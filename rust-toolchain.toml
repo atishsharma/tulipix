@@ -1,3 +1,6 @@
 [toolchain]
-channel = "stable"
+# Nightly: required for the Cranelift dev codegen backend (fast debug builds).
+# Stable still works if you drop `codegen-backend` from [profile.dev] in
+# Cargo.toml + the [unstable] block in .cargo/config.toml.
+channel = "nightly"
 components = ["rustfmt", "clippy"]

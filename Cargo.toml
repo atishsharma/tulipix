@@ -50,16 +50,19 @@ wasmtime = { version = "26", default-features = false, features = ["runtime", "c
 mlua = { version = "0.10", features = ["lua54", "vendored", "send", "serialize"] }
 
 [profile.dev]
-opt-level = 0                # our crates: fastest codegen for quick edits
-debug = "line-tables-only"   # keep backtraces+line numbers, drop heavy debuginfo
-split-debuginfo = "unpacked" # faster linking on Linux
+opt-level = 0                 # our crates: fastest codegen for quick edits
+codegen-backend = "cranelift" # our crates: Cranelift = much faster debug codegen (needs nightly)
+debug = "line-tables-only"    # keep backtraces+line numbers, drop heavy debuginfo
+split-debuginfo = "unpacked"  # faster linking on Linux
 incremental = true
 
-# Dependencies rarely rebuild — keep them optimized (so the app runs smooth) but
-# strip their debuginfo so each relink of tulipix-app stays small + fast.
+# Dependencies rarely rebuild — keep them on LLVM (optimized so the app runs
+# smooth + Cranelift can't compile every dep) and strip debuginfo so each relink
+# of tulipix-app stays small. sccache caches these across fresh builds.
 [profile.dev.package."*"]
 opt-level = 1
 debug = false
+codegen-backend = "llvm"
 
 [profile.release]
 lto = "thin"

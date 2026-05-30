@@ -45,14 +45,12 @@ AGENTS.md
 GEMINI.md
 QODER.md
 .gemini/
-.github/
 .kiro/
 .qoder/
 .tokengone/
 .antigravitycli/
 docs/
 target/
-.cargo/
 .rtk/
 .windsurfrules
 tulipix_plan.html

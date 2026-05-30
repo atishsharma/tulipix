@@ -1,0 +1,14 @@
+# ── Dev build speed (local only — .cargo/ is gitignored) ─────────────────────
+# mold: fastest linker; relinking tulipix-app is the slowest part of an
+# incremental rebuild. sccache: caches dependency crates so a fresh build after
+# deleting target/ is fast (deps come from cache). codegen-backend (unstable):
+# lets the dev profile use Cranelift for our crates — much faster debug codegen
+# than LLVM. Requires the nightly toolchain (rust-toolchain.toml).
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]
+
+[build]
+rustc-wrapper = "sccache"
+
+[unstable]
+codegen-backend = true
