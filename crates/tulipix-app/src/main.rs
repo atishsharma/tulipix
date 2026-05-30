@@ -1096,6 +1096,7 @@ fn main() -> Result<()> {
                 "favorites" => populate_favorites(&w),
                 "history" => populate_history(&w),
                 "folders" => populate_folder_roots(&w),
+                "albums" | "artists" => { w.set_music_browse_page(0); rebuild_browse_tab(&w, t.as_str()); }
                 _ => {}
             }
         }
@@ -1222,6 +1223,16 @@ fn main() -> Result<()> {
         } else if s == "count" { "desc" } else { "asc" };
         w.set_music_browse_sort(s.into());
         w.set_music_browse_dir(dir.into());
+        w.set_music_browse_page(0);
+        rebuild_browse_tab(&w, &w.get_music_lib_tab());
+    });
+    // Albums/Artists pagination (delta −1 / +1, clamped to page count).
+    let w = window.as_weak();
+    window.on_music_set_browse_page(move |delta| {
+        let Some(w) = w.upgrade() else { return; };
+        let pages = w.get_music_browse_pages().max(1);
+        let next = (w.get_music_browse_page() + delta).clamp(0, pages - 1);
+        w.set_music_browse_page(next);
         rebuild_browse_tab(&w, &w.get_music_lib_tab());
     });
     // Shuffle toggle (affects Next).
@@ -6638,9 +6649,18 @@ fn rebuild_browse_tab(w: &MainWindow, tab: &str) {
         if asc { o } else { o.reverse() }
     });
     let tiles: Vec<PhotoTile> = v.into_iter().map(|(t, _)| t).collect();
+    // Albums/Artists are paginated 21/page (Songs-grid style); the rest show all.
+    const BROWSE_PER: usize = 21;
+    let page_slice = |w: &MainWindow, tiles: Vec<PhotoTile>| -> Vec<PhotoTile> {
+        let pages = tiles.len().div_ceil(BROWSE_PER).max(1);
+        let page = (w.get_music_browse_page().max(0) as usize).min(pages - 1);
+        w.set_music_browse_pages(pages as i32);
+        w.set_music_browse_page(page as i32);
+        tiles.into_iter().skip(page * BROWSE_PER).take(BROWSE_PER).collect()
+    };
     match tab {
-        "albums"    => w.set_music_albums(slint::ModelRc::new(slint::VecModel::from(tiles))),
-        "artists"   => w.set_music_artists(slint::ModelRc::new(slint::VecModel::from(tiles))),
+        "albums"    => w.set_music_albums(slint::ModelRc::new(slint::VecModel::from(page_slice(w, tiles)))),
+        "artists"   => w.set_music_artists(slint::ModelRc::new(slint::VecModel::from(page_slice(w, tiles)))),
         "genres"    => w.set_music_genres(slint::ModelRc::new(slint::VecModel::from(tiles))),
         "folders"   => w.set_music_folders(slint::ModelRc::new(slint::VecModel::from(tiles))),
         "playlists" => w.set_music_playlists(slint::ModelRc::new(slint::VecModel::from(tiles))),
@@ -7133,6 +7153,8 @@ fn play_music_url(w: &MainWindow, url: &str, title: &str) {
     cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
         .arg(format!("--input-ipc-server={}", sock.display()))
         .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
+    // Carry the mute state across track changes (each track is a fresh mpv).
+    if w.get_music_muted() { cmd.arg("--mute=yes"); }
     match cmd.arg(url).spawn() {
         Ok(child) => { if let Ok(mut g) = music_proc().lock() { *g = Some(child); } }
         Err(e) => { tracing::error!(error = %e, "mpv stream launch failed"); return; }
@@ -7848,6 +7870,8 @@ fn play_music_at(w: &MainWindow, idx: i32) {
     cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
         .arg(format!("--input-ipc-server={}", sock.display()))
         .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
+    // Carry the mute state across track changes (each track is a fresh mpv).
+    if w.get_music_muted() { cmd.arg("--mute=yes"); }
     let s = tulipix_core::settings::Settings::load().unwrap_or_default();
     if let Some(name) = s.advanced.get("music.eq-preset") {
         if let Some(eq) = tulipix_music::eq::Equalizer::preset(name.trim()) {

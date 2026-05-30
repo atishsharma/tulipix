@@ -735,6 +735,8 @@ export component MainWindow inherits Window {
     in-out property <string> music-songs-view: "list";
     in-out property <string> music-browse-sort: "name";
     in-out property <string> music-browse-dir: "asc";
+    in-out property <int> music-browse-page: 0;
+    in-out property <int> music-browse-pages: 1;
     in-out property <bool> music-shuffle: false;
     in-out property <bool> music-np-loved: false;
     in-out property <int> music-np-stars: 0;
@@ -785,6 +787,7 @@ export component MainWindow inherits Window {
     callback music-set-songs-view(string);
     callback music-set-recent-page(int);
     callback music-set-browse-sort(string);
+    callback music-set-browse-page(int);
     callback music-toggle-shuffle();
     // Phase 5 music — synced lyrics / audio output / visualizer / cast / tags.
     in-out property <[MusicLyricLine]> music-lyrics-rows: [];
@@ -909,6 +912,7 @@ export component MainWindow inherits Window {
     in-out property <bool> music-mini-bubble: false;
     in-out property <length> music-mini-x: 0px;
     in-out property <length> music-mini-y: 0px;
+    in-out property <length> music-bubble-y: -1px;   // <0 = uninitialised (centre on show)
     in-out property <bool> music-mini-show-queue: false;
     callback music-open-fullscreen();
     callback music-open-mini();
@@ -1276,6 +1280,7 @@ export component MainWindow inherits Window {
                 folders: root.music-folders; playlists: root.music-playlists; recent-rows: root.music-recent-rows;
                 recent-page: root.music-recent-page; recent-pages: root.music-recent-pages;
                 browse-sort <=> root.music-browse-sort; browse-dir <=> root.music-browse-dir; shuffle: root.music-shuffle;
+                browse-page: root.music-browse-page; browse-pages: root.music-browse-pages; set-browse-page(d) => { root.music-set-browse-page(d); }
                 set-recent-page(d) => { root.music-set-recent-page(d); } set-browse-sort(s) => { root.music-set-browse-sort(s); }
                 toggle-shuffle => { root.music-toggle-shuffle(); }
                 songs-view <=> root.music-songs-view; set-songs-view(v) => { root.music-set-songs-view(v); }
@@ -1354,7 +1359,7 @@ export component MainWindow inherits Window {
                 open-now-album => { root.music-open-now-album(); } open-now-artist => { root.music-open-now-artist(); }
                 mini-active: root.music-mini-open;
                 open-mini => {
-                    if (root.music-mini-x == 0px && root.music-mini-y == 0px) { root.music-mini-x = root.width - 340px; root.music-mini-y = root.height - 200px; }
+                    if (root.music-mini-x == 0px && root.music-mini-y == 0px) { root.music-mini-x = (root.width - 300px)/2; root.music-mini-y = (root.height - 512px)/2; }
                     root.music-open-mini();
                 }
                 open-fullscreen => { root.music-open-fullscreen(); }
@@ -1502,7 +1507,7 @@ export component MainWindow inherits Window {
         queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
         tab <=> root.music-fs-tab;
         close => { root.music-fullscreen = false; root.music-exit-zen(); }
-        init => { root.music-enter-zen(); }
+        init => { root.music-enter-zen(); self.zen-lyrics = true; }
         playpause => { root.music-toggle-pause(); }
         next => { root.music-next(); } prev => { root.music-prev(); }
         seek(s) => { root.music-seek(s); } set-volume(v) => { root.music-set-volume(v); }
@@ -1528,26 +1533,45 @@ export component MainWindow inherits Window {
         MusicMini {
             width: 100%; height: 100%;
             art: root.music-np-art; title: root.music-np-title; sub: root.music-np-sub; album: root.music-np-album; playing: root.music-playing;
-            pos: root.music-pos; dur: root.music-dur; volume: root.music-volume; muted: root.music-muted;
+            pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
+            shuffle: root.music-shuffle; volume: root.music-volume; muted: root.music-muted;
             queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
             close => { root.music-mini-open = false; }
             minimise => { root.music-mini-bubble = true; }
             playpause => { root.music-toggle-pause(); }
             next => { root.music-next(); } prev => { root.music-prev(); }
             seek(s) => { root.music-seek(s); } set-volume(v) => { root.music-set-volume(v); }
-            toggle-mute => { root.music-toggle-mute(); } play-queue(i) => { root.music-play-queue(i); }
+            toggle-mute => { root.music-toggle-mute(); } toggle-shuffle => { root.music-toggle-shuffle(); } play-queue(i) => { root.music-play-queue(i); }
         }
     }
-    // Minimised bubble — pinned to the right edge (Android-style). Tap to restore.
+    // Minimised bubble — pinned to the right edge (Android-style). Drag up/down
+    // to reposition; tap to restore the full mini-player.
     if root.music-mini-open && root.music-mini-bubble: Rectangle {
-        x: root.width - 78px; y: root.height / 2 - 30px;
-        width: 60px; height: 60px; border-radius: 30px; clip: true;
-        background: #14141b; border-width: 2px; border-color: root.music-np-accent;
-        drop-shadow-blur: 26px; drop-shadow-color: root.music-np-accent;
-        Image { source: root.music-np-art; image-fit: cover; width: 100%; height: 100%; opacity: 0.9; }
-        if root.music-np-title == "": Text { text: "♪"; color: #ec4899; font-size: 24px; horizontal-alignment: center; vertical-alignment: center; }
-        if root.music-playing: Rectangle { width: 100%; height: 100%; background: transparent; border-width: 2px; border-color: #ffffff66; border-radius: 30px; }
-        TouchArea { mouse-cursor: pointer; clicked => { root.music-mini-bubble = false; } }
+        x: root.width - 78px;
+        y: root.music-bubble-y < 0px ? root.height / 2 - 30px : root.music-bubble-y;
+        width: 60px; height: 60px;
+        // Pulsing accent ring (animated, not clipped).
+        Rectangle { width: 60px; height: 60px; border-radius: 30px; background: transparent;
+            border-width: 3px; border-color: root.music-np-accent;
+            opacity: 0.45 + 0.55 * Math.abs(Math.sin((animation-tick() / 1ms / 280) * 1rad)); }
+        // Clipped circular art.
+        Rectangle { width: 56px; height: 56px; border-radius: 28px; clip: true; x: 2px; y: 2px;
+            background: #14141b; drop-shadow-blur: 26px; drop-shadow-color: root.music-np-accent;
+            Image { source: root.music-np-art; image-fit: cover; width: 100%; height: 100%; opacity: 0.9; }
+            if root.music-np-title == "": Text { text: "♪"; color: #ec4899; font-size: 24px; horizontal-alignment: center; vertical-alignment: center; } }
+        bta := TouchArea {
+            mouse-cursor: pointer;
+            property <bool> dragged: false;
+            moved => {
+                if (self.pressed) {
+                    root.music-bubble-y = Math.clamp((root.music-bubble-y < 0px ? root.height / 2 - 30px : root.music-bubble-y)
+                        + (self.mouse-y - self.pressed-y), 8px, root.height - 68px);
+                    self.dragged = true;
+                }
+            }
+            pointer-event(e) => { if (e.kind == PointerEventKind.down) { self.dragged = false; } }
+            clicked => { if (!self.dragged) { root.music-mini-bubble = false; } }
+        }
     }
 
     // Book reader overlay (np.p4.books.reader) — full window above content.

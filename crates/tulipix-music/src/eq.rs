@@ -48,7 +48,9 @@ impl Equalizer {
         let chans = BANDS_HZ.iter().zip(self.gains_db.iter())
             .map(|(f, g)| format!("c0 f={f} w={width} g={g}|c1 f={f} w={width} g={g}", width = (*f as f64 * 0.7) as u32, f = f, g = g))
             .collect::<Vec<_>>().join("|");
-        format!("anequalizer={chans}")
+        // mpv's option parser treats `|`/`=`/space specially; length-quote the
+        // whole params value (`%N%…`) so it survives `--af=` and IPC alike.
+        format!("anequalizer=params=%{}%{}", chans.len(), chans)
     }
 }
 
