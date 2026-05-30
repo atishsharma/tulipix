@@ -1,0 +1,246 @@
+// Books section — Google Play Books language: warm paper canvas, covers on
+// shelves with title + author + a reading-progress bar. View tabs filter the
+// library (All / Reading / Unread / Comics). Click a cover → native reader.
+import { ScrollView } from "std-widgets.slint";
+import { HdrChip, HdrSearch, CountPill } from "section_header.slint";
+
+export struct TocEntryRow { idx: int, title: string, page: int }
+export struct BookmarkRow { id: int, page: int, note: string }
+export struct SeriesRow { id: int, name: string, book-count: int, cover: image }
+
+export struct BookTile {
+    thumb: image,
+    title: string,
+    author: string,
+    index: int,
+    progress: float,   // 0..1 read
+    finished: bool,
+    comic: bool,
+    format: string,    // epub / cbz / cbr / pdf
+}
+
+export component BooksPage inherits Rectangle {
+    in property <int> item-count: 0;
+    in property <[BookTile]> tiles: [];
+    in property <[SeriesRow]> series: [];
+    in property <string> book-stats: "";
+    in-out property <string> view: "all";
+    in-out property <string> query: "";
+    in-out property <string> sort-mode: "title";   // title | author | recent
+    in-out property <string> sort-dir: "asc";       // asc | desc
+    callback add-folder();
+    callback open-book(int);
+    callback set-view(string);
+    callback search(string);
+    callback set-sort(string);
+    callback series-open(int);
+    callback fetch-meta(int);
+    callback export-notes(int);
+
+    // Books accent (Play-Books blue) — shared so header chips stay on-theme.
+    property <color> accent: #1a73e8;
+
+    property <length> col-gap: 26px;
+    property <length> row-h: 296px;
+    property <length> cover-h: 210px;
+
+    background: #f5f1e8;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Row 1 — title · search · add · count pill (Photos two-tier pattern).
+        Rectangle {
+            height: 72px; horizontal-stretch: 1; background: #fbf9f3;
+            border-width: 1px; border-color: #e7e0d0;
+            HorizontalLayout {
+                padding-left: 28px; padding-right: 28px; spacing: 14px;
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Text { text: "My library"; color: #20201c; font-size: 22px; font-weight: 700; } }
+                Rectangle { horizontal-stretch: 1; }
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    HdrSearch { width: 420px; placeholder: "Search your books";
+                        query <=> root.query; edited(q) => { root.search(q); } } }
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    HdrChip { label: "+ Add books"; accent: root.accent; active: true; height: 44px; min-width: 140px;
+                        clicked => { root.add-folder(); } } }
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    CountPill { accent: root.accent; seg1: "📚 " + item-count + " books"; } }
+            }
+        }
+
+        // Row 2 — view tabs · sort chips.
+        Rectangle {
+            height: 54px; horizontal-stretch: 1; background: #fbf9f3;
+            border-width: 1px; border-color: #e7e0d0;
+            HorizontalLayout {
+                padding-left: 28px; padding-right: 28px; spacing: 8px; alignment: start;
+                VerticalLayout { alignment: center; HdrChip { label: "All";       min-width: 90px;  accent: root.accent; active: view == "all";     clicked => { root.view = "all";     root.set-view("all"); } } }
+                VerticalLayout { alignment: center; HdrChip { label: "Reading";   min-width: 90px;  accent: root.accent; active: view == "reading"; clicked => { root.view = "reading"; root.set-view("reading"); } } }
+                VerticalLayout { alignment: center; HdrChip { label: "Unread";    min-width: 90px;  accent: root.accent; active: view == "unread";  clicked => { root.view = "unread";  root.set-view("unread"); } } }
+                VerticalLayout { alignment: center; HdrChip { label: "Comics";    min-width: 90px;  accent: root.accent; active: view == "comics";  clicked => { root.view = "comics";  root.set-view("comics"); } } }
+                VerticalLayout { alignment: center; HdrChip { label: "📚 Series"; min-width: 110px; accent: root.accent; active: view == "series";  clicked => { root.view = "series";  root.set-view("series"); } } }
+                Rectangle { horizontal-stretch: 1; }
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Text { text: "Sort"; color: #6b6456; font-size: 12px; vertical-alignment: center; } }
+                VerticalLayout { alignment: center; HdrChip {
+                    label: "Title" + (root.sort-mode == "title" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                    min-width: 92px; accent: root.accent; active: root.sort-mode == "title"; clicked => { root.set-sort("title"); } } }
+                VerticalLayout { alignment: center; HdrChip {
+                    label: "Author" + (root.sort-mode == "author" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                    min-width: 100px; accent: root.accent; active: root.sort-mode == "author"; clicked => { root.set-sort("author"); } } }
+                VerticalLayout { alignment: center; HdrChip {
+                    label: "Recent" + (root.sort-mode == "recent" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                    min-width: 100px; accent: root.accent; active: root.sort-mode == "recent"; clicked => { root.set-sort("recent"); } } }
+            }
+        }
+
+        // Stats bar — visible when view == "all" and book-stats is non-empty.
+        if view == "all" && root.book-stats != "": Rectangle {
+            height: 28px; horizontal-stretch: 1; background: #f5f1e8;
+            border-width: 1px; border-color: #e7e0d0;
+            HorizontalLayout {
+                padding-left: 32px; padding-right: 32px; alignment: start;
+                Text { text: root.book-stats; color: #8a8369; font-size: 12px; vertical-alignment: center; }
+            }
+        }
+
+        // ── SERIES GRID ──────────────────────────────────────────────────────
+        if view == "series": ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                padding-left: 32px; padding-right: 32px; padding-top: 22px; padding-bottom: 36px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    property <int> cols: max(2, floor(self.width / 176px));
+                    property <length> scell: (self.width - (cols - 1) * col-gap) / cols;
+                    height: ceil(root.series.length / cols) * 230px;
+                    for s[sidx] in root.series: Rectangle {
+                        x: mod(sidx, parent.cols) * (parent.scell + col-gap);
+                        y: floor(sidx / parent.cols) * 230px;
+                        width: parent.scell; height: 230px;
+                        VerticalLayout {
+                            spacing: 6px;
+                            // Cover
+                            Rectangle {
+                                width: 160px; height: 200px;
+                                x: (parent.width - self.width) / 2;
+                                border-radius: 10px; clip: true;
+                                background: #d8cfbb;
+                                drop-shadow-blur: ssta.has-hover ? 18px : 8px;
+                                drop-shadow-color: #00000040;
+                                drop-shadow-offset-y: 4px;
+                                Image { source: s.cover; image-fit: cover; width: parent.width; height: parent.height; }
+                                ssta := TouchArea { mouse-cursor: pointer; clicked => { root.series-open(s.id); } }
+                            }
+                            Text { text: s.name; color: #20201c; font-size: 14px; font-weight: 700;
+                                overflow: elide; horizontal-alignment: center; }
+                            Text { text: s.book-count + " books"; color: #8a8369; font-size: 11px;
+                                horizontal-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── BOOK TILE GRID (all / reading / unread / comics) ─────────────────
+        if view != "series" && tiles.length > 0: ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                padding-left: 32px; padding-right: 32px; padding-top: 22px; padding-bottom: 36px;
+                Rectangle {
+                    horizontal-stretch: 1;
+                    property <int> cols: max(2, floor(self.width / 168px));
+                    property <length> cell: (self.width - (cols - 1) * col-gap) / cols;
+                    height: ceil(tiles.length / cols) * row-h;
+                    for tile[idx] in root.tiles: Rectangle {
+                        x: mod(idx, parent.cols) * (parent.cell + col-gap);
+                        y: floor(idx / parent.cols) * row-h;
+                        width: parent.cell; height: row-h;
+                        VerticalLayout {
+                            spacing: 8px;
+                            // cover
+                            Rectangle {
+                                width: parent.width * 0.86; height: cover-h;
+                                x: (parent.width - self.width) / 2;
+                                border-radius: 5px; clip: true;
+                                background: #d8cfbb;
+                                drop-shadow-blur: ta.has-hover ? 20px : 9px;
+                                drop-shadow-color: #00000044;
+                                drop-shadow-offset-y: 6px;
+                                Image { source: tile.thumb; image-fit: cover; width: parent.width; height: parent.height; }
+                                // spine shading
+                                Rectangle { x: 0; y: 0; width: 6px; height: parent.height; background: #00000030; }
+                                // format chip
+                                Rectangle {
+                                    x: parent.width - self.width - 6px; y: 6px;
+                                    width: fmt.preferred-width + 12px; height: 18px; border-radius: 9px;
+                                    background: #000000aa;
+                                    fmt := Text { text: tile.format; color: #fff; font-size: 9px; font-weight: 700;
+                                        horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                                // fetch-meta button (top-right, behind format chip — shown on hover)
+                                if ta.has-hover: Rectangle {
+                                    x: parent.width - 32px; y: 28px;
+                                    width: 26px; height: 26px; border-radius: 13px;
+                                    background: #000000a8;
+                                    fmta := TouchArea { mouse-cursor: pointer;
+                                        clicked => { root.fetch-meta(tile.index); } }
+                                    Text { text: "⊕"; color: #ffffff; font-size: 13px;
+                                        horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                                // finished tick
+                                if tile.finished: Rectangle {
+                                    x: 6px; y: 6px; width: 22px; height: 22px; border-radius: 11px; background: #1a73e8;
+                                    Text { text: "✓"; color: #fff; font-size: 13px; font-weight: 700;
+                                        horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                                // progress bar
+                                if tile.progress > 0.001 && !tile.finished: Rectangle {
+                                    x: 0; y: parent.height - 5px; width: parent.width; height: 5px; background: #00000033;
+                                    Rectangle { x: 0; y: 0; height: parent.height; width: parent.width * tile.progress;
+                                        background: #f4b400; }
+                                }
+                                ta := TouchArea { mouse-cursor: pointer; clicked => { root.open-book(tile.index); } }
+                            }
+                            Text { text: tile.title; color: #20201c; font-size: 12px; font-weight: 600; overflow: elide;
+                                horizontal-alignment: center; }
+                            Text { text: tile.author; color: #8a8369; font-size: 10px; overflow: elide;
+                                horizontal-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+
+        if view != "series" && tiles.length == 0: Rectangle {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: center; spacing: 14px;
+                HorizontalLayout { alignment: center;
+                    Rectangle { width: 96px; height: 96px; border-radius: 16px; background: #e7dcc4;
+                        Text { text: "📚"; font-size: 42px; horizontal-alignment: center; vertical-alignment: center; } } }
+                Text { text: view == "all" ? "Your shelves are empty" : "Nothing here yet"; color: #20201c; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+                Text { text: "Add an EPUB, CBZ or PDF folder to build your reading library."; color: #6b6456; font-size: 13px; horizontal-alignment: center; }
+                HorizontalLayout { alignment: center;
+                    Rectangle { width: 150px; height: 42px; border-radius: 21px; background: #1a73e8;
+                        horizontal-stretch: 0; vertical-stretch: 0;
+                        TouchArea { mouse-cursor: pointer; clicked => { root.add-folder(); } }
+                        Text { text: "+ Add books"; color: #ffffff; font-size: 13px; font-weight: 600;
+                            horizontal-alignment: center; vertical-alignment: center; } } }
+            }
+        }
+
+        if view == "series" && root.series.length == 0: Rectangle {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: center; spacing: 14px;
+                HorizontalLayout { alignment: center;
+                    Rectangle { width: 96px; height: 96px; border-radius: 16px; background: #e7dcc4;
+                        Text { text: "📚"; font-size: 42px; horizontal-alignment: center; vertical-alignment: center; } } }
+                Text { text: "No series found"; color: #20201c; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+                Text { text: "Series are detected automatically from your book metadata."; color: #6b6456; font-size: 13px; horizontal-alignment: center; }
+            }
+        }
+    }
+}

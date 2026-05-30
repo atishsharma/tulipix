@@ -1,0 +1,115 @@
+// Keyboard-shortcut help overlay — ? or Cmd/Ctrl+/. Full-window translucent
+// listing grouped by context (Global / Photos / Videos / Music / Books).
+// Printable: caller routes to system print via the Print button.
+
+import { Theme } from "tokens.slint";
+
+export struct ShortcutItem {
+    keys: string,    // e.g. "Ctrl+K"
+    label: string,   // e.g. "Open command palette"
+}
+
+export struct ShortcutGroup {
+    title: string,
+    items: [ShortcutItem],
+}
+
+export component ShortcutHelp inherits Rectangle {
+    in property <[ShortcutGroup]> groups;
+    callback dismissed();
+    callback print-clicked();
+
+    width: 100%; height: 100%;
+
+    Rectangle {
+        background: rgba(5, 6, 20, 0.86);
+        TouchArea {
+            clicked => { root.dismissed(); }
+        }
+    }
+
+    Rectangle {
+        x: 32px; y: 32px;
+        width: parent.width - 64px;
+        height: parent.height - 64px;
+        background: Theme.modal;
+        border-radius: Theme.radius-lg;
+        border-width: 1px;
+        border-color: Theme.outline-strong;
+
+        VerticalLayout {
+            padding: 24px;
+            spacing: 16px;
+
+            HorizontalLayout {
+                alignment: space-between;
+                Text {
+                    text: "Keyboard Shortcuts";
+                    font-size: 22px;
+                    font-weight: 600;
+                    color: Theme.text;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Rectangle {
+                        height: 32px; width: 80px;
+                        border-radius: 8px;
+                        border-width: 1px;
+                        border-color: Theme.outline;
+                        TouchArea { clicked => { root.print-clicked(); } }
+                        Text { text: "Print"; horizontal-alignment: center; vertical-alignment: center; color: Theme.text; }
+                    }
+                    Rectangle {
+                        height: 32px; width: 80px;
+                        border-radius: 8px;
+                        background: Theme.brand;
+                        TouchArea { clicked => { root.dismissed(); } }
+                        Text { text: "Close"; color: white; horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+            }
+
+            Flickable {
+                vertical-stretch: 1;
+                viewport-height: groups-col.preferred-height;
+                groups-col := VerticalLayout {
+                    spacing: 18px;
+                    for g in root.groups: VerticalLayout {
+                        spacing: 6px;
+                        Text {
+                            text: g.title;
+                            font-size: 13px;
+                            font-weight: 600;
+                            color: Theme.text-dim;
+                            letter-spacing: 0.8px;
+                        }
+                        for it in g.items: HorizontalLayout {
+                            spacing: 16px;
+                            Rectangle {
+                                width: 140px;
+                                height: 26px;
+                                border-radius: 6px;
+                                background: Theme.panel;
+                                border-width: 1px;
+                                border-color: Theme.outline;
+                                Text {
+                                    text: it.keys;
+                                    color: Theme.text;
+                                    font-size: 12px;
+                                    horizontal-alignment: center;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Text {
+                                text: it.label;
+                                font-size: 13px;
+                                color: Theme.text;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

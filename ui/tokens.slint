@@ -1,0 +1,128 @@
+// Design tokens — single source of truth.
+// Both light + extra-dark themes; switch via Theme.dark in-out property.
+// WCAG: extra-dark bg #050614 + text #f8faff = ~17.8:1 (AAA).
+
+export enum Section { photos, videos, music, books, cloud, tools, settings }
+
+export global Theme {
+    in-out property <bool> dark: true;
+
+    // --- Surfaces ---
+    out property <color> bg:        dark ? #050614 : #ede9f8;
+    out property <color> atmosphere: dark ? #0d0f1a : #f6f3fd;
+    out property <color> panel:     dark ? #161827 : #ffffffd0;
+    out property <color> panel-2:   dark ? #1d2033 : #fbfaff;
+    out property <color> modal:     dark ? #1a1c2e : #ffffffe6;
+
+    // --- Text ---
+    out property <color> text:      dark ? #f8faff : #1a1040;
+    out property <color> text-dim:  dark ? rgba(248, 250, 255, 0.66) : rgba(26, 16, 64, 0.78);
+    out property <color> text-inv:  dark ? #050614 : #ffffff;
+
+    // --- Outline / focus / state ---
+    out property <color> outline:        dark ? rgba(255,255,255,0.10) : rgba(26,16,64,0.10);
+    out property <color> outline-strong: dark ? rgba(255,255,255,0.18) : rgba(26,16,64,0.20);
+    out property <color> highlight-inner: dark ? rgba(255,255,255,0.06) : rgba(255,255,255,0.85);
+    out property <color> focus:          #7c3aed;
+
+    // --- Brand ---
+    out property <color> brand:   #7c3aed;
+    out property <color> brand-2: #4f46e5;
+
+    // --- Section accents ---
+    out property <color> sec-photos:   #8b5cf6; // violet
+    out property <color> sec-videos:   #6366f1; // indigo
+    out property <color> sec-music:    #ec4899; // pink
+    out property <color> sec-books:    #10b981; // emerald
+    out property <color> sec-cloud:    #14b8a6; // teal
+    out property <color> sec-tools:    #f59e0b; // amber
+    out property <color> sec-settings: #94a3b8; // slate
+
+    // --- Status ---
+    out property <color> ok:    #16a34a;
+    out property <color> warn:  #f59e0b;
+    out property <color> error: #dc2626;
+
+    // --- Geometry ---
+    out property <length> radius-sm: 8px;
+    out property <length> radius-md: 14px;
+    out property <length> radius-lg: 24px;
+    out property <length> sidebar-w: 248px;
+
+    // --- Frost depths (used by frost.slint) ---
+    out property <length> frost-atmosphere: 80px;
+    out property <length> frost-panel:      24px;
+    out property <length> frost-modal:      40px;
+
+    // --- Motion ---
+    in-out property <bool> reduce-motion: false;
+
+    // --- Default font ---
+    out property <string> font-family: "Sora";
+
+    // --- Variable-font density signal ---
+    // Sora is shipped as a variable font (wght axis 100..900). The Weight
+    // global interpolates between these named stops based on press / hover /
+    // lift state — heavier on lift+hover, lighter on press for the
+    // "depressed key" feel. Reduce-motion clamps to the rest weight.
+    out property <int> weight-rest:    400;
+    out property <int> weight-hover:   500;
+    out property <int> weight-press:   300;
+    out property <int> weight-lift:    600;
+}
+
+export global Weight {
+    in property <bool> hovered: false;
+    in property <bool> pressed: false;
+    in property <bool> lifted:  false;
+
+    out property <int> value:
+        Theme.reduce-motion       ? Theme.weight-rest :
+        pressed                   ? Theme.weight-press :
+        lifted     &&  hovered    ? Theme.weight-lift :
+        lifted                    ? Theme.weight-hover :
+        hovered                   ? Theme.weight-hover :
+                                    Theme.weight-rest;
+}
+
+export global Accent {
+    in property <Section> section: Section.photos;
+    out property <color> color:
+        section == Section.photos   ? Theme.sec-photos :
+        section == Section.videos   ? Theme.sec-videos :
+        section == Section.music    ? Theme.sec-music :
+        section == Section.books    ? Theme.sec-books :
+        section == Section.cloud    ? Theme.sec-cloud :
+        section == Section.tools    ? Theme.sec-tools :
+                                      Theme.sec-settings;
+
+    out property <{x: float, y: float}> orb-corner:
+        section == Section.photos   ? { x: 0.15, y: 0.20 } :
+        section == Section.videos   ? { x: 0.85, y: 0.15 } :
+        section == Section.music    ? { x: 0.20, y: 0.85 } :
+        section == Section.books    ? { x: 0.85, y: 0.85 } :
+        section == Section.cloud    ? { x: 0.50, y: 0.50 } :
+        section == Section.tools    ? { x: 0.80, y: 0.50 } :
+                                      { x: 0.50, y: 0.50 };
+}
+
+// Legacy aliases for components migrated incrementally.
+export global Tokens {
+    out property <color> bg: Theme.bg;
+    out property <color> surface: Theme.panel;
+    out property <color> surface-2: Theme.panel-2;
+    out property <color> text: Theme.text;
+    out property <color> text-dim: Theme.text-dim;
+    out property <color> outline: Theme.outline;
+    out property <color> brand: Theme.brand;
+    out property <color> brand-2: Theme.brand-2;
+    out property <color> sec-photos: Theme.sec-photos;
+    out property <color> sec-videos: Theme.sec-videos;
+    out property <color> sec-music: Theme.sec-music;
+    out property <color> sec-books: Theme.sec-books;
+    out property <color> sec-cloud: Theme.sec-cloud;
+    out property <color> sec-tools: Theme.sec-tools;
+    out property <length> radius-md: Theme.radius-md;
+    out property <length> radius-lg: Theme.radius-lg;
+    out property <length> sidebar-w: Theme.sidebar-w;
+}

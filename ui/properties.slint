@@ -1,0 +1,149 @@
+import { Theme } from "tokens.slint";
+import { ModalFrost } from "frost.slint";
+
+export struct MetaRow { k: string, v: string }
+
+export struct AssetProperties {
+    path: string,
+    size-bytes: int,
+    size-human: string,     // "2.89 MB (3,031,744 bytes)"
+    mtime: string,
+    ctime: string,
+    mime: string,
+    sha256: string,
+    library-state: string, // "indexed" | "missing" | "orphan"
+    edits-applied: int,
+    metadata: [MetaRow],   // structured EXIF rows (bold key + value)
+    histogram: image,       // RGB histogram (Rust-rendered)
+}
+
+component KvRow inherits HorizontalLayout {
+    in property <string> k;
+    in property <string> v;
+    spacing: 8px;
+    Text { text: k; color: Theme.text-dim; font-size: 11px; font-weight: 700; width: 92px; vertical-alignment: top; }
+    Text { text: v; color: Theme.text; font-size: 11px; horizontal-stretch: 1; wrap: word-wrap; }
+}
+
+export component PropertiesWindow inherits Rectangle {
+    in property <AssetProperties> props;
+    in-out property <bool> open: false;
+    callback open-containing-folder();
+    callback close();
+
+    width: 100%; height: 100%;
+    background: #00000088;
+    visible: open;
+
+    if open: TouchArea { clicked => { root.close(); root.open = false; } }
+
+    if open: ModalFrost {
+        accent: Theme.brand;
+        // Dynamic height — tall enough to show all metadata without scrolling,
+        // clamped to the viewport (the metadata Flickable scrolls only if the
+        // window would exceed the screen, so the buttons never overflow).
+        property <length> body-h: max(meta-list.preferred-height, 300px);
+        width: 720px;
+        height: min(parent.height - 40px, self.body-h + 150px);
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        z: 200;
+        VerticalLayout {
+            padding: 22px; spacing: 12px;
+            Text { text: "Properties"; color: Theme.text; font-size: 18px; font-weight: 700; }
+
+            // Two panels — file facts + histogram on the left, EXIF on the right.
+            HorizontalLayout {
+                spacing: 14px; vertical-stretch: 1;
+
+                // Left panel: facts + histogram.
+                Rectangle {
+                    width: 320px;
+                    border-radius: 10px; background: Theme.panel;
+                    border-color: Theme.outline; border-width: 1px;
+                    VerticalLayout {
+                        padding: 14px; spacing: 7px;
+                        KvRow { k: "Path";     v: props.path; }
+                        KvRow { k: "Size";     v: props.size-human; }
+                        KvRow { k: "Modified"; v: props.mtime; }
+                        KvRow { k: "Created";  v: props.ctime; }
+                        KvRow { k: "MIME";     v: props.mime; }
+                        KvRow { k: "SHA-256";  v: props.sha256; }
+                        KvRow { k: "Library";  v: props.library-state; }
+                        KvRow { k: "Edits";    v: props.edits-applied + " applied"; }
+                        Rectangle { vertical-stretch: 1; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: "Histogram"; color: Theme.text-dim; font-size: 11px; font-weight: 700;
+                                vertical-alignment: center; horizontal-stretch: 1; }
+                            // Channel legend.
+                            Text { text: "● R"; color: #ff5252; font-size: 9px; vertical-alignment: center; }
+                            Text { text: "● G"; color: #4caf50; font-size: 9px; vertical-alignment: center; }
+                            Text { text: "● B"; color: #5c9dff; font-size: 9px; vertical-alignment: center; }
+                        }
+                        Rectangle {
+                            height: 96px; horizontal-stretch: 1;
+                            border-radius: 8px; clip: true;
+                            background: #00000066;
+                            border-color: Theme.outline; border-width: 1px;
+                            Image {
+                                source: props.histogram; image-fit: fill;
+                                width: parent.width; height: parent.height;
+                            }
+                            // Tonal region dividers (quarter + three-quarter).
+                            Rectangle { x: parent.width / 3; width: 1px; height: parent.height; background: #ffffff14; }
+                            Rectangle { x: 2 * parent.width / 3; width: 1px; height: parent.height; background: #ffffff14; }
+                        }
+                        // X-axis tonal regions: left = dark pixels, right = bright.
+                        HorizontalLayout {
+                            Text { text: "Shadows"; color: Theme.text-dim; font-size: 9px; horizontal-alignment: left; horizontal-stretch: 1; }
+                            Text { text: "Midtones"; color: Theme.text-dim; font-size: 9px; horizontal-alignment: center; horizontal-stretch: 1; }
+                            Text { text: "Highlights"; color: Theme.text-dim; font-size: 9px; horizontal-alignment: right; horizontal-stretch: 1; }
+                        }
+                    }
+                }
+
+                // Right panel: EXIF metadata.
+                Rectangle {
+                    horizontal-stretch: 1;
+                    border-radius: 10px; background: Theme.panel;
+                    border-color: Theme.outline; border-width: 1px;
+                    VerticalLayout {
+                        padding: 14px; spacing: 8px;
+                        Text { text: "Metadata"; color: Theme.text-dim; font-size: 11px; font-weight: 700; }
+                        Rectangle { height: 1px; background: Theme.outline; }
+                        // Window grows to fit all rows; Flickable only scrolls
+                        // if clamped to the viewport (keeps buttons inside).
+                        Flickable {
+                            vertical-stretch: 1;
+                            viewport-height: meta-list.preferred-height;
+                            meta-list := VerticalLayout {
+                                spacing: 5px;
+                                for r in props.metadata: KvRow { k: r.k; v: r.v; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 8px;
+                Rectangle { horizontal-stretch: 1; }
+                Rectangle {
+                    width: 150px; height: 30px; border-radius: 8px;
+                    background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
+                    TouchArea { clicked => { root.open-containing-folder(); } }
+                    Text { text: "Open Containing"; color: Theme.text; font-size: 11px;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                }
+                Rectangle {
+                    width: 70px; height: 30px; border-radius: 8px;
+                    background: Theme.brand;
+                    TouchArea { clicked => { root.close(); root.open = false; } }
+                    Text { text: "Close"; color: #ffffff; font-size: 11px; font-weight: 600;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+        }
+    }
+}

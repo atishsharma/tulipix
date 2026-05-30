@@ -1,0 +1,34 @@
+[package]
+name = "tulipix-platform"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Tray + global accelerator requires libxdo on Linux; default off to keep
+# headless CI green. Packaging targets enable it explicitly.
+tray = ["dep:tray-icon"]
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+keyring.workspace = true
+muda = { version = "0.15", default-features = false }
+tray-icon = { version = "0.19", optional = true }
+tulipix-core = { path = "../tulipix-core" }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows = { version = "0.58", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Dwm",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.5"
+objc2-foundation = "0.2"
+objc2-app-kit = { version = "0.2", features = ["NSWindow", "NSView", "NSVisualEffectView"] }

@@ -1,0 +1,39 @@
+import { Theme } from "tokens.slint";
+
+export enum ThemeChoice { system, light, extra-dark }
+
+export component ThemePicker inherits Rectangle {
+    in-out property <ThemeChoice> choice: ThemeChoice.system;
+    callback changed(ThemeChoice);
+
+    height: 40px;
+    border-radius: Theme.radius-md;
+    background: Theme.panel-2;
+    border-color: Theme.outline;
+    border-width: 1px;
+
+    HorizontalLayout {
+        padding: 4px; spacing: 4px;
+        for entry in [
+            { label: "System", v: ThemeChoice.system },
+            { label: "Light",  v: ThemeChoice.light },
+            { label: "Extra-Dark", v: ThemeChoice.extra-dark },
+        ]: Rectangle {
+            horizontal-stretch: 1;
+            border-radius: Theme.radius-sm;
+            background: root.choice == entry.v ? Theme.brand : transparent;
+            touch := TouchArea {
+                clicked => {
+                    root.choice = entry.v;
+                    root.changed(entry.v);
+                }
+            }
+            Text {
+                text: entry.label;
+                color: root.choice == entry.v ? #ffffff : Theme.text-dim;
+                font-size: 12px; font-weight: 600;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+        }
+    }
+}

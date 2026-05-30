@@ -1,0 +1,48 @@
+// App-wide icon set — Lucide (MIT). SVGs are stroke="currentColor"; the
+// `AppIcon` wrapper recolours them via `colorize` so they follow the theme.
+// @image-url needs a string literal, so each icon is a named image here.
+import { Theme } from "tokens.slint";
+
+export global Icons {
+    out property <image> lock:        @image-url("../resources/icons/lock.svg");
+    out property <image> lock-open:   @image-url("../resources/icons/lock-open.svg");
+    out property <image> settings:    @image-url("../resources/icons/settings.svg");
+    out property <image> moon:        @image-url("../resources/icons/moon.svg");
+    out property <image> sun:         @image-url("../resources/icons/sun.svg");
+    out property <image> image:       @image-url("../resources/icons/image.svg");
+    out property <image> film:        @image-url("../resources/icons/film.svg");
+    out property <image> music:       @image-url("../resources/icons/music.svg");
+    out property <image> book-open:   @image-url("../resources/icons/book-open.svg");
+    out property <image> cloud:       @image-url("../resources/icons/cloud.svg");
+    out property <image> wrench:      @image-url("../resources/icons/wrench.svg");
+    out property <image> search:      @image-url("../resources/icons/search.svg");
+    out property <image> x:           @image-url("../resources/icons/x.svg");
+    out property <image> chevron-left:  @image-url("../resources/icons/chevron-left.svg");
+    out property <image> chevron-right: @image-url("../resources/icons/chevron-right.svg");
+    out property <image> play:        @image-url("../resources/icons/play.svg");
+    out property <image> pause:       @image-url("../resources/icons/pause.svg");
+    out property <image> skip-back:   @image-url("../resources/icons/skip-back.svg");
+    out property <image> skip-forward:@image-url("../resources/icons/skip-forward.svg");
+    out property <image> shuffle:     @image-url("../resources/icons/shuffle.svg");
+    out property <image> repeat:      @image-url("../resources/icons/repeat.svg");
+    out property <image> repeat-1:    @image-url("../resources/icons/repeat-1.svg");
+    out property <image> volume:      @image-url("../resources/icons/volume.svg");
+    out property <image> volume-x:    @image-url("../resources/icons/volume-x.svg");
+    out property <image> heart:       @image-url("../resources/icons/heart.svg");
+    out property <image> star:        @image-url("../resources/icons/star.svg");
+    out property <image> list-music:  @image-url("../resources/icons/list-music.svg");
+    out property <image> sliders:     @image-url("../resources/icons/sliders.svg");
+    out property <image> mic:         @image-url("../resources/icons/mic.svg");
+    out property <image> list-plus:   @image-url("../resources/icons/list-plus.svg");
+    out property <image> pip:         @image-url("../resources/icons/pip.svg");
+    out property <image> timer:       @image-url("../resources/icons/timer.svg");
+}
+
+// Themed icon. Set `source: Icons.<name>` and optionally `tint` / size.
+export component AppIcon inherits Image {
+    in property <color> tint: Theme.text;
+    colorize: tint;
+    image-fit: contain;
+    width: 18px;
+    height: 18px;
+}

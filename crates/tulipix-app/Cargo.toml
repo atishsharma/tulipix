@@ -1,0 +1,77 @@
+[package]
+name = "tulipix-app"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "tulipix"
+path = "src/main.rs"
+
+[features]
+# Lean default — only the always-on subsystems are linked. Optional crates
+# (whisper, AI execution providers, large models, plugin sandboxes) are
+# behind their own feature flag so the base binary stays ~40% smaller and
+# loads them lazily on first use.
+default = []
+
+dev-reload = ["dep:notify"]
+
+# Real ONNX editor AI ops (upscale/colorize/heal/sky). Pulls ORT into
+# tulipix-photos (downloads the native runtime at build time).
+ai-onnx = ["tulipix-photos/onnx"]
+
+# Global allocator. mimalloc on Win/Linux gives 10-20% perf on the thumb
+# pipeline + DB pool; macOS keeps system malloc (jemalloc nightly-only).
+alloc-mimalloc = ["dep:mimalloc"]
+alloc-jemalloc = ["dep:tikv-jemallocator"]
+
+# Lazy subsystem feature flags. The app reads matching env vars at runtime
+# (TULIPIX_ENABLE_WHISPER=1 …) and only resolves the crate's entrypoints on
+# first call, so the cold-start path does not pay their startup cost.
+lazy-whisper = ["dep:tulipix-whisper"]
+lazy-ai-ep   = ["dep:tulipix-ai"]
+lazy-plugins = ["dep:tulipix-plugins"]
+lazy-sync    = ["dep:tulipix-sync"]
+
+# Convenience: turn everything on (used for the official packaging build).
+full = ["lazy-whisper", "lazy-ai-ep", "lazy-plugins", "lazy-sync"]
+
+[dependencies]
+slint.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+dark-light = "1"
+notify = { version = "6", optional = true }
+tulipix-core = { path = "../tulipix-core" }
+tulipix-platform = { path = "../tulipix-platform" }
+tulipix-photos = { path = "../tulipix-photos" }
+tulipix-videos = { path = "../tulipix-videos" }
+tulipix-player = { path = "../tulipix-player" }
+tulipix-music = { path = "../tulipix-music" }
+tulipix-books = { path = "../tulipix-books" }
+tulipix-cloud = { path = "../tulipix-cloud" }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+sqlx = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+serde_json.workspace = true
+walkdir = "2"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+sha2 = "0.10"
+kamadak-exif = "0.6"
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+tulipix-whisper = { path = "../tulipix-whisper", optional = true }
+tulipix-ai = { path = "../tulipix-ai", optional = true }
+tulipix-plugins = { path = "../tulipix-plugins", optional = true }
+tulipix-sync = { path = "../tulipix-sync", optional = true }
+
+[target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
+mimalloc = { version = "0.1", default-features = false, optional = true }
+tikv-jemallocator = { version = "0.6", optional = true }
+
+[build-dependencies]
+slint-build.workspace = true

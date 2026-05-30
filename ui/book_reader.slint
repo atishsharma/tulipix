@@ -1,0 +1,309 @@
+// Native book reader overlay (np.p4.books.reader). Three modes driven by
+// `kind`: "comic" (1–2 page images, spread / RTL / invert), "text" (EPUB
+// chapter text with typography), "unsupported" (honest PDF/CBR notice).
+import { ScrollView } from "std-widgets.slint";
+import { TocEntryRow, BookmarkRow } from "page_books.slint";
+
+component RBtn inherits Rectangle {
+    in property <string> label;
+    in property <bool> on: false;
+    callback clicked();
+    height: 34px;
+    width: t.preferred-width + 24px;
+    border-radius: 8px;
+    background: on ? #1a73e8 : ta.has-hover ? #ffffff22 : #ffffff14;
+    border-width: 1px; border-color: #ffffff2e;
+    animate background { duration: 110ms; }
+    t := Text { text: label; color: #fff; font-size: 13px; font-weight: 600;
+        horizontal-alignment: center; vertical-alignment: center; }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+export component BookReader inherits Rectangle {
+    in property <bool> open: false;
+    in property <string> title;
+    in property <string> kind: "comic";   // comic | text | unsupported
+    in property <string> page-label;
+    in property <float> progress;          // 0..1
+    // comic
+    in property <image> page-left;
+    in property <image> page-right;
+    in property <bool> has-right: false;
+    in property <bool> spread-double: false;
+    in property <bool> rtl: false;
+    in property <bool> invert: false;
+    // text
+    in property <string> text;
+    in property <float> font-px: 18;
+    in property <int> font-family: 0;
+    in property <bool> text-dark: false;
+    // Phase 5 — TOC / bookmarks / read-mode / theme
+    in property <[TocEntryRow]> toc-entries: [];
+    in property <[BookmarkRow]> reader-bookmarks: [];
+    in-out property <bool> toc-open: false;
+    in-out property <bool> bookmarks-open: false;
+    in property <string> read-mode: "paginated";
+    in property <string> theme: "sepia";
+    in property <float> line-height-val: 1.5;
+    in property <float> margin-pct: 8.0;
+
+    callback close();
+    callback next();
+    callback prev();
+    callback scrub(float);
+    callback toggle-spread();
+    callback toggle-rtl();
+    callback toggle-invert();
+    callback set-font(float);
+    callback set-family(int);
+    callback toggle-text-dark();
+    // Phase 5 callbacks
+    callback toggle-toc();
+    callback jump-to-chapter(int);
+    callback toggle-bookmarks();
+    callback add-bookmark();
+    callback jump-to-bookmark(int);
+    callback toggle-read-mode();
+    callback set-theme(string);
+    callback tts-start();
+    callback find-text(string);
+
+    property <string> family-name: font-family == 1 ? "Arial" : font-family == 2 ? "OpenDyslexic" : "Georgia";
+
+    // Theme-aware text area colors
+    property <color> text-bg:
+        kind == "text"
+            ? (theme == "light" ? #ffffff
+               : theme == "dark"  ? #1e1e1e
+               : theme == "black" ? #000000
+               : #f7f2e6)
+            : #0c0c10;
+    property <color> text-fg:
+        (theme == "dark" || theme == "black") ? #d6d0c2 : #2a2620;
+
+    visible: open;
+    background: text-bg;
+
+    if open: FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.LeftArrow) { rtl ? root.next() : root.prev(); return accept; }
+            if (e.text == Key.RightArrow) { rtl ? root.prev() : root.next(); return accept; }
+            if (e.text == Key.Escape) { root.close(); return accept; }
+            if (e.text == " ") { root.next(); return accept; }
+            return reject;
+        }
+        init => { self.focus(); }
+
+        VerticalLayout {
+            // Top bar
+            Rectangle {
+                height: 52px; background: kind == "text" && theme == "sepia" ? #fbf9f3
+                              : kind == "text" && theme == "light" ? #f5f5f5
+                              : #00000066;
+                HorizontalLayout {
+                    padding-left: 18px; padding-right: 14px; spacing: 8px; alignment: start;
+                    Text { text: title; font-size: 15px; font-weight: 700; vertical-alignment: center;
+                        color: kind == "text" && (theme == "sepia" || theme == "light") ? #20201c : #ffffff;
+                        overflow: elide; }
+                    Rectangle { horizontal-stretch: 1; }
+
+                    // ── Shared controls (all modes) ──────────────────────────
+                    RBtn { label: "☰"; on: root.toc-open; clicked => { root.toggle-toc(); } }
+                    RBtn { label: "🔖+"; clicked => { root.add-bookmark(); } }
+                    RBtn { label: "📋"; on: root.bookmarks-open; clicked => { root.toggle-bookmarks(); } }
+                    RBtn { label: root.read-mode == "paginated" ? "↕ Scroll" : "📄 Pages"; clicked => { root.toggle-read-mode(); } }
+
+                    // ── Text mode controls ───────────────────────────────────
+                    if kind == "text": HorizontalLayout {
+                        spacing: 8px;
+                        RBtn { label: "A-"; clicked => { root.set-font(max(12, font-px - 1)); } }
+                        RBtn { label: "A+"; clicked => { root.set-font(min(32, font-px + 1)); } }
+                        RBtn { label: family-name; clicked => { root.set-family(mod(font-family + 1, 3)); } }
+                        RBtn { label: "Night"; on: text-dark; clicked => { root.toggle-text-dark(); } }
+                        RBtn {
+                            label: root.theme == "sepia"  ? "☀ Sepia"
+                                 : root.theme == "light"  ? "☀ Light"
+                                 : root.theme == "dark"   ? "☾ Dark"
+                                 : "⬛ Black";
+                            clicked => {
+                                root.set-theme(
+                                    root.theme == "sepia"  ? "light"
+                                  : root.theme == "light"  ? "dark"
+                                  : root.theme == "dark"   ? "black"
+                                  : "sepia"
+                                );
+                            }
+                        }
+                    }
+
+                    // ── Comic mode controls ──────────────────────────────────
+                    if kind == "comic": HorizontalLayout {
+                        spacing: 8px;
+                        RBtn { label: spread-double ? "Two-page" : "Single"; on: spread-double; clicked => { root.toggle-spread(); } }
+                        RBtn { label: "RTL"; on: rtl; clicked => { root.toggle-rtl(); } }
+                        RBtn { label: "Invert"; on: invert; clicked => { root.toggle-invert(); } }
+                    }
+
+                    RBtn { label: "✕ Close"; clicked => { root.close(); } }
+                }
+            }
+
+            // Stage
+            Rectangle {
+                vertical-stretch: 1; horizontal-stretch: 1;
+
+                // COMIC
+                if kind == "comic": HorizontalLayout {
+                    padding: 16px; spacing: 10px; alignment: center;
+                    Image { source: page-left; image-fit: contain; height: parent.height - 32px;
+                        horizontal-stretch: has-right ? 1 : 0; }
+                    if has-right: Image { source: page-right; image-fit: contain; height: parent.height - 32px;
+                        horizontal-stretch: 1; }
+                }
+                // page tap zones (left third = prev, right third = next), RTL-aware
+                if kind == "comic": TouchArea {
+                    width: parent.width / 3; x: 0; mouse-cursor: pointer;
+                    clicked => { rtl ? root.next() : root.prev(); }
+                }
+                if kind == "comic": TouchArea {
+                    width: parent.width / 3; x: parent.width * 2 / 3; mouse-cursor: pointer;
+                    clicked => { rtl ? root.prev() : root.next(); }
+                }
+
+                // TEXT (column centred via root-derived padding to avoid a
+                // ScrollView width binding loop)
+                if kind == "text": ScrollView {
+                    width: 100%; height: 100%;
+                    VerticalLayout {
+                        padding-top: 30px; padding-bottom: 60px;
+                        padding-left: max(48px, (root.width - 760px) / 2);
+                        padding-right: max(48px, (root.width - 760px) / 2);
+                        Text {
+                            text: text;
+                            wrap: word-wrap;
+                            font-size: font-px * 1px;
+                            font-family: family-name;
+                            color: root.text-fg;
+                        }
+                    }
+                }
+
+                // UNSUPPORTED
+                if kind == "unsupported": VerticalLayout {
+                    alignment: center; spacing: 12px;
+                    Text { text: "📄"; font-size: 52px; horizontal-alignment: center; }
+                    Text { text: page-label; color: #cfcfe0; font-size: 16px; font-weight: 600; horizontal-alignment: center; }
+                    Text { text: "EPUB and CBZ open natively. PDF and CBR need a dedicated engine — coming soon.";
+                        color: #8a8aa0; font-size: 12px; horizontal-alignment: center; }
+                }
+            }
+
+            // Bottom nav bar
+            Rectangle {
+                height: 56px; background: kind == "text" && (theme == "sepia" || theme == "light") ? #fbf9f3 : #00000066;
+                HorizontalLayout {
+                    padding-left: 18px; padding-right: 18px; spacing: 14px;
+                    RBtn { label: "‹ Prev"; clicked => { root.prev(); } }
+                    // scrub track
+                    Rectangle {
+                        vertical-stretch: 1; horizontal-stretch: 1; y: 0;
+                        track := Rectangle {
+                            width: parent.width; height: 6px; y: (parent.height - self.height)/2;
+                            border-radius: 3px; background: #ffffff2e;
+                            Rectangle { x: 0; y: 0; height: parent.height; width: parent.width * progress;
+                                border-radius: 3px; background: #1a73e8; }
+                        }
+                        TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.scrub((self.mouse-x / self.width).clamp(0, 1)); }
+                            moved => { if (self.pressed) { root.scrub((self.mouse-x / self.width).clamp(0, 1)); } }
+                        }
+                    }
+                    Text { text: page-label; color: kind == "text" && (theme == "sepia" || theme == "light") ? #6b6456 : #cfcfe0;
+                        font-size: 12px; vertical-alignment: center; }
+                    RBtn { label: "Next ›"; clicked => { root.next(); } }
+                }
+            }
+        }
+
+        // ── TOC sidebar (left-side overlay, renders on top) ───────────────────
+        if root.toc-open: Rectangle {
+            width: 280px; height: 100%; x: 0; y: 0;
+            background: #1a1a1acc;
+            // Close overlay touch area (right side of screen outside panel)
+            TouchArea { x: 280px; width: root.width - 280px; height: parent.height;
+                clicked => { root.toc-open = false; } }
+            VerticalLayout {
+                padding: 12px; spacing: 8px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Contents"; color: #ffffff; font-size: 14px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                    Rectangle { width: 28px; height: 28px; border-radius: 14px;
+                        background: xt.has-hover ? #ffffff22 : transparent;
+                        xt := TouchArea { clicked => { root.toc-open = false; } }
+                        Text { text: "✕"; color: #ffffff; font-size: 13px;
+                            horizontal-alignment: center; vertical-alignment: center; } }
+                }
+                if root.toc-entries.length == 0: Text { text: "No chapters"; color: #7a7a7a; font-size: 12px; }
+                ScrollView { vertical-stretch: 1;
+                    VerticalLayout { alignment: start; spacing: 2px;
+                        for e[i] in root.toc-entries: Rectangle {
+                            height: 44px; horizontal-stretch: 1;
+                            background: tr.has-hover ? #ffffff18 : transparent;
+                            border-radius: 6px;
+                            tr := TouchArea { clicked => { root.jump-to-chapter(e.page); } }
+                            HorizontalLayout { padding-left: 10px; padding-right: 10px; spacing: 8px;
+                                Text { text: e.title; color: #d0d0d0; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                                Text { text: "p." + e.page; color: #707070; font-size: 11px; vertical-alignment: center; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Bookmarks sidebar (right-side overlay, renders on top) ────────────
+        if root.bookmarks-open: Rectangle {
+            width: 280px; height: 100%; x: root.width - 280px; y: 0;
+            background: #1a1a1acc;
+            TouchArea { x: -(root.width - 280px); width: root.width - 280px; height: parent.height;
+                clicked => { root.bookmarks-open = false; } }
+            VerticalLayout {
+                padding: 12px; spacing: 8px;
+                HorizontalLayout {
+                    spacing: 4px;
+                    Text { text: "Bookmarks"; color: #ffffff; font-size: 14px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+                    Rectangle { width: 28px; height: 28px; border-radius: 14px;
+                        background: addbm.has-hover ? #1a73e8 : #1a73e844;
+                        addbm := TouchArea { clicked => { root.add-bookmark(); } }
+                        Text { text: "＋"; color: #ffffff; font-size: 14px;
+                            horizontal-alignment: center; vertical-alignment: center; } }
+                    Rectangle { width: 28px; height: 28px; border-radius: 14px;
+                        background: xbm.has-hover ? #ffffff22 : transparent;
+                        xbm := TouchArea { clicked => { root.bookmarks-open = false; } }
+                        Text { text: "✕"; color: #ffffff; font-size: 13px;
+                            horizontal-alignment: center; vertical-alignment: center; } }
+                }
+                if root.reader-bookmarks.length == 0: Text {
+                    text: "No bookmarks yet.\nTap ＋ to add one.";
+                    color: #7a7a7a; font-size: 12px; wrap: word-wrap; }
+                ScrollView { vertical-stretch: 1;
+                    VerticalLayout { alignment: start; spacing: 2px;
+                        for bm[i] in root.reader-bookmarks: Rectangle {
+                            height: 52px; horizontal-stretch: 1;
+                            background: bmr.has-hover ? #ffffff18 : transparent;
+                            border-radius: 6px;
+                            bmr := TouchArea { clicked => { root.jump-to-bookmark(bm.page); } }
+                            HorizontalLayout { padding-left: 10px; padding-right: 10px; spacing: 8px;
+                                VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
+                                    Text { text: "Page " + (bm.page + 1); color: #d0d0d0; font-size: 13px; font-weight: 600; }
+                                    if bm.note != "": Text { text: bm.note; color: #909090; font-size: 11px; overflow: elide; }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

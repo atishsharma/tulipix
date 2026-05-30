@@ -1,0 +1,695 @@
+// Non-destructive photo editor (np.p2.edit.*). Opened from a photo's
+// right-click → Edit (or the viewer's Edit button). Live CPU preview rendered
+// by tulipix-photos::editor::ops; every control maps to a typed EditOp on the
+// undo/redo stack.
+import { Slider, ComboBox, ScrollView, SpinBox, LineEdit } from "std-widgets.slint";
+
+component AdjustRow inherits VerticalLayout {
+    in property <string> label;
+    in-out property <float> value;
+    in property <float> min: -1.0;
+    in property <float> max: 1.0;
+    callback changed(float);
+    spacing: 2px;
+    HorizontalLayout {
+        Text { text: root.label; color: #e8eaed; font-size: 12px; horizontal-stretch: 1; }
+        Text { text: Math.round(root.value * 100) / 100; color: #9aa0a6; font-size: 11px; }
+    }
+    Slider {
+        minimum: root.min; maximum: root.max; value <=> root.value;
+        changed(v) => { root.changed(v); }
+    }
+}
+
+component EditChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <bool> dim: false;
+    callback clicked();
+    height: 34px; min-width: 0px; border-radius: 10px;
+    horizontal-stretch: 1;
+    opacity: dim ? 0.45 : 1.0;
+    background: active ? #1a73e8 : (t.has-hover ? #3c4043 : #2a2b2e);
+    t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 8px; padding-right: 8px;
+        Text { text: root.label; color: #ffffff; font-size: 12px; font-weight: 600;
+            horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+    }
+}
+
+component PanelHeader inherits Text {
+    color: #9aa0a6; font-size: 11px; font-weight: 700;
+}
+
+// Vertical icon+label button for the slim left tool rail.
+component ModeBtn inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> active: false;
+    callback clicked();
+    height: 56px; border-radius: 10px;
+    background: root.active ? #1a73e8 : (mt.has-hover ? #2a2b2e : transparent);
+    mt := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    VerticalLayout {
+        alignment: center; spacing: 2px;
+        Text { text: root.icon; color: #ffffff; font-size: 18px; horizontal-alignment: center; }
+        Text { text: root.label; color: #cfd2d6; font-size: 9px; horizontal-alignment: center; }
+    }
+}
+
+// Hold-to-act variant of ModeBtn (momentary): fires `pressed` on pointer
+// down and `released` on up. Used for the press-and-hold Compare button.
+component HoldBtn inherits Rectangle {
+    in property <string> icon;
+    in property <string> label;
+    in property <bool> active: false;
+    callback pressed();
+    callback released();
+    height: 56px; border-radius: 10px;
+    background: root.active ? #1a73e8 : (ht.has-hover ? #2a2b2e : transparent);
+    ht := TouchArea {
+        mouse-cursor: pointer;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) { root.pressed(); }
+            if (e.kind == PointerEventKind.up)   { root.released(); }
+        }
+    }
+    VerticalLayout {
+        alignment: center; spacing: 2px;
+        Text { text: root.icon; color: #ffffff; font-size: 18px; horizontal-alignment: center; }
+        Text { text: root.label; color: #cfd2d6; font-size: 9px; horizontal-alignment: center; }
+    }
+}
+
+export component PhotoEditor inherits Rectangle {
+    in property <image> preview;
+    in property <image> original;
+    in property <bool> busy: false;
+    in property <int> op-count: 0;
+    in property <bool> can-undo: false;
+    in property <bool> can-redo: false;
+    in property <string> filename: "";
+    in property <string> active-filter: "";
+    in property <string> status: "";
+    in property <int> nat-w: 0;
+    in property <int> nat-h: 0;
+    in-out property <float> exposure: 0;
+    in-out property <float> contrast: 0;
+    in-out property <float> saturation: 0;
+    in-out property <float> temperature: 0;
+    in-out property <float> highlights: 0;
+    in-out property <float> shadows: 0;
+    in-out property <string> export-format: "JPEG";
+    in-out property <float> export-quality: 90;
+    in-out property <float> zoom: 1.0;       // 1.0 = fit-to-window
+    in-out property <string> edit-mode: "";  // "" | "transform" | "crop" | "resize"
+    in-out property <bool> comparing: false;
+    in-out property <bool> split-compare: false;  // before/after reveal slider
+    in-out property <float> split-pos: 0.5;        // divider position 0..1
+    in-out property <string> crop-aspect: "free";
+    in-out property <int> resize-w: 0;
+    in-out property <int> resize-h: 0;
+    in-out property <bool> confirm-open: false; // unsaved-changes dialog
+
+    // EXIF viewer (read-only dump) + editor (writable fields).
+    in-out property <string> exif-dump: "";
+    in-out property <bool> exif-view-open: false;
+    in-out property <bool> exif-edit-open: false;
+    in-out property <string> exif-artist: "";
+    in-out property <string> exif-copyright: "";
+    in-out property <string> exif-description: "";
+    in-out property <string> exif-comment: "";
+    in-out property <string> exif-date: "";
+
+    // Tone-curve editor. `histogram` is the edited image's RGB histogram
+    // (Rust-rendered) drawn behind the grid. Five fixed-X nodes (0/.25/.5/
+    // .75/1), y in 0..1; identity = cy{n} == n/4.
+    in-out property <image> histogram;
+    in-out property <bool> curve-open: false;
+    in-out property <string> curve-channel: "all"; // all|r|g|b
+    in-out property <float> cy0: 0.0;
+    in-out property <float> cy1: 0.25;
+    in-out property <float> cy2: 0.5;
+    in-out property <float> cy3: 0.75;
+    in-out property <float> cy4: 1.0;
+
+    callback adjust(float, float, float, float, float, float);
+    callback filter-preset(string);
+    callback transform(string);
+    callback enhance();
+    callback sharpen(float);
+    callback ai-op(string);
+    callback undo();
+    callback redo();
+    callback reset();
+    callback do-export(string, float);
+    callback save-original();
+    callback crop-apply(float, float, float, float);
+    callback resize-apply(int, int);
+    callback close();
+    callback exif-save(string, string, string, string, string); // artist,copyright,desc,comment,date
+    callback exif-clear-gps();
+    callback curve-changed(string, float, float, float, float, float); // channel, y0..y4
+
+    // Estimated fit scale from the window minus fixed chrome (left rail 64,
+    // right panel 300, top bar 56). Window dims are fixed inputs → no binding
+    // loop. The 1:1 button reads the live stage size in its handler.
+    property <length> stage-w-est: self.width - 64px - 300px;
+    property <length> stage-h-est: self.height - 56px;
+    property <float> fit-scale: min(
+        (stage-w-est / 1px) / max(1, root.nat-w),
+        (stage-h-est / 1px) / max(1, root.nat-h));
+    property <float> true-scale: root.zoom * fit-scale;
+    property <bool> dirty: root.op-count > 0;
+
+    callback push-adjust();
+    push-adjust => {
+        root.adjust(root.exposure, root.contrast, root.saturation, root.temperature, root.highlights, root.shadows);
+    }
+    // Escape / Close → confirm if there are unsaved edits, else close.
+    callback request-close();
+    request-close => { if (root.dirty) { root.confirm-open = true; } else { root.close(); } }
+    function enter-mode(m: string) {
+        if (m == "crop") { root.zoom = 1.0; crop.reset-box(); }
+        if (m == "resize") { root.resize-w = root.nat-w; root.resize-h = root.nat-h; }
+        root.edit-mode = root.edit-mode == m ? "" : m;
+    }
+
+    background: #1f2023;
+
+    fs := FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                if (root.edit-mode != "") { root.edit-mode = ""; return accept; }
+                if (root.curve-open) { root.curve-open = false; return accept; }
+                if (root.exif-view-open) { root.exif-view-open = false; return accept; }
+                if (root.exif-edit-open) { root.exif-edit-open = false; return accept; }
+                if (root.split-compare) { root.split-compare = false; return accept; }
+                root.request-close(); return accept;
+            }
+            return reject;
+        }
+
+        HorizontalLayout {
+            // ── Slim left tool rail ──────────────────────────────────────
+            Rectangle {
+                width: 64px; background: #141517; border-width: 1px; border-color: #3c4043;
+                VerticalLayout {
+                    padding: 6px; padding-top: 14px; spacing: 8px; alignment: start;
+                    ModeBtn { icon: "⤥"; label: "Transform"; active: root.edit-mode == "transform"; clicked => { root.enter-mode("transform"); } }
+                    ModeBtn { icon: "▢"; label: "Crop"; active: root.edit-mode == "crop"; clicked => { root.enter-mode("crop"); } }
+                    ModeBtn { icon: "⤡"; label: "Resize"; active: root.edit-mode == "resize"; clicked => { root.enter-mode("resize"); } }
+                    Rectangle { height: 1px; background: #3c4043; }
+                    // Hold to peek the unedited original.
+                    HoldBtn { icon: "👁"; label: "Compare"; active: root.comparing;
+                        pressed => { root.comparing = true; } released => { root.comparing = false; } }
+                    // Toggle the before/after reveal slider over the edit.
+                    ModeBtn { icon: "◫"; label: "Split"; active: root.split-compare;
+                        clicked => { root.split-compare = !root.split-compare; } }
+                    Rectangle { height: 1px; background: #3c4043; }
+                    // Tone-curve editor overlaid on the stage.
+                    ModeBtn { icon: "～"; label: "Curves"; active: root.curve-open;
+                        clicked => { root.curve-open = !root.curve-open; } }
+                    // EXIF metadata — read-only viewer + writable editor.
+                    ModeBtn { icon: "ⓘ"; label: "Info"; active: root.exif-view-open;
+                        clicked => { root.exif-view-open = !root.exif-view-open; root.exif-edit-open = false; } }
+                    ModeBtn { icon: "✎"; label: "Meta"; active: root.exif-edit-open;
+                        clicked => { root.exif-edit-open = !root.exif-edit-open; root.exif-view-open = false; } }
+                }
+            }
+
+            // ── Preview column ───────────────────────────────────────────
+            VerticalLayout {
+                horizontal-stretch: 1;
+                // Top bar.
+                Rectangle {
+                    height: 56px; background: #17181a;
+                    HorizontalLayout {
+                        padding-left: 14px; padding-right: 14px; spacing: 6px;
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Text { text: "Edit · " + root.filename; color: #ffffff; font-size: 14px; font-weight: 600;
+                                vertical-alignment: center; overflow: elide; } }
+                        Rectangle { horizontal-stretch: 1; }
+                        // Pixel dimensions of the current (edited) frame, centred.
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Text { text: root.nat-w + " × " + root.nat-h + " px"; color: #cfd2d6;
+                                font-size: 12px; font-weight: 600; vertical-alignment: center; } }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "−"; clicked => { root.zoom = Math.max(0.05, root.zoom - 0.25); } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: Math.round(true-scale * 100) + "%"; clicked => { root.zoom = 1.0; } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "+"; clicked => { root.zoom = Math.min(8.0, root.zoom + 0.25); } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "1:1"; active: Math.abs(true-scale - 1.0) < 0.02;
+                            clicked => { root.zoom = 1.0 / max(0.001, min((stage.width / 1px) / max(1, root.nat-w), (stage.height / 1px) / max(1, root.nat-h))); } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "Fit"; active: Math.abs(root.zoom - 1.0) < 0.01; clicked => { root.zoom = 1.0; } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "↶"; dim: !root.can-undo; clicked => { if (root.can-undo) { root.undo(); } } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "↷"; dim: !root.can-redo; clicked => { if (root.can-redo) { root.redo(); } } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "Reset"; dim: root.op-count == 0; clicked => { root.reset(); } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "✕ Close"; clicked => { root.request-close(); } } }
+                    }
+                }
+
+                // Image stage.
+                stage := Rectangle {
+                    horizontal-stretch: 1; vertical-stretch: 1; background: #0e0f10;
+                    clip: true;
+                    property <length> pan-x: 0;
+                    property <length> pan-y: 0;
+                    property <length> down-x: 0;
+                    property <length> down-y: 0;
+
+                    Image {
+                        source: root.comparing ? root.original : root.preview;
+                        image-fit: contain;
+                        width: parent.width * root.zoom;
+                        height: parent.height * root.zoom;
+                        x: (parent.width - self.width) / 2 + stage.pan-x;
+                        y: (parent.height - self.height) / 2 + stage.pan-y;
+                    }
+
+                    // ── Before/after reveal slider ──────────────────────────
+                    // Left of the divider shows the ORIGINAL clipped over the
+                    // edited preview; the divider is dragged anywhere on stage.
+                    if root.split-compare: Rectangle {
+                        x: 0; y: 0; width: stage.width * root.split-pos; height: stage.height;
+                        clip: true;
+                        Image {
+                            source: root.original;
+                            image-fit: contain;
+                            width: stage.width * root.zoom;
+                            height: stage.height * root.zoom;
+                            x: (stage.width - self.width) / 2 + stage.pan-x;
+                            y: (stage.height - self.height) / 2 + stage.pan-y;
+                        }
+                    }
+                    if root.split-compare: TouchArea {
+                        width: 100%; height: 100%; mouse-cursor: ew-resize;
+                        pointer-event(e) => { if (e.kind == PointerEventKind.down) {
+                            root.split-pos = Math.clamp(self.mouse-x / stage.width, 0.05, 0.95); } }
+                        moved => { root.split-pos = Math.clamp(self.mouse-x / stage.width, 0.05, 0.95); }
+                    }
+                    if root.split-compare: Rectangle {
+                        x: stage.width * root.split-pos - 1px; y: 0; width: 2px; height: stage.height;
+                        background: #ffffff;
+                        Rectangle {
+                            width: 30px; height: 30px; border-radius: 15px;
+                            x: (parent.width - self.width) / 2; y: (stage.height - self.height) / 2;
+                            background: #1a73e8; border-width: 2px; border-color: #ffffff;
+                            Text { text: "⇋"; color: #ffffff; font-size: 14px;
+                                horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
+                    if root.split-compare: Rectangle {
+                        x: 8px; y: 8px; width: lbl-b.preferred-width + 16px; height: 22px; border-radius: 11px;
+                        background: #000000aa;
+                        lbl-b := Text { text: "Before"; color: #ffffff; font-size: 11px; font-weight: 600;
+                            horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                    if root.split-compare: Rectangle {
+                        x: stage.width - self.width - 8px; y: 8px; width: lbl-a.preferred-width + 16px; height: 22px; border-radius: 11px;
+                        background: #000000aa;
+                        lbl-a := Text { text: "After"; color: #ffffff; font-size: 11px; font-weight: 600;
+                            horizontal-alignment: center; vertical-alignment: center; }
+                    }
+
+                    if root.edit-mode != "crop" && !root.split-compare: TouchArea {
+                        mouse-cursor: root.zoom > 1.0 ? MouseCursor.grab : MouseCursor.default;
+                        scroll-event(e) => {
+                            root.zoom = Math.max(0.05, Math.min(8.0, root.zoom + (e.delta-y > 0 ? 0.25 : -0.25)));
+                            if (root.zoom <= 1.0) { stage.pan-x = 0; stage.pan-y = 0; }
+                            return accept;
+                        }
+                        pointer-event(e) => { if (e.kind == PointerEventKind.down) { stage.down-x = stage.pan-x; stage.down-y = stage.pan-y; } }
+                        moved => {
+                            if (root.zoom > 1.0) {
+                                stage.pan-x = stage.down-x + (self.mouse-x - self.pressed-x);
+                                stage.pan-y = stage.down-y + (self.mouse-y - self.pressed-y);
+                            }
+                        }
+                    }
+
+                    // Crop overlay.
+                    crop := Rectangle {
+                        property <float> img-aspect: root.nat-h > 0 ? root.nat-w / root.nat-h : 1.0;
+                        property <bool> width-bound: (stage.width / stage.height) < img-aspect;
+                        property <length> disp-w: width-bound ? stage.width : stage.height * img-aspect;
+                        property <length> disp-h: width-bound ? stage.width / img-aspect : stage.height;
+                        property <length> disp-x: (stage.width - disp-w) / 2;
+                        property <length> disp-y: (stage.height - disp-h) / 2;
+                        property <float> fx: 0;
+                        property <float> fy: 0;
+                        property <float> fw: 1;
+                        property <float> fh: 1;
+                        property <float> down-fx: 0;
+                        property <float> down-fy: 0;
+                        property <float> down-fw: 1;
+                        property <float> down-fh: 1;
+                        public function reset-box() { self.fx = 0.08; self.fy = 0.08; self.fw = 0.84; self.fh = 0.84; }
+                        public function set-aspect(rw: float, rh: float) {
+                            if (rw <= 0 || rh <= 0) { self.reset-box(); return; }
+                            self.fw = 1.0; self.fh = 1.0;
+                            if ((self.disp-w / self.disp-h) > (rw / rh)) {
+                                self.fw = (self.disp-h * rw / rh) / self.disp-w;
+                            } else {
+                                self.fh = (self.disp-w * rh / rw) / self.disp-h;
+                            }
+                            self.fx = (1.0 - self.fw) / 2.0;
+                            self.fy = (1.0 - self.fh) / 2.0;
+                        }
+                        visible: root.edit-mode == "crop";
+                        x: disp-x; y: disp-y; width: disp-w; height: disp-h;
+                        Rectangle { x: 0; y: 0; width: parent.width; height: parent.fy * parent.height; background: #00000099; }
+                        Rectangle { x: 0; y: (parent.fy + parent.fh) * parent.height; width: parent.width; height: parent.height - (parent.fy + parent.fh) * parent.height; background: #00000099; }
+                        Rectangle { x: 0; y: parent.fy * parent.height; width: parent.fx * parent.width; height: parent.fh * parent.height; background: #00000099; }
+                        Rectangle { x: (parent.fx + parent.fw) * parent.width; y: parent.fy * parent.height; width: parent.width - (parent.fx + parent.fw) * parent.width; height: parent.fh * parent.height; background: #00000099; }
+                        box := Rectangle {
+                            x: parent.fx * parent.width;
+                            y: parent.fy * parent.height;
+                            width: parent.fw * parent.width;
+                            height: parent.fh * parent.height;
+                            border-width: 2px; border-color: #ffffff; background: transparent;
+                            move-ta := TouchArea {
+                                mouse-cursor: move;
+                                pointer-event(e) => { if (e.kind == PointerEventKind.down) { crop.down-fx = crop.fx; crop.down-fy = crop.fy; } }
+                                moved => {
+                                    crop.fx = Math.clamp(crop.down-fx + (self.mouse-x - self.pressed-x) / crop.disp-w, 0, 1 - crop.fw);
+                                    crop.fy = Math.clamp(crop.down-fy + (self.mouse-y - self.pressed-y) / crop.disp-h, 0, 1 - crop.fh);
+                                }
+                            }
+                            Rectangle {
+                                width: 22px; height: 22px; border-radius: 11px;
+                                x: parent.width - self.width / 2; y: parent.height - self.height / 2;
+                                background: #1a73e8; border-width: 2px; border-color: #ffffff;
+                                br-ta := TouchArea {
+                                    mouse-cursor: nesw-resize;
+                                    pointer-event(e) => { if (e.kind == PointerEventKind.down) { crop.down-fw = crop.fw; crop.down-fh = crop.fh; } }
+                                    moved => {
+                                        crop.fw = Math.clamp(crop.down-fw + (self.mouse-x - self.pressed-x) / crop.disp-w, 0.05, 1 - crop.fx);
+                                        crop.fh = Math.clamp(crop.down-fh + (self.mouse-y - self.pressed-y) / crop.disp-h, 0.05, 1 - crop.fy);
+                                    }
+                                }
+                            }
+                            Rectangle { x: parent.width / 3; y: 0; width: 1px; height: parent.height; background: #ffffff55; }
+                            Rectangle { x: 2 * parent.width / 3; y: 0; width: 1px; height: parent.height; background: #ffffff55; }
+                            Rectangle { x: 0; y: parent.height / 3; width: parent.width; height: 1px; background: #ffffff55; }
+                            Rectangle { x: 0; y: 2 * parent.height / 3; width: parent.width; height: 1px; background: #ffffff55; }
+                        }
+                    }
+
+                    // Floating mode-controls bar (bottom-centre of the stage).
+                    if root.edit-mode != "": Rectangle {
+                        x: (parent.width - self.width) / 2;
+                        y: parent.height - self.height - 16px;
+                        width: ctlbar.preferred-width + 24px; height: 48px;
+                        border-radius: 12px; background: #202124ee;
+                        border-width: 1px; border-color: #3c4043;
+                        ctlbar := HorizontalLayout {
+                            padding-left: 10px; padding-right: 10px; spacing: 6px;
+                            if root.edit-mode == "transform": HorizontalLayout {
+                                spacing: 6px;
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "⟲ 90°"; clicked => { root.transform("rot-left"); } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "⟳ 90°"; clicked => { root.transform("rot-right"); } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "⇋ Flip H"; clicked => { root.transform("flip-h"); } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "⇅ Flip V"; clicked => { root.transform("flip-v"); } } }
+                            }
+                            if root.edit-mode == "crop": HorizontalLayout {
+                                spacing: 5px;
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "Free"; active: root.crop-aspect == "free"; clicked => { root.crop-aspect = "free"; crop.reset-box(); } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "1:1"; active: root.crop-aspect == "1:1"; clicked => { root.crop-aspect = "1:1"; crop.set-aspect(1, 1); } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "3:2"; active: root.crop-aspect == "3:2"; clicked => { root.crop-aspect = "3:2"; crop.set-aspect(3, 2); } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "4:3"; active: root.crop-aspect == "4:3"; clicked => { root.crop-aspect = "4:3"; crop.set-aspect(4, 3); } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "16:9"; active: root.crop-aspect == "16:9"; clicked => { root.crop-aspect = "16:9"; crop.set-aspect(16, 9); } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "9:16"; active: root.crop-aspect == "9:16"; clicked => { root.crop-aspect = "9:16"; crop.set-aspect(9, 16); } } }
+                                Rectangle { width: 8px; }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "✓ Apply"; active: true; clicked => { root.crop-apply(crop.fx, crop.fy, crop.fw, crop.fh); root.edit-mode = ""; } } }
+                            }
+                            if root.edit-mode == "resize": HorizontalLayout {
+                                spacing: 8px;
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; Text { text: "W"; color: #9aa0a6; font-size: 12px; vertical-alignment: center; } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; SpinBox { width: 100px; minimum: 1; maximum: 30000; value <=> root.resize-w; } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; Text { text: "× H"; color: #9aa0a6; font-size: 12px; vertical-alignment: center; } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; SpinBox { width: 100px; minimum: 1; maximum: 30000; value <=> root.resize-h; } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "✓ Apply"; active: true; clicked => { root.resize-apply(root.resize-w, root.resize-h); root.edit-mode = ""; } } }
+                            }
+                        }
+                    }
+
+                    // ── Tone-curve editor (overlay on the stage) ────────────
+                    if root.curve-open: cpanel := Rectangle {
+                        property <float> gsize: 230;
+                        function set-node(mx: length, my: length) {
+                            // y in 0..1 (top = 1); pick the nearest fixed-X node.
+                            if (mx / (self.gsize * 1px) < 0.125) {
+                                root.cy0 = Math.clamp(1 - my / (self.gsize * 1px), 0, 1);
+                            } else if (mx / (self.gsize * 1px) < 0.375) {
+                                root.cy1 = Math.clamp(1 - my / (self.gsize * 1px), 0, 1);
+                            } else if (mx / (self.gsize * 1px) < 0.625) {
+                                root.cy2 = Math.clamp(1 - my / (self.gsize * 1px), 0, 1);
+                            } else if (mx / (self.gsize * 1px) < 0.875) {
+                                root.cy3 = Math.clamp(1 - my / (self.gsize * 1px), 0, 1);
+                            } else {
+                                root.cy4 = Math.clamp(1 - my / (self.gsize * 1px), 0, 1);
+                            }
+                            root.curve-changed(root.curve-channel, root.cy0, root.cy1, root.cy2, root.cy3, root.cy4);
+                        }
+                        function reset-nodes() {
+                            root.cy0 = 0.0; root.cy1 = 0.25; root.cy2 = 0.5; root.cy3 = 0.75; root.cy4 = 1.0;
+                            root.curve-changed(root.curve-channel, 0.0, 0.25, 0.5, 0.75, 1.0);
+                        }
+                        x: 16px; y: stage.height - self.height - 16px;
+                        width: self.gsize * 1px + 32px; height: self.gsize * 1px + 88px;
+                        border-radius: 12px; background: #202124f2;
+                        border-width: 1px; border-color: #3c4043;
+                        TouchArea { } // block stage interactions under the panel
+                        VerticalLayout {
+                            padding: 12px; spacing: 8px;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Text { text: "Curves"; color: #ffffff; font-size: 13px; font-weight: 700;
+                                    vertical-alignment: center; horizontal-stretch: 1; }
+                                EditChip { label: "Reset"; clicked => { cpanel.reset-nodes(); } }
+                            }
+                            HorizontalLayout {
+                                spacing: 5px;
+                                EditChip { label: "RGB"; active: root.curve-channel == "all"; clicked => { root.curve-channel = "all"; cpanel.reset-nodes(); } }
+                                EditChip { label: "R"; active: root.curve-channel == "r"; clicked => { root.curve-channel = "r"; cpanel.reset-nodes(); } }
+                                EditChip { label: "G"; active: root.curve-channel == "g"; clicked => { root.curve-channel = "g"; cpanel.reset-nodes(); } }
+                                EditChip { label: "B"; active: root.curve-channel == "b"; clicked => { root.curve-channel = "b"; cpanel.reset-nodes(); } }
+                            }
+                            // Grid + histogram backdrop + curve + draggable nodes.
+                            grid := Rectangle {
+                                width: cpanel.gsize * 1px; height: cpanel.gsize * 1px;
+                                border-radius: 6px; background: #0e0f10; clip: true;
+                                Image { source: root.histogram; image-fit: fill;
+                                    width: parent.width; height: parent.height; opacity: 0.55; }
+                                // Thirds grid.
+                                Rectangle { x: parent.width / 3; width: 1px; height: parent.height; background: #ffffff14; }
+                                Rectangle { x: 2 * parent.width / 3; width: 1px; height: parent.height; background: #ffffff14; }
+                                Rectangle { y: parent.height / 3; width: parent.width; height: 1px; background: #ffffff14; }
+                                Rectangle { y: 2 * parent.height / 3; width: parent.width; height: 1px; background: #ffffff14; }
+                                // Identity reference (faint diagonal).
+                                Path {
+                                    width: 100%; height: 100%;
+                                    viewbox-width: 1; viewbox-height: 1;
+                                    stroke: #ffffff33; stroke-width: 1px;
+                                    MoveTo { x: 0; y: 1; } LineTo { x: 1; y: 0; }
+                                }
+                                // Active curve.
+                                Path {
+                                    width: 100%; height: 100%;
+                                    viewbox-width: 1; viewbox-height: 1;
+                                    stroke: root.curve-channel == "r" ? #ff5252 : root.curve-channel == "g" ? #4caf50 : root.curve-channel == "b" ? #5c9dff : #ffd54f;
+                                    stroke-width: 2px;
+                                    MoveTo { x: 0;    y: 1 - root.cy0; }
+                                    LineTo { x: 0.25; y: 1 - root.cy1; }
+                                    LineTo { x: 0.5;  y: 1 - root.cy2; }
+                                    LineTo { x: 0.75; y: 1 - root.cy3; }
+                                    LineTo { x: 1.0;  y: 1 - root.cy4; }
+                                }
+                                // Node handles (visual; drag handled by the area below).
+                                Rectangle { x: 0.0 * parent.width - 5px;  y: (1 - root.cy0) * parent.height - 5px; width: 10px; height: 10px; border-radius: 5px; background: #ffffff; }
+                                Rectangle { x: 0.25 * parent.width - 5px; y: (1 - root.cy1) * parent.height - 5px; width: 10px; height: 10px; border-radius: 5px; background: #ffffff; }
+                                Rectangle { x: 0.5 * parent.width - 5px;  y: (1 - root.cy2) * parent.height - 5px; width: 10px; height: 10px; border-radius: 5px; background: #ffffff; }
+                                Rectangle { x: 0.75 * parent.width - 5px; y: (1 - root.cy3) * parent.height - 5px; width: 10px; height: 10px; border-radius: 5px; background: #ffffff; }
+                                Rectangle { x: 1.0 * parent.width - 5px;  y: (1 - root.cy4) * parent.height - 5px; width: 10px; height: 10px; border-radius: 5px; background: #ffffff; }
+                                TouchArea {
+                                    width: 100%; height: 100%; mouse-cursor: crosshair;
+                                    pointer-event(e) => { if (e.kind == PointerEventKind.down) { cpanel.set-node(self.mouse-x, self.mouse-y); } }
+                                    moved => { cpanel.set-node(self.mouse-x, self.mouse-y); }
+                                }
+                            }
+                            // Region legend — what the X axis means.
+                            HorizontalLayout {
+                                Text { text: "Shadows"; color: #9aa0a6; font-size: 9px; horizontal-alignment: left; horizontal-stretch: 1; }
+                                Text { text: "Midtones"; color: #9aa0a6; font-size: 9px; horizontal-alignment: center; horizontal-stretch: 1; }
+                                Text { text: "Highlights"; color: #9aa0a6; font-size: 9px; horizontal-alignment: right; horizontal-stretch: 1; }
+                            }
+                        }
+                    }
+
+                    // ── EXIF viewer (read-only full dump) ───────────────────
+                    if root.exif-view-open: Rectangle {
+                        x: stage.width - self.width - 16px; y: 16px;
+                        width: 330px; height: stage.height - 32px;
+                        border-radius: 12px; background: #202124f2;
+                        border-width: 1px; border-color: #3c4043;
+                        TouchArea { }
+                        VerticalLayout {
+                            padding: 16px; spacing: 10px;
+                            HorizontalLayout {
+                                Text { text: "Photo info (EXIF)"; color: #ffffff; font-size: 14px; font-weight: 700;
+                                    vertical-alignment: center; horizontal-stretch: 1; }
+                                EditChip { label: "✕"; clicked => { root.exif-view-open = false; } }
+                            }
+                            Rectangle { height: 1px; background: #3c4043; }
+                            Flickable {
+                                vertical-stretch: 1;
+                                viewport-height: dumptxt.preferred-height;
+                                dumptxt := Text {
+                                    width: parent.width;
+                                    text: root.exif-dump == "" ? "No metadata." : root.exif-dump;
+                                    color: #d0d3d7; font-size: 11px; font-family: "monospace"; wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+
+                    // ── EXIF editor (writable fields) ───────────────────────
+                    if root.exif-edit-open: Rectangle {
+                        x: stage.width - self.width - 16px; y: 16px;
+                        width: 330px; height: stage.height - 32px;
+                        border-radius: 12px; background: #202124f2;
+                        border-width: 1px; border-color: #3c4043;
+                        TouchArea { }
+                        ScrollView {
+                            VerticalLayout {
+                                padding: 16px; spacing: 10px; alignment: start;
+                                HorizontalLayout {
+                                    Text { text: "Edit metadata"; color: #ffffff; font-size: 14px; font-weight: 700;
+                                        vertical-alignment: center; horizontal-stretch: 1; }
+                                    EditChip { label: "✕"; clicked => { root.exif-edit-open = false; } }
+                                }
+                                Rectangle { height: 1px; background: #3c4043; }
+                                PanelHeader { text: "ARTIST"; }
+                                LineEdit { placeholder-text: "Author / photographer"; text <=> root.exif-artist; }
+                                PanelHeader { text: "COPYRIGHT"; }
+                                LineEdit { placeholder-text: "© 2026 …"; text <=> root.exif-copyright; }
+                                PanelHeader { text: "DESCRIPTION"; }
+                                LineEdit { placeholder-text: "Caption / title"; text <=> root.exif-description; }
+                                PanelHeader { text: "COMMENT"; }
+                                LineEdit { placeholder-text: "User comment"; text <=> root.exif-comment; }
+                                PanelHeader { text: "DATE TAKEN"; }
+                                LineEdit { placeholder-text: "YYYY:MM:DD HH:MM:SS"; text <=> root.exif-date; }
+                                Rectangle { height: 6px; }
+                                EditChip { label: "💾 Write metadata"; active: true;
+                                    clicked => { root.exif-save(root.exif-artist, root.exif-copyright, root.exif-description, root.exif-comment, root.exif-date); } }
+                                EditChip { label: "📍 Clear GPS location";
+                                    clicked => { root.exif-clear-gps(); } }
+                                Text { text: "Writes in place via exiftool. Date format: YYYY:MM:DD HH:MM:SS.";
+                                    color: #9aa0a6; font-size: 10px; wrap: word-wrap; }
+                            }
+                        }
+                    }
+
+                    if root.busy: Rectangle {
+                        width: 100%; height: 100%; background: #00000055;
+                        Text { text: "Rendering…"; color: #ffffff; font-size: 13px;
+                            horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                    if root.status != "": Rectangle {
+                        x: (parent.width - self.width) / 2; y: 16px;
+                        width: stxt.preferred-width + 28px; height: 36px; border-radius: 18px;
+                        background: #202124; border-width: 1px; border-color: #5f6368;
+                        stxt := Text { text: root.status; color: #ffffff; font-size: 12px;
+                            horizontal-alignment: center; vertical-alignment: center; }
+                    }
+                }
+            }
+
+            // ── Right tool panel ─────────────────────────────────────────
+            Rectangle {
+                width: 300px; background: #1f2023; border-width: 1px; border-color: #3c4043;
+                ScrollView {
+                    VerticalLayout {
+                        padding: 16px; spacing: 14px; alignment: start;
+                        PanelHeader { text: "LIGHT & COLOUR"; }
+                        AdjustRow { label: "Exposure";    value <=> root.exposure;    min: -2; max: 2; changed(v) => { root.push-adjust(); } }
+                        AdjustRow { label: "Contrast";     value <=> root.contrast;    changed(v) => { root.push-adjust(); } }
+                        AdjustRow { label: "Saturation";   value <=> root.saturation;  changed(v) => { root.push-adjust(); } }
+                        AdjustRow { label: "Temperature";  value <=> root.temperature; changed(v) => { root.push-adjust(); } }
+                        AdjustRow { label: "Highlights";   value <=> root.highlights;  changed(v) => { root.push-adjust(); } }
+                        AdjustRow { label: "Shadows";      value <=> root.shadows;     changed(v) => { root.push-adjust(); } }
+
+                        PanelHeader { text: "FILTERS"; }
+                        HorizontalLayout { spacing: 6px;
+                            EditChip { label: "B&W";     active: root.active-filter == "bw";      clicked => { root.filter-preset("bw"); } }
+                            EditChip { label: "Sepia";   active: root.active-filter == "sepia";   clicked => { root.filter-preset("sepia"); } }
+                            EditChip { label: "Vintage"; active: root.active-filter == "vintage"; clicked => { root.filter-preset("vintage"); } }
+                        }
+                        HorizontalLayout { spacing: 6px;
+                            EditChip { label: "Drama";    active: root.active-filter == "drama";    clicked => { root.filter-preset("drama"); } }
+                            EditChip { label: "HDR";      active: root.active-filter == "hdr";      clicked => { root.filter-preset("hdr"); } }
+                            EditChip { label: "Polaroid"; active: root.active-filter == "polaroid"; clicked => { root.filter-preset("polaroid"); } }
+                        }
+                        HorizontalLayout { spacing: 6px;
+                            EditChip { label: "Faded"; active: root.active-filter == "faded"; clicked => { root.filter-preset("faded"); } }
+                            EditChip { label: "None";  active: root.active-filter == "";     clicked => { root.filter-preset("none"); } }
+                        }
+
+                        PanelHeader { text: "ONE-TAP"; }
+                        HorizontalLayout { spacing: 6px;
+                            EditChip { label: "✨ Auto Enhance"; clicked => { root.enhance(); } }
+                            EditChip { label: "Sharpen"; clicked => { root.sharpen(1.0); } }
+                        }
+
+                        PanelHeader { text: "AI TOOLS (need model)"; }
+                        HorizontalLayout { spacing: 6px;
+                            EditChip { label: "Magic Eraser"; clicked => { root.ai-op("heal"); } }
+                            EditChip { label: "Sky"; clicked => { root.ai-op("sky"); } }
+                        }
+                        HorizontalLayout { spacing: 6px;
+                            EditChip { label: "Upscale"; clicked => { root.ai-op("upscale"); } }
+                            EditChip { label: "Colorize"; clicked => { root.ai-op("colorize"); } }
+                        }
+
+                        PanelHeader { text: "EXPORT"; }
+                        ComboBox { model: ["JPEG", "PNG", "WEBP", "TIFF", "HEIC"]; current-value <=> root.export-format; }
+                        AdjustRow { label: "Quality"; value <=> root.export-quality; min: 1; max: 100; changed(v) => { } }
+                        EditChip { label: "💾 Save a copy"; active: true; clicked => { root.do-export(root.export-format, root.export-quality); } }
+                        EditChip { label: "✓ Save to original"; clicked => { root.save-original(); } }
+                    }
+                }
+            }
+        }
+
+        init => { fs.focus(); }
+    }
+
+    // ── Unsaved-changes confirm dialog ──────────────────────────────────
+    if root.confirm-open: Rectangle {
+        width: 100%; height: 100%; background: #000000aa;
+        TouchArea { } // swallow clicks
+        Rectangle {
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            width: 440px; height: 220px; border-radius: 14px;
+            background: #26282b; border-width: 1px; border-color: #3c4043;
+            VerticalLayout {
+                padding: 22px; spacing: 14px;
+                Text { text: "Unsaved changes"; color: #ffffff; font-size: 17px; font-weight: 700; }
+                Text { text: "You have edits that haven't been saved. What would you like to do?";
+                    color: #c2c5c9; font-size: 13px; wrap: word-wrap; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    EditChip { label: "Discard"; active: true; clicked => { root.confirm-open = false; root.reset(); root.close(); } }
+                    EditChip { label: "Cancel"; clicked => { root.confirm-open = false; } }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    EditChip { label: "Save to original"; clicked => { root.confirm-open = false; root.save-original(); root.close(); } }
+                    EditChip { label: "Save a copy"; clicked => { root.confirm-open = false; root.do-export(root.export-format, root.export-quality); root.close(); } }
+                }
+            }
+        }
+    }
+}

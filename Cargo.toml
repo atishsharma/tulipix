@@ -1,0 +1,68 @@
+[workspace]
+resolver = "2"
+# Bare `cargo build`/`run`/`test` target only the app (which links core/photos/
+# videos/platform). The other crates stay in the workspace — build them
+# explicitly with `-p tulipix-<name>` when wiring a section. Keeps the dev loop
+# from compiling all 15 crates' source on a bare build.
+default-members = ["crates/tulipix-app"]
+members = [
+    "crates/tulipix-app",
+    "crates/tulipix-core",
+    "crates/tulipix-photos",
+    "crates/tulipix-videos",
+    "crates/tulipix-music",
+    "crates/tulipix-books",
+    "crates/tulipix-cloud",
+    "crates/tulipix-player",
+    "crates/tulipix-ai",
+    "crates/tulipix-whisper",
+    "crates/tulipix-sync",
+    "crates/tulipix-platform",
+    "crates/tulipix-plugins",
+    "crates/tulipix-tools",
+    "crates/tulipix-cli",
+    "tools/fetch-resources",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/atishsharma/tulipix"
+
+[workspace.dependencies]
+slint = { version = "1.8", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-skia", "renderer-skia-opengl", "unstable-fontique-08"] }
+slint-build = "1.8"
+tokio = { version = "1.40", features = ["full"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+toml = "0.8"
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+keyring = "3"
+sha2 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+wasmtime = { version = "26", default-features = false, features = ["runtime", "cranelift"] }
+mlua = { version = "0.10", features = ["lua54", "vendored", "send", "serialize"] }
+
+[profile.dev]
+opt-level = 0                # our crates: fastest codegen for quick edits
+debug = "line-tables-only"   # keep backtraces+line numbers, drop heavy debuginfo
+split-debuginfo = "unpacked" # faster linking on Linux
+incremental = true
+
+# Dependencies rarely rebuild — keep them optimized (so the app runs smooth) but
+# strip their debuginfo so each relink of tulipix-app stays small + fast.
+[profile.dev.package."*"]
+opt-level = 1
+debug = false
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"

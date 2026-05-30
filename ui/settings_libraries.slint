@@ -1,0 +1,123 @@
+import { Theme } from "tokens.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct LibraryRow {
+    id: string,
+    path: string,
+    section: string,
+    last-scan: string,
+    item-count: int,
+    size-pretty: string,
+    cadence: string,
+}
+
+component Btn inherits Rectangle {
+    in property <string> label;
+    in property <bool> danger: false;
+    in property <bool> primary: false;
+    callback clicked();
+    height: 30px;
+    border-radius: 8px;
+    background: touch.has-hover
+        ? (danger ? #b91c1c : (primary ? #6d28d9 : Theme.panel-2))
+        : (danger ? #7f1d1d : (primary ? Theme.brand : Theme.panel));
+    border-color: danger ? #b91c1c : Theme.outline;
+    border-width: 1px;
+    horizontal-stretch: 0;
+    touch := TouchArea { clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px;
+        Text {
+            text: label;
+            color: (primary || danger) ? #ffffff : Theme.text;
+            font-size: 11px; font-weight: 600;
+            horizontal-alignment: center; vertical-alignment: center;
+        }
+    }
+}
+
+component RowItem inherits Rectangle {
+    in property <LibraryRow> data;
+    callback rescan();
+    callback rethumb();
+    callback edit-exclude();
+    callback remove-lib();
+    height: 80px;
+    border-radius: Theme.radius-md;
+    background: Theme.panel-2;
+    border-color: Theme.outline;
+    border-width: 1px;
+
+    HorizontalLayout {
+        padding: 14px; spacing: 10px; alignment: stretch;
+        VerticalLayout {
+            alignment: center; spacing: 3px;
+            horizontal-stretch: 1;
+            Text { text: data.path; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
+            Text {
+                text: data.section + " · " + data.item-count + " items · " + data.size-pretty + " · last scan " + data.last-scan + " · " + data.cadence;
+                color: Theme.text-dim; font-size: 11px; overflow: elide;
+            }
+        }
+        VerticalLayout { alignment: center; Btn { label: "Rescan";   clicked => { root.rescan(); } } }
+        VerticalLayout { alignment: center; Btn { label: "Re-thumb"; clicked => { root.rethumb(); } } }
+        VerticalLayout { alignment: center; Btn { label: "Exclude";  clicked => { root.edit-exclude(); } } }
+        VerticalLayout { alignment: center; Btn { label: "Remove";   danger: true; clicked => { root.remove-lib(); } } }
+    }
+}
+
+export component SettingsLibraries inherits Rectangle {
+    in property <[LibraryRow]> rows;
+    callback add-location();
+    callback rescan-all();
+    callback clear-thumb-cache();
+    callback rebuild-fts();
+    callback row-rescan(int);
+    callback row-rethumb(int);
+    callback row-edit-exclude(int);
+    callback row-remove(int);
+    background: transparent;
+
+    VerticalLayout {
+        spacing: 12px;
+        HorizontalLayout {
+            spacing: 10px; alignment: stretch;
+            Text { text: "Libraries"; color: Theme.text; font-size: 20px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+            VerticalLayout { alignment: center; Btn { label: "+ Add Location"; primary: true; width: 140px; clicked => { root.add-location(); } } }
+        }
+        HorizontalLayout {
+            spacing: 8px; alignment: start;
+            Btn { label: "Rescan All"; width: 100px; clicked => { root.rescan-all(); } }
+            Btn { label: "Clear Thumb Cache"; width: 150px; clicked => { root.clear-thumb-cache(); } }
+            Btn { label: "Rebuild FTS"; width: 120px; clicked => { root.rebuild-fts(); } }
+        }
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                spacing: 8px;
+                for r[i] in root.rows: RowItem {
+                    data: r;
+                    rescan => { root.row-rescan(i); }
+                    rethumb => { root.row-rethumb(i); }
+                    edit-exclude => { root.row-edit-exclude(i); }
+                    remove-lib => { root.row-remove(i); }
+                }
+                if root.rows.length == 0: Rectangle {
+                    height: 80px;
+                    border-radius: Theme.radius-md;
+                    background: Theme.panel;
+                    border-color: Theme.outline; border-width: 1px;
+                    VerticalLayout {
+                        alignment: center;
+                        Text {
+                            text: "No watched locations yet. Click + Add Location.";
+                            color: Theme.text-dim; font-size: 12px;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+    }
+}

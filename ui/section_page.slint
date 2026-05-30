@@ -1,0 +1,199 @@
+import { Theme, Section, Accent } from "tokens.slint";
+import { PanelFrost } from "frost.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct PhotoTile {
+    thumb: image,
+    label: string,
+    col: int,
+    row: int,
+    index: int,   // global index into the section's path list (for grouped views)
+    starred: bool,
+    selected: bool, // multi-select state (np.p2.multiselect)
+    color-label: string,  // "" | "red" | "orange" | "yellow" | "green" | "blue" | "purple"
+    is-live: bool,        // live photo badge (still+video pair)
+    stack-count: int,     // 0 = single photo; >0 = stack with N items
+}
+
+// Toolbar pill — small action chip shown under the header.
+component ToolPill inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    callback clicked();
+    height: 30px; min-width: 80px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: 10px;
+    background: primary ? Accent.color.with-alpha(0.18) : (touch.has-hover ? Theme.panel-2 : transparent);
+    border-width: 1px;
+    border-color: primary ? Accent.color.with-alpha(0.45) : Theme.outline;
+    animate background { duration: 140ms; easing: ease-out; }
+    touch := TouchArea { clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px;
+        Text {
+            text: label;
+            color: primary ? Accent.color : Theme.text;
+            font-size: 11px; font-weight: 600;
+            vertical-alignment: center; horizontal-alignment: center;
+        }
+    }
+}
+
+export component SectionPage inherits Rectangle {
+    in property <Section> section: Section.photos;
+    in property <string> title: "Section";
+    in property <string> subtitle: "";
+    in property <int> item-count: 0;
+    in property <[PhotoTile]> tiles: [];
+    callback add-folder();
+    callback tile-clicked(int);
+
+    property <length> tile-size: 160px;
+    property <length> tile-gap: 10px;
+    property <int> cols: 6;
+    property <int> rows-count: (tiles.length + cols - 1) / cols;
+
+    background: transparent;
+
+    VerticalLayout {
+        padding: 28px; spacing: 18px;
+
+        // Header — accent rail + title block + counter card.
+        HorizontalLayout {
+            spacing: 14px;
+            Rectangle {
+                width: 6px; height: 44px;
+                horizontal-stretch: 0; vertical-stretch: 0;
+                y: (parent.height - self.height) / 2;
+                border-radius: 3px;
+                background: @linear-gradient(180deg, Accent.color 0%, Accent.color.with-alpha(0.5) 100%);
+            }
+            VerticalLayout {
+                alignment: center; spacing: 4px;
+                Text {
+                    text: title;
+                    color: Theme.text;
+                    font-size: 28px;
+                    font-weight: 700;
+                    letter-spacing: -0.1px;
+                }
+                Text {
+                    text: subtitle;
+                    color: Theme.text-dim;
+                    font-size: 13px;
+                }
+            }
+            Rectangle { horizontal-stretch: 1; }
+            PanelFrost {
+                accent: Accent.color;
+                width: 156px; height: 60px;
+                horizontal-stretch: 0; vertical-stretch: 0;
+                y: (parent.height - self.height) / 2;
+                VerticalLayout {
+                    padding: 10px; alignment: center; spacing: 2px;
+                    Text { text: "ITEMS"; color: Theme.text-dim; font-size: 9px; font-weight: 700; letter-spacing: 1.2px; }
+                    Text { text: item-count; color: Theme.text; font-size: 22px; font-weight: 700; }
+                }
+            }
+        }
+
+        // Toolbar pills.
+        HorizontalLayout {
+            spacing: 8px; alignment: start;
+            ToolPill { label: "Library"; primary: true; }
+            ToolPill { label: "Folders"; }
+            ToolPill { label: "Timeline"; }
+            Rectangle { horizontal-stretch: 1; }
+            ToolPill { label: "Filter"; }
+            ToolPill { label: "Sort"; }
+            ToolPill {
+                label: "+ Add a folder";
+                primary: true;
+                clicked => { root.add-folder(); }
+            }
+        }
+
+        // Body — grid when tiles populated, empty state otherwise.
+        if tiles.length > 0: PanelFrost {
+            accent: Accent.color;
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
+            ScrollView {
+                Rectangle {
+                    width: cols * (tile-size + tile-gap);
+                    height: rows-count * (tile-size + tile-gap) + 20px;
+                    horizontal-stretch: 1; vertical-stretch: 1;
+                    for tile[idx] in root.tiles: Rectangle {
+                        x: tile.col * (tile-size + tile-gap) + 14px;
+                        y: tile.row * (tile-size + tile-gap) + 14px;
+                        width: tile-size; height: tile-size;
+                        border-radius: 12px;
+                        clip: true;
+                        border-width: 1px;
+                        border-color: ta.has-hover ? Accent.color : Theme.outline;
+                        background: Theme.panel-2;
+                        animate border-color { duration: 140ms; easing: ease-out; }
+                        Image {
+                            source: tile.thumb;
+                            image-fit: cover;
+                            width: parent.width;
+                            height: parent.height;
+                        }
+                        ta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.tile-clicked(idx); }
+                        }
+                    }
+                }
+            }
+        }
+        if tiles.length == 0: PanelFrost {
+            accent: Accent.color;
+            vertical-stretch: 1;
+            horizontal-stretch: 1;
+
+            VerticalLayout {
+                padding: 56px; alignment: center; spacing: 14px;
+
+                Rectangle {
+                    width: 88px; height: 88px;
+                    horizontal-stretch: 0; vertical-stretch: 0;
+                    border-radius: 44px;
+                    background: @radial-gradient(circle, Accent.color.with-alpha(0.28) 0%, transparent 70%);
+                    Rectangle {
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        width: 56px; height: 56px;
+                        border-radius: 28px;
+                        background: Accent.color.with-alpha(0.20);
+                        border-width: 1px;
+                        border-color: Accent.color.with-alpha(0.45);
+                    }
+                }
+
+                Text {
+                    text: "No " + title + " yet";
+                    color: Theme.text;
+                    font-size: 20px;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                }
+                Text {
+                    text: "Add a watched folder in Settings → Libraries to populate this section.";
+                    color: Theme.text-dim;
+                    font-size: 13px;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+
+                Rectangle { height: 6px; horizontal-stretch: 0; vertical-stretch: 0; }
+
+                ToolPill {
+                    label: "+ Add a folder";
+                    primary: true;
+                    clicked => { root.add-folder(); }
+                }
+            }
+        }
+    }
+}

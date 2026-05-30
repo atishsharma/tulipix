@@ -1,0 +1,56 @@
+// Shared-element hero transitions — thumb in grid morphs to detail-view
+// hero on click. Slint custom-node bezier; reduce-motion falls back to a
+// 120 ms crossfade.
+//
+// Usage:
+//   SharedHero {
+//     source: photo-image;
+//     from-rect: { x: 120px, y: 240px, w: 160px, h: 160px };
+//     to-rect:   { x:   0px, y:   0px, w: 100%,  h: 480px };
+//     trigger: detail-open;
+//   }
+
+import { Theme } from "tokens.slint";
+
+export struct HeroRect { x: length, y: length, w: length, h: length }
+
+export component SharedHero inherits Rectangle {
+    in property <image> source;
+    in property <HeroRect> from-rect: { x: 0px, y: 0px, w: 100px, h: 100px };
+    in property <HeroRect> to-rect:   { x: 0px, y: 0px, w: 400px, h: 400px };
+    in-out property <bool> trigger: false;
+    // When the morph completes the host flips `faded` so the hero crossfades
+    // out, handing off to the identical static image underneath.
+    in property <bool> faded: false;
+
+    // Cubic ease-out (matches the 800 ms orb shift) for normal motion;
+    // 120 ms fast crossfade when Theme.reduce-motion is on.
+    property <duration> dur: Theme.reduce-motion ? 120ms : 360ms;
+    property <easing>   ease: Theme.reduce-motion ? linear : ease-in-out;
+
+    opacity: faded ? 0.0 : 1.0;
+    animate opacity { duration: 180ms; easing: ease-in-out; }
+
+    x: trigger ? to-rect.x : from-rect.x;
+    y: trigger ? to-rect.y : from-rect.y;
+    width:  trigger ? to-rect.w : from-rect.w;
+    height: trigger ? to-rect.h : from-rect.h;
+    clip: true;
+    border-radius: Theme.radius-md;
+
+    animate x      { duration: dur; easing: ease; }
+    animate y      { duration: dur; easing: ease; }
+    animate width  { duration: dur; easing: ease; }
+    animate height { duration: dur; easing: ease; }
+
+    Image {
+        source: source;
+        image-fit: cover;
+        x: 0; y: 0;
+        width: parent.width;
+        height: parent.height;
+        // Reduce-motion: skip the bezier, crossfade by fading the source in.
+        opacity: Theme.reduce-motion && !trigger ? 0.0 : 1.0;
+        animate opacity { duration: dur; easing: ease; }
+    }
+}

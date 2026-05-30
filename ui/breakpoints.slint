@@ -1,0 +1,37 @@
+// Adaptive layout — Material 3 breakpoints, plus a foldable-aware tier.
+// Bound to MainWindow.width and exposed via the Layout global.
+
+export enum Breakpoint { compact, medium, expanded, large, foldable }
+
+export global Layout {
+    in property <length> width: 1280px;
+    in property <bool> is-foldable: false;
+
+    out property <Breakpoint> bp:
+        is-foldable                ? Breakpoint.foldable :
+        width <  600px             ? Breakpoint.compact  :
+        width < 1024px             ? Breakpoint.medium   :
+        width < 1440px             ? Breakpoint.expanded :
+                                     Breakpoint.large;
+
+    // Sidebar collapses on compact / foldable inner display.
+    out property <bool> sidebar-collapsed:
+        bp == Breakpoint.compact || bp == Breakpoint.foldable;
+
+    // Dual-pane (list + detail in the same window) activates on expanded+.
+    out property <bool> dual-pane:
+        bp == Breakpoint.expanded || bp == Breakpoint.large;
+
+    out property <length> content-padding:
+        bp == Breakpoint.compact  ? 12px :
+        bp == Breakpoint.medium   ? 16px :
+        bp == Breakpoint.expanded ? 24px :
+                                    32px;
+
+    out property <int> grid-columns:
+        bp == Breakpoint.compact  ?  2 :
+        bp == Breakpoint.medium   ?  4 :
+        bp == Breakpoint.expanded ?  6 :
+        bp == Breakpoint.large    ?  8 :
+        /* foldable */              3;
+}

@@ -1,0 +1,22 @@
+[package]
+name = "tulipix-videos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true }
+sqlx.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+sha2.workspace = true
+async-trait = "0.1"
+tulipix-core = { path = "../tulipix-core" }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

@@ -1,0 +1,144 @@
+import { Theme } from "tokens.slint";
+import { ModePill, Mode } from "mode_pill.slint";
+import { PanelFrost, ModalFrost } from "frost.slint";
+import { Ripple } from "ripple.slint";
+import { AppIcon, Icons } from "icons.slint";
+
+export struct UserState {
+    display-name: string,
+    secondary: string,
+    mode: Mode,
+    avatar-emoji: string,
+}
+
+component MenuItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> prominent: false;
+    in property <string> shortcut: "";
+    callback clicked();
+    height: 36px;
+    border-radius: 10px;
+    touch := TouchArea { clicked => { root.clicked(); } }
+    background: touch.has-hover
+        ? (prominent ? Theme.brand : Theme.panel-2)
+        : (prominent ? Theme.brand.with-alpha(0.18) : transparent);
+    border-width: prominent ? 1px : 0;
+    border-color: prominent ? Theme.brand.with-alpha(0.45) : transparent;
+    HorizontalLayout {
+        padding-left: 14px; padding-right: 14px; spacing: 8px;
+        Text {
+            text: label;
+            color: (prominent && touch.has-hover) ? #ffffff : Theme.text;
+            font-size: 12px;
+            font-weight: prominent ? 600 : 500;
+            vertical-alignment: center;
+            horizontal-stretch: 1;
+        }
+        if shortcut != "": Text {
+            text: shortcut;
+            color: Theme.text-dim;
+            font-size: 10px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+export component UserCard inherits Rectangle {
+    in property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local, avatar-emoji: "👤" };
+    in-out property <bool> menu-open: false;
+    in property <bool> collapsed: false;   // sidebar collapsed → avatar only
+
+    callback action-switch-mode();
+    callback action-sign-in();
+    callback action-profiles();
+    callback action-lock();
+    callback action-edit-profile();
+    callback action-settings-account();
+
+    height: 64px;
+
+    frost := PanelFrost {
+        accent:
+            user.mode == Mode.account ? #14b8a6 :
+            user.mode == Mode.locked  ? #475569 :
+                                        Theme.brand;
+        width: parent.width;
+        height: parent.height;
+
+        HorizontalLayout {
+            padding: root.collapsed ? 4px : 8px; spacing: 8px;
+
+            // Identity region — emoji avatar + name. Click opens the user dialog.
+            Rectangle {
+                horizontal-stretch: 1;
+                border-radius: 12px;
+                background: ident.has-hover ? Theme.panel-2 : transparent;
+                animate background { duration: 120ms; easing: ease-out; }
+                ident := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => { root.menu-open = !root.menu-open; }
+                }
+                HorizontalLayout {
+                    padding-left: root.collapsed ? 0px : 6px; padding-right: root.collapsed ? 0px : 8px;
+                    spacing: root.collapsed ? 0px : 10px;
+                    alignment: root.collapsed ? center : start;
+                    // Emoji avatar — shrinks in the collapsed sidebar so it never
+                    // overflows the narrow rail.
+                    Rectangle {
+                        width: root.collapsed ? 34px : 42px;
+                        height: root.collapsed ? 34px : 42px;
+                        horizontal-stretch: 0; vertical-stretch: 0;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: 12px;
+                        background: frost.accent.with-alpha(0.18);
+                        border-width: 1px; border-color: frost.accent.with-alpha(0.45);
+                        Text {
+                            text: user.avatar-emoji == "" ? "👤" : user.avatar-emoji;
+                            font-size: root.collapsed ? 18px : 23px;
+                            horizontal-alignment: center; vertical-alignment: center;
+                        }
+                    }
+                    if !root.collapsed: VerticalLayout {
+                        alignment: center; spacing: 2px;
+                        Text {
+                            text: user.display-name == "" ? "Local user" : user.display-name;
+                            color: Theme.text; font-size: 14px; font-weight: 600;
+                            vertical-alignment: center; overflow: elide;
+                        }
+                        if user.secondary != "": Text {
+                            text: user.secondary;
+                            color: Theme.text-dim; font-size: 11px; overflow: elide;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if menu-open: ModalFrost {
+        accent: frost.accent;
+        // Opens upward — sidebar places UserCard at the bottom so the
+        // menu must float above the card, not below.
+        y: -self.height - 6px;
+        x: 0;
+        width: max(parent.width, 200px);
+        height: 212px;
+        z: 10;
+        VerticalLayout {
+            padding: 8px; spacing: 2px;
+            MenuItem {
+                label: user.mode == Mode.locked ? "Unlock"
+                    : (user.mode == Mode.account ? "Switch to Local Mode" : "Switch to Account Mode");
+                prominent: true;
+                clicked => { root.action-switch-mode(); root.menu-open = false; }
+            }
+            Rectangle { height: 1px; background: Theme.outline; }
+            MenuItem { label: "Sign In / Sign Out"; clicked => { root.action-sign-in(); root.menu-open = false; } }
+            MenuItem { label: "Manage Profiles"; clicked => { root.action-profiles(); root.menu-open = false; } }
+            MenuItem { label: "Edit Profile"; clicked => { root.action-edit-profile(); root.menu-open = false; } }
+            MenuItem { label: "Settings → Account";
+                clicked => { root.action-settings-account(); root.menu-open = false; }
+            }
+        }
+    }
+}

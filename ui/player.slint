@@ -1,0 +1,281 @@
+// Embedded media player overlay (np.p3.player.*). The video is a
+// BorrowedOpenGLTexture rendered by libmpv into a Slint Image (`frame`); all
+// chrome is native Slint. Controls: play/scrub/volume/speed/tracks/subs/
+// chapters/fullscreen. Keyboard: space/J/K/L/arrows/m/[/]/f routed to Rust
+// via `key` (mpv-style, mapped by tulipix-player::gestures).
+import { ScrollView } from "std-widgets.slint";
+
+export struct PlayerTrack { id: int, label: string, selected: bool }
+export struct PlayerChapter { index: int, title: string, time: string }
+
+component IconBtn inherits Rectangle {
+    in property <string> glyph;
+    in property <bool> active: false;
+    callback clicked();
+    width: 40px; height: 40px; border-radius: 8px;
+    background: ta.has-hover ? #ffffff22 : (active ? #ffffff14 : transparent);
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    Text { text: glyph; color: #ffffff; font-size: 18px;
+        horizontal-alignment: center; vertical-alignment: center; }
+}
+
+// A simple popup list (tracks / subtitles / chapters).
+component PickerPopup inherits Rectangle {
+    in property <string> title;
+    in property <[PlayerTrack]> rows;
+    in property <bool> show-load: false;   // append a "Load file…" footer (subs)
+    callback chosen(int);
+    callback load-clicked();
+    width: 280px;
+    background: #1c1c20; border-radius: 12px;
+    border-width: 1px; border-color: #ffffff22;
+    drop-shadow-blur: 28px; drop-shadow-color: #000000aa;
+    VerticalLayout {
+        padding: 10px; spacing: 2px;
+        Text { text: title; color: #9a9aa2; font-size: 11px; font-weight: 700; }
+        ScrollView {
+            height: min(rows.length * 34px, 280px);
+            VerticalLayout {
+                for r in rows: Rectangle {
+                    height: 32px; border-radius: 6px;
+                    background: rtouch.has-hover ? #ffffff14 : (r.selected ? #e5a00d22 : transparent);
+                    rtouch := TouchArea { mouse-cursor: pointer; clicked => { root.chosen(r.id); } }
+                    HorizontalLayout {
+                        padding-left: 10px; padding-right: 10px; spacing: 8px;
+                        Text { text: r.selected ? "●" : "○"; color: r.selected ? #e5a00d : #6a6a72; font-size: 12px; vertical-alignment: center; }
+                        Text { text: r.label; color: #e8e8ea; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                    }
+                }
+            }
+        }
+        if show-load: Rectangle { height: 1px; background: #ffffff14; }
+        if show-load: Rectangle {
+            height: 32px; border-radius: 6px;
+            background: ltouch.has-hover ? #ffffff14 : transparent;
+            ltouch := TouchArea { mouse-cursor: pointer; clicked => { root.load-clicked(); } }
+            HorizontalLayout {
+                padding-left: 10px; padding-right: 10px; spacing: 8px;
+                Text { text: "📂"; font-size: 12px; vertical-alignment: center; }
+                Text { text: "Load subtitle file…"; color: #e5a00d; font-size: 13px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
+            }
+        }
+    }
+}
+
+export component PlayerOverlay inherits Rectangle {
+    in property <bool> open: false;
+    in property <image> frame;
+    in property <string> title;
+    in property <float> pos;
+    in property <float> duration;
+    in property <string> pos-label: "0:00";
+    in property <string> dur-label: "0:00";
+    in property <bool> paused: false;
+    in property <float> volume: 100;
+    in property <bool> muted: false;
+    in property <float> speed: 1.0;
+    in property <bool> buffering: false;
+    in property <string> hwdec: "";
+    in property <[PlayerTrack]> audio-tracks: [];
+    in property <[PlayerTrack]> sub-tracks: [];
+    in property <[PlayerChapter]> chapters: [];
+
+    callback toggle-pause();
+    callback seek(float);          // absolute seconds
+    callback seek-rel(float);      // relative seconds
+    callback set-volume(float);
+    callback toggle-mute();
+    callback set-speed(float);
+    callback set-audio(int);
+    callback set-sub(int);
+    callback load-sub();           // manual subtitle file picker (np.p3.sub.manual)
+    callback set-chapter(int);
+    callback close();
+    callback key(string, bool);    // (mpv-key, shift)
+    callback toggle-fullscreen();
+
+    property <string> popup: "";   // "" | "audio" | "sub" | "chapter"
+
+    visible: open;
+    background: #000000;
+
+    if open: fs := FocusScope {
+        key-pressed(e) => {
+            if (e.text == Key.Space) { root.key("space", e.modifiers.shift); return accept; }
+            if (e.text == Key.LeftArrow)  { root.key("left",  e.modifiers.shift); return accept; }
+            if (e.text == Key.RightArrow) { root.key("right", e.modifiers.shift); return accept; }
+            if (e.text == Key.UpArrow)    { root.key("up",    e.modifiers.shift); return accept; }
+            if (e.text == Key.DownArrow)  { root.key("down",  e.modifiers.shift); return accept; }
+            if (e.text == Key.Escape)     { root.close(); return accept; }
+            if (e.text == Key.Backspace)  { root.key("backspace", e.modifiers.shift); return accept; }
+            root.key(e.text, e.modifiers.shift);
+            accept
+        }
+
+        // Opaque backdrop — guarantees the player never shows the desktop
+        // through transparent/letterbox areas.
+        Rectangle { width: parent.width; height: parent.height; background: #000000; }
+
+        // Video surface.
+        Image {
+            source: root.frame;
+            image-fit: contain;
+            width: parent.width; height: parent.height;
+        }
+        // Click anywhere on the video toggles play/pause.
+        TouchArea {
+            width: parent.width; height: parent.height;
+            mouse-cursor: pointer;
+            clicked => { root.popup = ""; root.toggle-pause(); }
+        }
+
+        if root.buffering: Text {
+            text: "Buffering…"; color: #ffffffcc; font-size: 16px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        }
+
+        // Top bar — title + hwdec badge + close.
+        Rectangle {
+            x: 0; y: 0; width: parent.width; height: 64px;
+            background: @linear-gradient(180deg, #000000bb 0%, transparent 100%);
+            HorizontalLayout {
+                padding: 16px; spacing: 12px;
+                Text { text: root.title; color: #ffffff; font-size: 16px; font-weight: 700;
+                    vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                if root.hwdec != "": Rectangle {
+                    height: 24px; width: hw.preferred-width + 18px; border-radius: 12px;
+                    background: #ffffff1a; y: 8px;
+                    hw := Text { text: "⚡ " + root.hwdec; color: #c8c8cc; font-size: 11px; font-weight: 600;
+                        horizontal-alignment: center; vertical-alignment: center; }
+                }
+                IconBtn { glyph: "✕"; clicked => { root.close(); } }
+            }
+        }
+
+        // Bottom controls.
+        Rectangle {
+            x: 0; y: parent.height - self.height; width: parent.width; height: 112px;
+            background: @linear-gradient(0deg, #000000cc 0%, transparent 100%);
+            VerticalLayout {
+                padding-left: 24px; padding-right: 24px; padding-bottom: 14px; padding-top: 20px; spacing: 10px;
+
+                // Scrubber.
+                HorizontalLayout {
+                    spacing: 12px;
+                    Text { text: root.pos-label; color: #d6d6da; font-size: 12px; vertical-alignment: center; min-width: 52px; }
+                    Rectangle {
+                        vertical-stretch: 0; horizontal-stretch: 1; height: 16px;
+                        track := Rectangle {
+                            y: (parent.height - self.height) / 2; width: parent.width; height: 5px;
+                            border-radius: 2.5px; background: #ffffff33;
+                            Rectangle {
+                                x: 0; y: 0; height: parent.height; border-radius: 2.5px;
+                                width: parent.width * (root.duration > 0 ? Math.clamp(root.pos / root.duration, 0.0, 1.0) : 0.0);
+                                background: #e5a00d;
+                            }
+                            // Playhead knob.
+                            Rectangle {
+                                width: 13px; height: 13px; border-radius: 7px; background: #ffffff;
+                                y: (parent.height - self.height) / 2;
+                                x: (parent.width - self.width) * (root.duration > 0 ? Math.clamp(root.pos / root.duration, 0.0, 1.0) : 0.0);
+                            }
+                        }
+                        seekta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                if (root.duration > 0) {
+                                    root.seek(root.duration * Math.clamp(self.mouse-x / self.width, 0.0, 1.0));
+                                }
+                            }
+                        }
+                    }
+                    Text { text: root.dur-label; color: #d6d6da; font-size: 12px; vertical-alignment: center; min-width: 52px; horizontal-alignment: right; }
+                }
+
+                // Buttons row.
+                HorizontalLayout {
+                    spacing: 6px; alignment: start;
+                    IconBtn { glyph: "⏮"; clicked => { root.seek-rel(-10); } }
+                    IconBtn { glyph: root.paused ? "▶" : "⏸"; clicked => { root.toggle-pause(); } }
+                    IconBtn { glyph: "⏭"; clicked => { root.seek-rel(10); } }
+
+                    Rectangle { width: 14px; }
+
+                    // Volume.
+                    IconBtn { glyph: root.muted ? "🔇" : "🔊"; clicked => { root.toggle-mute(); } }
+                    Rectangle {
+                        width: 90px; height: 40px;
+                        vol := Rectangle {
+                            y: (parent.height - self.height) / 2; width: parent.width; height: 5px;
+                            border-radius: 2.5px; background: #ffffff33;
+                            Rectangle { x: 0; height: parent.height; border-radius: 2.5px;
+                                width: parent.width * Math.clamp(root.volume / 100, 0.0, 1.0); background: #ffffffcc; }
+                        }
+                        volta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.set-volume(100 * Math.clamp(self.mouse-x / self.width, 0.0, 1.0)); }
+                        }
+                    }
+
+                    Rectangle { horizontal-stretch: 1; }
+
+                    // Speed.
+                    IconBtn { glyph: "－"; clicked => { root.set-speed(Math.max(0.25, root.speed - 0.25)); } }
+                    Rectangle { width: 56px;
+                        Text { text: root.speed + "×"; color: #e8e8ea; font-size: 13px; font-weight: 600;
+                            horizontal-alignment: center; vertical-alignment: center; } }
+                    IconBtn { glyph: "＋"; clicked => { root.set-speed(Math.min(4.0, root.speed + 0.25)); } }
+
+                    Rectangle { width: 10px; }
+
+                    IconBtn { glyph: "🎧"; active: root.popup == "audio";
+                        clicked => { root.popup = root.popup == "audio" ? "" : "audio"; } }
+                    IconBtn { glyph: "💬"; active: root.popup == "sub";
+                        clicked => { root.popup = root.popup == "sub" ? "" : "sub"; } }
+                    IconBtn { glyph: "📑"; active: root.popup == "chapter";
+                        clicked => { root.popup = root.popup == "chapter" ? "" : "chapter"; } }
+                    IconBtn { glyph: "⛶"; clicked => { root.toggle-fullscreen(); } }
+                }
+            }
+        }
+
+        // Popups float above the bottom bar.
+        if root.popup == "audio": PickerPopup {
+            x: parent.width - self.width - 120px; y: parent.height - 112px - self.height - 8px;
+            title: "AUDIO"; rows: root.audio-tracks;
+            chosen(id) => { root.set-audio(id); root.popup = ""; }
+        }
+        if root.popup == "sub": PickerPopup {
+            x: parent.width - self.width - 80px; y: parent.height - 112px - self.height - 8px;
+            title: "SUBTITLES"; rows: root.sub-tracks; show-load: true;
+            chosen(id) => { root.set-sub(id); root.popup = ""; }
+            load-clicked => { root.load-sub(); root.popup = ""; }
+        }
+        if root.popup == "chapter": Rectangle {
+            x: parent.width - 280px - 40px; y: parent.height - 112px - self.height - 8px;
+            width: 280px; height: min(root.chapters.length * 34px + 36px, 320px);
+            background: #1c1c20; border-radius: 12px; border-width: 1px; border-color: #ffffff22;
+            drop-shadow-blur: 28px; drop-shadow-color: #000000aa;
+            VerticalLayout {
+                padding: 10px; spacing: 2px;
+                Text { text: "CHAPTERS"; color: #9a9aa2; font-size: 11px; font-weight: 700; }
+                ScrollView {
+                    VerticalLayout {
+                        for c in root.chapters: Rectangle {
+                            height: 32px; border-radius: 6px;
+                            background: cta.has-hover ? #ffffff14 : transparent;
+                            cta := TouchArea { mouse-cursor: pointer; clicked => { root.set-chapter(c.index); root.popup = ""; } }
+                            HorizontalLayout {
+                                padding-left: 10px; padding-right: 10px; spacing: 8px;
+                                Text { text: c.title; color: #e8e8ea; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                                Text { text: c.time; color: #9a9aa2; font-size: 11px; vertical-alignment: center; }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        init => { fs.focus(); }
+    }
+}

@@ -1,0 +1,52 @@
+import { Theme } from "tokens.slint";
+
+// Slint can't truly blur the OS desktop without raw window handle integration.
+// We approximate with layered translucent fills + faint inner-highlight + outline.
+// Per-depth alpha tuned so the visual weight matches a real backdrop-filter.
+
+export component AtmosphereFrost inherits Rectangle {
+    background: Theme.atmosphere;
+    Rectangle {
+        background: @radial-gradient(circle, rgba(124, 58, 237, 0.10) 0%, transparent 60%);
+    }
+}
+
+export component PanelFrost inherits Rectangle {
+    in property <color> accent: Theme.brand;
+    border-radius: Theme.radius-md;
+    background: Theme.panel;
+    border-color: Theme.outline;
+    border-width: 1px;
+    Rectangle { // 5% accent wash
+        border-radius: parent.border-radius;
+        background: accent;
+        opacity: 0.05;
+    }
+    Rectangle { // inner highlight
+        border-radius: parent.border-radius;
+        border-width: 1px;
+        border-color: Theme.highlight-inner;
+        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+    }
+}
+
+export component ModalFrost inherits Rectangle {
+    in property <color> accent: Theme.brand;
+    border-radius: Theme.radius-lg;
+    background: Theme.modal;
+    border-color: Theme.outline-strong;
+    border-width: 1px;
+    drop-shadow-blur: 48px;
+    drop-shadow-color: #00000099;
+    Rectangle { // 12% accent wash
+        border-radius: parent.border-radius;
+        background: accent;
+        opacity: 0.12;
+    }
+    Rectangle { // inner highlight
+        border-radius: parent.border-radius;
+        border-width: 1px;
+        border-color: Theme.highlight-inner;
+        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+    }
+}

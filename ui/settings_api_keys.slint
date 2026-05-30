@@ -1,0 +1,136 @@
+import { Theme } from "tokens.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct ApiKeyRow {
+    service: string,
+    label: string,
+    use-app-default: bool,
+    user-key-set: bool,
+    quota-used: int,
+    quota-limit: int,  // -1 unlimited
+    status: string,    // "ok" | "warn" | "error" | "unknown"
+}
+
+component QuotaMeter inherits Rectangle {
+    in property <int> used;
+    in property <int> limit;
+    height: 4px;
+    border-radius: 2px;
+    background: Theme.outline;
+    Rectangle {
+        x: 0; y: 0;
+        width: limit <= 0 ? parent.width : min(parent.width, parent.width * used / limit);
+        height: parent.height;
+        border-radius: parent.border-radius;
+        background: limit < 0
+            ? @linear-gradient(90deg, #14b8a6, #06b6d4)
+            : used >= limit
+            ? #dc2626
+            : used * 4 >= limit * 3
+            ? #f59e0b
+            : @linear-gradient(90deg, #7c3aed, #4f46e5);
+    }
+}
+
+component Btn inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: false;
+    callback clicked();
+    width: 90px; height: 30px;
+    border-radius: 8px;
+    background: touch.has-hover
+        ? (primary ? #6d28d9 : Theme.panel-2)
+        : (primary ? Theme.brand : Theme.panel);
+    border-color: Theme.outline; border-width: 1px;
+    touch := TouchArea { clicked => { root.clicked(); } }
+    Text {
+        text: label;
+        color: primary ? #ffffff : Theme.text;
+        font-size: 11px; font-weight: 600;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+}
+
+component KeyRow inherits Rectangle {
+    in property <ApiKeyRow> data;
+    callback toggle-source();
+    callback edit-key();
+    callback test-connection();
+    height: 72px;
+    border-radius: Theme.radius-md;
+    background: Theme.panel-2;
+    border-color: Theme.outline;
+    border-width: 1px;
+
+    HorizontalLayout {
+        padding: 14px; spacing: 14px; alignment: stretch;
+
+        VerticalLayout {
+            alignment: center; spacing: 3px;
+            width: 220px;
+            Text { text: data.label; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
+            Text {
+                text: data.use-app-default
+                    ? "App default key"
+                    : (data.user-key-set ? "Custom key" : "Custom key (not set)");
+                color: Theme.text-dim; font-size: 11px;
+            }
+        }
+
+        VerticalLayout {
+            alignment: center; spacing: 6px;
+            horizontal-stretch: 1;
+            Text {
+                text: data.quota-limit < 0
+                    ? "Unlimited"
+                    : (data.quota-used + " / " + data.quota-limit + " today");
+                color: Theme.text-dim; font-size: 11px;
+            }
+            QuotaMeter { used: data.quota-used; limit: data.quota-limit; }
+        }
+
+        VerticalLayout {
+            alignment: center;
+            Btn {
+                label: data.use-app-default ? "App key" : "My key";
+                primary: data.use-app-default;
+                clicked => { root.toggle-source(); }
+            }
+        }
+        VerticalLayout {
+            alignment: center;
+            Btn { label: "Test"; clicked => { root.test-connection(); } }
+        }
+    }
+}
+
+export component SettingsApiKeys inherits Rectangle {
+    in property <[ApiKeyRow]> rows;
+    callback row-toggle(int);
+    callback row-edit(int);
+    callback row-test(int);
+    background: transparent;
+
+    VerticalLayout {
+        spacing: 12px; padding: 0;
+        Text { text: "API Keys"; color: Theme.text; font-size: 20px; font-weight: 700; }
+        Text {
+            text: "Toggle between Tulipix-supplied keys (rate-limited per tier) and your own keys (stored in OS keychain).";
+            color: Theme.text-dim; font-size: 12px; wrap: word-wrap;
+        }
+
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                spacing: 8px;
+                for r[i] in root.rows: KeyRow {
+                    data: r;
+                    toggle-source => { root.row-toggle(i); }
+                    edit-key => { root.row-edit(i); }
+                    test-connection => { root.row-test(i); }
+                }
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+    }
+}

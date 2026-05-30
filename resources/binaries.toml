@@ -1,0 +1,241 @@
+# Bundled binaries manifest. SHA-256 values MUST be filled before shipping.
+# Placeholder hashes ("TBD") cause fetch-resources to fail safely.
+
+[[binary]]
+name = "ffmpeg"
+version = "n124549-g1572784128"
+# Pinned BtbN build tag autobuild-2026-05-19-14-39 (master snapshot).
+# macOS sources pinned: evermeet 8.1.1 (intel), osxexperts 7.1.1 (arm).
+[[binary.sources]]
+os = "linux"
+arch = "x86_64"
+url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-05-19-14-39/ffmpeg-N-124549-g1572784128-linux64-gpl.tar.xz"
+sha256 = "a10d74b0328983b645b6049289c58e254f2f9379eba201e783da05a333f4af37"
+archive = "tar.xz"
+extract = ["bin/ffmpeg", "bin/ffprobe"]
+[[binary.sources]]
+os = "linux"
+arch = "aarch64"
+url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-05-19-14-39/ffmpeg-N-124549-g1572784128-linuxarm64-gpl.tar.xz"
+sha256 = "74f5bdf7461a32b6a2798262426d2200178365585dc24fa7da9a3de9a712696c"
+archive = "tar.xz"
+extract = ["bin/ffmpeg", "bin/ffprobe"]
+[[binary.sources]]
+os = "windows"
+arch = "x86_64"
+url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-05-19-14-39/ffmpeg-N-124549-g1572784128-win64-gpl.zip"
+sha256 = "eb88db8b36ec3c03975427b283692877ccc4b3923b1b19d805b64fe7570210ae"
+archive = "zip"
+extract = ["bin/ffmpeg.exe", "bin/ffprobe.exe"]
+[[binary.sources]]
+os = "macos"
+arch = "x86_64"
+url = "https://evermeet.cx/ffmpeg/ffmpeg-8.1.1.zip"
+sha256 = "4610988e2f54c243c50da73a09e4e2c36d9bb77546f9aa6c84cb328dcb1a98c1"
+archive = "zip"
+extract = ["ffmpeg"]
+[[binary.sources]]
+os = "macos"
+arch = "aarch64"
+url = "https://www.osxexperts.net/ffmpeg711arm.zip"
+sha256 = "59e39a5cec2e5d2307ed079c53227a9181e64b87454ed4de998349e044bfdc70"
+archive = "zip"
+extract = ["ffmpeg"]
+
+# whisper.cpp main executable.
+# Windows prebuilt ships upstream; other platforms build from pinned source tarball
+# during installer-prep (see scripts/build-whisper.sh).
+[[binary]]
+name = "whisper-cli"
+version = "1.8.4"
+[[binary.sources]]
+os = "linux"
+arch = "x86_64"
+url = "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.8.4.tar.gz"
+sha256 = "b26f30e52c095ccb75da40b168437736605eb280de57381887bf9e2b65f31e66"
+archive = "tar.gz"
+build = "make"
+extract = ["main"]
+[[binary.sources]]
+os = "linux"
+arch = "aarch64"
+url = "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.8.4.tar.gz"
+sha256 = "b26f30e52c095ccb75da40b168437736605eb280de57381887bf9e2b65f31e66"
+archive = "tar.gz"
+build = "make"
+extract = ["main"]
+[[binary.sources]]
+os = "windows"
+arch = "x86_64"
+url = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.4/whisper-bin-x64.zip"
+sha256 = "74f973345cb52ef5ba3ec9e7e7af8e48cc8c71722d1528603b80588a11f82e3e"
+archive = "zip"
+extract = ["main.exe"]
+[[binary.sources]]
+os = "macos"
+arch = "x86_64"
+url = "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.8.4.tar.gz"
+sha256 = "b26f30e52c095ccb75da40b168437736605eb280de57381887bf9e2b65f31e66"
+archive = "tar.gz"
+build = "make"
+extract = ["main"]
+[[binary.sources]]
+os = "macos"
+arch = "aarch64"
+url = "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.8.4.tar.gz"
+sha256 = "b26f30e52c095ccb75da40b168437736605eb280de57381887bf9e2b65f31e66"
+archive = "tar.gz"
+build = "make"
+extract = ["main"]
+
+# Default model shipped in installer (~75 MB). Larger models pulled on demand.
+[[binary]]
+name = "ggml-tiny"
+version = "1.0"
+[[binary.sources]]
+os = "linux"
+arch = "x86_64"
+url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin"
+sha256 = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"
+archive = "none"
+[[binary.sources]]
+os = "linux"
+arch = "aarch64"
+url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin"
+sha256 = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"
+archive = "none"
+[[binary.sources]]
+os = "windows"
+arch = "x86_64"
+url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin"
+sha256 = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"
+archive = "none"
+[[binary.sources]]
+os = "macos"
+arch = "x86_64"
+url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin"
+sha256 = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"
+archive = "none"
+[[binary.sources]]
+os = "macos"
+arch = "aarch64"
+url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin"
+sha256 = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"
+archive = "none"
+
+# yt-dlp — pinned release; in-app self-update channel implemented in tulipix-core::updater.
+# macOS asset is a universal binary (x86_64 + arm64).
+[[binary]]
+name = "yt-dlp"
+version = "2024.12.13"
+[[binary.sources]]
+os = "linux"
+arch = "x86_64"
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2024.12.13/yt-dlp_linux"
+sha256 = "e7788b8556c73e409d5713a4fdb71df12734b0853353f2da2352540dc9d22c95"
+archive = "none"
+[[binary.sources]]
+os = "linux"
+arch = "aarch64"
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2024.12.13/yt-dlp_linux_aarch64"
+sha256 = "d55bb8356ce48facdd0d1c34a54fc947824210a2bf67c9e2569b1b59080df7c1"
+archive = "none"
+[[binary.sources]]
+os = "windows"
+arch = "x86_64"
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2024.12.13/yt-dlp.exe"
+sha256 = "a11ea8bbccf8bb7a570a07223b94a22ec3235ff00a9d9dedc44078eb1942bbcc"
+archive = "none"
+[[binary.sources]]
+os = "macos"
+arch = "x86_64"
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2024.12.13/yt-dlp_macos"
+sha256 = "d395afaa83eac63c6fc8a6b6854ff457a8559f7a2a7b60f68e0dbd96223d9e93"
+archive = "none"
+[[binary.sources]]
+os = "macos"
+arch = "aarch64"
+url = "https://github.com/yt-dlp/yt-dlp/releases/download/2024.12.13/yt-dlp_macos"
+sha256 = "d395afaa83eac63c6fc8a6b6854ff457a8559f7a2a7b60f68e0dbd96223d9e93"
+archive = "none"
+
+# rclone — powers Cloud section
+[[binary]]
+name = "rclone"
+version = "1.68.2"
+[[binary.sources]]
+os = "linux"
+arch = "x86_64"
+url = "https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-linux-amd64.zip"
+sha256 = "0e6fa18051e67fc600d803a2dcb10ddedb092247fc6eee61be97f64ec080a13c"
+archive = "zip"
+extract = ["rclone"]
+[[binary.sources]]
+os = "linux"
+arch = "aarch64"
+url = "https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-linux-arm64.zip"
+sha256 = "c6e9d4cf9c88b279f6ad80cd5675daebc068e404890fa7e191412c1bc7a4ac5f"
+archive = "zip"
+extract = ["rclone"]
+[[binary.sources]]
+os = "windows"
+arch = "x86_64"
+url = "https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-windows-amd64.zip"
+sha256 = "812bf76cc02c04cf6327f3683f3d5a88e47d36c39db84c1a745777496be7d993"
+archive = "zip"
+extract = ["rclone.exe"]
+[[binary.sources]]
+os = "macos"
+arch = "x86_64"
+url = "https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-osx-amd64.zip"
+sha256 = "cdc685e16abbf35b6f47c95b2a5b4ad73a73921ff6842e5f4136c8b461756188"
+archive = "zip"
+extract = ["rclone"]
+[[binary.sources]]
+os = "macos"
+arch = "aarch64"
+url = "https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-osx-arm64.zip"
+sha256 = "323f387b32bcf9ddfc3874f01879a0b2689dbd91309beb8c3a4410db04d0c41f"
+archive = "zip"
+extract = ["rclone"]
+
+# exiftool — Perl source tarball on Unix (run via system perl or bundled);
+# Windows uses standalone exe zip; macOS uses upstream pkg installer.
+[[binary]]
+name = "exiftool"
+version = "13.58"
+[[binary.sources]]
+os = "linux"
+arch = "x86_64"
+url = "https://exiftool.org/Image-ExifTool-13.58.tar.gz"
+sha256 = "c84fb6b613a480a638225d44979bf44cd2f91c92b79f4d2aa43773c89fa4199e"
+archive = "tar.gz"
+extract = ["exiftool", "lib/"]
+[[binary.sources]]
+os = "linux"
+arch = "aarch64"
+url = "https://exiftool.org/Image-ExifTool-13.58.tar.gz"
+sha256 = "c84fb6b613a480a638225d44979bf44cd2f91c92b79f4d2aa43773c89fa4199e"
+archive = "tar.gz"
+extract = ["exiftool", "lib/"]
+[[binary.sources]]
+os = "windows"
+arch = "x86_64"
+url = "https://exiftool.org/exiftool-13.58_64.zip"
+sha256 = "fd3b407a01e6ffc6160f2d5fde5ff0c003f6c4c2ba85eee1ce8928ccb51fa3e6"
+archive = "zip"
+extract = ["exiftool(-k).exe"]
+[[binary.sources]]
+os = "macos"
+arch = "x86_64"
+url = "https://exiftool.org/ExifTool-13.58.pkg"
+sha256 = "02a796aedaaed57dd954cb7a14456487dea3b7c6ee1cacb614a272ce584dd4f8"
+archive = "pkg"
+extract = ["exiftool"]
+[[binary.sources]]
+os = "macos"
+arch = "aarch64"
+url = "https://exiftool.org/ExifTool-13.58.pkg"
+sha256 = "02a796aedaaed57dd954cb7a14456487dea3b7c6ee1cacb614a272ce584dd4f8"
+archive = "pkg"
+extract = ["exiftool"]

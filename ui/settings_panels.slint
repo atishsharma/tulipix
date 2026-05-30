@@ -1,0 +1,152 @@
+// Generic, data-driven settings rows. Each new Settings tab is just a
+// `SettingsList` bound to a model of `SettingItem`s seeded in Rust, so adding
+// a toggle / endpoint field / status line needs no new component.
+import { Theme, Accent } from "tokens.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct SettingItem {
+    key: string,
+    kind: string,     // "toggle" | "text" | "status" | "action" | "header"
+    label: string,
+    desc: string,
+    value: string,    // text value · status value · action button label
+    on: bool,         // toggle state
+    state: string,    // status tint: "ok" | "warn" | "error" | "muted"
+}
+
+component PillToggle inherits Rectangle {
+    in property <bool> on;
+    callback toggled(bool);
+    width: 48px; height: 26px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: 13px;
+    background: on ? Accent.color : Theme.outline;
+    animate background { duration: 140ms; easing: ease-out; }
+    TouchArea { mouse-cursor: pointer; clicked => { root.toggled(!root.on); } }
+    Rectangle {
+        width: 20px; height: 20px; border-radius: 10px; background: #ffffff;
+        x: on ? parent.width - self.width - 3px : 3px;
+        y: (parent.height - self.height) / 2;
+        animate x { duration: 140ms; easing: ease-out; }
+    }
+}
+
+component StatusDot inherits Rectangle {
+    in property <string> state;
+    width: 9px; height: 9px; border-radius: 5px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    background:
+        state == "ok"    ? Theme.ok :
+        state == "warn"  ? #f59e0b :
+        state == "error" ? #dc2626 :
+                           Theme.text-dim;
+}
+
+component Btn inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    height: 30px; min-width: 110px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: 8px;
+    background: touch.has-hover ? Theme.brand : Theme.panel;
+    border-color: Theme.outline; border-width: 1px;
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    Text {
+        text: label; color: touch.has-hover ? #ffffff : Theme.text;
+        font-size: 11px; font-weight: 600;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+}
+
+component Row inherits Rectangle {
+    in property <SettingItem> item;
+    callback toggle(bool);
+    callback text-edited(string);
+    callback action();
+    height: item.kind == "header" ? 30px : 64px;
+    border-radius: item.kind == "header" ? 0 : Theme.radius-md;
+    background: item.kind == "header" ? transparent : Theme.panel-2;
+    border-color: item.kind == "header" ? transparent : Theme.outline;
+    border-width: item.kind == "header" ? 0 : 1px;
+
+    if item.kind == "header": Text {
+        x: 2px; text: item.label; color: Theme.text-dim;
+        font-size: 11px; font-weight: 700; letter-spacing: 0.7px;
+        vertical-alignment: bottom; height: 100%;
+    }
+
+    if item.kind != "header": HorizontalLayout {
+        padding: 14px; spacing: 14px; alignment: stretch;
+        VerticalLayout {
+            alignment: center; spacing: 3px; horizontal-stretch: 1;
+            Text { text: item.label; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
+            if item.desc != "": Text { text: item.desc; color: Theme.text-dim; font-size: 11px; wrap: word-wrap; }
+        }
+
+        // Trailing control by kind.
+        if item.kind == "toggle": PillToggle {
+            on: item.on;
+            toggled(v) => { root.toggle(v); }
+        }
+        if item.kind == "action": Btn {
+            label: item.value == "" ? "Run" : item.value;
+            clicked => { root.action(); }
+        }
+        if item.kind == "status": HorizontalLayout {
+            spacing: 8px; alignment: end;
+            horizontal-stretch: 0; vertical-stretch: 0;
+            StatusDot { state: item.state; y: (parent.height - self.height) / 2; }
+            Text { text: item.value; color: Theme.text-dim; font-size: 12px; vertical-alignment: center; }
+        }
+        if item.kind == "text": Rectangle {
+            width: 280px; height: 34px;
+            horizontal-stretch: 0; vertical-stretch: 0;
+            y: (parent.height - self.height) / 2;
+            border-radius: 9px;
+            background: Theme.panel; border-color: Theme.outline; border-width: 1px;
+            ti := TextInput {
+                x: 12px; width: parent.width - 24px; height: parent.height;
+                text: item.value;
+                color: Theme.text; font-size: 12px;
+                vertical-alignment: center;
+                single-line: true;
+                edited => { root.text-edited(self.text); }
+            }
+            if item.value == "": Text {
+                x: 12px; text: item.desc == "" ? "default" : "custom override";
+                color: Theme.text-dim; font-size: 12px; vertical-alignment: center; height: 100%;
+                visible: !ti.has-focus && ti.text == "";
+            }
+        }
+    }
+}
+
+// One scrollable list of setting rows. Title + blurb on top.
+export component SettingsList inherits Rectangle {
+    in property <string> title;
+    in property <string> blurb;
+    in property <[SettingItem]> rows;
+    callback toggle(string /*key*/, bool);
+    callback text-edited(string /*key*/, string /*value*/);
+    callback action(string /*key*/);
+    background: transparent;
+
+    VerticalLayout {
+        spacing: 12px;
+        if root.title != "": Text { text: root.title; color: Theme.text; font-size: 20px; font-weight: 700; }
+        if root.blurb != "": Text { text: root.blurb; color: Theme.text-dim; font-size: 12px; wrap: word-wrap; }
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                spacing: 8px;
+                for r in root.rows: Row {
+                    item: r;
+                    toggle(v) => { root.toggle(r.key, v); }
+                    text-edited(s) => { root.text-edited(r.key, s); }
+                    action => { root.action(r.key); }
+                }
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+    }
+}

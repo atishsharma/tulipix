@@ -1,0 +1,119 @@
+// Command palette — Cmd/Ctrl+K. Spotlight-style fuzzy across:
+//   * commands (rescan, lock, transcode, …)
+//   * files (recent media items)
+//   * settings nodes (deep-links to a Settings tab)
+//   * recents (last-opened detail views)
+//
+// Frosted modal centred over the window; keyboard-only nav (↑ / ↓ / Enter / Esc).
+// Fuzzy match is computed Rust-side; this component just renders the result rows.
+
+import { Theme } from "tokens.slint";
+import { ListView } from "std-widgets.slint";
+
+export struct PaletteRow {
+    id: string,
+    title: string,
+    subtitle: string,
+    kind: string,
+    score: float,
+}
+
+export component CmdPalette inherits Rectangle {
+    in-out property <string> query: "";
+    in property <[PaletteRow]> rows;
+    in-out property <int> selected: 0;
+    callback query-changed(string);
+    callback row-activated(string);
+    callback dismissed();
+
+    width: 100%; height: 100%;
+
+    Rectangle {
+        background: #00000099;
+        TouchArea { clicked => { root.dismissed(); } }
+    }
+
+    Rectangle {
+        x: parent.width / 2 - self.width / 2;
+        y: parent.height / 4;
+        width: min(parent.width - 96px, 720px);
+        height: min(parent.height - 160px, 480px);
+        background: Theme.modal;
+        border-radius: Theme.radius-lg;
+        border-width: 1px;
+        border-color: Theme.outline-strong;
+        drop-shadow-color: #00000066;
+        drop-shadow-blur: 32px;
+        drop-shadow-offset-y: 8px;
+        clip: true;
+
+        VerticalLayout {
+            padding: 16px;
+            spacing: 10px;
+
+            Rectangle {
+                height: 44px;
+                border-radius: 12px;
+                background: Theme.panel;
+                border-width: 1px;
+                border-color: Theme.outline;
+
+                input := TextInput {
+                    x: 14px; y: 0; width: parent.width - 28px; height: parent.height;
+                    text: root.query;
+                    font-size: 16px;
+                    color: Theme.text;
+                    vertical-alignment: center;
+                    edited => { root.query = self.text; root.query-changed(self.text); }
+                    accepted => {
+                        if (root.selected >= 0 && root.selected < root.rows.length) {
+                            root.row-activated(root.rows[root.selected].id);
+                        }
+                    }
+                    key-pressed(ev) => {
+                        if (ev.text == Key.Escape)  { root.dismissed(); return accept; }
+                        if (ev.text == Key.UpArrow) { root.selected = max(0, root.selected - 1); return accept; }
+                        if (ev.text == Key.DownArrow) {
+                            root.selected = min(root.rows.length - 1, root.selected + 1);
+                            return accept;
+                        }
+                        return reject;
+                    }
+                }
+            }
+
+            ListView {
+                vertical-stretch: 1;
+                for r[i] in root.rows: Rectangle {
+                    height: 44px;
+                    background: i == root.selected ? rgba(124, 58, 237, 0.18) : transparent;
+                    border-radius: 8px;
+                    TouchArea { clicked => { root.row-activated(r.id); } }
+                    HorizontalLayout {
+                        padding: 8px;
+                        spacing: 10px;
+                        Text {
+                            text: r.kind;
+                            font-size: 11px;
+                            color: Theme.text-dim;
+                            width: 60px;
+                            vertical-alignment: center;
+                        }
+                        VerticalLayout {
+                            spacing: 2px;
+                            Text { text: r.title; font-size: 14px; color: Theme.text; }
+                            Text { text: r.subtitle; font-size: 12px; color: Theme.text-dim; }
+                        }
+                    }
+                }
+            }
+
+            Text {
+                text: "↑↓ navigate · Enter open · Esc close";
+                font-size: 11px;
+                color: Theme.text-dim;
+                horizontal-alignment: center;
+            }
+        }
+    }
+}

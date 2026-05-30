@@ -1,0 +1,22 @@
+[package]
+name = "tulipix-player"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# libmpv embed POC — off by default so headless CI doesn't need libmpv on PATH.
+embed-mpv = []
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+async-trait = "0.1"
+tulipix-core = { path = "../tulipix-core" }
+
+[dev-dependencies]
+tempfile = "3"

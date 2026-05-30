@@ -1,0 +1,609 @@
+// Videos section — Plex language: cinematic near-black, a featured hero with
+// a gradient scrim and play actions, then a poster grid (2:3) with titles
+// beneath. Plex gold accent. Library tabs mirror Photos parity:
+// Library · Continue Watching · Starred · Archive · Trash (np.p3.star-archive-trash,
+// np.p3.last-accessed, np.p3.watch-progress).
+// Discover tab: TMDB trending / upcoming / on-the-air horizontal rails (np.p3.discover).
+import { ScrollView } from "std-widgets.slint";
+import { HdrChip } from "section_header.slint";
+
+// Richer than PhotoTile — carries playback state so a poster can paint a
+// resume bar, a watched check, and the star badge.
+export struct VideoTile {
+    thumb: image,
+    label: string,
+    index: int,        // global index into the section's path list (== position)
+    starred: bool,
+    watched: bool,
+    progress: float,   // 0..1 resume fraction (0 = unstarted/unknown)
+    duration: string,  // pre-formatted "1:42:08" or "" if unknown
+    season: int,       // TV episode season (0 = not an episode)
+    episode: int,      // TV episode number within the season (0 = unknown)
+}
+
+// One TV show card (np.p3.episodes) — poster + title + episode count.
+export struct ShowCard { id: int, title: string, cover: image, count: int }
+
+// A season's worth of episode tiles, for the drilled-in show browser
+// (np.p3.episodes). `tiles` keep their global `index` so click→play still maps.
+export struct VideoSeason { number: int, label: string, tiles: [VideoTile] }
+
+// One card in the Discover rails (np.p3.discover).
+export struct DiscoverCard {
+    tmdb-id: int,
+    title: string,
+    year: int,           // 0 = unknown
+    poster: image,
+    vote: float,         // 0..10 TMDB vote_average; 0 = unknown
+    release-date: string, // "Jun 14, 2025" pre-formatted or ""
+    is-movie: bool,
+}
+
+component PlexButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> filled: false;
+    callback clicked();
+    height: 40px; min-width: 120px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: 6px;
+    background: filled ? #e5a00d : #ffffff22;
+    border-width: filled ? 0px : 1px;
+    border-color: #ffffff55;
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    Text {
+        text: label; font-size: 13px; font-weight: 700;
+        color: filled ? #1a1a1a : #ffffff;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+}
+
+// Tab chip — the Library/Continue/Starred/Archive/Trash switcher. Now a thin
+// wrapper over the shared HdrChip with the Plex gold theme baked in, so it
+// matches the Photos header pill shape.
+component VideoTab inherits HdrChip {
+    accent: #e5a00d;
+    active-text: #1a1a1a;
+    dark: true;
+    min-width: 88px;
+}
+
+component Poster inherits Rectangle {
+    in property <VideoTile> tile;
+    callback clicked();
+    callback context(int, length, length);
+    width: 150px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    VerticalLayout {
+        spacing: 8px;
+        Rectangle {
+            width: 150px; height: 225px;
+            border-radius: 8px; clip: true;
+            background: #2a2a2e;
+            border-width: ta.has-hover ? 2px : 0px;
+            border-color: #e5a00d;
+            Image { source: tile.thumb; image-fit: cover; width: parent.width; height: parent.height; }
+
+            // Star badge (top-right).
+            if tile.starred: Rectangle {
+                x: parent.width - self.width - 6px; y: 6px;
+                width: 24px; height: 24px; border-radius: 12px;
+                background: #000000aa;
+                Text { text: "★"; color: #e5a00d; font-size: 14px;
+                    horizontal-alignment: center; vertical-alignment: center; }
+            }
+            // Watched check (top-left).
+            if tile.watched: Rectangle {
+                x: 6px; y: 6px;
+                width: 24px; height: 24px; border-radius: 12px;
+                background: #e5a00d;
+                Text { text: "✓"; color: #1a1a1a; font-size: 14px; font-weight: 800;
+                    horizontal-alignment: center; vertical-alignment: center; }
+            }
+            // Duration pill (bottom-right) when known and no resume bar overlap.
+            if tile.duration != "": Rectangle {
+                x: parent.width - self.width - 6px; y: parent.height - self.height - 10px;
+                width: dlbl.preferred-width + 12px; height: 18px; border-radius: 9px;
+                background: #000000aa;
+                dlbl := Text { text: tile.duration; color: #ffffff; font-size: 10px; font-weight: 600;
+                    horizontal-alignment: center; vertical-alignment: center; }
+            }
+            // Episode badge (bottom-left) — TV episodes only.
+            if tile.episode > 0: Rectangle {
+                x: 6px; y: parent.height - self.height - 10px;
+                width: eplbl.preferred-width + 12px; height: 18px; border-radius: 9px;
+                background: #e5a00dcc;
+                eplbl := Text {
+                    text: (tile.season > 0 ? "S" + tile.season : "") + "E" + tile.episode;
+                    color: #1a1a1a; font-size: 10px; font-weight: 800;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+            }
+            // Resume bar (bottom) — only for in-progress, unwatched items.
+            if tile.progress > 0.0 && !tile.watched: Rectangle {
+                x: 0; y: parent.height - 4px; width: parent.width; height: 4px;
+                background: #00000066;
+                Rectangle { x: 0; y: 0; height: 4px;
+                    width: parent.width * Math.clamp(tile.progress, 0.0, 1.0);
+                    background: #e5a00d; }
+            }
+
+            ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.clicked(); }
+                pointer-event(e) => {
+                    if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                        root.context(tile.index,
+                            self.absolute-position.x + self.mouse-x,
+                            self.absolute-position.y + self.mouse-y);
+                    }
+                }
+            }
+        }
+        Text { text: tile.label; color: #e8e8ea; font-size: 12px; font-weight: 500; overflow: elide; width: 150px; }
+    }
+}
+
+component ShowCardView inherits Rectangle {
+    in property <ShowCard> show;
+    callback clicked();
+    width: 150px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    VerticalLayout {
+        spacing: 8px;
+        Rectangle {
+            width: 150px; height: 225px;
+            border-radius: 8px; clip: true; background: #2a2a2e;
+            border-width: ta.has-hover ? 2px : 0px; border-color: #e5a00d;
+            Image { source: show.cover; image-fit: cover; width: parent.width; height: parent.height; }
+            // Episode-count badge.
+            Rectangle {
+                x: parent.width - self.width - 6px; y: 6px;
+                width: cnt.preferred-width + 14px; height: 22px; border-radius: 11px; background: #000000bb;
+                cnt := Text { text: show.count + " ep"; color: #ffffff; font-size: 10px; font-weight: 700;
+                    horizontal-alignment: center; vertical-alignment: center; }
+            }
+            ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+        }
+        Text { text: show.title; color: #e8e8ea; font-size: 12px; font-weight: 600; overflow: elide; width: 150px; }
+    }
+}
+
+// Single card in a Discover rail — compact 2:3 poster with badges.
+component DiscoverCardView inherits Rectangle {
+    in property <DiscoverCard> card;
+    callback clicked();
+    width: 130px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    VerticalLayout {
+        spacing: 6px;
+        Rectangle {
+            width: 130px; height: 195px;
+            border-radius: 8px; clip: true;
+            background: #2a2a2e;
+            border-width: ta.has-hover ? 2px : 0px;
+            border-color: #e5a00d;
+            Image {
+                source: card.poster; image-fit: cover;
+                width: parent.width; height: parent.height;
+            }
+            // Rating badge — top-right corner.
+            if card.vote > 0.0: Rectangle {
+                x: parent.width - self.width - 6px; y: 6px;
+                width: vt.preferred-width + 10px; height: 18px;
+                border-radius: 9px; background: #000000cc;
+                vt := Text {
+                    text: "★ " + Math.round(card.vote * 10.0) / 10.0;
+                    color: #e5a00d; font-size: 9px; font-weight: 800;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+            }
+            // Movie/show type pill — top-left.
+            Rectangle {
+                x: 6px; y: 6px;
+                width: kt.preferred-width + 10px; height: 16px;
+                border-radius: 8px; background: card.is-movie ? #0047abcc : #8b0000cc;
+                kt := Text {
+                    text: card.is-movie ? "MOVIE" : "SHOW";
+                    color: #ffffff; font-size: 8px; font-weight: 800;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+            }
+            // Release-date ribbon — bottom overlay for upcoming items.
+            if card.release-date != "": Rectangle {
+                x: 0; y: parent.height - self.height;
+                width: parent.width; height: 22px;
+                background: #000000bb;
+                Text {
+                    text: card.release-date; color: #e5e5e5; font-size: 9px; font-weight: 600;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: parent.width; height: parent.height;
+                }
+            }
+            ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+        }
+        // Title (max 2 lines via fixed height + overflow elide on single-line for now).
+        Text {
+            text: card.title; color: #c8c8cc; font-size: 10px; font-weight: 600;
+            overflow: elide; width: 130px;
+        }
+        if card.year > 0: Text {
+            text: card.year; color: #6a6a72; font-size: 9px;
+            width: 130px;
+        }
+    }
+}
+
+// One horizontal-scroll rail with a labelled header.
+component DiscoverRail inherits Rectangle {
+    in property <string> label;
+    in property <string> icon;
+    in property <[DiscoverCard]> items;
+    callback card-clicked(int);  // tmdb_id
+    horizontal-stretch: 1;
+    height: 310px;
+    background: transparent;
+    VerticalLayout {
+        padding-left: 28px; padding-right: 28px;
+        padding-top: 18px; padding-bottom: 0;
+        spacing: 14px;
+        // Rail header row.
+        HorizontalLayout {
+            alignment: start; spacing: 10px;
+            Rectangle { width: 4px; height: 18px; border-radius: 2px; background: #e5a00d;
+                horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
+            Text { text: icon + " " + label; color: #ffffff; font-size: 16px; font-weight: 700;
+                vertical-alignment: center; }
+            Text { text: items.length + " titles"; color: #6a6a72; font-size: 12px;
+                vertical-alignment: center; }
+        }
+        // Horizontal scroll of cards.
+        if items.length > 0: ScrollView {
+            height: 242px;
+            viewport-width: items.length * 148px;
+            viewport-height: 242px;
+            for card[idx] in items: DiscoverCardView {
+                x: idx * 148px;
+                card: card;
+                clicked => { root.card-clicked(card.tmdb-id); }
+            }
+        }
+        if items.length == 0: Rectangle {
+            height: 100px;
+            Text { text: "Loading…"; color: #5a5a62; font-size: 13px;
+                horizontal-alignment: center; vertical-alignment: center;
+                width: parent.width; height: parent.height; }
+        }
+    }
+}
+
+export component VideosPage inherits Rectangle {
+    in property <int> item-count: 0;
+    in property <[VideoTile]> tiles: [];
+    in-out property <string> category: "library";   // library|continue|starred|archive|trash
+    in-out property <string> kind: "local";          // tv|movies|local|discover
+    in-out property <string> query: "";
+    in property <[ShowCard]> shows: [];               // TV show cards
+    in property <[VideoSeason]> seasons: [];          // drilled-in episodes, grouped by season
+    in property <bool> show-open: false;              // drilled into a show's episodes
+    in property <string> show-title: "";
+    // Discover feed rails (np.p3.discover) — four TMDB categories.
+    in property <[DiscoverCard]> discover-trending-movies: [];
+    in property <[DiscoverCard]> discover-trending-shows: [];
+    in property <[DiscoverCard]> discover-upcoming: [];
+    in property <[DiscoverCard]> discover-on-air: [];
+    callback add-folder();
+    callback tile-clicked(int);
+    callback tile-context(int, length, length);
+    callback set-category(string);
+    callback set-kind(string);
+    callback search(string);
+    callback clear-thumbs();
+    callback show-open-id(int);   // open a show's episodes
+    callback show-back();         // back to the show cards
+    callback refresh-discover();  // trigger TMDB feed refresh
+
+    // True when the TV tab should show show-cards rather than episode tiles.
+    property <bool> cards-mode: root.kind == "tv" && !root.show-open;
+    // True when drilled into a TV show — episodes are grouped by season.
+    property <bool> drilled: root.kind == "tv" && root.show-open;
+
+    background: #131316;
+
+    // Responsive poster grid metrics.
+    property <length> cell-w: 166px;   // poster 150 + 16 gap
+    property <length> cell-h: 285px;   // poster 225 + label 44 + 16 gap
+    property <int> cols: Math.max(1, Math.floor((self.width - 88px) / cell-w));
+
+    function tab-title(c: string) -> string {
+        c == "continue" ? "Continue Watching" :
+        c == "starred"  ? "Starred" :
+        c == "archive"  ? "Archive" :
+        c == "trash"    ? "Trash" : "Recently Added";
+    }
+    function empty-msg(c: string) -> string {
+        c == "continue" ? "Nothing in progress. Press play on a title and it lands here." :
+        c == "starred"  ? "Star a title (right-click) to pin it here." :
+        c == "archive"  ? "Archived titles are hidden from your main library." :
+        c == "trash"    ? "Trashed titles are kept here before they age out." :
+        "Add a movie or TV folder and Tulipix builds your cinematic library.";
+    }
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // Row 1 — title · TV/Movies/Local · search · add folder · count pill.
+        Rectangle {
+            height: 72px; horizontal-stretch: 1; background: #18181c;
+            HorizontalLayout {
+                padding-left: 28px; padding-right: 28px; spacing: 12px;
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Text { text: "Videos"; color: #ffffff; font-size: 22px; font-weight: 700; } }
+
+                // Top-level kind tabs (before the search, per request).
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    HorizontalLayout { spacing: 8px;
+                        VideoTab { label: "TV";       active: root.kind == "tv";       clicked => { root.set-kind("tv"); } }
+                        VideoTab { label: "Movies";   active: root.kind == "movies";   clicked => { root.set-kind("movies"); } }
+                        VideoTab { label: "Local";    active: root.kind == "local";    clicked => { root.set-kind("local"); } }
+                        VideoTab { label: "Discover"; active: root.kind == "discover"; clicked => { root.set-kind("discover"); } }
+                    }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                // Search box.
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Rectangle {
+                        width: 360px; height: 44px; border-radius: 22px; background: #ffffff14;
+                        border-width: 1px; border-color: #ffffff22;
+                        HorizontalLayout {
+                            padding-left: 18px; padding-right: 10px; spacing: 8px;
+                            Text { text: "🔍"; font-size: 14px; color: #9a9aa2; vertical-alignment: center; }
+                            Rectangle { horizontal-stretch: 1;
+                                qi := TextInput {
+                                    width: 100%; height: 100%;
+                                    text <=> root.query;
+                                    color: #ffffff; font-size: 14px;
+                                    vertical-alignment: center; single-line: true;
+                                    edited => { root.search(self.text); }
+                                }
+                                if root.query == "": Text {
+                                    text: "Search videos"; color: #9a9aa2; font-size: 14px;
+                                    vertical-alignment: center; height: 100%;
+                                    visible: !qi.has-focus;
+                                }
+                            }
+                            if root.query != "": Rectangle {
+                                width: 26px; height: 26px; border-radius: 13px;
+                                horizontal-stretch: 0; vertical-stretch: 0; y: (parent.height - self.height) / 2;
+                                background: clearx.has-hover ? #ffffff33 : #ffffff22;
+                                clearx := TouchArea { mouse-cursor: pointer; clicked => { root.query = ""; root.search(""); } }
+                                Text { text: "✕"; color: #e8e8ea; font-size: 11px;
+                                    horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+                    }
+                }
+
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    VideoTab { label: "+ Add folder"; active: true; clicked => { root.add-folder(); } } }
+
+                // Count pill.
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Rectangle {
+                        height: 44px; border-radius: 22px; background: #e5a00d;
+                        HorizontalLayout { padding-left: 16px; padding-right: 16px;
+                            Text { text: "🎬 " + root.item-count + " videos"; color: #1a1a1a; font-size: 12px; font-weight: 800; vertical-alignment: center; } }
+                    }
+                }
+            }
+        }
+
+        // Row 2 — library sub-tabs (shared across TV/Movies/Local) + clear thumbs.
+        Rectangle {
+            height: 54px; horizontal-stretch: 1; background: #131316;
+            HorizontalLayout {
+                padding-left: 28px; padding-right: 28px; spacing: 8px; alignment: start;
+                VideoTab { label: "Library";  active: root.category == "library";  clicked => { root.set-category("library"); } }
+                VideoTab { label: "Continue"; active: root.category == "continue"; clicked => { root.set-category("continue"); } }
+                VideoTab { label: "Starred";  active: root.category == "starred";  clicked => { root.set-category("starred"); } }
+                VideoTab { label: "Archive";  active: root.category == "archive";  clicked => { root.set-category("archive"); } }
+                VideoTab { label: "Trash";    active: root.category == "trash";    clicked => { root.set-category("trash"); } }
+                Rectangle { horizontal-stretch: 1; }
+                VideoTab { label: "↻ Clear thumbs"; clicked => { root.clear-thumbs(); } }
+            }
+        }
+
+        // TV drill-in back header.
+        if root.kind == "tv" && root.show-open: Rectangle {
+            height: 44px; horizontal-stretch: 1; background: #131316;
+            HorizontalLayout {
+                padding-left: 28px; spacing: 10px; alignment: start;
+                VideoTab { label: "‹ Shows"; clicked => { root.show-back(); } }
+                VerticalLayout { alignment: center;
+                    Text { text: root.show-title; color: #ffffff; font-size: 15px; font-weight: 700; } }
+            }
+        }
+
+        // TV show cards (not drilled into a show).
+        if root.cards-mode && shows.length > 0: ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                padding-left: 44px; padding-right: 44px; padding-top: 28px; padding-bottom: 36px; spacing: 14px;
+                HorizontalLayout { alignment: start; spacing: 8px;
+                    Rectangle { width: 4px; height: 20px; border-radius: 2px; background: #e5a00d;
+                        horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
+                    Text { text: "TV Shows"; color: #ffffff; font-size: 18px; font-weight: 700; } }
+                Rectangle {
+                    horizontal-stretch: 1;
+                    height: Math.ceil(shows.length / cols) * cell-h;
+                    for sh[idx] in root.shows: ShowCardView {
+                        x: Math.mod(idx, cols) * cell-w;
+                        y: Math.floor(idx / cols) * cell-h;
+                        show: sh;
+                        clicked => { root.show-open-id(sh.id); }
+                    }
+                }
+            }
+        }
+        if root.cards-mode && shows.length == 0: VerticalLayout {
+            alignment: center; spacing: 14px;
+            HorizontalLayout { alignment: center;
+                Rectangle { width: 96px; height: 96px; border-radius: 20px; background: #e5a00d22;
+                    Text { text: "📺"; font-size: 42px; horizontal-alignment: center; vertical-alignment: center; } } }
+            Text { text: "No TV shows"; color: #ffffff; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+            Text { text: "Name episode files like 'Show S01E01.mkv' in a per-show folder; they group here."; color: #a0a0a6; font-size: 13px; horizontal-alignment: center; }
+        }
+
+        // Drilled-in TV show — episodes grouped by season (np.p3.episodes).
+        if root.drilled && seasons.length > 0: ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                padding-left: 44px; padding-right: 44px; padding-top: 28px; padding-bottom: 36px;
+                spacing: 22px;
+                for season[sidx] in root.seasons: VerticalLayout {
+                    spacing: 14px;
+                    HorizontalLayout {
+                        alignment: start; spacing: 8px;
+                        Rectangle { width: 4px; height: 20px; border-radius: 2px; background: #e5a00d;
+                            horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
+                        Text { text: season.label; color: #ffffff; font-size: 18px; font-weight: 700; }
+                        Text { text: season.tiles.length + (season.tiles.length == 1 ? " episode" : " episodes");
+                            color: #8a8a90; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: Math.ceil(season.tiles.length / cols) * cell-h;
+                        for tile[idx] in season.tiles: Poster {
+                            x: Math.mod(idx, cols) * cell-w;
+                            y: Math.floor(idx / cols) * cell-h;
+                            tile: tile;
+                            clicked => { root.tile-clicked(tile.index); }
+                            context(i, mx, my) => { root.tile-context(i, mx, my); }
+                        }
+                    }
+                }
+            }
+        }
+        if root.drilled && seasons.length == 0: VerticalLayout {
+            alignment: center; spacing: 14px;
+            HorizontalLayout { alignment: center;
+                Rectangle { width: 96px; height: 96px; border-radius: 20px; background: #e5a00d22;
+                    Text { text: "📺"; font-size: 42px; horizontal-alignment: center; vertical-alignment: center; } } }
+            Text { text: "No episodes"; color: #ffffff; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+            Text { text: "This show has no episodes in the current tab."; color: #a0a0a6; font-size: 13px; horizontal-alignment: center; }
+        }
+
+        if !root.cards-mode && !root.drilled && tiles.length > 0: ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                spacing: 0px;
+
+                // Featured hero — Local Library only, first item as a wide backdrop.
+                if root.category == "library" && root.kind == "local": Rectangle {
+                    height: 360px; horizontal-stretch: 1; clip: true;
+                    background: #0c0c0e;
+                    Image {
+                        source: root.tiles[0].thumb; image-fit: cover;
+                        width: parent.width; height: parent.height;
+                        opacity: 0.55;
+                    }
+                    Rectangle { width: parent.width; height: parent.height;
+                        background: @linear-gradient(0deg, #131316 4%, transparent 60%); }
+                    Rectangle { width: parent.width; height: parent.height;
+                        background: @linear-gradient(90deg, #131316cc 0%, transparent 55%); }
+                    VerticalLayout {
+                        padding: 44px; alignment: end; spacing: 14px;
+                        Text { text: "FEATURED"; color: #e5a00d; font-size: 11px; font-weight: 800; letter-spacing: 2px; }
+                        Text { text: root.tiles[0].label; color: #ffffff; font-size: 34px; font-weight: 800; overflow: elide; }
+                        Text { text: item-count + " titles in your library"; color: #c8c8cc; font-size: 13px; }
+                        HorizontalLayout {
+                            spacing: 12px; alignment: start;
+                            PlexButton { label: "▶  Play"; filled: true; clicked => { root.tile-clicked(root.tiles[0].index); } }
+                            PlexButton { label: "+ Add media"; clicked => { root.add-folder(); } }
+                        }
+                    }
+                }
+
+                // Section grid.
+                VerticalLayout {
+                    padding-left: 44px; padding-right: 44px; padding-top: 28px; padding-bottom: 36px;
+                    spacing: 14px;
+                    HorizontalLayout {
+                        alignment: start; spacing: 8px;
+                        Rectangle { width: 4px; height: 20px; border-radius: 2px; background: #e5a00d;
+                            horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
+                        Text { text: root.tab-title(root.category); color: #ffffff; font-size: 18px; font-weight: 700; }
+                    }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        height: Math.ceil(tiles.length / cols) * cell-h;
+                        for tile[idx] in root.tiles: Poster {
+                            x: Math.mod(idx, cols) * cell-w;
+                            y: Math.floor(idx / cols) * cell-h;
+                            tile: tile;
+                            clicked => { root.tile-clicked(tile.index); }
+                            context(i, mx, my) => { root.tile-context(i, mx, my); }
+                        }
+                    }
+                }
+            }
+        }
+
+        if !root.cards-mode && !root.drilled && tiles.length == 0 && root.kind != "discover": VerticalLayout {
+            alignment: center; spacing: 14px;
+            HorizontalLayout {
+                alignment: center;
+                Rectangle { width: 96px; height: 96px; border-radius: 20px; background: #e5a00d22;
+                    Text { text: "🎬"; font-size: 42px; horizontal-alignment: center; vertical-alignment: center; } }
+            }
+            Text { text: root.category == "library" ? "No media yet" : "Nothing here"; color: #ffffff; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+            Text { text: root.empty-msg(root.category); color: #a0a0a6; font-size: 13px; horizontal-alignment: center; }
+            if root.category == "library": HorizontalLayout { alignment: center; PlexButton { label: "+ Add media"; filled: true; clicked => { root.add-folder(); } } }
+        }
+
+        // ── Discover feed (np.p3.discover) — four TMDB rails ──────────────
+        if root.kind == "discover": ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                padding-top: 24px; padding-bottom: 36px; spacing: 0px;
+
+                // Refresh button row.
+                HorizontalLayout {
+                    padding-left: 32px; padding-right: 32px; padding-bottom: 16px;
+                    alignment: space-between;
+                    VerticalLayout { alignment: center;
+                        Text { text: "TMDB Trending & Upcoming"; color: #6a6a72; font-size: 11px;
+                            font-weight: 700; letter-spacing: 1.5px; } }
+                    VerticalLayout { alignment: center;
+                        VideoTab { label: "↻ Refresh"; clicked => { root.refresh-discover(); } }
+                    }
+                }
+
+                DiscoverRail {
+                    label: "Trending Movies"; icon: "🔥";
+                    items: root.discover-trending-movies;
+                    card-clicked(id) => { /* future: open movie detail */ }
+                }
+                Rectangle { height: 1px; background: #ffffff0a; horizontal-stretch: 1; }
+                DiscoverRail {
+                    label: "Trending TV Shows"; icon: "📺";
+                    items: root.discover-trending-shows;
+                    card-clicked(id) => { }
+                }
+                Rectangle { height: 1px; background: #ffffff0a; horizontal-stretch: 1; }
+                DiscoverRail {
+                    label: "Upcoming Movies"; icon: "🎬";
+                    items: root.discover-upcoming;
+                    card-clicked(id) => { }
+                }
+                Rectangle { height: 1px; background: #ffffff0a; horizontal-stretch: 1; }
+                DiscoverRail {
+                    label: "On The Air"; icon: "📡";
+                    items: root.discover-on-air;
+                    card-clicked(id) => { }
+                }
+            }
+        }
+    }
+}

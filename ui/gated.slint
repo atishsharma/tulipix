@@ -1,0 +1,42 @@
+import { Theme } from "tokens.slint";
+
+export enum GateMode { hide, disable, upgrade-cta }
+
+export component Gated {
+    in property <bool> allowed: false;
+    in property <GateMode> mode: GateMode.disable;
+    in property <string> upgrade-label: "Upgrade to unlock";
+    callback upgrade-clicked();
+
+    // @children may appear only once and never inside a conditional, so the
+    // gated content lives in one wrapper whose visibility/opacity follow the
+    // gate: shown full when allowed, dimmed when disabled, hidden otherwise.
+    Rectangle {
+        visible: allowed || mode == GateMode.disable;
+        opacity: allowed ? 1.0 : 0.4;
+        @children
+    }
+
+    if !allowed && mode == GateMode.upgrade-cta: Rectangle {
+        border-radius: Theme.radius-md;
+        background: Theme.panel-2;
+        border-color: Theme.outline; border-width: 1px;
+        VerticalLayout {
+            padding: 14px; spacing: 6px; alignment: center;
+            Text {
+                text: "🔒 " + upgrade-label;
+                color: Theme.text; font-size: 13px; font-weight: 600;
+                horizontal-alignment: center;
+            }
+            Rectangle {
+                height: 28px; border-radius: 8px;
+                background: @linear-gradient(135deg, Theme.brand 0%, Theme.brand-2 100%);
+                TouchArea { clicked => { root.upgrade-clicked(); } }
+                Text { text: "Upgrade"; color: #ffffff; font-size: 11px; font-weight: 600;
+                    horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+    }
+
+    // GateMode.hide → render nothing
+}

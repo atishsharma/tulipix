@@ -1,0 +1,34 @@
+[package]
+name = "tulipix-photos"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+# Real ONNX inference for the editor AI ops (heal/sky/upscale/colorize). Pulls
+# ORT + its prebuilt native runtime (downloaded at build time), so it stays
+# opt-in to keep the base build light.
+onnx = ["dep:ort"]
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tokio = { workspace = true }
+sqlx.workspace = true
+sha2.workspace = true
+reqwest = { workspace = true, features = ["json", "stream"] }
+tulipix-core = { path = "../tulipix-core" }
+kamadak-exif = "0.6"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+walkdir = "2"
+regex = "1"
+futures-util = "0.3"
+ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["std", "download-binaries"] }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }

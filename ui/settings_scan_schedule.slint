@@ -1,0 +1,128 @@
+import { Theme } from "tokens.slint";
+import { ScrollView } from "std-widgets.slint";
+
+export struct ScanLibraryRow {
+    id: string,
+    path: string,
+    section: string,
+    cadence-override: string, // "" | "manual" | "hourly" | "daily" | "weekly"
+}
+
+component CadenceSegment inherits Rectangle {
+    in property <string> value;
+    in property <string> selected;
+    in property <string> label;
+    callback clicked();
+    property <bool> active: value == selected;
+    width: 80px; height: 30px; border-radius: 8px;
+    background: active ? Theme.brand : Theme.panel-2;
+    border-color: active ? Theme.brand : Theme.outline;
+    border-width: 1px;
+    TouchArea { clicked => { root.clicked(); } }
+    Text {
+        text: label;
+        color: active ? #ffffff : Theme.text;
+        font-size: 11px; font-weight: active ? 600 : 500;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+}
+
+component CadencePicker inherits HorizontalLayout {
+    in property <string> selected;
+    in property <bool> allow-default: false;
+    callback changed(string);
+    spacing: 6px; alignment: start;
+    if allow-default: CadenceSegment { value: ""; selected: root.selected; label: "Default"; clicked => { root.changed(""); } }
+    CadenceSegment { value: "manual"; selected: root.selected; label: "Manual"; clicked => { root.changed("manual"); } }
+    CadenceSegment { value: "hourly"; selected: root.selected; label: "Hourly"; clicked => { root.changed("hourly"); } }
+    CadenceSegment { value: "daily";  selected: root.selected; label: "Daily";  clicked => { root.changed("daily"); } }
+    CadenceSegment { value: "weekly"; selected: root.selected; label: "Weekly"; clicked => { root.changed("weekly"); } }
+}
+
+component LocationRow inherits Rectangle {
+    in property <ScanLibraryRow> data;
+    callback set-override(string);
+    height: 80px; border-radius: Theme.radius-md;
+    background: Theme.panel-2;
+    border-color: Theme.outline; border-width: 1px;
+    HorizontalLayout {
+        padding: 14px; spacing: 14px; alignment: stretch;
+        VerticalLayout {
+            alignment: center; spacing: 3px;
+            horizontal-stretch: 1;
+            Text { text: data.path; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
+            Text { text: data.section; color: Theme.text-dim; font-size: 11px; }
+        }
+        VerticalLayout {
+            alignment: center;
+            CadencePicker {
+                selected: data.cadence-override;
+                allow-default: true;
+                changed(c) => { root.set-override(c); }
+            }
+        }
+    }
+}
+
+export component SettingsScanSchedule inherits Rectangle {
+    in property <string> default-cadence;
+    in property <[ScanLibraryRow]> rows;
+    callback set-default-cadence(string);
+    callback set-override(string /*id*/, string /*cadence | ""*/);
+    background: transparent;
+
+    VerticalLayout {
+        spacing: 12px;
+        Text { text: "Auto-rescan cadence"; color: Theme.text; font-size: 20px; font-weight: 700; }
+        Text {
+            text: "Realtime watch is always on. Periodic full rescans cover NFS/SMB and sleep edge cases.";
+            color: Theme.text-dim; font-size: 12px; wrap: word-wrap;
+        }
+
+        Rectangle {
+            height: 96px;
+            border-radius: Theme.radius-md;
+            background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
+            HorizontalLayout {
+                padding: 14px; spacing: 16px; alignment: stretch;
+                VerticalLayout {
+                    alignment: center; spacing: 3px;
+                    horizontal-stretch: 1;
+                    Text { text: "Default for all libraries"; color: Theme.text; font-size: 13px; font-weight: 600; }
+                    Text { text: "Applied when a library has no override."; color: Theme.text-dim; font-size: 11px; }
+                }
+                VerticalLayout {
+                    alignment: center;
+                    CadencePicker {
+                        selected: root.default-cadence;
+                        allow-default: false;
+                        changed(c) => { root.set-default-cadence(c); }
+                    }
+                }
+            }
+        }
+
+        Text { text: "Per-location overrides"; color: Theme.text-dim; font-size: 12px; font-weight: 600; }
+
+        ScrollView {
+            vertical-stretch: 1;
+            VerticalLayout {
+                spacing: 8px;
+                for r in root.rows: LocationRow {
+                    data: r;
+                    set-override(c) => { root.set-override(r.id, c); }
+                }
+                if root.rows.length == 0: Rectangle {
+                    height: 80px;
+                    border-radius: Theme.radius-md;
+                    background: Theme.panel; border-color: Theme.outline; border-width: 1px;
+                    VerticalLayout {
+                        alignment: center;
+                        Text { text: "No locations yet."; color: Theme.text-dim; font-size: 12px; horizontal-alignment: center; }
+                    }
+                }
+                Rectangle { vertical-stretch: 1; }
+            }
+        }
+    }
+}

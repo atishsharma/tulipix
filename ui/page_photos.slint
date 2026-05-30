@@ -1,0 +1,1244 @@
+// Photos section — Google Photos language: light & airy, tight justified grid.
+// Tabs: Timeline (date-grouped) · Starred · Archive · Library (folders) · Trash.
+import { PhotoTile } from "section_page.slint";
+import { ScrollView } from "std-widgets.slint";
+
+// One date group in the timeline (e.g. "May 2026" + that month's tiles).
+export struct PhotoGroup { label: string, tiles: [PhotoTile] }
+// One watched folder shown in the Library tab.
+export struct FolderRow { name: string, path: string, count: int, cover: image }
+// One face cluster shown in the People tab (np.p2.ai.face-clusters / .name).
+export struct PersonCard { id: int, name: string, count: int, cover: image, named: bool }
+export struct AlbumCard { id: int, name: string, count: int, cover: image }
+// One object/tag shown in the Things tab (np.p2.ai.tags).
+export struct ThingChip { label: string, count: int }
+// Memories On-This-Day horizontal rail per year (Phase 6).
+export struct MemoryRail { year: int, ago: string, tiles: [PhotoTile] }
+// Map cluster card for the Places grid (Phase 6).
+export struct MapCluster { lat: float, lon: float, count: int, cover: image, label: string }
+// Duplicate pair shown in the Dedupe tab (Phase 6).
+export struct DedupeGroup { cluster-id: int, kind: string, left-thumb: image, right-thumb: image, left-label: string, right-label: string }
+
+component GPhotoChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <bool> blink: false;   // green confirmation flash
+    callback clicked();
+    height: 36px; min-width: 84px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: 17px;
+    clip: true;
+    background: active ? #1a73e8 : (touch.has-hover ? #e8eaed : #f1f3f4);
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    Text {
+        text: label; font-size: 13px; font-weight: 500;
+        color: active ? #ffffff : #3c4043;
+        width: 100%; height: 100%;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+    // Confirmation flash overlay.
+    Rectangle {
+        width: 100%; height: 100%; border-radius: parent.border-radius;
+        background: #34a853;
+        opacity: root.blink ? 0.9 : 0;
+        animate opacity { duration: 280ms; easing: ease-in-out; }
+        Text {
+            text: "✓ " + root.label; color: #ffffff; font-size: 13px; font-weight: 700;
+            width: 100%; height: 100%;
+            horizontal-alignment: center; vertical-alignment: center;
+            visible: root.blink;
+        }
+    }
+}
+
+// A single photo tile (thumb + hover + open/context). `tile.index` is the
+// global index into the section's path list so grouped views still address
+// the right photo.
+component PhotoCell inherits Rectangle {
+    in property <PhotoTile> tile;
+    // True once any photo is selected — plain clicks then toggle selection
+    // (Google-Photos style) instead of opening the viewer.
+    in property <bool> selecting: false;
+    callback open(int, length, length, length, length);
+    callback context(int, length, length);
+    callback star(int);
+    callback archive(int);
+    callback select-toggle(int);   // ctrl-click / circle / plain-click-in-selecting
+    callback select-range(int);    // shift-click
+    // True while the cell or any on-tile button is hovered (the buttons sit on
+    // top of `ta`, so we OR their hover in to keep them visible).
+    property <bool> hovered: ta.has-hover || sstar.has-hover || sarch.has-hover || scirc.has-hover;
+    // Modifiers captured on pointer-down so `clicked` can branch on them.
+    property <bool> mod-ctrl: false;
+    property <bool> mod-shift: false;
+    border-radius: 5px; clip: true;
+    // Selected = solid blue frame; hover = gradient frame; else flat.
+    background: tile.selected
+        ? #1a73e8
+        : (hovered
+            ? @linear-gradient(135deg, #4285f4 0%, #a142f4 50%, #ea4335 100%)
+            : #e8eaed);
+    Image {
+        source: tile.thumb; image-fit: cover;
+        // Selected photos inset further (8px) so the blue frame reads clearly.
+        x: tile.selected ? 8px : (hovered ? 4px : 0px);
+        y: tile.selected ? 8px : (hovered ? 4px : 0px);
+        width: tile.selected ? parent.width - 16px : (hovered ? parent.width - 8px : parent.width);
+        height: tile.selected ? parent.height - 16px : (hovered ? parent.height - 8px : parent.height);
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            if (root.mod-ctrl) {
+                root.select-toggle(tile.index);
+            } else if (root.mod-shift) {
+                root.select-range(tile.index);
+            } else if (root.selecting) {
+                root.select-toggle(tile.index);
+            } else {
+                root.open(tile.index, self.absolute-position.x, self.absolute-position.y, root.width, root.height);
+            }
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                root.mod-ctrl = e.modifiers.control || e.modifiers.meta;
+                root.mod-shift = e.modifiers.shift;
+            }
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                root.context(tile.index,
+                    self.absolute-position.x + self.mouse-x,
+                    self.absolute-position.y + self.mouse-y);
+            }
+        }
+    }
+    // Selection circle (top-left) — shown on hover or when selected. Click
+    // toggles selection without opening the viewer.
+    Rectangle {
+        visible: root.hovered || root.selecting || tile.selected;
+        x: 8px; y: 8px; width: 24px; height: 24px; border-radius: 12px;
+        background: tile.selected ? #1a73e8 : #000000a8;
+        border-width: 2px; border-color: #ffffff;
+        scirc := TouchArea { mouse-cursor: pointer; clicked => { root.select-toggle(tile.index); } }
+        Text { text: tile.selected ? "✓" : ""; color: #ffffff; font-size: 14px; font-weight: 700;
+            width: 100%; height: 100%;
+            horizontal-alignment: center; vertical-alignment: center; }
+    }
+    // Quick action — Star (bottom-left). White when unstarred, yellow when
+    // starred. Declared after `ta` so it wins clicks.
+    Rectangle {
+        visible: root.hovered;
+        x: 8px; y: parent.height - self.height - 8px;
+        width: 30px; height: 30px; border-radius: 15px;
+        background: sstar.has-hover ? #000000dd : #000000a8;
+        sstar := TouchArea { mouse-cursor: pointer; clicked => { root.star(tile.index); } }
+        Text { text: tile.starred ? "★" : "☆"; color: tile.starred ? #ffd54a : #ffffff; font-size: 16px;
+            width: 100%; height: 100%;
+            horizontal-alignment: center; vertical-alignment: center; }
+    }
+    // Quick action — Archive (bottom-right).
+    Rectangle {
+        visible: root.hovered;
+        x: parent.width - self.width - 8px; y: parent.height - self.height - 8px;
+        width: 30px; height: 30px; border-radius: 15px;
+        background: sarch.has-hover ? #000000dd : #000000a8;
+        sarch := TouchArea { mouse-cursor: pointer; clicked => { root.archive(tile.index); } }
+        Text { text: "🗄"; color: #ffffff; font-size: 14px;
+            width: 100%; height: 100%;
+            horizontal-alignment: center; vertical-alignment: center; }
+    }
+    // Color-label dot (bottom-right corner, 8px dot).
+    if tile.color-label != "": Rectangle {
+        x: parent.width - self.width - 5px; y: parent.height - self.height - 5px;
+        width: 10px; height: 10px; border-radius: 5px;
+        background: tile.color-label == "red"    ? #ea4335
+                  : tile.color-label == "orange" ? #fa7b17
+                  : tile.color-label == "yellow" ? #fbbc04
+                  : tile.color-label == "green"  ? #34a853
+                  : tile.color-label == "blue"   ? #4285f4
+                  :                                #9c27b0;
+        border-width: 1px; border-color: #ffffff88;
+    }
+    // Live photo badge "▶" (bottom-left, next to star area, only when not hovered).
+    if tile.is-live && !root.hovered: Rectangle {
+        x: 8px; y: parent.height - self.height - 8px;
+        width: 22px; height: 22px; border-radius: 11px;
+        background: #000000a8;
+        Text { text: "▶"; color: #ffffffcc; font-size: 10px;
+            width: 100%; height: 100%;
+            horizontal-alignment: center; vertical-alignment: center; }
+    }
+    // Stack badge "⊞ N" (top-right corner).
+    if tile.stack-count > 0: Rectangle {
+        x: parent.width - self.width - 6px; y: 6px;
+        width: 28px; height: 20px; border-radius: 6px;
+        background: #1a73e8cc;
+        Text { text: "⊞ " + tile.stack-count; color: #ffffff; font-size: 10px; font-weight: 700;
+            width: 100%; height: 100%;
+            horizontal-alignment: center; vertical-alignment: center; }
+    }
+}
+
+// A justified square grid of tiles, manual layout, given a column count.
+component TileGrid inherits Rectangle {
+    in property <[PhotoTile]> tiles;
+    in property <int> cols: 6;
+    in property <length> gap: 4px;
+    in property <bool> selecting: false;
+    callback open(int, length, length, length, length);
+    callback context(int, length, length);
+    callback star(int);
+    callback archive(int);
+    callback select-toggle(int);
+    callback select-range(int);
+    property <length> cell: (self.width - (cols - 1) * gap) / cols;
+    horizontal-stretch: 1;
+    height: Math.ceil(tiles.length / cols) * (cell + gap);
+    for tile[idx] in tiles: PhotoCell {
+        x: Math.mod(idx, cols) * (parent.cell + gap);
+        y: Math.floor(idx / cols) * (parent.cell + gap);
+        width: parent.cell; height: parent.cell;
+        tile: tile;
+        selecting: root.selecting;
+        open(i, ax, ay, w, h) => { root.open(i, ax, ay, w, h); }
+        context(i, mx, my) => { root.context(i, mx, my); }
+        star(i) => { root.star(i); }
+        archive(i) => { root.archive(i); }
+        select-toggle(i) => { root.select-toggle(i); }
+        select-range(i) => { root.select-range(i); }
+    }
+}
+
+// One pill in the selection action bar (np.p2.multiselect).
+component SelBtn inherits Rectangle {
+    in property <string> glyph;
+    in property <string> label;
+    in property <bool> danger: false;
+    in property <bool> dim: false;
+    callback clicked();
+    height: 40px; min-width: 64px; border-radius: 20px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    opacity: dim ? 0.4 : 1.0;
+    background: t.has-hover ? (danger ? #ea433533 : #ffffff22) : transparent;
+    t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px; spacing: 6px; alignment: center;
+        Text { text: root.glyph; color: danger ? #f28b82 : #ffffff; font-size: 14px; vertical-alignment: center; }
+        Text { text: root.label; color: danger ? #f28b82 : #ffffff; font-size: 13px; font-weight: 600; vertical-alignment: center; }
+    }
+}
+
+// One circular face-cluster card in the People tab (np.p2.ai.face-clusters).
+// Avatar opens the person's photos; the name field renames the cluster inline.
+component PersonCardView inherits Rectangle {
+    in property <PersonCard> p;
+    callback open(int);
+    callback rename(int, string);
+    VerticalLayout {
+        padding: 8px; spacing: 6px; alignment: start;
+        HorizontalLayout {
+            alignment: center;
+            Rectangle {
+                width: 116px; height: 116px; border-radius: 58px; clip: true;
+                background: av.has-hover ? #d2e3fc : #e8eaed;
+                av := TouchArea { mouse-cursor: pointer; clicked => { root.open(p.id); } }
+                if p.cover.width > 0: Image { source: p.cover; image-fit: cover; width: 100%; height: 100%; }
+                if p.cover.width == 0: Text { text: "👤"; font-size: 46px;
+                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+        // Inline rename — type a name and press Enter to label the cluster.
+        Rectangle {
+            height: 28px; border-radius: 8px;
+            background: ni.has-focus ? #ffffff : #f1f3f4;
+            border-width: 1px; border-color: ni.has-focus ? #1a73e8 : transparent;
+            ni := TextInput {
+                width: 100%; height: 100%;
+                text: p.named ? p.name : "";
+                color: #202124; font-size: 13px; font-weight: 600;
+                horizontal-alignment: center; vertical-alignment: center; single-line: true;
+                accepted => { root.rename(p.id, self.text); }
+            }
+            if !p.named && !ni.has-focus: Text {
+                text: "+ Add name"; color: #5f6368; font-size: 13px;
+                width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center;
+            }
+        }
+        Text { text: p.count + (p.count == 1 ? " photo" : " photos"); color: #5f6368; font-size: 11px;
+            horizontal-alignment: center; }
+    }
+}
+
+// One album in the Albums tab (np.p2.albums): cover + inline-rename + count + ✕.
+component AlbumCardView inherits Rectangle {
+    in property <AlbumCard> a;
+    callback open(int);
+    callback rename(int, string);
+    callback remove(int);
+    VerticalLayout {
+        padding: 8px; spacing: 6px; alignment: start;
+        Rectangle {
+            height: 150px; border-radius: 12px; clip: true;
+            background: cov.has-hover ? #d2e3fc : #e8eaed;
+            cov := TouchArea { mouse-cursor: pointer; clicked => { root.open(a.id); } }
+            if a.cover.width > 0: Image { source: a.cover; image-fit: cover; width: 100%; height: 100%; }
+            if a.cover.width == 0: Text { text: "🖼"; font-size: 46px;
+                width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+            // delete ✕
+            Rectangle {
+                x: parent.width - self.width - 6px; y: 6px; width: 26px; height: 26px; border-radius: 13px;
+                background: del.has-hover ? #ea4335 : #000000a8;
+                del := TouchArea { mouse-cursor: pointer; clicked => { root.remove(a.id); } }
+                Text { text: "✕"; color: #fff; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+        Rectangle {
+            height: 28px; border-radius: 8px;
+            background: ai.has-focus ? #ffffff : #f1f3f4;
+            border-width: 1px; border-color: ai.has-focus ? #1a73e8 : transparent;
+            ai := TextInput {
+                width: 100%; height: 100%; text: a.name;
+                color: #202124; font-size: 13px; font-weight: 600;
+                horizontal-alignment: center; vertical-alignment: center; single-line: true;
+                accepted => { root.rename(a.id, self.text); }
+            }
+        }
+        Text { text: a.count + (a.count == 1 ? " photo" : " photos"); color: #5f6368; font-size: 11px;
+            horizontal-alignment: center; }
+    }
+}
+
+export component PhotosPage inherits Rectangle {
+    in property <int> item-count: 0;
+    in property <int> folder-count: 0;
+    in property <[PhotoTile]> tiles: [];          // flat grid (starred/archive/trash)
+    in property <[PhotoGroup]> groups: [];         // timeline date groups
+    in property <[FolderRow]> folders: [];         // library folder list
+    in property <[PersonCard]> people: [];         // People tab (face clusters)
+    in property <[ThingChip]> things: [];          // Things tab (object tags)
+    in property <[AlbumCard]> albums: [];          // Albums tab (np.p2.albums)
+    in-out property <bool> album-picker-open: false; // "Add to album" overlay
+    in property <[AlbumCard]> picker-albums: [];   // albums listed in the picker
+    in property <string> filter-title: "";         // header for a drill-in flat grid
+    in-out property <string> category: "timeline"; // timeline | library | folder | starred | archive | trash
+    in-out property <string> query: "";
+    in-out property <string> folder-name: "";      // current folder (folder view)
+    in-out property <string> sort-mode: "date";    // date | name | size
+    in-out property <string> sort-dir: "desc";     // asc | desc
+    in-out property <string> lib-sort: "name";     // library folder sort: name | count
+    in-out property <string> lib-sort-dir: "asc";  // asc | desc
+    in property <string> blink-tab: "";            // tab to flash green as confirmation
+    in property <bool> selecting: false;           // multi-select mode active
+    in property <int> select-count: 0;             // number of selected photos
+    in property <bool> can-paste: false;           // clipboard has photos to paste
+    callback add-folder();
+    callback set-category(string);
+    callback set-sort(string);
+    callback set-library-sort(string);
+    callback search(string);
+    callback tile-clicked(int);
+    callback tile-open-rect(int, length, length, length, length);
+    callback tile-context(int, length, length);
+    callback tile-star(int);
+    callback tile-archive(int);
+    callback folder-open(string);
+    // AI tabs (np.p2.ai.*).
+    callback person-open(int);
+    callback person-rename(int, string);
+    callback thing-open(string);
+    callback album-open(int);
+    callback album-new();
+    callback album-rename(int, string);
+    callback album-delete(int);
+    callback album-add-open();        // selection → open "Add to album" picker
+    callback album-add(int);          // add selection to album id
+    callback album-add-new();         // create a new album from the selection
+    // Multi-select (np.p2.multiselect).
+    callback tile-select-toggle(int);
+    callback tile-select-range(int);
+    callback sel-clear();
+    callback sel-all();
+    callback sel-star();
+    callback sel-archive();
+    callback sel-trash();
+    callback sel-copy();
+    callback sel-cut();
+    callback sel-paste();
+    // Phase 6 — Memories rails (Feature 1).
+    in property <[MemoryRail]> memory-rails: [];
+    callback memories-refresh();
+    // Phase 6 — Places cluster grid (Feature 2).
+    in property <[MapCluster]> map-clusters: [];
+    callback places-refresh();
+    // Phase 6 — Color labels (Feature 3).
+    callback photo-label(int, string);   // tile index, label
+    // Phase 6 — Burst/Stacks (Feature 5).
+    callback stack-toggle(int);          // tile index → toggle stack expanded
+    // Phase 6 — Dedupe (Feature 6).
+    in property <[DedupeGroup]> dedupe-groups: [];
+    in-out property <bool> dedupe-scanning: false;
+    callback dedupe-scan();
+    callback dedupe-keep(int, bool);     // cluster_id, true=keep_left
+    callback dedupe-both(int);           // cluster_id = keep both
+    // Phase 6 — Slideshow export (Feature 7).
+    in-out property <bool> slideshow-dialog-open: false;
+    in property <string> slideshow-status: "";
+    callback slideshow-export(string);   // output path
+    // Phase 6 — Smart Albums (Feature 8).
+    in-out property <bool> smart-rule-open: false;
+    in-out property <int> smart-rule-album-id: 0;
+    in property <int> smart-rule-match-count: -1;
+    callback smart-rule-test(string);    // rule JSON
+    callback smart-rule-save(int, string); // album_id, rule JSON
+
+    property <int> cols: 6;
+    property <length> gap: 4px;
+
+    background: #ffffff;
+
+    VerticalLayout {
+        padding: 0px;
+
+        // Top app bar — title · search · add · count pill.
+        Rectangle {
+            height: 72px; horizontal-stretch: 1;
+            background: #ffffff;
+            HorizontalLayout {
+                padding-left: 28px; padding-right: 28px; spacing: 14px;
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Text { text: "Photos"; color: #202124; font-size: 22px; font-weight: 600; }
+                }
+
+                // Spacer pushes the big search + add-folder + count pill to the right edge.
+                Rectangle { horizontal-stretch: 1; }
+
+                // Big search box, anchored at the right with add-folder + pill.
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Rectangle {
+                        width: 560px; height: 44px; border-radius: 22px; background: #f1f3f4;
+                        HorizontalLayout {
+                            padding-left: 18px; padding-right: 10px; spacing: 8px;
+                            Text { text: "🔍"; font-size: 15px; color: #5f6368; vertical-alignment: center; }
+                            Rectangle {
+                                horizontal-stretch: 1;
+                                qi := TextInput {
+                                    width: 100%; height: 100%;
+                                    text <=> root.query;
+                                    color: #202124; font-size: 14px;
+                                    vertical-alignment: center; single-line: true;
+                                    edited => { root.search(self.text); }
+                                }
+                                if root.query == "": Text {
+                                    text: "Search your photos"; color: #5f6368; font-size: 14px;
+                                    vertical-alignment: center; height: 100%;
+                                    visible: !qi.has-focus;
+                                }
+                            }
+                            // Clear-search button — shown only while there's a query.
+                            if root.query != "": Rectangle {
+                                width: 28px; height: 28px; border-radius: 14px;
+                                horizontal-stretch: 0; vertical-stretch: 0;
+                                y: (parent.height - self.height) / 2;
+                                background: clearx.has-hover ? #d7dadd : #e3e6e8;
+                                clearx := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.query = ""; root.search(""); }
+                                }
+                                Text { text: "✕"; color: #3c4043; font-size: 12px;
+                                    horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                        }
+                    }
+                }
+
+                // Add-folder — wide enough that the label never clips.
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    GPhotoChip { label: "+ Add folder"; active: true; height: 44px; min-width: 140px; clicked => { root.add-folder(); } }
+                }
+
+                // Count pill — total photos + folders. Red, pinned to the far right.
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Rectangle {
+                        height: 44px; border-radius: 22px; background: #ea4335;
+                        HorizontalLayout {
+                            padding-left: 18px; padding-right: 18px; spacing: 10px;
+                            Text { text: "🖼 " + root.item-count + " photos"; color: #ffffff; font-size: 12px; font-weight: 700; vertical-alignment: center; }
+                            Text { text: "·"; color: #ffffffcc; vertical-alignment: center; }
+                            Text { text: "📁 " + root.folder-count + " folders"; color: #ffffff; font-size: 12px; font-weight: 700; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Tab row — Timeline · Starred · Archive · Library · Trash.
+        Rectangle {
+            height: 54px; horizontal-stretch: 1; background: #ffffff;
+            HorizontalLayout {
+                padding-left: 28px; padding-right: 28px; spacing: 8px; alignment: start;
+                VerticalLayout { alignment: center; GPhotoChip { label: "🕘  Timeline"; min-width: 97px; active: root.category == "timeline";
+                    clicked => { root.category = "timeline"; root.set-category("timeline"); } } }
+                VerticalLayout { alignment: center; GPhotoChip { label: "🗂  Library"; min-width: 97px; active: root.category == "library" || root.category == "folder";
+                    clicked => { root.category = "library"; root.set-category("library"); } } }
+                VerticalLayout { alignment: center; GPhotoChip { label: "★  Starred"; min-width: 97px; active: root.category == "starred";
+                    blink: root.blink-tab == "starred";
+                    clicked => { root.category = "starred"; root.set-category("starred"); } } }
+                VerticalLayout { alignment: center; GPhotoChip { label: "🗄  Archive"; min-width: 97px; active: root.category == "archive";
+                    blink: root.blink-tab == "archive";
+                    clicked => { root.category = "archive"; root.set-category("archive"); } } }
+                VerticalLayout { alignment: center; GPhotoChip { label: "🗑  Trash"; min-width: 97px; active: root.category == "trash";
+                    blink: root.blink-tab == "trash";
+                    clicked => { root.category = "trash"; root.set-category("trash"); } } }
+                VerticalLayout { alignment: center; GPhotoChip { label: "👤  People"; min-width: 97px; active: root.category == "people" || root.category == "facephotos";
+                    clicked => { root.category = "people"; root.set-category("people"); } } }
+                VerticalLayout { alignment: center; GPhotoChip { label: "🏷  Things"; min-width: 97px; active: root.category == "things" || root.category == "tagphotos";
+                    clicked => { root.category = "things"; root.set-category("things"); } } }
+                VerticalLayout { alignment: center; GPhotoChip { label: "📚  Albums"; min-width: 97px; active: root.category == "albums" || root.category == "albumphotos";
+                    clicked => { root.category = "albums"; root.set-category("albums"); } } }
+                VerticalLayout { alignment: center; GPhotoChip { label: "🎞  Memories"; min-width: 97px; active: root.category == "memories";
+                    clicked => { root.category = "memories"; root.set-category("memories"); } } }
+                VerticalLayout { alignment: center; GPhotoChip { label: "📍  Places"; min-width: 97px; active: root.category == "places";
+                    clicked => { root.category = "places"; root.set-category("places"); } } }
+                VerticalLayout { alignment: center; GPhotoChip { label: "🔁  Dedupe"; min-width: 97px; active: root.category == "dedupe";
+                    clicked => { root.category = "dedupe"; root.set-category("dedupe"); } } }
+                Rectangle { horizontal-stretch: 1; }
+            }
+        }
+
+        // ── TIMELINE — date-grouped, newest→oldest, with a drag scrubber. ──
+        if root.category == "timeline" && root.groups.length > 0: Rectangle {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            flick := Flickable {
+                viewport-width: self.width;
+                viewport-height: tl-body.preferred-height;
+                tl-body := VerticalLayout {
+                    padding-left: 28px; padding-right: 40px; padding-top: 8px; padding-bottom: 28px;
+                    spacing: 14px;
+                    for grp[gi] in root.groups: VerticalLayout {
+                        spacing: 8px;
+                        Text { text: grp.label; color: #202124; font-size: 15px; font-weight: 600; }
+                        TileGrid {
+                            tiles: grp.tiles; cols: root.cols; gap: root.gap;
+                            selecting: root.selecting;
+                            open(i, ax, ay, w, h) => { root.tile-open-rect(i, ax, ay, w, h); root.tile-clicked(i); }
+                            context(i, mx, my) => { root.tile-context(i, mx, my); }
+                            star(i) => { root.tile-star(i); }
+                            archive(i) => { root.tile-archive(i); }
+                            select-toggle(i) => { root.tile-select-toggle(i); }
+                            select-range(i) => { root.tile-select-range(i); }
+                        }
+                    }
+                }
+            }
+            // Drag scrubber — right edge. Hover/drag shows the month and jumps
+            // the view proportionally (Google-Photos style).
+            Rectangle {
+                x: parent.width - 30px; y: 0; width: 30px; height: parent.height;
+                scrub := TouchArea {
+                    mouse-cursor: pointer;
+                    property <float> frac: Math.clamp(self.mouse-y / self.height, 0.0, 1.0);
+                    moved => { flick.viewport-y = -self.frac * max(0px, flick.viewport-height - flick.height); }
+                    clicked => { flick.viewport-y = -self.frac * max(0px, flick.viewport-height - flick.height); }
+                }
+                // Tick marks.
+                for m[i] in root.groups: Rectangle {
+                    x: 10px; width: 10px; height: 2px; border-radius: 1px;
+                    y: (parent.height - 8px) * (i / max(1, root.groups.length - 1)) + 4px;
+                    background: #bdc1c6;
+                }
+                // Floating month pill at the cursor.
+                if scrub.has-hover: Rectangle {
+                    width: 130px; height: 30px; border-radius: 15px;
+                    x: -self.width - 6px;
+                    y: Math.clamp(scrub.mouse-y - self.height / 2, 0px, parent.height - self.height);
+                    background: #202124;
+                    Text {
+                        text: root.groups[Math.clamp(Math.floor(scrub.frac * root.groups.length), 0, root.groups.length - 1)].label;
+                        color: #ffffff; font-size: 12px; font-weight: 600;
+                        horizontal-alignment: center; vertical-alignment: center;
+                    }
+                }
+            }
+        }
+
+        // ── STARRED / ARCHIVE / TRASH + AI drill-in (People/Things) — flat grid. ──
+        if (root.category == "starred" || root.category == "archive" || root.category == "trash"
+            || root.category == "facephotos" || root.category == "tagphotos"
+            || root.category == "albumphotos") && root.tiles.length > 0: ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: start;   // pack from the top, not centered
+                padding-left: 28px; padding-right: 28px; padding-top: 8px; padding-bottom: 28px;
+                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    // Back chip — on the drill-in grids (returns to the list).
+                    if root.category == "facephotos" || root.category == "tagphotos" || root.category == "albumphotos":
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
+                            label: root.category == "facephotos" ? "‹ People" : root.category == "albumphotos" ? "‹ Albums" : "‹ Things";
+                            height: 36px; min-width: 96px;
+                            clicked => {
+                                root.category = root.category == "facephotos" ? "people" : root.category == "albumphotos" ? "albums" : "things";
+                                root.set-category(root.category);
+                            } } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Text {
+                            text: (root.category == "facephotos" || root.category == "tagphotos" || root.category == "albumphotos") ? root.filter-title
+                                : root.query != "" ? "Results for “" + root.query + "”"
+                                : root.category == "starred" ? "Starred"
+                                : root.category == "memories" ? "On this day"
+                                : root.category == "places" ? "Places"
+                                : root.category == "archive" ? "Archive" : "Trash";
+                            color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center;
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Text { text: "Sort"; color: #5f6368; font-size: 12px; vertical-alignment: center; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
+                        label: "Date" + (root.sort-mode == "date" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                        height: 36px; min-width: 96px;
+                        active: root.sort-mode == "date"; clicked => { root.set-sort("date"); } } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
+                        label: "Name" + (root.sort-mode == "name" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                        height: 36px; min-width: 92px;
+                        active: root.sort-mode == "name"; clicked => { root.set-sort("name"); } } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
+                        label: "Size" + (root.sort-mode == "size" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                        height: 36px; min-width: 92px;
+                        active: root.sort-mode == "size"; clicked => { root.set-sort("size"); } } }
+                }
+                TileGrid {
+                    tiles: root.tiles; cols: root.cols; gap: root.gap;
+                    selecting: root.selecting;
+                    open(i, ax, ay, w, h) => { root.tile-open-rect(i, ax, ay, w, h); root.tile-clicked(i); }
+                    context(i, mx, my) => { root.tile-context(i, mx, my); }
+                    star(i) => { root.tile-star(i); }
+                    archive(i) => { root.tile-archive(i); }
+                    select-toggle(i) => { root.tile-select-toggle(i); }
+                    select-range(i) => { root.tile-select-range(i); }
+                }
+            }
+        }
+
+        // ── MEMORIES — On This Day rails per year (Phase 6). ──
+        if root.category == "memories": ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-left: 28px; padding-right: 28px; padding-top: 8px; padding-bottom: 28px;
+                spacing: 20px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Text { text: "On This Day"; color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        GPhotoChip { label: "↻ Refresh"; height: 36px; min-width: 100px; clicked => { root.memories-refresh(); } } }
+                }
+                if root.memory-rails.length == 0: VerticalLayout {
+                    alignment: center; spacing: 10px;
+                    Text { text: "No memories for today yet."; color: #5f6368; font-size: 13px; horizontal-alignment: center; }
+                }
+                for rail[ri] in root.memory-rails: VerticalLayout {
+                    spacing: 8px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: rail.ago + " · " + rail.tiles.length + " photos"; color: #202124; font-size: 14px; font-weight: 600; vertical-alignment: center; }
+                    }
+                    ScrollView {
+                        height: 156px;
+                        HorizontalLayout {
+                            spacing: 4px; padding-bottom: 4px;
+                            for tile[ti] in rail.tiles: PhotoCell {
+                                width: 140px; height: 140px;
+                                tile: tile;
+                                selecting: root.selecting;
+                                open(i, ax, ay, w, h) => { root.tile-open-rect(i, ax, ay, w, h); root.tile-clicked(i); }
+                                context(i, mx, my) => { root.tile-context(i, mx, my); }
+                                star(i) => { root.tile-star(i); }
+                                archive(i) => { root.tile-archive(i); }
+                                select-toggle(i) => { root.tile-select-toggle(i); }
+                                select-range(i) => { root.tile-select-range(i); }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── PLACES — cluster grid (Phase 6). ──
+        if root.category == "places": ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-left: 28px; padding-right: 28px; padding-top: 8px; padding-bottom: 28px;
+                spacing: 14px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Text { text: "Places · " + root.map-clusters.length + " clusters";
+                            color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        GPhotoChip { label: "↻ Refresh"; height: 36px; min-width: 100px; clicked => { root.places-refresh(); } } }
+                }
+                if root.map-clusters.length == 0: Text { text: "No geotagged photos found."; color: #5f6368; font-size: 13px; }
+                pclusgrid := Rectangle {
+                    horizontal-stretch: 1;
+                    property <int> pccols: Math.max(2, Math.floor(self.width / 180px));
+                    property <length> pccell: self.width / pccols;
+                    height: Math.ceil(root.map-clusters.length / pccols) * 190px;
+                    for cl[ci] in root.map-clusters: Rectangle {
+                        x: Math.mod(ci, pclusgrid.pccols) * pclusgrid.pccell;
+                        y: Math.floor(ci / pclusgrid.pccols) * 190px;
+                        width: pclusgrid.pccell; height: 182px;
+                        VerticalLayout {
+                            padding: 6px; spacing: 4px; alignment: start;
+                            Rectangle {
+                                height: 140px; border-radius: 10px; clip: true;
+                                background: #e8eaed;
+                                if cl.cover.width > 0: Image { source: cl.cover; image-fit: cover; width: 100%; height: 100%; }
+                                // Count badge overlay
+                                Rectangle {
+                                    x: parent.width - self.width - 6px; y: parent.height - self.height - 6px;
+                                    width: 52px; height: 22px; border-radius: 11px;
+                                    background: #000000aa;
+                                    Text { text: "📍 " + cl.count; color: #ffffff; font-size: 11px; font-weight: 700;
+                                        width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                            }
+                            Text { text: cl.label; color: #3c4043; font-size: 12px; overflow: elide; }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── DEDUPE — duplicate detection pairs (Phase 6). ──
+        if root.category == "dedupe": ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-left: 28px; padding-right: 28px; padding-top: 8px; padding-bottom: 28px;
+                spacing: 14px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Text { text: "Duplicates · " + root.dedupe-groups.length + " pairs";
+                            color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        GPhotoChip { label: root.dedupe-scanning ? "Scanning…" : "🔍 Scan"; active: root.dedupe-scanning;
+                            height: 36px; min-width: 110px;
+                            clicked => { if (!root.dedupe-scanning) { root.dedupe-scan(); } } } }
+                }
+                if !root.dedupe-scanning && root.dedupe-groups.length == 0: Text {
+                    text: "No duplicates found. Click Scan to search for duplicates.";
+                    color: #5f6368; font-size: 13px; }
+                for dg[di] in root.dedupe-groups: Rectangle {
+                    horizontal-stretch: 1; height: 220px;
+                    border-radius: 12px; background: #f8f9fa; border-width: 1px; border-color: #e8eaed;
+                    VerticalLayout {
+                        padding: 12px; spacing: 8px;
+                        HorizontalLayout {
+                            spacing: 6px;
+                            // Kind badge
+                            Rectangle {
+                                height: 20px; border-radius: 10px; background: dg.kind == "sha256" ? #34a85322 : #fbbc0422;
+                                horizontal-stretch: 0;
+                                HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                                    Text { text: dg.kind == "sha256" ? "SHA-256" : "pHash"; color: dg.kind == "sha256" ? #34a853 : #ea8600;
+                                        font-size: 11px; font-weight: 700; vertical-alignment: center; } }
+                            }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        HorizontalLayout {
+                            spacing: 12px;
+                            VerticalLayout { alignment: start; spacing: 4px; horizontal-stretch: 1;
+                                Rectangle {
+                                    height: 130px; border-radius: 8px; clip: true; background: #e8eaed;
+                                    if dg.left-thumb.width > 0: Image { source: dg.left-thumb; image-fit: cover; width: 100%; height: 100%; }
+                                }
+                                Text { text: dg.left-label; color: #5f6368; font-size: 11px; overflow: elide; }
+                            }
+                            VerticalLayout { alignment: start; spacing: 4px; horizontal-stretch: 1;
+                                Rectangle {
+                                    height: 130px; border-radius: 8px; clip: true; background: #e8eaed;
+                                    if dg.right-thumb.width > 0: Image { source: dg.right-thumb; image-fit: cover; width: 100%; height: 100%; }
+                                }
+                                Text { text: dg.right-label; color: #5f6368; font-size: 11px; overflow: elide; }
+                            }
+                            VerticalLayout { alignment: center; spacing: 8px; horizontal-stretch: 0; min-width: 110px;
+                                GPhotoChip { label: "← Keep Left"; height: 34px; min-width: 108px;
+                                    clicked => { root.dedupe-keep(dg.cluster-id, true); } }
+                                GPhotoChip { label: "Keep Right →"; height: 34px; min-width: 108px;
+                                    clicked => { root.dedupe-keep(dg.cluster-id, false); } }
+                                GPhotoChip { label: "Both"; height: 34px; min-width: 108px;
+                                    clicked => { root.dedupe-both(dg.cluster-id); } }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── LIBRARY — list of folders added to the Photos panel. ──
+        if root.category == "library" && root.folders.length > 0: ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: start;   // pack from the top, not centered
+                padding-left: 28px; padding-right: 28px; padding-top: 8px; padding-bottom: 28px;
+                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Text { text: "Library folders"; color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Text { text: "Sort"; color: #5f6368; font-size: 12px; vertical-alignment: center; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
+                        label: "Name" + (root.lib-sort == "name" ? (root.lib-sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                        height: 36px; min-width: 92px;
+                        active: root.lib-sort == "name"; clicked => { root.set-library-sort("name"); } } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
+                        label: "Photos" + (root.lib-sort == "count" ? (root.lib-sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                        height: 36px; min-width: 104px;
+                        active: root.lib-sort == "count"; clicked => { root.set-library-sort("count"); } } }
+                }
+                for f[i] in root.folders: Rectangle {
+                    height: 72px; horizontal-stretch: 1;
+                    border-radius: 10px;
+                    background: frow.has-hover ? #f1f3f4 : #f8f9fa;
+                    border-width: 1px; border-color: #e8eaed;
+                    frow := TouchArea { mouse-cursor: pointer; clicked => { root.folder-open(f.path); } }
+                    HorizontalLayout {
+                        padding: 12px; spacing: 14px;
+                        Rectangle {
+                            width: 48px; height: 48px; border-radius: 8px; clip: true;
+                            horizontal-stretch: 0; vertical-stretch: 0;
+                            y: (parent.height - self.height) / 2;
+                            background: #e8eaed;
+                            Image { source: f.cover; image-fit: cover; width: 100%; height: 100%; }
+                        }
+                        VerticalLayout {
+                            alignment: center; spacing: 2px; horizontal-stretch: 1;
+                            Text { text: f.name; color: #202124; font-size: 14px; font-weight: 600; overflow: elide; }
+                            Text { text: f.path; color: #5f6368; font-size: 11px; overflow: elide; }
+                        }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Text { text: f.count + " photos"; color: #3c4043; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── FOLDER — a single library folder opened as a timeline-style grid,
+        // with a Back button + sort selector (Date taken / Name / Size). ──
+        if root.category == "folder": Rectangle {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                // Folder header: breadcrumb box (Library › folder) · sort chips (right edge).
+                Rectangle {
+                    height: 52px; horizontal-stretch: 1; background: #ffffff;
+                    HorizontalLayout {
+                        padding-left: 28px; padding-right: 28px; spacing: 10px;
+                        // Breadcrumb box — signals you're inside a library folder.
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Rectangle {
+                                horizontal-stretch: 0;
+                                height: 36px; border-radius: 10px;
+                                background: #f1f3f4; border-width: 1px; border-color: #dadce0;
+                                HorizontalLayout {
+                                    padding-left: 12px; padding-right: 14px; spacing: 8px;
+                                    Rectangle {
+                                        horizontal-stretch: 0; vertical-stretch: 0;
+                                        y: (parent.height - self.height) / 2;
+                                        width: lib-bc.preferred-width; height: 24px; border-radius: 6px;
+                                        background: back.has-hover ? #e0e3e6 : transparent;
+                                        back := TouchArea { mouse-cursor: pointer; clicked => { root.category = "library"; root.set-category("library"); } }
+                                        lib-bc := Text { text: "‹ Library"; color: #1a73e8; font-size: 13px; font-weight: 600;
+                                            vertical-alignment: center; }
+                                    }
+                                    Text { text: "›"; color: #9aa0a6; font-size: 14px; vertical-alignment: center; }
+                                    Text { text: "📁"; font-size: 13px; vertical-alignment: center; }
+                                    Text { text: root.folder-name; color: #202124; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Text { text: "Sort"; color: #5f6368; font-size: 12px; vertical-alignment: center; } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
+                            label: "Date taken" + (root.sort-mode == "date" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                            height: 40px; min-width: 128px;
+                            active: root.sort-mode == "date"; clicked => { root.set-sort("date"); } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
+                            label: "Name" + (root.sort-mode == "name" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                            height: 40px; min-width: 96px;
+                            active: root.sort-mode == "name"; clicked => { root.set-sort("name"); } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
+                            label: "Size" + (root.sort-mode == "size" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                            height: 40px; min-width: 96px;
+                            active: root.sort-mode == "size"; clicked => { root.set-sort("size"); } } }
+                    }
+                }
+                // Grouped grid (reuses the timeline `groups` model).
+                Rectangle {
+                    vertical-stretch: 1; horizontal-stretch: 1;
+                    fflick := Flickable {
+                        viewport-width: self.width;
+                        viewport-height: fbody.preferred-height;
+                        fbody := VerticalLayout {
+                            padding-left: 28px; padding-right: 40px; padding-top: 6px; padding-bottom: 28px;
+                            spacing: 14px;
+                            for grp[gi] in root.groups: VerticalLayout {
+                                spacing: 8px;
+                                Text { text: grp.label; color: #202124; font-size: 15px; font-weight: 600; }
+                                TileGrid {
+                                    tiles: grp.tiles; cols: root.cols; gap: root.gap;
+                                    selecting: root.selecting;
+                                    open(i, ax, ay, w, h) => { root.tile-open-rect(i, ax, ay, w, h); root.tile-clicked(i); }
+                                    context(i, mx, my) => { root.tile-context(i, mx, my); }
+                                    select-toggle(i) => { root.tile-select-toggle(i); }
+                                    select-range(i) => { root.tile-select-range(i); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── PEOPLE — face clusters as circular avatar cards (np.p2.ai.face-clusters). ──
+        if root.category == "people" && root.people.length > 0: ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-left: 28px; padding-right: 28px; padding-top: 8px; padding-bottom: 28px;
+                spacing: 10px;
+                Text { text: "People"; color: #202124; font-size: 15px; font-weight: 600; }
+                pgrid := Rectangle {
+                    horizontal-stretch: 1;
+                    property <int> pcols: Math.max(2, Math.floor(self.width / 164px));
+                    property <length> pcell: self.width / pcols;
+                    height: Math.ceil(root.people.length / pcols) * 196px;
+                    for p[i] in root.people: PersonCardView {
+                        x: Math.mod(i, pgrid.pcols) * pgrid.pcell;
+                        y: Math.floor(i / pgrid.pcols) * 196px;
+                        width: pgrid.pcell; height: 196px;
+                        p: p;
+                        open(id) => { root.person-open(id); }
+                        rename(id, n) => { root.person-rename(id, n); }
+                    }
+                }
+            }
+        }
+
+        // ── THINGS — object tags as a clickable list (np.p2.ai.tags). ──
+        if root.category == "things" && root.things.length > 0: ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-left: 28px; padding-right: 28px; padding-top: 8px; padding-bottom: 28px;
+                spacing: 8px;
+                Text { text: "Things"; color: #202124; font-size: 15px; font-weight: 600; }
+                for t[i] in root.things: Rectangle {
+                    height: 56px; horizontal-stretch: 1; border-radius: 10px;
+                    background: trow.has-hover ? #f1f3f4 : #f8f9fa;
+                    border-width: 1px; border-color: #e8eaed;
+                    trow := TouchArea { mouse-cursor: pointer; clicked => { root.thing-open(t.label); } }
+                    HorizontalLayout {
+                        padding-left: 16px; padding-right: 16px; spacing: 12px;
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Text { text: "🏷"; font-size: 16px; vertical-alignment: center; } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 1;
+                            Text { text: t.label; color: #202124; font-size: 14px; font-weight: 600; vertical-alignment: center; } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Text { text: t.count + " photos"; color: #3c4043; font-size: 12px; font-weight: 600; vertical-alignment: center; } }
+                    }
+                }
+            }
+        }
+
+        // ── ALBUMS — cover cards with inline rename + delete, + a New card. ──
+        if root.category == "albums": ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: start;
+                padding-left: 28px; padding-right: 28px; padding-top: 8px; padding-bottom: 28px;
+                spacing: 10px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Text { text: "Albums"; color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        GPhotoChip { label: "＋ New album"; active: true; height: 36px; min-width: 124px; clicked => { root.album-new(); } } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        GPhotoChip { label: "＋ Smart album"; height: 36px; min-width: 136px;
+                            clicked => { root.smart-rule-album-id = 0; root.smart-rule-open = true; } } }
+                }
+                agrid := Rectangle {
+                    horizontal-stretch: 1;
+                    property <int> acols: Math.max(2, Math.floor(self.width / 220px));
+                    property <length> acell: self.width / acols;
+                    height: Math.ceil(root.albums.length / acols) * 226px;
+                    for a[i] in root.albums: AlbumCardView {
+                        x: Math.mod(i, agrid.acols) * agrid.acell;
+                        y: Math.floor(i / agrid.acols) * 226px;
+                        width: agrid.acell; height: 226px;
+                        a: a;
+                        open(id) => { root.album-open(id); }
+                        rename(id, n) => { root.album-rename(id, n); }
+                        remove(id) => { root.album-delete(id); }
+                    }
+                }
+                if root.albums.length == 0: Text { text: "No albums yet — make one, then select photos and “＋ Album”.";
+                    color: #5f6368; font-size: 13px; }
+            }
+        }
+
+        // ── Empty states. ──
+        if root.category == "library" && root.folders.length == 0: Rectangle {
+            vertical-stretch: 1; horizontal-stretch: 1; background: #ffffff;
+            VerticalLayout {
+                alignment: center; spacing: 14px;
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle { width: 96px; height: 96px; border-radius: 48px; background: #e8f0fe;
+                        Text { text: "📁"; font-size: 40px; horizontal-alignment: center; vertical-alignment: center; } }
+                }
+                Text { text: "No folders yet"; color: #202124; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
+                Text { text: "Add a watched folder to build your photo library."; color: #5f6368; font-size: 13px; horizontal-alignment: center; }
+                HorizontalLayout { alignment: center; GPhotoChip { label: "+ Add folder"; active: true; clicked => { root.add-folder(); } } }
+            }
+        }
+
+        if root.category == "timeline" && root.groups.length == 0: Rectangle {
+            vertical-stretch: 1; horizontal-stretch: 1; background: #ffffff;
+            VerticalLayout {
+                alignment: center; spacing: 14px;
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle { width: 96px; height: 96px; border-radius: 48px; background: #e8f0fe;
+                        Text { text: root.query == "" ? "🖼" : "🔍"; font-size: 40px; horizontal-alignment: center; vertical-alignment: center; } }
+                }
+                Text { text: root.query == "" ? "Your photos live here" : "No photos match “" + root.query + "”";
+                    color: #202124; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
+                Text { text: root.query == "" ? "Add a watched folder to see your library as a beautiful grid." : "Try a different search.";
+                    color: #5f6368; font-size: 13px; horizontal-alignment: center; }
+                if root.query == "": HorizontalLayout { alignment: center; GPhotoChip { label: "+ Add folder"; active: true; clicked => { root.add-folder(); } } }
+            }
+        }
+
+        if (root.category == "starred" || root.category == "archive" || root.category == "trash") && root.tiles.length == 0: Rectangle {
+            vertical-stretch: 1; horizontal-stretch: 1; background: #ffffff;
+            VerticalLayout {
+                alignment: center; spacing: 12px;
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle { width: 96px; height: 96px; border-radius: 48px; background: #e8f0fe;
+                        Text { text: root.category == "starred" ? "★" : root.category == "archive" ? "🗄" : "🗑";
+                            font-size: 40px; horizontal-alignment: center; vertical-alignment: center; } }
+                }
+                Text { text: root.category == "starred" ? "Starred" : root.category == "archive" ? "Archive" : "Trash";
+                    color: #202124; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
+                Text {
+                    text: root.category == "starred"  ? "No starred photos. Right-click a photo → Star to pin it here."
+                        : root.category == "archive"  ? "Archive is empty. Right-click a photo → Archive to hide it from the grid."
+                        :                               "Trash is empty. Deleted photos rest here for 30 days before purge.";
+                    color: #5f6368; font-size: 13px; horizontal-alignment: center; wrap: word-wrap;
+                }
+            }
+        }
+
+        // People / Things empty states — honest about the opt-in AI model.
+        if (root.category == "people" && root.people.length == 0)
+            || (root.category == "things" && root.things.length == 0): Rectangle {
+            vertical-stretch: 1; horizontal-stretch: 1; background: #ffffff;
+            VerticalLayout {
+                alignment: center; spacing: 12px;
+                HorizontalLayout {
+                    alignment: center;
+                    Rectangle { width: 96px; height: 96px; border-radius: 48px; background: #e8f0fe;
+                        Text { text: root.category == "people" ? "👤" : "🏷";
+                            font-size: 40px; horizontal-alignment: center; vertical-alignment: center; } }
+                }
+                Text { text: root.category == "people" ? "No people yet" : "No things tagged yet";
+                    color: #202124; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
+                Text {
+                    text: root.category == "people"
+                        ? "Install a face-detection model in Settings → AI Models, then run the background indexer to group faces into people."
+                        : "Install an object-detection model in Settings → AI Models, then run the background indexer to tag objects in your photos.";
+                    color: #5f6368; font-size: 13px; horizontal-alignment: center; wrap: word-wrap;
+                    max-width: 420px;
+                }
+            }
+        }
+    }
+
+    // ── Selection action bar (np.p2.multiselect) — floats bottom-centre while
+    // any photo is selected. Batch Star / Archive / Trash + clipboard. ──
+    if root.selecting: Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: parent.height - self.height - 24px;
+        width: bar.preferred-width + 28px; height: 56px;
+        border-radius: 28px;
+        background: #202124;
+        drop-shadow-blur: 24px; drop-shadow-color: #00000055; drop-shadow-offset-y: 4px;
+        bar := HorizontalLayout {
+            padding-left: 8px; padding-right: 14px; spacing: 6px;
+            // Close / clear selection.
+            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                Rectangle {
+                    width: 40px; height: 40px; border-radius: 20px;
+                    background: xta.has-hover ? #ffffff22 : transparent;
+                    xta := TouchArea { mouse-cursor: pointer; clicked => { root.sel-clear(); } }
+                    Text { text: "✕"; color: #ffffff; font-size: 16px;
+                        width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                }
+            }
+            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                Text { text: root.select-count + " selected"; color: #ffffff; font-size: 14px; font-weight: 600;
+                    vertical-alignment: center; } }
+            // Spacer between the count and the actions.
+            Rectangle { width: 8px; }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "★"; label: "Star"; clicked => { root.sel-star(); } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "📚"; label: "Album"; clicked => { root.album-add-open(); } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "🎞"; label: "Slideshow"; clicked => { root.slideshow-dialog-open = true; } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "🗄"; label: "Archive"; clicked => { root.sel-archive(); } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "📋"; label: "Copy"; clicked => { root.sel-copy(); } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "✂"; label: "Cut"; clicked => { root.sel-cut(); } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "📥"; label: "Paste"; dim: !root.can-paste; clicked => { if (root.can-paste) { root.sel-paste(); } } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "✓"; label: "All"; clicked => { root.sel-all(); } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "🗑"; label: "Trash"; danger: true; clicked => { root.sel-trash(); } } }
+        }
+    }
+
+    // ── "Add to album" picker overlay (np.p2.albums) ──
+    if root.album-picker-open: Rectangle {
+        background: #00000066;
+        TouchArea { clicked => { root.album-picker-open = false; } }
+        Rectangle {
+            width: 420px; height: 460px; border-radius: 14px; background: #ffffff;
+            drop-shadow-blur: 30px; drop-shadow-color: #00000055;
+            TouchArea {}  // swallow clicks inside the card
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                Text { text: "Add " + root.select-count + " to album"; color: #202124; font-size: 17px; font-weight: 700; }
+                Rectangle {
+                    height: 44px; border-radius: 10px; background: nan.has-hover ? #e8f0fe : #f1f3f4;
+                    nan := TouchArea { mouse-cursor: pointer; clicked => { root.album-add-new(); } }
+                    HorizontalLayout { padding-left: 14px; spacing: 10px;
+                        Text { text: "＋"; color: #1a73e8; font-size: 18px; vertical-alignment: center; }
+                        Text { text: "New album from selection"; color: #1a73e8; font-size: 14px; font-weight: 600; vertical-alignment: center; } }
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        alignment: start; spacing: 6px;
+                        for a[i] in root.picker-albums: Rectangle {
+                            height: 52px; border-radius: 10px;
+                            background: pr.has-hover ? #f1f3f4 : #f8f9fa; border-width: 1px; border-color: #e8eaed;
+                            pr := TouchArea { mouse-cursor: pointer; clicked => { root.album-add(a.id); } }
+                            HorizontalLayout {
+                                padding-left: 10px; padding-right: 14px; spacing: 12px;
+                                Rectangle { width: 36px; height: 36px; border-radius: 6px; clip: true;
+                                    y: (parent.height - self.height)/2; horizontal-stretch: 0; background: #e8eaed;
+                                    if a.cover.width > 0: Image { source: a.cover; image-fit: cover; width: 100%; height: 100%; } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                    Text { text: a.name; color: #202124; font-size: 14px; font-weight: 600; overflow: elide; } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                    Text { text: a.count + ""; color: #5f6368; font-size: 12px; vertical-alignment: center; } }
+                            }
+                        }
+                        if root.picker-albums.length == 0: Text { text: "No albums — create one above."; color: #5f6368; font-size: 13px; }
+                    }
+                }
+                HorizontalLayout { alignment: end;
+                    GPhotoChip { label: "Cancel"; height: 38px; min-width: 90px; clicked => { root.album-picker-open = false; } } }
+            }
+        }
+    }
+
+    // ── Slideshow export dialog overlay (Phase 6 Feature 7). ──
+    if root.slideshow-dialog-open: Rectangle {
+        background: #00000066;
+        TouchArea { clicked => { root.slideshow-dialog-open = false; } }
+        Rectangle {
+            width: 420px; height: 240px; border-radius: 14px; background: #ffffff;
+            drop-shadow-blur: 30px; drop-shadow-color: #00000055;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            TouchArea {}
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                Text { text: "Export Slideshow"; color: #202124; font-size: 17px; font-weight: 700; }
+                Text { text: "Output path (MP4):"; color: #5f6368; font-size: 13px; }
+                Rectangle {
+                    height: 40px; border-radius: 8px; background: #f1f3f4;
+                    border-width: 1px; border-color: sli.has-focus ? #1a73e8 : transparent;
+                    sli := TextInput {
+                        width: 100%; height: 100%;
+                        text: "/tmp/slideshow.mp4";
+                        color: #202124; font-size: 13px;
+                        horizontal-alignment: left; vertical-alignment: center; single-line: true;
+                    }
+                }
+                if root.slideshow-status != "": Text { text: root.slideshow-status; color: #5f6368; font-size: 12px; }
+                HorizontalLayout { alignment: end; spacing: 8px;
+                    GPhotoChip { label: "Cancel"; height: 38px; min-width: 90px;
+                        clicked => { root.slideshow-dialog-open = false; } }
+                    GPhotoChip { label: "Export"; active: true; height: 38px; min-width: 90px;
+                        clicked => { root.slideshow-export(sli.text); root.slideshow-dialog-open = false; } }
+                }
+            }
+        }
+    }
+
+    // ── Smart Album rule builder overlay (Phase 6 Feature 8). ──
+    if root.smart-rule-open: Rectangle {
+        background: #00000066;
+        TouchArea { clicked => { root.smart-rule-open = false; } }
+        Rectangle {
+            width: 460px; height: 280px; border-radius: 14px; background: #ffffff;
+            drop-shadow-blur: 30px; drop-shadow-color: #00000055;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            TouchArea {}
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                Text { text: "Smart Album"; color: #202124; font-size: 17px; font-weight: 700; }
+                Text { text: "Rule JSON (e.g. {\"starred\": true} or {\"year\": {\">=\": 2024}}):"; color: #5f6368; font-size: 12px; }
+                Rectangle {
+                    height: 60px; border-radius: 8px; background: #f1f3f4;
+                    border-width: 1px; border-color: sri.has-focus ? #1a73e8 : transparent;
+                    sri := TextInput {
+                        width: 100%; height: 100%;
+                        text: "{\"starred\": true}";
+                        color: #202124; font-size: 13px;
+                        horizontal-alignment: left; vertical-alignment: top; single-line: false;
+                        wrap: word-wrap;
+                    }
+                }
+                if root.smart-rule-match-count >= 0: Text {
+                    text: "Matches: " + root.smart-rule-match-count + " photos";
+                    color: #1a73e8; font-size: 13px; font-weight: 600; }
+                HorizontalLayout { alignment: end; spacing: 8px;
+                    GPhotoChip { label: "Cancel"; height: 38px; min-width: 90px;
+                        clicked => { root.smart-rule-open = false; } }
+                    GPhotoChip { label: "Test"; height: 38px; min-width: 80px;
+                        clicked => { root.smart-rule-test(sri.text); } }
+                    GPhotoChip { label: "Save"; active: true; height: 38px; min-width: 80px;
+                        clicked => { root.smart-rule-save(root.smart-rule-album-id, sri.text); root.smart-rule-open = false; } }
+                }
+            }
+        }
+    }
+}
