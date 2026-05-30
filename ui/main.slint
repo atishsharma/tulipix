@@ -7,7 +7,7 @@ import { PhotoEditor } from "photo_editor.slint";
 import { SharedHero, HeroRect } from "shared_element.slint";
 import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
-import { MusicPage, MusicSongRow, MusicLyricLine, MusicFullscreen, MusicMini } from "page_music.slint";
+import { MusicPage, MusicSongRow, SongRowEx, MusicLyricLine, MusicFullscreen, MusicMini } from "page_music.slint";
 import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry } from "page_cloud.slint";
@@ -750,6 +750,10 @@ export component MainWindow inherits Window {
     in-out property <string> music-lyrics-text: "";
     in-out property <string> music-eq-preset: "flat";
     in-out property <[float]> music-eq-bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    in-out property <[string]> music-eq-custom-names: [];
+    callback music-eq-save-profile();
+    callback music-eq-load-profile(string);
+    callback music-eq-delete-profile(string);
     callback music-toggle-pause();
     callback music-seek(float);
     callback music-set-volume(float);
@@ -761,6 +765,10 @@ export component MainWindow inherits Window {
     callback music-add-to-playlist();
     callback music-set-eq-band(int, float);
     in-out property <[MusicSongRow]> music-songs: [];
+    in-out property <[SongRowEx]> music-songs-ex: [];
+    callback music-row-fav(int);
+    callback music-row-rate(int, int);
+    callback music-row-find-lyrics(int);
     in-out property <int> music-song-total: 0;
     in-out property <int> music-song-page: 0;
     in-out property <int> music-song-pages: 1;
@@ -882,6 +890,12 @@ export component MainWindow inherits Window {
     callback music-folder-remove-root(int);
     in-out property <string> music-side-panel: "";
     callback music-side-panel-show(string);
+    in-out property <string> music-np-album: "";
+    callback music-set-sleep(int);
+    callback music-enter-zen();   // true OS fullscreen for the zen player
+    callback music-exit-zen();
+    callback music-open-now-album();   // current track → album page
+    callback music-open-now-artist();  // current track → artist page
     in-out property <bool> music-lyrics-search-open: false;
     in-out property <string> music-lyrics-search-query: "";
     in-out property <[string]> music-lyrics-search-results: [];
@@ -892,6 +906,7 @@ export component MainWindow inherits Window {
     in-out property <bool> music-fullscreen: false;
     in-out property <string> music-fs-tab: "lyrics";
     in-out property <bool> music-mini-open: false;
+    in-out property <bool> music-mini-bubble: false;
     in-out property <length> music-mini-x: 0px;
     in-out property <length> music-mini-y: 0px;
     in-out property <bool> music-mini-show-queue: false;
@@ -1274,7 +1289,10 @@ export component MainWindow inherits Window {
                 toggle-panel(p) => { root.music-toggle-panel(p); } set-eq(e) => { root.music-set-eq(e); }
                 play-queue(i) => { root.music-play-queue(i); } add-to-playlist => { root.music-add-to-playlist(); }
                 eq-bands: root.music-eq-bands; set-eq-band(i, v) => { root.music-set-eq-band(i, v); }
-                songs: root.music-songs; song-total: root.music-song-total; song-page: root.music-song-page;
+                eq-custom-names: root.music-eq-custom-names; eq-save-profile => { root.music-eq-save-profile(); } eq-load-profile(n) => { root.music-eq-load-profile(n); } eq-delete-profile(n) => { root.music-eq-delete-profile(n); }
+                songs: root.music-songs; songs-ex: root.music-songs-ex;
+                row-fav(i) => { root.music-row-fav(i); } row-rate(i, n) => { root.music-row-rate(i, n); } row-find-lyrics(i) => { root.music-row-find-lyrics(i); }
+                song-total: root.music-song-total; song-page: root.music-song-page;
                 song-pages: root.music-song-pages; song-sort: root.music-song-sort; song-dir: root.music-song-dir;
                 set-song-sort(s) => { root.music-set-song-sort(s); } set-song-page(d) => { root.music-set-song-page(d); }
                 query <=> root.music-query; search(q) => { root.music-search(q); }
@@ -1332,6 +1350,8 @@ export component MainWindow inherits Window {
                 lyrics-search-results: root.music-lyrics-search-results; lyrics-search-status: root.music-lyrics-search-status;
                 lyrics-search => { root.music-lyrics-search(); } lyrics-search-pick(i) => { root.music-lyrics-search-pick(i); }
                 side-panel <=> root.music-side-panel; side-panel-show(s) => { root.music-side-panel-show(s); }
+                np-album: root.music-np-album; set-sleep(m) => { root.music-set-sleep(m); }
+                open-now-album => { root.music-open-now-album(); } open-now-artist => { root.music-open-now-artist(); }
                 mini-active: root.music-mini-open;
                 open-mini => {
                     if (root.music-mini-x == 0px && root.music-mini-y == 0px) { root.music-mini-x = root.width - 340px; root.music-mini-y = root.height - 200px; }
@@ -1478,21 +1498,24 @@ export component MainWindow inherits Window {
         pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
         volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat; shuffle: root.music-shuffle;
         np-loved: root.music-np-loved; np-stars: root.music-np-stars;
+        album: root.music-np-album; vis-bars: root.music-vis-bars;
         queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
         tab <=> root.music-fs-tab;
-        close => { root.music-fullscreen = false; }
+        close => { root.music-fullscreen = false; root.music-exit-zen(); }
+        init => { root.music-enter-zen(); }
         playpause => { root.music-toggle-pause(); }
         next => { root.music-next(); } prev => { root.music-prev(); }
         seek(s) => { root.music-seek(s); } set-volume(v) => { root.music-set-volume(v); }
         toggle-mute => { root.music-toggle-mute(); } cycle-repeat => { root.music-cycle-repeat(); }
         toggle-shuffle => { root.music-toggle-shuffle(); }
         play-queue(i) => { root.music-play-queue(i); } love => { root.music-love(); } rate(n) => { root.music-rate(n); }
+        open-now-album => { root.music-open-now-album(); } open-now-artist => { root.music-open-now-artist(); }
     }
 
     // App-wide draggable mini-player (over every section).
-    if root.music-mini-open: Rectangle {
+    if root.music-mini-open && !root.music-mini-bubble: Rectangle {
         x: root.music-mini-x; y: root.music-mini-y;
-        width: 320px; height: root.music-mini-show-queue ? 350px : 168px;
+        width: 300px; height: 512px;
         dragmini := TouchArea {
             mouse-cursor: move;
             moved => {
@@ -1504,15 +1527,27 @@ export component MainWindow inherits Window {
         }
         MusicMini {
             width: 100%; height: 100%;
-            art: root.music-np-art; title: root.music-np-title; sub: root.music-np-sub; playing: root.music-playing;
+            art: root.music-np-art; title: root.music-np-title; sub: root.music-np-sub; album: root.music-np-album; playing: root.music-playing;
             pos: root.music-pos; dur: root.music-dur; volume: root.music-volume; muted: root.music-muted;
-            queue-rows: root.music-queue-rows; show-queue <=> root.music-mini-show-queue;
+            queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
             close => { root.music-mini-open = false; }
+            minimise => { root.music-mini-bubble = true; }
             playpause => { root.music-toggle-pause(); }
             next => { root.music-next(); } prev => { root.music-prev(); }
             seek(s) => { root.music-seek(s); } set-volume(v) => { root.music-set-volume(v); }
             toggle-mute => { root.music-toggle-mute(); } play-queue(i) => { root.music-play-queue(i); }
         }
+    }
+    // Minimised bubble — pinned to the right edge (Android-style). Tap to restore.
+    if root.music-mini-open && root.music-mini-bubble: Rectangle {
+        x: root.width - 78px; y: root.height / 2 - 30px;
+        width: 60px; height: 60px; border-radius: 30px; clip: true;
+        background: #14141b; border-width: 2px; border-color: root.music-np-accent;
+        drop-shadow-blur: 26px; drop-shadow-color: root.music-np-accent;
+        Image { source: root.music-np-art; image-fit: cover; width: 100%; height: 100%; opacity: 0.9; }
+        if root.music-np-title == "": Text { text: "♪"; color: #ec4899; font-size: 24px; horizontal-alignment: center; vertical-alignment: center; }
+        if root.music-playing: Rectangle { width: 100%; height: 100%; background: transparent; border-width: 2px; border-color: #ffffff66; border-radius: 30px; }
+        TouchArea { mouse-cursor: pointer; clicked => { root.music-mini-bubble = false; } }
     }
 
     // Book reader overlay (np.p4.books.reader) — full window above content.
