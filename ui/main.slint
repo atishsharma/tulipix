@@ -7,7 +7,7 @@ import { PhotoEditor } from "photo_editor.slint";
 import { SharedHero, HeroRect } from "shared_element.slint";
 import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
-import { MusicPage, MusicSongRow, SongRowEx, MusicLyricLine, MusicFullscreen, MusicMini } from "page_music.slint";
+import { MusicPage, MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MusicFullscreen, MusicMini } from "page_music.slint";
 import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry } from "page_cloud.slint";
@@ -438,7 +438,7 @@ component SettingsPage inherits Rectangle {
 }
 
 export component MainWindow inherits Window {
-    title: "Tulipix";
+    title: root.music-fullscreen ? "Tulipix Music - Zen" : "Tulipix";
     min-width: 1100px;
     min-height: 720px;
     preferred-width: 1320px;
@@ -732,7 +732,7 @@ export component MainWindow inherits Window {
     in-out property <[MusicSongRow]> music-recent-rows: [];
     in-out property <int> music-recent-page: 0;
     in-out property <int> music-recent-pages: 1;
-    in-out property <string> music-songs-view: "list";
+    in-out property <string> music-songs-view: "grid";
     in-out property <string> music-browse-sort: "name";
     in-out property <string> music-browse-dir: "asc";
     in-out property <int> music-browse-page: 0;
@@ -773,8 +773,40 @@ export component MainWindow inherits Window {
     callback music-row-rate(int, int);
     callback music-row-find-lyrics(int);
     callback music-row-view-lyrics(int);
+    // Song right-click context-menu actions.
+    callback music-song-play-default(int);
+    callback music-song-properties(int);
+    callback music-song-edit-media(int);
+    callback music-song-delete(int);
+    // Media-info / Properties dialog.
+    in-out property <bool> music-song-props-open: false;
+    in-out property <string> music-props-title: "";
+    in-out property <string> music-props-artist: "";
+    in-out property <string> music-props-album: "";
+    in-out property <string> music-props-genre: "";
+    in-out property <string> music-props-duration: "";
+    in-out property <string> music-props-path: "";
+    in-out property <string> music-props-format: "";
+    in-out property <string> music-props-size: "";
     callback music-sync-all-lyrics();
     in-out property <string> music-lyrics-sync-status: "";
+    in-out property <float> music-lyrics-sync-progress: 0;
+    // Library lyrics manager popup.
+    in-out property <bool> music-lyrics-mgr-open: false;
+    in-out property <int> music-lyrics-mgr-total: 0;
+    in-out property <int> music-lyrics-mgr-synced: 0;
+    in-out property <int> music-lyrics-mgr-missing: 0;
+    in-out property <int> music-lyrics-mgr-page: 0;
+    in-out property <int> music-lyrics-mgr-pages: 1;
+    in-out property <[LyricsMgrRow]> music-lyrics-mgr-rows: [];
+    in-out property <string> music-lyrics-mgr-mode: "list";
+    in-out property <string> music-lyrics-mgr-filter: "all";
+    callback music-open-lyrics-manager();
+    callback music-lyrics-mgr-set-page(int);
+    callback music-lyrics-mgr-set-filter(string);
+    callback music-lyrics-mgr-view(int);
+    callback music-lyrics-mgr-search-open(int);
+    callback music-lyrics-mgr-back();
     // Read-only lyrics-view popup (no playback) + re-search.
     in-out property <bool> music-lyrics-view-open: false;
     in-out property <string> music-lyrics-view-title: "";
@@ -783,12 +815,20 @@ export component MainWindow inherits Window {
     in-out property <string> music-lyrics-view-q-name: "";
     in-out property <string> music-lyrics-view-q-artist: "";
     in-out property <string> music-lyrics-view-q-album: "";
+    in-out property <bool> music-lyrics-view-dirty: false;
+    in-out property <string> music-lyrics-view-sub: "";
+    in-out property <string> music-lyrics-view-status: "";
+    in-out property <string> music-lyrics-view-mode: "lyrics";
+    in-out property <[LyricsResult]> music-lyrics-view-results: [];
+    callback music-lyrics-view-pick(int);
+    callback music-lyrics-view-back();
     callback music-lyrics-view-search();
+    callback music-lyrics-view-save();
     in-out property <int> music-song-total: 0;
     in-out property <int> music-song-page: 0;
     in-out property <int> music-song-pages: 1;
-    in-out property <string> music-song-sort: "added";
-    in-out property <string> music-song-dir: "desc";
+    in-out property <string> music-song-sort: "title";
+    in-out property <string> music-song-dir: "asc";
     callback music-set-view(string);
     callback music-set-lib-tab(string);
     callback music-cycle-sleep();
@@ -805,6 +845,7 @@ export component MainWindow inherits Window {
     // Phase 5 music — synced lyrics / audio output / visualizer / cast / tags.
     in-out property <[MusicLyricLine]> music-lyrics-rows: [];
     in-out property <int> music-lyrics-active: -1;
+    in-out property <float> music-lyrics-line-progress: 0;
     in-out property <int> music-lyrics-offset-ms: 0;
     callback music-lyrics-offset(int);
     in-out property <[string]> music-devices: [];
@@ -882,9 +923,13 @@ export component MainWindow inherits Window {
     in-out property <string> music-jump-text: "";
     callback music-jump-page(int);
     in-out property <[MusicSongRow]> music-fav-rows: [];
+    in-out property <[PhotoTile]> music-fav-artists: [];
+    in-out property <[PhotoTile]> music-fav-albums: [];
     in-out property <int> music-fav-page: 0;
     in-out property <int> music-fav-pages: 1;
     callback music-set-fav-page(int);
+    callback music-album-fav(int);
+    callback music-artist-fav(int);
     in-out property <[MusicSongRow]> music-history-rows: [];
     callback music-clear-history();
     in-out property <[PhotoTile]> music-search-artists: [];
@@ -894,13 +939,18 @@ export component MainWindow inherits Window {
     in-out property <int> music-detail-page: 0;
     in-out property <int> music-detail-pages: 1;
     callback music-set-detail-page(int);
+    in-out property <string> music-detail-sort: "";
+    in-out property <string> music-detail-sort-dir: "asc";
+    callback music-set-detail-sort(string);
     in-out property <string> music-detail-kind: "album";
     in-out property <string> music-detail-title: "";
     in-out property <string> music-detail-subtitle: "";
     in-out property <image> music-detail-art;
     in-out property <string> music-detail-bio: "";
     in-out property <[MusicSongRow]> music-detail-tracks: [];
+    in-out property <[PhotoTile]> music-detail-artist-albums: [];
     in-out property <string> music-detail-status: "";
+    callback music-detail-open-artist();
     callback music-album-open(int);
     callback music-artist-open(int);
     callback music-genre-open(int);
@@ -913,6 +963,9 @@ export component MainWindow inherits Window {
     // Folder management + lyrics search (Batch 36).
     in-out property <[string]> music-folder-roots: [];
     callback music-folder-remove-root(int);
+    callback music-folder-open(int);
+    callback music-folder-find-system(int);
+    callback music-folder-remove(int);
     in-out property <string> music-side-panel: "";
     callback music-side-panel-show(string);
     in-out property <string> music-np-album: "";
@@ -934,6 +987,8 @@ export component MainWindow inherits Window {
     in-out property <bool> music-mini-bubble: false;
     in-out property <length> music-mini-x: 0px;
     in-out property <length> music-mini-y: 0px;
+    in-out property <length> music-mini-w: 300px;
+    in-out property <length> music-mini-h: 470px;
     in-out property <length> music-bubble-y: -1px;   // <0 = uninitialised (centre on show)
     in-out property <bool> music-mini-show-queue: false;
     callback music-open-fullscreen();
@@ -1164,6 +1219,16 @@ export component MainWindow inherits Window {
             if e.text == "?" {
                 root.shortcuts-open = true; return accept;
             }
+            // Music playback shortcuts — arrows seek/volume, space play/pause
+            // (np.p4.music.player-keys). Active in Music OR whenever the
+            // app-wide mini-player is open on any other section.
+            if (root.active-section == "music" || root.music-mini-open) && !root.viewer-open {
+                if e.text == Key.LeftArrow  { root.music-seek(Math.max(0, root.music-pos - 5)); return accept; }
+                if e.text == Key.RightArrow { root.music-seek(Math.min(root.music-dur, root.music-pos + 5)); return accept; }
+                if e.text == Key.UpArrow    { root.music-set-volume(Math.min(130, root.music-volume + 5)); return accept; }
+                if e.text == Key.DownArrow  { root.music-set-volume(Math.max(0, root.music-volume - 5)); return accept; }
+                if e.text == " "            { root.music-toggle-pause(); return accept; }
+            }
             // Multi-select keyboard (np.p2.multiselect) — photos section only.
             if root.active-section == "photos" {
                 if (e.modifiers.control || e.modifiers.meta) && e.text == "a" {
@@ -1320,11 +1385,30 @@ export component MainWindow inherits Window {
                 songs: root.music-songs; songs-ex: root.music-songs-ex;
                 row-fav(i) => { root.music-row-fav(i); } row-rate(i, n) => { root.music-row-rate(i, n); } row-find-lyrics(i) => { root.music-row-find-lyrics(i); }
                 row-view-lyrics(i) => { root.music-row-view-lyrics(i); }
-                sync-all-lyrics => { root.music-sync-all-lyrics(); } lyrics-sync-status: root.music-lyrics-sync-status;
+                song-play-default(i) => { root.music-song-play-default(i); } song-view-album(i) => { root.music-album-open(i); }
+                song-view-artist(i) => { root.music-artist-open(i); } song-properties(i) => { root.music-song-properties(i); }
+                song-edit-media(i) => { root.music-song-edit-media(i); }
+                song-delete(i) => { root.music-song-delete(i); }
+                song-props-open <=> root.music-song-props-open; props-title: root.music-props-title; props-artist: root.music-props-artist;
+                props-album: root.music-props-album; props-genre: root.music-props-genre; props-duration: root.music-props-duration;
+                props-path: root.music-props-path; props-format: root.music-props-format; props-size: root.music-props-size;
+                sync-all-lyrics => { root.music-sync-all-lyrics(); } lyrics-sync-status: root.music-lyrics-sync-status; lyrics-sync-progress: root.music-lyrics-sync-progress;
+                lyrics-mgr-open <=> root.music-lyrics-mgr-open; lyrics-mgr-total: root.music-lyrics-mgr-total;
+                lyrics-mgr-synced: root.music-lyrics-mgr-synced; lyrics-mgr-missing: root.music-lyrics-mgr-missing;
+                lyrics-mgr-page: root.music-lyrics-mgr-page; lyrics-mgr-pages: root.music-lyrics-mgr-pages; lyrics-mgr-rows: root.music-lyrics-mgr-rows;
+                open-lyrics-manager => { root.music-open-lyrics-manager(); } lyrics-mgr-set-page(d) => { root.music-lyrics-mgr-set-page(d); }
+                lyrics-mgr-mode <=> root.music-lyrics-mgr-mode;
+                lyrics-mgr-view(i) => { root.music-lyrics-mgr-view(i); } lyrics-mgr-search-open(i) => { root.music-lyrics-mgr-search-open(i); }
+                lyrics-mgr-back => { root.music-lyrics-mgr-back(); }
+                lyrics-mgr-filter <=> root.music-lyrics-mgr-filter; lyrics-mgr-set-filter(f) => { root.music-lyrics-mgr-set-filter(f); }
                 lyrics-view-open <=> root.music-lyrics-view-open; lyrics-view-title: root.music-lyrics-view-title;
                 lyrics-view-plain: root.music-lyrics-view-plain; lyrics-view-rows: root.music-lyrics-view-rows;
                 lyrics-view-q-name <=> root.music-lyrics-view-q-name; lyrics-view-q-artist <=> root.music-lyrics-view-q-artist;
                 lyrics-view-q-album <=> root.music-lyrics-view-q-album; lyrics-view-search => { root.music-lyrics-view-search(); }
+                lyrics-view-dirty: root.music-lyrics-view-dirty; lyrics-view-save => { root.music-lyrics-view-save(); }
+                lyrics-view-sub: root.music-lyrics-view-sub; lyrics-view-status: root.music-lyrics-view-status;
+                lyrics-view-mode <=> root.music-lyrics-view-mode; lyrics-view-results: root.music-lyrics-view-results;
+                lyrics-view-pick(i) => { root.music-lyrics-view-pick(i); } lyrics-view-back => { root.music-lyrics-view-back(); }
                 song-total: root.music-song-total; song-page: root.music-song-page;
                 song-pages: root.music-song-pages; song-sort: root.music-song-sort; song-dir: root.music-song-dir;
                 set-song-sort(s) => { root.music-set-song-sort(s); } set-song-page(d) => { root.music-set-song-page(d); }
@@ -1334,6 +1418,7 @@ export component MainWindow inherits Window {
                 set-lib-tab(t) => { root.music-set-lib-tab(t); }
                 love => { root.music-love(); } rate(n) => { root.music-rate(n); }
                 lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active; lyrics-offset-ms: root.music-lyrics-offset-ms;
+                lyrics-line-progress: root.music-lyrics-line-progress;
                 lyrics-offset(d) => { root.music-lyrics-offset(d); }
                 devices: root.music-devices; device <=> root.music-device; exclusive <=> root.music-exclusive;
                 gapless <=> root.music-gapless; crossfade <=> root.music-crossfade; replaygain <=> root.music-replaygain;
@@ -1369,19 +1454,25 @@ export component MainWindow inherits Window {
                 play-all => { root.music-play-all(); } shuffle-all => { root.music-shuffle-all(); }
                 jump-text <=> root.music-jump-text; jump-page(p) => { root.music-jump-page(p); }
                 fav-rows: root.music-fav-rows; fav-page: root.music-fav-page; fav-pages: root.music-fav-pages; set-fav-page(d) => { root.music-set-fav-page(d); }
+                fav-artists: root.music-fav-artists; fav-albums: root.music-fav-albums;
+                album-fav(i) => { root.music-album-fav(i); } artist-fav(i) => { root.music-artist-fav(i); }
                 history-rows: root.music-history-rows; clear-history => { root.music-clear-history(); }
                 search-artists: root.music-search-artists; search-albums: root.music-search-albums;
                 detail-open <=> root.music-detail-open; detail-kind: root.music-detail-kind;
                 detail-title: root.music-detail-title; detail-subtitle: root.music-detail-subtitle;
                 detail-art: root.music-detail-art; detail-bio: root.music-detail-bio;
                 detail-tracks: root.music-detail-tracks; detail-status: root.music-detail-status;
+                detail-artist-albums: root.music-detail-artist-albums; detail-open-artist => { root.music-detail-open-artist(); }
                 detail-page: root.music-detail-page; detail-pages: root.music-detail-pages; set-detail-page(d) => { root.music-set-detail-page(d); }
+                detail-sort: root.music-detail-sort; detail-sort-dir: root.music-detail-sort-dir; set-detail-sort(s) => { root.music-set-detail-sort(s); }
                 album-open(i) => { root.music-album-open(i); } artist-open(i) => { root.music-artist-open(i); } genre-open(i) => { root.music-genre-open(i); }
                 detail-close => { root.music-detail-close(); } detail-play-all => { root.music-detail-play-all(); }
                 detail-shuffle => { root.music-detail-shuffle(); } detail-fetch-meta => { root.music-detail-fetch-meta(); }
                 detail-replace-art => { root.music-detail-replace-art(); } detail-play-track(i) => { root.music-detail-play-track(i); }
                 folder-roots: root.music-folder-roots; folder-add => { root.pick-folder(); }
                 folder-rescan => { root.refresh-library(); } folder-remove-root(i) => { root.music-folder-remove-root(i); }
+                folder-open(i) => { root.music-folder-open(i); } folder-remove(i) => { root.music-folder-remove(i); }
+                folder-find-system(i) => { root.music-folder-find-system(i); }
                 lyrics-search-open <=> root.music-lyrics-search-open; lyrics-search-query <=> root.music-lyrics-search-query;
                 lyrics-search-results: root.music-lyrics-search-results; lyrics-search-status: root.music-lyrics-search-status;
                 lyrics-search => { root.music-lyrics-search(); } lyrics-search-pick(i) => { root.music-lyrics-search-pick(i); }
@@ -1390,7 +1481,7 @@ export component MainWindow inherits Window {
                 open-now-album => { root.music-open-now-album(); } open-now-artist => { root.music-open-now-artist(); }
                 mini-active: root.music-mini-open;
                 open-mini => {
-                    if (root.music-mini-x == 0px && root.music-mini-y == 0px) { root.music-mini-x = (root.width - 300px)/2; root.music-mini-y = (root.height - 512px)/2; }
+                    if (root.music-mini-x == 0px && root.music-mini-y == 0px) { root.music-mini-x = (root.width - root.music-mini-w)/2; root.music-mini-y = (root.height - root.music-mini-h)/2; }
                     root.music-open-mini();
                 }
                 open-fullscreen => { root.music-open-fullscreen(); }
@@ -1472,6 +1563,14 @@ export component MainWindow inherits Window {
         }
     }
         init => { key-scope.focus(); }
+        // Re-grab key focus whenever the section changes so playback shortcuts
+        // work across the whole Music page without first clicking the player.
+        property <string> watch-section: root.active-section;
+        changed watch-section => { key-scope.focus(); }
+        // Also re-grab focus when the mini-player opens so its transport keys
+        // (space/arrows) work even on non-music sections.
+        property <bool> watch-mini: root.music-mini-open;
+        changed watch-mini => { if (root.music-mini-open) { key-scope.focus(); } }
     }
 
     // Right-click context menu for photo tiles. Declared after the shell so it
@@ -1551,7 +1650,7 @@ export component MainWindow inherits Window {
     // App-wide draggable mini-player (over every section).
     if root.music-mini-open && !root.music-mini-bubble: Rectangle {
         x: root.music-mini-x; y: root.music-mini-y;
-        width: 300px; height: 512px;
+        width: root.music-mini-w; height: root.music-mini-h;
         dragmini := TouchArea {
             mouse-cursor: move;
             moved => {
@@ -1575,6 +1674,27 @@ export component MainWindow inherits Window {
             seek(s) => { root.music-seek(s); } set-volume(v) => { root.music-set-volume(v); }
             toggle-mute => { root.music-toggle-mute(); } toggle-shuffle => { root.music-toggle-shuffle(); } play-queue(i) => { root.music-play-queue(i); }
         }
+        // Resize handles — drag either bottom corner; a curved arc shows on hover.
+        // Bottom-right.
+        Rectangle { width: 22px; height: 22px; x: parent.width - self.width; y: parent.height - self.height;
+            Rectangle { width: 14px; height: 14px; border-radius: 7px; x: 2px; y: 2px;
+                background: transparent; border-width: 2px;
+                border-color: brh.has-hover || brh.pressed ? root.music-np-accent : #ffffff44; }
+            brh := TouchArea { mouse-cursor: nesw-resize;
+                moved => { if (self.pressed) {
+                    root.music-mini-w = Math.clamp(root.music-mini-w + (self.mouse-x - self.pressed-x), 260px, 460px);
+                    root.music-mini-h = Math.clamp(root.music-mini-h + (self.mouse-y - self.pressed-y), 380px, 760px);
+                } } } }
+        // Bottom-left.
+        Rectangle { width: 22px; height: 22px; x: 0; y: parent.height - self.height;
+            Rectangle { width: 14px; height: 14px; border-radius: 7px; x: 6px; y: 2px;
+                background: transparent; border-width: 2px;
+                border-color: blh.has-hover || blh.pressed ? root.music-np-accent : #ffffff44; }
+            blh := TouchArea { mouse-cursor: nwse-resize;
+                moved => { if (self.pressed) {
+                    root.music-mini-w = Math.clamp(root.music-mini-w - (self.mouse-x - self.pressed-x), 260px, 460px);
+                    root.music-mini-h = Math.clamp(root.music-mini-h + (self.mouse-y - self.pressed-y), 380px, 760px);
+                } } } }
     }
     // Minimised bubble — pinned to the right edge (Android-style). Drag up/down
     // to reposition; tap to restore the full mini-player.

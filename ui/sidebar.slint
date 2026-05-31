@@ -185,7 +185,7 @@ component BrandHeader inherits Rectangle {
 export component Sidebar inherits Rectangle {
     in-out property <string> active-section: "photos";
     in property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local };
-    in-out property <bool> collapsed: false;
+    in-out property <bool> collapsed: true;
     callback section-changed(string);
     callback user-action(string);
 

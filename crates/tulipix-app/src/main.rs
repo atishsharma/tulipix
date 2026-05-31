@@ -241,8 +241,8 @@ fn main() -> Result<()> {
     });
     window.on_ambient_dismissed(|| tulipix_core::idle::mark_active());
 
-    // Initial theme from OS
-    apply_theme_choice(&window, ThemeChoice::System);
+    // Initial theme — start light (overridden below by persisted setting).
+    apply_theme_choice(&window, ThemeChoice::Light);
 
     // Singleton 80 ms flush ticker — drains atomic counters into the UI in
     // one coalesced post per tick so per-file scan throughput doesn't spam
@@ -1093,6 +1093,7 @@ fn main() -> Result<()> {
     window.on_music_set_lib_tab(move |t| {
         if let Some(w) = w.upgrade() {
             w.set_music_detail_open(false); // leave any album/artist detail when switching tab
+            w.set_music_playlist_name("".into()); // leave playlist detail too
             w.set_music_lib_tab(t.clone());
             match t.as_str() {
                 "favorites" => populate_favorites(&w),
@@ -1170,14 +1171,94 @@ fn main() -> Result<()> {
     window.on_music_row_find_lyrics(move |pos| {
         if let Some(w0) = w.upgrade() { play_music_at(&w0, pos); }
     });
+    // Context menu — open the track in the OS default player (xdg-open / open / start).
+    let w = window.as_weak();
+    window.on_music_song_play_default(move |pos| {
+        let _ = w;
+        let Some(path) = music_paths().lock().ok().and_then(|g| g.get(pos as usize).cloned()) else { return; };
+        open_in_default_app(&path);
+    });
+    // Context menu — Properties: gather media info into the dialog props.
+    let w = window.as_weak();
+    window.on_music_song_properties(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let path = music_paths().lock().ok().and_then(|g| g.get(pos as usize).cloned());
+        let meta = music_songs().lock().ok().and_then(|g| g.iter().find(|s| s.pos == pos).cloned());
+        let item_id = meta.as_ref().map(|m| m.item_id).unwrap_or(-1);
+        if let Some(m) = &meta {
+            w0.set_music_props_title(m.title.clone().into());
+            w0.set_music_props_artist(m.artist.clone().into());
+            w0.set_music_props_album(m.album.clone().into());
+            w0.set_music_props_duration(if m.duration_s > 0.0 { fmt_clock(m.duration_s).into() } else { "—".into() });
+        }
+        let (fmt, size) = path.as_ref().map(|p| {
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_uppercase();
+            let bytes = std::fs::metadata(p).map(|md| md.len()).unwrap_or(0);
+            (ext, human_size(bytes))
+        }).unwrap_or_default();
+        w0.set_music_props_format(fmt.into());
+        w0.set_music_props_size(size.into());
+        w0.set_music_props_path(path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default().into());
+        w0.set_music_props_genre("".into());
+        w0.set_music_song_props_open(true);
+        // Fill genre from the DB asynchronously.
+        if item_id >= 0 {
+            let weak = w.clone();
+            tokio::runtime::Handle::current().spawn(async move {
+                let Ok(pool) = pool_for("music").await else { return; };
+                let genre: Option<String> = sqlx::query_scalar("SELECT genre FROM track_meta WHERE item_id = ?")
+                    .bind(item_id).fetch_optional(&pool).await.ok().flatten();
+                if let Some(g) = genre {
+                    let _ = weak.upgrade_in_event_loop(move |w| w.set_music_props_genre(g.into()));
+                }
+            });
+        }
+    });
+    // Context menu — Edit media info: open the tag editor targeting this song.
+    let w = window.as_weak();
+    window.on_music_song_edit_media(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(m) = music_songs().lock().ok().and_then(|g| g.iter().find(|s| s.pos == pos).cloned()) else { return; };
+        if let Ok(mut g) = tag_edit_target().lock() { *g = Some(m.item_id); }
+        w0.set_music_tag_title(m.title.clone().into());
+        w0.set_music_tag_artist(m.artist.clone().into());
+        w0.set_music_tag_album(m.album.clone().into());
+        w0.set_music_tag_open(true);
+    });
+    // Context menu — Delete: remove the file from disk AND the library, then refresh.
+    let w = window.as_weak();
+    window.on_music_song_delete(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let path = music_paths().lock().ok().and_then(|g| g.get(pos as usize).cloned());
+        let Some(item_id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+        // Delete the underlying file (best-effort).
+        if let Some(p) = &path { let _ = std::fs::remove_file(p); }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query("DELETE FROM track_meta WHERE item_id = ?").bind(item_id).execute(&pool).await;
+            let _ = sqlx::query("DELETE FROM lyrics WHERE item_id = ?").bind(item_id).execute(&pool).await;
+            let _ = sqlx::query("DELETE FROM items WHERE id = ?").bind(item_id).execute(&pool).await;
+            let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
+        });
+        let _ = w0;
+    });
     // View a synced track's lyrics in a popup WITHOUT starting playback
     // (np.p5.music.lyrics-synced — read-only viewer + re-search).
     let w = window.as_weak();
     window.on_music_row_view_lyrics(move |pos| {
         let Some(w0) = w.upgrade() else { return; };
-        let Some(item_id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
-        stop_music(&w0); // checking lyrics — not playing
+        let item_id = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()).unwrap_or(-1);
+        tracing::info!(pos, item_id, "lyrics view requested");
+        // Keep playing — viewing lyrics no longer interrupts playback.
         if let Ok(mut g) = music_view_lyrics_id().lock() { *g = Some(item_id); }
+        if let Ok(mut g) = pending_view_lyrics().lock() { *g = None; }
+        // Open in lyrics mode (not the stale results list from a prior search).
+        w0.set_music_lyrics_view_mode("lyrics".into());
+        w0.set_music_lyrics_view_results(slint::ModelRc::new(slint::VecModel::<LyricsResult>::default()));
+        w0.set_music_lyrics_view_rows(slint::ModelRc::new(slint::VecModel::<MusicLyricLine>::default()));
+        w0.set_music_lyrics_view_plain("Loading…".into());
+        w0.set_music_lyrics_view_dirty(false);
         w0.set_music_lyrics_view_open(true);
         view_lyrics_load(&w0, item_id);
     });
@@ -1185,38 +1266,161 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_music_lyrics_view_search(move || {
         let Some(w0) = w.upgrade() else { return; };
-        let Some(id) = music_view_lyrics_id().lock().ok().and_then(|g| *g) else { return; };
         let name = w0.get_music_lyrics_view_q_name().to_string();
         let artist = w0.get_music_lyrics_view_q_artist().to_string();
         let album = w0.get_music_lyrics_view_q_album().to_string();
-        w0.set_music_lyrics_view_plain("Searching…".into());
+        // Switch the window to the results list and show a searching placeholder.
+        w0.set_music_lyrics_view_mode("results".into());
+        w0.set_music_lyrics_view_results(slint::ModelRc::new(slint::VecModel::<LyricsResult>::default()));
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
-            let Ok(pool) = pool_for("music").await else { return; };
-            let url = tulipix_music::lyrics::get_url(&artist, &name, &album, 0.0);
+            // LRCLIB /api/search returns an array of candidates.
+            let q = |s: &str| urlencoding(s);
+            let mut url = format!("https://lrclib.net/api/search?track_name={}&artist_name={}", q(&name), q(&artist));
+            if !album.is_empty() { url.push_str(&format!("&album_name={}", q(&album))); }
             let client = reqwest::Client::new();
-            let mut synced = String::new();
-            let mut plain = String::new();
+            let mut cands: Vec<(bool, String, String, String)> = Vec::new(); // (synced, content, title, sub)
             if let Ok(resp) = client.get(&url)
                 .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
                 .send().await {
-                if let Ok(json) = resp.json::<serde_json::Value>().await {
-                    synced = json["syncedLyrics"].as_str().unwrap_or("").to_string();
-                    plain = json["plainLyrics"].as_str().unwrap_or("").to_string();
+                if let Ok(arr) = resp.json::<Vec<serde_json::Value>>().await {
+                    for j in arr.into_iter().take(30) {
+                        let synced = j["syncedLyrics"].as_str().unwrap_or("").to_string();
+                        let plain = j["plainLyrics"].as_str().unwrap_or("").to_string();
+                        if synced.is_empty() && plain.is_empty() { continue; }
+                        let is_synced = !synced.is_empty();
+                        let content = if is_synced { synced } else { plain };
+                        let t = j["trackName"].as_str().unwrap_or("").to_string();
+                        let a = j["artistName"].as_str().unwrap_or("").to_string();
+                        let al = j["albumName"].as_str().unwrap_or("").to_string();
+                        let d = j["duration"].as_f64().unwrap_or(0.0);
+                        let mut sub = a;
+                        if !al.is_empty() { if !sub.is_empty() { sub.push_str(" · "); } sub.push_str(&al); }
+                        if d > 0.0 { sub.push_str(&format!(" · {}", fmt_clock(d))); }
+                        cands.push((is_synced, content, t, sub));
+                    }
                 }
             }
-            if !synced.is_empty() { let _ = tulipix_music::lyrics::store(&pool, id, &synced, true, "lrclib").await; }
-            else if !plain.is_empty() { let _ = tulipix_music::lyrics::store(&pool, id, &plain, false, "lrclib").await; }
-            let lines = if !synced.is_empty() { tulipix_music::lyrics::parse_lrc(&synced) } else { Vec::new() };
+            // Stash full contents for pick(), build the display model.
+            if let Ok(mut g) = lyrics_search_results().lock() {
+                *g = cands.iter().map(|(s, c, _, _)| (*s, c.clone())).collect();
+            }
             let _ = weak.upgrade_in_event_loop(move |w| {
-                let rows: Vec<MusicLyricLine> = lines.iter().map(|(ms, t)| MusicLyricLine {
-                    time: fmt_clock(*ms as f64 / 1000.0).into(), text: t.clone().into() }).collect();
-                w.set_music_lyrics_view_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
-                w.set_music_lyrics_view_plain(if !plain.is_empty() { plain } else if synced.is_empty() { "No lyrics found.".into() } else { String::new() }.into());
-                // Reflect the synced badge in the list immediately.
-                rebuild_music_songs_page(&w);
+                let rows: Vec<LyricsResult> = cands.iter().map(|(s, _, t, sub)| LyricsResult {
+                    title: t.clone().into(), sub: sub.clone().into(),
+                    kind: if *s { "Synced".into() } else { "Normal".into() } }).collect();
+                w.set_music_lyrics_view_results(slint::ModelRc::new(slint::VecModel::from(rows)));
             });
         });
+    });
+    // Pick a search result — load its content into the box (preview, unsaved).
+    let w = window.as_weak();
+    window.on_music_lyrics_view_pick(move |i| {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some((synced, content)) = lyrics_search_results().lock().ok().and_then(|g| g.get(i as usize).cloned()) else { return; };
+        if let Ok(mut g) = pending_view_lyrics().lock() { *g = Some((synced, content.clone())); }
+        let lines = if synced { tulipix_music::lyrics::parse_lrc(&content) } else { Vec::new() };
+        let rows: Vec<MusicLyricLine> = lines.iter().map(|(ms, t)| MusicLyricLine {
+            time: fmt_clock(*ms as f64 / 1000.0).into(), text: t.clone().into() }).collect();
+        w0.set_music_lyrics_view_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+        w0.set_music_lyrics_view_plain(if synced { String::new() } else { content }.into());
+        w0.set_music_lyrics_view_status(if synced { "Synced" } else { "Normal" }.into());
+        w0.set_music_lyrics_view_mode("lyrics".into());
+        w0.set_music_lyrics_view_dirty(true); // previewed, not yet saved
+    });
+    // Back — return from a previewed result to the results list.
+    let w = window.as_weak();
+    window.on_music_lyrics_view_back(move || {
+        if let Some(w0) = w.upgrade() { w0.set_music_lyrics_view_mode("results".into()); }
+    });
+    // Save the previewed lyrics to the library DB (np.p5.music.lyrics-synced).
+    let w = window.as_weak();
+    window.on_music_lyrics_view_save(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(id) = music_view_lyrics_id().lock().ok().and_then(|g| *g) else { return; };
+        let Some((synced, content)) = pending_view_lyrics().lock().ok().and_then(|g| g.clone()) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = tulipix_music::lyrics::store(&pool, id, &content, synced, "lrclib").await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_lyrics_view_dirty(false);
+                w.set_music_lyrics_view_status(if synced { "Synced" } else { "Normal" }.into());
+                // Flip the cached song's synced flag so the grid pill updates live,
+                // with no button press (np.p5.music.lyrics-pill-auto).
+                if let Ok(mut g) = music_songs().lock() {
+                    if let Some(s) = g.iter_mut().find(|s| s.item_id == id) { s.synced = synced; }
+                }
+                rebuild_music_songs_page(&w); // reflect the synced badge across the app
+                // If we just edited the now-playing track, refresh its live lyrics line.
+                if current_music_id(&w) == Some(id) { load_music_lyrics(&w); }
+            });
+        });
+    });
+    // Open the library lyrics manager — build the list + counts.
+    let w = window.as_weak();
+    window.on_music_open_lyrics_manager(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_lyrics_mgr_page(0);
+        w0.set_music_lyrics_mgr_mode("list".into());
+        w0.set_music_lyrics_mgr_open(true);
+        rebuild_lyrics_manager(&w0);
+    });
+    // Lyrics manager pagination.
+    let w = window.as_weak();
+    window.on_music_lyrics_mgr_set_page(move |d| {
+        let Some(w0) = w.upgrade() else { return; };
+        let pages = w0.get_music_lyrics_mgr_pages().max(1);
+        let cur = w0.get_music_lyrics_mgr_page();
+        let next = (cur + d).clamp(0, pages - 1);
+        if next != cur { w0.set_music_lyrics_mgr_page(next); publish_lyrics_mgr_page(&w0); }
+    });
+    // Manager: click a stat card to filter the list (all / synced / missing).
+    let w = window.as_weak();
+    window.on_music_lyrics_mgr_set_filter(move |f| {
+        let Some(w0) = w.upgrade() else { return; };
+        let f = f.to_string();
+        // Toggle off when re-clicking the active filter.
+        let next = if w0.get_music_lyrics_mgr_filter() == f.as_str() { "all".to_string() } else { f };
+        w0.set_music_lyrics_mgr_filter(next.into());
+        w0.set_music_lyrics_mgr_page(0);
+        publish_lyrics_mgr_page(&w0);
+    });
+    // Manager: view a song's stored lyrics inside the popup (no playback).
+    let w = window.as_weak();
+    window.on_music_lyrics_mgr_view(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let item_id = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()).unwrap_or(-1);
+        if let Ok(mut g) = music_view_lyrics_id().lock() { *g = Some(item_id); }
+        w0.set_music_lyrics_view_rows(slint::ModelRc::new(slint::VecModel::<MusicLyricLine>::default()));
+        w0.set_music_lyrics_view_plain("Loading…".into());
+        w0.set_music_lyrics_mgr_mode("lyrics".into());
+        view_lyrics_load(&w0, item_id);
+    });
+    // Manager: open the manual search page for a song (prefill from its tags).
+    let w = window.as_weak();
+    window.on_music_lyrics_mgr_search_open(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let item_id = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()).unwrap_or(-1);
+        if let Ok(mut g) = music_view_lyrics_id().lock() { *g = Some(item_id); }
+        if let Ok(mut g) = pending_view_lyrics().lock() { *g = None; }
+        w0.set_music_lyrics_view_dirty(false);
+        w0.set_music_lyrics_view_mode("results".into()); // start on the search/browse sub-view
+        w0.set_music_lyrics_view_results(slint::ModelRc::new(slint::VecModel::<LyricsResult>::default()));
+        // Prefill the search fields from this song's metadata.
+        if let Some((t, a)) = music_songs().lock().ok().and_then(|g| g.iter().find(|s| s.pos == pos).map(|s| (s.title.clone(), s.artist.clone()))) {
+            w0.set_music_lyrics_view_q_name(t.into());
+            w0.set_music_lyrics_view_q_artist(a.into());
+            w0.set_music_lyrics_view_q_album("".into());
+        }
+        w0.set_music_lyrics_mgr_mode("search".into());
+    });
+    // Manager: back to the list (refresh counts/statuses).
+    let w = window.as_weak();
+    window.on_music_lyrics_mgr_back(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_lyrics_mgr_mode("list".into());
+        rebuild_lyrics_manager(&w0);
     });
     // Batch lyrics sync — fetch LRCLIB lyrics for every library track missing them.
     let w = window.as_weak();
@@ -1224,6 +1428,7 @@ fn main() -> Result<()> {
         let Some(w0) = w.upgrade() else { return; };
         if w0.get_music_lyrics_sync_status().starts_with('⟳') { return; } // already running
         w0.set_music_lyrics_sync_status("⟳ 0%".into());
+        w0.set_music_lyrics_sync_progress(0.0);
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("music").await else { return; };
@@ -1259,13 +1464,20 @@ fn main() -> Result<()> {
                 done += 1;
                 if done % 4 == 0 || done == total {
                     let pct = done * 100 / total;
-                    let _ = weak.upgrade_in_event_loop(move |w| w.set_music_lyrics_sync_status(format!("⟳ {pct}%").into()));
+                    let frac = done as f32 / total as f32;
+                    let _ = weak.upgrade_in_event_loop(move |w| {
+                        w.set_music_lyrics_sync_status(format!("⟳ {pct}%").into());
+                        w.set_music_lyrics_sync_progress(frac);
+                    });
                 }
                 tokio::time::sleep(std::time::Duration::from_millis(150)).await; // be gentle on LRCLIB
             }
             let _ = weak.upgrade_in_event_loop(move |w| {
                 w.set_music_lyrics_sync_status(format!("✓ {found} found").into());
-                rebuild_music_songs_page(&w);
+                w.set_music_lyrics_sync_progress(1.0);
+                // Re-derive synced flags from the DB so every grid pill updates live.
+                populate_music_views(w.as_weak());
+                if w.get_music_lyrics_mgr_open() { rebuild_lyrics_manager(&w); }
             });
         });
     });
@@ -1303,10 +1515,16 @@ fn main() -> Result<()> {
         w.set_music_song_page(0);
         rebuild_music_songs_page(&w);
         rebuild_grouped_search(&w, q.as_str()); // np.p5.atmusic.lib-grouped-search
+        // Search acts on whatever sub-tab is showing — filter that tab's view.
         let tab = w.get_music_lib_tab().to_string();
-        if matches!(tab.as_str(), "albums" | "artists" | "genres") {
-            w.set_music_browse_page(0);
-            rebuild_browse_tab(&w, &tab);
+        match tab.as_str() {
+            "albums" | "artists" | "genres" | "folders" | "playlists" => {
+                w.set_music_browse_page(0);
+                rebuild_browse_tab(&w, &tab);
+            }
+            "favorites" => { w.set_music_fav_page(0); rebuild_fav_page(&w); }
+            "history" => { rebuild_history_page(&w); }
+            _ => {}
         }
     });
     // Songs list/grid view toggle (thumb styling).
@@ -1438,6 +1656,39 @@ fn main() -> Result<()> {
         });
         let _ = w0;
     });
+    // Favorite an album / artist (heart on its browse thumb) — np.p5.music.fav-collections.
+    let w = window.as_weak();
+    window.on_music_album_fav(move |pos| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let Some(item_id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query("ALTER TABLE albums ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+            if let Some(aid) = sqlx::query_scalar::<_, Option<i64>>("SELECT album_id FROM track_meta WHERE item_id = ?")
+                .bind(item_id).fetch_optional(&pool).await.ok().flatten().flatten() {
+                let _ = sqlx::query("UPDATE albums SET loved = CASE COALESCE(loved,0) WHEN 1 THEN 0 ELSE 1 END WHERE id = ?")
+                    .bind(aid).execute(&pool).await;
+                let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
+            }
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_artist_fav(move |pos| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let Some(item_id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query("ALTER TABLE artists ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+            if let Some(aid) = sqlx::query_scalar::<_, Option<i64>>("SELECT artist_id FROM track_meta WHERE item_id = ?")
+                .bind(item_id).fetch_optional(&pool).await.ok().flatten().flatten() {
+                let _ = sqlx::query("UPDATE artists SET loved = CASE COALESCE(loved,0) WHEN 1 THEN 0 ELSE 1 END WHERE id = ?")
+                    .bind(aid).execute(&pool).await;
+                let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
+            }
+        });
+    });
     // Genre detail — open the genre's page (list) before any playback.
     let w = window.as_weak();
     window.on_music_genre_open(move |pos| {
@@ -1464,6 +1715,36 @@ fn main() -> Result<()> {
         for p in load_watched_folders() { if p.exists() { add_folder_path(&w0, p); } }
         populate_folder_roots(&w0);
         populate_music_views(w0.as_weak());
+    });
+    // Folder → its own songs page (detail overlay listing that folder's tracks).
+    let w = window.as_weak();
+    window.on_music_folder_open(move |pos| {
+        if let Some(w0) = w.upgrade() { open_folder_detail(&w0, pos); }
+    });
+    // Right-click a folder → remove its tracks from the music library.
+    let w = window.as_weak();
+    window.on_music_folder_remove(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(dir) = music_paths().lock().ok()
+            .and_then(|g| g.get(pos as usize).and_then(|p| p.parent().map(|d| d.to_path_buf()))) else { return; };
+        let ids = folder_track_ids(&dir);
+        if ids.is_empty() { return; }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            for id in &ids {
+                let _ = sqlx::query("DELETE FROM items WHERE id = ?").bind(id).execute(&pool).await;
+            }
+            let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
+        });
+    });
+    // Right-click a folder → reveal it in the OS file manager.
+    let w = window.as_weak();
+    window.on_music_folder_find_system(move |pos| {
+        let _ = w;
+        let Some(dir) = music_paths().lock().ok()
+            .and_then(|g| g.get(pos as usize).and_then(|p| p.parent().map(|d| d.to_path_buf()))) else { return; };
+        open_in_default_app(&dir);
     });
     // Player redesign — sleep timer set to a chosen interval (np.p4.music.sleep-timer).
     let w = window.as_weak();
@@ -1605,12 +1886,54 @@ fn main() -> Result<()> {
     });
     let w = window.as_weak();
     window.on_music_detail_close(move || { if let Some(w) = w.upgrade() { w.set_music_detail_open(false); } });
+    // Album page → open the album's artist (click the artist name in the info box).
+    let w = window.as_weak();
+    window.on_music_detail_open_artist(move || {
+        let Some(_w0) = w.upgrade() else { return; };
+        let ids = music_detail().lock().map(|g| g.2.clone()).unwrap_or_default();
+        let Some(first) = ids.first().copied() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            if let Some(aid) = sqlx::query_scalar::<_, Option<i64>>("SELECT artist_id FROM track_meta WHERE item_id = ?")
+                .bind(first).fetch_optional(&pool).await.ok().flatten().flatten() {
+                let _ = weak.upgrade_in_event_loop(move |w| open_artist_detail(&w, aid));
+            }
+        });
+    });
     let w = window.as_weak();
     window.on_music_set_detail_page(move |delta| {
         let Some(w) = w.upgrade() else { return; };
         let pages = w.get_music_detail_pages().max(1);
         let next = (w.get_music_detail_page() + delta).clamp(0, pages - 1);
         w.set_music_detail_page(next);
+        publish_detail_page(&w);
+    });
+    // Sort the open detail's tracks by an attribute (title/artist/duration).
+    let w = window.as_weak();
+    window.on_music_set_detail_sort(move |s| {
+        let Some(w) = w.upgrade() else { return; };
+        let s = s.to_string();
+        let dir = if w.get_music_detail_sort() == s.as_str() {
+            if w.get_music_detail_sort_dir() == "asc" { "desc" } else { "asc" }
+        } else { "asc" };
+        w.set_music_detail_sort(s.clone().into());
+        w.set_music_detail_sort_dir(dir.into());
+        let dur_secs = |d: &str| -> i64 {
+            let mut it = d.split(':').filter_map(|x| x.trim().parse::<i64>().ok());
+            match (it.next(), it.next()) { (Some(m), Some(sec)) => m * 60 + sec, (Some(sec), None) => sec, _ => 0 }
+        };
+        DETAIL_ROWS.with(|r| {
+            let mut v = r.borrow_mut();
+            match s.as_str() {
+                "title"    => v.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
+                "artist"   => v.sort_by(|a, b| a.artist.to_lowercase().cmp(&b.artist.to_lowercase())),
+                "duration" => v.sort_by(|a, b| dur_secs(a.duration.as_str()).cmp(&dur_secs(b.duration.as_str()))),
+                _ => {}
+            }
+            if dir == "desc" { v.reverse(); }
+        });
+        w.set_music_detail_page(0);
         publish_detail_page(&w);
     });
     let w = window.as_weak();
@@ -1823,6 +2146,7 @@ fn main() -> Result<()> {
     window.on_music_tag_edit(move || {
         let Some(w) = w.upgrade() else { return; };
         if current_music_id(&w).is_none() { return; }
+        if let Ok(mut g) = tag_edit_target().lock() { *g = None; } // target = now-playing
         w.set_music_tag_title(w.get_music_np_title());
         let sub = w.get_music_np_sub();
         w.set_music_tag_artist(if sub == "Playing from your library" { "".into() } else { sub });
@@ -1833,13 +2157,19 @@ fn main() -> Result<()> {
     window.on_music_tag_save(move || {
         let Some(w0) = w.upgrade() else { return; };
         w0.set_music_tag_open(false);
-        let Some(id) = current_music_id(&w0) else { return; };
+        // Prefer the context-menu target (Edit media info on an arbitrary song),
+        // else fall back to the now-playing track.
+        let target = tag_edit_target().lock().ok().and_then(|g| *g);
+        let Some(id) = target.or_else(|| current_music_id(&w0)) else { return; };
+        if let Ok(mut g) = tag_edit_target().lock() { *g = None; }
         let title = w0.get_music_tag_title().to_string();
         let artist = w0.get_music_tag_artist().to_string();
         let album = w0.get_music_tag_album().to_string();
-        // Reflect immediately in the now-playing bar.
-        if !title.is_empty() { w0.set_music_np_title(title.clone().into()); }
-        w0.set_music_np_sub(if artist.is_empty() { "Playing from your library".into() } else { artist.clone().into() });
+        // Reflect immediately in the now-playing bar only when editing it.
+        if target.is_none() || target == current_music_id(&w0) {
+            if !title.is_empty() { w0.set_music_np_title(title.clone().into()); }
+            w0.set_music_np_sub(if artist.is_empty() { "Playing from your library".into() } else { artist.clone().into() });
+        }
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("music").await else { return; };
@@ -2096,6 +2426,7 @@ fn main() -> Result<()> {
             let p = path.to_string_lossy().into_owned();
             save_music_pref(&format!("music.playlist.cover.{id}"), &p);
             w0.set_music_playlist_cover(slint::Image::load_from_path(&path).unwrap_or_default());
+            populate_music_views(w0.as_weak()); // reflect the art on the playlists grid too
         }
     });
     let w = window.as_weak();
@@ -2269,8 +2600,13 @@ fn main() -> Result<()> {
                 }
                 return;
             }
-            let bars = tulipix_music::visualizer::synthetic_bars(
-                tulipix_music::visualizer::DEFAULT_BARS, start.elapsed().as_secs_f64());
+            // Shape from the synthetic spectrum, energy from the REAL audio loudness
+            // (ebur128) so every style pulses to the actual beat, not just a clock.
+            let amp = MUSIC_LOUDNESS.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0;
+            let env = 0.18 + 0.82 * amp;
+            let bars: Vec<f32> = tulipix_music::visualizer::synthetic_bars(
+                tulipix_music::visualizer::DEFAULT_BARS, start.elapsed().as_secs_f64())
+                .into_iter().map(|b| (b * env).clamp(0.0, 1.0)).collect();
             w.set_music_vis_bars(slint::ModelRc::new(slint::VecModel::from(bars)));
         });
     }
@@ -2739,7 +3075,8 @@ fn main() -> Result<()> {
         let choice = match s.theme.as_str() {
             "light" => ThemeChoice::Light,
             "extra-dark" => ThemeChoice::ExtraDark,
-            _ => ThemeChoice::System,
+            "system" => ThemeChoice::System,
+            _ => ThemeChoice::Light, // default fresh start = light
         };
         window.set_theme_choice(choice);
         apply_theme_choice(&window, choice);
@@ -3712,6 +4049,10 @@ fn main() -> Result<()> {
             }
         }
     }
+
+    // OS media-key support (XF86Audio Play/Pause/Next/Prev) via MPRIS on Linux,
+    // SMTC on Windows, MediaPlayer on macOS. Held alive for the app's lifetime.
+    setup_media_controls(&window);
 
     // Launch filling the screen (maximised, decorations kept) rather than a
     // small floating window.
@@ -6743,6 +7084,7 @@ fn current_music_id(w: &MainWindow) -> Option<i64> {
 }
 
 /// One track's metadata for the detailed, sortable Songs list.
+#[derive(Clone)]
 struct SongMeta { pos: i32, item_id: i64, title: String, artist: String, album: String, duration_s: f64, added: i64, plays: i64, loved: bool, stars: i32, synced: bool }
 static MUSIC_SONGS: std::sync::OnceLock<std::sync::Mutex<Vec<SongMeta>>> = std::sync::OnceLock::new();
 fn music_songs() -> &'static std::sync::Mutex<Vec<SongMeta>> {
@@ -6766,6 +7108,23 @@ thread_local! {
         std::cell::RefCell::new(std::collections::HashMap::new());
     // Full track list of the open album/artist/genre detail (display paginated 25/page).
     static DETAIL_ROWS: std::cell::RefCell<Vec<MusicSongRow>> = std::cell::RefCell::new(Vec::new());
+    // Artist detail — the artist's albums column (2/row, 8/page, follows the track page).
+    static DETAIL_ARTIST_ALBUMS: std::cell::RefCell<Vec<PhotoTile>> = std::cell::RefCell::new(Vec::new());
+}
+/// Store the full artist-albums list and publish the first 8-per-page slice.
+fn set_detail_artist_albums(w: &MainWindow, albums: Vec<PhotoTile>) {
+    DETAIL_ARTIST_ALBUMS.with(|r| *r.borrow_mut() = albums);
+    publish_detail_artist_albums(w);
+}
+/// Publish the current 8-album page (keyed to the track page index).
+fn publish_detail_artist_albums(w: &MainWindow) {
+    const PER: usize = 8;
+    DETAIL_ARTIST_ALBUMS.with(|r| {
+        let all = r.borrow();
+        let page = w.get_music_detail_page().max(0) as usize;
+        let slice: Vec<PhotoTile> = all.iter().skip(page * PER).take(PER).cloned().collect();
+        w.set_music_detail_artist_albums(slint::ModelRc::new(slint::VecModel::from(slice)));
+    });
 }
 /// Store the detail's full rows and publish the first 25-track page.
 fn set_detail_rows(w: &MainWindow, rows: Vec<MusicSongRow>) {
@@ -6785,6 +7144,8 @@ fn publish_detail_page(w: &MainWindow) {
         w.set_music_detail_page(page as i32);
         w.set_music_detail_tracks(slint::ModelRc::new(slint::VecModel::from(slice)));
     });
+    // Keep the artist-albums column in step with the track page.
+    publish_detail_artist_albums(w);
 }
 fn browse_tab_key(tab: &str) -> Option<&'static str> {
     ["albums", "artists", "genres", "folders", "playlists"].into_iter().find(|k| *k == tab)
@@ -6794,14 +7155,15 @@ fn browse_tab_key(tab: &str) -> Option<&'static str> {
 /// unified grouped-search header (np.p5.atmusic.lib-grouped-search).
 fn rebuild_grouped_search(w: &MainWindow, q: &str) {
     let q = q.trim().to_lowercase();
-    let pick = |tab: &'static str| -> Vec<PhotoTile> {
+    let pick = |tab: &'static str, limit: usize| -> Vec<PhotoTile> {
         if q.is_empty() { return Vec::new(); }
         MUSIC_BROWSE.with(|m| m.borrow().get(tab).cloned().unwrap_or_default())
             .into_iter().filter(|(t, _)| t.label.to_lowercase().contains(&q))
-            .map(|(t, _)| t).take(12).collect()
+            .map(|(t, _)| t).take(limit).collect()
     };
-    w.set_music_search_artists(slint::ModelRc::new(slint::VecModel::from(pick("artists"))));
-    w.set_music_search_albums(slint::ModelRc::new(slint::VecModel::from(pick("albums"))));
+    // Artists: 9 per line × 2 lines = 18. Albums: 7 per line × 2 lines = 14.
+    w.set_music_search_artists(slint::ModelRc::new(slint::VecModel::from(pick("artists", 18))));
+    w.set_music_search_albums(slint::ModelRc::new(slint::VecModel::from(pick("albums", 14))));
 }
 fn set_browse_src(tab: &'static str, src: Vec<(PhotoTile, i64)>) {
     MUSIC_BROWSE.with(|m| { m.borrow_mut().insert(tab, src); });
@@ -6829,8 +7191,8 @@ fn rebuild_recent_page(w: &MainWindow) {
 fn rebuild_browse_tab(w: &MainWindow, tab: &str) {
     let Some(tab) = browse_tab_key(tab) else { return; };
     let mut v: Vec<(PhotoTile, i64)> = MUSIC_BROWSE.with(|m| m.borrow().get(tab).cloned().unwrap_or_default());
-    // Context search — filter albums/artists/genres by the search box query.
-    if matches!(tab, "albums" | "artists" | "genres") {
+    // Context search — filter the current browse tab by the search box query.
+    {
         let q = music_query_filter().lock().map(|s| s.trim().to_lowercase()).unwrap_or_default();
         if !q.is_empty() { v.retain(|(t, _)| t.label.to_lowercase().contains(&q)); }
     }
@@ -7000,10 +7362,22 @@ static FAV_IDS: std::sync::OnceLock<std::sync::Mutex<Vec<i64>>> = std::sync::Onc
 fn fav_ids() -> &'static std::sync::Mutex<Vec<i64>> {
     FAV_IDS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
+/// Filter item_ids by the current search query (title/artist substring),
+/// resolving each via the cached `music_songs` metadata. Empty query = all.
+fn filter_ids_by_query(ids: &[i64]) -> Vec<i64> {
+    let q = music_query_filter().lock().map(|s| s.trim().to_lowercase()).unwrap_or_default();
+    if q.is_empty() { return ids.to_vec(); }
+    let by_id: std::collections::HashMap<i64, (String, String)> = music_songs().lock()
+        .map(|g| g.iter().map(|s| (s.item_id, (s.title.to_lowercase(), s.artist.to_lowercase()))).collect())
+        .unwrap_or_default();
+    ids.iter().copied().filter(|id| by_id.get(id)
+        .map(|(t, a)| t.contains(&q) || a.contains(&q)).unwrap_or(false)).collect()
+}
 /// Publish one 20-track page of favorites + the page count.
 fn rebuild_fav_page(w: &MainWindow) {
     const PER: usize = 20;
-    let ids = fav_ids().lock().map(|g| g.clone()).unwrap_or_default();
+    let all = fav_ids().lock().map(|g| g.clone()).unwrap_or_default();
+    let ids = filter_ids_by_query(&all);
     let pages = ids.len().div_ceil(PER).max(1);
     let page = (w.get_music_fav_page().max(0) as usize).min(pages - 1);
     let slice: Vec<i64> = ids.iter().skip(page * PER).take(PER).copied().collect();
@@ -7028,6 +7402,18 @@ fn populate_favorites(w: &MainWindow) {
 }
 
 /// Playback History page (np.p5.atmusic.history-page) — most-recent plays first.
+/// Cached ids so the search box can filter the list live.
+static HISTORY_IDS: std::sync::OnceLock<std::sync::Mutex<Vec<i64>>> = std::sync::OnceLock::new();
+fn history_ids() -> &'static std::sync::Mutex<Vec<i64>> {
+    HISTORY_IDS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+/// Re-publish history rows, applying the current search query filter.
+fn rebuild_history_page(w: &MainWindow) {
+    let all = history_ids().lock().map(|g| g.clone()).unwrap_or_default();
+    let ids = filter_ids_by_query(&all);
+    let rows = song_rows_for_ids(w, &ids);
+    w.set_music_history_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+}
 fn populate_history(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
@@ -7036,8 +7422,8 @@ fn populate_history(w: &MainWindow) {
             "SELECT item_id FROM play_history ORDER BY played_at DESC LIMIT 200")
             .fetch_all(&pool).await.unwrap_or_default();
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let rows = song_rows_for_ids(&w, &ids);
-            w.set_music_history_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+            if let Ok(mut g) = history_ids().lock() { *g = ids; }
+            rebuild_history_page(&w);
         });
     });
 }
@@ -7102,6 +7488,12 @@ fn open_artist_detail(w: &MainWindow, artist_id: i64) {
         let album_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(DISTINCT album_id) FROM track_meta WHERE artist_id = ? AND album_id IS NOT NULL")
             .bind(artist_id).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
+        // Albums by this artist (cover + first track) for the 70/30 right column.
+        let alb: Vec<(i64, String, Option<String>, i64)> = sqlx::query_as(
+            "SELECT al.id, al.title, al.cover_path, MIN(tm.item_id) \
+             FROM track_meta tm JOIN albums al ON al.id = tm.album_id \
+             WHERE tm.artist_id = ? GROUP BY al.id ORDER BY al.title COLLATE NOCASE")
+            .bind(artist_id).fetch_all(&pool).await.unwrap_or_default();
         let sub = format!("{} track{}  ·  {} album{}",
             ids.len(), if ids.len() == 1 { "" } else { "s" },
             album_count, if album_count == 1 { "" } else { "s" });
@@ -7122,6 +7514,19 @@ fn open_artist_detail(w: &MainWindow, artist_id: i64) {
                 w.set_music_detail_bio(cached_bio.into());
                 w.set_music_detail_status("".into());
                 set_detail_rows(&w, rows);
+                // Build the artist-albums column tiles (cover → first-track thumb).
+                let pos_of: std::collections::HashMap<i64, i32> = music_ids().lock()
+                    .map(|g| g.iter().enumerate().map(|(i, id)| (*id, i as i32)).collect()).unwrap_or_default();
+                let tiles = w.get_music_tiles();
+                let album_tiles: Vec<PhotoTile> = alb.iter().map(|(_aid, title, cover, first)| {
+                    let pos = pos_of.get(first).copied().unwrap_or(-1);
+                    let thumb = cover.as_ref().filter(|p| std::path::Path::new(p).exists())
+                        .map(|p| slint::Image::load_from_path(std::path::Path::new(p)).unwrap_or_default())
+                        .or_else(|| if pos >= 0 && (pos as usize) < tiles.row_count() { tiles.row_data(pos as usize).map(|t| t.thumb) } else { None })
+                        .unwrap_or_default();
+                    PhotoTile { thumb, label: title.clone().into(), index: pos, ..Default::default() }
+                }).collect();
+                set_detail_artist_albums(&w, album_tiles);
                 w.set_music_detail_open(true);
             }
         });
@@ -7168,6 +7573,38 @@ fn open_genre_detail(w: &MainWindow, genre: String) {
             w.set_music_detail_open(true);
         });
     });
+}
+
+/// Item ids whose file lives directly in `dir` (one folder level), by playback
+/// position — using the in-memory paths/ids so no path SQL is needed.
+fn folder_track_ids(dir: &std::path::Path) -> Vec<i64> {
+    let paths = music_paths().lock().map(|g| g.clone()).unwrap_or_default();
+    let ids = music_ids().lock().map(|g| g.clone()).unwrap_or_default();
+    paths.iter().zip(ids.iter())
+        .filter(|(p, _)| p.parent() == Some(dir))
+        .map(|(_, id)| *id).collect()
+}
+/// Open a folder's own songs page (detail overlay) — its directly-contained tracks.
+fn open_folder_detail(w: &MainWindow, pos: i32) {
+    let Some(dir) = music_paths().lock().ok()
+        .and_then(|g| g.get(pos as usize).and_then(|p| p.parent().map(|d| d.to_path_buf()))) else { return; };
+    let pos_of: std::collections::HashMap<i64, i32> = music_ids().lock()
+        .map(|g| g.iter().enumerate().map(|(i, id)| (*id, i as i32)).collect()).unwrap_or_default();
+    let ids = folder_track_ids(&dir);
+    let title = dir.file_name().and_then(|s| s.to_str()).unwrap_or("Folder").to_string();
+    let sub = format!("{} track{}", ids.len(), if ids.len() == 1 { "" } else { "s" });
+    let rows = song_rows_for_ids(w, &ids);
+    let art = rows.first().map(|r| r.thumb.clone()).unwrap_or_default();
+    if let Ok(mut g) = music_detail().lock() { *g = ("folder".into(), -1, ids.clone()); }
+    w.set_music_detail_kind("folder".into());
+    w.set_music_detail_title(title.into());
+    w.set_music_detail_subtitle(sub.into());
+    w.set_music_detail_art(art);
+    w.set_music_detail_bio("".into());
+    w.set_music_detail_status("".into());
+    set_detail_rows(w, rows);
+    w.set_music_detail_open(true);
+    let _ = pos_of;
 }
 
 /// Queue all of the open detail's tracks and start playback (Play All / Shuffle).
@@ -7407,6 +7844,7 @@ fn play_music_url(w: &MainWindow, url: &str, title: &str) {
         .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
     // Carry the mute state across track changes (each track is a fresh mpv).
     if w.get_music_muted() { cmd.arg("--mute=yes"); }
+    cmd.arg(format!("--af={}", music_full_af(&music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10])))));
     stop_video(); // music takes over the universal stream from any video
     mpv_die_with_parent(&mut cmd);
     match cmd.arg(url).spawn() {
@@ -7462,10 +7900,17 @@ fn save_music_pref(key: &str, val: &str) {
 /// Recompute the highlighted lyric line for the current playhead + offset.
 fn update_lyrics_active(w: &MainWindow) {
     let t_ms = (w.get_music_pos() as f64 * 1000.0) as i64 - w.get_music_lyrics_offset_ms() as i64;
-    let active = music_lyrics_lines().lock().ok()
-        .and_then(|g| tulipix_music::lyrics::active_line(&g, t_ms))
-        .map(|i| i as i32).unwrap_or(-1);
+    let (active, prog) = music_lyrics_lines().lock().ok().map(|g| {
+        let a = tulipix_music::lyrics::active_line(&g, t_ms);
+        let p = a.map(|i| {
+            let start = g[i].0;
+            let end = g.get(i + 1).map(|l| l.0).unwrap_or(start + 4000);
+            (((t_ms - start) as f64) / ((end - start).max(1) as f64)).clamp(0.0, 1.0) as f32
+        }).unwrap_or(0.0);
+        (a.map(|i| i as i32).unwrap_or(-1), p)
+    }).unwrap_or((-1, 0.0));
     if w.get_music_lyrics_active() != active { w.set_music_lyrics_active(active); }
+    w.set_music_lyrics_line_progress(prog); // karaoke wipe within the current line
 }
 
 /// mpv `--key=value` args for the persisted audio config (device / exclusive /
@@ -7543,6 +7988,17 @@ static MUSIC_VIEW_LYRICS_ID: std::sync::OnceLock<std::sync::Mutex<Option<i64>>> 
 fn music_view_lyrics_id() -> &'static std::sync::Mutex<Option<i64>> {
     MUSIC_VIEW_LYRICS_ID.get_or_init(|| std::sync::Mutex::new(None))
 }
+/// Target track for the tag editor when opened from a song's context menu
+/// (Edit media info). `None` ⇒ the editor targets the now-playing track.
+static TAG_EDIT_TARGET: std::sync::OnceLock<std::sync::Mutex<Option<i64>>> = std::sync::OnceLock::new();
+fn tag_edit_target() -> &'static std::sync::Mutex<Option<i64>> {
+    TAG_EDIT_TARGET.get_or_init(|| std::sync::Mutex::new(None))
+}
+/// Previewed-but-unsaved lyrics from a popup re-search: (synced, content).
+static PENDING_VIEW_LYRICS: std::sync::OnceLock<std::sync::Mutex<Option<(bool, String)>>> = std::sync::OnceLock::new();
+fn pending_view_lyrics() -> &'static std::sync::Mutex<Option<(bool, String)>> {
+    PENDING_VIEW_LYRICS.get_or_init(|| std::sync::Mutex::new(None))
+}
 
 /// Populate the lyrics-view popup for a specific track without touching playback.
 /// Loads stored lyrics (DB) or fetches from LRCLIB, then fills the viewer rows +
@@ -7584,8 +8040,14 @@ fn view_lyrics_load(w: &MainWindow, id: i64) {
         }
         let (synced, content) = row.unwrap_or((0, String::new()));
         let lines = if synced != 0 { tulipix_music::lyrics::parse_lrc(&content) } else { Vec::new() };
+        let status = if synced != 0 { "Synced" } else if content.is_empty() { "Not Found" } else { "Normal" };
+        let sub = if album.is_empty() { artist.clone() } else if artist.is_empty() { album.clone() } else { format!("{artist} · {album}") };
         let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_music_lyrics_view_mode("lyrics".into());
+            w.set_music_lyrics_view_results(slint::ModelRc::new(slint::VecModel::<LyricsResult>::default()));
             w.set_music_lyrics_view_title(title.clone().into());
+            w.set_music_lyrics_view_sub(sub.into());
+            w.set_music_lyrics_view_status(status.into());
             w.set_music_lyrics_view_q_name(title.into());
             w.set_music_lyrics_view_q_artist(artist.into());
             w.set_music_lyrics_view_q_album(album.into());
@@ -7595,6 +8057,76 @@ fn view_lyrics_load(w: &MainWindow, id: i64) {
             w.set_music_lyrics_view_plain(if synced == 0 {
                 if content.is_empty() { "No lyrics found — try Search below.".to_string() } else { content }
             } else { String::new() }.into());
+        });
+    });
+}
+
+/// LRCLIB search candidates for the lyrics popup: (synced, content) per result.
+static LYRICS_SEARCH_RESULTS: std::sync::OnceLock<std::sync::Mutex<Vec<(bool, String)>>> = std::sync::OnceLock::new();
+fn lyrics_search_results() -> &'static std::sync::Mutex<Vec<(bool, String)>> {
+    LYRICS_SEARCH_RESULTS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+thread_local! {
+    /// Full library lyrics-manager list (one row per song), paged 20/screen.
+    static LYRICS_MGR_ROWS: std::cell::RefCell<Vec<LyricsMgrRow>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+const LYRICS_MGR_PAGE: usize = 20;
+
+/// Publish the current lyrics-manager page (20 rows) + counters to the UI.
+fn publish_lyrics_mgr_page(w: &MainWindow) {
+    LYRICS_MGR_ROWS.with(|r| {
+        let all = r.borrow();
+        let total = all.len();
+        let synced = all.iter().filter(|x| x.status == "Synced").count();
+        let missing = all.iter().filter(|x| x.status == "Missing").count();
+        // Filter the visible rows by the active stat-card filter (counts stay full).
+        let filter = w.get_music_lyrics_mgr_filter().to_string();
+        let filtered: Vec<LyricsMgrRow> = all.iter().filter(|x| match filter.as_str() {
+            "synced" => x.status == "Synced",
+            "normal" => x.status == "Normal",
+            "missing" => x.status == "Missing",
+            _ => true,
+        }).cloned().collect();
+        let pages = filtered.len().div_ceil(LYRICS_MGR_PAGE).max(1);
+        let page = (w.get_music_lyrics_mgr_page() as usize).min(pages - 1);
+        let slice: Vec<LyricsMgrRow> = filtered.iter().skip(page * LYRICS_MGR_PAGE).take(LYRICS_MGR_PAGE).cloned().collect();
+        w.set_music_lyrics_mgr_rows(slint::ModelRc::new(slint::VecModel::from(slice)));
+        w.set_music_lyrics_mgr_total(total as i32);
+        w.set_music_lyrics_mgr_synced(synced as i32);
+        w.set_music_lyrics_mgr_missing(missing as i32);
+        w.set_music_lyrics_mgr_page(page as i32);
+        w.set_music_lyrics_mgr_pages(pages as i32);
+        w.set_music_lyrics_sync_progress(if total > 0 { (total - missing) as f32 / total as f32 } else { 0.0 });
+    });
+}
+
+/// Rebuild the lyrics-manager list from the song library + the lyrics table.
+fn rebuild_lyrics_manager(w: &MainWindow) {
+    let songs: Vec<(i32, i64, String, String)> = match music_songs().lock() {
+        Ok(g) => g.iter().map(|s| (s.pos, s.item_id, s.title.clone(), s.artist.clone())).collect(),
+        Err(_) => return,
+    };
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("music").await else { return; };
+        // item_id → synced flag, for tracks that actually have lyric content.
+        let rows: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT item_id, synced FROM lyrics WHERE content IS NOT NULL AND content <> ''")
+            .fetch_all(&pool).await.unwrap_or_default();
+        let map: std::collections::HashMap<i64, i64> = rows.into_iter().collect();
+        let list: Vec<LyricsMgrRow> = songs.iter().map(|(pos, id, title, artist)| {
+            let status = match map.get(id) {
+                Some(s) if *s != 0 => "Synced",
+                Some(_) => "Normal",
+                None => "Missing",
+            };
+            LyricsMgrRow { title: title.clone().into(), artist: artist.clone().into(),
+                status: status.into(), index: *pos }
+        }).collect();
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            LYRICS_MGR_ROWS.with(|r| *r.borrow_mut() = list);
+            publish_lyrics_mgr_page(&w);
         });
     });
 }
@@ -7710,6 +8242,7 @@ fn sort_music_songs(sort: &str, dir: &str) {
             "title"  => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
             "artist" => a.artist.to_lowercase().cmp(&b.artist.to_lowercase()),
             "plays"  => a.plays.cmp(&b.plays),
+            "rating" => a.stars.cmp(&b.stars).then(a.title.to_lowercase().cmp(&b.title.to_lowercase())),
             _        => a.added.cmp(&b.added),
         };
         if dir == "asc" { o } else { o.reverse() }
@@ -7725,7 +8258,9 @@ fn rebuild_music_songs_page(w: &MainWindow) {
         q.is_empty() || s.title.to_lowercase().contains(&q) || s.artist.to_lowercase().contains(&q)
     }).collect();
     let total = view.len();
-    let pages = total.div_ceil(SONG_PAGE).max(1);
+    // Smaller pages while searching so songs stay above the artists/albums rows.
+    let per = if q.is_empty() { SONG_PAGE } else { 14 };
+    let pages = total.div_ceil(per).max(1);
     let page = (w.get_music_song_page() as usize).min(pages - 1);
     let tiles = w.get_music_tiles();
     let thumb_at = |pos: i32| -> slint::Image {
@@ -7733,7 +8268,7 @@ fn rebuild_music_songs_page(w: &MainWindow) {
             tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default()
         } else { slint::Image::default() }
     };
-    let page_rows: Vec<&SongMeta> = view.iter().skip(page * SONG_PAGE).take(SONG_PAGE).copied().collect();
+    let page_rows: Vec<&SongMeta> = view.iter().skip(page * per).take(per).copied().collect();
     let rows: Vec<MusicSongRow> = page_rows.iter().map(|s| MusicSongRow {
         thumb: thumb_at(s.pos),
         title: s.title.clone().into(),
@@ -7880,6 +8415,14 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
         let albums = tulipix_music::browse::albums(&pool).await.unwrap_or_default();
         let artists = tulipix_music::browse::artists(&pool).await.unwrap_or_default();
         let genres = tulipix_music::browse::genres(&pool).await.unwrap_or_default();
+        // Favorited albums/artists (np.p5.music.fav-collections). The `loved`
+        // columns are added on demand; ignore the error when they already exist.
+        let _ = sqlx::query("ALTER TABLE albums ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE artists ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let loved_albums: std::collections::HashSet<i64> = sqlx::query_scalar("SELECT id FROM albums WHERE loved = 1")
+            .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
+        let loved_artists: std::collections::HashSet<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE loved = 1")
+            .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
         // Per-track grouping keys, to resolve a group's first playback position.
         let meta: Vec<(i64, Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
             "SELECT item_id, album_id, artist_id, genre FROM track_meta").fetch_all(&pool).await.unwrap_or_default();
@@ -7895,11 +8438,25 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
         let folder_rows: Vec<(i64, String)> = sqlx::query_as(
             "SELECT item_id, folder FROM track_meta WHERE folder IS NOT NULL AND folder != ''")
             .fetch_all(&pool).await.unwrap_or_default();
-        // Playlists (np.p4.music.playlists) — name + first track.
-        let playlist_rows: Vec<(i64, String, i64, Option<i64>)> = sqlx::query_as(
-            "SELECT p.id, p.name, COUNT(pi.item_id), MIN(pi.item_id) \
+        // Playlists (np.p4.music.playlists) — name + first track. Smart playlists
+        // (Loved / Recently Added) compute their tracks from a rule, so the LEFT
+        // JOIN count is 0 — resolve those via the rule so counts/covers are real.
+        let playlist_raw: Vec<(i64, String, i64, Option<i64>, i64, Option<String>)> = sqlx::query_as(
+            "SELECT p.id, p.name, COUNT(pi.item_id), MIN(pi.item_id), COALESCE(p.is_smart,0), p.rule_json \
              FROM playlists p LEFT JOIN playlist_items pi ON pi.playlist_id = p.id GROUP BY p.id")
             .fetch_all(&pool).await.unwrap_or_default();
+        let mut playlist_rows: Vec<(i64, String, i64, Option<i64>)> = Vec::with_capacity(playlist_raw.len());
+        for (pid, name, n, first, is_smart, rule_json) in playlist_raw {
+            if is_smart != 0 {
+                let ids = match rule_json.as_ref().and_then(|j| serde_json::from_str::<tulipix_music::playlists::SmartRule>(j).ok()) {
+                    Some(rule) => tulipix_music::playlists::evaluate(&pool, &rule).await.unwrap_or_default(),
+                    None => Vec::new(),
+                };
+                playlist_rows.push((pid, name, ids.len() as i64, ids.first().copied()));
+            } else {
+                playlist_rows.push((pid, name, n, first));
+            }
+        }
 
         let _ = weak.upgrade_in_event_loop(move |w| {
             let id_of: std::collections::HashMap<String, i64> = id_rows.into_iter()
@@ -7948,21 +8505,27 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
                     .or_else(|| tile_at(pos).map(|t| t.thumb))
                     .unwrap_or_default();
                 let label = match &a.artist { Some(ar) => format!("{} · {}", a.title, ar), None => a.title.clone() };
-                (PhotoTile { thumb, label: label.into(), index: pos, ..Default::default() }, a.track_count)
+                (PhotoTile { thumb, label: label.into(), index: pos, starred: loved_albums.contains(&a.album_id), ..Default::default() }, a.track_count)
             }).collect();
             set_browse_src("albums", album_tiles_src.clone());
             rebuild_browse_tab(&w, "albums");
+            // Favorited albums → the categorized Favorites page.
+            let fav_album_tiles: Vec<PhotoTile> = album_tiles_src.iter().filter(|(t, _)| t.starred).map(|(t, _)| t.clone()).collect();
+            w.set_music_fav_albums(slint::ModelRc::new(slint::VecModel::from(fav_album_tiles)));
 
             // Artists — cover from the artist's first track (album art); Genres stay label-only.
             let artist_src: Vec<(PhotoTile, i64)> = artists.iter().map(|(id, name, n)| {
                 let pos = first_artist.get(id).copied().unwrap_or(-1);
                 (PhotoTile {
                     thumb: tile_at(pos).map(|t| t.thumb).unwrap_or_default(),
-                    label: format!("{name} · {n}").into(), index: pos, ..Default::default()
+                    label: format!("{name} · {n}").into(), index: pos, starred: loved_artists.contains(id), ..Default::default()
                 }, *n)
             }).collect();
-            set_browse_src("artists", artist_src);
+            set_browse_src("artists", artist_src.clone());
             rebuild_browse_tab(&w, "artists");
+            // Favorited artists → the categorized Favorites page.
+            let fav_artist_tiles: Vec<PhotoTile> = artist_src.iter().filter(|(t, _)| t.starred).map(|(t, _)| t.clone()).collect();
+            w.set_music_fav_artists(slint::ModelRc::new(slint::VecModel::from(fav_artist_tiles)));
             let genre_src: Vec<(PhotoTile, i64)> = genres.iter().map(|(g, n)| (PhotoTile {
                 label: format!("{g} · {n}").into(),
                 index: first_genre.get(g).copied().unwrap_or(-1), ..Default::default()
@@ -8039,13 +8602,18 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
 
             // Playlists — `index` carries the playlist DB id so playlist-open can
             // load its tracks (np.p5.music.playlists-builder).
-            let playlist_src: Vec<(PhotoTile, i64)> = playlist_rows.iter().map(|(pid, name, n, _first)| (PhotoTile {
-                label: format!("{name} · {n}").into(),
-                thumb: playlist_cover_path(*pid)
+            let playlist_src: Vec<(PhotoTile, i64)> = playlist_rows.iter().map(|(pid, name, n, first)| {
+                // Cover: custom playlist art → else the first track's album thumb.
+                let pos = first.and_then(|fid| pos_of.get(&fid).copied()).unwrap_or(-1);
+                let thumb = playlist_cover_path(*pid)
                     .map(|p| slint::Image::load_from_path(std::path::Path::new(&p)).unwrap_or_default())
-                    .unwrap_or_default(),
-                index: *pid as i32, ..Default::default()
-            }, *n)).collect();
+                    .or_else(|| tile_at(pos).map(|t| t.thumb))
+                    .unwrap_or_default();
+                (PhotoTile {
+                    label: format!("{name} · {n}").into(), thumb,
+                    index: *pid as i32, ..Default::default()
+                }, *n)
+            }).collect();
             set_browse_src("playlists", playlist_src);
             rebuild_browse_tab(&w, "playlists");
 
@@ -8123,10 +8691,22 @@ fn music_eq_af(gains: &[f64; 10]) -> String {
     format!("anequalizer=params=%{}%{}", entries.len(), entries)
 }
 
+/// Live momentary loudness (LUFS) from the ebur128 visualizer filter, stored as
+/// a normalized 0..1000 amplitude so the visualizer pulses to the actual audio.
+static MUSIC_LOUDNESS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// LUFS → 0..1 envelope (≈ -45 dB silence .. -6 dB loud).
+fn loudness_to_amp(lufs: f64) -> f32 { (((lufs + 45.0) / 39.0).clamp(0.0, 1.0)) as f32 }
+/// Append the ebur128 metering filter (labelled `vis`) to the EQ `af` so we can
+/// read real loudness. Empty EQ → just the meter.
+fn music_full_af(eq_af: &str) -> String {
+    const VIS: &str = "@vis:ebur128=metadata=1:video=0";
+    if eq_af.is_empty() { VIS.to_string() } else { format!("{eq_af},{VIS}") }
+}
+
 /// Apply the current EQ gains to the live track + reflect them in the UI bands.
 fn apply_music_eq(w: &MainWindow) {
     let gains = music_eq().lock().map(|g| *g).unwrap_or([0.0; 10]);
-    music_ipc(&["set_property", "af", &music_eq_af(&gains)]); // empty clears
+    music_ipc(&["set_property", "af", &music_full_af(&music_eq_af(&gains))]);
     let bands: Vec<f32> = gains.iter().map(|g| *g as f32).collect();
     w.set_music_eq_bands(slint::ModelRc::new(slint::VecModel::from(bands)));
 }
@@ -8171,6 +8751,8 @@ fn music_ipc(args: &[&str]) {
 fn advance_music(w: &MainWindow) {
     // "Repeat one" always re-plays the current track, ignoring the queue.
     if w.get_music_repeat() == "one" { advance_sequential(w); return; }
+    // Shuffle overrides the sequential auto-queue — pick a random next track.
+    if w.get_music_shuffle() { advance_sequential(w); return; }
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("music").await else {
@@ -8240,11 +8822,10 @@ fn play_music_at(w: &MainWindow, idx: i32) {
     stop_video(); // music takes over the universal stream from any video
     mpv_die_with_parent(&mut cmd);
     let s = tulipix_core::settings::Settings::load().unwrap_or_default();
-    if let Some(name) = s.advanced.get("music.eq-preset") {
-        if let Some(eq) = tulipix_music::eq::Equalizer::preset(name.trim()) {
-            cmd.arg(format!("--af={}", eq.mpv_af()));
-        }
-    }
+    // Always attach the ebur128 meter (+ EQ if any) so the visualizer pulses to
+    // the real audio loudness (np.p5.music.visualizer — beat sync).
+    let eq_af = music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10]));
+    cmd.arg(format!("--af={}", music_full_af(&eq_af)));
     // Apply persisted audio config: device / exclusive / gapless / replaygain
     // (np.p5.music.output / .gapless / .replaygain).
     for a in music_audio_args(&s) { cmd.arg(a); }
@@ -8266,12 +8847,20 @@ fn play_music_at(w: &MainWindow, idx: i32) {
                 "{\"command\":[\"observe_property\",2,\"duration\"]}\n",
                 "{\"command\":[\"observe_property\",3,\"pause\"]}\n",
                 "{\"command\":[\"observe_property\",4,\"volume\"]}\n",
-                "{\"command\":[\"observe_property\",5,\"mute\"]}\n").as_bytes());
+                "{\"command\":[\"observe_property\",5,\"mute\"]}\n",
+                "{\"command\":[\"observe_property\",6,\"af-metadata/vis/lavfi.r128.M\"]}\n").as_bytes());
             let rd = BufReader::new(stream);
             for line in rd.lines().map_while(Result::ok) {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
                 if v["event"] != "property-change" { continue; }
                 let name = v["name"].as_str().unwrap_or("").to_string();
+                // Real loudness → atomic (handled in-thread, no event-loop hop per frame).
+                if name == "af-metadata/vis/lavfi.r128.M" {
+                    if let Some(l) = v["data"].as_str().and_then(|s| s.parse::<f64>().ok()) {
+                        MUSIC_LOUDNESS.store((loudness_to_amp(l) * 1000.0) as i32, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    continue;
+                }
                 let wk = weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(w) = wk.upgrade() else { return; };
@@ -8281,7 +8870,7 @@ fn play_music_at(w: &MainWindow, idx: i32) {
                             update_lyrics_active(&w); }
                         "duration" => if let Some(d) = v["data"].as_f64() {
                             w.set_music_dur(d as f32); w.set_music_dur_label(fmt_clock(d).into()); }
-                        "pause"  => if let Some(p) = v["data"].as_bool() { w.set_music_playing(!p); }
+                        "pause"  => if let Some(p) = v["data"].as_bool() { w.set_music_playing(!p); media_set_playing(!p); }
                         "volume" => if let Some(d) = v["data"].as_f64() { w.set_music_volume(d as f32); }
                         "mute"   => if let Some(m) = v["data"].as_bool() { w.set_music_muted(m); }
                         _ => {}
@@ -8353,8 +8942,9 @@ fn play_music_at(w: &MainWindow, idx: i32) {
             });
         });
     }
-    // Refresh lyrics (synced highlight) for the new track if the panel is open.
-    if w.get_music_player_panel() == "lyrics" { load_music_lyrics(w); }
+    // Always refresh lyrics for the new track so the now-playing lyric line
+    // (above the seekbar) syncs automatically — independent of the side panel.
+    load_music_lyrics(w);
 }
 
 /// Load the photo at `idx` from the current library list into the viewer,
@@ -8771,6 +9361,82 @@ fn human_size(bytes: u64) -> String {
         raw.push(c);
     }
     if unit == "bytes" { format!("{raw} bytes") } else { format!("{val:.2} {unit} ({raw} bytes)") }
+}
+
+/// Minimal URL query-component percent-encoder (spaces → +).
+fn urlencoding(s: &str) -> String {
+    s.bytes().map(|b| match b {
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+        b' ' => "+".to_string(),
+        _ => format!("%{b:02X}"),
+    }).collect()
+}
+
+thread_local! {
+    /// OS media-control handle, held on the UI thread so playback-state updates
+    /// (which must mirror real state or the DE sends the wrong key event) and the
+    /// initial registration share one connection.
+    static MEDIA_CONTROLS: std::cell::RefCell<Option<souvlaki::MediaControls>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Mirror the real playback state to the OS media surface so the desktop sends
+/// the correct Play vs Pause event for the next media-key press.
+fn media_set_playing(playing: bool) {
+    MEDIA_CONTROLS.with(|c| {
+        if let Some(ctrl) = c.borrow_mut().as_mut() {
+            let st = if playing {
+                souvlaki::MediaPlayback::Playing { progress: None }
+            } else {
+                souvlaki::MediaPlayback::Paused { progress: None }
+            };
+            let _ = ctrl.set_playback(st);
+        }
+    });
+}
+
+/// Register an OS media-control surface (MPRIS / SMTC / MediaPlayer) so the
+/// hardware/keyboard media keys drive playback (np.p4.music.player-keys).
+fn setup_media_controls(window: &MainWindow) {
+    use souvlaki::{MediaControlEvent, MediaControls, MediaPlayback, PlatformConfig};
+    let config = PlatformConfig { dbus_name: "tulipix", display_name: "Tulipix", hwnd: None };
+    let mut controls = match MediaControls::new(config) {
+        Ok(c) => c,
+        Err(e) => { tracing::warn!(error = ?e, "media controls unavailable"); return; }
+    };
+    let weak = window.as_weak();
+    let attached = controls.attach(move |event: MediaControlEvent| {
+        let weak = weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(w) = weak.upgrade() else { return; };
+            match event {
+                MediaControlEvent::Toggle => w.invoke_music_toggle_pause(),
+                MediaControlEvent::Play  => if !w.get_music_playing() { w.invoke_music_toggle_pause(); },
+                MediaControlEvent::Pause => if  w.get_music_playing() { w.invoke_music_toggle_pause(); },
+                MediaControlEvent::Stop  => if  w.get_music_playing() { w.invoke_music_toggle_pause(); },
+                MediaControlEvent::Next     => w.invoke_music_next(),
+                MediaControlEvent::Previous => w.invoke_music_prev(),
+                _ => {}
+            }
+        });
+    });
+    if let Err(e) = attached { tracing::warn!(error = ?e, "media controls attach failed"); return; }
+    // Advertise as Playing so desktop environments route the media keys to us.
+    let _ = controls.set_playback(MediaPlayback::Playing { progress: None });
+    MEDIA_CONTROLS.with(|c| *c.borrow_mut() = Some(controls));
+}
+
+/// Open a file in the OS default application (Play in default player).
+fn open_in_default_app(path: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    let prog = "xdg-open";
+    #[cfg(target_os = "macos")]
+    let prog = "open";
+    #[cfg(target_os = "windows")]
+    let prog = "explorer";
+    match std::process::Command::new(prog).arg(path).spawn() {
+        Ok(_) => {}
+        Err(e) => tracing::error!(error = %e, ?path, "open in default app failed"),
+    }
 }
 
 // ── Data-driven Settings panels (AI · Endpoints · Security · Data · System) ──

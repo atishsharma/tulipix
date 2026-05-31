@@ -61,6 +61,8 @@ reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true
 walkdir = "2"
 libc = "0.2"
+# OS media-key / now-playing integration (Linux MPRIS · Windows SMTC · macOS).
+souvlaki = "0.7"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 sha2 = "0.10"
 kamadak-exif = "0.6"
