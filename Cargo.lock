@@ -6942,6 +6942,7 @@ dependencies = [
  "dark-light",
  "image",
  "kamadak-exif",
+ "libc",
  "mimalloc",
  "notify",
  "reqwest",

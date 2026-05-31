@@ -60,6 +60,7 @@ sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true
 walkdir = "2"
+libc = "0.2"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 sha2 = "0.10"
 kamadak-exif = "0.6"

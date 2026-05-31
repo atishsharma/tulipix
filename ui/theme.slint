@@ -1,0 +1,42 @@
+// Independent light/dark theme tokens for the Music section (np.p5.atmusic).
+// Toggle `MusicTheme.light`; every Music surface/text reads from these tokens.
+// Light mode is a colourful, glassmorphism-inspired palette (tinted translucent
+// surfaces over a soft gradient) — not flat white — for readability + style.
+export global MusicTheme {
+    in-out property <bool> light: false;
+
+    // Page backdrop (gradient in light mode → the "glass" sits over colour).
+    out property <brush> page-bg: light
+        ? @linear-gradient(135deg, #f4e9ff 0%, #e7f0ff 45%, #ffe9f4 100%)
+        : #0f0f0f;
+
+    // Text — deep indigo in light mode (readable on the pale gradient).
+    out property <color> fg:       light ? #1b1533 : #ffffff;
+    out property <color> fg2:      light ? #2c2452 : #e8e8ea;
+    out property <color> fg3:      light ? #463c72 : #c8c8d0;
+    out property <color> fg-dim:   light ? #645a8c : #9a9aa2;
+    out property <color> fg-dim2:  light ? #6f6597 : #aaaaaa;
+    out property <color> fg-mute:  light ? #968fb6 : #6a6a72;
+    out property <color> fg-faint: light ? #00000055 : #ffffff55;
+
+    // Solid-ish surfaces — translucent tinted glass in light mode.
+    out property <color> surf-page:    light ? #eef0fb : #0f0f0f;
+    out property <color> surf-header:  light ? #ffffffd2 : #18181c;
+    out property <color> surf-header2: light ? #f2ecfdc8 : #131316;
+    out property <color> surf-player:  light ? #ffffffdd : #14141b;
+    out property <color> surf-pop:     light ? #fbf7fff5 : #1c1c25;
+    out property <color> surf-pop2:    light ? #f3edfc : #1c1c22;
+    out property <color> surf-thumb:   light ? #e2ddf2 : #2a2a2e;
+    out property <color> surf-zen:    light ? #efe9fb   : #07070a;
+    out property <color> surf-zen-w1: light ? #efe9fbdd : #07070ae0;
+    out property <color> surf-zen-w2: light ? #efe9fbf2 : #07070af2;
+
+    // Translucent surfaces / borders — colour-tinted in light mode so buttons,
+    // chips and hovers stay visible (the white-on-white readability fix).
+    out property <color> line:   light ? #6d4ed63a : #ffffff22;
+    out property <color> hov:    light ? #ec489922 : #ffffff12;
+    out property <color> hov2:   light ? #8b5cf63d : #ffffff1f;
+    out property <color> surf1:  light ? #6d4ed61f : #ffffff14;
+    out property <color> surf0:  light ? #ec489917 : #ffffff10;
+    out property <color> surf00: light ? #8b5cf612 : #ffffff08;
+}

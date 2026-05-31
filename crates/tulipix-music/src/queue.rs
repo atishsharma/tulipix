@@ -65,6 +65,11 @@ pub async fn record_play(pool: &SqlitePool, item_id: i64, ms_played: i64) -> Res
         .bind(item_id).bind(t).bind(ms_played).execute(pool).await?;
     sqlx::query("UPDATE track_meta SET play_count = play_count + 1, last_played = ? WHERE item_id = ?")
         .bind(t).bind(item_id).execute(pool).await?;
+    // Keep only the most recent 50 plays (np.p5.atmusic.history-page).
+    sqlx::query(
+        "DELETE FROM play_history WHERE id NOT IN
+         (SELECT id FROM play_history ORDER BY played_at DESC LIMIT 50)")
+        .execute(pool).await?;
     Ok(())
 }
 
