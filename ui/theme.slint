@@ -6,9 +6,13 @@
 // accent (#ec4899) is shared and unchanged across both themes.
 export global MusicTheme {
     in-out property <bool> light: true;
+    // Extra-dark OLED variant of the dark theme — pure-black surfaces so true
+    // blacks switch off OLED pixels (np.p5.atmusic.oled). Only meaningful when
+    // `light` is false; the zen theme button cycles light → dark → OLED.
+    in-out property <bool> oled: false;
 
-    // Page backdrop — flat near-white in light, near-black in dark.
-    out property <brush> page-bg: light ? #f3f3f6 : #0f0f0f;
+    // Page backdrop — flat near-white in light, near-black in dark, pure black OLED.
+    out property <brush> page-bg: light ? #f3f3f6 : (oled ? #000000 : #0f0f0f);
 
     // Text — dark ink on light surfaces (mirror of white-on-black in dark).
     out property <color> fg:       light ? #16161b : #ffffff;
@@ -19,17 +23,18 @@ export global MusicTheme {
     out property <color> fg-mute:  light ? #6b6b74 : #6a6a72;
     out property <color> fg-faint: light ? #00000055 : #ffffff55;
 
-    // Solid surfaces — light greys mirroring the dark near-blacks.
-    out property <color> surf-page:    light ? #f3f3f6 : #0f0f0f;
-    out property <color> surf-header:  light ? #ffffff : #18181c;
-    out property <color> surf-header2: light ? #f7f7fa : #131316;
-    out property <color> surf-player:  light ? #ffffff : #14141b;
-    out property <color> surf-pop:     light ? #ffffff : #1c1c25;
-    out property <color> surf-pop2:    light ? #f1f1f5 : #1c1c22;
-    out property <color> surf-thumb:   light ? #e6e6ea : #2a2a2e;
-    out property <color> surf-zen:    light ? #f6f6f9   : #07070a;
-    out property <color> surf-zen-w1: light ? #f6f6f9e0 : #07070ae0;
-    out property <color> surf-zen-w2: light ? #f6f6f9f2 : #07070af2;
+    // Solid surfaces — light greys mirroring the dark near-blacks; OLED collapses
+    // them to black / hairline-grey.
+    out property <color> surf-page:    light ? #f3f3f6 : (oled ? #000000 : #0f0f0f);
+    out property <color> surf-header:  light ? #ffffff : (oled ? #000000 : #18181c);
+    out property <color> surf-header2: light ? #f7f7fa : (oled ? #050505 : #131316);
+    out property <color> surf-player:  light ? #ffffff : (oled ? #000000 : #14141b);
+    out property <color> surf-pop:     light ? #ffffff : (oled ? #0a0a0a : #1c1c25);
+    out property <color> surf-pop2:    light ? #f1f1f5 : (oled ? #0a0a0a : #1c1c22);
+    out property <color> surf-thumb:   light ? #e6e6ea : (oled ? #161616 : #2a2a2e);
+    out property <color> surf-zen:    light ? #f6f6f9   : (oled ? #000000   : #07070a);
+    out property <color> surf-zen-w1: light ? #f6f6f9e0 : (oled ? #000000e0 : #07070ae0);
+    out property <color> surf-zen-w2: light ? #f6f6f9f2 : (oled ? #000000f2 : #07070af2);
 
     // Translucent overlays — dark uses faint white alpha; light uses STRONGER
     // black alpha so borders read as real dark outlines and buttons/chips have

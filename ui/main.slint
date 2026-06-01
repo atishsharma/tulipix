@@ -7,7 +7,7 @@ import { PhotoEditor } from "photo_editor.slint";
 import { SharedHero, HeroRect } from "shared_element.slint";
 import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
-import { MusicPage, MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MusicFullscreen, MusicMini } from "page_music.slint";
+import { MusicPage, MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, MusicFullscreen, MusicMini } from "page_music.slint";
 import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry } from "page_cloud.slint";
@@ -784,6 +784,8 @@ export component MainWindow inherits Window {
     in-out property <string> music-props-artist: "";
     in-out property <string> music-props-album: "";
     in-out property <string> music-props-genre: "";
+    in-out property <string> music-props-release: "";
+    in-out property <string> music-props-credits: "";
     in-out property <string> music-props-duration: "";
     in-out property <string> music-props-path: "";
     in-out property <string> music-props-format: "";
@@ -807,6 +809,23 @@ export component MainWindow inherits Window {
     callback music-lyrics-mgr-view(int);
     callback music-lyrics-mgr-search-open(int);
     callback music-lyrics-mgr-back();
+    // Library metadata manager (np.p5.atmusic.metadata-manager).
+    in-out property <bool> music-meta-mgr-open: false;
+    in-out property <int> music-meta-mgr-total: 0;
+    in-out property <int> music-meta-mgr-tagged: 0;
+    in-out property <int> music-meta-mgr-missing: 0;
+    in-out property <[MetaMgrRow]> music-meta-mgr-rows: [];
+    in-out property <int> music-meta-mgr-page: 0;
+    in-out property <int> music-meta-mgr-pages: 1;
+    in-out property <string> music-meta-mgr-filter: "all";
+    in-out property <string> music-meta-fetch-status: "";
+    in-out property <float> music-meta-fetch-progress: 0;
+    callback music-open-meta-manager();
+    callback music-meta-mgr-set-page(int);
+    callback music-meta-mgr-set-filter(string);
+    callback music-meta-mgr-edit(int);
+    callback music-meta-fetch-all();
+    callback music-meta-fetch-one(int);
     // Read-only lyrics-view popup (no playback) + re-search.
     in-out property <bool> music-lyrics-view-open: false;
     in-out property <string> music-lyrics-view-title: "";
@@ -853,11 +872,13 @@ export component MainWindow inherits Window {
     in-out property <string> music-device: "auto";
     in-out property <bool> music-exclusive: false;
     in-out property <bool> music-gapless: true;
+    in-out property <bool> music-home-connect: false;
     in-out property <float> music-crossfade: 0;
     in-out property <string> music-replaygain: "off";
     callback music-set-device(string);
     callback music-toggle-exclusive();
     callback music-toggle-gapless();
+    callback music-toggle-home-connect();
     callback music-set-crossfade(float);
     callback music-set-replaygain(string);
     in-out property <[string]> music-cast-devices: [];
@@ -872,12 +893,20 @@ export component MainWindow inherits Window {
     in-out property <string> music-tag-title: "";
     in-out property <string> music-tag-artist: "";
     in-out property <string> music-tag-album: "";
+    in-out property <string> music-tag-album-artist: "";
     in-out property <string> music-tag-date: "";
     in-out property <string> music-tag-genre: "";
+    in-out property <string> music-tag-credits: "";
+    in-out property <image> music-tag-art;
+    in-out property <bool> music-tag-locked: false;
+    in-out property <string> music-tag-fetch-status: "";
     in property <[string]> music-genre-options: [];
     callback music-set-vis-style(int);
     callback music-tag-edit();
     callback music-tag-save();
+    callback music-tag-change-art();
+    callback music-tag-fetch();
+    callback music-tag-toggle-lock();
     // Phase 5 music — playlist builder / M3U / queue reorder.
     in-out property <[MusicSongRow]> music-playlist-tracks: [];
     in-out property <string> music-playlist-name: "";
@@ -971,6 +1000,7 @@ export component MainWindow inherits Window {
     callback music-album-open(int);
     callback music-artist-open(int);
     callback music-genre-open(int);
+    callback music-genre-set-art(int);
     callback music-detail-close();
     callback music-detail-play-all();
     callback music-detail-shuffle();
@@ -1410,6 +1440,7 @@ export component MainWindow inherits Window {
                 song-delete(i) => { root.music-song-delete(i); }
                 song-props-open <=> root.music-song-props-open; props-title: root.music-props-title; props-artist: root.music-props-artist;
                 props-album: root.music-props-album; props-genre: root.music-props-genre; props-duration: root.music-props-duration;
+                props-release: root.music-props-release; props-credits: root.music-props-credits;
                 props-path: root.music-props-path; props-format: root.music-props-format; props-size: root.music-props-size;
                 sync-all-lyrics => { root.music-sync-all-lyrics(); } lyrics-sync-status: root.music-lyrics-sync-status; lyrics-sync-progress: root.music-lyrics-sync-progress;
                 lyrics-mgr-open <=> root.music-lyrics-mgr-open; lyrics-mgr-total: root.music-lyrics-mgr-total;
@@ -1419,6 +1450,14 @@ export component MainWindow inherits Window {
                 lyrics-mgr-mode <=> root.music-lyrics-mgr-mode;
                 lyrics-mgr-view(i) => { root.music-lyrics-mgr-view(i); } lyrics-mgr-search-open(i) => { root.music-lyrics-mgr-search-open(i); }
                 lyrics-mgr-back => { root.music-lyrics-mgr-back(); }
+                meta-mgr-open <=> root.music-meta-mgr-open; meta-mgr-total: root.music-meta-mgr-total; meta-mgr-rows: root.music-meta-mgr-rows;
+                meta-mgr-tagged: root.music-meta-mgr-tagged; meta-mgr-missing: root.music-meta-mgr-missing;
+                meta-mgr-page: root.music-meta-mgr-page; meta-mgr-pages: root.music-meta-mgr-pages;
+                meta-mgr-filter <=> root.music-meta-mgr-filter;
+                meta-fetch-status: root.music-meta-fetch-status; meta-fetch-progress: root.music-meta-fetch-progress;
+                open-meta-manager => { root.music-open-meta-manager(); } meta-mgr-set-page(d) => { root.music-meta-mgr-set-page(d); }
+                meta-mgr-set-filter(f) => { root.music-meta-mgr-set-filter(f); } meta-mgr-edit(i) => { root.music-meta-mgr-edit(i); }
+                meta-fetch-all => { root.music-meta-fetch-all(); } meta-fetch-one(i) => { root.music-meta-fetch-one(i); }
                 lyrics-mgr-filter <=> root.music-lyrics-mgr-filter; lyrics-mgr-set-filter(f) => { root.music-lyrics-mgr-set-filter(f); }
                 lyrics-view-open <=> root.music-lyrics-view-open; lyrics-view-title: root.music-lyrics-view-title;
                 lyrics-view-plain: root.music-lyrics-view-plain; lyrics-view-rows: root.music-lyrics-view-rows;
@@ -1442,6 +1481,7 @@ export component MainWindow inherits Window {
                 lyrics-offset(d) => { root.music-lyrics-offset(d); }
                 devices: root.music-devices; device <=> root.music-device; exclusive <=> root.music-exclusive;
                 gapless <=> root.music-gapless; crossfade <=> root.music-crossfade; replaygain <=> root.music-replaygain;
+                home-connect <=> root.music-home-connect; toggle-home-connect => { root.music-toggle-home-connect(); }
                 set-device(d) => { root.music-set-device(d); } toggle-exclusive => { root.music-toggle-exclusive(); }
                 toggle-gapless => { root.music-toggle-gapless(); } set-crossfade(v) => { root.music-set-crossfade(v); }
                 set-replaygain(r) => { root.music-set-replaygain(r); }
@@ -1451,6 +1491,9 @@ export component MainWindow inherits Window {
                 scrobble-on <=> root.music-scrobble-on; toggle-scrobble => { root.music-toggle-scrobble(); }
                 tag-open <=> root.music-tag-open; tag-title <=> root.music-tag-title; tag-artist <=> root.music-tag-artist; tag-album <=> root.music-tag-album; tag-date <=> root.music-tag-date;
                 tag-genre <=> root.music-tag-genre; genre-options: root.music-genre-options;
+                tag-album-artist <=> root.music-tag-album-artist; tag-credits <=> root.music-tag-credits;
+                tag-art: root.music-tag-art; tag-locked <=> root.music-tag-locked; tag-fetch-status: root.music-tag-fetch-status;
+                tag-change-art => { root.music-tag-change-art(); } tag-fetch => { root.music-tag-fetch(); } tag-toggle-lock => { root.music-tag-toggle-lock(); }
                 tag-edit => { root.music-tag-edit(); } tag-save => { root.music-tag-save(); }
                 playlist-tracks: root.music-playlist-tracks; playlist-name <=> root.music-playlist-name;
                 playlist-cover: root.music-playlist-cover; playlist-set-art => { root.music-playlist-set-art(); }
@@ -1493,6 +1536,7 @@ export component MainWindow inherits Window {
                 detail-page: root.music-detail-page; detail-pages: root.music-detail-pages; set-detail-page(d) => { root.music-set-detail-page(d); }
                 detail-sort: root.music-detail-sort; detail-sort-dir: root.music-detail-sort-dir; set-detail-sort(s) => { root.music-set-detail-sort(s); }
                 album-open(i) => { root.music-album-open(i); } artist-open(i) => { root.music-artist-open(i); } genre-open(i) => { root.music-genre-open(i); }
+                genre-set-art(i) => { root.music-genre-set-art(i); }
                 detail-close => { root.music-detail-close(); } detail-play-all => { root.music-detail-play-all(); }
                 detail-shuffle => { root.music-detail-shuffle(); } detail-fetch-meta => { root.music-detail-fetch-meta(); }
                 detail-replace-art => { root.music-detail-replace-art(); } detail-play-track(i) => { root.music-detail-play-track(i); }
