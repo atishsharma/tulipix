@@ -819,6 +819,7 @@ export component MainWindow inherits Window {
     in-out property <string> music-lyrics-view-sub: "";
     in-out property <string> music-lyrics-view-status: "";
     in-out property <string> music-lyrics-view-mode: "lyrics";
+    in-out property <bool> music-lyrics-view-searching: false;
     in-out property <[LyricsResult]> music-lyrics-view-results: [];
     callback music-lyrics-view-pick(int);
     callback music-lyrics-view-back();
@@ -871,6 +872,10 @@ export component MainWindow inherits Window {
     in-out property <string> music-tag-title: "";
     in-out property <string> music-tag-artist: "";
     in-out property <string> music-tag-album: "";
+    in-out property <string> music-tag-date: "";
+    in-out property <string> music-tag-genre: "";
+    in property <[string]> music-genre-options: [];
+    callback music-set-vis-style(int);
     callback music-tag-edit();
     callback music-tag-save();
     // Phase 5 music — playlist builder / M3U / queue reorder.
@@ -902,6 +907,9 @@ export component MainWindow inherits Window {
     callback music-podcast-play(int);
     callback music-podcast-refresh();
     callback music-playlist-move(int, int);
+    in-out property <string> music-playlist-sort: "custom";
+    in-out property <string> music-playlist-sort-dir: "asc";
+    callback music-playlist-sort-set(string);
     in-out property <[MusicSongRow]> music-audiobooks: [];
     in-out property <float> music-book-speed: 1.0;
     in-out property <bool> music-book-skip-silence-on: false;
@@ -930,7 +938,12 @@ export component MainWindow inherits Window {
     callback music-set-fav-page(int);
     callback music-album-fav(int);
     callback music-artist-fav(int);
+    callback music-album-rate(int, int);
+    callback music-artist-rate(int, int);
     in-out property <[MusicSongRow]> music-history-rows: [];
+    in-out property <int> music-history-page: 1;
+    in-out property <int> music-history-pages: 1;
+    callback music-set-history-page(int);
     callback music-clear-history();
     in-out property <[PhotoTile]> music-search-artists: [];
     in-out property <[PhotoTile]> music-search-albums: [];
@@ -950,6 +963,10 @@ export component MainWindow inherits Window {
     in-out property <[MusicSongRow]> music-detail-tracks: [];
     in-out property <[PhotoTile]> music-detail-artist-albums: [];
     in-out property <string> music-detail-status: "";
+    in-out property <bool> music-detail-loved: false;
+    in-out property <int> music-detail-stars: 0;
+    callback music-detail-fav();
+    callback music-detail-rate(int);
     callback music-detail-open-artist();
     callback music-album-open(int);
     callback music-artist-open(int);
@@ -987,8 +1004,10 @@ export component MainWindow inherits Window {
     in-out property <bool> music-mini-bubble: false;
     in-out property <length> music-mini-x: 0px;
     in-out property <length> music-mini-y: 0px;
-    in-out property <length> music-mini-w: 300px;
-    in-out property <length> music-mini-h: 470px;
+    // Uniform scale (keeps the 300×470 aspect ratio); 1.0 = original, 3.0 = 300%.
+    in-out property <float> music-mini-scale: 1.0;
+    property <length> music-mini-w: 300px * root.music-mini-scale;
+    property <length> music-mini-h: 470px * root.music-mini-scale;
     in-out property <length> music-bubble-y: -1px;   // <0 = uninitialised (centre on show)
     in-out property <bool> music-mini-show-queue: false;
     callback music-open-fullscreen();
@@ -1408,6 +1427,7 @@ export component MainWindow inherits Window {
                 lyrics-view-dirty: root.music-lyrics-view-dirty; lyrics-view-save => { root.music-lyrics-view-save(); }
                 lyrics-view-sub: root.music-lyrics-view-sub; lyrics-view-status: root.music-lyrics-view-status;
                 lyrics-view-mode <=> root.music-lyrics-view-mode; lyrics-view-results: root.music-lyrics-view-results;
+                lyrics-view-searching: root.music-lyrics-view-searching;
                 lyrics-view-pick(i) => { root.music-lyrics-view-pick(i); } lyrics-view-back => { root.music-lyrics-view-back(); }
                 song-total: root.music-song-total; song-page: root.music-song-page;
                 song-pages: root.music-song-pages; song-sort: root.music-song-sort; song-dir: root.music-song-dir;
@@ -1427,9 +1447,10 @@ export component MainWindow inherits Window {
                 set-replaygain(r) => { root.music-set-replaygain(r); }
                 cast-devices: root.music-cast-devices; cast-target <=> root.music-cast-target;
                 scan-cast => { root.music-scan-cast(); } set-cast(c) => { root.music-set-cast(c); }
-                vis-bars: root.music-vis-bars; vis-style <=> root.music-vis-style; instant-mix => { root.music-instant-mix(); }
+                vis-bars: root.music-vis-bars; vis-style <=> root.music-vis-style; vis-style-changed(s) => { root.music-set-vis-style(s); } instant-mix => { root.music-instant-mix(); }
                 scrobble-on <=> root.music-scrobble-on; toggle-scrobble => { root.music-toggle-scrobble(); }
-                tag-open <=> root.music-tag-open; tag-title <=> root.music-tag-title; tag-artist <=> root.music-tag-artist; tag-album <=> root.music-tag-album;
+                tag-open <=> root.music-tag-open; tag-title <=> root.music-tag-title; tag-artist <=> root.music-tag-artist; tag-album <=> root.music-tag-album; tag-date <=> root.music-tag-date;
+                tag-genre <=> root.music-tag-genre; genre-options: root.music-genre-options;
                 tag-edit => { root.music-tag-edit(); } tag-save => { root.music-tag-save(); }
                 playlist-tracks: root.music-playlist-tracks; playlist-name <=> root.music-playlist-name;
                 playlist-cover: root.music-playlist-cover; playlist-set-art => { root.music-playlist-set-art(); }
@@ -1441,6 +1462,8 @@ export component MainWindow inherits Window {
                 add-pick-open <=> root.music-add-pick-open; playlist-picker: root.music-playlist-picker; add-pick(i) => { root.music-add-pick(i); }
                 queue-move(f, t) => { root.music-queue-move(f, t); }
                 playlist-move(f, t) => { root.music-playlist-move(f, t); }
+                playlist-sort <=> root.music-playlist-sort; playlist-sort-dir <=> root.music-playlist-sort-dir;
+                playlist-sort-set(s) => { root.music-playlist-sort-set(s); }
                 podcast-feeds: root.music-podcast-feeds; podcast-episodes: root.music-podcast-episodes;
                 podcast-sel <=> root.music-podcast-sel; podcast-url <=> root.music-podcast-url;
                 podcast-subscribe => { root.music-podcast-subscribe(); } podcast-open(i) => { root.music-podcast-open(i); } podcast-play(i) => { root.music-podcast-play(i); }
@@ -1456,13 +1479,17 @@ export component MainWindow inherits Window {
                 fav-rows: root.music-fav-rows; fav-page: root.music-fav-page; fav-pages: root.music-fav-pages; set-fav-page(d) => { root.music-set-fav-page(d); }
                 fav-artists: root.music-fav-artists; fav-albums: root.music-fav-albums;
                 album-fav(i) => { root.music-album-fav(i); } artist-fav(i) => { root.music-artist-fav(i); }
+                album-rate(i, n) => { root.music-album-rate(i, n); } artist-rate(i, n) => { root.music-artist-rate(i, n); }
                 history-rows: root.music-history-rows; clear-history => { root.music-clear-history(); }
+                history-page: root.music-history-page; history-pages: root.music-history-pages; set-history-page(d) => { root.music-set-history-page(d); }
                 search-artists: root.music-search-artists; search-albums: root.music-search-albums;
                 detail-open <=> root.music-detail-open; detail-kind: root.music-detail-kind;
                 detail-title: root.music-detail-title; detail-subtitle: root.music-detail-subtitle;
                 detail-art: root.music-detail-art; detail-bio: root.music-detail-bio;
                 detail-tracks: root.music-detail-tracks; detail-status: root.music-detail-status;
                 detail-artist-albums: root.music-detail-artist-albums; detail-open-artist => { root.music-detail-open-artist(); }
+                detail-loved: root.music-detail-loved; detail-stars: root.music-detail-stars;
+                detail-fav => { root.music-detail-fav(); } detail-rate(n) => { root.music-detail-rate(n); }
                 detail-page: root.music-detail-page; detail-pages: root.music-detail-pages; set-detail-page(d) => { root.music-set-detail-page(d); }
                 detail-sort: root.music-detail-sort; detail-sort-dir: root.music-detail-sort-dir; set-detail-sort(s) => { root.music-set-detail-sort(s); }
                 album-open(i) => { root.music-album-open(i); } artist-open(i) => { root.music-artist-open(i); } genre-open(i) => { root.music-genre-open(i); }
@@ -1633,7 +1660,7 @@ export component MainWindow inherits Window {
         pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
         volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat; shuffle: root.music-shuffle;
         np-loved: root.music-np-loved; np-stars: root.music-np-stars;
-        album: root.music-np-album; vis-bars: root.music-vis-bars; vis-style <=> root.music-vis-style;
+        album: root.music-np-album; vis-bars: root.music-vis-bars; vis-style <=> root.music-vis-style; vis-style-changed(s) => { root.music-set-vis-style(s); }
         queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
         tab <=> root.music-fs-tab;
         close => { root.music-fullscreen = false; root.music-exit-zen(); }
@@ -1662,6 +1689,7 @@ export component MainWindow inherits Window {
         }
         MusicMini {
             width: 100%; height: 100%;
+            uiscale: root.music-mini-scale;
             art: root.music-np-art; title: root.music-np-title; sub: root.music-np-sub; album: root.music-np-album; playing: root.music-playing;
             pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
             shuffle: root.music-shuffle; volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat;
@@ -1674,26 +1702,16 @@ export component MainWindow inherits Window {
             seek(s) => { root.music-seek(s); } set-volume(v) => { root.music-set-volume(v); }
             toggle-mute => { root.music-toggle-mute(); } toggle-shuffle => { root.music-toggle-shuffle(); } play-queue(i) => { root.music-play-queue(i); }
         }
-        // Resize handles — drag either bottom corner; a curved arc shows on hover.
+        // Resize handles — drag either bottom corner; uniform scale keeps the
+        // aspect ratio (100%–300%). A curved arc shows on hover.
         // Bottom-right.
-        Rectangle { width: 22px; height: 22px; x: parent.width - self.width; y: parent.height - self.height;
-            Rectangle { width: 14px; height: 14px; border-radius: 7px; x: 2px; y: 2px;
+        Rectangle { width: 24px; height: 24px; x: parent.width - self.width; y: parent.height - self.height;
+            Rectangle { width: 16px; height: 16px; border-radius: 8px; x: 2px; y: 2px;
                 background: transparent; border-width: 2px;
-                border-color: brh.has-hover || brh.pressed ? root.music-np-accent : #ffffff44; }
-            brh := TouchArea { mouse-cursor: nesw-resize;
+                border-color: brh.has-hover || brh.pressed ? root.music-np-accent : #ffffff55; }
+            brh := TouchArea { mouse-cursor: nwse-resize;
                 moved => { if (self.pressed) {
-                    root.music-mini-w = Math.clamp(root.music-mini-w + (self.mouse-x - self.pressed-x), 260px, 460px);
-                    root.music-mini-h = Math.clamp(root.music-mini-h + (self.mouse-y - self.pressed-y), 380px, 760px);
-                } } } }
-        // Bottom-left.
-        Rectangle { width: 22px; height: 22px; x: 0; y: parent.height - self.height;
-            Rectangle { width: 14px; height: 14px; border-radius: 7px; x: 6px; y: 2px;
-                background: transparent; border-width: 2px;
-                border-color: blh.has-hover || blh.pressed ? root.music-np-accent : #ffffff44; }
-            blh := TouchArea { mouse-cursor: nwse-resize;
-                moved => { if (self.pressed) {
-                    root.music-mini-w = Math.clamp(root.music-mini-w - (self.mouse-x - self.pressed-x), 260px, 460px);
-                    root.music-mini-h = Math.clamp(root.music-mini-h + (self.mouse-y - self.pressed-y), 380px, 760px);
+                    root.music-mini-scale = Math.clamp(root.music-mini-scale + (self.mouse-x - self.pressed-x) / 300px, 1.0, 3.0);
                 } } } }
     }
     // Minimised bubble — pinned to the right edge (Android-style). Drag up/down

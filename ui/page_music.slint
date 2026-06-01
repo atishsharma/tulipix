@@ -53,10 +53,12 @@ component AlbumCard inherits Rectangle {
     in property <image> thumb;
     in property <string> label;
     in property <length> size: 168px;
-    in property <bool> fav-enabled: false;   // show the bottom-left fav heart
+    in property <bool> fav-enabled: false;   // show the fav heart (top) + rating (bottom)
     in property <bool> loved: false;
+    in property <int> stars: 0;              // rating 0..5
     callback clicked();
     callback fav();
+    callback rate(int);
     width: size;
     horizontal-stretch: 0; vertical-stretch: 0;
     VerticalLayout {
@@ -73,21 +75,89 @@ component AlbumCard inherits Rectangle {
             if ta.has-hover: Rectangle {
                 width: parent.width; height: parent.height; background: #00000055;
                 Rectangle {
-                    x: parent.width - 52px; y: parent.height - 52px;
-                    width: 40px; height: 40px; border-radius: 20px; background: #ec4899;
-                    Text { text: "▶"; color: MusicTheme.fg; font-size: 15px; horizontal-alignment: center; vertical-alignment: center; }
+                    x: (parent.width - 44px)/2; y: (parent.height - 44px)/2 - 6px;
+                    width: 44px; height: 44px; border-radius: 22px; background: #ec4899;
+                    Text { text: "▶"; color: #ffffff; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; }
                 }
             }
-            ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-            // Fav heart — bottom-left (always when loved, else on hover).
-            if root.fav-enabled: Rectangle { x: 8px; y: parent.height - 40px; width: 32px; height: 32px; border-radius: 16px;
+            // Single region-dispatch TouchArea (np.p5.atmusic.song-grid) — top-left
+            // toggles fav, bottom strip sets rating, elsewhere opens. Stacked inner
+            // TouchAreas were stealing clicks, so the whole card uses one dispatcher.
+            ta := TouchArea { mouse-cursor: pointer;
+                clicked => {
+                    if (root.fav-enabled && self.mouse-y <= 40px && self.mouse-x <= 40px) { root.fav(); }
+                    else if (root.fav-enabled && self.mouse-y >= self.height - 30px) {
+                        root.rate(Math.min(5, Math.max(1, Math.floor(self.mouse-x / (self.width / 5)) + 1))); }
+                    else { root.clicked(); }
+                } }
+            // Fav heart — top-left (always when loved, else on hover).
+            if root.fav-enabled: Rectangle { x: 8px; y: 8px; width: 30px; height: 30px; border-radius: 15px;
                 background: #000000aa;
-                opacity: (favta.has-hover || ta.has-hover || root.loved) ? 1 : 0; animate opacity { duration: 140ms; }
-                favta := TouchArea { mouse-cursor: pointer; clicked => { root.fav(); } }
+                opacity: (ta.has-hover || root.loved) ? 1 : 0; animate opacity { duration: 140ms; }
                 Text { text: root.loved ? "♥" : "♡"; color: root.loved ? #ec4899 : #ffffff; font-size: 16px;
                     horizontal-alignment: center; vertical-alignment: center; } }
+            // Rating — bottom strip (like songs), on hover or when already rated.
+            if root.fav-enabled: Rectangle { x: 0; y: parent.height - 30px; width: parent.width; height: 28px; background: #000000aa;
+                opacity: (ta.has-hover || root.stars > 0) ? 1 : 0; animate opacity { duration: 140ms; }
+                HorizontalLayout { spacing: 0px;
+                    for n[i] in [1, 2, 3, 4, 5]: Rectangle { horizontal-stretch: 1; height: 28px;
+                        Text { text: root.stars >= n ? "★" : "☆"; color: root.stars >= n ? #e5a00d : #ffffffcc; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; } } } }
         }
         Text { text: label; color: MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; width: size; horizontal-alignment: center; }
+    }
+}
+
+// Modern month-grid calendar — release-date picker (np.p5.music.calendar).
+component MiniCalendar inherits Rectangle {
+    in-out property <int> yy: 2025;   // shown year
+    in-out property <int> mm: 1;      // shown month 1..12
+    in property <int> sel-y: 0;       // selected date (0 = none)
+    in property <int> sel-m: 0;
+    in property <int> sel-d: 0;
+    callback picked(int, int, int);   // (year, month, day)
+    property <[string]> mnames: ["January","February","March","April","May","June","July","August","September","October","November","December"];
+    property <[int]> sak: [0, 3, 2, 5, 0, 3, 5, 1, 4, 6, 2, 4];
+    function leap(y: int) -> bool { (Math.mod(y, 4) == 0 && Math.mod(y, 100) != 0) || Math.mod(y, 400) == 0; }
+    function dim() -> int { root.mm == 2 ? (leap(root.yy) ? 29 : 28) : ((root.mm == 4 || root.mm == 6 || root.mm == 9 || root.mm == 11) ? 30 : 31); }
+    // First weekday of the month (0=Sun..6=Sat) — Sakamoto's algorithm.
+    function dowy() -> int { root.mm < 3 ? root.yy - 1 : root.yy; }
+    function dow1() -> int {
+        Math.mod(root.dowy() + Math.floor(root.dowy() / 4) - Math.floor(root.dowy() / 100) + Math.floor(root.dowy() / 400) + root.sak[root.mm - 1] + 1, 7);
+    }
+    width: 300px; height: 320px; border-radius: 14px; background: MusicTheme.surf-pop;
+    border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: 40px; drop-shadow-color: #000000e6;
+    VerticalLayout { padding: 14px; spacing: 8px;
+        // Header — month/year with prev/next.
+        HorizontalLayout { spacing: 6px;
+            Rectangle { width: 30px; height: 30px; border-radius: 8px; background: pmh.has-hover ? MusicTheme.hov2 : MusicTheme.surf0;
+                pmh := TouchArea { mouse-cursor: pointer; clicked => { if (root.mm == 1) { root.mm = 12; root.yy -= 1; } else { root.mm -= 1; } } }
+                Text { text: "‹"; color: MusicTheme.fg2; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; } }
+            VerticalLayout { alignment: center; horizontal-stretch: 1;
+                Text { text: root.mnames[root.mm - 1] + " " + root.yy; color: MusicTheme.fg; font-size: 15px; font-weight: 700; horizontal-alignment: center; } }
+            Rectangle { width: 30px; height: 30px; border-radius: 8px; background: nmh.has-hover ? MusicTheme.hov2 : MusicTheme.surf0;
+                nmh := TouchArea { mouse-cursor: pointer; clicked => { if (root.mm == 12) { root.mm = 1; root.yy += 1; } else { root.mm += 1; } } }
+                Text { text: "›"; color: MusicTheme.fg2; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; } } }
+        // Weekday header.
+        HorizontalLayout { spacing: 2px;
+            for wd[i] in ["S","M","T","W","T","F","S"]: Rectangle { horizontal-stretch: 1; height: 20px;
+                Text { text: wd; color: MusicTheme.fg-mute; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+        // Day grid — 42 cells.
+        Rectangle { horizontal-stretch: 1; vertical-stretch: 1;
+            property <length> cw: self.width / 7;
+            property <length> ch: self.height / 6;
+            for c[k] in [0,1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,32,33,34,35,36,37,38,39,40,41]:
+                Rectangle {
+                    property <int> dayno: k - root.dow1() + 1;
+                    x: Math.mod(k, 7) * parent.cw; y: Math.floor(k / 7) * parent.ch;
+                    width: parent.cw; height: parent.ch;
+                    if dayno >= 1 && dayno <= root.dim(): Rectangle { width: parent.width - 4px; height: parent.height - 4px; x: 2px; y: 2px; border-radius: 8px;
+                        background: (root.sel-y == root.yy && root.sel-m == root.mm && root.sel-d == dayno) ? #ec4899
+                            : (dc.has-hover ? MusicTheme.hov2 : transparent);
+                        dc := TouchArea { mouse-cursor: pointer; clicked => { root.picked(root.yy, root.mm, dayno); } }
+                        Text { text: dayno; font-size: 13px;
+                            color: (root.sel-y == root.yy && root.sel-m == root.mm && root.sel-d == dayno) ? #ffffff : MusicTheme.fg2;
+                            horizontal-alignment: center; vertical-alignment: center; } } }
+        }
     }
 }
 
@@ -162,8 +232,9 @@ component Scrubber inherits Rectangle {
         background: @linear-gradient(90deg, root.fill-color 0%, root.fill-color.brighter(0.3) 100%);
         // Glow trail so seeks read as fluid motion, not a snap.
         drop-shadow-blur: ta.has-hover || ta.pressed ? 10px : 5px; drop-shadow-color: root.fill-color.with-alpha(0.5);
-        // Track value continuously; while dragging follow 1:1, otherwise glide.
-        animate width { duration: ta.pressed ? 0ms : 260ms; easing: ease-in-out; }
+        // Track value continuously; while dragging follow 1:1, otherwise a tiny
+        // glide so seeks land instantly instead of crawling to the target.
+        animate width { duration: ta.pressed ? 0ms : 70ms; easing: ease-out; }
         animate drop-shadow-blur { duration: 160ms; }
     }
     // Squiggly waveform overlay — only on seekbars while actively dragging.
@@ -185,7 +256,7 @@ component Scrubber inherits Rectangle {
         y: (parent.height - self.height) / 2;
         opacity: ta.has-hover || ta.pressed ? 1.0 : 0.0;
         drop-shadow-blur: 8px; drop-shadow-color: root.fill-color;
-        animate x { duration: ta.pressed ? 0ms : 260ms; easing: ease-in-out; }
+        animate x { duration: ta.pressed ? 0ms : 70ms; easing: ease-out; }
         animate opacity, width, height { duration: 140ms; easing: ease-out; }
     }
     ta := TouchArea {
@@ -494,8 +565,8 @@ component SongCard inherits Rectangle {
             // Star rating — bottom strip on hover.
             Rectangle { x: 0; y: parent.height - 32px; width: parent.width; height: 28px; background: #000000aa;
                 opacity: ta.has-hover ? 1 : 0; animate opacity { duration: 140ms; }
-                HorizontalLayout { alignment: center; spacing: 0px;
-                    for n[i] in [1, 2, 3, 4, 5]: Rectangle { width: 24px; height: 28px;
+                HorizontalLayout { spacing: 0px;
+                    for n[i] in [1, 2, 3, 4, 5]: Rectangle { horizontal-stretch: 1; height: 28px;
                         Text { text: track.stars >= n ? "★" : "☆"; color: track.stars >= n ? #e5a00d : #ffffffcc; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } } }
             // Single dispatcher — region of the click decides the action, so there
             // are no stacked TouchAreas to steal hover (np.p5.atmusic.song-grid).
@@ -762,6 +833,7 @@ export component MusicPage inherits Rectangle {
     in property <string> lyrics-view-sub: "";       // line 2: "Artist · Album"
     in property <string> lyrics-view-status: "";     // Synced | Normal | Not Found
     in-out property <string> lyrics-view-mode: "lyrics"; // lyrics | results
+    in property <bool> lyrics-view-searching: false;     // LRCLIB request in flight
     in property <[LyricsResult]> lyrics-view-results: [];
     callback lyrics-view-pick(int);                  // choose a search result → load it
     callback lyrics-view-back();                      // results ↔ lyrics
@@ -818,6 +890,7 @@ export component MusicPage inherits Rectangle {
     // Audio visualizer (np.p5.music.visualizer) — 0..1 bar heights.
     in property <[float]> vis-bars: [];
     in-out property <int> vis-style: 0;          // 0 Bars · 1 Mirror · 2 Dots · 3 Levels · 4 Line
+    callback vis-style-changed(int);             // persist the chosen visualizer style
     // Static idle spectrum shown when nothing is playing (visualizer always visible).
     property <[float]> vis-idle: [0.12, 0.2, 0.16, 0.26, 0.18, 0.3, 0.22, 0.34, 0.24, 0.3, 0.2, 0.26, 0.16, 0.22, 0.14, 0.2, 0.12, 0.18, 0.14, 0.1];
     // Instant mix / auto-DJ (np.p5.music.instant-mix) — radio from current track.
@@ -830,6 +903,9 @@ export component MusicPage inherits Rectangle {
     in-out property <string> tag-title: "";
     in-out property <string> tag-artist: "";
     in-out property <string> tag-album: "";
+    in-out property <string> tag-date: "";       // release date YYYY-MM-DD (null/empty by default)
+    in-out property <string> tag-genre: "";       // genre of the track being edited
+    in property <[string]> genre-options: [];     // distinct genres in the library, for the dropdown
     callback tag-edit();
     callback tag-save();
     // Playlist builder/editor + M3U (np.p5.music.playlists-builder / .import-playlists).
@@ -846,6 +922,9 @@ export component MusicPage inherits Rectangle {
     callback playlist-play-track(int);
     callback playlist-remove-track(int);
     callback playlist-move(int, int);       // reorder: row i → new index
+    in-out property <string> playlist-sort: "custom";   // custom | title | artist
+    in-out property <string> playlist-sort-dir: "asc";
+    callback playlist-sort-set(string);
     callback playlist-import();              // M3U file → new playlist
     callback playlist-export();             // current queue → M3U file
     in-out property <bool> add-pick-open: false;
@@ -896,7 +975,12 @@ export component MusicPage inherits Rectangle {
     callback set-fav-page(int);
     callback album-fav(int);                       // toggle loved on an album (by playback index)
     callback artist-fav(int);                      // toggle loved on an artist (by playback index)
+    callback album-rate(int, int);                 // set album rating (playback index, stars)
+    callback artist-rate(int, int);                // set artist rating (playback index, stars)
     in property <[MusicSongRow]> history-rows: [];
+    in property <int> history-page: 1;             // 30 plays / page, up to 5 pages
+    in property <int> history-pages: 1;
+    callback set-history-page(int);                // +1 / -1
     callback clear-history();
     // AT parity — unified grouped search (np.p5.atmusic.lib-grouped-search).
     in property <[PhotoTile]> search-artists: [];
@@ -948,6 +1032,10 @@ export component MusicPage inherits Rectangle {
     in property <string> detail-sort-dir: "asc";
     callback set-detail-sort(string);
     in property <string> detail-status: "";
+    in property <bool> detail-loved: false;        // album/artist favorited
+    in property <int> detail-stars: 0;             // album/artist rating 0..5
+    callback detail-fav();
+    callback detail-rate(int);
     callback album-open(int);
     callback artist-open(int);
     callback genre-open(int);
@@ -1050,6 +1138,9 @@ export component MusicPage inherits Rectangle {
         // Row 2 — category-specific sub-menus + sort.
         Rectangle {
             height: 54px; horizontal-stretch: 1; background: MusicTheme.surf-header2;
+            // Gradient underline — sets the sub-menu row apart from the page body.
+            Rectangle { x: 0; y: parent.height - 2px; width: 100%; height: 2px;
+                background: @linear-gradient(90deg, #ec489900 0%, #ec4899 22%, #8b5cf6 78%, #8b5cf600 100%); }
             HorizontalLayout {
                 padding-left: 28px; padding-right: 28px; spacing: 8px; alignment: start;
                 // My Music sub-tabs.
@@ -1061,7 +1152,7 @@ export component MusicPage inherits Rectangle {
                     MusicTab { label: "♫ Genres";    active: root.lib-tab == "genres";    clicked => { root.set-lib-tab("genres"); } }
                     MusicTab { label: "≣ Playlists"; active: root.lib-tab == "playlists"; clicked => { root.set-lib-tab("playlists"); } }
                     MusicTab { label: "🗀 Folders";   active: root.lib-tab == "folders";   clicked => { root.set-lib-tab("folders"); } }
-                    MusicTab { label: "♥ Favorites"; active: root.lib-tab == "favorites"; clicked => { root.set-lib-tab("favorites"); } }
+                    MusicTab { label: "♥ Loved"; active: root.lib-tab == "favorites"; clicked => { root.set-lib-tab("favorites"); } }
                     MusicTab { label: "↺ History";   active: root.lib-tab == "history";   clicked => { root.set-lib-tab("history"); } }
                 } }
                 if root.view == "podcasts": VerticalLayout { alignment: center; HorizontalLayout { spacing: 8px;
@@ -1077,7 +1168,10 @@ export component MusicPage inherits Rectangle {
                     MusicTab { label: "Search"; active: true; }
                     MusicTab { label: "Cached"; } } }
                 Rectangle { horizontal-stretch: 1; }
-                // History — Clear docked at the row-2 right edge (history tab only).
+                // History — pagination (30/page, 5 pages) then Clear, docked right.
+                if root.view == "mymusic" && !root.detail-open && root.lib-tab == "history" && root.history-pages > 1: VerticalLayout { alignment: center;
+                    PageNav { page: root.history-page; pages: root.history-pages; go(d) => { root.set-history-page(d); } } }
+                if root.view == "mymusic" && !root.detail-open && root.lib-tab == "history" && root.history-pages > 1: VerticalLayout { alignment: center; Rectangle { width: 10px; } }
                 if root.view == "mymusic" && !root.detail-open && root.lib-tab == "history" && root.history-rows.length > 0: VerticalLayout { alignment: center;
                     SortChip { label: "🗑 Clear"; clicked => { root.clear-history(); } } }
                 // Favorites — play/shuffle + pagination docked at the row-2 right edge.
@@ -1124,6 +1218,10 @@ export component MusicPage inherits Rectangle {
                     VerticalLayout { alignment: center; SortChip {
                         label: "Tracks" + (root.browse-sort == "count" ? (root.browse-dir == "asc" ? "  ▲" : "  ▼") : "");
                         active: root.browse-sort == "count"; clicked => { root.set-browse-sort("count"); } } }
+                    // Rating sort — albums/artists thumbs.
+                    if root.lib-tab == "albums" || root.lib-tab == "artists": VerticalLayout { alignment: center; SortChip {
+                        label: "★ Rating" + (root.browse-sort == "rating" ? (root.browse-dir == "asc" ? "  ▲" : "  ▼") : "");
+                        active: root.browse-sort == "rating"; clicked => { root.set-browse-sort("rating"); } } }
                     // Pagination — albums/artists only, docked at the right edge.
                     if (root.lib-tab == "albums" || root.lib-tab == "artists") && root.browse-pages > 1: VerticalLayout { alignment: center; Rectangle { width: 10px; } }
                     if (root.lib-tab == "albums" || root.lib-tab == "artists") && root.browse-pages > 1: VerticalLayout { alignment: center; PageNav { page: root.browse-page; pages: root.browse-pages; go(d) => { root.set-browse-page(d); } } }
@@ -1350,8 +1448,8 @@ export component MusicPage inherits Rectangle {
                             size: cell - 16px;
                             x: Math.mod(idx, gcols) * cell + 8px;
                             y: Math.floor(idx / gcols) * rowh;
-                            thumb: a.thumb; label: a.label; fav-enabled: true; loved: a.starred;
-                            clicked => { root.album-open(a.index); } fav => { root.album-fav(a.index); }
+                            thumb: a.thumb; label: a.label; fav-enabled: true; loved: a.starred; stars: a.stack-count;
+                            clicked => { root.album-open(a.index); } fav => { root.album-fav(a.index); } rate(n) => { root.album-rate(a.index, n); }
                         }
                     }
                 }
@@ -1367,8 +1465,8 @@ export component MusicPage inherits Rectangle {
                             size: cell - 16px;
                             x: Math.mod(idx, gcols) * cell + 8px;
                             y: Math.floor(idx / gcols) * rowh;
-                            thumb: a.thumb; label: a.label; fav-enabled: true; loved: a.starred;
-                            clicked => { root.artist-open(a.index); } fav => { root.artist-fav(a.index); }
+                            thumb: a.thumb; label: a.label; fav-enabled: true; loved: a.starred; stars: a.stack-count;
+                            clicked => { root.artist-open(a.index); } fav => { root.artist-fav(a.index); } rate(n) => { root.artist-rate(a.index, n); }
                         }
                     }
                 }
@@ -1376,7 +1474,7 @@ export component MusicPage inherits Rectangle {
                 // favorited Artists, then Albums, then loved Songs.
                 if root.lib-tab == "favorites": VerticalLayout { padding-left: 36px; padding-right: 36px; spacing: 14px; padding-top: 6px;
                     if root.fav-rows.length == 0 && root.fav-artists.length == 0 && root.fav-albums.length == 0:
-                        Text { text: "Nothing favorited yet — tap ♥ on a track, album or artist."; color: MusicTheme.fg-dim2; font-size: 13px; }
+                        Text { text: "Nothing loved yet — tap ♥ on a track, album or artist."; color: MusicTheme.fg-dim2; font-size: 13px; }
                     // Favorited artists.
                     if root.fav-artists.length > 0: Text { text: "Artists"; color: MusicTheme.fg; font-size: 18px; font-weight: 700; }
                     if root.fav-artists.length > 0: Rectangle { horizontal-stretch: 1;
@@ -1400,8 +1498,8 @@ export component MusicPage inherits Rectangle {
                             size: cell - 16px;
                             x: Math.mod(idx, gcols) * cell + 8px;
                             y: Math.floor(idx / gcols) * rowh;
-                            thumb: a.thumb; label: a.label; fav-enabled: true; loved: true;
-                            clicked => { root.album-open(a.index); } fav => { root.album-fav(a.index); } } }
+                            thumb: a.thumb; label: a.label; fav-enabled: true; loved: true; stars: a.stack-count;
+                            clicked => { root.album-open(a.index); } fav => { root.album-fav(a.index); } rate(n) => { root.album-rate(a.index, n); } } }
                     // Loved songs.
                     if root.fav-rows.length > 0: Text { text: "Songs"; color: MusicTheme.fg; font-size: 18px; font-weight: 700; }
                     // Play all / Shuffle — left-aligned, above the loved-track list.
@@ -1492,12 +1590,20 @@ export component MusicPage inherits Rectangle {
                                     BrowseChip { label: "‹ Back"; clicked => { root.playlist-back(); } } } }
                         }
                     }
+                    // Sort row — Custom keeps the saved/manual order (the play order);
+                    // Title/Artist sort the view (np.p5.music.playlist-sort).
+                    HorizontalLayout { spacing: 6px; alignment: start;
+                        VerticalLayout { alignment: center; Text { text: "Sort"; color: MusicTheme.fg-mute; font-size: 12px; vertical-alignment: center; } }
+                        VerticalLayout { alignment: center; SortChip { label: "Custom"; active: root.playlist-sort == "custom"; clicked => { root.playlist-sort-set("custom"); } } }
+                        VerticalLayout { alignment: center; SortChip { label: "Title" + (root.playlist-sort == "title" ? (root.playlist-sort-dir == "asc" ? "  ▲" : "  ▼") : ""); active: root.playlist-sort == "title"; clicked => { root.playlist-sort-set("title"); } } }
+                        VerticalLayout { alignment: center; SortChip { label: "Artist" + (root.playlist-sort == "artist" ? (root.playlist-sort-dir == "asc" ? "  ▲" : "  ▼") : ""); active: root.playlist-sort == "artist"; clicked => { root.playlist-sort-set("artist"); } } } }
                     if root.playlist-tracks.length == 0: Text { text: "This playlist is empty — add tracks from the player's ＋ button."; color: MusicTheme.fg-dim2; font-size: 13px; }
                     VerticalLayout { spacing: 2px;
                         for s[i] in root.playlist-tracks: HorizontalLayout { spacing: 6px;
                             VerticalLayout { horizontal-stretch: 1; TrackRow { track: s; clicked => { root.playlist-play-track(s.index); } } }
-                            VerticalLayout { alignment: center; GlyphBtn { glyph: "▲"; size: 30px; clicked => { root.playlist-move(i, i - 1); } } }
-                            VerticalLayout { alignment: center; GlyphBtn { glyph: "▼"; size: 30px; clicked => { root.playlist-move(i, i + 1); } } }
+                            // Reorder arrows only in Custom mode (they save the custom order).
+                            if root.playlist-sort == "custom": VerticalLayout { alignment: center; GlyphBtn { glyph: "▲"; size: 30px; clicked => { root.playlist-move(i, i - 1); } } }
+                            if root.playlist-sort == "custom": VerticalLayout { alignment: center; GlyphBtn { glyph: "▼"; size: 30px; clicked => { root.playlist-move(i, i + 1); } } }
                             VerticalLayout { alignment: center; GlyphBtn { glyph: "✕"; size: 30px; clicked => { root.playlist-remove-track(i); } } }
                         } }
                 }
@@ -1648,7 +1754,7 @@ export component MusicPage inherits Rectangle {
                                 VerticalLayout { padding: 8px; spacing: 2px;
                                     for vs[i] in ["Bars", "Mirror", "Dots", "Levels", "Line"]: Rectangle { height: 24px; border-radius: 6px;
                                         background: root.vis-style == i ? #ec489933 : (vrow.has-hover ? MusicTheme.hov : transparent);
-                                        vrow := TouchArea { mouse-cursor: pointer; clicked => { root.vis-style = i; vizpop.close(); } }
+                                        vrow := TouchArea { mouse-cursor: pointer; clicked => { root.vis-style = i; root.vis-style-changed(i); vizpop.close(); } }
                                         HorizontalLayout { padding-left: 10px; padding-right: 10px;
                                             Text { text: vs; color: root.vis-style == i ? #ec4899 : MusicTheme.fg3; font-size: 12px; vertical-alignment: center; }
                                             Rectangle { horizontal-stretch: 1; }
@@ -1887,28 +1993,32 @@ export component MusicPage inherits Rectangle {
                                         background: r.kind == "Synced" ? #ec489926 : #3b82f626;
                                         Text { text: r.kind; color: r.kind == "Synced" ? #ec4899 : #3b82f6; font-size: 10px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } } } } } } }
                 // Vertical search form — Name / Artist / Album / Search, 4 stacked rows.
+                // Labels name each field, so the inputs carry no inner placeholder text.
                 if root.lyrics-mgr-mode == "search" && root.lyrics-view-mode != "lyrics": VerticalLayout { spacing: 8px;
                     VerticalLayout { spacing: 3px;
                         Text { text: "Song name"; color: MusicTheme.fg-dim; font-size: 11px; }
                         Rectangle { height: 38px; border-radius: 9px; background: MusicTheme.surf0; border-width: 1px; border-color: MusicTheme.line;
                             HorizontalLayout { padding-left: 12px; padding-right: 12px;
-                                mnmi := TextInput { width: 100%; height: 100%; color: MusicTheme.fg; font-size: 13px; vertical-alignment: center; single-line: true; text <=> root.lyrics-view-q-name; }
-                                if root.lyrics-view-q-name == "": Text { text: "Song name"; color: MusicTheme.fg-mute; font-size: 13px; vertical-alignment: center; visible: !mnmi.has-focus; } } } }
+                                TextInput { width: 100%; height: 100%; color: MusicTheme.fg; font-size: 13px; vertical-alignment: center; single-line: true; text <=> root.lyrics-view-q-name; } } } }
                     VerticalLayout { spacing: 3px;
                         Text { text: "Artist"; color: MusicTheme.fg-dim; font-size: 11px; }
                         Rectangle { height: 38px; border-radius: 9px; background: MusicTheme.surf0; border-width: 1px; border-color: MusicTheme.line;
                             HorizontalLayout { padding-left: 12px; padding-right: 12px;
-                                mari := TextInput { width: 100%; height: 100%; color: MusicTheme.fg; font-size: 13px; vertical-alignment: center; single-line: true; text <=> root.lyrics-view-q-artist; }
-                                if root.lyrics-view-q-artist == "": Text { text: "Artist"; color: MusicTheme.fg-mute; font-size: 13px; vertical-alignment: center; visible: !mari.has-focus; } } } }
+                                TextInput { width: 100%; height: 100%; color: MusicTheme.fg; font-size: 13px; vertical-alignment: center; single-line: true; text <=> root.lyrics-view-q-artist; } } } }
                     VerticalLayout { spacing: 3px;
                         Text { text: "Album (optional)"; color: MusicTheme.fg-dim; font-size: 11px; }
                         Rectangle { height: 38px; border-radius: 9px; background: MusicTheme.surf0; border-width: 1px; border-color: MusicTheme.line;
                             HorizontalLayout { padding-left: 12px; padding-right: 12px;
-                                mali := TextInput { width: 100%; height: 100%; color: MusicTheme.fg; font-size: 13px; vertical-alignment: center; single-line: true; text <=> root.lyrics-view-q-album; }
-                                if root.lyrics-view-q-album == "": Text { text: "Album (optional)"; color: MusicTheme.fg-mute; font-size: 13px; vertical-alignment: center; visible: !mali.has-focus; } } } }
-                    Rectangle { height: 40px; border-radius: 9px; background: @linear-gradient(120deg, #ec4899, #8b5cf6);
+                                TextInput { width: 100%; height: 100%; color: MusicTheme.fg; font-size: 13px; vertical-alignment: center; single-line: true; text <=> root.lyrics-view-q-album; } } } }
+                    // Search button — pulsing colour-fill while a search is in flight.
+                    Rectangle { height: 40px; border-radius: 9px; clip: true; background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                        // Idle: full gradient. Searching: a sweeping partial-width gradient bar.
+                        Rectangle { height: 100%; background: @linear-gradient(120deg, #ec4899, #8b5cf6);
+                            width: root.lyrics-view-searching
+                                ? parent.width * (0.18 + 0.82 * Math.abs(Math.sin((animation-tick() / 1ms / 360) * 1rad)))
+                                : parent.width; }
                         msra := TouchArea { mouse-cursor: pointer; clicked => { root.lyrics-view-search(); } }
-                        Text { text: "🔍 Search"; color: #ffffff; font-size: 14px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+                        Text { text: root.lyrics-view-searching ? "Searching…" : "🔍 Search"; color: #ffffff; font-size: 14px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
                 // Preview sub-view: picked result's lyrics + Save / Back-to-results.
                 if root.lyrics-mgr-mode == "search" && root.lyrics-view-mode == "lyrics": Rectangle { vertical-stretch: 1; border-radius: 12px; background: MusicTheme.surf-pop2; border-width: 1px; border-color: MusicTheme.line; clip: true;
                     ScrollView { width: 100%; height: 100%;
@@ -1984,8 +2094,8 @@ export component MusicPage inherits Rectangle {
                             Text { text: root.detail-kind == "artist" ? "🎤" : "♪";
                                 color: #ec4899; font-size: 52px; horizontal-alignment: center; vertical-alignment: center; }
                             Image { source: root.detail-art; image-fit: cover; width: parent.width; height: parent.height; } }
-                        // Outlined info card — all rows left-aligned, evenly spaced.
-                        Rectangle { horizontal-stretch: 1; height: 196px; y: (parent.height - self.height)/2; border-radius: 14px;
+                        // Outlined info card — sized to its content (not full width).
+                        Rectangle { horizontal-stretch: 0; min-width: 420px; height: 196px; y: (parent.height - self.height)/2; border-radius: 14px;
                             background: MusicTheme.surf00; border-width: 1px; border-color: MusicTheme.line;
                             VerticalLayout { padding: 18px; spacing: 7px; alignment: start;
                                 Text { text: root.detail-kind == "artist" ? "ARTIST" : (root.detail-kind == "genre" ? "GENRE" : (root.detail-kind == "folder" ? "FOLDER" : "ALBUM")); color: MusicTheme.fg-dim; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
@@ -1999,9 +2109,6 @@ export component MusicPage inherits Rectangle {
                                         Text { text: root.detail-subtitle;
                                             color: (root.detail-kind == "album" && sbal.has-hover) ? #ec4899 : MusicTheme.fg3;
                                             font-size: 14px; overflow: elide; vertical-alignment: center; } } }
-                                // Track count — shown in the info box (not above the list).
-                                Text { text: root.detail-tracks.length + (root.detail-tracks.length == 1 ? " song" : " songs");
-                                    color: MusicTheme.fg-dim; font-size: 12px; font-weight: 600; }
                                 Rectangle { vertical-stretch: 1; }
                                 // Actions + Sort — a single aligned row.
                                 HorizontalLayout { spacing: 8px; alignment: start;
@@ -2011,10 +2118,22 @@ export component MusicPage inherits Rectangle {
                                     VerticalLayout { alignment: center; DetailActionBtn { icon: Icons.shuffle; label: "Shuffle"; clicked => { root.detail-shuffle(); } } }
                                     if root.detail-kind == "album": VerticalLayout { alignment: center; DetailActionBtn { icon: Icons.search; label: "Cover"; clicked => { root.detail-fetch-meta(); } } }
                                     VerticalLayout { alignment: center; DetailActionBtn { icon: Icons.image; label: "Art"; clicked => { root.detail-replace-art(); } } }
+                                    // Favourite + rate this album / artist (np.p5.music.detail-fav).
+                                    if root.detail-kind == "album" || root.detail-kind == "artist": VerticalLayout { alignment: center;
+                                        Rectangle { width: 38px; height: 38px; border-radius: 19px;
+                                            background: dfav.has-hover ? MusicTheme.hov2 : MusicTheme.surf0; border-width: 1px; border-color: MusicTheme.line;
+                                            dfav := TouchArea { mouse-cursor: pointer; clicked => { root.detail-fav(); } }
+                                            Text { text: root.detail-loved ? "♥" : "♡"; color: root.detail-loved ? #ec4899 : MusicTheme.fg2; font-size: 17px; horizontal-alignment: center; vertical-alignment: center; } } }
+                                    if root.detail-kind == "album" || root.detail-kind == "artist": VerticalLayout { alignment: center; HorizontalLayout { spacing: 0px;
+                                        for n[i] in [1, 2, 3, 4, 5]: Rectangle { width: 19px; height: 30px;
+                                            TouchArea { mouse-cursor: pointer; clicked => { root.detail-rate(root.detail-stars == n ? 0 : n); } }
+                                            Text { text: root.detail-stars >= n ? "★" : "☆"; color: root.detail-stars >= n ? #e5a00d : MusicTheme.fg-mute; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } } }
                                     VerticalLayout { alignment: center; Rectangle { width: 1px; height: 18px; background: MusicTheme.line; } }
                                     VerticalLayout { alignment: center; Text { text: "Sort"; color: MusicTheme.fg-dim; font-size: 12px; vertical-alignment: center; } }
                                     VerticalLayout { alignment: center; SortChip { label: "Title" + (root.detail-sort == "title" ? (root.detail-sort-dir == "asc" ? "  ▲" : "  ▼") : ""); active: root.detail-sort == "title"; clicked => { root.set-detail-sort("title"); } } }
                                     VerticalLayout { alignment: center; SortChip { label: "Artist" + (root.detail-sort == "artist" ? (root.detail-sort-dir == "asc" ? "  ▲" : "  ▼") : ""); active: root.detail-sort == "artist"; clicked => { root.set-detail-sort("artist"); } } }
+                                    // Album sort — useful on folder / genre pages.
+                                    if root.detail-kind == "folder" || root.detail-kind == "genre": VerticalLayout { alignment: center; SortChip { label: "Album" + (root.detail-sort == "album" ? (root.detail-sort-dir == "asc" ? "  ▲" : "  ▼") : ""); active: root.detail-sort == "album"; clicked => { root.set-detail-sort("album"); } } }
                                     VerticalLayout { alignment: center; SortChip { label: "Time" + (root.detail-sort == "duration" ? (root.detail-sort-dir == "asc" ? "  ▲" : "  ▼") : ""); active: root.detail-sort == "duration"; clicked => { root.set-detail-sort("duration"); } } }
                                     Rectangle { horizontal-stretch: 1; }
                                     if root.detail-pages > 1: VerticalLayout { alignment: center; Rectangle { width: 28px; height: 28px; border-radius: 14px; background: dpp.has-hover ? #ec4899 : #ec489966;
@@ -2044,6 +2163,8 @@ export component MusicPage inherits Rectangle {
                                         animate width, height { duration: 160ms; easing: ease-out; } } }
                                 Text { text: "Back"; color: dbk.has-hover ? #ffffff : MusicTheme.fg2; font-size: 16px; font-weight: 700; horizontal-alignment: center; } }
                         }
+                        // Fill the remaining width so the info card sizes to content.
+                        Rectangle { horizontal-stretch: 1; }
                     }
                 }
                 // Artist bio (np.p5.atmusic.artist-detail) — MusicBrainz blurb.
@@ -2052,8 +2173,9 @@ export component MusicPage inherits Rectangle {
                     Text { text: root.detail-bio; color: MusicTheme.fg3; font-size: 13px; wrap: word-wrap; } }
                 // Artist page — 70/30: song list left, artist's albums right
                 // (2 per row, 8/page, same pagination as the song list).
-                if root.detail-kind == "artist": HorizontalLayout { padding-left: 36px; padding-right: 36px; padding-bottom: 24px; spacing: 22px; alignment: start;
+                if root.detail-kind == "artist": HorizontalLayout { padding-left: 36px; padding-right: 36px; padding-bottom: 24px; spacing: 22px;
                     VerticalLayout { horizontal-stretch: 7; spacing: 8px; alignment: start;
+                        Text { text: "Songs"; color: MusicTheme.fg; font-size: 16px; font-weight: 700; }
                         if root.detail-tracks.length == 0: Text { text: "No tracks."; color: MusicTheme.fg-dim2; font-size: 13px; }
                         VerticalLayout { spacing: 2px;
                             for s[i] in root.detail-tracks: TrackRow { track: s; clicked => { root.detail-play-track(s.index); } } } }
@@ -2068,7 +2190,8 @@ export component MusicPage inherits Rectangle {
                                 size: cell - 12px;
                                 x: Math.mod(idx, gcols) * cell + 6px;
                                 y: Math.floor(idx / gcols) * rowh;
-                                thumb: a.thumb; label: a.label; clicked => { root.album-open(a.index); }
+                                thumb: a.thumb; label: a.label; fav-enabled: true; loved: a.starred; stars: a.stack-count;
+                                clicked => { root.album-open(a.index); } fav => { root.album-fav(a.index); } rate(n) => { root.album-rate(a.index, n); }
                             } } }
                 }
                 // Album / genre / folder — full-width tracklist (count lives in the info box).
@@ -2143,21 +2266,35 @@ export component MusicPage inherits Rectangle {
                                 sr := TouchArea { mouse-cursor: pointer; clicked => { root.lyrics-search-pick(i); root.lyrics-find-open = false; } }
                                 HorizontalLayout { padding-left: 10px; padding-right: 10px;
                                     Text { text: r; color: MusicTheme.fg2; font-size: 12px; vertical-alignment: center; overflow: elide; } } } } } }
-                // Lyrics view (hidden while the Find panel is open). Auto-scrolls
-                // so the current synced line stays centred (np.p5.music.lyrics-autoscroll).
-                if !root.lyrics-find-open: lyrscroll := ScrollView { vertical-stretch: 1;
-                    viewport-y: root.lyrics-active < 0 ? 0px
-                        : Math.clamp(self.visible-height / 2 - root.lyrics-active * 32px - 16px,
-                            Math.min(0px, self.visible-height - self.viewport-height), 0px);
-                    animate viewport-y { duration: 280ms; easing: ease-out; }
-                    VerticalLayout { spacing: 4px; padding-bottom: 24px;
-                        if root.lyrics-rows.length == 0 && root.lyrics-text == "": Text { text: "No lyrics yet — tap “Find lyrics”."; color: MusicTheme.fg-dim; font-size: 13px; horizontal-alignment: center; }
-                        if root.lyrics-rows.length == 0 && root.lyrics-text != "": Text { text: root.lyrics-text; color: MusicTheme.fg3; font-size: 14px; wrap: word-wrap; horizontal-alignment: center; }
-                        for l[i] in root.lyrics-rows: Text { text: l.text == "" ? "♪" : l.text;
-                            color: i == root.lyrics-active ? #ec4899 : MusicTheme.fg-dim;
-                            font-size: i == root.lyrics-active ? 18px : 15px;
-                            font-weight: i == root.lyrics-active ? 700 : 400; wrap: word-wrap; horizontal-alignment: center; width: 100%;
-                            animate color, font-size { duration: 180ms; } } } }
+                // Lyrics view (hidden while the Find panel is open). A fixed 6-line
+                // window centred on the active synced line — big animated current
+                // line, lines further out fade out (np.p5.music.lyrics-window).
+                if !root.lyrics-find-open: Rectangle { vertical-stretch: 1;
+                    if root.lyrics-rows.length == 0 && root.lyrics-text == "":
+                        Text { text: "No lyrics yet — tap “Find lyrics”."; color: MusicTheme.fg-dim; font-size: 13px;
+                            horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+                    if root.lyrics-rows.length == 0 && root.lyrics-text != "": ScrollView { width: 100%; height: 100%;
+                        Text { text: root.lyrics-text; color: MusicTheme.fg3; font-size: 15px; wrap: word-wrap; horizontal-alignment: center; width: 100%; } }
+                    // Scrollable lyric column — auto-follows the active line (viewport
+                    // re-centres on each line change) yet the wheel still works between
+                    // changes. Centre 3 lines stay in focus; the rest fade by distance,
+                    // so ~10 lines read at once (np.p5.music.lyrics-window).
+                    if root.lyrics-rows.length > 0: ScrollView { width: 100%; height: 100%;
+                        viewport-y: root.lyrics-active >= 0 ? -(root.lyrics-active * 40px + 20px) : 0px;
+                        VerticalLayout { spacing: 6px; padding-left: 16px; padding-right: 16px; padding-top: parent.height / 2; padding-bottom: parent.height / 2;
+                            for ln[i] in root.lyrics-rows: Text {
+                                property <int> d: i - root.lyrics-active;
+                                text: ln.text == "" ? "♪" : ln.text;
+                                color: self.d == 0 ? #ec4899 : MusicTheme.fg-dim;
+                                font-size: self.d == 0 ? 25px : (Math.abs(self.d) == 1 ? 19px : 15px);
+                                font-weight: Math.abs(self.d) <= 1 ? 800 : 500;
+                                // Centre 3 lines (|d|<=1) in full focus; fade the rest (fake blur).
+                                opacity: Math.abs(self.d) <= 1 ? 1.0
+                                    : (Math.abs(self.d) == 2 ? 0.6 : (Math.abs(self.d) == 3 ? 0.42
+                                    : (Math.abs(self.d) == 4 ? 0.3 : (Math.abs(self.d) <= 5 ? 0.18 : 0.0))));
+                                wrap: word-wrap; horizontal-alignment: center; width: 100%;
+                                animate font-size, opacity, color { duration: 220ms; easing: ease-out; } } } }
+                }
             }
         }
     }
@@ -2233,12 +2370,12 @@ export component MusicPage inherits Rectangle {
         width: 100%; height: 100%; background: #000000aa;
         TouchArea { clicked => { root.tag-open = false; } }   // click-away to close
         Rectangle {
-            width: 420px; height: 392px; border-radius: 16px;
+            width: 420px; height: 520px; border-radius: 16px;
             background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
             drop-shadow-blur: 40px; drop-shadow-color: #000000e6;
             TouchArea {}  // swallow clicks inside the card
             VerticalLayout {
-                padding: 22px; spacing: 12px;
+                padding: 22px; spacing: 10px;
                 Text { text: "Edit media info"; color: MusicTheme.fg; font-size: 18px; font-weight: 700; }
                 for f[i] in [
                     { lbl: "Title",  val: root.tag-title },
@@ -2258,8 +2395,45 @@ export component MusicPage inherits Rectangle {
                                     if (i == 2) { root.tag-album = self.text; }
                                 } } } }
                 }
-                Rectangle { vertical-stretch: 1; }
+                // Genre — dropdown of distinct library genres (free-set via picker).
+                VerticalLayout { spacing: 4px;
+                    Text { text: "Genre"; color: MusicTheme.fg-dim; font-size: 12px; }
+                    Rectangle { height: 38px; border-radius: 9px; background: gnd.has-hover ? MusicTheme.hov2 : MusicTheme.surf0;
+                        border-width: 1px; border-color: MusicTheme.line;
+                        HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 8px;
+                            Text { text: root.tag-genre == "" ? "Select genre" : root.tag-genre;
+                                color: root.tag-genre == "" ? MusicTheme.fg-mute : MusicTheme.fg; font-size: 14px; vertical-alignment: center; horizontal-stretch: 1; }
+                            Text { text: "▾"; color: MusicTheme.fg-dim; font-size: 14px; vertical-alignment: center; } }
+                        gnd := TouchArea { mouse-cursor: pointer; clicked => { genpop.show(); } }
+                        genpop := PopupWindow { x: 0; y: 44px; width: 376px; height: 220px; close-policy: close-on-click-outside;
+                            Rectangle { width: 100%; height: 100%; border-radius: 12px; background: MusicTheme.surf-pop;
+                                border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: 36px; drop-shadow-color: #000000e6;
+                                ScrollView { width: 100%; height: 100%;
+                                    VerticalLayout { padding: 6px; spacing: 1px;
+                                        if root.genre-options.length == 0: Text { text: "No genres tagged yet."; color: MusicTheme.fg-dim; font-size: 12px; }
+                                        for g[i] in root.genre-options: Rectangle { height: 32px; border-radius: 6px;
+                                            background: gro.has-hover ? MusicTheme.hov2 : (root.tag-genre == g ? MusicTheme.surf1 : transparent);
+                                            gro := TouchArea { mouse-cursor: pointer; clicked => { root.tag-genre = g; genpop.close(); } }
+                                            HorizontalLayout { padding-left: 12px; padding-right: 12px;
+                                                Text { text: g; color: root.tag-genre == g ? #ec4899 : MusicTheme.fg2; font-size: 13px; vertical-alignment: center; } } } } } } } }
+                }
+                // Release date — calendar dropdown (null by default).
+                VerticalLayout { spacing: 4px;
+                    Text { text: "Release date"; color: MusicTheme.fg-dim; font-size: 12px; }
+                    Rectangle { height: 38px; border-radius: 9px; background: cald.has-hover ? MusicTheme.hov2 : MusicTheme.surf0;
+                        border-width: 1px; border-color: MusicTheme.line;
+                        HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 8px;
+                            Text { text: root.tag-date == "" ? "Pick a date" : root.tag-date;
+                                color: root.tag-date == "" ? MusicTheme.fg-mute : MusicTheme.fg; font-size: 14px; vertical-alignment: center; horizontal-stretch: 1; }
+                            Text { text: "📅"; font-size: 15px; vertical-alignment: center; } }
+                        cald := TouchArea { mouse-cursor: pointer; clicked => { calpop.show(); } }
+                        calpop := PopupWindow { x: 0; y: 44px; width: 300px; height: 320px; close-policy: close-on-click-outside;
+                            MiniCalendar { picked(y, m, d) => {
+                                root.tag-date = y + "-" + (m < 10 ? "0" : "") + m + "-" + (d < 10 ? "0" : "") + d;
+                                calpop.close(); } } } }
+                }
                 HorizontalLayout { spacing: 10px; alignment: end;
+                    BrowseChip { label: "Clear date"; clicked => { root.tag-date = ""; } }
                     BrowseChip { label: "Cancel"; clicked => { root.tag-open = false; } }
                     Rectangle { width: 90px; height: 36px; border-radius: 18px; background: #ec4899;
                         TouchArea { mouse-cursor: pointer; clicked => { root.tag-save(); } }
@@ -2391,6 +2565,7 @@ export component MusicFullscreen inherits Rectangle {
     in-out property <bool> flipped: false;     // art ↔ lyrics flip (np.p5.atmusic.art-flip-lyrics)
     in property <[float]> vis-bars: [];        // zen visualizer spectrum
     in-out property <int> vis-style: 0;        // shared visualizer style
+    callback vis-style-changed(int);           // persist the chosen visualizer style
     in property <string> album: "";
     in-out property <string> zen-panel: "";    // "" | queue  (slide-in)
     in-out property <bool> zen-lyrics: false;  // inline 3-line synced lyrics
@@ -2508,7 +2683,7 @@ export component MusicFullscreen inherits Rectangle {
                         VerticalLayout { padding: 8px; spacing: 2px;
                             for vs[i] in ["Bars", "Mirror", "Dots", "Levels", "Line"]: Rectangle { height: 24px; border-radius: 6px;
                                 background: root.vis-style == i ? #ec489933 : (zvrow.has-hover ? MusicTheme.hov : transparent);
-                                zvrow := TouchArea { mouse-cursor: pointer; clicked => { root.vis-style = i; zvizpop.close(); } }
+                                zvrow := TouchArea { mouse-cursor: pointer; clicked => { root.vis-style = i; root.vis-style-changed(i); zvizpop.close(); } }
                                 HorizontalLayout { padding-left: 10px; padding-right: 10px;
                                     Text { text: vs; color: root.vis-style == i ? #ec4899 : MusicTheme.fg3; font-size: 12px; vertical-alignment: center; }
                                     Rectangle { horizontal-stretch: 1; }
@@ -2575,6 +2750,8 @@ export component MusicMini inherits Rectangle {
     callback cycle-repeat();
     in property <string> repeat: "off";
     callback play-queue(int);
+    // Uniform content scale (1.0–3.0) so everything resizes with the window.
+    in property <float> uiscale: 1.0;
 
     width: 300px; height: 488px; border-radius: 18px;
     background: MusicTheme.surf-player; border-width: 1px; border-color: MusicTheme.line;
@@ -2582,41 +2759,65 @@ export component MusicMini inherits Rectangle {
     VerticalLayout {
         // alignment:start collects any slack at the very bottom instead of
         // scattering uneven gaps between rows (np.p5.music.mini-uniform).
-        padding: 14px; spacing: 10px; alignment: start;
+        padding: 14px * root.uiscale; spacing: 10px * root.uiscale; alignment: start;
         // 1. Close (left edge) · centered song title · bubble (right edge).
-        HorizontalLayout { spacing: 4px;
-            PlayerBtn { icon: Icons.x; size: 26px; isz: 13px; clicked => { root.close(); } }
+        HorizontalLayout { spacing: 4px * root.uiscale;
+            PlayerBtn { icon: Icons.x; size: 26px * root.uiscale; isz: 13px * root.uiscale; clicked => { root.close(); } }
             VerticalLayout { alignment: center; horizontal-stretch: 1;
-                Marquee { height: 20px; centered: true; text: title == "" ? "Nothing playing" : title; fg: MusicTheme.fg; font-size: 15px; weight: 700; } }
-            PlayerBtn { icon: Icons.chevron-right; size: 26px; isz: 14px; clicked => { root.minimise(); } } }
+                Marquee { height: 20px * root.uiscale; centered: true; text: title == "" ? "Nothing playing" : title; fg: MusicTheme.fg; font-size: 15px * root.uiscale; weight: 700; } }
+            PlayerBtn { icon: Icons.chevron-right; size: 26px * root.uiscale; isz: 14px * root.uiscale; clicked => { root.minimise(); } } }
         // 2. Artist · album on a single centered line (tight under the title).
         Text { text: title == "" ? "Pick a track" : (album != "" ? sub + "  ·  " + album : sub);
-            color: MusicTheme.fg3; font-size: 12px; overflow: elide; horizontal-alignment: center; }
+            color: MusicTheme.fg3; font-size: 12px * root.uiscale; overflow: elide; horizontal-alignment: center; }
         // 3. Square art — flips to reveal the queue / 3-line lyrics panel.
-        Rectangle { height: 230px; border-radius: 12px; clip: true; background: MusicTheme.surf-pop2;
+        Rectangle { height: 230px * root.uiscale; border-radius: 12px * root.uiscale; clip: true; background: MusicTheme.surf-pop2;
             border-width: 1px; border-color: MusicTheme.surf1;
-            // front — spinning vinyl record (art = center label).
-            Rectangle { width: 100%; height: 100%; visible: root.face == "";
+            // front — spinning vinyl record (art = center label) + sweeping tonearm.
+            vinyl := Rectangle { width: 100%; height: 100%; visible: root.face == "";
                 background: MusicTheme.surf-pop2;
+                // Tonearm geometry — square coord system over the 222-unit disc; the
+                // needle sweeps inward (12°→34°) as the track plays, parks at 2° idle.
+                property <float> frac: root.dur > 0 ? Math.clamp(root.pos / root.dur, 0, 1) : 0;
+                property <float> armdeg: root.playing ? (12 + 22 * self.frac) : 2;
+                property <float> nx: 210 - 150 * Math.sin(self.armdeg * 1deg);
+                property <float> ny: 16 + 150 * Math.cos(self.armdeg * 1deg);
+                property <length> side: 222px * root.uiscale;
+                property <length> offx: (self.width - self.side) / 2;
+                property <length> offy: (self.height - self.side) / 2;
                 // vinyl disc — concentric grooves (rotation-invariant); the art
                 // label spins (rotation only works on Image in this Slint version).
-                Rectangle { width: 222px; height: 222px; border-radius: 111px; clip: true; background: MusicTheme.surf-thumb;
+                Rectangle { width: 222px * root.uiscale; height: self.width; border-radius: self.width / 2; clip: true; background: MusicTheme.surf-thumb;
                     x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                     // groove rings
-                    Rectangle { width: 202px; height: 202px; border-radius: 101px; border-width: 1px; border-color: MusicTheme.hov;
+                    Rectangle { width: 202px * root.uiscale; height: self.width; border-radius: self.width / 2; border-width: 1px; border-color: MusicTheme.hov;
                         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
-                    Rectangle { width: 154px; height: 154px; border-radius: 77px; border-width: 1px; border-color: MusicTheme.line;
+                    Rectangle { width: 154px * root.uiscale; height: self.width; border-radius: self.width / 2; border-width: 1px; border-color: MusicTheme.line;
                         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
                     // center label — circular album art, spinning (artwork +30%).
-                    Rectangle { width: 146px; height: 146px; border-radius: 73px; clip: true;
+                    Rectangle { width: 146px * root.uiscale; height: self.width; border-radius: self.width / 2; clip: true;
                         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                         Image { source: art; image-fit: cover; width: 100%; height: 100%;
                             rotation-angle: root.playing ? Math.mod(animation-tick() / 1ms / 16, 360) * 1deg : 0deg; }
-                        if title == "": Text { text: "♪"; color: #ec4899; font-size: 44px; horizontal-alignment: center; vertical-alignment: center; } }
+                        if title == "": Text { text: "♪"; color: #ec4899; font-size: 44px * root.uiscale; horizontal-alignment: center; vertical-alignment: center; } }
                 }
                 // spindle hub (static center)
-                Rectangle { width: 10px; height: 10px; border-radius: 5px; background: MusicTheme.surf-pop2; border-width: 1.5px; border-color: MusicTheme.fg-faint;
+                Rectangle { width: 10px * root.uiscale; height: self.width; border-radius: self.width / 2; background: MusicTheme.surf-pop2; border-width: 1.5px; border-color: MusicTheme.fg-faint;
                     x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                // tonearm — the arm line from the pivot to the needle.
+                Path { x: vinyl.offx; y: vinyl.offy; width: vinyl.side; height: vinyl.side;
+                    viewbox-width: 222; viewbox-height: 222; stroke: MusicTheme.fg3; stroke-width: 3px;
+                    MoveTo { x: 210; y: 16; } LineTo { x: vinyl.nx; y: vinyl.ny; } }
+                // pivot base (counterweight) — top-right of the disc.
+                Rectangle { width: 18px * root.uiscale; height: self.width; border-radius: self.width / 2;
+                    background: MusicTheme.fg-mute; border-width: 2px; border-color: MusicTheme.surf-pop2;
+                    x: vinyl.offx + 210 * root.uiscale * 1px - self.width / 2;
+                    y: vinyl.offy + 16 * root.uiscale * 1px - self.height / 2; }
+                // needle head (cartridge) — rides the groove.
+                Rectangle { width: 13px * root.uiscale; height: self.width; border-radius: self.width / 2;
+                    background: #ec4899; drop-shadow-blur: 6px; drop-shadow-color: #ec489988;
+                    x: vinyl.offx + vinyl.nx * root.uiscale * 1px - self.width / 2;
+                    y: vinyl.offy + vinyl.ny * root.uiscale * 1px - self.height / 2;
+                    animate x, y { duration: 400ms; easing: ease-out; } }
                 animate opacity { duration: 160ms; } }
             // back — queue
             if root.face == "queue": ScrollView { width: 100%; height: 100%;
@@ -2634,24 +2835,24 @@ export component MusicMini inherits Rectangle {
         // 4. Seekbar with elapsed / total time, then music controls.
         Scrubber { value: pos; maximum: dur > 0 ? dur : 1.0; wiggle: true; changed(v) => { root.seek(v); } }
         HorizontalLayout {
-            Text { text: pos-label; color: MusicTheme.fg-dim; font-size: 10px; }
+            Text { text: pos-label; color: MusicTheme.fg-dim; font-size: 10px * root.uiscale; }
             Rectangle { horizontal-stretch: 1; }
-            Text { text: dur-label; color: MusicTheme.fg-dim; font-size: 10px; } }
-        HorizontalLayout { alignment: center; spacing: 12px;
-            PlayerBtn { icon: Icons.shuffle; size: 32px; isz: 16px; active: root.shuffle; clicked => { root.toggle-shuffle(); } }
-            PlayerBtn { icon: Icons.skip-back; size: 38px; isz: 19px; clicked => { root.prev(); } }
-            Rectangle { width: 48px; height: 48px; border-radius: 24px; horizontal-stretch: 0; vertical-stretch: 0;
+            Text { text: dur-label; color: MusicTheme.fg-dim; font-size: 10px * root.uiscale; } }
+        HorizontalLayout { alignment: center; spacing: 12px * root.uiscale;
+            PlayerBtn { icon: Icons.shuffle; size: 32px * root.uiscale; isz: 16px * root.uiscale; active: root.shuffle; clicked => { root.toggle-shuffle(); } }
+            PlayerBtn { icon: Icons.skip-back; size: 38px * root.uiscale; isz: 19px * root.uiscale; clicked => { root.prev(); } }
+            Rectangle { width: 48px * root.uiscale; height: self.width; border-radius: self.width / 2; horizontal-stretch: 0; vertical-stretch: 0;
                 background: mpb.has-hover ? #ec4899 : #f0f0f3; animate background { duration: 150ms; }
                 mpb := TouchArea { mouse-cursor: pointer; clicked => { root.playpause(); } }
-                AppIcon { source: playing ? Icons.pause : Icons.play; tint: #14141b; width: 20px; height: 20px; } }
-            PlayerBtn { icon: Icons.skip-forward; size: 38px; isz: 19px; clicked => { root.next(); } }
-            PlayerBtn { icon: root.repeat == "one" ? Icons.repeat-1 : Icons.repeat; size: 32px; isz: 16px; active: root.repeat != "off"; clicked => { root.cycle-repeat(); } } }
+                AppIcon { source: playing ? Icons.pause : Icons.play; tint: #14141b; width: 20px * root.uiscale; height: 20px * root.uiscale; } }
+            PlayerBtn { icon: Icons.skip-forward; size: 38px * root.uiscale; isz: 19px * root.uiscale; clicked => { root.next(); } }
+            PlayerBtn { icon: root.repeat == "one" ? Icons.repeat-1 : Icons.repeat; size: 32px * root.uiscale; isz: 16px * root.uiscale; active: root.repeat != "off"; clicked => { root.cycle-repeat(); } } }
         // 5. Queue · volume · lyrics (queue/lyrics flip the art above).
-        HorizontalLayout { alignment: center; spacing: 8px;
-            PlayerBtn { icon: Icons.list-music; size: 32px; isz: 16px; active: root.face == "queue"; clicked => { root.face = root.face == "queue" ? "" : "queue"; } }
-            PlayerBtn { icon: muted ? Icons.volume-x : Icons.volume; size: 30px; isz: 15px; active: muted; clicked => { root.toggle-mute(); } }
-            Rectangle { width: 96px; height: 30px;
-                Scrubber { y: (parent.height - self.height)/2; width: 96px; value: volume; maximum: 130.0; fill-color: MusicTheme.fg3; changed(v) => { root.set-volume(v); } } }
-            PlayerBtn { icon: Icons.lyrics; size: 32px; isz: 16px; active: root.face == "lyrics"; clicked => { root.face = root.face == "lyrics" ? "" : "lyrics"; } } }
+        HorizontalLayout { alignment: center; spacing: 8px * root.uiscale;
+            PlayerBtn { icon: Icons.list-music; size: 32px * root.uiscale; isz: 16px * root.uiscale; active: root.face == "queue"; clicked => { root.face = root.face == "queue" ? "" : "queue"; } }
+            PlayerBtn { icon: muted ? Icons.volume-x : Icons.volume; size: 30px * root.uiscale; isz: 15px * root.uiscale; active: muted; clicked => { root.toggle-mute(); } }
+            Rectangle { width: 96px * root.uiscale; height: 30px * root.uiscale;
+                Scrubber { y: (parent.height - self.height)/2; width: 96px * root.uiscale; value: volume; maximum: 130.0; fill-color: MusicTheme.fg3; changed(v) => { root.set-volume(v); } } }
+            PlayerBtn { icon: Icons.lyrics; size: 32px * root.uiscale; isz: 16px * root.uiscale; active: root.face == "lyrics"; clicked => { root.face = root.face == "lyrics" ? "" : "lyrics"; } } }
     }
 }

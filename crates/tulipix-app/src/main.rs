@@ -1223,7 +1223,30 @@ fn main() -> Result<()> {
         w0.set_music_tag_title(m.title.clone().into());
         w0.set_music_tag_artist(m.artist.clone().into());
         w0.set_music_tag_album(m.album.clone().into());
+        w0.set_music_tag_date("".into());
+        w0.set_music_tag_genre("".into());
         w0.set_music_tag_open(true);
+        // Prefill the release date + genre from the DB if stored, and refresh the
+        // genre dropdown options.
+        let id = m.item_id;
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN release_date TEXT").execute(&pool).await;
+            let d: Option<String> = sqlx::query_scalar("SELECT release_date FROM track_meta WHERE item_id = ?")
+                .bind(id).fetch_optional(&pool).await.ok().flatten().flatten();
+            let g: Option<String> = sqlx::query_scalar("SELECT genre FROM track_meta WHERE item_id = ?")
+                .bind(id).fetch_optional(&pool).await.ok().flatten().flatten();
+            let opts: Vec<String> = sqlx::query_scalar(
+                "SELECT DISTINCT genre FROM track_meta WHERE genre IS NOT NULL AND genre != '' ORDER BY genre")
+                .fetch_all(&pool).await.unwrap_or_default();
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                if let Some(d) = d { w.set_music_tag_date(d.into()); }
+                if let Some(g) = g { w.set_music_tag_genre(g.into()); }
+                let opts: Vec<slint::SharedString> = opts.into_iter().map(|s| s.into()).collect();
+                w.set_music_genre_options(slint::ModelRc::new(slint::VecModel::from(opts)));
+            });
+        });
     });
     // Context menu — Delete: remove the file from disk AND the library, then refresh.
     let w = window.as_weak();
@@ -1269,8 +1292,9 @@ fn main() -> Result<()> {
         let name = w0.get_music_lyrics_view_q_name().to_string();
         let artist = w0.get_music_lyrics_view_q_artist().to_string();
         let album = w0.get_music_lyrics_view_q_album().to_string();
-        // Switch the window to the results list and show a searching placeholder.
+        // Switch the window to the results list and show the searching state.
         w0.set_music_lyrics_view_mode("results".into());
+        w0.set_music_lyrics_view_searching(true);
         w0.set_music_lyrics_view_results(slint::ModelRc::new(slint::VecModel::<LyricsResult>::default()));
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
@@ -1310,6 +1334,7 @@ fn main() -> Result<()> {
                     title: t.clone().into(), sub: sub.clone().into(),
                     kind: if *s { "Synced".into() } else { "Normal".into() } }).collect();
                 w.set_music_lyrics_view_results(slint::ModelRc::new(slint::VecModel::from(rows)));
+                w.set_music_lyrics_view_searching(false);
             });
         });
     });
@@ -1614,10 +1639,20 @@ fn main() -> Result<()> {
         w.set_music_jump_text("".into());
         rebuild_music_songs_page(&w);
     });
+    // History pagination — 30 plays / page, up to 5 pages (np.p5.atmusic.history-page).
+    let w = window.as_weak();
+    window.on_music_set_history_page(move |d| {
+        let Some(w) = w.upgrade() else { return; };
+        let pages = w.get_music_history_pages().max(1);
+        let next = (w.get_music_history_page() + d).clamp(1, pages);
+        w.set_music_history_page(next);
+        rebuild_history_page(&w);
+    });
     // AT parity — clear the playback history (np.p5.atmusic.history-page).
     let w = window.as_weak();
     window.on_music_clear_history(move || {
-        let Some(_w0) = w.upgrade() else { return; };
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_history_page(1);
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("music").await else { return; };
@@ -1687,6 +1722,70 @@ fn main() -> Result<()> {
                     .bind(aid).execute(&pool).await;
                 let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
             }
+        });
+    });
+    // Rate an album / artist (stars on its browse thumb).
+    let w = window.as_weak();
+    window.on_music_album_rate(move |pos, n| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let Some(item_id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query("ALTER TABLE albums ADD COLUMN rating INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+            if let Some(aid) = sqlx::query_scalar::<_, Option<i64>>("SELECT album_id FROM track_meta WHERE item_id = ?")
+                .bind(item_id).fetch_optional(&pool).await.ok().flatten().flatten() {
+                let _ = sqlx::query("UPDATE albums SET rating = ? WHERE id = ?").bind(n as i64).bind(aid).execute(&pool).await;
+                let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
+            }
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_artist_rate(move |pos, n| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let Some(item_id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query("ALTER TABLE artists ADD COLUMN rating INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+            if let Some(aid) = sqlx::query_scalar::<_, Option<i64>>("SELECT artist_id FROM track_meta WHERE item_id = ?")
+                .bind(item_id).fetch_optional(&pool).await.ok().flatten().flatten() {
+                let _ = sqlx::query("UPDATE artists SET rating = ? WHERE id = ?").bind(n as i64).bind(aid).execute(&pool).await;
+                let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
+            }
+        });
+    });
+    // Favourite / rate the open album or artist (info-box buttons).
+    let w = window.as_weak();
+    window.on_music_detail_fav(move || {
+        let Some(_w0) = w.upgrade() else { return; };
+        let (kind, id, _) = music_detail().lock().map(|g| g.clone()).unwrap_or_default();
+        if id < 0 || (kind != "album" && kind != "artist") { return; }
+        let table = if kind == "album" { "albums" } else { "artists" };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN loved INTEGER NOT NULL DEFAULT 0")).execute(&pool).await;
+            let _ = sqlx::query(&format!("UPDATE {table} SET loved = CASE COALESCE(loved,0) WHEN 1 THEN 0 ELSE 1 END WHERE id = ?"))
+                .bind(id).execute(&pool).await;
+            let loved: i64 = sqlx::query_scalar(&format!("SELECT COALESCE(loved,0) FROM {table} WHERE id = ?"))
+                .bind(id).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
+            let _ = weak.upgrade_in_event_loop(move |w| { w.set_music_detail_loved(loved != 0); populate_music_views(w.as_weak()); });
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_detail_rate(move |n| {
+        let Some(w0) = w.upgrade() else { return; };
+        let (kind, id, _) = music_detail().lock().map(|g| g.clone()).unwrap_or_default();
+        if id < 0 || (kind != "album" && kind != "artist") { return; }
+        let table = if kind == "album" { "albums" } else { "artists" };
+        w0.set_music_detail_stars(n);
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN rating INTEGER NOT NULL DEFAULT 0")).execute(&pool).await;
+            let _ = sqlx::query(&format!("UPDATE {table} SET rating = ? WHERE id = ?")).bind(n as i64).bind(id).execute(&pool).await;
+            let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
         });
     });
     // Genre detail — open the genre's page (list) before any playback.
@@ -1929,6 +2028,11 @@ fn main() -> Result<()> {
                 "title"    => v.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
                 "artist"   => v.sort_by(|a, b| a.artist.to_lowercase().cmp(&b.artist.to_lowercase())),
                 "duration" => v.sort_by(|a, b| dur_secs(a.duration.as_str()).cmp(&dur_secs(b.duration.as_str()))),
+                "album"    => {
+                    let alb_of: std::collections::HashMap<i32, String> = music_songs().lock()
+                        .map(|g| g.iter().map(|s| (s.pos, s.album.to_lowercase())).collect()).unwrap_or_default();
+                    v.sort_by(|a, b| alb_of.get(&a.index).cmp(&alb_of.get(&b.index)));
+                }
                 _ => {}
             }
             if dir == "desc" { v.reverse(); }
@@ -2092,6 +2196,10 @@ fn main() -> Result<()> {
         let mpv = match r.as_str() { "track" => "track", "album" => "album", _ => "no" };
         music_ipc(&["set_property", "replaygain", mpv]);
     });
+    // Visualizer style — persist the last-chosen style so it sticks across launches.
+    window.on_music_set_vis_style(move |s| {
+        save_music_pref("music.vis_style", &s.to_string());
+    });
     // Scrobble opt-in (np.p5.music.scrobble) — toggle + persist.
     let w = window.as_weak();
     window.on_music_toggle_scrobble(move || {
@@ -2151,7 +2259,27 @@ fn main() -> Result<()> {
         let sub = w.get_music_np_sub();
         w.set_music_tag_artist(if sub == "Playing from your library" { "".into() } else { sub });
         w.set_music_tag_album("".into());
+        w.set_music_tag_date("".into());
+        w.set_music_tag_genre("".into());
         w.set_music_tag_open(true);
+        // Prefill genre + refresh the dropdown options for the now-playing track.
+        let id = current_music_id(&w);
+        let weak = w.as_weak();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let g: Option<String> = if let Some(id) = id {
+                sqlx::query_scalar("SELECT genre FROM track_meta WHERE item_id = ?")
+                    .bind(id).fetch_optional(&pool).await.ok().flatten().flatten()
+            } else { None };
+            let opts: Vec<String> = sqlx::query_scalar(
+                "SELECT DISTINCT genre FROM track_meta WHERE genre IS NOT NULL AND genre != '' ORDER BY genre")
+                .fetch_all(&pool).await.unwrap_or_default();
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                if let Some(g) = g { w.set_music_tag_genre(g.into()); }
+                let opts: Vec<slint::SharedString> = opts.into_iter().map(|s| s.into()).collect();
+                w.set_music_genre_options(slint::ModelRc::new(slint::VecModel::from(opts)));
+            });
+        });
     });
     let w = window.as_weak();
     window.on_music_tag_save(move || {
@@ -2165,6 +2293,8 @@ fn main() -> Result<()> {
         let title = w0.get_music_tag_title().to_string();
         let artist = w0.get_music_tag_artist().to_string();
         let album = w0.get_music_tag_album().to_string();
+        let release_date = w0.get_music_tag_date().to_string();
+        let genre = w0.get_music_tag_genre().to_string();
         // Reflect immediately in the now-playing bar only when editing it.
         if target.is_none() || target == current_music_id(&w0) {
             if !title.is_empty() { w0.set_music_np_title(title.clone().into()); }
@@ -2185,6 +2315,15 @@ fn main() -> Result<()> {
                 .bind(if title.is_empty() { None } else { Some(title.clone()) })
                 .bind(artist_id)
                 .bind(if album.is_empty() { None } else { Some(album.clone()) })
+                .bind(id).execute(&pool).await;
+            // Release date — stored in an on-demand column (null by default).
+            let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN release_date TEXT").execute(&pool).await;
+            let _ = sqlx::query("UPDATE track_meta SET release_date = ? WHERE item_id = ?")
+                .bind(if release_date.trim().is_empty() { None } else { Some(release_date.trim().to_string()) })
+                .bind(id).execute(&pool).await;
+            // Genre — overwrite when set, clear when blank.
+            let _ = sqlx::query("UPDATE track_meta SET genre = ? WHERE item_id = ?")
+                .bind(if genre.trim().is_empty() { None } else { Some(genre.trim().to_string()) })
                 .bind(id).execute(&pool).await;
             // Write the tags back into the file itself via ffmpeg (np.p5.music.tag-editor),
             // so the metadata survives a re-scan / shows in other players. Stream-copies
@@ -2472,7 +2611,23 @@ fn main() -> Result<()> {
     });
     let w = window.as_weak();
     window.on_music_playlist_play_track(move |pos| {
-        if let Some(w) = w.upgrade() { play_music_at(&w, pos); }
+        let Some(w0) = w.upgrade() else { return; };
+        play_music_at(&w0, pos);
+        // Queue the rest of the playlist in its displayed order (np.p5.music.playlist-order).
+        let (_pid, ids) = current_playlist().lock().map(|g| g.clone()).unwrap_or((-1, Vec::new()));
+        let clicked_id = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied());
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = tulipix_music::queue::clear(&pool).await;
+            if let Some(start) = clicked_id.and_then(|cid| ids.iter().position(|x| *x == cid)) {
+                for off in 1..ids.len() {
+                    let id = ids[(start + off) % ids.len()];
+                    let _ = tulipix_music::queue::enqueue(&pool, id, "playlist").await;
+                }
+            }
+            let _ = weak.upgrade_in_event_loop(|w| build_music_queue(&w));
+        });
     });
     // Remove the i-th track from the open playlist.
     let w = window.as_weak();
@@ -2505,6 +2660,19 @@ fn main() -> Result<()> {
                 let _ = weak.upgrade_in_event_loop(move |w| build_playlist_detail(&w, pid));
             }
         });
+    });
+    // Playlist sort — Custom (saved/manual order = play order) | title | artist.
+    let w = window.as_weak();
+    window.on_music_playlist_sort_set(move |s| {
+        let Some(w0) = w.upgrade() else { return; };
+        let s = s.to_string();
+        let dir = if w0.get_music_playlist_sort() == s.as_str() {
+            if w0.get_music_playlist_sort_dir() == "asc" { "desc" } else { "asc" }
+        } else { "asc" };
+        w0.set_music_playlist_sort(s.clone().into());
+        w0.set_music_playlist_sort_dir(dir.into());
+        let pid = current_playlist().lock().map(|g| g.0).unwrap_or(-1);
+        if pid >= 0 { build_playlist_detail(&w0, pid); }
     });
     // Import an M3U/M3U8/PLS file → new playlist of matched library tracks.
     let w = window.as_weak();
@@ -2621,6 +2789,8 @@ fn main() -> Result<()> {
         window.set_music_scrobble_on(s.advanced.get("music.scrobble").map(|v| v == "1").unwrap_or(false));
         let tsz = s.advanced.get("music.thumb_size").and_then(|v| v.parse::<f32>().ok()).unwrap_or(168.0).clamp(100.0, 300.0);
         window.set_music_thumb_size(tsz);
+        // Last-used visualizer style (0..4), default Line (4).
+        window.set_music_vis_style(s.advanced.get("music.vis_style").and_then(|v| v.parse::<i32>().ok()).unwrap_or(4).clamp(0, 4));
         populate_eq_customs(&window);
         let weak = window.as_weak();
         std::thread::spawn(move || {
@@ -7196,10 +7366,14 @@ fn rebuild_browse_tab(w: &MainWindow, tab: &str) {
         let q = music_query_filter().lock().map(|s| s.trim().to_lowercase()).unwrap_or_default();
         if !q.is_empty() { v.retain(|(t, _)| t.label.to_lowercase().contains(&q)); }
     }
-    let by_count = w.get_music_browse_sort() == "count";
+    let sort = w.get_music_browse_sort().to_string();
     let asc = w.get_music_browse_dir() == "asc";
     v.sort_by(|a, b| {
-        let o = if by_count { a.1.cmp(&b.1) } else { a.0.label.to_lowercase().cmp(&b.0.label.to_lowercase()) };
+        let o = match sort.as_str() {
+            "count"  => a.1.cmp(&b.1),
+            "rating" => a.0.stack_count.cmp(&b.0.stack_count),
+            _        => a.0.label.to_lowercase().cmp(&b.0.label.to_lowercase()),
+        };
         if asc { o } else { o.reverse() }
     });
     // Albums show their track count next to the name (easier visual sorting).
@@ -7407,11 +7581,20 @@ static HISTORY_IDS: std::sync::OnceLock<std::sync::Mutex<Vec<i64>>> = std::sync:
 fn history_ids() -> &'static std::sync::Mutex<Vec<i64>> {
     HISTORY_IDS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
-/// Re-publish history rows, applying the current search query filter.
+/// Re-publish history rows, applying the current search query filter and paging
+/// 30 plays per page (up to 5 pages = 150 most-recent plays).
 fn rebuild_history_page(w: &MainWindow) {
+    const PER: usize = 30;
+    const MAX_PAGES: usize = 5;
     let all = history_ids().lock().map(|g| g.clone()).unwrap_or_default();
     let ids = filter_ids_by_query(&all);
-    let rows = song_rows_for_ids(w, &ids);
+    let pages = ((ids.len() + PER - 1) / PER).clamp(1, MAX_PAGES);
+    w.set_music_history_pages(pages as i32);
+    let page = (w.get_music_history_page().max(1) as usize).min(pages);
+    w.set_music_history_page(page as i32);
+    let start = (page - 1) * PER;
+    let slice: Vec<i64> = ids.iter().skip(start).take(PER).copied().collect();
+    let rows = song_rows_for_ids(w, &slice);
     w.set_music_history_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
 }
 fn populate_history(w: &MainWindow) {
@@ -7419,7 +7602,7 @@ fn populate_history(w: &MainWindow) {
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("music").await else { return; };
         let ids: Vec<i64> = sqlx::query_scalar(
-            "SELECT item_id FROM play_history ORDER BY played_at DESC LIMIT 200")
+            "SELECT item_id FROM play_history ORDER BY played_at DESC LIMIT 150")
             .fetch_all(&pool).await.unwrap_or_default();
         let _ = weak.upgrade_in_event_loop(move |w| {
             if let Ok(mut g) = history_ids().lock() { *g = ids; }
@@ -7445,6 +7628,10 @@ fn open_album_detail(w: &MainWindow, album_id: i64) {
              FROM albums al LEFT JOIN artists ar ON ar.id = al.artist_id WHERE al.id = ?")
             .bind(album_id).fetch_optional(&pool).await.ok().flatten();
         let Some((title, year, cover, artist)) = hdr else { return; };
+        let _ = sqlx::query("ALTER TABLE albums ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE albums ADD COLUMN rating INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let al_loved: i64 = sqlx::query_scalar("SELECT COALESCE(loved,0) FROM albums WHERE id = ?").bind(album_id).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
+        let al_rating: i64 = sqlx::query_scalar("SELECT COALESCE(rating,0) FROM albums WHERE id = ?").bind(album_id).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
         let ids: Vec<i64> = sqlx::query_scalar(
             "SELECT item_id FROM track_meta WHERE album_id = ? ORDER BY COALESCE(disc_no,0), COALESCE(track_no,0), title")
             .bind(album_id).fetch_all(&pool).await.unwrap_or_default();
@@ -7466,6 +7653,8 @@ fn open_album_detail(w: &MainWindow, album_id: i64) {
             w.set_music_detail_art(art);
             w.set_music_detail_bio("".into());
             w.set_music_detail_status("".into());
+            w.set_music_detail_loved(al_loved != 0);
+            w.set_music_detail_stars(al_rating as i32);
             set_detail_rows(&w, rows);
             w.set_music_detail_open(true);
         });
@@ -7488,9 +7677,16 @@ fn open_artist_detail(w: &MainWindow, artist_id: i64) {
         let album_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(DISTINCT album_id) FROM track_meta WHERE artist_id = ? AND album_id IS NOT NULL")
             .bind(artist_id).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
+        // This artist's own favourite / rating state (for the info-box buttons).
+        let _ = sqlx::query("ALTER TABLE artists ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE artists ADD COLUMN rating INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let ar_loved: i64 = sqlx::query_scalar("SELECT COALESCE(loved,0) FROM artists WHERE id = ?").bind(artist_id).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
+        let ar_rating: i64 = sqlx::query_scalar("SELECT COALESCE(rating,0) FROM artists WHERE id = ?").bind(artist_id).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
         // Albums by this artist (cover + first track) for the 70/30 right column.
-        let alb: Vec<(i64, String, Option<String>, i64)> = sqlx::query_as(
-            "SELECT al.id, al.title, al.cover_path, MIN(tm.item_id) \
+        let _ = sqlx::query("ALTER TABLE albums ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE albums ADD COLUMN rating INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let alb: Vec<(i64, String, Option<String>, i64, i64, i64)> = sqlx::query_as(
+            "SELECT al.id, al.title, al.cover_path, MIN(tm.item_id), COALESCE(al.loved,0), COALESCE(al.rating,0) \
              FROM track_meta tm JOIN albums al ON al.id = tm.album_id \
              WHERE tm.artist_id = ? GROUP BY al.id ORDER BY al.title COLLATE NOCASE")
             .bind(artist_id).fetch_all(&pool).await.unwrap_or_default();
@@ -7512,19 +7708,22 @@ fn open_artist_detail(w: &MainWindow, artist_id: i64) {
                 w.set_music_detail_subtitle(sub.into());
                 w.set_music_detail_art(art);
                 w.set_music_detail_bio(cached_bio.into());
+                w.set_music_detail_loved(ar_loved != 0);
+                w.set_music_detail_stars(ar_rating as i32);
                 w.set_music_detail_status("".into());
                 set_detail_rows(&w, rows);
                 // Build the artist-albums column tiles (cover → first-track thumb).
                 let pos_of: std::collections::HashMap<i64, i32> = music_ids().lock()
                     .map(|g| g.iter().enumerate().map(|(i, id)| (*id, i as i32)).collect()).unwrap_or_default();
                 let tiles = w.get_music_tiles();
-                let album_tiles: Vec<PhotoTile> = alb.iter().map(|(_aid, title, cover, first)| {
+                let album_tiles: Vec<PhotoTile> = alb.iter().map(|(_aid, title, cover, first, loved, rating)| {
                     let pos = pos_of.get(first).copied().unwrap_or(-1);
                     let thumb = cover.as_ref().filter(|p| std::path::Path::new(p).exists())
                         .map(|p| slint::Image::load_from_path(std::path::Path::new(p)).unwrap_or_default())
                         .or_else(|| if pos >= 0 && (pos as usize) < tiles.row_count() { tiles.row_data(pos as usize).map(|t| t.thumb) } else { None })
                         .unwrap_or_default();
-                    PhotoTile { thumb, label: title.clone().into(), index: pos, ..Default::default() }
+                    PhotoTile { thumb, label: title.clone().into(), index: pos,
+                        starred: *loved != 0, stack_count: *rating as i32, ..Default::default() }
                 }).collect();
                 set_detail_artist_albums(&w, album_tiles);
                 w.set_music_detail_open(true);
@@ -7693,7 +7892,7 @@ fn build_playlist_detail(w: &MainWindow, playlist_id: i64) {
                 .map(|g| g.iter().map(|s| (s.pos, (s.title.clone(), s.artist.clone(), s.duration_s))).collect())
                 .unwrap_or_default();
             let tiles = w.get_music_tiles();
-            let rows: Vec<MusicSongRow> = item_ids.iter().map(|id| {
+            let mut rows: Vec<MusicSongRow> = item_ids.iter().map(|id| {
                 let pos = pos_of.get(id).copied().unwrap_or(-1);
                 let (title, artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
                 MusicSongRow {
@@ -7704,12 +7903,23 @@ fn build_playlist_detail(w: &MainWindow, playlist_id: i64) {
                     index: pos,
                 }
             }).collect();
+            // Apply the playlist sort — Custom keeps the saved/manual order.
+            let psort = w.get_music_playlist_sort().to_string();
+            match psort.as_str() {
+                "title"  => rows.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
+                "artist" => rows.sort_by(|a, b| a.artist.to_lowercase().cmp(&b.artist.to_lowercase())),
+                _ => {}
+            }
+            if psort != "custom" && w.get_music_playlist_sort_dir() == "desc" { rows.reverse(); }
             // Cover: custom art (Settings) → else the first track's thumb.
             let cover = playlist_cover_path(playlist_id)
                 .map(|p| slint::Image::load_from_path(std::path::Path::new(&p)).unwrap_or_default())
                 .or_else(|| rows.first().map(|r| r.thumb.clone()))
                 .unwrap_or_default();
-            if let Ok(mut g) = current_playlist().lock() { *g = (playlist_id, item_ids); }
+            // Persist the playlist in its *displayed* order so playback follows it.
+            let id_of_pos: std::collections::HashMap<i32, i64> = pos_of.iter().map(|(id, p)| (*p, *id)).collect();
+            let ordered_ids: Vec<i64> = rows.iter().filter_map(|r| id_of_pos.get(&r.index).copied()).collect();
+            if let Ok(mut g) = current_playlist().lock() { *g = (playlist_id, ordered_ids); }
             w.set_music_playlist_name(if name.is_empty() { "Playlist".into() } else { name.into() });
             w.set_music_playlist_cover(cover);
             w.set_music_playlist_tracks(slint::ModelRc::new(slint::VecModel::from(rows)));
@@ -8419,9 +8629,15 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
         // columns are added on demand; ignore the error when they already exist.
         let _ = sqlx::query("ALTER TABLE albums ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
         let _ = sqlx::query("ALTER TABLE artists ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE albums ADD COLUMN rating INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE artists ADD COLUMN rating INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
         let loved_albums: std::collections::HashSet<i64> = sqlx::query_scalar("SELECT id FROM albums WHERE loved = 1")
             .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
         let loved_artists: std::collections::HashSet<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE loved = 1")
+            .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
+        let album_rating: std::collections::HashMap<i64, i64> = sqlx::query_as("SELECT id, rating FROM albums WHERE rating > 0")
+            .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
+        let artist_rating: std::collections::HashMap<i64, i64> = sqlx::query_as("SELECT id, rating FROM artists WHERE rating > 0")
             .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
         // Per-track grouping keys, to resolve a group's first playback position.
         let meta: Vec<(i64, Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
@@ -8505,7 +8721,8 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
                     .or_else(|| tile_at(pos).map(|t| t.thumb))
                     .unwrap_or_default();
                 let label = match &a.artist { Some(ar) => format!("{} · {}", a.title, ar), None => a.title.clone() };
-                (PhotoTile { thumb, label: label.into(), index: pos, starred: loved_albums.contains(&a.album_id), ..Default::default() }, a.track_count)
+                (PhotoTile { thumb, label: label.into(), index: pos, starred: loved_albums.contains(&a.album_id),
+                    stack_count: album_rating.get(&a.album_id).copied().unwrap_or(0) as i32, ..Default::default() }, a.track_count)
             }).collect();
             set_browse_src("albums", album_tiles_src.clone());
             rebuild_browse_tab(&w, "albums");
@@ -8518,7 +8735,8 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
                 let pos = first_artist.get(id).copied().unwrap_or(-1);
                 (PhotoTile {
                     thumb: tile_at(pos).map(|t| t.thumb).unwrap_or_default(),
-                    label: format!("{name} · {n}").into(), index: pos, starred: loved_artists.contains(id), ..Default::default()
+                    label: format!("{name} · {n}").into(), index: pos, starred: loved_artists.contains(id),
+                    stack_count: artist_rating.get(id).copied().unwrap_or(0) as i32, ..Default::default()
                 }, *n)
             }).collect();
             set_browse_src("artists", artist_src.clone());
