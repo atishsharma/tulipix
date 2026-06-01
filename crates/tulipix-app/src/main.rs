@@ -1185,6 +1185,7 @@ fn main() -> Result<()> {
         let path = music_paths().lock().ok().and_then(|g| g.get(pos as usize).cloned());
         let meta = music_songs().lock().ok().and_then(|g| g.iter().find(|s| s.pos == pos).cloned());
         let item_id = meta.as_ref().map(|m| m.item_id).unwrap_or(-1);
+        w0.set_music_props_pos(pos);
         if let Some(m) = &meta {
             w0.set_music_props_title(m.title.clone().into());
             w0.set_music_props_artist(m.artist.clone().into());

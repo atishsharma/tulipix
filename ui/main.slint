@@ -780,6 +780,7 @@ export component MainWindow inherits Window {
     callback music-song-delete(int);
     // Media-info / Properties dialog.
     in-out property <bool> music-song-props-open: false;
+    in-out property <int> music-props-pos: -1;
     in-out property <string> music-props-title: "";
     in-out property <string> music-props-artist: "";
     in-out property <string> music-props-album: "";
@@ -1438,7 +1439,7 @@ export component MainWindow inherits Window {
                 song-view-artist(i) => { root.music-artist-open(i); } song-properties(i) => { root.music-song-properties(i); }
                 song-edit-media(i) => { root.music-song-edit-media(i); }
                 song-delete(i) => { root.music-song-delete(i); }
-                song-props-open <=> root.music-song-props-open; props-title: root.music-props-title; props-artist: root.music-props-artist;
+                song-props-open <=> root.music-song-props-open; props-pos <=> root.music-props-pos; props-title: root.music-props-title; props-artist: root.music-props-artist;
                 props-album: root.music-props-album; props-genre: root.music-props-genre; props-duration: root.music-props-duration;
                 props-release: root.music-props-release; props-credits: root.music-props-credits;
                 props-path: root.music-props-path; props-format: root.music-props-format; props-size: root.music-props-size;
@@ -1700,7 +1701,7 @@ export component MainWindow inherits Window {
     // Full-screen music player page (above all sections).
     if root.music-fullscreen: MusicFullscreen {
         width: 100%; height: 100%;
-        art: root.music-np-art; title: root.music-np-title; sub: root.music-np-sub; playing: root.music-playing;
+        art: root.music-np-art; accent: root.music-np-accent; title: root.music-np-title; sub: root.music-np-sub; playing: root.music-playing;
         pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
         volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat; shuffle: root.music-shuffle;
         np-loved: root.music-np-loved; np-stars: root.music-np-stars;
@@ -1734,7 +1735,7 @@ export component MainWindow inherits Window {
         MusicMini {
             width: 100%; height: 100%;
             uiscale: root.music-mini-scale;
-            art: root.music-np-art; title: root.music-np-title; sub: root.music-np-sub; album: root.music-np-album; playing: root.music-playing;
+            art: root.music-np-art; accent: root.music-np-accent; title: root.music-np-title; sub: root.music-np-sub; album: root.music-np-album; playing: root.music-playing;
             pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
             shuffle: root.music-shuffle; volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat;
             queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;

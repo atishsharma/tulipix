@@ -119,9 +119,10 @@ pub fn best_metadata(search: &RecordingSearch) -> Option<FetchedMeta> {
         .filter(|y| *y > 0);
     let genre = r.tags.iter().max_by_key(|t| t.count)
         .map(|t| t.name.clone()).filter(|g| !g.is_empty());
-    // Credits — the recording's artist-credit names (performers), joined.
-    let credits = r.artist_credit.iter().map(|a| a.name.as_str())
-        .filter(|n| !n.is_empty()).collect::<Vec<_>>().join(", ");
+    // Credits is a manual roles field (writer / singer / producer) — the MB
+    // recording search only yields performer names (== artist), so don't
+    // auto-fill it and duplicate the Song artist.
+    let credits = String::new();
     let cover_url = rel.map(|x| cover_front_url(&x.id));
     Some(FetchedMeta { title: r.title.clone(), artist, album, year, release_date, genre, credits, cover_url })
 }

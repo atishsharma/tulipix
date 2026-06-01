@@ -486,21 +486,15 @@ component MusicMenuRow inherits Rectangle {
 component TrackRow inherits Rectangle {
     in property <MusicSongRow> track;
     callback clicked();
-    callback play-default();
-    callback view-album();
-    callback view-artist();
-    callback edit-media();
-    callback song-credits();
-    callback properties();
-    callback delete-song();
-    property <length> menu-x: 0;
-    property <length> menu-y: 0;
+    // Right-click hands absolute screen coords up to a page-level context menu
+    // (a nested PopupWindow inside the detail ScrollView rendered behind the page).
+    callback context(length, length);
     height: 56px; border-radius: 8px;
     background: t.has-hover ? MusicTheme.hov : transparent;
     t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); }
         pointer-event(e) => {
             if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down) {
-                root.menu-x = self.mouse-x; root.menu-y = Math.min(self.mouse-y, root.height - 20px); ctxpop2.show();
+                root.context(t.absolute-position.x + t.mouse-x, t.absolute-position.y + t.mouse-y);
             } } }
     HorizontalLayout {
         padding-left: 10px; padding-right: 16px; spacing: 12px;
@@ -515,22 +509,6 @@ component TrackRow inherits Rectangle {
             Text { text: track.artist; color: MusicTheme.fg-dim; font-size: 11px; overflow: elide; }
         }
         Text { text: track.duration; color: MusicTheme.fg-mute; font-size: 12px; vertical-alignment: center; horizontal-stretch: 0; }
-    }
-    ctxpop2 := PopupWindow { x: root.menu-x; y: root.menu-y; width: 256px; height: 268px; close-policy: close-on-click-outside;
-        Rectangle { width: 100%; height: 100%; border-radius: 12px; background: MusicTheme.surf-pop;
-            border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: 36px; drop-shadow-color: #000000e6;
-            VerticalLayout { padding: 6px; spacing: 1px;
-                MusicMenuRow { label: "▶   Play"; clicked => { ctxpop2.close(); root.clicked(); } }
-                MusicMenuRow { label: "⧉   Play in default player"; clicked => { ctxpop2.close(); root.play-default(); } }
-                MusicMenuRow { label: "▦   View album"; clicked => { ctxpop2.close(); root.view-album(); } }
-                MusicMenuRow { label: "◐   View artist"; clicked => { ctxpop2.close(); root.view-artist(); } }
-                Rectangle { height: 7px; Rectangle { y: 3px; height: 1px; background: MusicTheme.line; } }
-                MusicMenuRow { label: "✎   Edit media info for library"; clicked => { ctxpop2.close(); root.edit-media(); } }
-                MusicMenuRow { label: "👥   Song credits"; clicked => { ctxpop2.close(); root.song-credits(); } }
-                MusicMenuRow { label: "ⓘ   Properties"; clicked => { ctxpop2.close(); root.properties(); } }
-                MusicMenuRow { label: "🗑   Delete song (from system)"; txt: #ef4444; clicked => { ctxpop2.close(); root.delete-song(); } }
-            }
-        }
     }
 }
 
@@ -669,9 +647,8 @@ component SongCard inherits Rectangle {
                                     str := TouchArea { mouse-cursor: pointer; clicked => { ctxpop.close(); root.rate(track.stars == n ? 0 : n); } }
                                     Text { text: track.stars >= n ? "★" : "☆"; color: track.stars >= n ? #e5a00d : MusicTheme.fg-mute; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; } } } } }
                         Rectangle { height: 7px; Rectangle { y: 3px; height: 1px; background: MusicTheme.line; } }
-                        MusicMenuRow { label: "✎   Edit media info for library"; clicked => { ctxpop.close(); root.edit-media(); } }
-                        MusicMenuRow { label: "👥   Song credits"; clicked => { ctxpop.close(); root.song-credits(); } }
                         MusicMenuRow { label: "ⓘ   Properties"; clicked => { ctxpop.close(); root.properties(); } }
+                        MusicMenuRow { label: "✎   Edit media info for library"; clicked => { ctxpop.close(); root.edit-media(); } }
                         MusicMenuRow { label: "🗑   Delete song (from system)"; txt: #ef4444; clicked => { ctxpop.close(); root.delete-song(); } }
                     }
                 }
@@ -898,6 +875,18 @@ export component MusicPage inherits Rectangle {
     in property <string> props-path: "";
     in property <string> props-format: "";
     in property <string> props-size: "";
+    in-out property <int> props-pos: -1;         // song pos backing the Properties dialog (Edit button)
+    // Detail-list (album/artist/genre) row context menu — rendered at page level
+    // so it isn't clipped behind the detail ScrollView (opened on top).
+    property <int> trk-ctx-idx: -1;
+    property <length> trk-ctx-x: 0;
+    property <length> trk-ctx-y: 0;
+    property <bool> trk-ctx-open: false;
+    // Delete confirmation — both context menus route here instead of deleting
+    // immediately; the dialog renders on top (np.p5.atmusic.delete-confirm).
+    property <bool> del-confirm-open: false;
+    property <int> del-confirm-idx: -1;
+    property <string> del-confirm-title: "";
     callback sync-all-lyrics();                  // batch-fetch lyrics for the whole library
     in property <string> lyrics-sync-status: ""; // progress label on the Sync button
     in property <float> lyrics-sync-progress: 0; // 0..1 fill on the Sync button
@@ -1273,7 +1262,7 @@ export component MusicPage inherits Rectangle {
                             if (MusicTheme.light) { MusicTheme.light = false; }
                             else if (!MusicTheme.oled) { MusicTheme.oled = true; }
                             else { MusicTheme.light = true; MusicTheme.oled = false; } } }
-                        AppIcon { source: MusicTheme.light ? Icons.moon : Icons.sun; tint: MusicTheme.fg2;
+                        AppIcon { source: MusicTheme.light ? Icons.sun : (MusicTheme.oled ? Icons.star : Icons.moon); tint: MusicTheme.fg2;
                             width: 18px; height: 18px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
             }
         }
@@ -1551,7 +1540,7 @@ export component MusicPage inherits Rectangle {
                             properties => { root.song-properties(s.index); }
                             song-credits => { root.song-properties(s.index); }
                             edit-media => { root.song-edit-media(s.index); }
-                            delete-song => { root.song-delete(s.index); }
+                            delete-song => { root.del-confirm-idx = s.index; root.del-confirm-title = s.title; root.del-confirm-open = true; }
                         }
                     }
                     if root.songs.length == 0: Text { text: root.query == "" ? "No tracks." : "No tracks match \"" + root.query + "\".";
@@ -2199,40 +2188,8 @@ export component MusicPage inherits Rectangle {
         }
     }
 
-    // ── Song Properties / media-info dialog (np.p5.atmusic.song-properties) ──
-    if root.song-props-open: Rectangle {
-        width: 100%; height: 100%; background: #00000088;
-        TouchArea { clicked => { root.song-props-open = false; } } // click-away closes
-        Rectangle { width: 520px; height: 500px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
-            border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
-            drop-shadow-blur: 44px; drop-shadow-color: #000000e6;
-            TouchArea {} // swallow clicks inside the card
-            VerticalLayout { padding: 24px; spacing: 14px;
-                HorizontalLayout { spacing: 10px;
-                    VerticalLayout { alignment: center; horizontal-stretch: 1;
-                        Text { text: "Properties"; color: MusicTheme.fg; font-size: 19px; font-weight: 800; } }
-                    PlayerBtn { icon: Icons.x; size: 30px; isz: 14px; clicked => { root.song-props-open = false; } } }
-                Rectangle { height: 1px; background: MusicTheme.line; }
-                // Field rows — label · value, aligned.
-                for f[i] in [
-                    { k: "Title",    v: root.props-title },
-                    { k: "Artist",   v: root.props-artist },
-                    { k: "Album",    v: root.props-album },
-                    { k: "Genre",    v: root.props-genre },
-                    { k: "Released", v: root.props-release },
-                    { k: "Credits",  v: root.props-credits },
-                    { k: "Duration", v: root.props-duration },
-                    { k: "Format",   v: root.props-format },
-                    { k: "Size",     v: root.props-size },
-                    { k: "Path",     v: root.props-path },
-                ]: HorizontalLayout { spacing: 14px;
-                    VerticalLayout { alignment: start; horizontal-stretch: 0; Rectangle { width: 92px;
-                        Text { text: f.k; color: MusicTheme.fg-mute; font-size: 13px; font-weight: 600; } } }
-                    VerticalLayout { alignment: start; horizontal-stretch: 1;
-                        Text { text: f.v == "" ? "—" : f.v; color: MusicTheme.fg2; font-size: 13px; wrap: word-wrap; } } }
-            }
-        }
-    }
+    // Song Properties dialog + delete-confirm are declared at the END of the
+    // component so they stack above the detail overlay (np.p5.atmusic.modals).
 
     // ── Album / Artist detail overlay (np.p5.atmusic.album-detail / .artist-detail) ──
     // Sits below the 126px header (Row1+Row2, both clickable) and above the
@@ -2342,10 +2299,9 @@ export component MusicPage inherits Rectangle {
                         if root.detail-tracks.length == 0: Text { text: "No tracks."; color: MusicTheme.fg-dim2; font-size: 13px; }
                         VerticalLayout { spacing: 2px;
                             for s[i] in root.detail-tracks: TrackRow { track: s; clicked => { root.detail-play-track(s.index); }
-                                play-default => { root.song-play-default(s.index); } view-album => { root.song-view-album(s.index); }
-                                view-artist => { root.song-view-artist(s.index); } edit-media => { root.song-edit-media(s.index); }
-                                song-credits => { root.song-properties(s.index); } properties => { root.song-properties(s.index); }
-                                delete-song => { root.song-delete(s.index); } } } }
+                                context(ax, ay) => { root.trk-ctx-idx = s.index;
+                                    root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y;
+                                    root.trk-ctx-open = true; } } } }
                     VerticalLayout { horizontal-stretch: 3; spacing: 10px; alignment: start;
                         if root.detail-artist-albums.length > 0: Text { text: "Albums"; color: MusicTheme.fg; font-size: 16px; font-weight: 700; }
                         Rectangle { horizontal-stretch: 1;
@@ -2366,10 +2322,9 @@ export component MusicPage inherits Rectangle {
                     if root.detail-tracks.length == 0: Text { text: "No tracks."; color: MusicTheme.fg-dim2; font-size: 13px; }
                     VerticalLayout { spacing: 2px;
                         for s[i] in root.detail-tracks: TrackRow { track: s; clicked => { root.detail-play-track(s.index); }
-                            play-default => { root.song-play-default(s.index); } view-album => { root.song-view-album(s.index); }
-                            view-artist => { root.song-view-artist(s.index); } edit-media => { root.song-edit-media(s.index); }
-                            song-credits => { root.song-properties(s.index); } properties => { root.song-properties(s.index); }
-                            delete-song => { root.song-delete(s.index); } } }
+                            context(ax, ay) => { root.trk-ctx-idx = s.index;
+                                root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y;
+                                root.trk-ctx-open = true; } } }
                 }
             }
         }
@@ -2652,11 +2607,10 @@ export component MusicPage inherits Rectangle {
                 // Scrollable field stack — everything editable / fetchable.
                 ScrollView { vertical-stretch: 1;
                     VerticalLayout { spacing: 10px; padding-right: 6px;
-                        TagField { label: "Title";        text <=> root.tag-title; }
-                        TagField { label: "Artist";       text <=> root.tag-artist; }
-                        TagField { label: "Album";        text <=> root.tag-album; }
-                        TagField { label: "Album artist"; text <=> root.tag-album-artist; }
-                        TagField { label: "Credits";      text <=> root.tag-credits; }
+                        TagField { label: "Title";       text <=> root.tag-title; }
+                        TagField { label: "Song artist"; text <=> root.tag-artist; }
+                        TagField { label: "Album";       text <=> root.tag-album; }
+                        TagField { label: "Credits (writer · singer · producer)"; text <=> root.tag-credits; }
                         // Genre — dropdown of distinct library genres.
                         VerticalLayout { spacing: 4px;
                             Text { text: "Genre"; color: MusicTheme.fg-dim; font-size: 12px; }
@@ -2802,6 +2756,98 @@ export component MusicPage inherits Rectangle {
             }
         }
     }
+
+    // ── Detail-list row context menu (page-level, renders on top) ─────────
+    // Hoisted out of the detail ScrollView, which clipped the nested popup
+    // behind the page on album/artist pages (np.p5.atmusic.detail-context).
+    if root.trk-ctx-open: Rectangle {
+        TouchArea { mouse-cursor: default;
+            clicked => { root.trk-ctx-open = false; }
+            pointer-event(ev) => { if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) { root.trk-ctx-open = false; } } }
+        Rectangle {
+            x: Math.min(root.trk-ctx-x, root.width - self.width - 8px);
+            y: Math.min(root.trk-ctx-y, root.height - self.height - 8px);
+            width: 256px; height: 248px; border-radius: 12px; background: MusicTheme.surf-pop;
+            border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: 36px; drop-shadow-color: #000000e6;
+            VerticalLayout { padding: 6px; spacing: 1px;
+                MusicMenuRow { label: "▶   Play"; clicked => { root.trk-ctx-open = false; root.detail-play-track(root.trk-ctx-idx); } }
+                MusicMenuRow { label: "⧉   Play in default player"; clicked => { root.trk-ctx-open = false; root.song-play-default(root.trk-ctx-idx); } }
+                MusicMenuRow { label: "▦   View album"; clicked => { root.trk-ctx-open = false; root.song-view-album(root.trk-ctx-idx); } }
+                MusicMenuRow { label: "◐   View artist"; clicked => { root.trk-ctx-open = false; root.song-view-artist(root.trk-ctx-idx); } }
+                Rectangle { height: 7px; Rectangle { y: 3px; height: 1px; background: MusicTheme.line; } }
+                MusicMenuRow { label: "ⓘ   Properties"; clicked => { root.trk-ctx-open = false; root.song-properties(root.trk-ctx-idx); } }
+                MusicMenuRow { label: "✎   Edit media info for library"; clicked => { root.trk-ctx-open = false; root.song-edit-media(root.trk-ctx-idx); } }
+                MusicMenuRow { label: "🗑   Delete song (from system)"; txt: #ef4444; clicked => { root.trk-ctx-open = false; root.del-confirm-idx = root.trk-ctx-idx; root.del-confirm-open = true; } }
+            }
+        }
+    }
+
+    // ── Song Properties / media-info dialog (np.p5.atmusic.song-properties) ──
+    // Declared last so it stacks above the detail overlay on album/artist pages.
+    if root.song-props-open: Rectangle {
+        width: 100%; height: 100%; background: #00000088;
+        TouchArea { clicked => { root.song-props-open = false; } } // click-away closes
+        Rectangle { width: 520px; height: 500px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
+            drop-shadow-blur: 44px; drop-shadow-color: #000000e6;
+            TouchArea {} // swallow clicks inside the card
+            VerticalLayout { padding: 24px; spacing: 14px;
+                HorizontalLayout { spacing: 10px;
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        Text { text: "Properties"; color: MusicTheme.fg; font-size: 19px; font-weight: 800; } }
+                    // Edit — jump straight into the tag editor for this song.
+                    VerticalLayout { alignment: center; Rectangle { width: 96px; height: 32px; border-radius: 16px;
+                        background: edpb.has-hover ? @linear-gradient(120deg, #8b5cf6, #ec4899) : MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                        edpb := TouchArea { mouse-cursor: pointer; clicked => { root.song-props-open = false; root.song-edit-media(root.props-pos); } }
+                        Text { text: "✎ Edit"; color: edpb.has-hover ? #ffffff : MusicTheme.fg2; font-size: 12px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+                    PlayerBtn { icon: Icons.x; size: 30px; isz: 14px; clicked => { root.song-props-open = false; } } }
+                Rectangle { height: 1px; background: MusicTheme.line; }
+                // Field rows — label · value, aligned.
+                for f[i] in [
+                    { k: "Title",    v: root.props-title },
+                    { k: "Artist",   v: root.props-artist },
+                    { k: "Album",    v: root.props-album },
+                    { k: "Genre",    v: root.props-genre },
+                    { k: "Released", v: root.props-release },
+                    { k: "Credits",  v: root.props-credits },
+                    { k: "Duration", v: root.props-duration },
+                    { k: "Format",   v: root.props-format },
+                    { k: "Size",     v: root.props-size },
+                    { k: "Path",     v: root.props-path },
+                ]: HorizontalLayout { spacing: 14px;
+                    VerticalLayout { alignment: start; horizontal-stretch: 0; Rectangle { width: 92px;
+                        Text { text: f.k; color: MusicTheme.fg-mute; font-size: 13px; font-weight: 600; } } }
+                    VerticalLayout { alignment: start; horizontal-stretch: 1;
+                        Text { text: f.v == "" ? "—" : f.v; color: MusicTheme.fg2; font-size: 13px; wrap: word-wrap; } } }
+            }
+        }
+    }
+
+    // ── Delete confirmation (np.p5.atmusic.delete-confirm) — topmost overlay ──
+    if root.del-confirm-open: Rectangle {
+        width: 100%; height: 100%; background: #000000aa;
+        TouchArea { clicked => { root.del-confirm-open = false; } } // click-away cancels
+        Rectangle { width: 420px; height: 220px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
+            drop-shadow-blur: 48px; drop-shadow-color: #000000ee;
+            TouchArea {} // swallow clicks inside the card
+            VerticalLayout { padding: 24px; spacing: 12px; alignment: start;
+                HorizontalLayout { spacing: 10px;
+                    Text { text: "🗑"; font-size: 24px; vertical-alignment: center; }
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        Text { text: "Delete song?"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; } } }
+                Text { text: root.del-confirm-title == "" ? "This removes the file from your system permanently."
+                        : "“" + root.del-confirm-title + "” will be removed from your system permanently.";
+                    color: MusicTheme.fg-dim; font-size: 13px; wrap: word-wrap; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    BrowseChip { label: "Cancel"; clicked => { root.del-confirm-open = false; } }
+                    Rectangle { width: 110px; height: 36px; border-radius: 18px; background: delb.has-hover ? #dc2626 : #ef4444;
+                        delb := TouchArea { mouse-cursor: pointer; clicked => { root.del-confirm-open = false; root.song-delete(root.del-confirm-idx); } }
+                        Text { text: "Delete"; color: #ffffff; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+            }
+        }
+    }
 }
 
 // ── Full-screen player page ───────────────────────────────────────────────
@@ -2809,6 +2855,7 @@ export component MusicPage inherits Rectangle {
 // Right: tabbed Lyrics + Queue.
 export component MusicFullscreen inherits Rectangle {
     in property <image> art;
+    in property <color> accent: #ec4899;   // art-derived accent (vinyl fill, all themes)
     in property <string> title;
     in property <string> sub;
     in property <bool> playing;
@@ -2888,7 +2935,7 @@ export component MusicFullscreen inherits Rectangle {
             Rectangle { horizontal-stretch: 1; }
             // Theme cycle — light → dark → OLED → light (np.p5.atmusic.oled).
             VerticalLayout { alignment: center; PlayerBtn {
-                icon: MusicTheme.light ? Icons.sun : Icons.moon; size: 80px; isz: 40px;
+                icon: MusicTheme.light ? Icons.sun : (MusicTheme.oled ? Icons.star : Icons.moon); size: 80px; isz: 40px;
                 active: MusicTheme.oled;
                 clicked => {
                     if (MusicTheme.light) { MusicTheme.light = false; }
@@ -2998,6 +3045,7 @@ export component MusicFullscreen inherits Rectangle {
 // state so it works on every section, not just the music page.
 export component MusicMini inherits Rectangle {
     in property <image> art;
+    in property <color> accent: #ec4899;   // art-derived accent (vinyl fill, all themes)
     in property <string> title;
     in property <string> sub;          // artist
     in property <string> album;
@@ -3061,7 +3109,10 @@ export component MusicMini inherits Rectangle {
                 property <length> offy: (self.height - self.side) / 2;
                 // vinyl disc — concentric grooves (rotation-invariant); the art
                 // label spins (rotation only works on Image in this Slint version).
-                Rectangle { width: 222px * root.uiscale; height: self.width; border-radius: self.width / 2; clip: true; background: MusicTheme.surf-thumb;
+                Rectangle { width: 222px * root.uiscale; height: self.width; border-radius: self.width / 2; clip: true;
+                    // Remaining vinyl space tinted from the song-art accent (all themes):
+                    // transparent under the centre art label, deepening to the rim.
+                    background: @radial-gradient(circle, root.accent.with-alpha(0.22) 30%, root.accent.with-alpha(0.6) 62%, root.accent.with-alpha(0.92) 100%);
                     x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                     // groove rings
                     Rectangle { width: 202px * root.uiscale; height: self.width; border-radius: self.width / 2; border-width: 1px; border-color: MusicTheme.hov;
