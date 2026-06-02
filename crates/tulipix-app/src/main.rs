@@ -3,9 +3,7 @@ use slint::{ComponentHandle, Model};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use tracing_subscriber::EnvFilter;
-use tulipix_core::libraries::{Library, ScanCadence, Section as LibrarySection};
-use tulipix_core::populator::populate;
-use tulipix_photos::scan::scan_library;
+use tulipix_core::libraries::{ScanCadence, Section as LibrarySection};
 
 #[cfg(all(feature = "alloc-mimalloc", any(target_os = "linux", target_os = "windows")))]
 #[global_allocator]
@@ -45,6 +43,23 @@ fn apply_theme_choice(window: &MainWindow, choice: ThemeChoice) {
         ThemeChoice::System => detect_dark(),
     };
     window.set_dark(dark);
+}
+
+/// Drive the Settings → Libraries maintenance progress bar. `frac` is 0..1, or
+/// negative for an indeterminate "working…" bar. Safe to call from any thread.
+fn set_lib_busy(weak: &slint::Weak<MainWindow>, task: &str, frac: f32) {
+    let task = task.to_string();
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        w.set_lib_busy_task(task.into());
+        w.set_lib_busy_frac(frac);
+    });
+}
+/// Clear the maintenance progress bar (idle).
+fn clear_lib_busy(weak: &slint::Weak<MainWindow>) {
+    let _ = weak.upgrade_in_event_loop(|w| {
+        w.set_lib_busy_task("".into());
+        w.set_lib_busy_frac(0.0);
+    });
 }
 
 static APP_START: OnceLock<std::time::Instant> = OnceLock::new();
@@ -304,19 +319,36 @@ fn main() -> Result<()> {
             .collect();
         let mut progress_rows: Vec<ScanProgress> = Vec::new();
         let mut scheduled: Vec<(String, &'static str, i64)> = Vec::new();
+        let path_str = path.display().to_string();
         for section in ["photos", "videos", "music", "books"] {
             let total = counts.get(section).copied().unwrap_or(0);
             if total == 0 { continue; }
-            let lib_id = format!("lib-{}-{}", section, rows.len() + 1);
-            rows.push(LibraryRow {
-                id:          lib_id.clone().into(),
-                path:        path.display().to_string().into(),
-                section:     section.into(),
-                r#last_scan: "scanning".into(),
-                item_count:  0,
-                size_pretty: "0 B".into(),
-                cadence:     "default".into(),
-            });
+            // Dedup: a rescan / startup-restore re-adds the same watched folder.
+            // If this (path, section) already has a library row, reuse it and
+            // mark it scanning instead of appending a duplicate copy.
+            let lib_id = if let Some(i) = rows.iter().position(
+                |r| r.path.as_str() == path_str.as_str() && r.section.as_str() == section)
+            {
+                rows[i].r#last_scan = "scanning".into();
+                rows[i].item_count = 0;
+                rows[i].id.to_string()
+            } else {
+                let id = format!("lib-{}-{}", section, rows.len() + 1);
+                let music_section = if section == "music" {
+                    music_section_label(load_folder_sections().get(&path_str).map(|s| s.as_str()).unwrap_or("mymusic")).into()
+                } else { slint::SharedString::new() };
+                rows.push(LibraryRow {
+                    id:          id.clone().into(),
+                    path:        path_str.clone().into(),
+                    section:     section.into(),
+                    r#last_scan: "scanning".into(),
+                    item_count:  0,
+                    size_pretty: "0 B".into(),
+                    cadence:     "default".into(),
+                    music_section,
+                });
+                id
+            };
             progress_rows.push(ScanProgress {
                 section: section.into(),
                 label: section_label(section).into(),
@@ -463,7 +495,7 @@ fn main() -> Result<()> {
     });
     let w = window.as_weak();
     window.on_book_add_bookmark(move || {
-        let Some(w0) = w.upgrade() else { return; };
+        let Some(_w0) = w.upgrade() else { return; };
         let snap = READER.with(|r| {
             r.borrow().as_ref().map(|s| {
                 let page = if s.format == "cbz" { s.comic.page as i64 } else { s.chapter as i64 };
@@ -567,7 +599,7 @@ fn main() -> Result<()> {
         // call here once reqwest is added to tulipix-app's Cargo.toml.
         let _ = w.upgrade();
     });
-    let w = window.as_weak();
+    let _w = window.as_weak();
     window.on_book_export_notes(move |idx| {
         let item_id = book_ids().lock().ok().and_then(|g| g.get(idx as usize).copied()).unwrap_or(-1);
         let title = book_paths().lock().ok()
@@ -782,7 +814,7 @@ fn main() -> Result<()> {
     // Drill into a TV show's episodes / back to the show cards.
     let w = window.as_weak();
     window.on_video_show_drill(move |id| {
-        let Some(w0) = w.upgrade() else { return; };
+        let Some(_w0) = w.upgrade() else { return; };
         if let Ok(mut g) = video_show().lock() { *g = Some(id as i64); }
         // Look up the show title for the drill-in header.
         let weak = w.clone();
@@ -1083,10 +1115,27 @@ fn main() -> Result<()> {
             w.set_music_detail_open(false); // leave any album/artist detail when switching section
             w.set_music_view(v.clone());
             match v.as_str() {
-                "podcasts" => populate_podcasts(&w),
+                "podcasts" => {
+                    w.set_music_podcast_detail_open(false);
+                    populate_podcasts(&w);
+                    populate_podcast_latest(&w);
+                    populate_podcast_downloads(&w);
+                }
                 "audiobooks" => populate_audiobooks(&w),
                 _ => {}
             }
+        }
+    });
+    // Sidebar section click — warm every podcast sub-page so the podcast section
+    // never shows empty on first open (data loads while the user is elsewhere).
+    let w = window.as_weak();
+    window.on_section_changed(move |s| {
+        let Some(w0) = w.upgrade() else { return; };
+        if s.as_str() == "music" {
+            populate_podcasts(&w0);
+            populate_podcast_latest(&w0);
+            populate_podcast_downloads(&w0);
+            populate_podcast_trends(&w0);
         }
     });
     let w = window.as_weak();
@@ -1250,15 +1299,23 @@ fn main() -> Result<()> {
         let Some(w0) = w.upgrade() else { return; };
         let path = music_paths().lock().ok().and_then(|g| g.get(pos as usize).cloned());
         let Some(item_id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
-        // Delete the underlying file (best-effort).
-        if let Some(p) = &path { let _ = std::fs::remove_file(p); }
+        // Move the file to the OS recycle bin (recoverable) — never a hard delete.
+        if let Some(p) = &path {
+            if let Err(e) = tulipix_platform::fm::move_to_trash(p) {
+                tracing::warn!(path = %p.display(), error = %e, "move song to trash");
+            }
+            // Drop it from the in-memory accumulator so the tile vanishes too.
+            if let Ok(mut g) = music_full().lock() {
+                g.retain(|(_, orig, _)| orig != p);
+            }
+        }
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("music").await else { return; };
             let _ = sqlx::query("DELETE FROM track_meta WHERE item_id = ?").bind(item_id).execute(&pool).await;
             let _ = sqlx::query("DELETE FROM lyrics WHERE item_id = ?").bind(item_id).execute(&pool).await;
             let _ = sqlx::query("DELETE FROM items WHERE id = ?").bind(item_id).execute(&pool).await;
-            let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
+            let _ = weak.upgrade_in_event_loop(|w| { rebuild_music_tiles(&w); populate_music_views(w.as_weak()); });
         });
         let _ = w0;
     });
@@ -1357,7 +1414,7 @@ fn main() -> Result<()> {
     // Save the previewed lyrics to the library DB (np.p5.music.lyrics-synced).
     let w = window.as_weak();
     window.on_music_lyrics_view_save(move || {
-        let Some(w0) = w.upgrade() else { return; };
+        let Some(_w0) = w.upgrade() else { return; };
         let Some(id) = music_view_lyrics_id().lock().ok().and_then(|g| *g) else { return; };
         let Some((synced, content)) = pending_view_lyrics().lock().ok().and_then(|g| g.clone()) else { return; };
         let weak = w.clone();
@@ -1933,6 +1990,10 @@ fn main() -> Result<()> {
         let roots = load_watched_folders();
         let Some(path) = roots.get(i as usize).cloned() else { return; };
         forget_watched_folder(&w0, &path.to_string_lossy());
+        // Drop the removed root's tracks from the accumulator so they vanish
+        // without waiting for a rescan of the remaining roots.
+        prune_music_full_under(&path);
+        rebuild_music_tiles(&w0);
         for p in load_watched_folders() { if p.exists() { add_folder_path(&w0, p); } }
         populate_folder_roots(&w0);
         populate_music_views(w0.as_weak());
@@ -1945,7 +2006,7 @@ fn main() -> Result<()> {
     // Right-click a folder → remove its tracks from the music library.
     let w = window.as_weak();
     window.on_music_folder_remove(move |pos| {
-        let Some(w0) = w.upgrade() else { return; };
+        let Some(_w0) = w.upgrade() else { return; };
         let Some(dir) = music_paths().lock().ok()
             .and_then(|g| g.get(pos as usize).and_then(|p| p.parent().map(|d| d.to_path_buf()))) else { return; };
         let ids = folder_track_ids(&dir);
@@ -1956,7 +2017,11 @@ fn main() -> Result<()> {
             for id in &ids {
                 let _ = sqlx::query("DELETE FROM items WHERE id = ?").bind(id).execute(&pool).await;
             }
-            let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                prune_music_full_under(&dir);
+                rebuild_music_tiles(&w);
+                populate_music_views(w.as_weak());
+            });
         });
     });
     // Right-click a folder → reveal it in the OS file manager.
@@ -1966,6 +2031,16 @@ fn main() -> Result<()> {
         let Some(dir) = music_paths().lock().ok()
             .and_then(|g| g.get(pos as usize).and_then(|p| p.parent().map(|d| d.to_path_buf()))) else { return; };
         open_in_default_app(&dir);
+    });
+    // Reassign a folder to the next of the 5 music sections (np.p5.atmusic.folder-sections).
+    let w = window.as_weak();
+    window.on_music_folder_cycle_section(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(folder) = music_paths().lock().ok()
+            .and_then(|g| g.get(pos as usize).and_then(|p| p.parent().map(|d| d.display().to_string()))) else { return; };
+        let next = cycle_folder_section(&folder);
+        tracing::info!(folder = %folder, section = %next, "music folder section reassigned");
+        populate_music_views(w0.as_weak());
     });
     // Player redesign — sleep timer set to a chosen interval (np.p4.music.sleep-timer).
     let w = window.as_weak();
@@ -2568,29 +2643,613 @@ fn main() -> Result<()> {
         let Some(w0) = w.upgrade() else { return; };
         let url = w0.get_music_podcast_url().to_string();
         if url.trim().is_empty() { return; }
-        w0.set_music_podcast_url("".into());
+        // Keep the dialog open and show the busy/progress state; the URL stays put
+        // (so a failed add can be edited + retried) until it actually succeeds.
+        w0.set_music_podcast_add_busy(true);
+        w0.set_music_podcast_add_frac(0.0);
+        w0.set_music_podcast_add_status("Fetching feed…".into());
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
-            let Ok(pool) = pool_for("music").await else { return; };
+            let fail = |weak: slint::Weak<MainWindow>, msg: &'static str| {
+                let _ = weak.upgrade_in_event_loop(move |w| {
+                    w.set_music_podcast_add_busy(false);
+                    w.set_music_podcast_add_frac(0.0);
+                    w.set_music_podcast_add_status(msg.into());
+                });
+            };
+            let Ok(pool) = pool_for("podcasts").await else { fail(weak.clone(), "Database error"); return; };
             let client = reqwest::Client::new();
-            let Ok(resp) = client.get(url.trim()).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await else { return; };
-            let Ok(xml) = resp.text().await else { return; };
+            let Ok(resp) = client.get(url.trim()).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await
+                else { fail(weak.clone(), "Network error — check the URL"); return; };
+            let Ok(xml) = resp.text().await else { fail(weak.clone(), "Could not read the feed"); return; };
             let feed = tulipix_music::podcasts::parse_feed(&xml);
-            let _ = tulipix_music::podcasts::subscribe(&pool, url.trim(), &feed).await;
-            let _ = weak.upgrade_in_event_loop(|w| populate_podcasts(&w));
+            if feed.title.is_none() && feed.episodes.is_empty() { fail(weak.clone(), "Not a valid podcast feed"); return; }
+            // Drive the dialog progress bar per-episode (throttled to whole %).
+            let prog = weak.clone();
+            let mut last_pct = -1i32;
+            let res = tulipix_music::podcasts::subscribe_with_progress(&pool, url.trim(), &feed, move |done, total| {
+                let pct = ((done as f64 / total.max(1) as f64) * 100.0) as i32;
+                if pct == last_pct { return; }
+                last_pct = pct;
+                let frac = done as f32 / total.max(1) as f32;
+                let p = prog.clone();
+                let _ = p.upgrade_in_event_loop(move |w| {
+                    w.set_music_podcast_add_frac(frac);
+                    w.set_music_podcast_add_status(format!("{done} / {total} episodes").into());
+                });
+            }).await;
+            let ok = res.is_ok();
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_podcast_add_busy(false);
+                w.set_music_podcast_add_frac(0.0);
+                if ok {
+                    w.set_music_podcast_add_status("".into());
+                    w.set_music_podcast_add_open(false);
+                    w.set_music_podcast_url("".into());
+                    populate_podcasts(&w);
+                    populate_podcast_latest(&w);
+                } else {
+                    w.set_music_podcast_add_status("Subscribe failed".into());
+                }
+            });
+        });
+    });
+    // Clear ALL subscriptions + their cached files, with live removal progress.
+    let w = window.as_weak();
+    window.on_music_podcast_reset_all(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_reset_busy(true);
+        w0.set_music_podcast_reset_frac(0.0);
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else {
+                let _ = weak.upgrade_in_event_loop(|w| w.set_music_podcast_reset_busy(false));
+                return;
+            };
+            let paths: Vec<(Option<String>,)> = sqlx::query_as(
+                "SELECT downloaded_path FROM podcast_episodes WHERE downloaded_path IS NOT NULL")
+                .fetch_all(&pool).await.unwrap_or_default();
+            let total = paths.len().max(1);
+            for (i, (p,)) in paths.iter().enumerate() {
+                if let Some(p) = p { let _ = std::fs::remove_file(p); }
+                let frac = (i + 1) as f32 / total as f32;
+                let wk = weak.clone();
+                let _ = wk.upgrade_in_event_loop(move |w| w.set_music_podcast_reset_frac(frac));
+            }
+            let _ = sqlx::query("DELETE FROM podcast_episodes").execute(&pool).await;
+            let _ = sqlx::query("DELETE FROM podcasts").execute(&pool).await;
+            let _ = sqlx::query("VACUUM").execute(&pool).await;
+            if let Ok(mut g) = cur_podcast_id().lock() { *g = -1; }
+            let _ = weak.upgrade_in_event_loop(|w| {
+                w.set_music_podcast_reset_busy(false);
+                w.set_music_podcast_reset_frac(0.0);
+                w.set_music_podcast_detail_open(false);
+                refresh_podcast_views(&w);
+            });
+        });
+    });
+    // Set a custom artwork for the open podcast (detail page → "Change art").
+    let w = window.as_weak();
+    window.on_music_podcast_set_thumb(move || {
+        let Some(_w0) = w.upgrade() else { return; };
+        let pid = cur_podcast_id().lock().map(|g| *g).unwrap_or(-1);
+        if pid < 0 { return; }
+        let Some(file) = rfd::FileDialog::new().set_title("Choose podcast artwork")
+            .add_filter("Images", &["jpg", "jpeg", "png", "webp"]).pick_file() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let dir = tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("podcast_art");
+            let _ = std::fs::create_dir_all(&dir);
+            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
+            let dest = dir.join(format!("pod-custom-{pid}.{ext}"));
+            if std::fs::copy(&file, &dest).is_err() { return; }
+            let dest_s = dest.to_string_lossy().to_string();
+            // Store the local path in custom_image (not image_url) so a later
+            // feed refresh — which overwrites image_url — can never wipe it.
+            // resolve_artwork loads the local file directly.
+            let _ = sqlx::query("UPDATE podcasts SET custom_image = ? WHERE id = ?")
+                .bind(&dest_s).bind(pid).execute(&pool).await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                load_podcast_detail(&w, pid);
+                populate_podcasts(&w);
+                populate_podcast_latest(&w);
+            });
+        });
+    });
+    // Search across subscribed podcasts (title/author/category/feed + episode
+    // titles) — filters the Subscribed grid. Empty query restores the full list.
+    let w = window.as_weak();
+    window.on_music_podcast_search(move |q| {
+        let Some(w0) = w.upgrade() else { return; };
+        let q = q.to_string();
+        // Route the query to whichever podcast tab (or the single-podcast page) is
+        // active, so each surface filters independently.
+        let which = if w0.get_music_podcast_detail_open() { "detail" }
+            else { match w0.get_music_podcast_tab().as_str() {
+                "home" => "home", "trends" => "trends", "downloads" => "downloads", _ => "subs" } };
+        if let Ok(mut f) = pod_filters().lock() {
+            match which { "home" => f.home = q.clone(), "trends" => f.trends = q.clone(),
+                "downloads" => f.downloads = q.clone(), "detail" => f.detail = q.clone(), _ => f.subs = q.clone() };
+        }
+        match which {
+            "home" => populate_podcast_latest(&w0),
+            "trends" => render_trends(&w0),
+            "downloads" => { w0.set_music_podcast_dl_page(0); populate_podcast_downloads(&w0); }
+            "detail" => { w0.set_music_podcast_d_page(0);
+                if let Ok(g) = cur_podcast_id().lock() { load_podcast_detail(&w0, *g); } }
+            _ => { w0.set_music_podcast_cat("All".into()); w0.set_music_podcast_sub_page(0); populate_podcasts(&w0); }
+        }
+    });
+    // Trends — subscribe to a baked/hardcoded feed by its index in podc.md.
+    let w = window.as_weak();
+    window.on_music_podcast_trend_subscribe(move |idx| {
+        let Some(w0) = w.upgrade() else { return; };
+        let feeds = trend_feed_urls();
+        let Some(url) = feeds.get(idx as usize).cloned() else { return; };
+        w0.set_music_podcast_subscribing(true);
+        w0.set_music_podcast_subscribe_frac(0.0);
+        w0.set_music_podcast_subscribe_status("".into());
+        subscribe_feed_with_progress(w.clone(), url);
+    });
+    // Trends — sort + pagination (no network; renders from the session cache).
+    let w = window.as_weak();
+    window.on_music_podcast_trends_set_sort(move |s| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_trends_sort(s);
+        w0.set_music_podcast_trends_page(0);
+        render_trends(&w0);
+    });
+    let w = window.as_weak();
+    window.on_music_podcast_trends_set_page(move |d| {
+        let Some(w0) = w.upgrade() else { return; };
+        let next = (w0.get_music_podcast_trends_page() + d).clamp(0, (w0.get_music_podcast_trends_pages() - 1).max(0));
+        w0.set_music_podcast_trends_page(next);
+        render_trends(&w0);
+    });
+    // Trends — open the read-only info card for one feed (count + latest only).
+    let w = window.as_weak();
+    window.on_music_podcast_trend_info(move |idx| {
+        let Some(w0) = w.upgrade() else { return; };
+        let feeds = trend_feed_urls();
+        let Some(url) = feeds.get(idx as usize).cloned() else { return; };
+        if let Ok(mut g) = cur_trend_idx().lock() { *g = idx; }
+        if let Ok(mut g) = cur_info_feed().lock() { *g = url.clone(); }
+        // Pre-fill from the cache; the network fetch fills count/latest/desc.
+        let meta = trend_cache().lock().ok().and_then(|g| g.get(idx as usize).cloned());
+        w0.set_music_podcast_info_open(true);
+        w0.set_music_podcast_info_loading(true);
+        w0.set_music_podcast_info_episodes(0);
+        w0.set_music_podcast_info_latest("".into());
+        w0.set_music_podcast_info_desc("".into());
+        if let Some(m) = &meta {
+            w0.set_music_podcast_info_title(m.title.clone().into());
+            w0.set_music_podcast_info_author(m.author.clone().into());
+            w0.set_music_podcast_info_category(m.category.clone().into());
+            w0.set_music_podcast_info_image(m.art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default());
+        }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let subscribed = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM podcasts WHERE feed_url = ?")
+                .bind(&url).fetch_one(&pool).await.unwrap_or(0) > 0;
+            let client = reqwest::Client::new();
+            let (mut count, mut latest, mut desc) = (0i32, String::new(), String::new());
+            if let Ok(resp) = client.get(&url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
+                if let Ok(xml) = resp.text().await {
+                    let feed = tulipix_music::podcasts::parse_feed(&xml);
+                    count = feed.episodes.len() as i32;
+                    latest = feed.episodes.iter().filter_map(|e| e.published).max().map(fmt_date).unwrap_or_default();
+                    desc = feed.description;
+                }
+            }
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_podcast_info_loading(false);
+                w.set_music_podcast_info_episodes(count);
+                w.set_music_podcast_info_latest(latest.into());
+                w.set_music_podcast_info_desc(desc.into());
+                w.set_music_podcast_info_subscribed(subscribed);
+            });
+        });
+    });
+    // Info card for a SUBSCRIBED podcast (by DB id) — straight from the DB, no
+    // network. Shares the same popup as Trends.
+    let w = window.as_weak();
+    window.on_music_podcast_info_open_id(move |pid| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_info_open(true);
+        w0.set_music_podcast_info_loading(true);
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let row: Option<(String, String, String, String, String, String)> = sqlx::query_as(
+                "SELECT COALESCE(title, feed_url), COALESCE(author,''), COALESCE(category,''), COALESCE(description,''),
+                        COALESCE(NULLIF(custom_image,''), image_url, ''), feed_url
+                 FROM podcasts WHERE id = ?").bind(pid as i64).fetch_optional(&pool).await.ok().flatten();
+            let Some((title, author, category, desc, img, feed_url)) = row else { return; };
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM podcast_episodes WHERE podcast_id = ?")
+                .bind(pid as i64).fetch_one(&pool).await.unwrap_or(0);
+            let latest_pub: Option<i64> = sqlx::query_scalar("SELECT MAX(published) FROM podcast_episodes WHERE podcast_id = ?")
+                .bind(pid as i64).fetch_one(&pool).await.ok().flatten();
+            let latest = latest_pub.map(fmt_date).unwrap_or_default();
+            // Track this feed for Save / thumb; map to a trend index if it's baked.
+            let tidx = trend_feed_urls().iter().position(|u| u == &feed_url).map(|p| p as i32).unwrap_or(-1);
+            if let Ok(mut g) = cur_trend_idx().lock() { *g = tidx; }
+            if let Ok(mut g) = cur_info_feed().lock() { *g = feed_url.clone(); }
+            let client = reqwest::Client::new();
+            let art = resolve_artwork(&client, &format!("pod-{pid}"), &img).await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_podcast_info_loading(false);
+                w.set_music_podcast_info_title(title.into());
+                w.set_music_podcast_info_author(author.into());
+                w.set_music_podcast_info_category(category.into());
+                w.set_music_podcast_info_desc(desc.into());
+                w.set_music_podcast_info_episodes(count as i32);
+                w.set_music_podcast_info_latest(latest.into());
+                w.set_music_podcast_info_subscribed(true);
+                w.set_music_podcast_info_image(art.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default());
+            });
+        });
+    });
+    // Info card — save the edited category (cache override + DB).
+    let w = window.as_weak();
+    window.on_music_podcast_info_save_category(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let url = cur_info_feed().lock().map(|g| g.clone()).unwrap_or_default();
+        if url.is_empty() { return; }
+        let idx = cur_trend_idx().lock().map(|g| *g).unwrap_or(-1);
+        let cat = w0.get_music_podcast_info_category().to_string();
+        if idx >= 0 { if let Ok(mut g) = trend_cache().lock() { if let Some(m) = g.get_mut(idx as usize) { m.category = cat.clone(); } } }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let _ = sqlx::query("UPDATE podcasts SET category = ? WHERE feed_url = ?").bind(&cat).bind(&url).execute(&pool).await;
+            let _ = weak.upgrade_in_event_loop(|w| { render_trends(&w); populate_podcasts(&w); });
+        });
+    });
+    // Info card — replace the thumbnail (cache + DB custom_image).
+    let w = window.as_weak();
+    window.on_music_podcast_info_set_thumb(move || {
+        let Some(_w0) = w.upgrade() else { return; };
+        let url = cur_info_feed().lock().map(|g| g.clone()).unwrap_or_default();
+        if url.is_empty() { return; }
+        let idx = cur_trend_idx().lock().map(|g| *g).unwrap_or(-1);
+        let Some(file) = rfd::FileDialog::new().set_title("Choose podcast artwork")
+            .add_filter("Images", &["jpg", "jpeg", "png", "webp"]).pick_file() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let dir = tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("podcast_art");
+            let _ = std::fs::create_dir_all(&dir);
+            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
+            // Name by DB id when subscribed (so the grid's pod-{id} lookup finds it),
+            // else by trend index.
+            let pid: Option<i64> = sqlx::query_scalar("SELECT id FROM podcasts WHERE feed_url = ?").bind(&url).fetch_optional(&pool).await.ok().flatten();
+            let stem = match pid { Some(id) => format!("pod-custom-{id}"), None => format!("trend-custom-{idx}") };
+            let dest = dir.join(format!("{stem}.{ext}"));
+            if std::fs::copy(&file, &dest).is_err() { return; }
+            let dest_s = dest.to_string_lossy().to_string();
+            let _ = sqlx::query("UPDATE podcasts SET custom_image = ? WHERE feed_url = ?").bind(&dest_s).bind(&url).execute(&pool).await;
+            if idx >= 0 { if let Ok(mut g) = trend_cache().lock() { if let Some(m) = g.get_mut(idx as usize) { m.art = Some(dest.clone()); } } }
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_podcast_info_image(slint::Image::load_from_path(&dest).unwrap_or_default());
+                render_trends(&w);
+                populate_podcasts(&w);
+            });
+        });
+    });
+    // Info card — Subscribe to the open feed.
+    let w = window.as_weak();
+    window.on_music_podcast_info_subscribe(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let url = cur_info_feed().lock().map(|g| g.clone()).unwrap_or_default();
+        if url.is_empty() { return; }
+        w0.set_music_podcast_subscribing(true);
+        w0.set_music_podcast_subscribe_frac(0.0);
+        w0.set_music_podcast_subscribe_status("".into());
+        subscribe_feed_with_progress(w.clone(), url);
+    });
+    // Open the owning podcast's page from a downloaded episode's context menu.
+    let w = window.as_weak();
+    window.on_music_podcast_goto_show(move |ep_id| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let pid: Option<i64> = sqlx::query_scalar("SELECT podcast_id FROM podcast_episodes WHERE id = ?")
+                .bind(ep_id as i64).fetch_optional(&pool).await.ok().flatten();
+            if let Some(pid) = pid {
+                let _ = weak.upgrade_in_event_loop(move |w| open_podcast(&w, pid as i32));
+            }
         });
     });
     let w = window.as_weak();
     window.on_music_podcast_open(move |i| {
         if let Some(w) = w.upgrade() { open_podcast(&w, i); }
     });
-    // Stream the i-th episode of the open feed directly via mpv.
+    // Play an episode by DB id (works from any list — detail / Home / Downloads /
+    // mini-player). Prefers the offline copy; switches the bottom player to
+    // podcast mode; marks the episode played.
     let w = window.as_weak();
-    window.on_music_podcast_play(move |i| {
+    window.on_music_podcast_play(move |id| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let row: Option<(String, String, Option<String>, String, i64, String, String)> = sqlx::query_as(
+                "SELECT e.title, e.audio_url, e.downloaded_path, COALESCE(e.image_url,''),
+                        p.id, COALESCE(NULLIF(p.custom_image,''), p.image_url, ''), COALESCE(p.title,'')
+                 FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id WHERE e.id = ?")
+                .bind(id as i64).fetch_optional(&pool).await.ok().flatten();
+            let Some((title, url, dl, eimg, pid, pimg, show)) = row else { return; };
+            if url.is_empty() && dl.is_none() { return; }
+            let client = reqwest::Client::new();
+            let art = match cache_artwork(&client, &format!("ep-{id}"), &eimg).await {
+                Some(p) => Some(p),
+                None => cache_artwork(&client, &format!("pod-{pid}"), &pimg).await,
+            };
+            let _ = sqlx::query("UPDATE podcast_episodes SET played = 1 WHERE id = ?").bind(id as i64).execute(&pool).await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                let src = dl.clone().filter(|p| std::path::Path::new(p).exists()).unwrap_or(url);
+                play_music_url(&w, &src, &title);
+                w.set_music_player_mode("podcast".into());
+                w.set_music_np_title(title.into());
+                w.set_music_np_sub(if show.is_empty() { "Podcast".into() } else { show.into() });
+                w.set_music_np_accent(slint::Color::from_rgb_u8(0x8b, 0x5c, 0xf6));
+                if let Some(p) = art { if let Ok(im) = slint::Image::load_from_path(&p) { w.set_music_np_art(im); } }
+                // Open the mini-player centered in the page (podcasts have no bottom bar).
+                w.invoke_music_center_mini();
+                // Carry the chosen playback speed across episodes.
+                let sp = w.get_music_podcast_speed();
+                music_ipc(&["set_property", "audio-pitch-correction", "yes"]);
+                if (sp - 1.0).abs() > 0.01 { music_ipc(&["set_property", "speed", &sp.to_string()]); }
+                refresh_podcast_views(&w);
+                // Queue reflects WHERE playback started: a single-podcast page keeps
+                // its own episodes; the Downloads tab queues the downloads list;
+                // anything else (Home) queues the Latest-episodes feed.
+                if !w.get_music_podcast_detail_open() {
+                    if w.get_music_podcast_tab().as_str() == "downloads" {
+                        w.set_music_podcast_d_episodes(w.get_music_podcast_downloads());
+                    } else {
+                        w.set_music_podcast_d_episodes(w.get_music_podcast_latest());
+                    }
+                }
+            });
+        });
+    });
+    // Skip ±N seconds in the playing episode.
+    window.on_music_podcast_skip(move |secs| {
+        music_ipc(&["seek", &secs.to_string(), "relative"]);
+    });
+    // Set podcast playback speed (pitch-preserving) on the live stream.
+    let w = window.as_weak();
+    window.on_music_podcast_set_speed(move |s| {
         let Some(w0) = w.upgrade() else { return; };
-        let (url, title) = podcast_episodes().lock().ok()
-            .and_then(|g| g.get(i as usize).cloned()).unwrap_or_default();
-        if !url.is_empty() { play_music_url(&w0, &url, &title); }
+        let s = (s as f64).clamp(0.5, 3.0);
+        w0.set_music_podcast_speed(s as f32);
+        music_ipc(&["set_property", "audio-pitch-correction", "yes"]);
+        music_ipc(&["set_property", "speed", &s.to_string()]);
+    });
+    // Save (download) an episode by id to the app cache — streamed with a live
+    // inline progress bar (podcast-dl-id / podcast-dl-frac drive the UI).
+    let w = window.as_weak();
+    window.on_music_podcast_download(move |id| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let row: Option<(String, Option<String>)> = sqlx::query_as(
+                "SELECT audio_url, downloaded_path FROM podcast_episodes WHERE id = ?")
+                .bind(id as i64).fetch_optional(&pool).await.ok().flatten();
+            let Some((url, dl)) = row else { return; };
+            if url.is_empty() || dl.is_some() { return; }
+            let dir = tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("podcast_offline");
+            let _ = std::fs::create_dir_all(&dir);
+            let ext = url.split('?').next().unwrap_or(&url).rsplit('.').next()
+                .filter(|e| e.len() <= 4 && !e.contains('/')).unwrap_or("mp3").to_string();
+            let dest = dir.join(format!("ep-{id}.{ext}"));
+            // Mark this row as the in-flight download.
+            let wk = weak.clone();
+            let _ = wk.upgrade_in_event_loop(move |w| { w.set_music_podcast_dl_id(id); w.set_music_podcast_dl_frac(0.0); });
+            let client = reqwest::Client::new();
+            let ok = {
+                use std::io::Write;
+                let mut got: u64 = 0;
+                let mut last_pct: i32 = -1;
+                let result: Option<()> = async {
+                    let mut resp = client.get(&url)
+                        .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
+                        .send().await.ok()?;
+                    let total = resp.content_length();
+                    let mut file = std::fs::File::create(&dest).ok()?;
+                    while let Some(chunk) = resp.chunk().await.ok()? {
+                        file.write_all(&chunk).ok()?;
+                        got += chunk.len() as u64;
+                        if let Some(t) = total {
+                            if t > 0 {
+                                let pct = ((got as f64 / t as f64) * 100.0) as i32;
+                                if pct != last_pct {
+                                    last_pct = pct;
+                                    let frac = (got as f64 / t as f64) as f32;
+                                    let wk = weak.clone();
+                                    let _ = wk.upgrade_in_event_loop(move |w| w.set_music_podcast_dl_frac(frac));
+                                }
+                            }
+                        }
+                    }
+                    Some(())
+                }.await;
+                result.is_some()
+            };
+            if ok {
+                let _ = tulipix_music::podcasts::mark_downloaded(&pool, id as i64, dest.to_string_lossy().as_ref()).await;
+            } else {
+                let _ = std::fs::remove_file(&dest);
+            }
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_podcast_dl_id(-1);
+                w.set_music_podcast_dl_frac(0.0);
+                refresh_podcast_views(&w);
+            });
+        });
+    });
+    // Open the show-notes / transcript panel for an episode by id.
+    let w = window.as_weak();
+    window.on_music_podcast_transcript(move |id| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let row: Option<(String, String)> = sqlx::query_as(
+                "SELECT COALESCE(title,''), COALESCE(description,'') FROM podcast_episodes WHERE id = ?")
+                .bind(id as i64).fetch_optional(&pool).await.ok().flatten();
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                if let Some((title, desc)) = row {
+                    w.set_music_podcast_transcript_title(title.into());
+                    w.set_music_podcast_transcript_text(desc.into());
+                    w.set_music_podcast_transcript_open(true);
+                }
+            });
+        });
+    });
+    // Podcast sub-tab switch (Home / Subscribed / Downloads).
+    let w = window.as_weak();
+    window.on_music_podcast_set_tab(move |t| {
+        let Some(w0) = w.upgrade() else { return; };
+        // Pure UI swap. All three lists (Home/Subscribed/Downloads) are populated
+        // once on entering Podcasts and again on Refresh/Fetch/Add/Reset — so a
+        // tab change must NOT re-query the DB (that was the switch lag/stutter).
+        // Trends is the one exception: it fetches the baked feed list (cached for
+        // the session) the first time it's opened.
+        let is_trends = t == "trends";
+        w0.set_music_podcast_tab(t);
+        if is_trends { populate_podcast_trends(&w0); }
+    });
+    // Filter the Subscribed grid by category (reset to page 1).
+    let w = window.as_weak();
+    window.on_music_podcast_set_cat(move |c| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_cat(c);
+        w0.set_music_podcast_sub_page(0);
+        populate_podcasts(&w0);
+    });
+    // Subscribed / Home grid pagination (re-render from DB).
+    let w = window.as_weak();
+    window.on_music_podcast_sub_set_page(move |d| {
+        let Some(w0) = w.upgrade() else { return; };
+        let next = (w0.get_music_podcast_sub_page() + d).clamp(0, (w0.get_music_podcast_sub_pages() - 1).max(0));
+        w0.set_music_podcast_sub_page(next);
+        populate_podcasts(&w0);
+    });
+    let w = window.as_weak();
+    window.on_music_podcast_home_set_page(move |d| {
+        let Some(w0) = w.upgrade() else { return; };
+        let next = (w0.get_music_podcast_home_page() + d).clamp(0, (w0.get_music_podcast_home_pages() - 1).max(0));
+        w0.set_music_podcast_home_page(next);
+        populate_podcasts(&w0);
+    });
+    // Downloads tab — sort + pagination.
+    let w = window.as_weak();
+    window.on_music_podcast_dl_set_sort(move |s| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_dl_sort(s);
+        w0.set_music_podcast_dl_page(0);
+        populate_podcast_downloads(&w0);
+    });
+    let w = window.as_weak();
+    window.on_music_podcast_dl_set_page(move |d| {
+        let Some(w0) = w.upgrade() else { return; };
+        let next = (w0.get_music_podcast_dl_page() + d).clamp(0, (w0.get_music_podcast_dl_pages() - 1).max(0));
+        w0.set_music_podcast_dl_page(next);
+        populate_podcast_downloads(&w0);
+    });
+    // Re-fetch a single feed by id (Subscribed/Home context menu → Fetch).
+    let w = window.as_weak();
+    window.on_music_podcast_fetch(move |id| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let url: Option<String> = sqlx::query_scalar("SELECT feed_url FROM podcasts WHERE id = ?")
+                .bind(id as i64).fetch_optional(&pool).await.ok().flatten();
+            if let Some(url) = url {
+                let client = reqwest::Client::new();
+                if let Ok(resp) = client.get(&url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
+                    if let Ok(xml) = resp.text().await {
+                        let feed = tulipix_music::podcasts::parse_feed(&xml);
+                        let _ = tulipix_music::podcasts::subscribe(&pool, &url, &feed).await;
+                    }
+                }
+            }
+            let _ = weak.upgrade_in_event_loop(|w| refresh_podcast_views(&w));
+        });
+    });
+    // Unsubscribe a feed by id — removes it (and episodes, via cascade) everywhere.
+    let w = window.as_weak();
+    window.on_music_podcast_unsubscribe(move |id| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            // Drop any cached offline files for this feed first.
+            let paths: Vec<(Option<String>,)> = sqlx::query_as(
+                "SELECT downloaded_path FROM podcast_episodes WHERE podcast_id = ? AND downloaded_path IS NOT NULL")
+                .bind(id as i64).fetch_all(&pool).await.unwrap_or_default();
+            for (p,) in paths { if let Some(p) = p { let _ = std::fs::remove_file(&p); } }
+            let _ = sqlx::query("DELETE FROM podcast_episodes WHERE podcast_id = ?").bind(id as i64).execute(&pool).await;
+            let _ = sqlx::query("DELETE FROM podcasts WHERE id = ?").bind(id as i64).execute(&pool).await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                // If the open detail belongs to this feed, close it.
+                let cur = cur_podcast_id().lock().map(|g| *g).unwrap_or(-1);
+                if cur == id as i64 {
+                    w.set_music_podcast_detail_open(false);
+                    if let Ok(mut g) = cur_podcast_id().lock() { *g = -1; }
+                }
+                populate_podcasts(&w);
+                populate_podcast_latest(&w);
+                populate_podcast_downloads(&w);
+            });
+        });
+    });
+    // Remove an episode's offline copy (Downloads context menu).
+    let w = window.as_weak();
+    window.on_music_podcast_remove_download(move |id| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let path: Option<String> = sqlx::query_scalar("SELECT downloaded_path FROM podcast_episodes WHERE id = ?")
+                .bind(id as i64).fetch_optional(&pool).await.ok().flatten();
+            if let Some(p) = path { let _ = std::fs::remove_file(&p); }
+            let _ = sqlx::query("UPDATE podcast_episodes SET downloaded_path = NULL WHERE id = ?").bind(id as i64).execute(&pool).await;
+            let _ = weak.upgrade_in_event_loop(|w| refresh_podcast_views(&w));
+        });
+    });
+    // Detail page — sort (newest/oldest) + pagination.
+    let w = window.as_weak();
+    window.on_music_podcast_d_set_sort(move |s| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_d_sort(s);
+        w0.set_music_podcast_d_page(0);
+        let pid = cur_podcast_id().lock().map(|g| *g).unwrap_or(-1);
+        if pid >= 0 { load_podcast_detail(&w0, pid); }
+    });
+    let w = window.as_weak();
+    window.on_music_podcast_d_set_page(move |d| {
+        let Some(w0) = w.upgrade() else { return; };
+        let pages = w0.get_music_podcast_d_pages();
+        let next = (w0.get_music_podcast_d_page() + d).clamp(0, (pages - 1).max(0));
+        w0.set_music_podcast_d_page(next);
+        let pid = cur_podcast_id().lock().map(|g| *g).unwrap_or(-1);
+        if pid >= 0 { load_podcast_detail(&w0, pid); }
+    });
+    // Back from a podcast detail page to the grid.
+    let w = window.as_weak();
+    window.on_music_podcast_back(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_detail_open(false);
+        if let Ok(mut g) = cur_podcast_id().lock() { *g = -1; }
+        refresh_podcast_views(&w0);
     });
     // Audiobook play with pitch-preserving speed + resume (np.p5.music.audiobook-chapters).
     let w = window.as_weak();
@@ -2667,23 +3326,56 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_music_podcast_refresh(move || {
         let Some(w0) = w.upgrade() else { return; };
+        if w0.get_music_podcast_refresh_busy() { return; }
+        w0.set_music_podcast_refresh_busy(true);
+        w0.set_music_podcast_refresh_frac(0.0);
+        w0.set_music_podcast_refresh_status("↻ Starting…".into());
         let weak = w.clone();
-        let _ = w0;
         tokio::runtime::Handle::current().spawn(async move {
-            let Ok(pool) = pool_for("music").await else { return; };
-            let feeds: Vec<(String,)> = sqlx::query_as("SELECT feed_url FROM podcasts")
+            let Ok(pool) = pool_for("podcasts").await else {
+                let _ = weak.upgrade_in_event_loop(|w| w.set_music_podcast_refresh_busy(false));
+                return;
+            };
+            let feeds: Vec<(i64, String)> = sqlx::query_as("SELECT id, feed_url FROM podcasts")
                 .fetch_all(&pool).await.unwrap_or_default();
+            let n = feeds.len().max(1);
             let client = reqwest::Client::new();
-            for (url,) in feeds {
-                if let Ok(resp) = client.get(&url)
-                    .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
+            let mut total_added: i64 = 0;
+            for (i, (pid, url)) in feeds.iter().enumerate() {
+                let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM podcast_episodes WHERE podcast_id = ?")
+                    .bind(pid).fetch_one(&pool).await.unwrap_or(0);
+                if let Ok(resp) = client.get(url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
                     if let Ok(xml) = resp.text().await {
                         let feed = tulipix_music::podcasts::parse_feed(&xml);
-                        let _ = tulipix_music::podcasts::subscribe(&pool, &url, &feed).await;
+                        let prog = weak.clone();
+                        let base = i;
+                        let _ = tulipix_music::podcasts::subscribe_with_progress(&pool, url, &feed, move |done, total| {
+                            let frac = ((base as f32) + (done as f32 / total.max(1) as f32)) / n as f32;
+                            let p = prog.clone();
+                            let _ = p.upgrade_in_event_loop(move |w| {
+                                w.set_music_podcast_refresh_frac(frac);
+                                w.set_music_podcast_refresh_status(format!("↻ {}/{}", base + 1, n).into());
+                            });
+                        }).await;
                     }
                 }
+                let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM podcast_episodes WHERE podcast_id = ?")
+                    .bind(pid).fetch_one(&pool).await.unwrap_or(0);
+                total_added += (after - before).max(0);
+                let (frac, ii, added) = ((i + 1) as f32 / n as f32, i + 1, total_added);
+                let _ = weak.upgrade_in_event_loop(move |w| {
+                    w.set_music_podcast_refresh_frac(frac);
+                    w.set_music_podcast_refresh_status(format!("↻ {ii}/{n} · +{added}").into());
+                });
             }
-            let _ = weak.upgrade_in_event_loop(|w| populate_podcasts(&w));
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_podcast_refresh_busy(false);
+                w.set_music_podcast_refresh_frac(0.0);
+                w.set_music_podcast_refresh_status("".into());
+                populate_podcasts(&w);
+                populate_podcast_latest(&w);
+                populate_podcast_downloads(&w);
+            });
         });
     });
     // Fetch artist art + bio from MusicBrainz / Cover Art Archive (np.p5.music.art-bio).
@@ -2927,7 +3619,7 @@ fn main() -> Result<()> {
         });
     });
     // Export the current Up-Next queue (or the library) to an M3U file.
-    let w = window.as_weak();
+    let _w = window.as_weak();
     window.on_music_playlist_export(move || {
         let Some(file) = rfd::FileDialog::new().set_title("Export queue")
             .set_file_name("tulipix-queue.m3u8").add_filter("Playlists", &["m3u8", "m3u"]).save_file() else { return; };
@@ -3453,7 +4145,7 @@ fn main() -> Result<()> {
             };
             w.set_user(user);
             // Mode change can change tier → refresh the account-feature gate.
-            w.set_account_sync_allowed(tulipix_core::caps::is_allowed(tulipix_core::caps::Cap::SyncEnabled));
+            w.set_account_sync_allowed(true); // local-model: full access, every capability unlocked
             // Locking shows the screensaver as a lock screen.
             if action.as_str() == "lock" {
                 w.set_ambient_clock(clock_now().into());
@@ -3466,12 +4158,10 @@ fn main() -> Result<()> {
     // ── Settings panels: load persisted settings, seed the UI models ───────
     {
         let s = tulipix_core::settings::Settings::load().unwrap_or_default();
-        let choice = match s.theme.as_str() {
-            "light" => ThemeChoice::Light,
-            "extra-dark" => ThemeChoice::ExtraDark,
-            "system" => ThemeChoice::System,
-            _ => ThemeChoice::Light, // default fresh start = light
-        };
+        // Always launch in light theme regardless of the persisted choice
+        // (user preference). The in-session theme picker still works; we just
+        // never *start* dark.
+        let choice = ThemeChoice::Light;
         window.set_theme_choice(choice);
         apply_theme_choice(&window, choice);
         window.set_reduce_motion(s.reduce_motion);
@@ -4222,7 +4912,7 @@ fn main() -> Result<()> {
     });
 
     // ── Capability gating (np.p1.caps.ui / caps.events) ────────────────────
-    window.set_account_sync_allowed(tulipix_core::caps::is_allowed(tulipix_core::caps::Cap::SyncEnabled));
+    window.set_account_sync_allowed(true); // local-model: full access, every capability unlocked
     // Surface every capability denial as an upgrade nudge toast.
     let w = window.as_weak();
     tulipix_core::caps::on_denied(move |cap, tier| {
@@ -4344,20 +5034,104 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_lib_rescan_all(move || {
         let Some(w) = w.upgrade() else { return; };
+        set_lib_busy(&w.as_weak(), "Rescanning all libraries…", -1.0);
+        set_scan_silent(false); // surface the detailed per-section scan overlay
         for path in load_watched_folders() {
             if path.exists() { add_folder_path(&w, path); }
         }
+        populate_folder_roots(&w);
+        // The section scans run async; the scan overlay shows the live count,
+        // so clear the maintenance bar once the kicks are dispatched.
+        clear_lib_busy(&w.as_weak());
         tracing::info!("rescan-all requested");
     });
+    let w = window.as_weak();
     window.on_lib_clear_thumb_cache(move || {
-        if let Some(dir) = tulipix_core::paths::thumbs_dir() {
-            match std::fs::remove_dir_all(&dir) {
-                Ok(()) | Err(_) => { let _ = std::fs::create_dir_all(&dir); }
+        let Some(w) = w.upgrade() else { return; };
+        set_lib_busy(&w.as_weak(), "Clearing thumbnail cache…", -1.0);
+        let weak = w.as_weak();
+        tokio::runtime::Handle::current().spawn(async move {
+            if let Some(dir) = tulipix_core::paths::thumbs_dir() {
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    let _ = std::fs::create_dir_all(&dir);
+                }).await;
+                tracing::info!("thumbnail cache cleared");
             }
-            tracing::info!(dir = %dir.display(), "thumbnail cache cleared");
-        }
+            clear_lib_busy(&weak);
+        });
     });
-    window.on_lib_rebuild_fts(move || tracing::info!("rebuild-fts requested (search index)"));
+    let w = window.as_weak();
+    window.on_lib_rebuild_fts(move || {
+        let Some(w) = w.upgrade() else { return; };
+        set_lib_busy(&w.as_weak(), "Rebuilding search index…", 0.0);
+        let weak = w.as_weak();
+        tokio::runtime::Handle::current().spawn(async move {
+            // Re-index the photo full-text-search table item-by-item so the
+            // FTS5 index matches the current library + tags + people. Driven
+            // through the maintenance progress bar.
+            if let Ok(pool) = pool_for("photos").await {
+                let ids: Vec<i64> = sqlx::query_scalar(
+                    "SELECT id FROM items WHERE section = 'photos' AND missing_since IS NULL")
+                    .fetch_all(&pool).await.unwrap_or_default();
+                let total = ids.len().max(1);
+                for (n, id) in ids.iter().enumerate() {
+                    let _ = tulipix_photos::search::index_item(&pool, *id).await;
+                    if n % 16 == 0 {
+                        set_lib_busy(&weak, "Rebuilding search index…", (n as f32) / (total as f32));
+                    }
+                }
+                tracing::info!(count = ids.len(), "FTS rebuild complete");
+            }
+            clear_lib_busy(&weak);
+        });
+    });
+    // Reset App — wipe every section DB row, watched folders, folder tags, the
+    // thumbnail cache, and all in-memory accumulators so the app starts fresh.
+    // Destructive, behind an explicit danger button in Settings → Libraries.
+    let w = window.as_weak();
+    window.on_lib_reset_app(move || {
+        let Some(w) = w.upgrade() else { return; };
+        set_lib_busy(&w.as_weak(), "Clearing all data — starting fresh…", -1.0);
+        // Forget persisted lists.
+        if let Some(p) = watched_folders_path() { let _ = std::fs::remove_file(p); }
+        if let Some(p) = folder_sections_path() { let _ = std::fs::remove_file(p); }
+        // Drop the thumbnail cache.
+        if let Some(dir) = tulipix_core::paths::thumbs_dir() {
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::create_dir_all(&dir);
+        }
+        // Clear in-memory accumulators so the grids empty immediately.
+        if let Ok(mut g) = photo_full().lock() { g.clear(); }
+        if let Ok(mut g) = video_full().lock() { g.clear(); }
+        if let Ok(mut g) = music_full().lock() { g.clear(); }
+        if let Ok(mut g) = music_paths().lock() { g.clear(); }
+        let weak = w.as_weak();
+        tokio::runtime::Handle::current().spawn(async move {
+            // Truncate the core items table per section. Derived views read via
+            // joins on items, so emptying it empties every section's library.
+            for section in ["photos", "videos", "music", "books"] {
+                if let Ok(pool) = pool_for(section).await {
+                    let _ = sqlx::query("DELETE FROM items").execute(&pool).await;
+                }
+            }
+            tracing::info!("app data reset — fresh start");
+            let _ = weak.upgrade_in_event_loop(|w| {
+                w.set_library_rows(slint::ModelRc::new(slint::VecModel::from(Vec::<LibraryRow>::new())));
+                rebuild_scan_rows(&w);
+                w.set_onboarding_lib_added(false);
+                // Rebuild every section view from the now-empty DBs.
+                rebuild_music_tiles(&w);
+                populate_music_views(w.as_weak());
+                populate_folder_roots(&w);
+                w.set_photos_total(0);
+                kick_category_refresh(w.as_weak(), w.get_photos_category().to_string(), w.get_photos_query().to_string());
+                kick_video_refresh(w.as_weak(), w.get_video_category().to_string());
+                refresh_books(&w);
+                clear_lib_busy(&w.as_weak());
+            });
+        });
+    });
     let w = window.as_weak();
     window.on_lib_row_remove(move |i| {
         let Some(w) = w.upgrade() else { return; };
@@ -4373,9 +5147,56 @@ fn main() -> Result<()> {
         rebuild_scan_rows(&w);
         tracing::info!(index = i, "library row removed");
     });
-    window.on_lib_row_rescan(move |i| tracing::info!(index = i, "library row rescan requested"));
-    window.on_lib_row_rethumb(move |i| tracing::info!(index = i, "library row rethumb requested"));
+    // Rescan a single watched location — re-walk just that row's folder.
+    let w = window.as_weak();
+    window.on_lib_row_rescan(move |i| {
+        let Some(w) = w.upgrade() else { return; };
+        let Some(row) = w.get_library_rows().row_data(i as usize) else { return; };
+        let path = PathBuf::from(row.path.to_string());
+        if !path.exists() { return; }
+        set_lib_busy(&w.as_weak(), &format!("Rescanning {}…", row.path), -1.0);
+        set_scan_silent(false);
+        add_folder_path(&w, path);
+        populate_folder_roots(&w);
+        clear_lib_busy(&w.as_weak());
+        tracing::info!(index = i, "library row rescan");
+    });
+    // Re-thumbnail a single location — drop its cached thumbs, then rescan so
+    // they regenerate.
+    let w = window.as_weak();
+    window.on_lib_row_rethumb(move |i| {
+        let Some(w) = w.upgrade() else { return; };
+        let Some(row) = w.get_library_rows().row_data(i as usize) else { return; };
+        let path = PathBuf::from(row.path.to_string());
+        if !path.exists() { return; }
+        set_lib_busy(&w.as_weak(), &format!("Re-thumbnailing {}…", row.path), -1.0);
+        // Clearing the whole thumb cache is the safe, simple option: the rescan
+        // below regenerates exactly the thumbs this folder needs.
+        if let Some(dir) = tulipix_core::paths::thumbs_dir() {
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::create_dir_all(&dir);
+        }
+        set_scan_silent(false);
+        add_folder_path(&w, path);
+        clear_lib_busy(&w.as_weak());
+        tracing::info!(index = i, "library row rethumb");
+    });
     window.on_lib_row_edit_exclude(move |i| tracing::info!(index = i, "library row edit-exclude requested"));
+    // Music row: persist the chosen section (5-section dropdown + Save).
+    let w = window.as_weak();
+    window.on_lib_row_save_section(move |i, label| {
+        let Some(w) = w.upgrade() else { return; };
+        let model = w.get_library_rows();
+        let Some(mut row) = model.row_data(i as usize) else { return; };
+        if row.section != "music" { return; }
+        let key = music_section_key(&label);
+        set_folder_section(&row.path.to_string(), key);
+        row.music_section = music_section_label(key).into();
+        model.set_row_data(i as usize, row);
+        populate_music_views(w.as_weak());
+        populate_folder_roots(&w);
+        tracing::info!(index = i, section = key, "library music-row section saved");
+    });
 
     // ── Command palette ────────────────────────────────────────────────────
     let w = window.as_weak();
@@ -4481,6 +5302,9 @@ static VIDEOS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
 static MUSIC_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
 static BOOKS_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
 static CLOUD_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
+// Music sub-sections split out of music.db (no items FK — self-contained).
+static PODCASTS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
+static RADIO_POOL:    OnceLock<sqlx::SqlitePool> = OnceLock::new();
 // Map photo tile index → absolute path so the click handler can pop the
 // viewer with the original (not the 320px thumb).
 static PHOTO_PATHS: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();
@@ -5543,6 +6367,7 @@ fn incremented_stem(dir: &std::path::Path, base: &str, ext: &str) -> String {
 
 /// Resolve the super-resolution model path: `TULIPIX_SR_MODEL` env override,
 /// else `<data>/models/swin2sr-x4.onnx`. None ⇒ no real model installed.
+#[allow(dead_code)] // wired for the super-resolution feature (not yet on a UI path)
 fn sr_model_path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("TULIPIX_SR_MODEL") {
         let p = PathBuf::from(p);
@@ -5614,6 +6439,7 @@ fn editor_upscale(weak: slint::Weak<MainWindow>) {
 
 /// DeOldify colourise model path: `TULIPIX_COLORIZE_MODEL` env override, else
 /// `<data>/models/deoldify.onnx`.
+#[allow(dead_code)] // wired for the colourise feature (not yet on a UI path)
 fn colorize_model_path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("TULIPIX_COLORIZE_MODEL") {
         let p = PathBuf::from(p);
@@ -6047,6 +6873,16 @@ fn fmt_clock(secs: f64) -> String {
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
 }
 
+/// Unix-epoch seconds → "12 Jun 2022" (podcast episode dates).
+fn fmt_date(epoch: i64) -> String {
+    use chrono::{TimeZone, Utc, Datelike};
+    const MON: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    match Utc.timestamp_opt(epoch, 0).single() {
+        Some(dt) => format!("{} {} {}", dt.day(), MON[(dt.month0() as usize).min(11)], dt.year()),
+        None => String::new(),
+    }
+}
+
 // Currently-playing item (for watch_progress writeback) + pending resume seek.
 static PLAYER_ITEM: std::sync::OnceLock<std::sync::Mutex<Option<i64>>> = std::sync::OnceLock::new();
 fn player_item() -> &'static std::sync::Mutex<Option<i64>> {
@@ -6169,6 +7005,63 @@ fn persist_watched_folder(path: &std::path::Path) {
         Ok(body) => { let _ = std::fs::write(&file, body); }
         Err(e) => tracing::warn!(error = %e, "serialize watched folders"),
     }
+}
+
+// ── Music folder → section tag (np.p5.atmusic.folder-sections) ──────────────
+// Each scanned music folder can be assigned to one of the 5 top music sections
+// so the user controls where its tracks belong. Persisted next to the watched
+// folders so the assignment survives restarts.
+const MUSIC_SECTIONS: [&str; 5] = ["mymusic", "podcasts", "audiobooks", "radio", "youtube"];
+
+fn folder_sections_path() -> Option<PathBuf> {
+    tulipix_core::paths::config_dir().map(|d| d.join("music_folder_sections.json"))
+}
+fn load_folder_sections() -> std::collections::HashMap<String, String> {
+    folder_sections_path()
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|b| serde_json::from_str(&b).ok())
+        .unwrap_or_default()
+}
+fn save_folder_sections(map: &std::collections::HashMap<String, String>) {
+    let Some(file) = folder_sections_path() else { return; };
+    if let Some(parent) = file.parent() { let _ = std::fs::create_dir_all(parent); }
+    if let Ok(body) = serde_json::to_string_pretty(map) { let _ = std::fs::write(&file, body); }
+}
+/// Human label for a section key.
+fn music_section_label(key: &str) -> &'static str {
+    match key {
+        "podcasts"   => "Podcasts",
+        "audiobooks" => "Audiobooks",
+        "radio"      => "Radio",
+        "youtube"    => "YouTube",
+        _            => "My Music",
+    }
+}
+/// Section key for a human label (inverse of `music_section_label`).
+fn music_section_key(label: &str) -> &'static str {
+    match label {
+        "Podcasts"   => "podcasts",
+        "Audiobooks" => "audiobooks",
+        "Radio"      => "radio",
+        "YouTube"    => "youtube",
+        _            => "mymusic",
+    }
+}
+/// Persist a folder → section assignment (settings dropdown / chip both use this).
+fn set_folder_section(folder: &str, key: &str) {
+    let mut map = load_folder_sections();
+    map.insert(folder.to_string(), key.to_string());
+    save_folder_sections(&map);
+}
+/// Advance a folder's section tag to the next of the 5 and persist it.
+fn cycle_folder_section(folder: &str) -> String {
+    let mut map = load_folder_sections();
+    let cur = map.get(folder).map(|s| s.as_str()).unwrap_or("mymusic");
+    let idx = MUSIC_SECTIONS.iter().position(|s| *s == cur).unwrap_or(0);
+    let next = MUSIC_SECTIONS[(idx + 1) % MUSIC_SECTIONS.len()].to_string();
+    map.insert(folder.to_string(), next.clone());
+    save_folder_sections(&map);
+    next
 }
 
 /// Open a library video in the embedded player (np.p3.player.*): resume from
@@ -6684,6 +7577,7 @@ struct BookRow {
     author: String,
     cover_path: Option<String>,
     is_comic: bool,
+    #[allow(dead_code)] // reading direction; carried for future right-to-left comic support
     rtl: bool,
     format: String,
     page: i64,
@@ -7466,6 +8360,39 @@ fn cloud_delete_entry(weak: slint::Weak<MainWindow>, remote: String, rel: String
 static MUSIC_PATHS: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();
 fn music_paths() -> &'static std::sync::Mutex<Vec<PathBuf>> {
     MUSIC_PATHS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+// Accumulated music tracks across ALL watched folders: (label, abs, thumb).
+// Like photo_full/video_full, this is the source of truth the tiles + paths are
+// rebuilt from, so adding a second folder ACCUMULATES instead of replacing the
+// first. Deduped by abs path.
+static MUSIC_FULL: std::sync::OnceLock<std::sync::Mutex<Vec<(String, PathBuf, PathBuf)>>> = std::sync::OnceLock::new();
+fn music_full() -> &'static std::sync::Mutex<Vec<(String, PathBuf, PathBuf)>> {
+    MUSIC_FULL.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+/// Rebuild the music tiles + playback-path list from the accumulated
+/// `music_full` set. Each tile's `index` is its playback position.
+fn rebuild_music_tiles(w: &MainWindow) {
+    let full = music_full().lock().map(|g| g.clone()).unwrap_or_default();
+    let mut paths: Vec<PathBuf> = Vec::with_capacity(full.len());
+    let mut tiles: Vec<PhotoTile> = Vec::with_capacity(full.len());
+    for (i, (label, orig, thumb_path)) in full.iter().enumerate() {
+        tiles.push(PhotoTile {
+            thumb: slint::Image::load_from_path(thumb_path).unwrap_or_default(),
+            label: label.clone().into(),
+            index: i as i32,
+            ..Default::default()
+        });
+        paths.push(orig.clone());
+    }
+    if let Ok(mut g) = music_paths().lock() { *g = paths; }
+    w.set_music_tiles(slint::ModelRc::new(slint::VecModel::from(tiles)));
+}
+/// Drop every accumulated music track whose abs path is under `dir` (used when
+/// a folder is removed from the library so its tiles disappear without a rescan).
+fn prune_music_full_under(dir: &std::path::Path) {
+    if let Ok(mut g) = music_full().lock() {
+        g.retain(|(_, orig, _)| !orig.starts_with(dir));
+    }
 }
 // Parallel to music_paths: the music.db item_id at each playback position, so
 // item_id-keyed features (dashboard / browse / rating) map back to a position.
@@ -8287,14 +9214,10 @@ fn build_playlist_detail(w: &MainWindow, playlist_id: i64) {
     });
 }
 
-// Podcast feed ids parallel to the shown feed names; open episodes = (url, title).
-static PODCAST_FEED_IDS: std::sync::OnceLock<std::sync::Mutex<Vec<i64>>> = std::sync::OnceLock::new();
-fn podcast_feed_ids() -> &'static std::sync::Mutex<Vec<i64>> {
-    PODCAST_FEED_IDS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
-}
-static PODCAST_EPISODES: std::sync::OnceLock<std::sync::Mutex<Vec<(String, String)>>> = std::sync::OnceLock::new();
-fn podcast_episodes() -> &'static std::sync::Mutex<Vec<(String, String)>> {
-    PODCAST_EPISODES.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+// id of the podcast whose detail page is currently open.
+static CUR_PODCAST_ID: std::sync::OnceLock<std::sync::Mutex<i64>> = std::sync::OnceLock::new();
+fn cur_podcast_id() -> &'static std::sync::Mutex<i64> {
+    CUR_PODCAST_ID.get_or_init(|| std::sync::Mutex::new(-1))
 }
 // Bookmark positions (seconds) for the playing audiobook, parallel to the chips.
 static BOOK_BOOKMARKS: std::sync::OnceLock<std::sync::Mutex<Vec<f64>>> = std::sync::OnceLock::new();
@@ -8317,57 +9240,529 @@ fn load_book_bookmarks(w: &MainWindow, item_id: i64) {
     });
 }
 
-/// Fill the podcasts view with subscribed feed titles (np.p5.music.podcast-feeds).
-fn populate_podcasts(w: &MainWindow) {
+/// Cache an http(s) artwork URL to a local file (keyed by `key`), returning the
+/// path. Re-uses an already-downloaded file. Used for podcast/episode thumbs.
+async fn cache_artwork(client: &reqwest::Client, key: &str, url: &str) -> Option<std::path::PathBuf> {
+    if url.is_empty() || !url.starts_with("http") { return None; }
+    let dir = tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("podcast_art");
+    let _ = std::fs::create_dir_all(&dir);
+    let ext = url.rsplit('.').next().filter(|e| e.len() <= 4 && !e.contains('/')).unwrap_or("jpg");
+    let dest = dir.join(format!("{key}.{ext}"));
+    if dest.exists() { return Some(dest); }
+    let bytes = client.get(url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
+        .send().await.ok()?.bytes().await.ok()?;
+    std::fs::write(&dest, &bytes).ok()?;
+    Some(dest)
+}
+
+/// Resolve a podcast/show artwork source that may be either an http(s) URL OR a
+/// local file path (a user-supplied custom thumbnail). Local existing files are
+/// used as-is; URLs go through [`cache_artwork`].
+async fn resolve_artwork(client: &reqwest::Client, key: &str, src: &str) -> Option<std::path::PathBuf> {
+    if src.is_empty() { return None; }
+    let p = std::path::Path::new(src);
+    if p.is_file() { return Some(p.to_path_buf()); }
+    cache_artwork(client, key, src).await
+}
+
+/// Fill the Podcasts grid with subscribed feeds, filtered by the active
+/// category, plus the category-chip list (np.p5.music.podcast-feeds).
+// Send-safe subscription summary (no slint::Image).
+#[derive(Clone)]
+struct PodAllData {
+    id: i64,
+    title: String,
+    author: String,
+    category: String,
+    art: Option<std::path::PathBuf>,
+    unplayed: i64,
+    episodes: i64,
+}
+const PODCAST_SUB_PAGE: usize = 21;   // Subscribed grid: 3 rows × 7
+const PODCAST_HOME_PAGE: usize = 14;  // Home "Your shows": 2 rows × 7
+
+// ── Trends (hardcoded podcast directory) ──────────────────────────────────
+// Feed URLs are baked into the binary from podc.md at the repo root, so the
+// Trends page stays populated even after a full podcast-library reset. Edit
+// podc.md (one feed URL per line; '#'/blank lines ignored) and rebuild to add
+// more. Per-feed metadata (title/author/art/category) is fetched live and
+// cached for the session.
+const TREND_FEEDS_RAW: &str = include_str!("../../../podc.md");
+
+fn trend_feed_urls() -> Vec<String> {
+    TREND_FEEDS_RAW.lines()
+        .map(|l| l.trim())
+        .filter(|l| l.starts_with("http"))
+        .map(|s| s.to_string())
+        .collect()
+}
+
+#[derive(Clone)]
+struct TrendMeta {
+    feed_url: String,
+    title: String,
+    author: String,
+    category: String,
+    art: Option<std::path::PathBuf>,
+}
+
+fn trend_cache() -> &'static std::sync::Mutex<Vec<TrendMeta>> {
+    static C: OnceLock<std::sync::Mutex<Vec<TrendMeta>>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+const PODCAST_TREND_PAGE: usize = 21;   // Trends grid: 3 rows × 7
+
+fn cur_trend_idx() -> &'static std::sync::Mutex<i32> {
+    static C: OnceLock<std::sync::Mutex<i32>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(-1))
+}
+
+// Feed URL of the podcast whose info card is open (Trends or Subscribed) — drives
+// Save-category / Update-thumb / Subscribe regardless of how it was opened.
+fn cur_info_feed() -> &'static std::sync::Mutex<String> {
+    static C: OnceLock<std::sync::Mutex<String>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(String::new()))
+}
+
+// Per-tab podcast search filters — each tab (and the single-podcast page) keeps
+// its own query so search works independently across Home/Trends/Subscribed/
+// Downloads and the detail page.
+#[derive(Default, Clone)]
+struct PodFilters { home: String, trends: String, subs: String, downloads: String, detail: String }
+fn pod_filters() -> &'static std::sync::Mutex<PodFilters> {
+    static C: OnceLock<std::sync::Mutex<PodFilters>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(PodFilters::default()))
+}
+fn pod_filter(which: &str) -> String {
+    let g = pod_filters().lock().map(|f| f.clone()).unwrap_or_default();
+    match which { "home" => g.home, "trends" => g.trends, "subs" => g.subs, "downloads" => g.downloads, "detail" => g.detail, _ => String::new() }
+}
+
+/// Render the Trends grid from the session cache: sort (name/category), paginate
+/// (21/page), and flag which feeds are already subscribed. No network.
+fn render_trends(w: &MainWindow) {
     let weak = w.as_weak();
+    let sort = w.get_music_podcast_trends_sort().to_string();
+    let page = w.get_music_podcast_trends_page().max(0) as usize;
     tokio::runtime::Handle::current().spawn(async move {
-        let Ok(pool) = pool_for("music").await else { return; };
-        // Title + unplayed-episode count (np.p5.music.podcast-feeds unplayed badge).
-        let rows: Vec<(i64, String, i64)> = sqlx::query_as(
-            "SELECT p.id, COALESCE(p.title, p.feed_url),
-                    (SELECT COUNT(*) FROM podcast_episodes e WHERE e.podcast_id = p.id AND COALESCE(e.played,0) = 0)
-             FROM podcasts p ORDER BY p.title COLLATE NOCASE")
-            .fetch_all(&pool).await.unwrap_or_default();
+        let Ok(pool) = pool_for("podcasts").await else { return; };
+        let subs: Vec<(String,)> = sqlx::query_as("SELECT feed_url FROM podcasts").fetch_all(&pool).await.unwrap_or_default();
+        let subset: std::collections::HashSet<String> = subs.into_iter().map(|(u,)| u).collect();
+        let metas = trend_cache().lock().map(|g| g.clone()).unwrap_or_default();
+        // Keep the original (feed-order) index for subscribe/info-by-index.
+        let mut indexed: Vec<(usize, TrendMeta)> = metas.into_iter().enumerate().collect();
+        // Filter (Trends search) — title/author/category.
+        let filter = pod_filter("trends");
+        let needle = filter.trim().to_lowercase();
+        if !needle.is_empty() {
+            indexed.retain(|(_, m)| m.title.to_lowercase().contains(&needle)
+                || m.author.to_lowercase().contains(&needle)
+                || m.category.to_lowercase().contains(&needle));
+        }
+        match sort.as_str() {
+            "category" => indexed.sort_by(|a, b| a.1.category.to_lowercase().cmp(&b.1.category.to_lowercase())
+                .then(a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase()))),
+            "subscribed" => indexed.sort_by(|a, b| subset.contains(&b.1.feed_url).cmp(&subset.contains(&a.1.feed_url))
+                .then(a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase()))),
+            "unsubscribed" => indexed.sort_by(|a, b| subset.contains(&a.1.feed_url).cmp(&subset.contains(&b.1.feed_url))
+                .then(a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase()))),
+            _ => indexed.sort_by(|a, b| a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase())),
+        }
+        let total = indexed.len();
+        let pages = ((total + PODCAST_TREND_PAGE - 1) / PODCAST_TREND_PAGE).max(1);
+        let page = page.min(pages - 1);
+        let slice: Vec<(usize, TrendMeta)> = indexed.into_iter().skip(page * PODCAST_TREND_PAGE).take(PODCAST_TREND_PAGE).collect();
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let names: Vec<slint::SharedString> = rows.iter()
-                .map(|(_, t, unplayed)| if *unplayed > 0 { format!("{t}  ·  {unplayed} new").into() } else { t.clone().into() })
-                .collect();
-            if let Ok(mut g) = podcast_feed_ids().lock() { *g = rows.iter().map(|(id, _, _)| *id).collect(); }
-            w.set_music_podcast_feeds(slint::ModelRc::new(slint::VecModel::from(names)));
+            let rows: Vec<PodcastTrendCard> = slice.iter().map(|(i, m)| PodcastTrendCard {
+                title: m.title.clone().into(),
+                author: m.author.clone().into(),
+                category: m.category.clone().into(),
+                image: m.art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default(),
+                feed_url: m.feed_url.clone().into(),
+                subscribed: subset.contains(&m.feed_url),
+                index: *i as i32,
+            }).collect();
+            w.set_music_podcast_trends(slint::ModelRc::new(slint::VecModel::from(rows)));
+            w.set_music_podcast_trends_pages(pages as i32);
+            w.set_music_podcast_trends_page(page as i32);
         });
     });
 }
 
-/// Open a feed's episode list (np.p5.music.podcast-feeds).
-fn open_podcast(w: &MainWindow, idx: i32) {
-    let (pid, name) = {
-        let ids = podcast_feed_ids().lock().map(|g| g.clone()).unwrap_or_default();
-        let feeds = w.get_music_podcast_feeds();
-        let Some(&pid) = ids.get(idx as usize) else { return; };
-        let name = feeds.row_data(idx as usize).map(|s| s.to_string()).unwrap_or_default();
-        (pid, name)
-    };
-    w.set_music_podcast_sel(name.into());
-    let weak = w.as_weak();
+/// Subscribe to `url`, driving the subscribe progress bar (Trends button /
+/// info-card Subscribe) as episodes are stored, then refresh the grids.
+fn subscribe_feed_with_progress(weak: slint::Weak<MainWindow>, url: String) {
     tokio::runtime::Handle::current().spawn(async move {
-        let Ok(pool) = pool_for("music").await else { return; };
-        let eps: Vec<(String, String, Option<f64>)> = sqlx::query_as(
-            "SELECT title, audio_url, duration_s FROM podcast_episodes WHERE podcast_id = ? ORDER BY id DESC")
-            .bind(pid).fetch_all(&pool).await.unwrap_or_default();
-        let _ = weak.upgrade_in_event_loop(move |w| {
-            let rows: Vec<MusicSongRow> = eps.iter().enumerate().map(|(i, (title, _url, dur))| MusicSongRow {
-                thumb: slint::Image::default(),
-                title: title.clone().into(),
-                artist: "Episode".into(),
-                duration: dur.map(|d| fmt_clock(d).into()).unwrap_or_default(),
-                index: i as i32,
-            }).collect();
-            if let Ok(mut g) = podcast_episodes().lock() {
-                *g = eps.iter().map(|(t, u, _)| (u.clone(), t.clone())).collect();
+        let finish = |weak: slint::Weak<MainWindow>| { let _ = weak.upgrade_in_event_loop(|w| { w.set_music_podcast_subscribing(false); }); };
+        let Ok(pool) = pool_for("podcasts").await else { finish(weak); return; };
+        let client = reqwest::Client::new();
+        let resp = match client.get(&url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
+            Ok(r) => r, Err(_) => { finish(weak); return; } };
+        let xml = match resp.text().await { Ok(x) => x, Err(_) => { finish(weak); return; } };
+        let feed = tulipix_music::podcasts::parse_feed(&xml);
+        if feed.title.is_none() && feed.episodes.is_empty() { finish(weak); return; }
+        let cbw = weak.clone();
+        let _ = tulipix_music::podcasts::subscribe_with_progress(&pool, &url, &feed, move |done, total| {
+            // Throttle UI updates (~40 steps max) so we don't flood the event loop.
+            let step = (total / 40).max(1);
+            if total > 0 && (done % step == 0 || done >= total) {
+                let frac = done as f32 / total as f32;
+                let status = format!("Adding… {done}/{total}");
+                let _ = cbw.upgrade_in_event_loop(move |w| {
+                    w.set_music_podcast_subscribe_frac(frac);
+                    w.set_music_podcast_subscribe_status(status.into());
+                });
             }
-            w.set_music_podcast_episodes(slint::ModelRc::new(slint::VecModel::from(rows)));
+        }).await;
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_music_podcast_subscribe_frac(1.0);
+            w.set_music_podcast_subscribing(false);
+            w.set_music_podcast_info_subscribed(true);
+            render_trends(&w);             // flip the card to ✓ Subscribed
+            populate_podcasts(&w);
+            populate_podcast_latest(&w);
         });
     });
+}
+
+/// Populate the Trends grid: fetch each baked feed's metadata (session-cached),
+/// then render. Network only on the first open.
+fn populate_podcast_trends(w: &MainWindow) {
+    let weak = w.as_weak();
+    let feeds = trend_feed_urls();
+    let cached_now = trend_cache().lock().map(|g| g.len()).unwrap_or(0);
+    if cached_now == feeds.len() { render_trends(w); return; }
+    w.set_music_podcast_trends_loading(true);
+    tokio::runtime::Handle::current().spawn(async move {
+        let client = reqwest::Client::new();
+        // Fetch every feed concurrently (one task each) — was sequential and slow.
+        let handles: Vec<_> = feeds.iter().enumerate().map(|(i, url)| {
+            let client = client.clone();
+            let url = url.clone();
+            tokio::spawn(async move {
+                let (mut title, mut author, mut category, mut art) = (String::new(), String::new(), String::new(), None);
+                if let Ok(resp) = client.get(&url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
+                    if let Ok(xml) = resp.text().await {
+                        let feed = tulipix_music::podcasts::parse_feed(&xml);
+                        title = feed.title.unwrap_or_default();
+                        author = feed.author;
+                        category = feed.category;
+                        art = resolve_artwork(&client, &format!("trend-{i}"), &feed.image_url).await;
+                    }
+                }
+                if title.is_empty() { title = url.clone(); }
+                if category.is_empty() { category = "Other".to_string(); }
+                (i, TrendMeta { feed_url: url, title, author, category, art })
+            })
+        }).collect();
+        // Collect, preserving feed order by index.
+        let mut indexed: Vec<(usize, TrendMeta)> = Vec::with_capacity(feeds.len());
+        for h in handles {
+            if let Ok(pair) = h.await { indexed.push(pair); }
+        }
+        indexed.sort_by_key(|(i, _)| *i);
+        let metas: Vec<TrendMeta> = indexed.into_iter().map(|(_, m)| m).collect();
+        if let Ok(mut g) = trend_cache().lock() { *g = metas; }
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_music_podcast_trends_loading(false);
+            render_trends(&w);
+        });
+    });
+}
+
+fn populate_podcasts(w: &MainWindow) {
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("podcasts").await else { return; };
+        let filter = pod_filter("subs");
+        let like = format!("%{}%", filter.trim());
+        let base = "SELECT p.id, COALESCE(p.title, p.feed_url), COALESCE(p.author,''), COALESCE(NULLIF(p.custom_image,''), p.image_url, ''), COALESCE(p.category,''),
+                    (SELECT COUNT(*) FROM podcast_episodes e WHERE e.podcast_id = p.id AND COALESCE(e.played,0) = 0),
+                    (SELECT COUNT(*) FROM podcast_episodes e WHERE e.podcast_id = p.id)
+             FROM podcasts p";
+        let rows: Vec<(i64, String, String, String, String, i64, i64)> = if filter.trim().is_empty() {
+            sqlx::query_as(&format!("{base} ORDER BY p.title COLLATE NOCASE")).fetch_all(&pool).await.unwrap_or_default()
+        } else {
+            sqlx::query_as(&format!("{base} WHERE p.title LIKE ?1 OR p.author LIKE ?1 OR p.category LIKE ?1 OR p.feed_url LIKE ?1
+                    OR EXISTS (SELECT 1 FROM podcast_episodes e WHERE e.podcast_id = p.id AND e.title LIKE ?1)
+                 ORDER BY p.title COLLATE NOCASE"))
+                .bind(&like).fetch_all(&pool).await.unwrap_or_default()
+        };
+        let client = reqwest::Client::new();
+        let mut all: Vec<PodAllData> = Vec::with_capacity(rows.len());
+        for (id, title, author, img, category, unplayed, episodes) in rows {
+            let art = resolve_artwork(&client, &format!("pod-{id}"), &img).await;
+            all.push(PodAllData { id, title, author, category, art, unplayed, episodes });
+        }
+        let _ = weak.upgrade_in_event_loop(move |w| render_podcast_cards(&w, &all));
+    });
+}
+
+/// Build the Subscribed (filtered + 21/page) and Home (14/page) card models
+/// from the full subscription list on the UI thread.
+fn render_podcast_cards(w: &MainWindow, all: &[PodAllData]) {
+    let to_card = |i: usize, d: &PodAllData| PodcastCard {
+        id: d.id as i32,
+        title: d.title.clone().into(),
+        author: d.author.clone().into(),
+        category: d.category.clone().into(),
+        image: d.art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default(),
+        unplayed: d.unplayed as i32,
+        episodes: d.episodes as i32,
+        index: i as i32,
+    };
+    w.set_music_podcast_total(all.len() as i32);
+    // Categories.
+    let mut cats: Vec<String> = vec!["All".into()];
+    for d in all { if !d.category.is_empty() && !cats.iter().any(|x| *x == d.category) { cats.push(d.category.clone()); } }
+    let cat_models: Vec<slint::SharedString> = cats.iter().map(|c| c.clone().into()).collect();
+    w.set_music_podcast_categories(slint::ModelRc::new(slint::VecModel::from(cat_models)));
+    // Subscribed — category filter + 21/page.
+    let active = w.get_music_podcast_cat().to_string();
+    let filtered: Vec<(usize, &PodAllData)> = all.iter().enumerate()
+        .filter(|(_, d)| active == "All" || d.category == active).collect();
+    let sub_pages = ((filtered.len() + PODCAST_SUB_PAGE - 1) / PODCAST_SUB_PAGE).max(1);
+    let sub_page = (w.get_music_podcast_sub_page().max(0) as usize).min(sub_pages - 1);
+    let sub_cards: Vec<PodcastCard> = filtered.iter().skip(sub_page * PODCAST_SUB_PAGE).take(PODCAST_SUB_PAGE)
+        .map(|(i, d)| to_card(*i, d)).collect();
+    w.set_music_podcast_sub_pages(sub_pages as i32);
+    w.set_music_podcast_sub_page(sub_page as i32);
+    w.set_music_podcast_cards(slint::ModelRc::new(slint::VecModel::from(sub_cards)));
+    // Home "Your shows" — all subscriptions, 14/page.
+    let home_pages = ((all.len() + PODCAST_HOME_PAGE - 1) / PODCAST_HOME_PAGE).max(1);
+    let home_page = (w.get_music_podcast_home_page().max(0) as usize).min(home_pages - 1);
+    let home_cards: Vec<PodcastCard> = all.iter().enumerate().skip(home_page * PODCAST_HOME_PAGE).take(PODCAST_HOME_PAGE)
+        .map(|(i, d)| to_card(i, d)).collect();
+    w.set_music_podcast_home_pages(home_pages as i32);
+    w.set_music_podcast_home_page(home_page as i32);
+    w.set_music_podcast_home_cards(slint::ModelRc::new(slint::VecModel::from(home_cards)));
+}
+
+/// Open a feed's detail page by podcast id — header + episode list.
+fn open_podcast(w: &MainWindow, pid_i32: i32) {
+    let pid = pid_i32 as i64;
+    if pid < 0 { return; }
+    if let Ok(mut g) = cur_podcast_id().lock() { *g = pid; }
+    // Clear the previous feed's header + episodes synchronously so opening a
+    // different podcast never flashes the old one while the new page loads.
+    w.set_music_podcast_d_title("Loading…".into());
+    w.set_music_podcast_d_author("".into());
+    w.set_music_podcast_d_category("".into());
+    w.set_music_podcast_d_desc("".into());
+    w.set_music_podcast_d_image(slint::Image::default());
+    w.set_music_podcast_d_episodes(slint::ModelRc::new(slint::VecModel::from(Vec::<PodcastEpisodeRow>::new())));
+    w.set_music_podcast_detail_open(true);
+    w.set_music_podcast_d_page(0);
+    load_podcast_detail(w, pid);
+}
+
+const PODCAST_PAGE: i64 = 15;
+
+/// (Re)load the header + a 20-episode page for podcast `pid` into the detail
+/// view, ordered by the chosen sort (newest/oldest first).
+fn load_podcast_detail(w: &MainWindow, pid: i64) {
+    let sort = w.get_music_podcast_d_sort().to_string();
+    let page = w.get_music_podcast_d_page().max(0) as i64;
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("podcasts").await else { return; };
+        let head: Option<(String, String, String, String, String)> = sqlx::query_as(
+            "SELECT COALESCE(title, feed_url), COALESCE(author,''), COALESCE(category,''), COALESCE(description,''), COALESCE(NULLIF(custom_image,''), image_url, '')
+             FROM podcasts WHERE id = ?").bind(pid).fetch_optional(&pool).await.ok().flatten();
+        let filter = pod_filter("detail");
+        let like = format!("%{}%", filter.trim());
+        let has_f = !filter.trim().is_empty();
+        let extra = if has_f { " AND title LIKE ?".to_string() } else { String::new() };
+        let total: i64 = {
+            let cq = format!("SELECT COUNT(*) FROM podcast_episodes WHERE podcast_id = ?{extra}");
+            let mut qb = sqlx::query_scalar(&cq).bind(pid);
+            if has_f { qb = qb.bind(like.clone()); }
+            qb.fetch_one(&pool).await.unwrap_or(0)
+        };
+        let pages = ((total + PODCAST_PAGE - 1) / PODCAST_PAGE).max(1);
+        let page = page.min(pages - 1);
+        let order = if sort == "old" { "ASC" } else { "DESC" };
+        let q = format!(
+            "SELECT id, COALESCE(title,''), audio_url, published, duration_s, COALESCE(image_url,''), downloaded_path, COALESCE(played,0)
+             FROM podcast_episodes WHERE podcast_id = ?{extra}
+             ORDER BY COALESCE(published,0) {order}, id {order} LIMIT ? OFFSET ?");
+        let mut qb = sqlx::query_as(&q).bind(pid);
+        if has_f { qb = qb.bind(like); }
+        let eps: Vec<(i64, String, String, Option<i64>, Option<f64>, String, Option<String>, i64)> =
+            qb.bind(PODCAST_PAGE).bind(page * PODCAST_PAGE)
+                .fetch_all(&pool).await.unwrap_or_default();
+        let client = reqwest::Client::new();
+        // Only the show artwork is fetched here (usually already cached from the
+        // grid). Per-episode thumbs are NOT fetched on the detail page — fetching
+        // 20 images serially was the main cause of the slow open; every row falls
+        // back to the show art, which is what most podcast apps show anyway.
+        let head_art = if let Some((_, _, _, _, img)) = &head { resolve_artwork(&client, &format!("pod-{pid}"), img).await } else { None };
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            if let Some((title, author, category, desc, _)) = &head {
+                w.set_music_podcast_d_title(title.clone().into());
+                w.set_music_podcast_d_author(author.clone().into());
+                w.set_music_podcast_d_category(category.clone().into());
+                w.set_music_podcast_d_desc(desc.clone().into());
+            }
+            w.set_music_podcast_d_image(head_art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default());
+            w.set_music_podcast_d_total(total as i32);
+            w.set_music_podcast_d_pages(pages as i32);
+            w.set_music_podcast_d_page(page as i32);
+            let rows: Vec<PodcastEpisodeRow> = eps.iter().enumerate().map(|(i, (id, title, _url, pub_, dur, _img, dl, played))| PodcastEpisodeRow {
+                id: *id as i32,
+                title: title.clone().into(),
+                show: slint::SharedString::new(),
+                date: pub_.map(fmt_date).unwrap_or_default().into(),
+                duration: dur.map(|d| fmt_clock(d).into()).unwrap_or_default(),
+                // Show artwork for every row (per-episode thumbs skipped for speed).
+                image: head_art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default(),
+                played: *played != 0,
+                downloaded: dl.is_some(),
+                index: i as i32,
+            }).collect();
+            w.set_music_podcast_d_episodes(slint::ModelRc::new(slint::VecModel::from(rows)));
+        });
+    });
+}
+
+// Send-safe intermediate (no slint::Image) for cross-thread episode rows.
+#[derive(Clone)]
+struct EpRowData {
+    id: i32,
+    title: String,
+    show: String,
+    date: String,
+    duration: String,
+    art: Option<std::path::PathBuf>,
+    played: bool,
+    downloaded: bool,
+}
+
+/// Build the Home (Latest) feed — newest 14, one episode per show. Episode art
+/// falls back to the show's feed artwork.
+fn populate_podcast_latest(w: &MainWindow) {
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("podcasts").await else { return; };
+        let filter = pod_filter("home");
+        let like = format!("%{}%", filter.trim());
+        let extra = if filter.trim().is_empty() { "" } else { " AND (e.title LIKE ?1 OR p.title LIKE ?1)" };
+        let q = format!(
+            "SELECT e.id, COALESCE(e.title,''), e.audio_url, e.published, e.duration_s,
+                    COALESCE(e.image_url,''), COALESCE(NULLIF(p.custom_image,''), p.image_url, ''), p.id, e.downloaded_path, COALESCE(e.played,0), COALESCE(p.title,'')
+             FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id
+             WHERE e.id = (SELECT e2.id FROM podcast_episodes e2 WHERE e2.podcast_id = e.podcast_id
+                           ORDER BY COALESCE(e2.published,0) DESC, e2.id DESC LIMIT 1){extra}
+             ORDER BY COALESCE(e.published,0) DESC, e.id DESC LIMIT 14");
+        let mut qb = sqlx::query_as(&q);
+        if !filter.trim().is_empty() { qb = qb.bind(like); }
+        let eps: Vec<EpQueryRow> = qb.fetch_all(&pool).await.unwrap_or_default();
+        let data = build_episode_data(eps).await;
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_music_podcast_latest(slint::ModelRc::new(slint::VecModel::from(rows_from_data(&data))));
+        });
+    });
+}
+
+const PODCAST_DL_PAGE: i64 = 20;
+
+/// Build the Downloads tab — cached episodes, sorted + paginated (20/page).
+fn populate_podcast_downloads(w: &MainWindow) {
+    let weak = w.as_weak();
+    let sort = w.get_music_podcast_dl_sort().to_string();
+    let page = w.get_music_podcast_dl_page().max(0) as i64;
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("podcasts").await else { return; };
+        let filter = pod_filter("downloads");
+        let like = format!("%{}%", filter.trim());
+        let has_f = !filter.trim().is_empty();
+        let extra = if has_f { " AND (e.title LIKE ? OR p.title LIKE ?)".to_string() } else { String::new() };
+        let total: i64 = {
+            let cq = format!("SELECT COUNT(*) FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id WHERE e.downloaded_path IS NOT NULL{extra}");
+            let mut qb = sqlx::query_scalar(&cq);
+            if has_f { qb = qb.bind(like.clone()).bind(like.clone()); }
+            qb.fetch_one(&pool).await.unwrap_or(0)
+        };
+        let pages = ((total + PODCAST_DL_PAGE - 1) / PODCAST_DL_PAGE).max(1);
+        let page = page.min(pages - 1);
+        let order = if sort == "old" { "ASC" } else { "DESC" };
+        let q = format!(
+            "SELECT e.id, COALESCE(e.title,''), e.audio_url, e.published, e.duration_s,
+                    COALESCE(e.image_url,''), COALESCE(NULLIF(p.custom_image,''), p.image_url, ''), p.id, e.downloaded_path, COALESCE(e.played,0), COALESCE(p.title,'')
+             FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id
+             WHERE e.downloaded_path IS NOT NULL{extra}
+             ORDER BY COALESCE(e.published,0) {order}, e.id {order} LIMIT ? OFFSET ?");
+        let mut qb = sqlx::query_as(&q);
+        if has_f { qb = qb.bind(like.clone()).bind(like); }
+        let eps: Vec<EpQueryRow> =
+            qb.bind(PODCAST_DL_PAGE).bind(page * PODCAST_DL_PAGE).fetch_all(&pool).await.unwrap_or_default();
+        let data = build_episode_data(eps).await;
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_music_podcast_dl_pages(pages as i32);
+            w.set_music_podcast_dl_page(page as i32);
+            w.set_music_podcast_downloads(slint::ModelRc::new(slint::VecModel::from(rows_from_data(&data))));
+        });
+    });
+}
+
+// Cross-show episode query row: id, title, audio_url, published, duration_s,
+// episode_image, show_image, podcast_id, downloaded_path, played, show_title.
+type EpQueryRow = (i64, String, String, Option<i64>, Option<f64>, String, String, i64, Option<String>, i64, String);
+
+/// Off-thread: cache artwork + flatten a cross-show episode query into Send data.
+async fn build_episode_data(eps: Vec<EpQueryRow>) -> Vec<EpRowData> {
+    let client = reqwest::Client::new();
+    let mut out = Vec::with_capacity(eps.len());
+    for (id, title, _url, pub_, dur, ep_img, show_img, pid, dl, played, show) in eps {
+        // Prefer the episode's own image; else the show artwork — keyed `pod-{id}`
+        // so it reuses the file the grid already cached (instant, never blank).
+        let art = if !ep_img.is_empty() { cache_artwork(&client, &format!("ep-{id}"), &ep_img).await } else { None };
+        let art = match art {
+            Some(p) => Some(p),
+            None if !show_img.is_empty() => resolve_artwork(&client, &format!("pod-{pid}"), &show_img).await,
+            None => None,
+        };
+        out.push(EpRowData {
+            id: id as i32,
+            title,
+            show,
+            date: pub_.map(fmt_date).unwrap_or_default(),
+            duration: dur.map(fmt_clock).unwrap_or_default(),
+            art,
+            played: played != 0,
+            downloaded: dl.is_some(),
+        });
+    }
+    out
+}
+
+/// On the UI thread: turn Send data into UI rows (loads slint::Image).
+fn rows_from_data(data: &[EpRowData]) -> Vec<PodcastEpisodeRow> {
+    data.iter().enumerate().map(|(i, d)| PodcastEpisodeRow {
+        id: d.id,
+        title: d.title.clone().into(),
+        show: d.show.clone().into(),
+        date: d.date.clone().into(),
+        duration: d.duration.clone().into(),
+        image: d.art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default(),
+        played: d.played,
+        downloaded: d.downloaded,
+        index: i as i32,
+    }).collect()
+}
+
+/// Repopulate whichever podcast surface is currently visible.
+fn refresh_podcast_views(w: &MainWindow) {
+    match w.get_music_podcast_tab().as_str() {
+        "home" => { populate_podcasts(w); populate_podcast_latest(w); }
+        "downloads" => populate_podcast_downloads(w),
+        _ => populate_podcasts(w),
+    }
+    if w.get_music_podcast_detail_open() {
+        let pid = cur_podcast_id().lock().map(|g| *g).unwrap_or(-1);
+        if pid >= 0 { load_podcast_detail(w, pid); }
+    }
 }
 
 /// Fill the audiobooks view with `is_audiobook` library tracks (np.p5.music.audiobook-chapters).
@@ -8595,6 +9990,7 @@ fn discover_cast_devices() -> Vec<tulipix_music::cast::CastDevice> {
 
 /// Stop playback immediately (kill mpv, suppress auto-advance). Used when the
 /// user only wants to *check* lyrics, not play (np.p5.music.lyrics).
+#[allow(dead_code)] // kept for the lyrics-only "check, don't play" path
 fn stop_music(w: &MainWindow) {
     MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     if let Ok(mut g) = music_proc().lock() {
@@ -9248,12 +10644,17 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
             for (_, folder) in &folder_rows { *folder_counts.entry(folder.clone()).or_insert(0) += 1; }
             let mut folder_keys: Vec<&String> = first_folder.keys().collect();
             folder_keys.sort();
+            // Section tag per folder (np.p5.atmusic.folder-sections) — carried in
+            // `color_label` so the Folders grid can render the assignment chip.
+            let sec_map = load_folder_sections();
             let folder_src: Vec<(PhotoTile, i64)> = folder_keys.iter().map(|folder| {
                 let base = std::path::Path::new(folder.as_str()).file_name()
                     .and_then(|s| s.to_str()).unwrap_or(folder.as_str());
                 let n = folder_counts.get(*folder).copied().unwrap_or(0);
+                let sec = sec_map.get(*folder).cloned().unwrap_or_else(|| "mymusic".to_string());
                 (PhotoTile {
                     label: format!("🗂 {base} · {n}").into(),
+                    color_label: sec.into(),
                     index: first_folder.get(*folder).copied().unwrap_or(-1), ..Default::default()
                 }, n)
             }).collect();
@@ -9563,6 +10964,7 @@ fn play_music_at(w: &MainWindow, idx: i32) {
     w.set_music_np_art(art);
     w.set_music_np_index(idx);
     w.set_music_np_total(total);
+    w.set_music_player_mode("music".into()); // library track → music-mode player
     w.set_music_playing(true);
     w.set_music_pos(0.0); w.set_music_dur(0.0);
     w.set_music_pos_label("0:00".into()); w.set_music_dur_label("0:00".into());
@@ -10320,6 +11722,8 @@ async fn pool_for(section: &str) -> Result<sqlx::SqlitePool> {
         "music"  => &MUSIC_POOL,
         "books"  => &BOOKS_POOL,
         "cloud"  => &CLOUD_POOL,
+        "podcasts" => &PODCASTS_POOL,
+        "radio"    => &RADIO_POOL,
         _ => anyhow::bail!("unknown section"),
     };
     if let Some(p) = cache.get() { return Ok(p.clone()); }
@@ -10352,12 +11756,67 @@ async fn pool_for(section: &str) -> Result<sqlx::SqlitePool> {
         }
         "videos" => tulipix_videos::schema::apply(&pool).await?,
         "music"  => tulipix_music::schema::apply(&pool).await?,
+        "podcasts" => {
+            tulipix_music::podcasts::apply_schema(&pool).await?;
+            // One-time lift of legacy rows out of the shared music.db.
+            migrate_split_from_music(&pool, &[
+                ("podcasts",
+                 "id, feed_url, title, author, image_url, category, description, last_checked"),
+                ("podcast_episodes",
+                 "id, podcast_id, guid, title, audio_url, published, duration_s, \
+                  description, image_url, downloaded_path, position_s, played"),
+            ]).await;
+        }
+        "radio" => {
+            tulipix_music::radio::apply_schema(&pool).await?;
+            migrate_split_from_music(&pool, &[
+                ("radio_stations",
+                 "id, station_uuid, name, url, favicon, country, tags, favourite"),
+            ]).await;
+        }
         "books"  => tulipix_books::schema::apply(&pool).await?,
         "cloud"  => tulipix_cloud::schema::apply(&pool).await?,
         _ => {}
     }
     let _ = cache.set(pool.clone());
     Ok(pool)
+}
+
+/// One-time migration: move `tables` (each `(name, explicit_column_list)`) out
+/// of the legacy shared `music.db` into the freshly-opened section `dest` pool.
+///
+/// Idempotent: no-ops once the source tables are gone (so it's safe to run on
+/// every section open). Copies are parent→child (FK order); drops are the
+/// reverse. Everything runs on a single acquired connection because `ATTACH` is
+/// connection-scoped and the pool would otherwise hand later statements a
+/// different connection that never saw the attach.
+async fn migrate_split_from_music(dest: &sqlx::SqlitePool, tables: &[(&str, &str)]) {
+    let Some(music_path) = tulipix_core::paths::db_path("music") else { return; };
+    if !music_path.exists() { return; }
+    let Ok(mut conn) = dest.acquire().await else { return; };
+    // Attach the legacy DB read/write so we can also drop the moved tables.
+    if sqlx::query(&format!("ATTACH DATABASE '{}' AS legacy", music_path.display()))
+        .execute(&mut *conn).await.is_err() { return; }
+    // Copy parent→child.
+    let mut moved_any = false;
+    for (table, cols) in tables {
+        let exists: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM legacy.sqlite_master WHERE type='table' AND name = ?")
+            .bind(*table).fetch_optional(&mut *conn).await.ok().flatten();
+        if exists.is_none() { continue; }
+        moved_any = true;
+        let _ = sqlx::query(&format!(
+            "INSERT OR IGNORE INTO {table} ({cols}) SELECT {cols} FROM legacy.{table}"))
+            .execute(&mut *conn).await;
+    }
+    // Drop child→parent so foreign keys in the legacy DB don't block the drop.
+    if moved_any {
+        for (table, _) in tables.iter().rev() {
+            let _ = sqlx::query(&format!("DROP TABLE IF EXISTS legacy.{table}")).execute(&mut *conn).await;
+        }
+        tracing::info!("migrated {} table(s) out of music.db into a split section DB", tables.len());
+    }
+    let _ = sqlx::query("DETACH DATABASE legacy").execute(&mut *conn).await;
 }
 
 fn section_for_ext(ext: &str) -> Option<&'static str> {
@@ -10384,6 +11843,7 @@ fn classify_folder(root: &std::path::Path) -> std::collections::HashMap<&'static
     counts
 }
 
+#[allow(dead_code)] // section→enum helper kept alongside lib_section_enum's siblings
 fn lib_section_enum(section: &str) -> LibrarySection {
     match section {
         "videos" => LibrarySection::Videos,
@@ -10846,13 +12306,23 @@ fn kick_section_scan(
                     kick_video_refresh(w.as_weak(), cat);
                 }
                 "music"  => {
-                    if let Ok(mut g) = music_paths().lock() { *g = paths; }
-                    // Stamp each tile's index with its playback position so rail /
-                    // browse clicks (which pass tile.index) resolve correctly.
-                    let mut out = out;
-                    for (i, t) in out.iter_mut().enumerate() { t.index = i as i32; }
-                    w.set_music_tiles(slint::ModelRc::new(slint::VecModel::from(out)));
+                    let _ = (paths, out, n);
+                    // Accumulate this folder's tracks (dedup by abs path) so adding
+                    // a second folder ADDS to the library instead of replacing the
+                    // first. The DB already holds every folder's items; this keeps
+                    // the in-memory tiles/paths in sync with that.
+                    if let Ok(mut g) = music_full().lock() {
+                        let have: std::collections::HashSet<String> =
+                            g.iter().map(|(_, o, _)| o.to_string_lossy().into_owned()).collect();
+                        for row in full {
+                            if !have.contains(&row.1.to_string_lossy().into_owned()) { g.push(row); }
+                        }
+                    }
+                    rebuild_music_tiles(&w);
                     populate_music_views(w.as_weak());
+                    // Refresh the scanned-roots list (Folders tab) so a freshly
+                    // added music folder shows up immediately with its count.
+                    populate_folder_roots(&w);
                     // Extract tags (title/artist/album/…) for items lacking them,
                     // then refresh the views (np.p4.music.tags).
                     ingest_music_tags(w.as_weak());

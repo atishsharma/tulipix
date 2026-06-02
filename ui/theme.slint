@@ -5,6 +5,8 @@
 // preserving the same contrast steps so everything stays readable. The pink
 // accent (#ec4899) is shared and unchanged across both themes.
 export global MusicTheme {
+    // Music section defaults to light (podcasts + all music pages); the zen-theme
+    // button cycles light → dark → OLED.
     in-out property <bool> light: true;
     // Extra-dark OLED variant of the dark theme — pure-black surfaces so true
     // blacks switch off OLED pixels (np.p5.atmusic.oled). Only meaningful when

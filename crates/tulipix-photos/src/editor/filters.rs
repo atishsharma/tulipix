@@ -12,6 +12,9 @@ use serde::{Deserialize, Serialize};
 #[serde(rename_all = "kebab-case")]
 pub enum Preset { BW, Sepia, Vintage, Drama, Hdr, Polaroid, Faded }
 
+// Every match arm reassigns r/g/b, so the (r0,g0,b0) seed is intentionally
+// overwritten — keeps the bindings definitely-initialised for all presets.
+#[allow(unused_assignments)]
 pub fn apply(img: DynamicImage, preset: Preset, strength: f32) -> DynamicImage {
     let s = strength.clamp(0.0, 1.0);
     let rgba = img.to_rgba8();

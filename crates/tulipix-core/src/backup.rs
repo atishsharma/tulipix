@@ -18,6 +18,8 @@ pub const INCLUDED_DIRS: &[&str] = &[
     "photos.db",
     "videos.db",
     "music.db",
+    "podcasts.db",
+    "radio.db",
     "books.db",
     "cloud.db",
     "edits",

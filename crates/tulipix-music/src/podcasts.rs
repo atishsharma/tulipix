@@ -8,17 +8,74 @@
 use anyhow::Result;
 use sqlx::SqlitePool;
 
+/// Schema for the standalone `podcasts.db` section. Self-contained — no `items`
+/// foreign key — which is why podcasts can live in their own file. Columns that
+/// were historically added to `music.db` via `ALTER TABLE` (category,
+/// description, episode description/image_url) are inlined here.
+pub const PODCASTS_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS podcasts (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    feed_url     TEXT    NOT NULL UNIQUE,
+    title        TEXT,
+    author       TEXT,
+    image_url    TEXT,
+    custom_image TEXT,
+    category     TEXT,
+    description  TEXT,
+    last_checked INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS podcast_episodes (
+    id              INTEGER PRIMARY KEY AUTOINCREMENT,
+    podcast_id      INTEGER NOT NULL REFERENCES podcasts(id) ON DELETE CASCADE,
+    guid            TEXT    NOT NULL,
+    title           TEXT,
+    audio_url       TEXT    NOT NULL,
+    published       INTEGER,
+    duration_s      REAL,
+    description     TEXT,
+    image_url       TEXT,
+    downloaded_path TEXT,
+    position_s      REAL    NOT NULL DEFAULT 0,
+    played          INTEGER NOT NULL DEFAULT 0,
+    UNIQUE(podcast_id, guid)
+);
+CREATE INDEX IF NOT EXISTS podcast_episodes_pod_idx ON podcast_episodes(podcast_id, published DESC);
+CREATE INDEX IF NOT EXISTS podcast_episodes_dl_idx  ON podcast_episodes(downloaded_path);
+"#;
+
+/// Apply the podcasts schema to a (podcasts.db) pool. Idempotent.
+pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
+    sqlx::raw_sql(PODCASTS_SCHEMA).execute(pool).await?;
+    // Migrate pre-existing podcasts.db files that lack the custom_image column.
+    // A user-set thumbnail lives here so a feed refresh (which overwrites
+    // image_url) can never clobber it. Ignore the error when it already exists.
+    let _ = sqlx::query("ALTER TABLE podcasts ADD COLUMN custom_image TEXT").execute(pool).await;
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedEpisode {
     pub guid: String,
     pub title: String,
     pub audio_url: String,
     pub duration_s: Option<f64>,
+    /// `pubDate` parsed to a Unix epoch (seconds).
+    pub published: Option<i64>,
+    /// Show notes / summary (HTML stripped to plain text) — reused as the
+    /// episode "transcript" panel in the UI.
+    pub description: String,
+    /// Per-episode `itunes:image href`, when present.
+    pub image_url: String,
 }
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ParsedFeed {
     pub title: Option<String>,
+    pub author: String,
+    pub image_url: String,
+    pub category: String,
+    pub description: String,
     pub episodes: Vec<ParsedEpisode>,
 }
 
@@ -62,8 +119,70 @@ pub fn parse_itunes_duration(s: &str) -> Option<f64> {
     })
 }
 
+/// Crude HTML→text: drop tags, collapse whitespace, decode a few entities.
+/// Show notes are HTML; this keeps them readable in the transcript panel.
+fn strip_html(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut in_tag = false;
+    for c in s.chars() {
+        match c {
+            '<' => in_tag = true,
+            '>' => in_tag = false,
+            _ if !in_tag => out.push(c),
+            _ => {}
+        }
+    }
+    let out = out
+        .replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+        .replace("&quot;", "\"").replace("&#39;", "'").replace("&nbsp;", " ");
+    out.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+/// Days from civil date to the Unix epoch (Howard Hinnant's algorithm).
+fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = if y >= 0 { y } else { y - 399 } / 400;
+    let yoe = y - era * 400;
+    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    era * 146097 + doe - 719468
+}
+
+/// Parse an RFC-822 `pubDate` (e.g. `Wed, 15 Jun 2022 19:00:00 GMT`) → epoch
+/// seconds. Timezone offsets beyond GMT are ignored (good enough for ordering).
+pub fn parse_rss_date(s: &str) -> Option<i64> {
+    const MON: [&str; 12] = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"];
+    let s = s.trim();
+    let body = s.split_once(", ").map(|(_, r)| r).unwrap_or(s);
+    let mut it = body.split_whitespace();
+    let day: i64 = it.next()?.parse().ok()?;
+    let mon = it.next()?.to_ascii_lowercase();
+    let month = MON.iter().position(|m| mon.starts_with(m))? as i64 + 1;
+    let year: i64 = it.next()?.parse().ok()?;
+    let (mut h, mut mi, mut se) = (0i64, 0i64, 0i64);
+    if let Some(t) = it.next() {
+        let mut tp = t.split(':');
+        h = tp.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+        mi = tp.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+        se = tp.next().and_then(|x| x.parse().ok()).unwrap_or(0);
+    }
+    Some(days_from_civil(year, month, day) * 86400 + h * 3600 + mi * 60 + se)
+}
+
 pub fn parse_feed(xml: &str) -> ParsedFeed {
-    let title = tag_text(xml, "title").map(uncdata);
+    // Channel-level metadata is everything before the first <item>.
+    let channel = xml.split("<item").next().unwrap_or(xml);
+    let title = tag_text(channel, "title").map(uncdata);
+    let author = tag_text(channel, "itunes:author")
+        .or_else(|| tag_text(channel, "managingEditor"))
+        .map(uncdata).unwrap_or_default();
+    let image_url = tag_attr(channel, "itunes:image", "href")
+        .or_else(|| tag_text(channel, "url").map(uncdata))
+        .unwrap_or_default();
+    let category = tag_attr(channel, "itunes:category", "text").map(|s| uncdata(&s)).unwrap_or_default();
+    let description = tag_text(channel, "description")
+        .or_else(|| tag_text(channel, "itunes:summary"))
+        .map(uncdata).map(|d| strip_html(&d)).unwrap_or_default();
     let mut episodes = Vec::new();
     let mut rest = xml;
     while let Some(s) = rest.find("<item") {
@@ -74,11 +193,19 @@ pub fn parse_feed(xml: &str) -> ParsedFeed {
             let guid = tag_text(block, "guid").map(uncdata).unwrap_or_else(|| url.clone());
             let etitle = tag_text(block, "title").map(uncdata).unwrap_or_default();
             let dur = tag_text(block, "itunes:duration").and_then(parse_itunes_duration);
-            episodes.push(ParsedEpisode { guid, title: etitle, audio_url: url, duration_s: dur });
+            let published = tag_text(block, "pubDate").and_then(parse_rss_date);
+            let edesc = tag_text(block, "itunes:summary")
+                .or_else(|| tag_text(block, "description"))
+                .map(uncdata).map(|d| strip_html(&d)).unwrap_or_default();
+            let eimg = tag_attr(block, "itunes:image", "href").unwrap_or_default();
+            episodes.push(ParsedEpisode {
+                guid, title: etitle, audio_url: url, duration_s: dur,
+                published, description: edesc, image_url: eimg,
+            });
         }
         rest = &after[e + "</item>".len()..];
     }
-    ParsedFeed { title, episodes }
+    ParsedFeed { title, author, image_url, category, description, episodes }
 }
 
 fn now() -> i64 {
@@ -87,14 +214,63 @@ fn now() -> i64 {
 
 /// Subscribe (or refresh) a feed and upsert its episodes. Returns podcast id.
 pub async fn subscribe(pool: &SqlitePool, feed_url: &str, feed: &ParsedFeed) -> Result<i64> {
-    sqlx::query("INSERT INTO podcasts (feed_url, title, last_checked) VALUES (?,?,?) ON CONFLICT(feed_url) DO UPDATE SET title=excluded.title, last_checked=excluded.last_checked")
-        .bind(feed_url).bind(&feed.title).bind(now()).execute(pool).await?;
+    subscribe_with_progress(pool, feed_url, feed, |_, _| {}).await
+}
+
+/// Like [`subscribe`], but invokes `on_progress(done, total)` after each episode
+/// upsert so the UI can show a live progress bar while a feed loads.
+pub async fn subscribe_with_progress<F: FnMut(usize, usize)>(
+    pool: &SqlitePool, feed_url: &str, feed: &ParsedFeed, mut on_progress: F,
+) -> Result<i64> {
+    sqlx::query(
+        "INSERT INTO podcasts (feed_url, title, author, image_url, category, description, last_checked)
+         VALUES (?,?,?,?,?,?,?)
+         ON CONFLICT(feed_url) DO UPDATE SET
+            title=excluded.title, author=excluded.author, image_url=excluded.image_url,
+            category=excluded.category, description=excluded.description, last_checked=excluded.last_checked")
+        .bind(feed_url).bind(&feed.title).bind(&feed.author).bind(&feed.image_url)
+        .bind(&feed.category).bind(&feed.description).bind(now()).execute(pool).await?;
     let pid: i64 = sqlx::query_scalar("SELECT id FROM podcasts WHERE feed_url = ?").bind(feed_url).fetch_one(pool).await?;
-    for ep in &feed.episodes {
-        sqlx::query("INSERT INTO podcast_episodes (podcast_id, guid, title, audio_url, duration_s) VALUES (?,?,?,?,?) ON CONFLICT(podcast_id, guid) DO NOTHING")
-            .bind(pid).bind(&ep.guid).bind(&ep.title).bind(&ep.audio_url).bind(ep.duration_s).execute(pool).await?;
+    let total = feed.episodes.len();
+    for (i, ep) in feed.episodes.iter().enumerate() {
+        // Upsert keeps user state (played/position/downloaded_path) while
+        // refreshing title/description as the feed evolves.
+        sqlx::query(
+            "INSERT INTO podcast_episodes (podcast_id, guid, title, audio_url, duration_s, published, description, image_url)
+             VALUES (?,?,?,?,?,?,?,?)
+             ON CONFLICT(podcast_id, guid) DO UPDATE SET
+                title=excluded.title, duration_s=excluded.duration_s,
+                published=excluded.published, description=excluded.description, image_url=excluded.image_url")
+            .bind(pid).bind(&ep.guid).bind(&ep.title).bind(&ep.audio_url)
+            .bind(ep.duration_s).bind(ep.published).bind(&ep.description).bind(&ep.image_url)
+            .execute(pool).await?;
+        on_progress(i + 1, total);
     }
+    // Keep the table bounded on high-volume feeds (newest N + anything the user
+    // touched). This is what stops podcasts.db ballooning over time.
+    let _ = prune_feed(pool, pid, DEFAULT_KEEP_PER_FEED).await;
     Ok(pid)
+}
+
+/// Default cap on stored episodes per feed (see [`prune_feed`]).
+pub const DEFAULT_KEEP_PER_FEED: i64 = 300;
+
+/// Cap stored episodes for one feed: keep the newest `keep`, plus any that are
+/// downloaded or partially played, deleting the rest. Returns rows removed.
+pub async fn prune_feed(pool: &SqlitePool, podcast_id: i64, keep: i64) -> Result<u64> {
+    let res = sqlx::query(
+        "DELETE FROM podcast_episodes
+         WHERE podcast_id = ?1
+           AND downloaded_path IS NULL
+           AND COALESCE(position_s, 0) = 0
+           AND played = 0
+           AND id NOT IN (
+               SELECT id FROM podcast_episodes
+               WHERE podcast_id = ?1
+               ORDER BY COALESCE(published, 0) DESC, id DESC
+               LIMIT ?2)")
+        .bind(podcast_id).bind(keep).execute(pool).await?;
+    Ok(res.rows_affected())
 }
 
 pub async fn mark_downloaded(pool: &SqlitePool, episode_id: i64, path: &str) -> Result<()> {

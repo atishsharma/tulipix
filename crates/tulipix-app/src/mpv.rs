@@ -13,7 +13,9 @@
 //!   * mpv's "update" callback (frame ready) runs on an arbitrary thread; it
 //!     only flips a flag + requests a redraw.
 
-#![allow(non_camel_case_types, non_upper_case_globals)]
+// Embedded-libmpv scaffolding (np.p3.player): video currently plays via the mpv
+// IPC path, so most of this FFI surface is not yet on a live call path.
+#![allow(non_camel_case_types, non_upper_case_globals, dead_code)]
 
 use std::ffi::{c_char, c_int, c_void, CStr, CString};
 use std::ptr;

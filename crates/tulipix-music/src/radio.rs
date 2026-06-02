@@ -10,6 +10,28 @@ use sqlx::SqlitePool;
 
 pub const RB_BASE: &str = "https://de1.api.radio-browser.info/json";
 
+/// Schema for the standalone `radio.db` section. Self-contained (just saved
+/// stations), so it lives in its own file rather than bloating `music.db`.
+pub const RADIO_SCHEMA: &str = r#"
+CREATE TABLE IF NOT EXISTS radio_stations (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    station_uuid TEXT UNIQUE,
+    name         TEXT NOT NULL,
+    url          TEXT NOT NULL,
+    favicon      TEXT,
+    country      TEXT,
+    tags         TEXT,
+    favourite    INTEGER NOT NULL DEFAULT 0
+);
+CREATE INDEX IF NOT EXISTS radio_fav_idx ON radio_stations(favourite);
+"#;
+
+/// Apply the radio schema to a (radio.db) pool. Idempotent.
+pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
+    sqlx::raw_sql(RADIO_SCHEMA).execute(pool).await?;
+    Ok(())
+}
+
 #[derive(Debug, Clone, Deserialize)]
 pub struct Station {
     pub stationuuid: String,

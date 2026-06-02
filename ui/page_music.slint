@@ -15,6 +15,45 @@ export struct MusicSongRow {
     index: int,        // playback position into music_paths
 }
 
+// One subscribed podcast shown as a card in the Podcasts grid
+// (np.p5.music.podcast-feeds).
+export struct PodcastCard {
+    id: int,           // podcasts.id — drives open / fetch / unsubscribe
+    title: string,
+    author: string,
+    category: string,
+    image: image,
+    unplayed: int,
+    episodes: int,
+    index: int,        // global position in the subscription list
+}
+
+// One card on the Trends (hardcoded directory) page. Carries the feed URL +
+// a subscribed flag so the card can flip to ✓ once added to the library.
+export struct PodcastTrendCard {
+    title: string,
+    author: string,
+    category: string,
+    image: image,
+    feed-url: string,
+    subscribed: bool,
+    index: int,        // position into the baked feed list (subscribe-by-index)
+}
+
+// One episode row — used in the detail page, the Home/Latest feed and the
+// Downloads list.
+export struct PodcastEpisodeRow {
+    id: int,           // podcast_episodes.id (for the download-progress match)
+    title: string,
+    show: string,      // owning podcast title (shown in cross-show feeds)
+    date: string,
+    duration: string,
+    image: image,
+    played: bool,
+    downloaded: bool,
+    index: int,        // position into the list's parallel episode-state vec
+}
+
 // Rich Songs-list row — adds lyrics / fav / star columns.
 export struct SongRowEx {
     thumb: image,
@@ -178,27 +217,6 @@ component MiniCalendar inherits Rectangle {
                         Text { text: dayno; font-size: 13px;
                             color: (root.sel-y == root.yy && root.sel-m == root.mm && root.sel-d == dayno) ? #ffffff : MusicTheme.fg2;
                             horizontal-alignment: center; vertical-alignment: center; } } }
-        }
-    }
-}
-
-component Rail inherits VerticalLayout {
-    in property <string> title;
-    in property <[PhotoTile]> items: [];
-    callback pick(int);
-    spacing: 14px;
-    HorizontalLayout {
-        alignment: start; spacing: 0px;
-        Text { text: title; color: MusicTheme.fg; font-size: 22px; font-weight: 700; }
-    }
-    ScrollView {
-        height: 226px; horizontal-stretch: 1;
-        HorizontalLayout {
-            spacing: 18px; alignment: start;
-            for tile[idx] in items: AlbumCard {
-                thumb: tile.thumb; label: tile.label;
-                clicked => { pick(tile.index); }
-            }
         }
     }
 }
@@ -418,23 +436,6 @@ component TileGrid inherits Rectangle {
     }
 }
 
-// Secondary-sidebar nav row (np.p4.music.sidebar-collapse).
-component MusicNav inherits Rectangle {
-    in property <string> glyph;
-    in property <string> label;
-    in property <bool> active: false;
-    callback clicked();
-    height: 38px; border-radius: 8px;
-    background: active ? #ec489926 : (touch.has-hover ? MusicTheme.surf0 : transparent);
-    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    HorizontalLayout {
-        padding-left: 12px; padding-right: 12px; spacing: 10px;
-        Text { text: glyph; font-size: 15px; vertical-alignment: center; horizontal-stretch: 0; }
-        Text { text: label; color: active ? #ec4899 : MusicTheme.fg3; font-size: 13px; font-weight: active ? 700 : 500;
-            vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-    }
-}
-
 // Sort chip for the Songs list (mirrors the Photos page).
 component SortChip inherits Rectangle {
     in property <string> label;
@@ -512,58 +513,6 @@ component TrackRow inherits Rectangle {
     }
 }
 
-// Rich Songs-list row — thumb · title/artist · lyrics(synced?/find) · fav · stars · duration.
-component SongListRow inherits Rectangle {
-    in property <SongRowEx> track;
-    callback clicked();
-    callback fav();
-    callback rate(int);
-    callback find-lyrics();
-    callback view-lyrics();
-    height: 58px; border-radius: 8px;
-    background: t.has-hover ? MusicTheme.hov : transparent;
-    t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    HorizontalLayout {
-        padding-left: 10px; padding-right: 16px; spacing: 12px;
-        Rectangle { width: 42px; height: 42px; border-radius: 5px; clip: true; background: MusicTheme.surf-thumb;
-            horizontal-stretch: 0; vertical-stretch: 0; y: (parent.height - self.height)/2;
-            Image { source: track.thumb; image-fit: cover; width: parent.width; height: parent.height; }
-            if t.has-hover: Rectangle { width: parent.width; height: parent.height; background: #00000088;
-                Text { text: "▶"; color: MusicTheme.fg; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
-        // Title column.
-        VerticalLayout { alignment: center; horizontal-stretch: 1;
-            Text { text: track.title; color: MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; horizontal-alignment: center; } }
-        // Artist column.
-        VerticalLayout { alignment: center; horizontal-stretch: 1;
-            Text { text: track.artist; color: MusicTheme.fg-dim; font-size: 12px; overflow: elide; horizontal-alignment: center; } }
-        // Album column.
-        VerticalLayout { alignment: center; horizontal-stretch: 1;
-            Text { text: track.album; color: MusicTheme.fg-mute; font-size: 12px; overflow: elide; horizontal-alignment: center; } }
-        // Lyrics column — synced badge OR a find button.
-        VerticalLayout { alignment: center; horizontal-stretch: 0; width: 96px;
-            if track.synced: Rectangle { width: 84px; height: 26px; border-radius: 13px;
-                background: vl.has-hover ? #ec489926 : transparent;
-                vl := TouchArea { mouse-cursor: pointer; clicked => { root.view-lyrics(); } }
-                HorizontalLayout { alignment: center; spacing: 4px;
-                    Text { text: "♪"; color: #ec4899; font-size: 12px; vertical-alignment: center; }
-                    Text { text: vl.has-hover ? "View" : "Synced"; color: #ec4899; font-size: 11px; vertical-alignment: center; } } }
-            if !track.synced: Rectangle { width: 84px; height: 26px; border-radius: 13px;
-                background: fl.has-hover ? MusicTheme.hov2 : MusicTheme.surf0; border-width: 1px; border-color: MusicTheme.line;
-                fl := TouchArea { mouse-cursor: pointer; clicked => { root.find-lyrics(); } }
-                Text { text: "Find lyrics"; color: MusicTheme.fg3; font-size: 10px; horizontal-alignment: center; vertical-alignment: center; } } }
-        // Fav (heart).
-        VerticalLayout { alignment: center; horizontal-stretch: 0;
-            Rectangle { width: 30px; height: 30px;
-                fa := TouchArea { mouse-cursor: pointer; clicked => { root.fav(); } }
-                Text { text: track.loved ? "♥" : "♡"; color: track.loved ? #ec4899 : (fa.has-hover ? MusicTheme.fg : MusicTheme.fg-mute); font-size: 16px; horizontal-alignment: center; vertical-alignment: center; } } }
-        // Star rating (1–5).
-        VerticalLayout { alignment: center; horizontal-stretch: 0; HorizontalLayout { spacing: 0px;
-            for n[i] in [1, 2, 3, 4, 5]: Rectangle { width: 15px; height: 30px;
-                TouchArea { mouse-cursor: pointer; clicked => { root.rate(track.stars == n ? 0 : n); } }
-                Text { text: track.stars >= n ? "★" : "☆"; color: track.stars >= n ? #e5a00d : #50505a; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; } } } }
-        Text { text: track.duration; color: MusicTheme.fg-mute; font-size: 12px; vertical-alignment: center; horizontal-stretch: 0; width: 44px; horizontal-alignment: right; }
-    }
-}
 
 component SongCard inherits Rectangle {
     in property <SongRowEx> track;
@@ -783,6 +732,190 @@ component TagField inherits VerticalLayout {
                 vertical-alignment: center; single-line: true; text <=> root.text; } } }
 }
 
+// One podcast subscription card — artwork, title, author, unplayed badge.
+component PodcastCardView inherits Rectangle {
+    in property <PodcastCard> card;
+    in property <length> size: 168px;
+    in property <bool> ctx-enabled: true;     // right-click Open / Fetch / Unsubscribe
+    property <length> menu-x: 0;
+    property <length> menu-y: 0;
+    callback open();
+    callback fetch();
+    callback unsubscribe();
+    callback info();
+    width: size; horizontal-stretch: 0; vertical-stretch: 0;
+    VerticalLayout { spacing: 6px;
+        Rectangle { width: size; height: size; border-radius: 14px; clip: true; background: MusicTheme.surf-thumb;
+            border-width: ta.has-hover ? 2px : 0px; border-color: #8b5cf6;
+            drop-shadow-blur: ta.has-hover ? 26px : 0px; drop-shadow-color: #8b5cf6aa;
+            animate drop-shadow-blur, border-width { duration: 140ms; easing: ease-out; }
+            if card.image.width > 0: Image { source: card.image; image-fit: cover; width: 100%; height: 100%; }
+            if card.image.width == 0: Text { text: "🎙"; font-size: 48px; horizontal-alignment: center; vertical-alignment: center; }
+            // Unplayed-episode badge — top-right.
+            if card.unplayed > 0: Rectangle { x: parent.width - ubadge.preferred-width - 8px; y: 8px; width: ubadge.preferred-width; height: 26px; border-radius: 13px; background: #8b5cf6;
+                ubadge := HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                    Text { text: card.unplayed > 999 ? "999+" : card.unplayed; color: #ffffff; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+            Rectangle { width: 100%; height: 100%; background: #00000055; opacity: ta.has-hover ? 1 : 0; animate opacity { duration: 140ms; }
+                Text { text: "▶"; color: #ffffff; font-size: 24px; horizontal-alignment: center; vertical-alignment: center; } }
+            ta := TouchArea { mouse-cursor: pointer; clicked => { root.open(); }
+                pointer-event(e) => {
+                    if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down && root.ctx-enabled) {
+                        root.menu-x = self.mouse-x; root.menu-y = Math.min(self.mouse-y, self.height - 30px); cardctx.show();
+                    } } }
+            cardctx := PopupWindow { x: root.menu-x; y: root.menu-y; width: 220px; height: 168px; close-policy: close-on-click-outside;
+                Rectangle { width: 100%; height: 100%; border-radius: 12px; background: MusicTheme.surf-pop;
+                    border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: 36px; drop-shadow-color: #000000e6;
+                    VerticalLayout { padding: 6px; spacing: 1px;
+                        MusicMenuRow { label: "▶   Open"; clicked => { cardctx.close(); root.open(); } }
+                        MusicMenuRow { label: "ⓘ   Podcast info"; clicked => { cardctx.close(); root.info(); } }
+                        MusicMenuRow { label: "↻   Fetch new episodes"; clicked => { cardctx.close(); root.fetch(); } }
+                        MusicMenuRow { label: "✕   Unsubscribe"; txt: #ef4444; clicked => { cardctx.close(); root.unsubscribe(); } }
+                    } } } }
+        // Title with the author tucked tight underneath (reads as one block).
+        VerticalLayout { spacing: 0px;
+            Text { text: card.title; color: MusicTheme.fg; font-size: 13px; font-weight: 700; overflow: elide; width: size; horizontal-alignment: center; }
+            if card.author != "": Text { text: card.author; color: MusicTheme.fg-mute; font-size: 10px; overflow: elide; width: size; horizontal-alignment: center; } }
+    }
+}
+
+// One Trends card — social-media tile: big rounded artwork, title + author, a
+// category chip, and a Subscribe pill that flips to ✓ Added once subscribed.
+component PodcastTrendCardView inherits Rectangle {
+    in property <PodcastTrendCard> card;
+    in property <length> size: 180px;
+    property <length> menu-x: 0;
+    property <length> menu-y: 0;
+    callback subscribe();
+    callback info();        // open the read-only info card
+    width: size; horizontal-stretch: 0; vertical-stretch: 0;
+    height: size + 88px;
+    border-radius: 16px; background: MusicTheme.surf0; border-width: 1px;
+    border-color: hov.has-hover ? #8b5cf6 : MusicTheme.line;
+    drop-shadow-blur: hov.has-hover ? 26px : 0px; drop-shadow-color: #8b5cf655;
+    animate drop-shadow-blur, border-color { duration: 140ms; easing: ease-out; }
+    clip: true;
+    hov := TouchArea { mouse-cursor: pointer; clicked => { root.info(); }
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down) {
+                root.menu-x = self.mouse-x; root.menu-y = Math.min(self.mouse-y, self.height - 96px); tctx.show();
+            } } }
+    tctx := PopupWindow { x: root.menu-x; y: root.menu-y; width: 210px; height: 90px; close-policy: close-on-click-outside;
+        Rectangle { width: 100%; height: 100%; border-radius: 12px; background: MusicTheme.surf-pop;
+            border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: 36px; drop-shadow-color: #000000e6;
+            VerticalLayout { padding: 6px; spacing: 1px;
+                if !card.subscribed: MusicMenuRow { label: "＋   Subscribe"; clicked => { tctx.close(); root.subscribe(); } }
+                if card.subscribed: MusicMenuRow { label: "✓   Subscribed"; txt: #22c55e; }
+                MusicMenuRow { label: "ⓘ   Podcast info"; clicked => { tctx.close(); root.info(); } } } } }
+    VerticalLayout { padding: 10px; spacing: 7px;
+        Rectangle { width: parent.width - 20px; height: self.width; border-radius: 12px; clip: true; background: MusicTheme.surf-thumb;
+            if card.image.width > 0: Image { source: card.image; image-fit: cover; width: 100%; height: 100%; }
+            if card.image.width == 0: Text { text: "🎙"; font-size: 48px; horizontal-alignment: center; vertical-alignment: center; }
+            // Category chip — top-left over the art (white-on-dark, readable both themes).
+            if card.category != "": Rectangle { x: 8px; y: 8px; height: 22px; border-radius: 11px; background: #000000bb;
+                HorizontalLayout { padding-left: 9px; padding-right: 9px;
+                    Text { text: card.category; color: #ffffff; font-size: 10px; font-weight: 700; vertical-alignment: center; } } } }
+        Text { text: card.title; color: MusicTheme.fg; font-size: 13px; font-weight: 700; overflow: elide; }
+        Text { text: card.author == "" ? "Podcast" : card.author; color: MusicTheme.fg-mute; font-size: 11px; overflow: elide; }
+        Rectangle { height: 32px; border-radius: 16px;
+            background: card.subscribed ? #22c55e22 : (sub.has-hover ? #7c3aed : #8b5cf6);
+            border-width: card.subscribed ? 1px : 0px; border-color: #22c55e;
+            sub := TouchArea { mouse-cursor: card.subscribed ? default : pointer; clicked => { if (!card.subscribed) { root.subscribe(); } } }
+            Text { text: card.subscribed ? "✓ Added" : "+ Subscribe"; color: card.subscribed ? #22c55e : #ffffff;
+                font-size: 12px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+    }
+}
+
+// Responsive grid of podcast cards. force-cols pins the columns (edge-to-edge).
+component PodcastGrid inherits Rectangle {
+    in property <[PodcastCard]> cards: [];
+    in property <length> cell-size: 168px;
+    in property <int> force-cols: 0;     // 0 = auto-fit by width
+    in property <bool> ctx-enabled: true;
+    callback open(int);
+    callback fetch(int);
+    callback unsubscribe(int);
+    callback info(int);
+    property <int> cols: force-cols > 0 ? force-cols : Math.max(1, Math.floor(self.width / cell-size));
+    // force-cols stretches each cell to fill the width (edge-to-edge). Otherwise
+    // cells stay a FIXED cell-size so a single card doesn't blow up to 1/Nth of
+    // the page — it just sits, normal-sized, at the left.
+    property <length> cell-w: force-cols > 0 ? self.width / cols : cell-size;
+    property <length> cell-h: cell-w + 42px;
+    horizontal-stretch: 1;
+    height: Math.ceil(cards.length / cols) * cell-h;
+    for c[idx] in cards: Rectangle {
+        x: Math.mod(idx, cols) * cell-w;
+        y: Math.floor(idx / cols) * cell-h;
+        width: cell-w; height: cell-h;
+        PodcastCardView { x: 4px; card: c; size: cell-w - 8px; ctx-enabled: root.ctx-enabled;
+            open => { root.open(c.id); } fetch => { root.fetch(c.id); } unsubscribe => { root.unsubscribe(c.id); } info => { root.info(c.id); } }
+    }
+}
+
+// One episode row inside a podcast detail page — play · download · transcript.
+component PodcastEpisodeItem inherits Rectangle {
+    in property <PodcastEpisodeRow> ep;
+    in property <bool> show-podcast: false;   // show the owning podcast name (cross-show feeds)
+    in property <int> dl-id: -1;              // id currently downloading
+    in property <float> dl-frac: 0;           // 0..1 progress of that download
+    in property <bool> ctx-remove: false;     // right-click → Remove from download
+    property <bool> downloading: ep.id == dl-id && dl-id >= 0;
+    property <length> menu-x: 0;
+    property <length> menu-y: 0;
+    callback play();
+    callback download();
+    callback transcript();
+    callback remove-download();
+    callback goto-podcast();                  // open the owning podcast's page
+    height: show-podcast ? 72px : 64px; border-radius: 10px;
+    background: ta.has-hover ? MusicTheme.hov : transparent;
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.play(); }
+        pointer-event(e) => {
+            if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down && root.ctx-remove) {
+                root.menu-x = self.mouse-x; root.menu-y = Math.min(self.mouse-y, self.height - 20px); epctx.show();
+            } } }
+    epctx := PopupWindow { x: root.menu-x; y: root.menu-y; width: 240px; height: 82px; close-policy: close-on-click-outside;
+        Rectangle { width: 100%; height: 100%; border-radius: 12px; background: MusicTheme.surf-pop;
+            border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: 36px; drop-shadow-color: #000000e6;
+            VerticalLayout { padding: 6px; spacing: 1px;
+                MusicMenuRow { label: "🎙   Go to podcast page"; clicked => { epctx.close(); root.goto-podcast(); } }
+                MusicMenuRow { label: "🗑   Remove from downloads"; txt: #ef4444; clicked => { epctx.close(); root.remove-download(); } } } } }
+    HorizontalLayout { padding-left: 10px; padding-right: 10px; spacing: 12px; alignment: stretch;
+        Rectangle { width: 48px; height: 48px; border-radius: 8px; clip: true; background: MusicTheme.surf-thumb;
+            y: (parent.height - 48px) / 2;
+            if ep.image.width > 0: Image { source: ep.image; image-fit: cover; width: 100%; height: 100%; }
+            if ep.image.width == 0: Text { text: "🎙"; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; }
+            // Played dot.
+            if ep.played: Rectangle { x: parent.width - 14px; y: 2px; width: 12px; height: 12px; border-radius: 6px; background: #22c55e; border-width: 2px; border-color: MusicTheme.surf-thumb; } }
+        VerticalLayout { alignment: center; spacing: 3px; horizontal-stretch: 1;
+            if show-podcast && ep.show != "": Text { text: ep.show; color: MusicTheme.light ? #6d28d9 : #c4b5fd; font-size: 10px; font-weight: 700; overflow: elide; }
+            Text { text: ep.title; color: ep.played ? MusicTheme.fg-mute : MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; }
+            Text { text: ep.date + (ep.date != "" && ep.duration != "" ? "  ·  " : "") + ep.duration;
+                color: MusicTheme.fg-mute; font-size: 11px; overflow: elide; } }
+        // Transcript / show-notes.
+        VerticalLayout { alignment: center; Rectangle { width: 34px; height: 34px; border-radius: 17px;
+            background: tt.has-hover ? MusicTheme.surf1 : transparent;
+            tt := TouchArea { mouse-cursor: pointer; clicked => { root.transcript(); } }
+            Text { text: "≡"; color: MusicTheme.fg2; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; } } }
+        // Download for offline — inline progress bar + percent while downloading.
+        VerticalLayout { alignment: center;
+            if root.downloading: Rectangle { width: 56px; height: 30px; border-radius: 8px; clip: true;
+                background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                Rectangle { x: 0; y: 0; height: 100%; width: parent.width * Math.clamp(root.dl-frac, 0, 1);
+                    background: @linear-gradient(90deg, #8b5cf6, #6366f1); animate width { duration: 150ms; } }
+                Text { text: Math.round(Math.clamp(root.dl-frac, 0, 1) * 100) + "%"; color: MusicTheme.fg; font-size: 10px; font-weight: 700;
+                    horizontal-alignment: center; vertical-alignment: center; } }
+            if !root.downloading: Rectangle { width: 34px; height: 34px; border-radius: 17px;
+                background: ep.downloaded ? #22c55e22 : (dt.has-hover ? MusicTheme.surf1 : transparent);
+                dt := TouchArea { mouse-cursor: pointer; clicked => { root.download(); } }
+                Text { text: ep.downloaded ? "✓" : "⤓"; color: ep.downloaded ? #22c55e : MusicTheme.fg2; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; } } }
+        // Play.
+        VerticalLayout { alignment: center; Rectangle { width: 38px; height: 38px; border-radius: 19px; background: #8b5cf6;
+            pt := TouchArea { mouse-cursor: pointer; clicked => { root.play(); } }
+            Text { text: "▶"; color: #ffffff; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } } }
+    }
+}
+
 export component MusicPage inherits Rectangle {
     in property <int> item-count: 0;
     in property <bool> home-connect: false;       // gradient-outline the Home blocks
@@ -887,6 +1020,12 @@ export component MusicPage inherits Rectangle {
     property <bool> del-confirm-open: false;
     property <int> del-confirm-idx: -1;
     property <string> del-confirm-title: "";
+    // Podcast confirmations — unsubscribe a feed / remove a download.
+    property <bool> unsub-confirm-open: false;
+    property <int> unsub-confirm-id: -1;
+    property <bool> dlrm-confirm-open: false;
+    property <int> dlrm-confirm-id: -1;
+    property <string> dlrm-confirm-title: "";
     callback sync-all-lyrics();                  // batch-fetch lyrics for the whole library
     in property <string> lyrics-sync-status: ""; // progress label on the Sync button
     in property <float> lyrics-sync-progress: 0; // 0..1 fill on the Sync button
@@ -960,6 +1099,7 @@ export component MusicPage inherits Rectangle {
     callback set-song-sort(string);              // title|artist|added|plays (toggles dir if same)
     callback set-song-page(int);                 // page delta (−1 / +1)
     callback search(string);                     // filter the Songs list
+    callback podcast-search(string);             // search across subscribed podcasts (+ episodes)
     callback set-songs-view(string);             // list | grid
     callback set-recent-page(int);               // Home recent pager delta
     callback set-browse-sort(string);            // name | count (toggles dir)
@@ -1045,14 +1185,106 @@ export component MusicPage inherits Rectangle {
     // Queue reorder (np.p5.music.queue-persist).
     callback queue-move(int, int);
     // Podcasts (np.p5.music.podcast-feeds).
-    in property <[string]> podcast-feeds: [];
-    in property <[MusicSongRow]> podcast-episodes: [];
-    in-out property <string> podcast-sel: "";
-    in-out property <string> podcast-url: "";
+    in-out property <string> podcast-tab: "home";     // home | subscribed | downloads
+    callback podcast-set-tab(string);
+    in property <int> podcast-total: 0;               // subscription count (header badge)
+    in property <[PodcastCard]> podcast-cards: [];    // Subscribed page (filtered + paged 21)
+    in property <int> podcast-sub-page: 0;
+    in property <int> podcast-sub-pages: 1;
+    callback podcast-sub-set-page(int);
+    in property <[PodcastCard]> podcast-home-cards: []; // Home "Your shows" (paged 14)
+    in property <int> podcast-home-page: 0;
+    in property <int> podcast-home-pages: 1;
+    callback podcast-home-set-page(int);
+    in property <[PodcastTrendCard]> podcast-trends: [];   // Trends (hardcoded directory)
+    in property <bool> podcast-trends-loading: false;
+    callback podcast-trend-subscribe(int);
+    callback podcast-trend-info(int);                 // open the read-only info card (Trends, by feed index)
+    callback podcast-info-open-id(int);               // open the info card for a subscribed podcast (by DB id)
+    in-out property <string> podcast-trends-sort: "name";   // name | category
+    callback podcast-trends-set-sort(string);
+    in property <int> podcast-trends-page: 0;
+    in property <int> podcast-trends-pages: 1;
+    callback podcast-trends-set-page(int);
+    // Podcast info card — read-only metadata + editable category + thumb update.
+    // Never loads the episode list (just count + latest date).
+    in-out property <bool> podcast-info-open: false;
+    in property <bool> podcast-info-loading: false;
+    in property <string> podcast-info-title: "";
+    in property <string> podcast-info-author: "";
+    in-out property <string> podcast-info-category: "";
+    in property <string> podcast-info-desc: "";
+    in property <image> podcast-info-image;
+    in property <int> podcast-info-episodes: 0;
+    in property <string> podcast-info-latest: "";
+    in property <bool> podcast-info-subscribed: false;
+    callback podcast-info-save-category();
+    callback podcast-info-set-thumb();
+    callback podcast-info-subscribe();
+    in property <float> podcast-speed: 1.0;           // header speed-cycle chip
+    callback podcast-set-speed(float);
+    callback podcast-goto-show(int);                  // open owning podcast (from a download)
+    in property <[string]> podcast-categories: [];   // distinct categories + "All"
+    in-out property <string> podcast-cat: "All";      // active category filter
+    in property <bool> podcast-loaded: false;          // a podcast episode is current (playing OR paused)
+    in-out property <string> podcast-url: "";          // RSS URL in the Add popup
+    in-out property <bool> podcast-add-open: false;    // Add-podcast popup
+    in property <bool> podcast-add-busy: false;        // subscribe + episode-load in flight
+    in property <float> podcast-add-frac: 0;           // 0..1 episode-load progress
+    in property <string> podcast-add-status: "";       // status line under the progress bar
+    in property <[PodcastEpisodeRow]> podcast-latest: [];    // Home — newest 14, one per show
+    in property <[PodcastEpisodeRow]> podcast-downloads: []; // Downloads tab (sorted + paged 20)
+    in-out property <string> podcast-dl-sort: "new";  // new | old (Downloads)
+    in property <int> podcast-dl-page: 0;
+    in property <int> podcast-dl-pages: 1;
+    callback podcast-dl-set-sort(string);
+    callback podcast-dl-set-page(int);
     callback podcast-subscribe();
-    callback podcast-open(int);
-    callback podcast-play(int);
+    callback podcast-set-cat(string);
+    callback podcast-open(int);            // open feed by podcast id
+    callback podcast-fetch(int);           // re-fetch one feed (by id)
+    callback podcast-unsubscribe(int);     // remove a subscription (by id)
+    callback podcast-remove-download(int); // delete an episode's cached file (by id)
+    callback podcast-play(int);            // play an episode by its DB id (any list)
+    callback podcast-skip(int);            // ± seconds on the playing episode (header transport)
+    callback podcast-set-thumb();          // pick a custom artwork for the open podcast
     callback podcast-refresh();      // re-fetch all subscribed feeds
+    in property <bool> podcast-refresh-busy: false;
+    in property <float> podcast-refresh-frac: 0;     // 0..1 across feeds + episodes
+    in property <string> podcast-refresh-status: "";
+    // Subscribe-in-progress (Trends button / info-card Subscribe) — overlay bar.
+    in property <bool> podcast-subscribing: false;
+    in property <float> podcast-subscribe-frac: 0;   // 0..1 episodes stored
+    in property <string> podcast-subscribe-status: "";
+    callback podcast-reset-all();    // clear every subscription + cached files
+    in property <bool> podcast-reset-busy: false;   // reset-all in progress
+    in property <float> podcast-reset-frac: 0;      // 0..1 removal progress
+    in-out property <bool> reset-confirm-open: false;   // "type yes to clear" dialog
+    in-out property <string> reset-confirm-text: "";    // typed confirmation
+    // Single-podcast detail page (header + episode list).
+    in-out property <bool> podcast-detail-open: false;
+    in property <string> podcast-d-title: "";
+    in property <string> podcast-d-author: "";
+    in property <string> podcast-d-category: "";
+    in property <string> podcast-d-desc: "";
+    in property <image> podcast-d-image;
+    in property <[PodcastEpisodeRow]> podcast-d-episodes: [];
+    in-out property <string> podcast-d-sort: "new";  // new | old
+    in property <int> podcast-d-page: 0;
+    in property <int> podcast-d-pages: 1;
+    in property <int> podcast-d-total: 0;            // total episodes (all pages)
+    callback podcast-d-set-sort(string);
+    callback podcast-d-set-page(int);                // +1 / -1
+    callback podcast-back();
+    callback podcast-download(int);   // save episode i to the app cache for offline
+    callback podcast-transcript(int); // open the show-notes / transcript panel
+    // Inline download progress — the row whose id == podcast-dl-id shows a bar.
+    in property <int> podcast-dl-id: -1;
+    in property <float> podcast-dl-frac: 0;
+    // Transcript / show-notes panel (reuses the lyrics-panel pattern).
+    in-out property <bool> podcast-transcript-open: false;
+    in property <string> podcast-transcript-title: "";
+    in property <string> podcast-transcript-text: "";
     // Audiobooks (np.p5.music.audiobook-chapters).
     in property <[MusicSongRow]> audiobooks: [];
     in-out property <float> book-speed: 1.0;
@@ -1105,6 +1337,7 @@ export component MusicPage inherits Rectangle {
     callback folder-open(int);       // open a folder's own songs page
     callback folder-find-system(int);// reveal the folder in the OS file manager
     callback folder-remove(int);     // remove folder's tracks from library
+    callback folder-cycle-section(int); // reassign folder to one of the 5 music sections
     // AT parity — dockable side panels (np.p5.atmusic.sidebar-panels).
     in-out property <string> side-panel: "";   // "" | queue | lyrics
     callback side-panel-show(string);          // populates queue/lyrics on open
@@ -1227,14 +1460,14 @@ export component MusicPage inherits Rectangle {
                             Rectangle { horizontal-stretch: 1;
                                 mq := TextInput { width: 100%; height: 100%; text <=> root.query; color: #16161b;
                                     font-size: 14px; vertical-alignment: center; single-line: true;
-                                    edited => { root.search(self.text); } }
-                                if root.query == "": Text { text: "Search music"; color: #8a8a92; font-size: 14px;
+                                    edited => { if (root.view == "podcasts") { root.podcast-search(self.text); } else { root.search(self.text); } } }
+                                if root.query == "": Text { text: root.view == "podcasts" ? "Search podcasts" : "Search music"; color: #8a8a92; font-size: 14px;
                                     vertical-alignment: center; height: 100%; visible: !mq.has-focus; }
                             }
                             // Clear button — appears once there is a query.
                             if root.query != "": VerticalLayout { alignment: center; horizontal-stretch: 0;
                                 Rectangle { width: 26px; height: 26px; border-radius: 13px; background: clrb.has-hover ? #ec4899 : #ec489933;
-                                    clrb := TouchArea { mouse-cursor: pointer; clicked => { root.query = ""; root.search(""); } }
+                                    clrb := TouchArea { mouse-cursor: pointer; clicked => { root.query = ""; if (root.view == "podcasts") { root.podcast-search(""); } else { root.search(""); } } }
                                     Text { text: "✕"; color: clrb.has-hover ? #ffffff : #ec4899; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; } } }
                         }
                     }
@@ -1248,10 +1481,12 @@ export component MusicPage inherits Rectangle {
                             : (root.view == "audiobooks" ? @linear-gradient(120deg, #3b82f6, #06b6d4)
                             : (root.view == "radio" ? @linear-gradient(120deg, #14b8a6, #22c55e)
                             : @linear-gradient(120deg, #ef4444, #f59e0b))));
-                        clicked => { root.add-folder(); } } }
+                        // Add is per-section: Podcasts opens the Add-podcast popup
+                        // (RSS URL), every other section opens the folder picker.
+                        clicked => { if (root.view == "podcasts") { root.podcast-url = ""; root.podcast-add-open = true; } else { root.add-folder(); } } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     FancyCount {
-                        num: root.view == "mymusic" ? item-count : (root.view == "podcasts" ? root.podcast-feeds.length : (root.view == "audiobooks" ? root.audiobooks.length : 0));
+                        num: root.view == "mymusic" ? item-count : (root.view == "podcasts" ? root.podcast-total : (root.view == "audiobooks" ? root.audiobooks.length : 0));
                         label: root.view == "mymusic" ? "Tracks" : (root.view == "podcasts" ? "Podcasts" : (root.view == "audiobooks" ? "Audiobooks" : (root.view == "radio" ? "Stations" : "Downloads"))); } }
                 // Independent Music light/dark theme toggle — round outlined icon only.
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
@@ -1287,9 +1522,16 @@ export component MusicPage inherits Rectangle {
                     MusicTab { label: "♥ Loved";     has-grad: true; tint: #f43f5e; grad: @linear-gradient(120deg, #f43f5e, #ec4899); active: root.lib-tab == "favorites"; clicked => { root.set-lib-tab("favorites"); } }
                     MusicTab { label: "↺ History";   has-grad: true; tint: #a855f7; grad: @linear-gradient(120deg, #a855f7, #8b5cf6); active: root.lib-tab == "history";   clicked => { root.set-lib-tab("history"); } }
                 } }
-                if root.view == "podcasts": VerticalLayout { alignment: center; HorizontalLayout { spacing: 8px;
-                    MusicTab { label: "Subscribed"; active: true; }
-                    MusicTab { label: "Latest"; } MusicTab { label: "Downloads"; } } }
+                // Podcast sub-tabs — order: Home (Latest) · Subscribed · Downloads.
+                // Hidden while a single-podcast detail page is open.
+                if root.view == "podcasts" && !root.podcast-detail-open: VerticalLayout { alignment: center; HorizontalLayout { spacing: 14px;
+                    MusicTab { label: "⌂ Home";     has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.podcast-tab == "home";       clicked => { root.podcast-set-tab("home"); } }
+                    MusicTab { label: "🔥 Trends";   has-grad: true; tint: #f43f5e; grad: @linear-gradient(120deg, #f43f5e, #f59e0b); active: root.podcast-tab == "trends";     clicked => { root.podcast-set-tab("trends"); } }
+                    MusicTab { label: "❤ Subscribed"; has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #6366f1, #8b5cf6); active: root.podcast-tab == "subscribed"; clicked => { root.podcast-set-tab("subscribed"); } }
+                    MusicTab { label: "⤓ Downloads"; has-grad: true; tint: #22c55e; grad: @linear-gradient(120deg, #22c55e, #16a34a); active: root.podcast-tab == "downloads";  clicked => { root.podcast-set-tab("downloads"); } } } }
+                // Single-podcast detail — Back replaces the sub-tabs on row 2 (keeps the row populated).
+                if root.view == "podcasts" && root.podcast-detail-open: VerticalLayout { alignment: center;
+                    MusicTab { label: "‹ Back to podcasts"; has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: true; clicked => { root.podcast-back(); } } }
                 if root.view == "audiobooks": VerticalLayout { alignment: center; HorizontalLayout { spacing: 8px;
                     MusicTab { label: "All"; active: true; }
                     MusicTab { label: "In progress"; } MusicTab { label: "Finished"; } } }
@@ -1300,6 +1542,70 @@ export component MusicPage inherits Rectangle {
                     MusicTab { label: "Search"; active: true; }
                     MusicTab { label: "Cached"; } } }
                 Rectangle { horizontal-stretch: 1; }
+                // Podcasts — Subscribed pagination + Refresh docked right on row 2.
+                if root.view == "podcasts" && !root.podcast-detail-open && root.podcast-tab == "subscribed" && root.podcast-sub-pages > 1: VerticalLayout { alignment: center;
+                    PageNav { page: root.podcast-sub-page; pages: root.podcast-sub-pages; go(d) => { root.podcast-sub-set-page(d); } } }
+                // Refresh — a pill that FILLS with the live progress (feeds + new
+                // episodes) while a refresh runs.
+                if root.view == "podcasts": VerticalLayout { alignment: center;
+                    Rectangle { height: 36px; min-width: 116px; border-radius: 18px; clip: true;
+                        background: MusicTheme.light
+                            ? (rfp.has-hover ? #e8d9ff : #efe7ff)
+                            : (rfp.has-hover ? #8b5cf64d : #8b5cf630);
+                        border-width: 1px; border-color: MusicTheme.light ? #c4b5fd : #8b5cf680;
+                        // Fill bar (only while busy).
+                        Rectangle { x: 0; width: parent.width * Math.clamp(root.podcast-refresh-frac, 0, 1); height: 100%;
+                            background: @linear-gradient(90deg, #8b5cf6, #6366f1); opacity: root.podcast-refresh-busy ? 1 : 0;
+                            animate width { duration: 120ms; } }
+                        rfp := TouchArea { mouse-cursor: pointer; clicked => { if (!root.podcast-refresh-busy) { root.podcast-refresh(); } } }
+                        HorizontalLayout { padding-left: 14px; padding-right: 14px;
+                            Text { text: root.podcast-refresh-busy
+                                    ? (root.podcast-refresh-status == "" ? "↻ " + Math.round(root.podcast-refresh-frac * 100) + "%" : root.podcast-refresh-status)
+                                    : "↻ Refresh";
+                                color: root.podcast-refresh-busy ? #ffffff : (MusicTheme.light ? #6d28d9 : #c4b5fd);
+                                font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } } }
+                if root.view == "podcasts" && !root.podcast-detail-open: VerticalLayout { alignment: center; Rectangle { width: 6px; } }
+                if root.view == "podcasts" && !root.podcast-detail-open: VerticalLayout { alignment: center;
+                    SortChip { label: root.podcast-reset-busy ? "Removing " + Math.round(root.podcast-reset-frac * 100) + "%" : "🗑 Reset all";
+                        clicked => { if (!root.podcast-reset-busy) { root.reset-confirm-text = ""; root.reset-confirm-open = true; } } } }
+                // Now-playing cluster — present whenever an episode is loaded. While
+                // PLAYING it gets an animated gradient OUTLINE tinted from the show
+                // artwork (ring, not fill). Holds transport · speed · mini, tight together.
+                if root.view == "podcasts" && root.podcast-loaded: VerticalLayout { alignment: center;
+                    Rectangle {
+                        property <angle> ga: (Math.mod(animation-tick() / 18ms, 360)) * 1deg;
+                        border-radius: 19px;
+                        background: root.playing
+                            ? @linear-gradient(ga, root.np-accent, root.np-accent.with-alpha(0.25), root.np-accent.brighter(0.5), root.np-accent)
+                            : transparent;
+                        HorizontalLayout { padding: root.playing ? 2px : 0px;
+                            Rectangle { border-radius: 17px; background: root.playing ? MusicTheme.surf-header2 : transparent;
+                                HorizontalLayout { padding-left: 6px; padding-right: 6px; padding-top: 5px; padding-bottom: 5px; spacing: 5px;
+                                    Rectangle { width: 36px; height: 34px; border-radius: 17px; background: s15.has-hover ? MusicTheme.surf1 : transparent;
+                                        s15 := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-skip(-15); } }
+                                        Text { text: "↺15"; color: MusicTheme.fg2; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                                    Rectangle { width: 38px; height: 34px; border-radius: 17px; background: pph.has-hover ? #8b5cf6 : MusicTheme.surf1;
+                                        pph := TouchArea { mouse-cursor: pointer; clicked => { root.np-playpause(); } }
+                                        AppIcon { source: root.playing ? Icons.pause : Icons.play; tint: MusicTheme.fg; width: 15px; height: 15px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } }
+                                    Rectangle { width: 36px; height: 34px; border-radius: 17px; background: s30.has-hover ? MusicTheme.surf1 : transparent;
+                                        s30 := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-skip(30); } }
+                                        Text { text: "30↻"; color: MusicTheme.fg2; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                                    // Speed cycle.
+                                    Rectangle { width: 46px; height: 34px; border-radius: 17px; background: spdh.has-hover ? #8b5cf6 : MusicTheme.surf1;
+                                        spdh := TouchArea { mouse-cursor: pointer; clicked => {
+                                            root.podcast-set-speed(root.podcast-speed >= 2.0 ? 0.75 : (root.podcast-speed >= 1.5 ? 2.0 : (root.podcast-speed >= 1.25 ? 1.5 : (root.podcast-speed >= 1.0 ? 1.25 : 1.0)))); } }
+                                        Text { text: root.podcast-speed + "×"; color: MusicTheme.fg; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                                    // Mini-player toggle.
+                                    Rectangle { width: 38px; height: 34px; border-radius: 17px; background: mnh.has-hover || root.mini-active ? #8b5cf6 : MusicTheme.surf1;
+                                        mnh := TouchArea { mouse-cursor: pointer; clicked => { root.open-mini(); } }
+                                        AppIcon { source: Icons.pip; tint: MusicTheme.fg; width: 16px; height: 16px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } } } } } }
+                // Mini-player toggle (only when nothing's loaded — otherwise it lives in the cluster).
+                if root.view == "podcasts" && !root.podcast-loaded: VerticalLayout { alignment: center;
+                    PlayerBtn { icon: Icons.pip; size: 34px; isz: 16px; active: root.mini-active; clicked => { root.open-mini(); } } }
+                if root.view == "podcasts": VerticalLayout { alignment: center; Rectangle { width: 4px; } }
+                // Settings — far right edge.
+                if root.view == "podcasts": VerticalLayout { alignment: center;
+                    PlayerBtn { icon: Icons.settings; size: 34px; isz: 16px; active: root.music-settings-open; clicked => { root.music-settings-open = !root.music-settings-open; } } }
                 // History — pagination (30/page, 5 pages) then Clear, docked right.
                 if root.view == "mymusic" && !root.detail-open && root.lib-tab == "history" && root.history-pages > 1: VerticalLayout { alignment: center;
                     PageNav { page: root.history-page; pages: root.history-pages; go(d) => { root.set-history-page(d); } } }
@@ -1383,33 +1689,192 @@ export component MusicPage inherits Rectangle {
             }
         }
 
-        // Podcasts (np.p5.music.podcast-feeds) — subscribe + feed list + episodes.
-        if root.view == "podcasts": ScrollView {
+        // Podcasts (np.p5.music.podcast-feeds) — Home / Subscribed / Downloads.
+        if root.view == "podcasts" && !root.podcast-detail-open: ScrollView {
             vertical-stretch: 1; horizontal-stretch: 1;
-            VerticalLayout { padding: 36px; padding-top: 20px; spacing: 18px;
-                Text { text: "Podcasts"; color: MusicTheme.fg; font-size: 26px; font-weight: 800; }
-                HorizontalLayout { spacing: 10px;
-                    Rectangle { width: 460px; height: 42px; border-radius: 21px; background: MusicTheme.hov;
-                        border-width: 1px; border-color: MusicTheme.line;
-                        HorizontalLayout { padding-left: 16px; padding-right: 10px;
-                            pu := TextInput { width: 100%; height: 100%; color: MusicTheme.fg; font-size: 13px;
-                                vertical-alignment: center; single-line: true; text <=> root.podcast-url;
-                                accepted => { root.podcast-subscribe(); } }
-                            if root.podcast-url == "": Text { text: "Paste an RSS feed URL…"; color: MusicTheme.fg-mute; font-size: 13px; vertical-alignment: center; visible: !pu.has-focus; } } }
-                    Rectangle { width: 120px; height: 42px; border-radius: 21px; background: #ec4899;
-                        TouchArea { mouse-cursor: pointer; clicked => { root.podcast-subscribe(); } }
-                        Text { text: "+ Subscribe"; color: MusicTheme.fg; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
-                    Rectangle { width: 110px; height: 42px; border-radius: 21px; background: MusicTheme.surf1;
-                        border-width: 1px; border-color: MusicTheme.line;
-                        TouchArea { mouse-cursor: pointer; clicked => { root.podcast-refresh(); } }
-                        Text { text: "↻ Refresh"; color: MusicTheme.fg; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
-                if root.podcast-feeds.length == 0: Text { text: "No subscriptions yet — paste a podcast RSS URL above (needs network to fetch)."; color: MusicTheme.fg-dim2; font-size: 13px; }
-                HorizontalLayout { spacing: 10px; alignment: start;
-                    for f[i] in root.podcast-feeds: BrowseChip { label: f == root.podcast-sel ? "● " + f : f; clicked => { root.podcast-open(i); } } }
-                if root.podcast-sel != "": VerticalLayout { spacing: 4px;
-                    Text { text: "Episodes — " + root.podcast-sel; color: MusicTheme.fg; font-size: 16px; font-weight: 700; }
-                    if root.podcast-episodes.length == 0: Text { text: "No episodes."; color: MusicTheme.fg-dim2; font-size: 13px; }
-                    for s[i] in root.podcast-episodes: TrackRow { track: s; clicked => { root.podcast-play(i); } } }
+            VerticalLayout { padding: 36px; padding-top: 12px; spacing: 14px;
+
+                // ── HOME (Latest) ──────────────────────────────────────────
+                if root.podcast-tab == "home": VerticalLayout { spacing: 18px;
+                    if root.podcast-home-cards.length > 0: VerticalLayout { spacing: 10px;
+                        HorizontalLayout { spacing: 8px;
+                            Text { text: "Your shows"; color: MusicTheme.fg; font-size: 17px; font-weight: 700;
+                                vertical-alignment: center; horizontal-stretch: 1; }
+                            if root.podcast-home-pages > 1: VerticalLayout { alignment: center;
+                                PageNav { page: root.podcast-home-page; pages: root.podcast-home-pages; go(d) => { root.podcast-home-set-page(d); } } } }
+                        // 7 shows per row, edge to edge (14/page → pagination above).
+                        PodcastGrid { cards: root.podcast-home-cards; force-cols: 7;
+                            open(id) => { root.podcast-open(id); }
+                            fetch(id) => { root.podcast-fetch(id); }
+                            info(id) => { root.podcast-info-open-id(id); }
+                            unsubscribe(id) => { root.unsub-confirm-id = id; root.unsub-confirm-open = true; } } }
+                    Text { text: "Latest episodes"; color: MusicTheme.fg; font-size: 17px; font-weight: 700; }
+                    if root.podcast-latest.length == 0 && root.podcast-home-cards.length == 0: VerticalLayout { alignment: center; spacing: 12px;
+                        HorizontalLayout { alignment: center; Rectangle { width: 88px; height: 88px; border-radius: 44px;
+                            background: #8b5cf622; Text { text: "🎙"; font-size: 38px; horizontal-alignment: center; vertical-alignment: center; } } }
+                        Text { text: "No subscriptions yet"; color: MusicTheme.fg; font-size: 18px; font-weight: 700; horizontal-alignment: center; }
+                        Text { text: "Use + Add (top-right) and paste a podcast RSS feed URL — needs network to fetch."; color: MusicTheme.fg-dim2; font-size: 13px; horizontal-alignment: center; } }
+                    if root.podcast-latest.length == 0 && root.podcast-home-cards.length > 0: Text { text: "Hit ↻ Refresh to pull the newest episodes."; color: MusicTheme.fg-dim2; font-size: 13px; }
+                    for e[i] in root.podcast-latest: PodcastEpisodeItem {
+                        ep: e; show-podcast: true; dl-id: root.podcast-dl-id; dl-frac: root.podcast-dl-frac;
+                        play => { root.podcast-play(e.id); }
+                        download => { root.podcast-download(e.id); }
+                        transcript => { root.podcast-transcript(e.id); } } }
+
+                // ── TRENDS (hardcoded directory — survives library reset) ───
+                if root.podcast-tab == "trends": VerticalLayout { spacing: 10px;
+                    HorizontalLayout { spacing: 8px;
+                        VerticalLayout { alignment: center; horizontal-stretch: 1;
+                            Text { text: "🔥 Trending podcasts"; color: MusicTheme.fg; font-size: 20px; font-weight: 800; } }
+                        VerticalLayout { alignment: center; Text { text: "Sort"; color: MusicTheme.fg-dim; font-size: 12px; vertical-alignment: center; } }
+                        VerticalLayout { alignment: center; SortChip { label: "Name"; active: root.podcast-trends-sort == "name"; clicked => { root.podcast-trends-set-sort("name"); } } }
+                        VerticalLayout { alignment: center; SortChip { label: "Category"; active: root.podcast-trends-sort == "category"; clicked => { root.podcast-trends-set-sort("category"); } } }
+                        VerticalLayout { alignment: center; SortChip { label: "Subscribed"; active: root.podcast-trends-sort == "subscribed"; clicked => { root.podcast-trends-set-sort("subscribed"); } } }
+                        VerticalLayout { alignment: center; SortChip { label: "Not subscribed"; active: root.podcast-trends-sort == "unsubscribed"; clicked => { root.podcast-trends-set-sort("unsubscribed"); } } }
+                        if root.podcast-trends-pages > 1: VerticalLayout { alignment: center;
+                            PageNav { page: root.podcast-trends-page; pages: root.podcast-trends-pages; go(d) => { root.podcast-trends-set-page(d); } } } }
+                    // Subscribe-in-progress bar — fills as episodes are stored.
+                    if root.podcast-subscribing: Rectangle { height: 30px; border-radius: 15px; background: #8b5cf622; clip: true;
+                        Rectangle { x: 0; width: parent.width * Math.clamp(root.podcast-subscribe-frac, 0, 1); height: 100%;
+                            border-radius: 15px; background: @linear-gradient(90deg, #8b5cf6, #6366f1); }
+                        Text { text: root.podcast-subscribe-status == "" ? "Subscribing… " + Math.round(root.podcast-subscribe-frac * 100) + "%" : root.podcast-subscribe-status;
+                            color: MusicTheme.fg; font-size: 12px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                    if root.podcast-trends-loading && root.podcast-trends.length == 0: HorizontalLayout { alignment: center; padding: 40px;
+                        Text { text: "Loading trends…"; color: MusicTheme.fg-mute; font-size: 14px; } }
+                    if !root.podcast-trends-loading && root.podcast-trends.length == 0: HorizontalLayout { alignment: center; padding: 40px;
+                        Text { text: "No trend feeds configured."; color: MusicTheme.fg-mute; font-size: 14px; } }
+                    Rectangle { horizontal-stretch: 1;
+                        property <int> cols: 7;
+                        property <length> cw: self.width / cols;
+                        property <length> ch: cw + 84px;
+                        height: Math.ceil(root.podcast-trends.length / cols) * ch;
+                        for t[idx] in root.podcast-trends: PodcastTrendCardView {
+                            x: Math.mod(idx, cols) * cw + 7px;
+                            y: Math.floor(idx / cols) * ch;
+                            size: cw - 14px;
+                            card: t;
+                            subscribe => { root.podcast-trend-subscribe(t.index); }
+                            info => { root.podcast-trend-info(t.index); } } }
+                }
+
+                // ── SUBSCRIBED (card grid 7-wide + category filter) ─────────
+                if root.podcast-tab == "subscribed": VerticalLayout { spacing: 16px;
+                    if root.podcast-categories.length > 1: HorizontalLayout { spacing: 8px; alignment: start;
+                        for c[i] in root.podcast-categories: BrowseChip {
+                            label: c == root.podcast-cat ? "● " + c : c; clicked => { root.podcast-set-cat(c); } } }
+                    if root.podcast-cards.length == 0: VerticalLayout { alignment: center; spacing: 12px;
+                        HorizontalLayout { alignment: center; Rectangle { width: 88px; height: 88px; border-radius: 44px;
+                            background: #8b5cf622; Text { text: "🎙"; font-size: 38px; horizontal-alignment: center; vertical-alignment: center; } } }
+                        Text { text: "No subscriptions yet"; color: MusicTheme.fg; font-size: 18px; font-weight: 700; horizontal-alignment: center; }
+                        Text { text: "Use + Add (top-right) and paste a podcast RSS feed URL (needs network to fetch)."; color: MusicTheme.fg-dim2; font-size: 13px; horizontal-alignment: center; } }
+                    if root.podcast-cards.length > 0: PodcastGrid {
+                        cards: root.podcast-cards; force-cols: 7;
+                        open(id) => { root.podcast-open(id); }
+                        fetch(id) => { root.podcast-fetch(id); }
+                        info(id) => { root.podcast-info-open-id(id); }
+                        unsubscribe(id) => { root.unsub-confirm-id = id; root.unsub-confirm-open = true; } } }
+
+                // ── DOWNLOADS (offline episodes — sort + 20/page) ───────────
+                if root.podcast-tab == "downloads": VerticalLayout { spacing: 10px; alignment: start;
+                    HorizontalLayout { spacing: 8px;
+                        Text { text: "Downloaded for offline"; color: MusicTheme.fg; font-size: 17px; font-weight: 700;
+                            vertical-alignment: center; horizontal-stretch: 1; }
+                        VerticalLayout { alignment: center; SortChip {
+                            label: root.podcast-dl-sort == "new" ? "↓ Newest" : "↑ Oldest";
+                            clicked => { root.podcast-dl-set-sort(root.podcast-dl-sort == "new" ? "old" : "new"); } } }
+                        if root.podcast-dl-pages > 1: VerticalLayout { alignment: center;
+                            PageNav { page: root.podcast-dl-page; pages: root.podcast-dl-pages; go(d) => { root.podcast-dl-set-page(d); } } } }
+                    if root.podcast-downloads.length == 0: Text { text: "No downloads yet — tap ⤓ on any episode to save it for offline listening."; color: MusicTheme.fg-dim2; font-size: 13px; }
+                    for e[i] in root.podcast-downloads: PodcastEpisodeItem {
+                        ep: e; show-podcast: true; ctx-remove: true; dl-id: root.podcast-dl-id; dl-frac: root.podcast-dl-frac;
+                        play => { root.podcast-play(e.id); }
+                        download => { root.podcast-download(e.id); }
+                        transcript => { root.podcast-transcript(e.id); }
+                        goto-podcast => { root.podcast-goto-show(e.id); }
+                        remove-download => { root.dlrm-confirm-id = e.id; root.dlrm-confirm-title = e.title; root.dlrm-confirm-open = true; } }
+                    if root.podcast-dl-pages > 1: HorizontalLayout { alignment: center;
+                        PageNav { page: root.podcast-dl-page; pages: root.podcast-dl-pages; go(d) => { root.podcast-dl-set-page(d); } } } }
+            }
+        }
+
+        // Single-podcast detail page — modelled on the single-album hero:
+        // [ cover · outlined info card (sort + pagination) · BIG round Back ],
+        // then the episode list. The Back button lives OUTSIDE the info box.
+        if root.view == "podcasts" && root.podcast-detail-open: ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout { padding: 0px; spacing: 18px; alignment: start;
+                // Hero header — accent wash behind cover + info card + Back.
+                Rectangle { height: 284px; horizontal-stretch: 1; clip: true;
+                    Rectangle { width: parent.width; height: parent.height;
+                        background: @linear-gradient(180deg, #8b5cf659, MusicTheme.surf-page); }
+                    HorizontalLayout { padding-left: 36px; padding-right: 36px; padding-top: 18px; padding-bottom: 16px; spacing: 22px;
+                        // Cover — same height as the info box; click to set a custom thumb.
+                        Rectangle { width: 244px; height: 244px; border-radius: 14px; clip: true;
+                            background: MusicTheme.surf-thumb; y: (parent.height - self.height)/2;
+                            border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: 24px; drop-shadow-color: #000000aa;
+                            if root.podcast-d-image.width == 0: Text { text: "🎙"; color: #c4b5fd; font-size: 56px; horizontal-alignment: center; vertical-alignment: center; }
+                            if root.podcast-d-image.width > 0: Image { source: root.podcast-d-image; image-fit: cover; width: 100%; height: 100%; }
+                            cha := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-set-thumb(); } }
+                            Rectangle { width: 100%; height: 34px; y: parent.height - self.height;
+                                background: #000000bb; opacity: cha.has-hover ? 1 : 0; animate opacity { duration: 120ms; }
+                                Text { text: "✎ Change art"; color: #ffffff; font-size: 11px; font-weight: 700;
+                                    horizontal-alignment: center; vertical-alignment: center; } } }
+                        // Outlined info card — sized to content (not full width).
+                        Rectangle { horizontal-stretch: 0; min-width: 460px; max-width: 620px; height: 244px; y: (parent.height - self.height)/2; border-radius: 14px;
+                            background: MusicTheme.surf00; border-width: 1px; border-color: MusicTheme.line;
+                            VerticalLayout { padding: 18px; spacing: 7px; alignment: start;
+                                Text { text: "PODCAST"; color: MusicTheme.fg-dim; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
+                                Text { text: root.podcast-d-title; color: MusicTheme.fg; font-size: 28px; font-weight: 800; overflow: elide; }
+                                if root.podcast-d-author != "": Text { text: root.podcast-d-author; color: MusicTheme.fg3; font-size: 14px; overflow: elide; }
+                                HorizontalLayout { spacing: 8px; alignment: start;
+                                    if root.podcast-d-category != "": Rectangle { height: 24px; border-radius: 12px; background: MusicTheme.light ? #8b5cf626 : #8b5cf633; horizontal-stretch: 0;
+                                        HorizontalLayout { padding-left: 10px; padding-right: 10px;
+                                            Text { text: root.podcast-d-category; color: MusicTheme.light ? #6d28d9 : #c4b5fd; font-size: 11px; font-weight: 700; vertical-alignment: center; } } }
+                                    Rectangle { height: 24px; border-radius: 12px; background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line; horizontal-stretch: 0;
+                                        HorizontalLayout { padding-left: 10px; padding-right: 10px;
+                                            Text { text: root.podcast-d-total + " episodes"; color: MusicTheme.fg2; font-size: 12px; font-weight: 700; vertical-alignment: center; } } } }
+                                // About — kept INSIDE the info box now.
+                                if root.podcast-d-desc != "": Text { text: root.podcast-d-desc; color: MusicTheme.fg2; font-size: 13px; wrap: word-wrap; overflow: elide; vertical-stretch: 1; }
+                                if root.podcast-d-desc == "": Rectangle { vertical-stretch: 1; }
+                                // Sort + pagination row (inside the card footer).
+                                HorizontalLayout { spacing: 8px; alignment: start;
+                                    VerticalLayout { alignment: center; Text { text: "Sort"; color: MusicTheme.fg-dim; font-size: 12px; vertical-alignment: center; } }
+                                    VerticalLayout { alignment: center; SortChip {
+                                        label: root.podcast-d-sort == "new" ? "↓ Newest" : "↑ Oldest";
+                                        clicked => { root.podcast-d-set-sort(root.podcast-d-sort == "new" ? "old" : "new"); } } }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    if root.podcast-d-pages > 1: VerticalLayout { alignment: center; Rectangle { width: 28px; height: 28px; border-radius: 14px; background: dppp.has-hover ? #8b5cf6 : #8b5cf666;
+                                        dppp := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-d-set-page(-1); } }
+                                        Text { text: "◀"; color: #ffffff; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; } } }
+                                    if root.podcast-d-pages > 1: VerticalLayout { alignment: center; Text { text: (root.podcast-d-page + 1) + "/" + root.podcast-d-pages; color: MusicTheme.fg2; font-size: 12px; vertical-alignment: center; } }
+                                    if root.podcast-d-pages > 1: VerticalLayout { alignment: center; Rectangle { width: 28px; height: 28px; border-radius: 14px; background: dnnp.has-hover ? #8b5cf6 : #8b5cf666;
+                                        dnnp := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-d-set-page(1); } }
+                                        Text { text: "▶"; color: #ffffff; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; } } } } } }
+                        // BIG round Back — OUTSIDE the info box, cover-sized, glows on hover.
+                        Rectangle { width: 244px; height: 244px; border-radius: 122px; horizontal-stretch: 0; vertical-stretch: 0;
+                            y: (parent.height - self.height)/2;
+                            background: dbkp.has-hover ? #8b5cf6 : MusicTheme.surf1;
+                            border-width: 2px; border-color: dbkp.has-hover ? #8b5cf6 : MusicTheme.line;
+                            drop-shadow-blur: dbkp.has-hover ? 34px : 0px; drop-shadow-color: #8b5cf6aa;
+                            animate background, drop-shadow-blur, border-color { duration: 180ms; easing: ease-out; }
+                            dbkp := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-back(); } }
+                            VerticalLayout { alignment: center; spacing: 4px;
+                                HorizontalLayout { alignment: center;
+                                    AppIcon { source: Icons.chevron-left; tint: dbkp.has-hover ? #ffffff : MusicTheme.fg2;
+                                        width: dbkp.has-hover ? 56px : 48px; height: dbkp.has-hover ? 56px : 48px;
+                                        animate width, height { duration: 160ms; easing: ease-out; } } }
+                                Text { text: "Back"; color: dbkp.has-hover ? #ffffff : MusicTheme.fg2; font-size: 16px; font-weight: 700; horizontal-alignment: center; } } }
+                        Rectangle { horizontal-stretch: 1; } } }
+                // Episode list.
+                VerticalLayout { padding-left: 36px; padding-right: 36px; padding-bottom: 24px; spacing: 2px;
+                    if root.podcast-d-episodes.length == 0: Text { text: "No episodes."; color: MusicTheme.fg-dim2; font-size: 13px; }
+                    for e[i] in root.podcast-d-episodes: PodcastEpisodeItem {
+                        ep: e; dl-id: root.podcast-dl-id; dl-frac: root.podcast-dl-frac;
+                        play => { root.podcast-play(e.id); }
+                        download => { root.podcast-download(e.id); }
+                        transcript => { root.podcast-transcript(e.id); } }
+                    if root.podcast-d-pages > 1: HorizontalLayout { alignment: center;
+                        PageNav { page: root.podcast-d-page; pages: root.podcast-d-pages; go(d) => { root.podcast-d-set-page(d); } } } }
             }
         }
 
@@ -1482,7 +1947,8 @@ export component MusicPage inherits Rectangle {
                             }
                             if root.recent-rows.length == 0: Text { text: "Play something — your recent tracks land here."; color: MusicTheme.fg-dim2; font-size: 13px; }
                             VerticalLayout { spacing: 2px;
-                                for s[i] in root.recent-rows: TrackRow { track: s; clicked => { root.tile-clicked(s.index); } } }
+                                for s[i] in root.recent-rows: TrackRow { track: s; clicked => { root.tile-clicked(s.index); }
+                                    context(ax, ay) => { root.trk-ctx-idx = s.index; root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y; root.trk-ctx-open = true; } } }
                         } }
                         // Top artists — fixed 3×2 grid.
                         GradOutline { on: root.home-connect; width: 520px; horizontal-stretch: 0;
@@ -1653,13 +2119,15 @@ export component MusicPage inherits Rectangle {
                         DetailActionBtn { icon: Icons.play; label: "Play all"; clicked => { root.play-all(); } }
                         DetailActionBtn { icon: Icons.shuffle; label: "Shuffle"; clicked => { root.shuffle-all(); } } }
                     VerticalLayout { spacing: 2px;
-                        for s[i] in root.fav-rows: TrackRow { track: s; clicked => { root.tile-clicked(s.index); } } }
+                        for s[i] in root.fav-rows: TrackRow { track: s; clicked => { root.tile-clicked(s.index); }
+                            context(ax, ay) => { root.trk-ctx-idx = s.index; root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y; root.trk-ctx-open = true; } } }
                 }
                 // Playback History (np.p5.atmusic.history-page) — timeline of plays.
                 if root.lib-tab == "history": VerticalLayout { padding-left: 36px; padding-right: 36px; spacing: 12px; padding-top: 6px;
                     if root.history-rows.length == 0: Text { text: "Nothing played yet."; color: MusicTheme.fg-dim2; font-size: 13px; }
                     VerticalLayout { spacing: 2px;
-                        for s[i] in root.history-rows: TrackRow { track: s; clicked => { root.tile-clicked(s.index); } } }
+                        for s[i] in root.history-rows: TrackRow { track: s; clicked => { root.tile-clicked(s.index); }
+                            context(ax, ay) => { root.trk-ctx-idx = s.index; root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y; root.trk-ctx-open = true; } } }
                 }
                 // Genres — thumb grid (7 per row, 21 per page) with row-2 pagination;
                 // each thumb borrows its first track's album art (np.p4.music.browse).
@@ -1750,7 +2218,8 @@ export component MusicPage inherits Rectangle {
                     if root.playlist-tracks.length == 0: Text { text: "This playlist is empty — add tracks from the player's ＋ button."; color: MusicTheme.fg-dim2; font-size: 13px; }
                     VerticalLayout { spacing: 2px;
                         for s[i] in root.playlist-tracks: HorizontalLayout { spacing: 6px;
-                            VerticalLayout { horizontal-stretch: 1; TrackRow { track: s; clicked => { root.playlist-play-track(s.index); } } }
+                            VerticalLayout { horizontal-stretch: 1; TrackRow { track: s; clicked => { root.playlist-play-track(s.index); }
+                                context(ax, ay) => { root.trk-ctx-idx = s.index; root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y; root.trk-ctx-open = true; } } }
                             // Reorder arrows only in Custom mode (they save the custom order).
                             if root.playlist-sort == "custom": VerticalLayout { alignment: center; GlyphBtn { glyph: "▲"; size: 30px; clicked => { root.playlist-move(i, i - 1); } } }
                             if root.playlist-sort == "custom": VerticalLayout { alignment: center; GlyphBtn { glyph: "▼"; size: 30px; clicked => { root.playlist-move(i, i + 1); } } }
@@ -1798,7 +2267,23 @@ export component MusicPage inherits Rectangle {
                                             MusicMenuRow { label: "🔎   Find in system"; clicked => { fmenu.close(); root.folder-find-system(f.index); } }
                                             MusicMenuRow { label: "🗑   Delete from library"; txt: #ef4444; clicked => { fmenu.close(); root.folder-remove(f.index); } } } } }
                                 if fcard.has-hover: Rectangle { width: 100%; height: 100%; background: #00000044;
-                                    Text { text: "▶ Open  ·  right-click for options"; color: #ffffff; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap; } } }
+                                    Text { text: "▶ Open  ·  right-click for options"; color: #ffffff; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap; } }
+                                // Section assignment chip (np.p5.atmusic.folder-sections) — which of
+                                // the 5 music sections this folder feeds; click cycles the assignment.
+                                Rectangle {
+                                    property <string> sec: f.color-label == "" ? "mymusic" : f.color-label;
+                                    x: 6px; y: parent.height - self.height - 6px;
+                                    width: 84px; height: 20px; border-radius: 10px;
+                                    background: sec == "podcasts" ? #8b5cf6 : (sec == "audiobooks" ? #3b82f6 : (sec == "radio" ? #14b8a6 : (sec == "youtube" ? #ef4444 : #ec4899)));
+                                    drop-shadow-blur: 8px; drop-shadow-color: #00000066;
+                                    TouchArea { mouse-cursor: pointer; clicked => { root.folder-cycle-section(f.index); } }
+                                    Text {
+                                        text: parent.sec == "podcasts" ? "🎙 Podcasts" : (parent.sec == "audiobooks" ? "📚 Audiobooks" : (parent.sec == "radio" ? "📻 Radio" : (parent.sec == "youtube" ? "▶ YouTube" : "🎵 My Music")));
+                                        color: #ffffff; font-size: 8px; font-weight: 700;
+                                        horizontal-alignment: center; vertical-alignment: center;
+                                        width: 100%; height: 100%;
+                                    }
+                                } }
                             Text { text: f.label; color: MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; width: cell - 16px; horizontal-alignment: center; }
                         }
                     }
@@ -1827,7 +2312,8 @@ export component MusicPage inherits Rectangle {
 
 
         // ── Glassmorphism now-playing player (np.p4.music.player) ─────────
-        if tiles.length > 0: Rectangle {
+        // Hidden on the Podcasts view — podcasts play in the centered mini-player.
+        if tiles.length > 0 && root.view != "podcasts": Rectangle {
             height: 124px; horizontal-stretch: 1;
             background: MusicTheme.surf-player;
             border-width: 1px; border-color: MusicTheme.line;
@@ -2352,7 +2838,8 @@ export component MusicPage inherits Rectangle {
                 VerticalLayout { spacing: 2px;
                     if root.queue-rows.length == 0: Text { text: "Queue is empty."; color: MusicTheme.fg-dim; font-size: 13px; }
                     for s[i] in root.queue-rows: HorizontalLayout { spacing: 2px;
-                        VerticalLayout { horizontal-stretch: 1; TrackRow { track: s; clicked => { root.play-queue(s.index); } } }
+                        VerticalLayout { horizontal-stretch: 1; TrackRow { track: s; clicked => { root.play-queue(s.index); }
+                            context(ax, ay) => { root.trk-ctx-idx = s.index; root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y; root.trk-ctx-open = true; } } }
                         VerticalLayout { alignment: center; GlyphBtn { glyph: "▲"; size: 26px; clicked => { root.queue-move(i, i - 1); } } }
                         VerticalLayout { alignment: center; GlyphBtn { glyph: "▼"; size: 26px; clicked => { root.queue-move(i, i + 1); } } } } } }
             if root.side-panel == "lyrics": VerticalLayout { vertical-stretch: 1; spacing: 8px;
@@ -2848,6 +3335,227 @@ export component MusicPage inherits Rectangle {
             }
         }
     }
+
+    // Add-podcast popup (np.p5.music.podcast-feeds) — paste an RSS URL.
+    if root.podcast-add-open: Rectangle {
+        width: 100%; height: 100%; background: #000000aa;
+        TouchArea { clicked => { if (!root.podcast-add-busy) { root.podcast-add-open = false; } } }
+        FocusScope { width: 460px; height: root.podcast-add-busy ? 292px : 216px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            forward-focus: pin; init => { self.focus(); }
+            key-pressed(e) => { if (e.text == Key.Escape && !root.podcast-add-busy) { root.podcast-add-open = false; return accept; } return reject; }
+            Rectangle { width: 100%; height: 100%;
+            border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
+            drop-shadow-blur: 48px; drop-shadow-color: #000000ee; clip: true;
+            TouchArea {}
+            VerticalLayout { padding: 24px; spacing: 14px; alignment: start;
+                HorizontalLayout { spacing: 12px; alignment: start;
+                    Rectangle { width: 42px; height: 42px; border-radius: 21px; background: #8b5cf622;
+                        Text { text: "🎙"; font-size: 22px; horizontal-alignment: center; vertical-alignment: center; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
+                        Text { text: "Add podcast"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; }
+                        Text { text: "Subscribe with an RSS feed URL."; color: MusicTheme.fg-mute; font-size: 12px; } } }
+                // URL field — placeholder is an absolute overlay so it never shifts layout.
+                Rectangle { height: 46px; border-radius: 10px; background: MusicTheme.hov; border-width: 1px;
+                    border-color: pin.has-focus ? #8b5cf6 : MusicTheme.line; clip: true;
+                    HorizontalLayout { padding-left: 14px; padding-right: 14px;
+                        pin := TextInput { color: MusicTheme.fg; font-size: 13px; vertical-alignment: center;
+                            single-line: true; read-only: root.podcast-add-busy; text <=> root.podcast-url;
+                            accepted => { if (!root.podcast-add-busy && root.podcast-url != "") { root.podcast-subscribe(); } } } }
+                    if root.podcast-url == "": Text { text: "https://…/feed.xml"; color: MusicTheme.fg-mute; font-size: 13px;
+                        x: 14px; height: 100%; vertical-alignment: center; visible: !pin.has-focus; } }
+                // Live episode-load progress (only present while subscribing).
+                if root.podcast-add-busy: VerticalLayout { spacing: 6px;
+                    Rectangle { height: 8px; border-radius: 4px; background: MusicTheme.surf1; clip: true;
+                        Rectangle { x: 0; height: 100%; width: parent.width * Math.clamp(root.podcast-add-frac, 0, 1);
+                            border-radius: 4px; background: @linear-gradient(90deg, #8b5cf6, #6366f1); animate width { duration: 120ms; } } }
+                    Text { text: root.podcast-add-status == "" ? "Fetching episodes…" : root.podcast-add-status; color: MusicTheme.fg-mute; font-size: 11px; } }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    Rectangle { width: 100px; height: 40px; border-radius: 20px; background: cnb.has-hover ? MusicTheme.hov2 : MusicTheme.surf1;
+                        border-width: 1px; border-color: MusicTheme.line;
+                        cnb := TouchArea { mouse-cursor: pointer; clicked => { if (!root.podcast-add-busy) { root.podcast-add-open = false; } } }
+                        Text { text: "Cancel"; color: MusicTheme.fg; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                    Rectangle { width: 130px; height: 40px; border-radius: 20px; opacity: root.podcast-add-busy ? 0.6 : 1.0;
+                        background: subb.has-hover && !root.podcast-add-busy ? #7c3aed : #8b5cf6;
+                        subb := TouchArea { mouse-cursor: pointer; clicked => { if (!root.podcast-add-busy && root.podcast-url != "") { root.podcast-subscribe(); } } }
+                        Text { text: root.podcast-add-busy ? "Adding…" : "+ Add"; color: #ffffff; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+            }
+            }
+        }
+    }
+
+    // Reset-all confirmation — must type "yes" to wipe every podcast.
+    if root.reset-confirm-open: Rectangle {
+        width: 100%; height: 100%; background: #000000aa;
+        TouchArea { clicked => { root.reset-confirm-open = false; } }
+        FocusScope { width: 440px; height: 286px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            forward-focus: rcin; init => { self.focus(); }
+            key-pressed(e) => { if (e.text == Key.Escape) { root.reset-confirm-open = false; return accept; } return reject; }
+            Rectangle { width: 100%; height: 100%;
+            border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
+            drop-shadow-blur: 48px; drop-shadow-color: #000000ee; clip: true;
+            TouchArea {}
+            VerticalLayout { padding: 24px; spacing: 12px; alignment: start;
+                Text { text: "Clear ALL podcasts?"; color: #ef4444; font-size: 18px; font-weight: 800; }
+                Text { text: "Removes every subscription, all episodes and downloaded files. This cannot be undone."; color: MusicTheme.fg-dim; font-size: 13px; wrap: word-wrap; }
+                Text { text: "Type yes to confirm:"; color: MusicTheme.fg-mute; font-size: 12px; }
+                Rectangle { height: 42px; border-radius: 10px; background: MusicTheme.hov; border-width: 1px;
+                    border-color: rcin.has-focus ? #ef4444 : MusicTheme.line; clip: true;
+                    HorizontalLayout { padding-left: 14px; padding-right: 14px;
+                        rcin := TextInput { color: MusicTheme.fg; font-size: 13px; vertical-alignment: center; single-line: true; text <=> root.reset-confirm-text;
+                            accepted => { if (root.reset-confirm-text == "yes") { root.reset-confirm-open = false; root.podcast-reset-all(); } } } }
+                    if root.reset-confirm-text == "": Text { text: "yes"; color: MusicTheme.fg-mute; font-size: 13px; x: 14px; height: 100%; vertical-alignment: center; visible: !rcin.has-focus; } }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    Rectangle { width: 100px; height: 40px; border-radius: 20px; background: rcc.has-hover ? MusicTheme.hov2 : MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                        rcc := TouchArea { mouse-cursor: pointer; clicked => { root.reset-confirm-open = false; } }
+                        Text { text: "Cancel"; color: MusicTheme.fg; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                    Rectangle { width: 140px; height: 40px; border-radius: 20px; opacity: root.reset-confirm-text == "yes" ? 1.0 : 0.5;
+                        background: rcy.has-hover && root.reset-confirm-text == "yes" ? #dc2626 : #ef4444;
+                        rcy := TouchArea { mouse-cursor: pointer; clicked => { if (root.reset-confirm-text == "yes") { root.reset-confirm-open = false; root.podcast-reset-all(); } } }
+                        Text { text: "Clear all"; color: #ffffff; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+            }
+            }
+        }
+    }
+
+    // Unsubscribe confirmation.
+    if root.unsub-confirm-open: Rectangle {
+        width: 100%; height: 100%; background: #000000aa;
+        TouchArea { clicked => { root.unsub-confirm-open = false; } }
+        Rectangle { width: 420px; height: 200px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
+            drop-shadow-blur: 48px; drop-shadow-color: #000000ee; clip: true;
+            TouchArea {}
+            VerticalLayout { padding: 24px; spacing: 12px; alignment: start;
+                Text { text: "Unsubscribe?"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; }
+                Text { text: "This removes the podcast and all its episodes from every page."; color: MusicTheme.fg-dim; font-size: 13px; wrap: word-wrap; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    Rectangle { width: 100px; height: 38px; border-radius: 19px; background: ucn.has-hover ? MusicTheme.hov2 : MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                        ucn := TouchArea { mouse-cursor: pointer; clicked => { root.unsub-confirm-open = false; } }
+                        Text { text: "Cancel"; color: MusicTheme.fg; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                    Rectangle { width: 130px; height: 38px; border-radius: 19px; background: ucy.has-hover ? #dc2626 : #ef4444;
+                        ucy := TouchArea { mouse-cursor: pointer; clicked => { root.unsub-confirm-open = false; root.podcast-unsubscribe(root.unsub-confirm-id); } }
+                        Text { text: "Unsubscribe"; color: #ffffff; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+            }
+        }
+    }
+
+    // Remove-from-downloads confirmation.
+    if root.dlrm-confirm-open: Rectangle {
+        width: 100%; height: 100%; background: #000000aa;
+        TouchArea { clicked => { root.dlrm-confirm-open = false; } }
+        Rectangle { width: 420px; height: 210px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
+            drop-shadow-blur: 48px; drop-shadow-color: #000000ee; clip: true;
+            TouchArea {}
+            VerticalLayout { padding: 24px; spacing: 12px; alignment: start;
+                Text { text: "Remove download?"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; }
+                Text { text: root.dlrm-confirm-title == "" ? "Delete this episode's offline copy from the cache?" : "Delete the offline copy of “" + root.dlrm-confirm-title + "” from the cache?";
+                    color: MusicTheme.fg-dim; font-size: 13px; wrap: word-wrap; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    Rectangle { width: 100px; height: 38px; border-radius: 19px; background: dcn.has-hover ? MusicTheme.hov2 : MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                        dcn := TouchArea { mouse-cursor: pointer; clicked => { root.dlrm-confirm-open = false; } }
+                        Text { text: "Cancel"; color: MusicTheme.fg; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                    Rectangle { width: 110px; height: 38px; border-radius: 19px; background: dcy.has-hover ? #dc2626 : #ef4444;
+                        dcy := TouchArea { mouse-cursor: pointer; clicked => { root.dlrm-confirm-open = false; root.podcast-remove-download(root.dlrm-confirm-id); } }
+                        Text { text: "Remove"; color: #ffffff; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+            }
+        }
+    }
+
+    // Transcript / show-notes panel (np.p5.music.podcast-feeds) — reuses the
+    // lyrics-panel reading layout for episode notes.
+    if root.podcast-transcript-open: Rectangle {
+        width: 100%; height: 100%; background: #000000aa;
+        TouchArea { clicked => { root.podcast-transcript-open = false; } }
+        // Card height tracks the note length (capped at 82% of the window) so
+        // short show-notes don't leave a tall empty box.
+        Rectangle { width: 600px; height: Math.min(parent.height * 0.82, ntx.preferred-height + 148px);
+            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
+            drop-shadow-blur: 48px; drop-shadow-color: #000000ee;
+            TouchArea {} // swallow clicks inside the card
+            VerticalLayout { padding: 24px; spacing: 14px;
+                HorizontalLayout { spacing: 10px;
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        Text { text: "Transcript"; color: MusicTheme.fg-mute; font-size: 11px; font-weight: 700; }
+                        Text { text: root.podcast-transcript-title; color: MusicTheme.fg; font-size: 17px; font-weight: 800; overflow: elide; } }
+                    PlayerBtn { icon: Icons.x; size: 30px; isz: 14px; clicked => { root.podcast-transcript-open = false; } } }
+                Rectangle { height: 1px; background: MusicTheme.line; }
+                ScrollView { vertical-stretch: 1;
+                    VerticalLayout { padding-right: 8px;
+                        ntx := Text { text: root.podcast-transcript-text == "" ? "No show notes for this episode." : root.podcast-transcript-text;
+                            width: 544px; color: MusicTheme.fg3; font-size: 14px; wrap: word-wrap; } } }
+            }
+        }
+    }
+
+    // Podcast info card (Trends → click / right-click → Podcast info). Read-only
+    // metadata; never loads the episode list — just count + latest date. Lets you
+    // edit the category (Save) and replace the thumbnail, and Subscribe.
+    if root.podcast-info-open: Rectangle {
+        width: 100%; height: 100%; background: #000000aa;
+        TouchArea { clicked => { root.podcast-info-open = false; } }
+        FocusScope { width: 560px; height: 420px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            init => { self.focus(); }
+            key-pressed(e) => { if (e.text == Key.Escape) { root.podcast-info-open = false; return accept; } return reject; }
+            Rectangle { width: 100%; height: 100%; border-radius: 16px; background: MusicTheme.surf-pop;
+                border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: 48px; drop-shadow-color: #000000ee; clip: true;
+                TouchArea {}
+                VerticalLayout { padding: 22px; spacing: 14px;
+                    HorizontalLayout { spacing: 16px; alignment: start;
+                        // Cover — click overlay to update the DB/cache thumbnail.
+                        Rectangle { width: 132px; height: 132px; border-radius: 12px; clip: true; background: MusicTheme.surf-thumb;
+                            border-width: 1px; border-color: MusicTheme.line;
+                            if root.podcast-info-image.width == 0: Text { text: "🎙"; font-size: 44px; horizontal-alignment: center; vertical-alignment: center; }
+                            if root.podcast-info-image.width > 0: Image { source: root.podcast-info-image; image-fit: cover; width: 100%; height: 100%; }
+                            ich := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-info-set-thumb(); } }
+                            Rectangle { width: 100%; height: 30px; y: parent.height - self.height; background: #000000bb; opacity: ich.has-hover ? 1 : 0; animate opacity { duration: 120ms; }
+                                Text { text: "✎ Update thumb"; color: #ffffff; font-size: 10px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+                        VerticalLayout { alignment: start; spacing: 6px; horizontal-stretch: 1;
+                            Text { text: root.podcast-info-title; color: MusicTheme.fg; font-size: 20px; font-weight: 800; wrap: word-wrap; }
+                            if root.podcast-info-author != "": Text { text: root.podcast-info-author; color: MusicTheme.fg2; font-size: 13px; overflow: elide; }
+                            HorizontalLayout { spacing: 8px; alignment: start;
+                                Rectangle { height: 24px; border-radius: 12px; background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line; horizontal-stretch: 0;
+                                    HorizontalLayout { padding-left: 10px; padding-right: 10px;
+                                        Text { text: root.podcast-info-loading ? "…" : (root.podcast-info-episodes + " episodes"); color: MusicTheme.fg2; font-size: 12px; font-weight: 700; vertical-alignment: center; } } }
+                                if root.podcast-info-latest != "": Rectangle { height: 24px; border-radius: 12px; background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line; horizontal-stretch: 0;
+                                    HorizontalLayout { padding-left: 10px; padding-right: 10px;
+                                        Text { text: "Latest " + root.podcast-info-latest; color: MusicTheme.fg2; font-size: 12px; font-weight: 700; vertical-alignment: center; } } } }
+                            // Editable category + Save.
+                            Text { text: "Category"; color: MusicTheme.fg2; font-size: 12px; font-weight: 700; }
+                            HorizontalLayout { spacing: 8px;
+                                Rectangle { height: 34px; border-radius: 9px; background: MusicTheme.hov; border-width: 1px; border-color: cin.has-focus ? #8b5cf6 : MusicTheme.line; clip: true; horizontal-stretch: 1;
+                                    HorizontalLayout { padding-left: 12px; padding-right: 12px;
+                                        cin := TextInput { color: MusicTheme.fg; font-size: 13px; vertical-alignment: center; single-line: true; text <=> root.podcast-info-category;
+                                            accepted => { root.podcast-info-save-category(); } } }
+                                    if root.podcast-info-category == "": Text { text: "e.g. News"; color: MusicTheme.fg-mute; font-size: 13px; x: 12px; height: 100%; vertical-alignment: center; visible: !cin.has-focus; } }
+                                Rectangle { width: 78px; height: 34px; border-radius: 17px; background: csv.has-hover ? #7c3aed : #8b5cf6;
+                                    csv := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-info-save-category(); } }
+                                    Text { text: "Save"; color: #ffffff; font-size: 12px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } } } }
+                    if root.podcast-info-desc != "": ScrollView { vertical-stretch: 1;
+                        VerticalLayout { padding-right: 6px;
+                            Text { text: root.podcast-info-desc; width: 510px; color: MusicTheme.fg2; font-size: 13px; wrap: word-wrap; } } }
+                    if root.podcast-info-desc == "": Rectangle { vertical-stretch: 1; }
+                    HorizontalLayout { spacing: 10px; alignment: end;
+                        Rectangle { width: 100px; height: 40px; border-radius: 20px; background: icc.has-hover ? MusicTheme.hov2 : MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                            icc := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-info-open = false; } }
+                            Text { text: "Close"; color: MusicTheme.fg; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                        Rectangle { width: 150px; height: 40px; border-radius: 20px; clip: true;
+                            background: root.podcast-info-subscribed ? #22c55e22 : (isb.has-hover ? #7c3aed : #8b5cf6);
+                            border-width: root.podcast-info-subscribed ? 1px : 0px; border-color: #22c55e;
+                            // Progress fill while subscribing.
+                            if root.podcast-subscribing: Rectangle { x: 0; width: parent.width * Math.clamp(root.podcast-subscribe-frac, 0, 1); height: 100%;
+                                background: @linear-gradient(90deg, #22c55e, #16a34a); }
+                            isb := TouchArea { mouse-cursor: (root.podcast-info-subscribed || root.podcast-subscribing) ? default : pointer; clicked => { if (!root.podcast-info-subscribed && !root.podcast-subscribing) { root.podcast-info-subscribe(); } } }
+                            Text { text: root.podcast-subscribing ? ("Adding… " + Math.round(root.podcast-subscribe-frac * 100) + "%") : (root.podcast-info-subscribed ? "✓ Subscribed" : "+ Subscribe");
+                                color: root.podcast-info-subscribed ? #22c55e : #ffffff; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+                }
+            }
+        }
+    }
 }
 
 // ── Full-screen player page ───────────────────────────────────────────────
@@ -2880,6 +3588,10 @@ export component MusicFullscreen inherits Rectangle {
     in property <string> album: "";
     in-out property <string> zen-panel: "";    // "" | queue  (slide-in)
     in-out property <bool> zen-lyrics: false;  // inline 3-line synced lyrics
+    // Podcast playback in the zen player — show a speed control.
+    in property <bool> podcast-mode: false;
+    in property <float> speed: 1.0;
+    callback set-speed(float);
     callback open-now-album();
     callback open-now-artist();
     callback close();
@@ -2995,6 +3707,12 @@ export component MusicFullscreen inherits Rectangle {
             VerticalLayout { alignment: center; PlayerBtn { icon: muted ? Icons.volume-x : Icons.volume; isz: 17px; active: muted; clicked => { root.toggle-mute(); } } }
             VerticalLayout { alignment: center; Rectangle { width: 120px; height: 36px;
                 Scrubber { y: (parent.height - self.height)/2; width: 120px; value: volume; maximum: 130.0; fill-color: MusicTheme.fg3; changed(v) => { root.set-volume(v); } } } }
+            // Podcast playback speed cycle (zen player).
+            if root.podcast-mode: VerticalLayout { alignment: center; Rectangle { width: 58px; height: 36px; border-radius: 18px;
+                background: zsp.has-hover ? MusicTheme.surf1 : MusicTheme.surf0; border-width: 1px; border-color: MusicTheme.line;
+                zsp := TouchArea { mouse-cursor: pointer; clicked => {
+                    root.set-speed(root.speed >= 2.0 ? 1.0 : (root.speed >= 1.5 ? 2.0 : (root.speed >= 1.25 ? 1.5 : 1.25))); } }
+                Text { text: root.speed + "×"; color: MusicTheme.fg2; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
             VerticalLayout { alignment: center; PlayerBtn { icon: Icons.list-music; isz: 20px; size: 44px; active: root.zen-panel == "queue"; clicked => { root.zen-panel = root.zen-panel == "queue" ? "" : "queue"; } } }
             // Visualizer style selector.
             VerticalLayout { alignment: center; Rectangle { width: 44px; height: 44px;
@@ -3123,7 +3841,7 @@ export component MusicMini inherits Rectangle {
                     Rectangle { width: 146px * root.uiscale; height: self.width; border-radius: self.width / 2; clip: true;
                         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                         Image { source: art; image-fit: cover; width: 100%; height: 100%;
-                            rotation-angle: root.playing ? Math.mod(animation-tick() / 1ms / 16, 360) * 1deg : 0deg; }
+                            transform-rotation: root.playing ? Math.mod(animation-tick() / 1ms / 16, 360) * 1deg : 0deg; }
                         if title == "": Text { text: "♪"; color: #ec4899; font-size: 44px * root.uiscale; horizontal-alignment: center; vertical-alignment: center; } }
                 }
                 // spindle hub (static center)
@@ -3180,5 +3898,131 @@ export component MusicMini inherits Rectangle {
             Rectangle { width: 96px * root.uiscale; height: 30px * root.uiscale;
                 Scrubber { y: (parent.height - self.height)/2; width: 96px * root.uiscale; value: volume; maximum: 130.0; fill-color: MusicTheme.fg3; changed(v) => { root.set-volume(v); } } }
             PlayerBtn { icon: Icons.lyrics; size: 32px * root.uiscale; isz: 16px * root.uiscale; active: root.face == "lyrics"; clicked => { root.face = root.face == "lyrics" ? "" : "lyrics"; } } }
+    }
+}
+
+// Podcast-centric bottom player (np.p5.music.podcast-feeds). Same floating frame
+// as MusicMini but tuned for spoken word: square cover (no vinyl), −15s / +30s
+// skips, playback-speed cycle, and an episodes/notes flip instead of lyrics.
+export component PodcastMini inherits Rectangle {
+    in property <image> art;
+    in property <color> accent: #8b5cf6;
+    in property <string> title;
+    in property <string> sub;            // owning show
+    in property <bool> playing;
+    in property <float> pos;
+    in property <float> dur;
+    in property <string> pos-label;
+    in property <string> dur-label;
+    in property <float> speed: 1.0;
+    in property <float> volume: 100;
+    in property <bool> muted;
+    in property <string> summary: "";       // podcast description (scrollable show notes)
+    in property <[PodcastEpisodeRow]> episodes: [];
+    in-out property <string> face: "";   // "" disc | episodes | summary
+    in property <float> uiscale: 1.0;
+    callback close();
+    callback minimise();
+    callback playpause();
+    callback skip(int);                  // seconds, +/-
+    callback seek(float);
+    callback set-speed(float);
+    callback set-volume(float);
+    callback toggle-mute();
+    callback play-episode(int);
+
+    width: 300px; height: 442px; border-radius: 18px;
+    background: MusicTheme.surf-player; border-width: 1px; border-color: MusicTheme.line;
+    drop-shadow-blur: 42px; drop-shadow-color: #000000e6;
+    VerticalLayout {
+        padding: 14px * root.uiscale; spacing: 8px * root.uiscale;
+        // 1. Close · title · minimise.
+        HorizontalLayout { spacing: 4px * root.uiscale;
+            PlayerBtn { icon: Icons.x; size: 26px * root.uiscale; isz: 13px * root.uiscale; clicked => { root.close(); } }
+            VerticalLayout { alignment: center; horizontal-stretch: 1;
+                Marquee { height: 20px * root.uiscale; centered: true; text: title == "" ? "Nothing playing" : title; fg: MusicTheme.fg; font-size: 15px * root.uiscale; weight: 700; } }
+            PlayerBtn { icon: Icons.chevron-right; size: 26px * root.uiscale; isz: 14px * root.uiscale; clicked => { root.minimise(); } } }
+        // 2. Show name.
+        Text { text: title == "" ? "Pick an episode" : sub; color: MusicTheme.fg3; font-size: 12px * root.uiscale; overflow: elide; horizontal-alignment: center; }
+        // 3. Spinning vinyl disc (podcast thumb as the centre label); flips to
+        //    episodes / summary. WIDE full-width box so the episode/summary faces
+        //    read well (not cramped in a small square); the vinyl stays centred.
+        Rectangle { height: 200px * root.uiscale; border-radius: 12px * root.uiscale; clip: true; background: MusicTheme.surf-pop2;
+            border-width: 1px; border-color: MusicTheme.surf1;
+            if root.face == "": Rectangle { width: 100%; height: 100%;
+                // vinyl disc
+                Rectangle { width: 172px * root.uiscale; height: self.width; border-radius: self.width / 2; clip: true;
+                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                    background: @radial-gradient(circle, root.accent.with-alpha(0.22) 30%, root.accent.with-alpha(0.6) 62%, root.accent.with-alpha(0.92) 100%);
+                    Rectangle { width: 120px * root.uiscale; height: self.width; border-radius: self.width / 2; clip: true;
+                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                        if art.width > 0: Image { source: art; image-fit: cover; width: 100%; height: 100%;
+                            transform-rotation: root.playing ? Math.mod(animation-tick() / 1ms / 16, 360) * 1deg : 0deg; }
+                        if art.width == 0: Text { text: "🎙"; color: #ffffff; font-size: 40px * root.uiscale; horizontal-alignment: center; vertical-alignment: center; } }
+                    // spindle hub
+                    Rectangle { width: 10px * root.uiscale; height: self.width; border-radius: self.width / 2; background: MusicTheme.surf-pop2; border-width: 1.5px; border-color: MusicTheme.fg-faint;
+                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } }
+            if root.face == "episodes": ScrollView { width: 100%; height: 100%;
+                VerticalLayout { spacing: 2px; padding: 6px;
+                    if episodes.length == 0: Text { text: "No episodes."; color: MusicTheme.fg-dim; font-size: 12px; }
+                    for e[i] in episodes: Rectangle { height: 40px; border-radius: 8px;
+                        background: erow.has-hover ? MusicTheme.hov : transparent;
+                        erow := TouchArea { mouse-cursor: pointer; clicked => { root.play-episode(e.id); } }
+                        HorizontalLayout { padding-left: 8px; padding-right: 8px; spacing: 8px;
+                            VerticalLayout { alignment: center; Text { text: e.played ? "✓" : "▶"; color: e.played ? #22c55e : MusicTheme.fg3; font-size: 12px; } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                Text { text: e.title; color: MusicTheme.fg; font-size: 12px; overflow: elide; } } } } } }
+            // Summary — full show notes, wrapped line-by-line + vertically scrollable.
+            if root.face == "summary": VerticalLayout { padding: 12px; spacing: 8px;
+                Text { text: "SHOW SUMMARY"; color: MusicTheme.fg-mute; font-size: 10px; font-weight: 700; horizontal-alignment: center; }
+                ScrollView { vertical-stretch: 1; horizontal-stretch: 1;
+                    VerticalLayout { width: root.width - 64px; alignment: start;
+                        Text { text: summary == "" ? "No summary available." : summary; color: MusicTheme.fg3;
+                            font-size: 12px; wrap: word-wrap; } } } }
+            if root.face != "": Text { text: "↻"; color: #ffffff66; font-size: 14px; x: parent.width - 24px; y: 8px; } }
+        // Flexible gap — drops the seek + both control rows to the bottom so they
+        // always sit together and fit, whatever the mini's height.
+        Rectangle { vertical-stretch: 1; }
+        // 4. Seekbar.
+        Scrubber { value: pos; maximum: dur > 0 ? dur : 1.0; changed(v) => { root.seek(v); } }
+        HorizontalLayout {
+            Text { text: pos-label; color: MusicTheme.fg-dim; font-size: 10px * root.uiscale; }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: dur-label; color: MusicTheme.fg-dim; font-size: 10px * root.uiscale; } }
+        // 5. Transport — −15s · play/pause · +30s. All same height (level), each
+        //    with a 1px outline so they read as a matched set.
+        HorizontalLayout { alignment: center; spacing: 14px * root.uiscale;
+            VerticalLayout { alignment: center;
+                Rectangle { width: 48px * root.uiscale; height: 48px * root.uiscale; border-radius: self.height / 2; horizontal-stretch: 0;
+                    background: b15.has-hover ? MusicTheme.surf1 : transparent;
+                    border-width: 1px; border-color: MusicTheme.line;
+                    b15 := TouchArea { mouse-cursor: pointer; clicked => { root.skip(-15); } }
+                    Text { text: "↺15"; color: MusicTheme.fg2; font-size: 13px * root.uiscale; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+            VerticalLayout { alignment: center;
+                Rectangle { width: 56px * root.uiscale; height: 48px * root.uiscale; border-radius: self.height / 2; horizontal-stretch: 0;
+                    background: ppb.has-hover ? root.accent : #f0f0f3; animate background { duration: 150ms; }
+                    border-width: 1px; border-color: MusicTheme.line;
+                    ppb := TouchArea { mouse-cursor: pointer; clicked => { root.playpause(); } }
+                    AppIcon { source: playing ? Icons.pause : Icons.play; tint: #14141b; width: 22px * root.uiscale; height: 22px * root.uiscale; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
+            VerticalLayout { alignment: center;
+                Rectangle { width: 48px * root.uiscale; height: 48px * root.uiscale; border-radius: self.height / 2; horizontal-stretch: 0;
+                    background: b30.has-hover ? MusicTheme.surf1 : transparent;
+                    border-width: 1px; border-color: MusicTheme.line;
+                    b30 := TouchArea { mouse-cursor: pointer; clicked => { root.skip(30); } }
+                    Text { text: "30↻"; color: MusicTheme.fg2; font-size: 13px * root.uiscale; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } } }
+        // 6. Bottom bar — episodes · speed cycle · mute+volume · summary.
+        //    (The separate full-width Speed slider was removed; speed now lives as
+        //    a compact tap-to-cycle pill here so it no longer doubles the volume row.)
+        HorizontalLayout { alignment: center; spacing: 8px * root.uiscale;
+            PlayerBtn { icon: Icons.list-music; size: 32px * root.uiscale; isz: 16px * root.uiscale; active: root.face == "episodes"; clicked => { root.face = root.face == "episodes" ? "" : "episodes"; } }
+            Rectangle { width: 44px * root.uiscale; height: 30px * root.uiscale; border-radius: 15px * root.uiscale;
+                background: spc.has-hover ? MusicTheme.surf1 : MusicTheme.surf0; border-width: 1px; border-color: MusicTheme.line;
+                spc := TouchArea { mouse-cursor: pointer; clicked => {
+                    root.set-speed(root.speed >= 2.0 ? 0.75 : (root.speed >= 1.5 ? 2.0 : (root.speed >= 1.25 ? 1.5 : (root.speed >= 1.0 ? 1.25 : 1.0)))); } }
+                Text { text: root.speed + "×"; color: MusicTheme.fg2; font-size: 11px * root.uiscale; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+            PlayerBtn { icon: muted ? Icons.volume-x : Icons.volume; size: 30px * root.uiscale; isz: 15px * root.uiscale; active: muted; clicked => { root.toggle-mute(); } }
+            Rectangle { width: 76px * root.uiscale; height: 30px * root.uiscale;
+                Scrubber { y: (parent.height - self.height)/2; width: 76px * root.uiscale; value: volume; maximum: 130.0; fill-color: MusicTheme.fg3; changed(v) => { root.set-volume(v); } } }
+            PlayerBtn { icon: Icons.lyrics; size: 32px * root.uiscale; isz: 16px * root.uiscale; active: root.face == "summary"; clicked => { root.face = root.face == "summary" ? "" : "summary"; } } }
     }
 }

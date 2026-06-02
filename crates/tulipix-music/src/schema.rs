@@ -139,41 +139,11 @@ CREATE TABLE IF NOT EXISTS audiobook_bookmarks (
 );
 CREATE INDEX IF NOT EXISTS audiobook_bookmarks_item_idx ON audiobook_bookmarks(item_id);
 
-CREATE TABLE IF NOT EXISTS podcasts (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    feed_url     TEXT    NOT NULL UNIQUE,
-    title        TEXT,
-    author       TEXT,
-    image_url    TEXT,
-    last_checked INTEGER
-);
-
-CREATE TABLE IF NOT EXISTS podcast_episodes (
-    id              INTEGER PRIMARY KEY AUTOINCREMENT,
-    podcast_id      INTEGER NOT NULL REFERENCES podcasts(id) ON DELETE CASCADE,
-    guid            TEXT    NOT NULL,
-    title           TEXT,
-    audio_url       TEXT    NOT NULL,
-    published       INTEGER,
-    duration_s      REAL,
-    downloaded_path TEXT,
-    position_s      REAL    NOT NULL DEFAULT 0,
-    played          INTEGER NOT NULL DEFAULT 0,
-    UNIQUE(podcast_id, guid)
-);
-CREATE INDEX IF NOT EXISTS podcast_episodes_pod_idx ON podcast_episodes(podcast_id, published DESC);
-
-CREATE TABLE IF NOT EXISTS radio_stations (
-    id           INTEGER PRIMARY KEY AUTOINCREMENT,
-    station_uuid TEXT UNIQUE,
-    name         TEXT NOT NULL,
-    url          TEXT NOT NULL,
-    favicon      TEXT,
-    country      TEXT,
-    tags         TEXT,
-    favourite    INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS radio_fav_idx ON radio_stations(favourite);
+-- NOTE: `podcasts`, `podcast_episodes` and `radio_stations` used to live here.
+-- They carry no `items` foreign key (fully self-contained), so they were split
+-- into their own section DBs (`podcasts.db`, `radio.db`) to keep `music.db`
+-- lean and let those pages load independently. See `podcasts::PODCASTS_SCHEMA`
+-- / `radio::RADIO_SCHEMA`; existing rows are migrated out on first open.
 
 CREATE TABLE IF NOT EXISTS scrobble_queue (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -209,6 +179,10 @@ pub(crate) mod tests {
         let pool = h.pool().await.unwrap();
         apply_proxy_schema(&pool, "music").await.unwrap();
         apply(&pool).await.unwrap();
+        // Podcast/radio tables now live in their own section DBs; apply them to
+        // the same test pool so the podcasts/radio unit tests keep working.
+        crate::podcasts::apply_schema(&pool).await.unwrap();
+        crate::radio::apply_schema(&pool).await.unwrap();
         (tmp, pool)
     }
 

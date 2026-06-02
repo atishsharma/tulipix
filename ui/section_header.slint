@@ -50,7 +50,9 @@ export component HdrChip inherits Rectangle {
         text: label; font-size: 13px; font-weight: has-grad ? 700 : 600;
         // On a light canvas the bright tints (teal/amber) wash out — darken the
         // idle text so it stays legible; active text stays white on the gradient.
-        color: active ? active-text : (has-grad ? (light-theme ? tint.mix(#000000, 0.72) : tint) : (dark ? dk-text : #3c4043));
+        // Inactive coloured chips: darken on light, brighten toward white on dark
+        // so the label stays legible against the faint tint wash either way.
+        color: active ? active-text : (has-grad ? (light-theme ? tint.mix(#000000, 0.72) : tint.mix(#ffffff, 0.5)) : (dark ? dk-text : #3c4043));
         width: 100%; height: 100%;
         horizontal-alignment: center; vertical-alignment: center;
     }

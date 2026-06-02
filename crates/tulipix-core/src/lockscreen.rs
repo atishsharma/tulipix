@@ -9,7 +9,6 @@
 //! reset prompt. The state machine itself is OS-agnostic so unit tests
 //! can drive it without a real authenticator.
 
-use anyhow::Result;
 use sha2::{Digest, Sha256};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

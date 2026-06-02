@@ -8,7 +8,7 @@
 //! Startup reconcile: walk every watched location once, mark vanished rows as
 //! missing and re-stat anything whose mtime/size changed since last scan.
 
-use crate::libraries::{LibrariesConfig, Library};
+use crate::libraries::LibrariesConfig;
 use anyhow::Result;
 use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
