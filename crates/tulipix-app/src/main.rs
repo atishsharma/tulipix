@@ -389,9 +389,43 @@ fn main() -> Result<()> {
     window.on_pick_folder(move || {
         let Some(w) = w.upgrade() else { return; };
         let section = w.get_active_section().to_string();
+        // On the music page, pick the folder first, then let the user classify
+        // it into one of the 5 music sub-sections via a popup (Audiobooks flags
+        // the folder's tracks). Other sections add directly.
+        if section == "music" {
+            let Some(path) = rfd::FileDialog::new().set_title("Add music folder").pick_folder() else { return; };
+            w.set_music_pending_add_path(path.display().to_string().into());
+            w.set_music_add_section_open(true);
+            return;
+        }
         pick_and_append(&w, &section);
         // Reflect a successful add into the onboarding wizard step.
         if w.get_library_rows().row_count() > 0 { w.set_onboarding_lib_added(true); }
+    });
+
+    // Confirm the music sub-section for the just-picked folder: persist the
+    // section tag, classify+scan the folder, and flag/unflag its audiobook
+    // tracks (np.p5.music.audiobook-chapters).
+    let w = window.as_weak();
+    window.on_music_confirm_add_section(move |key| {
+        let Some(w) = w.upgrade() else { return; };
+        let path_str = w.get_music_pending_add_path().to_string();
+        if path_str.is_empty() { return; }
+        let key = key.to_string();
+        let path = PathBuf::from(&path_str);
+        set_folder_section(&path_str, &key);
+        persist_watched_folder(&path);
+        set_scan_silent(false);
+        add_folder_path(&w, path);
+        if w.get_library_rows().row_count() > 0 { w.set_onboarding_lib_added(true); }
+        // Apply the audiobook flag for this folder (idempotent; re-applied on
+        // view-switch once the scan has inserted the tracks).
+        let aud = key == "audiobooks";
+        tokio::runtime::Handle::current().spawn(async move {
+            if let Ok(pool) = pool_for("music").await {
+                let _ = tulipix_music::audiobooks::set_folder_flag(&pool, &path_str, aud).await;
+            }
+        });
     });
 
     let w = window.as_weak();
@@ -3123,7 +3157,12 @@ fn main() -> Result<()> {
         // the session) the first time it's opened.
         let is_trends = t == "trends";
         w0.set_music_podcast_tab(t);
-        if is_trends { populate_podcast_trends(&w0); }
+        // Trends: build only the first time (or after a reset emptied it). The
+        // grid model + sort flags persist, so re-entering is an instant UI swap
+        // instead of re-decoding 21 cover images on every tab change.
+        if is_trends && w0.get_music_podcast_trends().row_count() == 0 {
+            populate_podcast_trends(&w0);
+        }
     });
     // Filter the Subscribed grid by category (reset to page 1).
     let w = window.as_weak();
@@ -3147,6 +3186,32 @@ fn main() -> Result<()> {
         let next = (w0.get_music_podcast_home_page() + d).clamp(0, (w0.get_music_podcast_home_pages() - 1).max(0));
         w0.set_music_podcast_home_page(next);
         populate_podcasts(&w0);
+    });
+    // Home "Your shows" — sort (name / category / latest episode).
+    let w = window.as_weak();
+    window.on_music_podcast_home_set_sort(move |s| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_home_sort(s);
+        w0.set_music_podcast_home_page(0);
+        populate_podcasts(&w0);
+    });
+    // Toggle a show's presence on Home "Your shows" (pin/unpin).
+    let w = window.as_weak();
+    window.on_music_podcast_toggle_home(move |pid| {
+        if w.upgrade().is_none() { return; }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let _ = sqlx::query("UPDATE podcasts SET home_pinned = 1 - COALESCE(home_pinned,0) WHERE id = ?")
+                .bind(pid as i64).execute(&pool).await;
+            // Reflect new pin state on the open detail page, if any.
+            let pinned: i64 = sqlx::query_scalar("SELECT COALESCE(home_pinned,0) FROM podcasts WHERE id = ?")
+                .bind(pid as i64).fetch_one(&pool).await.unwrap_or(0);
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_podcast_d_pinned(pinned != 0);
+                populate_podcasts(&w);
+            });
+        });
     });
     // Downloads tab — sort + pagination.
     let w = window.as_weak();
@@ -3321,6 +3386,22 @@ fn main() -> Result<()> {
         let Some(_w0) = w.upgrade() else { return; };
         let pos = book_bookmarks().lock().ok().and_then(|g| g.get(i as usize).copied());
         if let Some(pos) = pos { music_ipc(&["seek", &pos.to_string(), "absolute"]); }
+    });
+    // Open a book (by folder) → build the detail hero + chapter list.
+    let w = window.as_weak();
+    window.on_music_audiobook_open(move |folder| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let folder = folder.to_string();
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let ids = tulipix_music::audiobooks::book_chapters(&pool, &folder).await.unwrap_or_default();
+            let _ = weak.upgrade_in_event_loop(move |w| fill_book_detail(&w, &folder, &ids));
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_audiobook_back(move || {
+        if let Some(w0) = w.upgrade() { w0.set_music_audiobook_detail_open(false); }
     });
     // Re-fetch every subscribed podcast feed (np.p5.music.podcast-feeds auto-refresh).
     let w = window.as_weak();
@@ -5190,9 +5271,18 @@ fn main() -> Result<()> {
         let Some(mut row) = model.row_data(i as usize) else { return; };
         if row.section != "music" { return; }
         let key = music_section_key(&label);
-        set_folder_section(&row.path.to_string(), key);
+        let folder = row.path.to_string();
+        set_folder_section(&folder, key);
         row.music_section = music_section_label(key).into();
         model.set_row_data(i as usize, row);
+        // Keep is_audiobook in sync with the folder's section assignment.
+        let aud = key == "audiobooks";
+        let folder2 = folder.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            if let Ok(pool) = pool_for("music").await {
+                let _ = tulipix_music::audiobooks::set_folder_flag(&pool, &folder2, aud).await;
+            }
+        });
         populate_music_views(w.as_weak());
         populate_folder_roots(&w);
         tracing::info!(index = i, section = key, "library music-row section saved");
@@ -9277,9 +9367,12 @@ struct PodAllData {
     art: Option<std::path::PathBuf>,
     unplayed: i64,
     episodes: i64,
+    latest: i64,        // MAX(published) across this show's episodes (Home sort)
+    pinned: bool,       // home_pinned — shown on Home "Your shows"
 }
 const PODCAST_SUB_PAGE: usize = 21;   // Subscribed grid: 3 rows × 7
 const PODCAST_HOME_PAGE: usize = 14;  // Home "Your shows": 2 rows × 7
+const PODCAST_HOME_MAX_PAGES: usize = 2;  // Home caps at 2 pages; rest live on Subscribed
 
 // ── Trends (hardcoded podcast directory) ──────────────────────────────────
 // Feed URLs are baked into the binary from podc.md at the repo root, so the
@@ -9426,8 +9519,9 @@ fn subscribe_feed_with_progress(weak: slint::Weak<MainWindow>, url: String) {
     });
 }
 
-/// Populate the Trends grid: fetch each baked feed's metadata (session-cached),
-/// then render. Network only on the first open.
+/// Populate the Trends grid. Metadata is persisted in the `podcast_trends` table:
+/// loaded from there on every launch (no network), and only feeds NOT yet in the
+/// table are fetched + saved. Session-cached after the first build.
 fn populate_podcast_trends(w: &MainWindow) {
     let weak = w.as_weak();
     let feeds = trend_feed_urls();
@@ -9436,10 +9530,24 @@ fn populate_podcast_trends(w: &MainWindow) {
     w.set_music_podcast_trends_loading(true);
     tokio::runtime::Handle::current().spawn(async move {
         let client = reqwest::Client::new();
-        // Fetch every feed concurrently (one task each) — was sequential and slow.
-        let handles: Vec<_> = feeds.iter().enumerate().map(|(i, url)| {
+        // 1. Load whatever's already cached in the DB.
+        let mut stored: std::collections::HashMap<String, TrendMeta> = std::collections::HashMap::new();
+        if let Ok(pool) = pool_for("podcasts").await {
+            let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
+                "SELECT feed_url, COALESCE(title,''), COALESCE(author,''), COALESCE(category,''), art_path FROM podcast_trends")
+                .fetch_all(&pool).await.unwrap_or_default();
+            for (feed_url, title, author, category, art_path) in rows {
+                let art = art_path.filter(|p| !p.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .filter(|p| p.exists());
+                stored.insert(feed_url.clone(), TrendMeta { feed_url, title, author, category, art });
+            }
+        }
+        // 2. Fetch only the feeds missing from the DB (concurrently), then persist.
+        let missing: Vec<(usize, String)> = feeds.iter().enumerate()
+            .filter(|(_, u)| !stored.contains_key(*u)).map(|(i, u)| (i, u.clone())).collect();
+        let handles: Vec<_> = missing.into_iter().map(|(i, url)| {
             let client = client.clone();
-            let url = url.clone();
             tokio::spawn(async move {
                 let (mut title, mut author, mut category, mut art) = (String::new(), String::new(), String::new(), None);
                 if let Ok(resp) = client.get(&url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
@@ -9453,16 +9561,30 @@ fn populate_podcast_trends(w: &MainWindow) {
                 }
                 if title.is_empty() { title = url.clone(); }
                 if category.is_empty() { category = "Other".to_string(); }
-                (i, TrendMeta { feed_url: url, title, author, category, art })
+                TrendMeta { feed_url: url, title, author, category, art }
             })
         }).collect();
-        // Collect, preserving feed order by index.
-        let mut indexed: Vec<(usize, TrendMeta)> = Vec::with_capacity(feeds.len());
-        for h in handles {
-            if let Ok(pair) = h.await { indexed.push(pair); }
+        let mut fetched: Vec<TrendMeta> = Vec::new();
+        for h in handles { if let Ok(m) = h.await { fetched.push(m); } }
+        // Persist the newly fetched rows.
+        if !fetched.is_empty() {
+            if let Ok(pool) = pool_for("podcasts").await {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+                for m in &fetched {
+                    let art_s = m.art.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                    let _ = sqlx::query(
+                        "INSERT INTO podcast_trends (feed_url, title, author, category, art_path, fetched_at)
+                         VALUES (?,?,?,?,?,?)
+                         ON CONFLICT(feed_url) DO UPDATE SET title=excluded.title, author=excluded.author,
+                            category=excluded.category, art_path=excluded.art_path, fetched_at=excluded.fetched_at")
+                        .bind(&m.feed_url).bind(&m.title).bind(&m.author).bind(&m.category).bind(&art_s).bind(now)
+                        .execute(&pool).await;
+                }
+            }
+            for m in fetched { stored.insert(m.feed_url.clone(), m); }
         }
-        indexed.sort_by_key(|(i, _)| *i);
-        let metas: Vec<TrendMeta> = indexed.into_iter().map(|(_, m)| m).collect();
+        // 3. Build the cache in feed (podc.md) order.
+        let metas: Vec<TrendMeta> = feeds.iter().filter_map(|u| stored.get(u).cloned()).collect();
         if let Ok(mut g) = trend_cache().lock() { *g = metas; }
         let _ = weak.upgrade_in_event_loop(move |w| {
             w.set_music_podcast_trends_loading(false);
@@ -9479,9 +9601,11 @@ fn populate_podcasts(w: &MainWindow) {
         let like = format!("%{}%", filter.trim());
         let base = "SELECT p.id, COALESCE(p.title, p.feed_url), COALESCE(p.author,''), COALESCE(NULLIF(p.custom_image,''), p.image_url, ''), COALESCE(p.category,''),
                     (SELECT COUNT(*) FROM podcast_episodes e WHERE e.podcast_id = p.id AND COALESCE(e.played,0) = 0),
-                    (SELECT COUNT(*) FROM podcast_episodes e WHERE e.podcast_id = p.id)
+                    (SELECT COUNT(*) FROM podcast_episodes e WHERE e.podcast_id = p.id),
+                    (SELECT COALESCE(MAX(e.published),0) FROM podcast_episodes e WHERE e.podcast_id = p.id),
+                    COALESCE(p.home_pinned,0)
              FROM podcasts p";
-        let rows: Vec<(i64, String, String, String, String, i64, i64)> = if filter.trim().is_empty() {
+        let rows: Vec<(i64, String, String, String, String, i64, i64, i64, i64)> = if filter.trim().is_empty() {
             sqlx::query_as(&format!("{base} ORDER BY p.title COLLATE NOCASE")).fetch_all(&pool).await.unwrap_or_default()
         } else {
             sqlx::query_as(&format!("{base} WHERE p.title LIKE ?1 OR p.author LIKE ?1 OR p.category LIKE ?1 OR p.feed_url LIKE ?1
@@ -9491,9 +9615,9 @@ fn populate_podcasts(w: &MainWindow) {
         };
         let client = reqwest::Client::new();
         let mut all: Vec<PodAllData> = Vec::with_capacity(rows.len());
-        for (id, title, author, img, category, unplayed, episodes) in rows {
+        for (id, title, author, img, category, unplayed, episodes, latest, pinned) in rows {
             let art = resolve_artwork(&client, &format!("pod-{id}"), &img).await;
-            all.push(PodAllData { id, title, author, category, art, unplayed, episodes });
+            all.push(PodAllData { id, title, author, category, art, unplayed, episodes, latest, pinned: pinned != 0 });
         }
         let _ = weak.upgrade_in_event_loop(move |w| render_podcast_cards(&w, &all));
     });
@@ -9511,6 +9635,7 @@ fn render_podcast_cards(w: &MainWindow, all: &[PodAllData]) {
         unplayed: d.unplayed as i32,
         episodes: d.episodes as i32,
         index: i as i32,
+        home_pinned: d.pinned,
     };
     w.set_music_podcast_total(all.len() as i32);
     // Categories.
@@ -9529,11 +9654,23 @@ fn render_podcast_cards(w: &MainWindow, all: &[PodAllData]) {
     w.set_music_podcast_sub_pages(sub_pages as i32);
     w.set_music_podcast_sub_page(sub_page as i32);
     w.set_music_podcast_cards(slint::ModelRc::new(slint::VecModel::from(sub_cards)));
-    // Home "Your shows" — all subscriptions, 14/page.
-    let home_pages = ((all.len() + PODCAST_HOME_PAGE - 1) / PODCAST_HOME_PAGE).max(1);
+    // Home "Your shows" — only shows the user pinned (home_pinned), capped at 2
+    // pages; the rest live on the Subscribed tab. 14/page, sortable.
+    let home_sort = w.get_music_podcast_home_sort().to_string();
+    let mut home_order: Vec<(usize, &PodAllData)> = all.iter().enumerate().filter(|(_, d)| d.pinned).collect();
+    match home_sort.as_str() {
+        "category" => home_order.sort_by(|a, b| a.1.category.to_lowercase().cmp(&b.1.category.to_lowercase())
+            .then(a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase()))),
+        "latest" => home_order.sort_by(|a, b| b.1.latest.cmp(&a.1.latest)
+            .then(a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase()))),
+        _ => home_order.sort_by(|a, b| a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase())),
+    }
+    let home_total = home_order.len().min(PODCAST_HOME_PAGE * PODCAST_HOME_MAX_PAGES);  // cap to 2 pages
+    let home_pages = ((home_total + PODCAST_HOME_PAGE - 1) / PODCAST_HOME_PAGE).max(1);
     let home_page = (w.get_music_podcast_home_page().max(0) as usize).min(home_pages - 1);
-    let home_cards: Vec<PodcastCard> = all.iter().enumerate().skip(home_page * PODCAST_HOME_PAGE).take(PODCAST_HOME_PAGE)
-        .map(|(i, d)| to_card(i, d)).collect();
+    let home_cards: Vec<PodcastCard> = home_order.iter().take(home_total)
+        .skip(home_page * PODCAST_HOME_PAGE).take(PODCAST_HOME_PAGE)
+        .map(|(i, d)| to_card(*i, d)).collect();
     w.set_music_podcast_home_pages(home_pages as i32);
     w.set_music_podcast_home_page(home_page as i32);
     w.set_music_podcast_home_cards(slint::ModelRc::new(slint::VecModel::from(home_cards)));
@@ -9554,6 +9691,7 @@ fn open_podcast(w: &MainWindow, pid_i32: i32) {
     w.set_music_podcast_d_episodes(slint::ModelRc::new(slint::VecModel::from(Vec::<PodcastEpisodeRow>::new())));
     w.set_music_podcast_detail_open(true);
     w.set_music_podcast_d_page(0);
+    w.set_music_podcast_d_id(pid_i32);
     load_podcast_detail(w, pid);
 }
 
@@ -9567,8 +9705,8 @@ fn load_podcast_detail(w: &MainWindow, pid: i64) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("podcasts").await else { return; };
-        let head: Option<(String, String, String, String, String)> = sqlx::query_as(
-            "SELECT COALESCE(title, feed_url), COALESCE(author,''), COALESCE(category,''), COALESCE(description,''), COALESCE(NULLIF(custom_image,''), image_url, '')
+        let head: Option<(String, String, String, String, String, i64)> = sqlx::query_as(
+            "SELECT COALESCE(title, feed_url), COALESCE(author,''), COALESCE(category,''), COALESCE(description,''), COALESCE(NULLIF(custom_image,''), image_url, ''), COALESCE(home_pinned,0)
              FROM podcasts WHERE id = ?").bind(pid).fetch_optional(&pool).await.ok().flatten();
         let filter = pod_filter("detail");
         let like = format!("%{}%", filter.trim());
@@ -9597,13 +9735,14 @@ fn load_podcast_detail(w: &MainWindow, pid: i64) {
         // grid). Per-episode thumbs are NOT fetched on the detail page — fetching
         // 20 images serially was the main cause of the slow open; every row falls
         // back to the show art, which is what most podcast apps show anyway.
-        let head_art = if let Some((_, _, _, _, img)) = &head { resolve_artwork(&client, &format!("pod-{pid}"), img).await } else { None };
+        let head_art = if let Some((_, _, _, _, img, _)) = &head { resolve_artwork(&client, &format!("pod-{pid}"), img).await } else { None };
         let _ = weak.upgrade_in_event_loop(move |w| {
-            if let Some((title, author, category, desc, _)) = &head {
+            if let Some((title, author, category, desc, _, pinned)) = &head {
                 w.set_music_podcast_d_title(title.clone().into());
                 w.set_music_podcast_d_author(author.clone().into());
                 w.set_music_podcast_d_category(category.clone().into());
                 w.set_music_podcast_d_desc(desc.clone().into());
+                w.set_music_podcast_d_pinned(*pinned != 0);
             }
             w.set_music_podcast_d_image(head_art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default());
             w.set_music_podcast_d_total(total as i32);
@@ -9766,18 +9905,117 @@ fn refresh_podcast_views(w: &MainWindow) {
 }
 
 /// Fill the audiobooks view with `is_audiobook` library tracks (np.p5.music.audiobook-chapters).
+/// Folder basename → book title.
+fn book_title(folder: &str) -> String {
+    std::path::Path::new(folder).file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| folder.to_string())
+}
+
+/// Seconds → "8h 12m" / "47m" pretty duration for book cards.
+fn fmt_hm(secs: f64) -> String {
+    let total = secs.max(0.0) as i64;
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    if h > 0 { format!("{}h {}m", h, m) } else { format!("{}m", m) }
+}
+
+/// In-memory maps used to turn library positions into title/artist/duration +
+/// cover art (shared by the audiobook card + detail builders).
+fn music_pos_maps() -> (std::collections::HashMap<i64, i32>, std::collections::HashMap<i32, (String, String, f64)>) {
+    let pos_of = music_ids().lock()
+        .map(|g| g.iter().enumerate().map(|(i, id)| (*id, i as i32)).collect()).unwrap_or_default();
+    let by_pos = music_songs().lock()
+        .map(|g| g.iter().map(|s| (s.pos, (s.title.clone(), s.artist.clone(), s.duration_s))).collect()).unwrap_or_default();
+    (pos_of, by_pos)
+}
+
+/// Build one audiobook card from a folder's ordered chapter ids.
+fn build_book_card(w: &MainWindow, folder: &str, ids: &[i64],
+                   pos_of: &std::collections::HashMap<i64, i32>,
+                   by_pos: &std::collections::HashMap<i32, (String, String, f64)>) -> BookCard {
+    let tiles = w.get_music_tiles();
+    let mut total = 0.0;
+    let mut cover = slint::Image::default();
+    let mut first = true;
+    for id in ids {
+        let Some(&pos) = pos_of.get(id) else { continue; };
+        let (_t, _a, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
+        total += dur;
+        if first {
+            first = false;
+            if pos >= 0 && (pos as usize) < tiles.row_count() {
+                cover = tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default();
+            }
+        }
+    }
+    BookCard {
+        id: folder.into(),
+        title: book_title(folder).into(),
+        author: "".into(),
+        cover,
+        chapters: ids.len() as i32,
+        total_time: fmt_hm(total).into(),
+        resume_frac: 0.0,
+    }
+}
+
+/// Fill the audiobook detail hero + chapter list for one folder.
+fn fill_book_detail(w: &MainWindow, folder: &str, ids: &[i64]) {
+    let (pos_of, by_pos) = music_pos_maps();
+    let tiles = w.get_music_tiles();
+    let mut total = 0.0;
+    let mut first_pos = -1;
+    let mut rows: Vec<ChapterRow> = Vec::new();
+    for id in ids {
+        let Some(&pos) = pos_of.get(id) else { continue; };
+        if first_pos < 0 { first_pos = pos; }
+        let (title, _artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
+        total += dur;
+        let n = rows.len() + 1;
+        rows.push(ChapterRow {
+            title: if title.is_empty() { format!("Chapter {}", n).into() } else { title.into() },
+            duration: if dur > 0.0 { fmt_clock(dur).into() } else { "".into() },
+            index: pos,
+            played: false,
+        });
+    }
+    let cover = if first_pos >= 0 && (first_pos as usize) < tiles.row_count() {
+        tiles.row_data(first_pos as usize).map(|t| t.thumb).unwrap_or_default()
+    } else { slint::Image::default() };
+    w.set_music_ab_d_title(book_title(folder).into());
+    w.set_music_ab_d_author("".into());
+    w.set_music_ab_d_cover(cover);
+    w.set_music_ab_d_total(fmt_hm(total).into());
+    w.set_music_ab_d_chapters(slint::ModelRc::new(slint::VecModel::from(rows)));
+    w.set_music_ab_d_resume_index(first_pos);
+    w.set_music_audiobook_detail_open(true);
+}
+
 fn populate_audiobooks(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("music").await else { return; };
+        // Reflect folder→section assignments: flag every audiobook-section
+        // folder so its (now-scanned) tracks show up grouped below.
+        for (folder, key) in load_folder_sections() {
+            if key == "audiobooks" {
+                let _ = tulipix_music::audiobooks::set_folder_flag(&pool, &folder, true).await;
+            }
+        }
         let ids: Vec<i64> = sqlx::query_scalar(
             "SELECT item_id FROM track_meta WHERE is_audiobook = 1")
             .fetch_all(&pool).await.unwrap_or_default();
+        // One (folder, ordered chapter ids) entry per book card.
+        let books = tulipix_music::audiobooks::book_folders(&pool).await.unwrap_or_default();
+        let mut book_ids: Vec<(String, Vec<i64>)> = Vec::with_capacity(books.len());
+        for (folder, _n) in &books {
+            let cids = tulipix_music::audiobooks::book_chapters(&pool, folder).await.unwrap_or_default();
+            book_ids.push((folder.clone(), cids));
+        }
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let pos_of: std::collections::HashMap<i64, i32> = music_ids().lock()
-                .map(|g| g.iter().enumerate().map(|(i, id)| (*id, i as i32)).collect()).unwrap_or_default();
-            let by_pos: std::collections::HashMap<i32, (String, String, f64)> = music_songs().lock()
-                .map(|g| g.iter().map(|s| (s.pos, (s.title.clone(), s.artist.clone(), s.duration_s))).collect()).unwrap_or_default();
+            let (pos_of, by_pos) = music_pos_maps();
             let tiles = w.get_music_tiles();
             let rows: Vec<MusicSongRow> = ids.iter().filter_map(|id| pos_of.get(id).copied()).map(|pos| {
                 let (title, artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
@@ -9790,6 +10028,10 @@ fn populate_audiobooks(w: &MainWindow) {
                 }
             }).collect();
             w.set_music_audiobooks(slint::ModelRc::new(slint::VecModel::from(rows)));
+            let cards: Vec<BookCard> = book_ids.iter()
+                .map(|(folder, cids)| build_book_card(&w, folder, cids, &pos_of, &by_pos))
+                .collect();
+            w.set_music_audiobook_cards(slint::ModelRc::new(slint::VecModel::from(cards)));
         });
     });
 }
