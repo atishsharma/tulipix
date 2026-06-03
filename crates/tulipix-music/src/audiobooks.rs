@@ -63,10 +63,84 @@ pub async fn bookmarks(pool: &SqlitePool, item_id: i64) -> Result<Vec<(f64, Stri
     Ok(rows.into_iter().map(|(p, l)| (p, l.unwrap_or_default())).collect())
 }
 
+/// Set (or clear) `is_audiobook` for every track whose `folder` matches.
+/// Returns the number of track_meta rows updated.
+pub async fn set_folder_flag(pool: &SqlitePool, folder: &str, on: bool) -> Result<u64> {
+    let res = sqlx::query("UPDATE track_meta SET is_audiobook = ? WHERE folder = ?")
+        .bind(if on { 1 } else { 0 })
+        .bind(folder)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+/// Distinct audiobook folders with chapter counts, ordered by folder path.
+/// One row per book card (np.p5.music.audiobook-chapters).
+pub async fn book_folders(pool: &SqlitePool) -> Result<Vec<(String, i64)>> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT folder, COUNT(*) AS n FROM track_meta \
+         WHERE is_audiobook = 1 AND folder IS NOT NULL AND folder <> '' \
+         GROUP BY folder ORDER BY folder")
+        .fetch_all(pool).await?;
+    Ok(rows)
+}
+
+/// item_ids of one book's chapters, ordered by track_no then item_id.
+pub async fn book_chapters(pool: &SqlitePool, folder: &str) -> Result<Vec<i64>> {
+    let rows: Vec<i64> = sqlx::query_scalar(
+        "SELECT item_id FROM track_meta \
+         WHERE is_audiobook = 1 AND folder = ? \
+         ORDER BY COALESCE(track_no, 1000000), item_id")
+        .bind(folder).fetch_all(pool).await?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::schema::tests::{open_pool, add_track};
+
+    #[tokio::test]
+    async fn folder_flag_scopes_to_one_folder() {
+        let (_t, pool) = open_pool().await;
+        let a = add_track(&pool, "/books/dune/ch01.mp3").await;
+        let b = add_track(&pool, "/books/dune/ch02.mp3").await;
+        let c = add_track(&pool, "/music/song.mp3").await;
+        for (id, folder) in [(a, "/books/dune"), (b, "/books/dune"), (c, "/music")] {
+            sqlx::query("UPDATE track_meta SET folder = ? WHERE item_id = ?")
+                .bind(folder).bind(id).execute(&pool).await.unwrap();
+        }
+        let n = set_folder_flag(&pool, "/books/dune", true).await.unwrap();
+        assert_eq!(n, 2);
+        let flagged: Vec<i64> = sqlx::query_scalar(
+            "SELECT item_id FROM track_meta WHERE is_audiobook = 1 ORDER BY item_id")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(flagged, vec![a, b]);
+        let n2 = set_folder_flag(&pool, "/books/dune", false).await.unwrap();
+        assert_eq!(n2, 2);
+        let still: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_meta WHERE is_audiobook = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(still, 0);
+    }
+
+    #[tokio::test]
+    async fn book_folders_groups_and_counts() {
+        let (_t, pool) = open_pool().await;
+        let a = add_track(&pool, "/books/dune/ch01.mp3").await;
+        let b = add_track(&pool, "/books/dune/ch02.mp3").await;
+        let c = add_track(&pool, "/books/hobbit/all.m4b").await;
+        for (id, folder) in [(a, "/books/dune"), (b, "/books/dune"), (c, "/books/hobbit")] {
+            sqlx::query("UPDATE track_meta SET folder = ?, is_audiobook = 1 WHERE item_id = ?")
+                .bind(folder).bind(id).execute(&pool).await.unwrap();
+        }
+        let books = book_folders(&pool).await.unwrap();
+        assert_eq!(books, vec![
+            ("/books/dune".to_string(), 2),
+            ("/books/hobbit".to_string(), 1),
+        ]);
+        let dune = book_chapters(&pool, "/books/dune").await.unwrap();
+        assert_eq!(dune, vec![a, b]);
+    }
 
     #[test]
     fn speed_clamps_and_keeps_pitch() {
