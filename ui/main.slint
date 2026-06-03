@@ -9,7 +9,7 @@ import { SharedHero, HeroRect } from "shared_element.slint";
 import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
 import { MusicPage, MusicFullscreen, MusicMini, PodcastMini } from "page_music.slint";
-import { MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow } from "music_common.slint";
+import { MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow } from "music_common.slint";
 import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry } from "page_cloud.slint";
@@ -1114,6 +1114,21 @@ export component MainWindow inherits Window {
     in-out property <string> music-playlist-sort-dir: "asc";
     callback music-playlist-sort-set(string);
     in-out property <[MusicSongRow]> music-audiobooks: [];
+    // Folder-grouped audiobook cards + hero-detail state.
+    in property <[BookCard]> music-audiobook-cards: [];
+    in-out property <bool> music-audiobook-detail-open: false;
+    in-out property <string> music-ab-d-title;
+    in-out property <string> music-ab-d-author;
+    in property <image> music-ab-d-cover;
+    in-out property <string> music-ab-d-total;
+    in property <[ChapterRow]> music-ab-d-chapters: [];
+    in-out property <int> music-ab-d-resume-index: -1;
+    callback music-audiobook-open(string);
+    callback music-audiobook-back();
+    // + Add → pick folder → assign music sub-section popup.
+    in-out property <string> music-pending-add-path: "";
+    in-out property <bool> music-add-section-open: false;
+    callback music-confirm-add-section(string);
     in-out property <float> music-book-speed: 1.0;
     in-out property <bool> music-book-skip-silence-on: false;
     in-out property <[string]> music-book-bookmarks: [];
@@ -1765,6 +1780,12 @@ export component MainWindow inherits Window {
                 podcast-transcript-open <=> root.music-podcast-transcript-open;
                 podcast-transcript-title: root.music-podcast-transcript-title; podcast-transcript-text: root.music-podcast-transcript-text;
                 audiobooks: root.music-audiobooks; book-speed <=> root.music-book-speed;
+                audiobook-cards: root.music-audiobook-cards;
+                audiobook-detail-open <=> root.music-audiobook-detail-open;
+                ab-d-title <=> root.music-ab-d-title; ab-d-author <=> root.music-ab-d-author;
+                ab-d-cover: root.music-ab-d-cover; ab-d-total <=> root.music-ab-d-total;
+                ab-d-chapters: root.music-ab-d-chapters; ab-d-resume-index <=> root.music-ab-d-resume-index;
+                audiobook-open(f) => { root.music-audiobook-open(f); } audiobook-back => { root.music-audiobook-back(); }
                 book-skip-silence-on <=> root.music-book-skip-silence-on; book-bookmarks: root.music-book-bookmarks;
                 audiobook-play(i) => { root.music-audiobook-play(i); } set-book-speed(s) => { root.music-set-book-speed(s); } book-chapter(d) => { root.music-book-chapter(d); }
                 book-skip-silence => { root.music-book-skip-silence(); } book-bookmark => { root.music-book-bookmark(); } book-bookmark-jump(i) => { root.music-book-bookmark-jump(i); }
@@ -2579,6 +2600,59 @@ export component MainWindow inherits Window {
         crop-apply(x, y, w, h) => { root.editor-crop(x, y, w, h); }
         resize-apply(w, h) => { root.editor-resize(w, h); }
         close => { root.editor-close(); root.editor-open = false; key-scope.focus(); }
+    }
+
+    // Add-folder → assign music sub-section popup. After + Add picks a folder,
+    // the user classifies it into one of the 5 music sections; choosing
+    // Audiobooks flags every track in that folder as an audiobook.
+    if root.music-add-section-open: Rectangle {
+        x: 0; y: 0; width: root.width; height: root.height;
+        background: #000000aa;
+        TouchArea { clicked => { root.music-add-section-open = false; } } // scrim dismiss
+        Rectangle {
+            width: 460px; height: 360px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            border-radius: Theme.radius-lg;
+            background: Theme.modal;
+            border-color: Accent.color.with-alpha(0.5); border-width: 1px;
+            drop-shadow-blur: 32px; drop-shadow-color: #000000aa;
+            TouchArea {} // swallow clicks so they don't dismiss
+            VerticalLayout {
+                padding: 22px; spacing: 12px;
+                Text { text: "Add to library"; color: Theme.text; font-size: 18px; font-weight: 700; }
+                Text { text: "Classify this folder. Audiobooks get chapter nav + position-remember.";
+                    color: Theme.text-dim; font-size: 12px; wrap: word-wrap; }
+                Text { text: root.music-pending-add-path; color: Accent.color; font-size: 11px;
+                    overflow: elide; }
+                Rectangle { height: 1px; background: Theme.outline; }
+                for opt[i] in [
+                    { key: "mymusic",    label: "🎵  My Music",   sub: "Songs, albums, artists" },
+                    { key: "podcasts",   label: "🎙  Podcasts",   sub: "RSS feeds + episodes" },
+                    { key: "audiobooks", label: "📚  Audiobooks",  sub: "Chapters + resume + speed" },
+                    { key: "radio",      label: "📻  Radio",      sub: "Stream stations" },
+                    { key: "youtube",    label: "▶  YouTube",     sub: "Downloads" },
+                ]: Rectangle {
+                    height: 44px; border-radius: 10px;
+                    background: oa.has-hover ? Accent.color.with-alpha(0.16) : Theme.panel;
+                    border-width: 1px; border-color: oa.has-hover ? Accent.color.with-alpha(0.5) : Theme.outline;
+                    animate background { duration: 100ms; }
+                    oa := TouchArea { mouse-cursor: pointer;
+                        clicked => { root.music-confirm-add-section(opt.key); root.music-add-section-open = false; } }
+                    HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 10px;
+                        VerticalLayout { alignment: center; Text { text: opt.label; color: Theme.text; font-size: 14px; font-weight: 700; } }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout { alignment: center; Text { text: opt.sub; color: Theme.text-dim; font-size: 11px; } } }
+                }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { alignment: end;
+                    Rectangle { width: 90px; height: 32px; border-radius: 8px;
+                        background: ca.has-hover ? Theme.panel-2 : Theme.panel;
+                        border-width: 1px; border-color: Theme.outline;
+                        ca := TouchArea { mouse-cursor: pointer; clicked => { root.music-add-section-open = false; } }
+                        Text { text: "Cancel"; color: Theme.text; font-size: 12px;
+                            horizontal-alignment: center; vertical-alignment: center; } } }
+            }
+        }
     }
 
     // Capability-denied nudge toast (np.p1.caps.events). Auto-clears.

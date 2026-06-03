@@ -5,7 +5,7 @@ import { ScrollView, ComboBox } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
 import { HdrChip, CountPill } from "section_header.slint";
 import { MusicTheme } from "theme.slint";
-import { MusicSongRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow } from "music_common.slint";
+import { MusicSongRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, BookCard, ChapterRow } from "music_common.slint";
 
 component AlbumCard inherits Rectangle {
     in property <image> thumb;
@@ -830,6 +830,58 @@ component PodcastEpisodeItem inherits Rectangle {
     }
 }
 
+// One book cover with a 📚 placeholder fallback for coverless audiobooks.
+component BookCover inherits Rectangle {
+    in property <image> cover;
+    in property <length> glyph-size: 40px;
+    border-radius: 12px; clip: true;
+    background: MusicTheme.surf1;
+    if root.cover.width == 0: Rectangle {
+        background: #3b82f61f;
+        Text { text: "📚"; font-size: root.glyph-size; horizontal-alignment: center; vertical-alignment: center; }
+    }
+    if root.cover.width > 0: Image { source: root.cover; image-fit: ImageFit.cover; width: 100%; height: 100%; }
+}
+
+// One audiobook card in the grid.
+component BookCardView inherits Rectangle {
+    in property <BookCard> card;
+    callback open();
+    border-radius: 14px;
+    background: ta.has-hover ? MusicTheme.hov2 : MusicTheme.surf00;
+    border-width: 1px; border-color: MusicTheme.line;
+    animate background { duration: 120ms; }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
+    VerticalLayout { padding: 10px; spacing: 8px;
+        BookCover { cover: root.card.cover; height: self.width; }
+        Text { text: root.card.title; color: MusicTheme.fg; font-size: 13px; font-weight: 700; overflow: elide; }
+        if root.card.author != "": Text { text: root.card.author; color: MusicTheme.fg-dim2; font-size: 11px; overflow: elide; }
+        HorizontalLayout { spacing: 6px;
+            Text { text: root.card.chapters + " ch"; color: MusicTheme.fg-dim; font-size: 11px; }
+            Rectangle { horizontal-stretch: 1; }
+            Text { text: root.card.total-time; color: MusicTheme.fg-dim; font-size: 11px; } }
+        Rectangle { height: 4px; border-radius: 2px; background: MusicTheme.line;
+            Rectangle { x: 0; width: parent.width * Math.clamp(root.card.resume-frac, 0, 1);
+                height: 100%; border-radius: 2px; background: #3b82f6; } }
+    }
+}
+
+// One chapter row in the audiobook detail view.
+component ChapterItem inherits Rectangle {
+    in property <ChapterRow> chapter;
+    in property <int> n;
+    callback play();
+    height: 40px; border-radius: 8px;
+    background: cta.has-hover ? MusicTheme.hov2 : transparent;
+    cta := TouchArea { mouse-cursor: pointer; clicked => { root.play(); } }
+    HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 10px;
+        VerticalLayout { alignment: center; Text { text: root.n + "."; color: MusicTheme.fg-dim; font-size: 12px; width: 28px; } }
+        VerticalLayout { alignment: center; horizontal-stretch: 1;
+            Text { text: root.chapter.title; color: root.chapter.played ? MusicTheme.fg-dim2 : MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; } }
+        VerticalLayout { alignment: center; Text { text: root.chapter.duration; color: MusicTheme.fg-dim; font-size: 12px; } }
+    }
+}
+
 export component MusicPage inherits Rectangle {
     in property <int> item-count: 0;
     in property <bool> home-connect: false;       // gradient-outline the Home blocks
@@ -1206,6 +1258,17 @@ export component MusicPage inherits Rectangle {
     in property <string> podcast-transcript-text: "";
     // Audiobooks (np.p5.music.audiobook-chapters).
     in property <[MusicSongRow]> audiobooks: [];
+    // Folder-grouped audiobook cards + hero-detail state (np.p5.music.audiobook-chapters).
+    in property <[BookCard]> audiobook-cards: [];
+    in-out property <bool> audiobook-detail-open: false;
+    in-out property <string> ab-d-title;
+    in-out property <string> ab-d-author;
+    in property <image> ab-d-cover;
+    in-out property <string> ab-d-total;
+    in property <[ChapterRow]> ab-d-chapters: [];
+    in-out property <int> ab-d-resume-index: -1; // chapter to (re)start on Resume
+    callback audiobook-open(string);   // open a book by folder path
+    callback audiobook-back();
     in-out property <float> book-speed: 1.0;
     in-out property <bool> book-skip-silence-on: false;
     in property <[string]> book-bookmarks: [];
@@ -1819,27 +1882,72 @@ export component MusicPage inherits Rectangle {
         }
 
         // Audiobooks (np.p5.music.audiobook-chapters) — speed + chapters + resume.
-        if root.view == "audiobooks": ScrollView {
+        // ── Audiobooks: folder-grouped card grid ────────────────────────────
+        if root.view == "audiobooks" && !root.audiobook-detail-open: ScrollView {
             vertical-stretch: 1; horizontal-stretch: 1;
             VerticalLayout { padding: 36px; padding-top: 20px; spacing: 18px;
                 Text { text: "Audiobooks"; color: MusicTheme.fg; font-size: 26px; font-weight: 800; }
-                HorizontalLayout { spacing: 8px; alignment: start;
-                    VerticalLayout { alignment: center; Text { text: "Speed"; color: MusicTheme.fg-mute; font-size: 12px; } }
-                    for sp[i] in [0.75, 1.0, 1.25, 1.5, 2.0]: BrowseChip {
-                        label: root.book-speed == sp ? "● " + sp + "×" : sp + "×"; clicked => { root.set-book-speed(sp); } }
-                    VerticalLayout { alignment: center; Rectangle { width: 1px; height: 18px; background: MusicTheme.line; } }
-                    BrowseChip { label: "⏮ Chapter"; clicked => { root.book-chapter(-1); } }
-                    BrowseChip { label: "Chapter ⏭"; clicked => { root.book-chapter(1); } }
-                    VerticalLayout { alignment: center; Rectangle { width: 1px; height: 18px; background: MusicTheme.line; } }
-                    BrowseChip { label: root.book-skip-silence-on ? "● Skip silence" : "Skip silence"; clicked => { root.book-skip-silence(); } }
-                    BrowseChip { label: "+ Bookmark"; clicked => { root.book-bookmark(); } }
+                if root.audiobook-cards.length == 0: Text {
+                    text: "No audiobooks yet — use + Add (top-right), pick a folder and assign it to Audiobooks; or mark a track via its tag editor.";
+                    color: MusicTheme.fg-dim2; font-size: 13px; }
+                Rectangle { horizontal-stretch: 1;
+                    property <int> cols: 6;
+                    property <length> cw: self.width / cols;
+                    property <length> ch: cw + 92px;
+                    height: Math.ceil(root.audiobook-cards.length / cols) * ch;
+                    for c[idx] in root.audiobook-cards: BookCardView {
+                        x: Math.mod(idx, cols) * cw + 7px;
+                        y: Math.floor(idx / cols) * ch;
+                        width: cw - 14px; height: ch - 14px;
+                        card: c;
+                        open => { root.audiobook-open(c.id); } } }
+            }
+        }
+
+        // ── Audiobooks: hero detail + chapter list ──────────────────────────
+        if root.view == "audiobooks" && root.audiobook-detail-open: ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout { padding: 0px; spacing: 16px; alignment: start;
+                // Hero.
+                Rectangle { height: 300px; horizontal-stretch: 1; clip: true;
+                    Rectangle { width: parent.width; height: parent.height;
+                        background: @linear-gradient(180deg, #3b82f659, MusicTheme.surf-page); }
+                    HorizontalLayout { padding-left: 36px; padding-right: 36px; padding-top: 18px; padding-bottom: 16px; spacing: 22px;
+                        BookCover { width: 260px; height: 260px; glyph-size: 56px; cover: root.ab-d-cover;
+                            y: (parent.height - self.height)/2; border-width: 1px; border-color: MusicTheme.line;
+                            drop-shadow-blur: 24px; drop-shadow-color: #000000aa; }
+                        VerticalLayout { horizontal-stretch: 1; padding-top: 20px; spacing: 8px; alignment: start;
+                            HorizontalLayout { spacing: 10px;
+                                Text { text: "AUDIOBOOK"; color: MusicTheme.fg-dim; font-size: 11px; font-weight: 700; letter-spacing: 2px; vertical-alignment: center; }
+                                Rectangle { horizontal-stretch: 1; }
+                                BrowseChip { label: "‹ Back"; clicked => { root.audiobook-back(); } } }
+                            Text { text: root.ab-d-title; color: MusicTheme.fg; font-size: 28px; font-weight: 800; overflow: elide; }
+                            if root.ab-d-author != "": Text { text: root.ab-d-author; color: MusicTheme.fg3; font-size: 14px; overflow: elide; }
+                            Text { text: root.ab-d-chapters.length + " chapters · " + root.ab-d-total; color: MusicTheme.fg2; font-size: 12px; font-weight: 700; }
+                            HorizontalLayout { spacing: 8px; alignment: start;
+                                Rectangle { height: 32px; border-radius: 16px; horizontal-stretch: 0; background: rb.has-hover ? #2563eb : #3b82f6;
+                                    rb := TouchArea { mouse-cursor: pointer; clicked => { root.audiobook-play(root.ab-d-resume-index); } }
+                                    HorizontalLayout { padding-left: 16px; padding-right: 16px;
+                                        Text { text: "▶ Resume"; color: #ffffff; font-size: 12px; font-weight: 700; vertical-alignment: center; } } } }
+                            HorizontalLayout { spacing: 8px; alignment: start;
+                                VerticalLayout { alignment: center; Text { text: "Speed"; color: MusicTheme.fg-mute; font-size: 12px; } }
+                                for sp[i] in [0.75, 1.0, 1.25, 1.5, 2.0]: BrowseChip {
+                                    label: root.book-speed == sp ? "● " + sp + "×" : sp + "×"; clicked => { root.set-book-speed(sp); } } }
+                            HorizontalLayout { spacing: 8px; alignment: start;
+                                BrowseChip { label: "⏮ Chapter"; clicked => { root.book-chapter(-1); } }
+                                BrowseChip { label: "Chapter ⏭"; clicked => { root.book-chapter(1); } }
+                                BrowseChip { label: root.book-skip-silence-on ? "● Skip silence" : "Skip silence"; clicked => { root.book-skip-silence(); } }
+                                BrowseChip { label: "+ Bookmark"; clicked => { root.book-bookmark(); } } }
+                            Rectangle { vertical-stretch: 1; } } } }
+                // Chapter list.
+                VerticalLayout { padding-left: 36px; padding-right: 36px; padding-bottom: 24px; spacing: 2px;
+                    if root.book-bookmarks.length > 0: HorizontalLayout { spacing: 8px; alignment: start;
+                        VerticalLayout { alignment: center; Text { text: "Bookmarks"; color: MusicTheme.fg-mute; font-size: 12px; } }
+                        for b[i] in root.book-bookmarks: BrowseChip { label: b; clicked => { root.book-bookmark-jump(i); } } }
+                    if root.ab-d-chapters.length == 0: Text { text: "No chapters."; color: MusicTheme.fg-dim2; font-size: 13px; }
+                    for cr[i] in root.ab-d-chapters: ChapterItem {
+                        chapter: cr; n: i + 1; play => { root.audiobook-play(cr.index); } }
                 }
-                if root.book-bookmarks.length > 0: HorizontalLayout { spacing: 8px; alignment: start;
-                    VerticalLayout { alignment: center; Text { text: "Bookmarks"; color: MusicTheme.fg-mute; font-size: 12px; } }
-                    for b[i] in root.book-bookmarks: BrowseChip { label: b; clicked => { root.book-bookmark-jump(i); } } }
-                if root.audiobooks.length == 0: Text { text: "No audiobooks yet — open a track's tag editor or right-click to mark long-form audio as an audiobook."; color: MusicTheme.fg-dim2; font-size: 13px; }
-                VerticalLayout { spacing: 2px;
-                    for s[i] in root.audiobooks: TrackRow { track: s; clicked => { root.audiobook-play(s.index); } } }
             }
         }
 

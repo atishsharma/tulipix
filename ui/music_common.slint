@@ -85,6 +85,26 @@ export struct LyricsMgrRow {
     index: int,        // playback position → find/store target
 }
 
+// One audiobook card in the Audiobooks grid — one per source folder
+// (np.p5.music.audiobook-chapters). Books are grouped by their folder.
+export struct BookCard {
+    id: string,          // folder path (stable key for open/flag)
+    title: string,       // folder basename
+    author: string,
+    cover: image,        // first chapter's art ("" → 📚 placeholder)
+    chapters: int,
+    total-time: string,  // pre-formatted, e.g. "8h 12m"
+    resume-frac: float,  // 0..1 progress for the card bar
+}
+
+// One chapter row in the audiobook detail view.
+export struct ChapterRow {
+    title: string,
+    duration: string,
+    index: int,          // music-library position → audiobook-play target
+    played: bool,
+}
+
 // One row in the library-wide metadata manager (np.p5.atmusic.metadata-manager).
 export struct MetaMgrRow {
     file: string,      // filename stem (the parse source)
