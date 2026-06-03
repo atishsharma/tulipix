@@ -5,98 +5,7 @@ import { ScrollView, ComboBox } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
 import { HdrChip, CountPill } from "section_header.slint";
 import { MusicTheme } from "theme.slint";
-
-// One row in the detailed Songs list (np.p4.music.browse — list view).
-export struct MusicSongRow {
-    thumb: image,
-    title: string,
-    artist: string,
-    duration: string,
-    index: int,        // playback position into music_paths
-}
-
-// One subscribed podcast shown as a card in the Podcasts grid
-// (np.p5.music.podcast-feeds).
-export struct PodcastCard {
-    id: int,           // podcasts.id — drives open / fetch / unsubscribe
-    title: string,
-    author: string,
-    category: string,
-    image: image,
-    unplayed: int,
-    episodes: int,
-    index: int,        // global position in the subscription list
-}
-
-// One card on the Trends (hardcoded directory) page. Carries the feed URL +
-// a subscribed flag so the card can flip to ✓ once added to the library.
-export struct PodcastTrendCard {
-    title: string,
-    author: string,
-    category: string,
-    image: image,
-    feed-url: string,
-    subscribed: bool,
-    index: int,        // position into the baked feed list (subscribe-by-index)
-}
-
-// One episode row — used in the detail page, the Home/Latest feed and the
-// Downloads list.
-export struct PodcastEpisodeRow {
-    id: int,           // podcast_episodes.id (for the download-progress match)
-    title: string,
-    show: string,      // owning podcast title (shown in cross-show feeds)
-    date: string,
-    duration: string,
-    image: image,
-    played: bool,
-    downloaded: bool,
-    index: int,        // position into the list's parallel episode-state vec
-}
-
-// Rich Songs-list row — adds lyrics / fav / star columns.
-export struct SongRowEx {
-    thumb: image,
-    title: string,
-    artist: string,
-    album: string,
-    duration: string,
-    index: int,
-    loved: bool,
-    stars: int,
-    synced: bool,      // has synced lyrics in the DB
-}
-
-// One synchronized lyric line (np.p5.music.lyrics-synced).
-export struct MusicLyricLine {
-    time: string,      // "0:42" display stamp ("" for unsynced lines)
-    text: string,
-}
-
-// One LRCLIB search candidate shown in the lyrics popup results list.
-export struct LyricsResult {
-    title: string,
-    sub: string,       // "Artist · Album · 3:24"
-    kind: string,      // "Synced" | "Normal"
-}
-
-// One row in the library-wide lyrics manager (np.p5.atmusic.lyrics-manager).
-export struct LyricsMgrRow {
-    title: string,
-    artist: string,
-    status: string,    // "Synced" | "Normal" | "Missing"
-    index: int,        // playback position → find/store target
-}
-
-// One row in the library-wide metadata manager (np.p5.atmusic.metadata-manager).
-export struct MetaMgrRow {
-    file: string,      // filename stem (the parse source)
-    title: string,     // current DB title
-    artist: string,    // current DB artist
-    album: string,     // current DB album
-    status: string,    // "Pending" | "Matched" | "No match" | "Error"
-    index: int,        // playback position → fetch target
-}
+import { MusicSongRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow } from "music_common.slint";
 
 component AlbumCard inherits Rectangle {
     in property <image> thumb;
@@ -743,6 +652,7 @@ component PodcastCardView inherits Rectangle {
     callback fetch();
     callback unsubscribe();
     callback info();
+    callback toggle-home();    // pin/unpin to Home "Your shows"
     width: size; horizontal-stretch: 0; vertical-stretch: 0;
     VerticalLayout { spacing: 6px;
         Rectangle { width: size; height: size; border-radius: 14px; clip: true; background: MusicTheme.surf-thumb;
@@ -762,12 +672,14 @@ component PodcastCardView inherits Rectangle {
                     if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down && root.ctx-enabled) {
                         root.menu-x = self.mouse-x; root.menu-y = Math.min(self.mouse-y, self.height - 30px); cardctx.show();
                     } } }
-            cardctx := PopupWindow { x: root.menu-x; y: root.menu-y; width: 220px; height: 168px; close-policy: close-on-click-outside;
+            cardctx := PopupWindow { x: root.menu-x; y: root.menu-y; width: 240px; height: 202px; close-policy: close-on-click-outside;
                 Rectangle { width: 100%; height: 100%; border-radius: 12px; background: MusicTheme.surf-pop;
                     border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: 36px; drop-shadow-color: #000000e6;
                     VerticalLayout { padding: 6px; spacing: 1px;
                         MusicMenuRow { label: "▶   Open"; clicked => { cardctx.close(); root.open(); } }
                         MusicMenuRow { label: "ⓘ   Podcast info"; clicked => { cardctx.close(); root.info(); } }
+                        MusicMenuRow { label: card.home-pinned ? "★   Remove from Your shows" : "☆   Add to Your shows";
+                            txt: card.home-pinned ? #f59e0b : MusicTheme.fg; clicked => { cardctx.close(); root.toggle-home(); } }
                         MusicMenuRow { label: "↻   Fetch new episodes"; clicked => { cardctx.close(); root.fetch(); } }
                         MusicMenuRow { label: "✕   Unsubscribe"; txt: #ef4444; clicked => { cardctx.close(); root.unsubscribe(); } }
                     } } } }
@@ -835,6 +747,7 @@ component PodcastGrid inherits Rectangle {
     callback fetch(int);
     callback unsubscribe(int);
     callback info(int);
+    callback toggle-home(int);
     property <int> cols: force-cols > 0 ? force-cols : Math.max(1, Math.floor(self.width / cell-size));
     // force-cols stretches each cell to fill the width (edge-to-edge). Otherwise
     // cells stay a FIXED cell-size so a single card doesn't blow up to 1/Nth of
@@ -848,7 +761,8 @@ component PodcastGrid inherits Rectangle {
         y: Math.floor(idx / cols) * cell-h;
         width: cell-w; height: cell-h;
         PodcastCardView { x: 4px; card: c; size: cell-w - 8px; ctx-enabled: root.ctx-enabled;
-            open => { root.open(c.id); } fetch => { root.fetch(c.id); } unsubscribe => { root.unsubscribe(c.id); } info => { root.info(c.id); } }
+            open => { root.open(c.id); } fetch => { root.fetch(c.id); } unsubscribe => { root.unsubscribe(c.id); } info => { root.info(c.id); }
+            toggle-home => { root.toggle-home(c.id); } }
     }
 }
 
@@ -1196,6 +1110,11 @@ export component MusicPage inherits Rectangle {
     in property <int> podcast-home-page: 0;
     in property <int> podcast-home-pages: 1;
     callback podcast-home-set-page(int);
+    in-out property <string> podcast-home-sort: "name";   // name | category | latest
+    callback podcast-home-set-sort(string);
+    callback podcast-toggle-home(int);                    // pin/unpin a show to Home
+    in property <bool> podcast-d-pinned: false;           // detail page: is this show on Home?
+    in property <int> podcast-d-id: -1;                   // detail page: open show id
     in property <[PodcastTrendCard]> podcast-trends: [];   // Trends (hardcoded directory)
     in property <bool> podcast-trends-loading: false;
     callback podcast-trend-subscribe(int);
@@ -1700,6 +1619,10 @@ export component MusicPage inherits Rectangle {
                         HorizontalLayout { spacing: 8px;
                             Text { text: "Your shows"; color: MusicTheme.fg; font-size: 17px; font-weight: 700;
                                 vertical-alignment: center; horizontal-stretch: 1; }
+                            VerticalLayout { alignment: center; Text { text: "Sort"; color: MusicTheme.fg-dim; font-size: 12px; vertical-alignment: center; } }
+                            VerticalLayout { alignment: center; SortChip { label: "Name"; active: root.podcast-home-sort == "name"; clicked => { root.podcast-home-set-sort("name"); } } }
+                            VerticalLayout { alignment: center; SortChip { label: "Category"; active: root.podcast-home-sort == "category"; clicked => { root.podcast-home-set-sort("category"); } } }
+                            VerticalLayout { alignment: center; SortChip { label: "Latest episode"; active: root.podcast-home-sort == "latest"; clicked => { root.podcast-home-set-sort("latest"); } } }
                             if root.podcast-home-pages > 1: VerticalLayout { alignment: center;
                                 PageNav { page: root.podcast-home-page; pages: root.podcast-home-pages; go(d) => { root.podcast-home-set-page(d); } } } }
                         // 7 shows per row, edge to edge (14/page → pagination above).
@@ -1707,6 +1630,7 @@ export component MusicPage inherits Rectangle {
                             open(id) => { root.podcast-open(id); }
                             fetch(id) => { root.podcast-fetch(id); }
                             info(id) => { root.podcast-info-open-id(id); }
+                            toggle-home(id) => { root.podcast-toggle-home(id); }
                             unsubscribe(id) => { root.unsub-confirm-id = id; root.unsub-confirm-open = true; } } }
                     Text { text: "Latest episodes"; color: MusicTheme.fg; font-size: 17px; font-weight: 700; }
                     if root.podcast-latest.length == 0 && root.podcast-home-cards.length == 0: VerticalLayout { alignment: center; spacing: 12px;
@@ -1772,6 +1696,7 @@ export component MusicPage inherits Rectangle {
                         open(id) => { root.podcast-open(id); }
                         fetch(id) => { root.podcast-fetch(id); }
                         info(id) => { root.podcast-info-open-id(id); }
+                        toggle-home(id) => { root.podcast-toggle-home(id); }
                         unsubscribe(id) => { root.unsub-confirm-id = id; root.unsub-confirm-open = true; } } }
 
                 // ── DOWNLOADS (offline episodes — sort + 20/page) ───────────
@@ -1804,12 +1729,12 @@ export component MusicPage inherits Rectangle {
             vertical-stretch: 1; horizontal-stretch: 1;
             VerticalLayout { padding: 0px; spacing: 18px; alignment: start;
                 // Hero header — accent wash behind cover + info card + Back.
-                Rectangle { height: 284px; horizontal-stretch: 1; clip: true;
+                Rectangle { height: 320px; horizontal-stretch: 1; clip: true;
                     Rectangle { width: parent.width; height: parent.height;
                         background: @linear-gradient(180deg, #8b5cf659, MusicTheme.surf-page); }
                     HorizontalLayout { padding-left: 36px; padding-right: 36px; padding-top: 18px; padding-bottom: 16px; spacing: 22px;
                         // Cover — same height as the info box; click to set a custom thumb.
-                        Rectangle { width: 244px; height: 244px; border-radius: 14px; clip: true;
+                        Rectangle { width: 280px; height: 280px; border-radius: 14px; clip: true;
                             background: MusicTheme.surf-thumb; y: (parent.height - self.height)/2;
                             border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: 24px; drop-shadow-color: #000000aa;
                             if root.podcast-d-image.width == 0: Text { text: "🎙"; color: #c4b5fd; font-size: 56px; horizontal-alignment: center; vertical-alignment: center; }
@@ -1820,7 +1745,7 @@ export component MusicPage inherits Rectangle {
                                 Text { text: "✎ Change art"; color: #ffffff; font-size: 11px; font-weight: 700;
                                     horizontal-alignment: center; vertical-alignment: center; } } }
                         // Outlined info card — sized to content (not full width).
-                        Rectangle { horizontal-stretch: 0; min-width: 460px; max-width: 620px; height: 244px; y: (parent.height - self.height)/2; border-radius: 14px;
+                        Rectangle { horizontal-stretch: 0; min-width: 460px; max-width: 620px; height: 280px; y: (parent.height - self.height)/2; border-radius: 14px;
                             background: MusicTheme.surf00; border-width: 1px; border-color: MusicTheme.line;
                             VerticalLayout { padding: 18px; spacing: 7px; alignment: start;
                                 Text { text: "PODCAST"; color: MusicTheme.fg-dim; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
@@ -1833,9 +1758,24 @@ export component MusicPage inherits Rectangle {
                                     Rectangle { height: 24px; border-radius: 12px; background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line; horizontal-stretch: 0;
                                         HorizontalLayout { padding-left: 10px; padding-right: 10px;
                                             Text { text: root.podcast-d-total + " episodes"; color: MusicTheme.fg2; font-size: 12px; font-weight: 700; vertical-alignment: center; } } } }
-                                // About — kept INSIDE the info box now.
-                                if root.podcast-d-desc != "": Text { text: root.podcast-d-desc; color: MusicTheme.fg2; font-size: 13px; wrap: word-wrap; overflow: elide; vertical-stretch: 1; }
-                                if root.podcast-d-desc == "": Rectangle { vertical-stretch: 1; }
+                                // Action row — pin to Home "Your shows" + Podcast info.
+                                HorizontalLayout { spacing: 8px; alignment: start;
+                                    Rectangle { height: 30px; border-radius: 15px; horizontal-stretch: 0;
+                                        background: root.podcast-d-pinned ? #f59e0b22 : (ahb.has-hover ? #7c3aed : #8b5cf6);
+                                        border-width: root.podcast-d-pinned ? 1px : 0px; border-color: #f59e0b;
+                                        ahb := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-toggle-home(root.podcast-d-id); } }
+                                        HorizontalLayout { padding-left: 12px; padding-right: 12px;
+                                            Text { text: root.podcast-d-pinned ? "★ On Home" : "☆ Add to Your shows";
+                                                color: root.podcast-d-pinned ? #f59e0b : #ffffff; font-size: 12px; font-weight: 700; vertical-alignment: center; } } }
+                                    Rectangle { height: 30px; border-radius: 15px; horizontal-stretch: 0; background: ifb.has-hover ? MusicTheme.hov2 : MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                                        ifb := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-info-open-id(root.podcast-d-id); } }
+                                        HorizontalLayout { padding-left: 12px; padding-right: 12px;
+                                            Text { text: "ⓘ Info"; color: MusicTheme.fg; font-size: 12px; font-weight: 700; vertical-alignment: center; } } } }
+                                // About — INSIDE the info box, hard-capped to 3 lines so long
+                                // descriptions never spill out of the card.
+                                if root.podcast-d-desc != "": Text { text: root.podcast-d-desc; color: MusicTheme.fg2; font-size: 13px;
+                                    wrap: word-wrap; overflow: elide; height: 54px; }
+                                Rectangle { vertical-stretch: 1; }
                                 // Sort + pagination row (inside the card footer).
                                 HorizontalLayout { spacing: 8px; alignment: start;
                                     VerticalLayout { alignment: center; Text { text: "Sort"; color: MusicTheme.fg-dim; font-size: 12px; vertical-alignment: center; } }
@@ -1851,7 +1791,7 @@ export component MusicPage inherits Rectangle {
                                         dnnp := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-d-set-page(1); } }
                                         Text { text: "▶"; color: #ffffff; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; } } } } } }
                         // BIG round Back — OUTSIDE the info box, cover-sized, glows on hover.
-                        Rectangle { width: 244px; height: 244px; border-radius: 122px; horizontal-stretch: 0; vertical-stretch: 0;
+                        Rectangle { width: 280px; height: 280px; border-radius: 140px; horizontal-stretch: 0; vertical-stretch: 0;
                             y: (parent.height - self.height)/2;
                             background: dbkp.has-hover ? #8b5cf6 : MusicTheme.surf1;
                             border-width: 2px; border-color: dbkp.has-hover ? #8b5cf6 : MusicTheme.line;

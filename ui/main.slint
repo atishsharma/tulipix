@@ -8,7 +8,8 @@ import { PhotoEditor } from "photo_editor.slint";
 import { SharedHero, HeroRect } from "shared_element.slint";
 import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
-import { MusicPage, MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, MusicFullscreen, MusicMini, PodcastMini } from "page_music.slint";
+import { MusicPage, MusicFullscreen, MusicMini, PodcastMini } from "page_music.slint";
+import { MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow } from "music_common.slint";
 import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry } from "page_cloud.slint";
@@ -1018,6 +1019,11 @@ export component MainWindow inherits Window {
     in-out property <int> music-podcast-home-page: 0;
     in-out property <int> music-podcast-home-pages: 1;
     callback music-podcast-home-set-page(int);
+    in-out property <string> music-podcast-home-sort: "name";
+    callback music-podcast-home-set-sort(string);
+    callback music-podcast-toggle-home(int);
+    in-out property <bool> music-podcast-d-pinned: false;
+    in-out property <int> music-podcast-d-id: -1;
     in-out property <[PodcastTrendCard]> music-podcast-trends: [];
     in-out property <bool> music-podcast-trends-loading: false;
     callback music-podcast-trend-subscribe(int);
@@ -1701,6 +1707,11 @@ export component MainWindow inherits Window {
                 podcast-home-cards: root.music-podcast-home-cards;
                 podcast-home-page: root.music-podcast-home-page; podcast-home-pages: root.music-podcast-home-pages;
                 podcast-home-set-page(d) => { root.music-podcast-home-set-page(d); }
+                podcast-home-sort <=> root.music-podcast-home-sort;
+                podcast-home-set-sort(s) => { root.music-podcast-home-set-sort(s); }
+                podcast-toggle-home(id) => { root.music-podcast-toggle-home(id); }
+                podcast-d-pinned: root.music-podcast-d-pinned;
+                podcast-d-id: root.music-podcast-d-id;
                 podcast-trends: root.music-podcast-trends; podcast-trends-loading: root.music-podcast-trends-loading;
                 podcast-trend-subscribe(i) => { root.music-podcast-trend-subscribe(i); }
                 podcast-trend-info(i) => { root.music-podcast-trend-info(i); }

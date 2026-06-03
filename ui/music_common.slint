@@ -1,0 +1,96 @@
+// Shared music module — structs, the MusicState global, and shared components
+// used across the 5 music sections (mymusic / podcasts / audiobooks / radio /
+// youtube). Split out of page_music.slint so each section is its own file.
+
+// One row in the detailed Songs list (np.p4.music.browse — list view).
+export struct MusicSongRow {
+    thumb: image,
+    title: string,
+    artist: string,
+    duration: string,
+    index: int,        // playback position into music_paths
+}
+
+// One subscribed podcast shown as a card in the Podcasts grid
+// (np.p5.music.podcast-feeds).
+export struct PodcastCard {
+    id: int,           // podcasts.id — drives open / fetch / unsubscribe
+    title: string,
+    author: string,
+    category: string,
+    image: image,
+    unplayed: int,
+    episodes: int,
+    index: int,        // global position in the subscription list
+    home-pinned: bool, // shown on Home "Your shows"
+}
+
+// One card on the Trends (hardcoded directory) page. Carries the feed URL +
+// a subscribed flag so the card can flip to ✓ once added to the library.
+export struct PodcastTrendCard {
+    title: string,
+    author: string,
+    category: string,
+    image: image,
+    feed-url: string,
+    subscribed: bool,
+    index: int,        // position into the baked feed list (subscribe-by-index)
+}
+
+// One episode row — used in the detail page, the Home/Latest feed and the
+// Downloads list.
+export struct PodcastEpisodeRow {
+    id: int,           // podcast_episodes.id (for the download-progress match)
+    title: string,
+    show: string,      // owning podcast title (shown in cross-show feeds)
+    date: string,
+    duration: string,
+    image: image,
+    played: bool,
+    downloaded: bool,
+    index: int,        // position into the list's parallel episode-state vec
+}
+
+// Rich Songs-list row — adds lyrics / fav / star columns.
+export struct SongRowEx {
+    thumb: image,
+    title: string,
+    artist: string,
+    album: string,
+    duration: string,
+    index: int,
+    loved: bool,
+    stars: int,
+    synced: bool,      // has synced lyrics in the DB
+}
+
+// One synchronized lyric line (np.p5.music.lyrics-synced).
+export struct MusicLyricLine {
+    time: string,      // "0:42" display stamp ("" for unsynced lines)
+    text: string,
+}
+
+// One LRCLIB search candidate shown in the lyrics popup results list.
+export struct LyricsResult {
+    title: string,
+    sub: string,       // "Artist · Album · 3:24"
+    kind: string,      // "Synced" | "Normal"
+}
+
+// One row in the library-wide lyrics manager (np.p5.atmusic.lyrics-manager).
+export struct LyricsMgrRow {
+    title: string,
+    artist: string,
+    status: string,    // "Synced" | "Normal" | "Missing"
+    index: int,        // playback position → find/store target
+}
+
+// One row in the library-wide metadata manager (np.p5.atmusic.metadata-manager).
+export struct MetaMgrRow {
+    file: string,      // filename stem (the parse source)
+    title: string,     // current DB title
+    artist: string,    // current DB artist
+    album: string,     // current DB album
+    status: string,    // "Pending" | "Matched" | "No match" | "Error"
+    index: int,        // playback position → fetch target
+}
