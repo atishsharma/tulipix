@@ -3,9 +3,7 @@ use slint::{ComponentHandle, Model};
 use std::path::PathBuf;
 use std::sync::OnceLock;
 use tracing_subscriber::EnvFilter;
-use tulipix_core::libraries::{Library, ScanCadence, Section as LibrarySection};
-use tulipix_core::populator::populate;
-use tulipix_photos::scan::scan_library;
+use tulipix_core::libraries::{ScanCadence, Section as LibrarySection};
 
 #[cfg(all(feature = "alloc-mimalloc", any(target_os = "linux", target_os = "windows")))]
 #[global_allocator]
@@ -20,6 +18,7 @@ slint::include_modules!();
 #[cfg(feature = "dev-reload")]
 mod dev_reload;
 mod mpv;
+mod mpv_ipc;
 mod books;
 mod cloud;
 
@@ -45,6 +44,23 @@ fn apply_theme_choice(window: &MainWindow, choice: ThemeChoice) {
         ThemeChoice::System => detect_dark(),
     };
     window.set_dark(dark);
+}
+
+/// Drive the Settings → Libraries maintenance progress bar. `frac` is 0..1, or
+/// negative for an indeterminate "working…" bar. Safe to call from any thread.
+fn set_lib_busy(weak: &slint::Weak<MainWindow>, task: &str, frac: f32) {
+    let task = task.to_string();
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        w.set_lib_busy_task(task.into());
+        w.set_lib_busy_frac(frac);
+    });
+}
+/// Clear the maintenance progress bar (idle).
+fn clear_lib_busy(weak: &slint::Weak<MainWindow>) {
+    let _ = weak.upgrade_in_event_loop(|w| {
+        w.set_lib_busy_task("".into());
+        w.set_lib_busy_frac(0.0);
+    });
 }
 
 static APP_START: OnceLock<std::time::Instant> = OnceLock::new();
@@ -241,8 +257,8 @@ fn main() -> Result<()> {
     });
     window.on_ambient_dismissed(|| tulipix_core::idle::mark_active());
 
-    // Initial theme from OS
-    apply_theme_choice(&window, ThemeChoice::System);
+    // Initial theme — start light (overridden below by persisted setting).
+    apply_theme_choice(&window, ThemeChoice::Light);
 
     // Singleton 80 ms flush ticker — drains atomic counters into the UI in
     // one coalesced post per tick so per-file scan throughput doesn't spam
@@ -304,19 +320,36 @@ fn main() -> Result<()> {
             .collect();
         let mut progress_rows: Vec<ScanProgress> = Vec::new();
         let mut scheduled: Vec<(String, &'static str, i64)> = Vec::new();
+        let path_str = path.display().to_string();
         for section in ["photos", "videos", "music", "books"] {
             let total = counts.get(section).copied().unwrap_or(0);
             if total == 0 { continue; }
-            let lib_id = format!("lib-{}-{}", section, rows.len() + 1);
-            rows.push(LibraryRow {
-                id:          lib_id.clone().into(),
-                path:        path.display().to_string().into(),
-                section:     section.into(),
-                r#last_scan: "scanning".into(),
-                item_count:  0,
-                size_pretty: "0 B".into(),
-                cadence:     "default".into(),
-            });
+            // Dedup: a rescan / startup-restore re-adds the same watched folder.
+            // If this (path, section) already has a library row, reuse it and
+            // mark it scanning instead of appending a duplicate copy.
+            let lib_id = if let Some(i) = rows.iter().position(
+                |r| r.path.as_str() == path_str.as_str() && r.section.as_str() == section)
+            {
+                rows[i].r#last_scan = "scanning".into();
+                rows[i].item_count = 0;
+                rows[i].id.to_string()
+            } else {
+                let id = format!("lib-{}-{}", section, rows.len() + 1);
+                let music_section = if section == "music" {
+                    music_section_label(load_folder_sections().get(&path_str).map(|s| s.as_str()).unwrap_or("mymusic")).into()
+                } else { slint::SharedString::new() };
+                rows.push(LibraryRow {
+                    id:          id.clone().into(),
+                    path:        path_str.clone().into(),
+                    section:     section.into(),
+                    r#last_scan: "scanning".into(),
+                    item_count:  0,
+                    size_pretty: "0 B".into(),
+                    cadence:     "default".into(),
+                    music_section,
+                });
+                id
+            };
             progress_rows.push(ScanProgress {
                 section: section.into(),
                 label: section_label(section).into(),
@@ -353,12 +386,60 @@ fn main() -> Result<()> {
         }
     }
 
+    // Add a freshly-picked folder straight into one music sub-section
+    // (mymusic|podcasts|audiobooks|radio|youtube). The Add button is
+    // section-scoped — whatever music tab is open is where the folder lands; no
+    // universal "which section?" popup. Audiobooks get metadata-gated flagging
+    // (np.p5.music.audiobook-detect): only files that look like audiobooks are
+    // kept (whole-folder fallback when none carry the metadata).
+    fn music_add_folder_to_section(window: &MainWindow, path: PathBuf, key: &str) {
+        let path_str = path.display().to_string();
+        set_folder_section(&path_str, key);
+        persist_watched_folder(&path);
+        set_scan_silent(false);
+        add_folder_path(window, path);
+        let aud = key == "audiobooks";
+        tokio::runtime::Handle::current().spawn(async move {
+            if let Ok(pool) = pool_for("music").await {
+                if aud {
+                    let _ = tulipix_music::audiobooks::flag_audiobook_folder(&pool, &path_str).await;
+                } else {
+                    // Re-adding a folder to a non-audiobook section clears any
+                    // stale audiobook flag so its tracks return to My Music.
+                    let _ = tulipix_music::audiobooks::set_folder_flag(&pool, &path_str, false).await;
+                }
+            }
+        });
+    }
+
     let w = window.as_weak();
     window.on_pick_folder(move || {
         let Some(w) = w.upgrade() else { return; };
         let section = w.get_active_section().to_string();
+        // On the music page the Add button is section-scoped: the folder lands
+        // in whichever music sub-section is currently open (music-view), with no
+        // universal "which section?" popup. Other sections add directly.
+        if section == "music" {
+            let Some(path) = rfd::FileDialog::new().set_title("Add music folder").pick_folder() else { return; };
+            let key = w.get_music_view().to_string();
+            music_add_folder_to_section(&w, path, &key);
+            if w.get_library_rows().row_count() > 0 { w.set_onboarding_lib_added(true); }
+            return;
+        }
         pick_and_append(&w, &section);
         // Reflect a successful add into the onboarding wizard step.
+        if w.get_library_rows().row_count() > 0 { w.set_onboarding_lib_added(true); }
+    });
+
+    // Confirm the music sub-section for the just-picked folder: persist the
+    // section tag, classify+scan the folder, and flag/unflag its audiobook
+    // tracks (np.p5.music.audiobook-chapters).
+    let w = window.as_weak();
+    window.on_music_confirm_add_section(move |key| {
+        let Some(w) = w.upgrade() else { return; };
+        let path_str = w.get_music_pending_add_path().to_string();
+        if path_str.is_empty() { return; }
+        music_add_folder_to_section(&w, PathBuf::from(&path_str), &key.to_string());
         if w.get_library_rows().row_count() > 0 { w.set_onboarding_lib_added(true); }
     });
 
@@ -463,7 +544,7 @@ fn main() -> Result<()> {
     });
     let w = window.as_weak();
     window.on_book_add_bookmark(move || {
-        let Some(w0) = w.upgrade() else { return; };
+        let Some(_w0) = w.upgrade() else { return; };
         let snap = READER.with(|r| {
             r.borrow().as_ref().map(|s| {
                 let page = if s.format == "cbz" { s.comic.page as i64 } else { s.chapter as i64 };
@@ -567,7 +648,7 @@ fn main() -> Result<()> {
         // call here once reqwest is added to tulipix-app's Cargo.toml.
         let _ = w.upgrade();
     });
-    let w = window.as_weak();
+    let _w = window.as_weak();
     window.on_book_export_notes(move |idx| {
         let item_id = book_ids().lock().ok().and_then(|g| g.get(idx as usize).copied()).unwrap_or(-1);
         let title = book_paths().lock().ok()
@@ -782,7 +863,7 @@ fn main() -> Result<()> {
     // Drill into a TV show's episodes / back to the show cards.
     let w = window.as_weak();
     window.on_video_show_drill(move |id| {
-        let Some(w0) = w.upgrade() else { return; };
+        let Some(_w0) = w.upgrade() else { return; };
         if let Ok(mut g) = video_show().lock() { *g = Some(id as i64); }
         // Look up the show title for the drill-in header.
         let weak = w.clone();
@@ -1037,27 +1118,86 @@ fn main() -> Result<()> {
         w.set_music_eq_preset("custom".into());
         apply_music_eq(&w);
     });
+    // EQ — save the current bands as a named custom profile.
+    let w = window.as_weak();
+    window.on_music_eq_save_profile(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let gains: Vec<f64> = music_eq().lock().map(|g| g.to_vec()).unwrap_or_else(|_| vec![0.0; 10]);
+        let mut list = load_eq_customs();
+        if list.len() >= 3 { return; } // only 3 custom profiles allowed
+        // First free "Custom N" slot (1..=3).
+        let n = (1..=3).find(|n| !list.iter().any(|(name, _)| name == &format!("Custom {n}"))).unwrap_or(list.len() + 1);
+        let name = format!("Custom {n}");
+        list.push((name.clone(), gains));
+        save_eq_customs(&list);
+        populate_eq_customs(&w0);
+        w0.set_music_eq_preset(name.into());
+    });
+    // EQ — delete a saved custom profile (right-click in the EQ popup).
+    let w = window.as_weak();
+    window.on_music_eq_delete_profile(move |name| {
+        let Some(w0) = w.upgrade() else { return; };
+        let name = name.to_string();
+        let mut list = load_eq_customs();
+        list.retain(|(n, _)| *n != name);
+        save_eq_customs(&list);
+        populate_eq_customs(&w0);
+    });
+    // EQ — load a saved custom profile by name.
+    let w = window.as_weak();
+    window.on_music_eq_load_profile(move |name| {
+        let Some(w0) = w.upgrade() else { return; };
+        let name = name.to_string();
+        if let Some((_, gains)) = load_eq_customs().into_iter().find(|(n, _)| *n == name) {
+            if let Ok(mut g) = music_eq().lock() {
+                for (i, v) in gains.iter().take(10).enumerate() { g[i] = v.clamp(-12.0, 12.0); }
+            }
+            w0.set_music_eq_preset(name.into());
+            apply_music_eq(&w0);
+        }
+    });
     // Secondary-sidebar view switch (np.p4.music.sidebar-collapse). Populate the
     // podcasts / audiobooks views on demand (np.p5.music.podcast-feeds / .audiobook-chapters).
     let w = window.as_weak();
     window.on_music_set_view(move |v| {
         if let Some(w) = w.upgrade() {
+            w.set_music_detail_open(false); // leave any album/artist detail when switching section
             w.set_music_view(v.clone());
             match v.as_str() {
-                "podcasts" => populate_podcasts(&w),
+                "podcasts" => {
+                    w.set_music_podcast_detail_open(false);
+                    populate_podcasts(&w);
+                    populate_podcast_latest(&w);
+                    populate_podcast_downloads(&w);
+                }
                 "audiobooks" => populate_audiobooks(&w),
                 _ => {}
             }
         }
     });
+    // Sidebar section click — warm every podcast sub-page so the podcast section
+    // never shows empty on first open (data loads while the user is elsewhere).
+    let w = window.as_weak();
+    window.on_section_changed(move |s| {
+        let Some(w0) = w.upgrade() else { return; };
+        if s.as_str() == "music" {
+            populate_podcasts(&w0);
+            populate_podcast_latest(&w0);
+            populate_podcast_downloads(&w0);
+            populate_podcast_trends(&w0);
+        }
+    });
     let w = window.as_weak();
     window.on_music_set_lib_tab(move |t| {
         if let Some(w) = w.upgrade() {
+            w.set_music_detail_open(false); // leave any album/artist detail when switching tab
+            w.set_music_playlist_name("".into()); // leave playlist detail too
             w.set_music_lib_tab(t.clone());
             match t.as_str() {
                 "favorites" => populate_favorites(&w),
                 "history" => populate_history(&w),
                 "folders" => populate_folder_roots(&w),
+                "albums" | "artists" | "genres" => { w.set_music_browse_page(0); rebuild_browse_tab(&w, t.as_str()); }
                 _ => {}
             }
         }
@@ -1089,6 +1229,485 @@ fn main() -> Result<()> {
             let _ = weak.upgrade_in_event_loop(move |w| w.set_music_np_stars(stars as i32));
         });
     });
+    // Songs-list per-row fav / star / find-lyrics (np.p5.atmusic.* list columns).
+    let w = window.as_weak();
+    window.on_music_row_fav(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+        let cur = w0.get_music_np_index();
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let loved = tulipix_music::rating::toggle_loved(&pool, id).await.unwrap_or(false);
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                if let Ok(mut g) = music_songs().lock() { if let Some(s) = g.iter_mut().find(|s| s.pos == pos) { s.loved = loved; } }
+                rebuild_music_songs_page(&w);
+                if pos == cur { w.set_music_np_loved(loved); }
+            });
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_row_rate(move |pos, n| {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+        let stars = n.clamp(0, 5) as u8;
+        let cur = w0.get_music_np_index();
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = tulipix_music::rating::set_stars(&pool, id, stars).await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                if let Ok(mut g) = music_songs().lock() { if let Some(s) = g.iter_mut().find(|s| s.pos == pos) { s.stars = stars as i32; } }
+                rebuild_music_songs_page(&w);
+                if pos == cur { w.set_music_np_stars(stars as i32); }
+            });
+        });
+    });
+    // Find lyrics for a list row — play it (so the lyrics save to the right track),
+    // the slint side opens the Find panel seeded with this row's name/artist.
+    let w = window.as_weak();
+    window.on_music_row_find_lyrics(move |pos| {
+        if let Some(w0) = w.upgrade() { play_music_at(&w0, pos); }
+    });
+    // Context menu — open the track in the OS default player (xdg-open / open / start).
+    let w = window.as_weak();
+    window.on_music_song_play_default(move |pos| {
+        let _ = w;
+        let Some(path) = music_paths().lock().ok().and_then(|g| g.get(pos as usize).cloned()) else { return; };
+        open_in_default_app(&path);
+    });
+    // Context menu — Properties: gather media info into the dialog props.
+    let w = window.as_weak();
+    window.on_music_song_properties(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let path = music_paths().lock().ok().and_then(|g| g.get(pos as usize).cloned());
+        let meta = music_songs().lock().ok().and_then(|g| g.iter().find(|s| s.pos == pos).cloned());
+        let item_id = meta.as_ref().map(|m| m.item_id).unwrap_or(-1);
+        w0.set_music_props_pos(pos);
+        if let Some(m) = &meta {
+            w0.set_music_props_title(m.title.clone().into());
+            w0.set_music_props_artist(m.artist.clone().into());
+            w0.set_music_props_album(m.album.clone().into());
+            w0.set_music_props_duration(if m.duration_s > 0.0 { fmt_clock(m.duration_s).into() } else { "—".into() });
+        }
+        let (fmt, size) = path.as_ref().map(|p| {
+            let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_uppercase();
+            let bytes = std::fs::metadata(p).map(|md| md.len()).unwrap_or(0);
+            (ext, human_size(bytes))
+        }).unwrap_or_default();
+        w0.set_music_props_format(fmt.into());
+        w0.set_music_props_size(size.into());
+        w0.set_music_props_path(path.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default().into());
+        w0.set_music_props_genre("".into());
+        w0.set_music_props_release("".into());
+        w0.set_music_props_credits("".into());
+        w0.set_music_song_props_open(true);
+        // Fill genre / release date / credits from the DB asynchronously.
+        if item_id >= 0 {
+            let weak = w.clone();
+            tokio::runtime::Handle::current().spawn(async move {
+                let Ok(pool) = pool_for("music").await else { return; };
+                let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN release_date TEXT").execute(&pool).await;
+                let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN credits TEXT").execute(&pool).await;
+                let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+                    "SELECT genre, release_date, credits FROM track_meta WHERE item_id = ?")
+                    .bind(item_id).fetch_optional(&pool).await.ok().flatten();
+                if let Some((g, rd, cr)) = row {
+                    let _ = weak.upgrade_in_event_loop(move |w| {
+                        w.set_music_props_genre(g.unwrap_or_default().into());
+                        w.set_music_props_release(rd.unwrap_or_default().into());
+                        w.set_music_props_credits(cr.unwrap_or_default().into());
+                    });
+                }
+            });
+        }
+    });
+    // Context menu — Edit media info: open the tag editor targeting this song.
+    let w = window.as_weak();
+    window.on_music_song_edit_media(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(m) = music_songs().lock().ok().and_then(|g| g.iter().find(|s| s.pos == pos).cloned()) else { return; };
+        if let Ok(mut g) = tag_edit_target().lock() { *g = Some(m.item_id); }
+        w0.set_music_tag_title(m.title.clone().into());
+        w0.set_music_tag_artist(m.artist.clone().into());
+        w0.set_music_tag_album(m.album.clone().into());
+        w0.set_music_tag_album_artist("".into());
+        w0.set_music_tag_date("".into());
+        w0.set_music_tag_genre("".into());
+        w0.set_music_tag_credits("".into());
+        w0.set_music_tag_locked(false);
+        w0.set_music_tag_fetch_status("".into());
+        // Cover preview — the song's tile art.
+        w0.set_music_tag_art(tile_thumb_at(&w0, pos));
+        w0.set_music_tag_open(true);
+        prefill_tag_editor(&w, m.item_id);
+    });
+    // Context menu — Delete: remove the file from disk AND the library, then refresh.
+    let w = window.as_weak();
+    window.on_music_song_delete(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let path = music_paths().lock().ok().and_then(|g| g.get(pos as usize).cloned());
+        let Some(item_id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+        // Move the file to the OS recycle bin (recoverable) — never a hard delete.
+        if let Some(p) = &path {
+            if let Err(e) = tulipix_platform::fm::move_to_trash(p) {
+                tracing::warn!(path = %p.display(), error = %e, "move song to trash");
+            }
+            // Drop it from the in-memory accumulator so the tile vanishes too.
+            if let Ok(mut g) = music_full().lock() {
+                g.retain(|(_, orig, _)| orig != p);
+            }
+        }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query("DELETE FROM track_meta WHERE item_id = ?").bind(item_id).execute(&pool).await;
+            let _ = sqlx::query("DELETE FROM lyrics WHERE item_id = ?").bind(item_id).execute(&pool).await;
+            let _ = sqlx::query("DELETE FROM items WHERE id = ?").bind(item_id).execute(&pool).await;
+            let _ = weak.upgrade_in_event_loop(|w| { rebuild_music_tiles(&w); populate_music_views(w.as_weak()); });
+        });
+        let _ = w0;
+    });
+    // View a synced track's lyrics in a popup WITHOUT starting playback
+    // (np.p5.music.lyrics-synced — read-only viewer + re-search).
+    let w = window.as_weak();
+    window.on_music_row_view_lyrics(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let item_id = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()).unwrap_or(-1);
+        tracing::info!(pos, item_id, "lyrics view requested");
+        // Keep playing — viewing lyrics no longer interrupts playback.
+        if let Ok(mut g) = music_view_lyrics_id().lock() { *g = Some(item_id); }
+        if let Ok(mut g) = pending_view_lyrics().lock() { *g = None; }
+        // Open in lyrics mode (not the stale results list from a prior search).
+        w0.set_music_lyrics_view_mode("lyrics".into());
+        w0.set_music_lyrics_view_results(slint::ModelRc::new(slint::VecModel::<LyricsResult>::default()));
+        w0.set_music_lyrics_view_rows(slint::ModelRc::new(slint::VecModel::<MusicLyricLine>::default()));
+        w0.set_music_lyrics_view_plain("Loading…".into());
+        w0.set_music_lyrics_view_dirty(false);
+        w0.set_music_lyrics_view_open(true);
+        view_lyrics_load(&w0, item_id);
+    });
+    // Re-search lyrics for the viewed track from the popup's name/artist/album.
+    let w = window.as_weak();
+    window.on_music_lyrics_view_search(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let name = w0.get_music_lyrics_view_q_name().to_string();
+        let artist = w0.get_music_lyrics_view_q_artist().to_string();
+        let album = w0.get_music_lyrics_view_q_album().to_string();
+        // Switch the window to the results list and show the searching state.
+        w0.set_music_lyrics_view_mode("results".into());
+        w0.set_music_lyrics_view_searching(true);
+        w0.set_music_lyrics_view_results(slint::ModelRc::new(slint::VecModel::<LyricsResult>::default()));
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            // LRCLIB /api/search returns an array of candidates.
+            let q = |s: &str| urlencoding(s);
+            let mut url = format!("https://lrclib.net/api/search?track_name={}&artist_name={}", q(&name), q(&artist));
+            if !album.is_empty() { url.push_str(&format!("&album_name={}", q(&album))); }
+            let client = reqwest::Client::new();
+            let mut cands: Vec<(bool, String, String, String)> = Vec::new(); // (synced, content, title, sub)
+            if let Ok(resp) = client.get(&url)
+                .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
+                .send().await {
+                if let Ok(arr) = resp.json::<Vec<serde_json::Value>>().await {
+                    for j in arr.into_iter().take(30) {
+                        let synced = j["syncedLyrics"].as_str().unwrap_or("").to_string();
+                        let plain = j["plainLyrics"].as_str().unwrap_or("").to_string();
+                        if synced.is_empty() && plain.is_empty() { continue; }
+                        let is_synced = !synced.is_empty();
+                        let content = if is_synced { synced } else { plain };
+                        let t = j["trackName"].as_str().unwrap_or("").to_string();
+                        let a = j["artistName"].as_str().unwrap_or("").to_string();
+                        let al = j["albumName"].as_str().unwrap_or("").to_string();
+                        let d = j["duration"].as_f64().unwrap_or(0.0);
+                        let mut sub = a;
+                        if !al.is_empty() { if !sub.is_empty() { sub.push_str(" · "); } sub.push_str(&al); }
+                        if d > 0.0 { sub.push_str(&format!(" · {}", fmt_clock(d))); }
+                        cands.push((is_synced, content, t, sub));
+                    }
+                }
+            }
+            // Stash full contents for pick(), build the display model.
+            if let Ok(mut g) = lyrics_search_results().lock() {
+                *g = cands.iter().map(|(s, c, _, _)| (*s, c.clone())).collect();
+            }
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                let rows: Vec<LyricsResult> = cands.iter().map(|(s, _, t, sub)| LyricsResult {
+                    title: t.clone().into(), sub: sub.clone().into(),
+                    kind: if *s { "Synced".into() } else { "Normal".into() } }).collect();
+                w.set_music_lyrics_view_results(slint::ModelRc::new(slint::VecModel::from(rows)));
+                w.set_music_lyrics_view_searching(false);
+            });
+        });
+    });
+    // Pick a search result — load its content into the box (preview, unsaved).
+    let w = window.as_weak();
+    window.on_music_lyrics_view_pick(move |i| {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some((synced, content)) = lyrics_search_results().lock().ok().and_then(|g| g.get(i as usize).cloned()) else { return; };
+        if let Ok(mut g) = pending_view_lyrics().lock() { *g = Some((synced, content.clone())); }
+        let lines = if synced { tulipix_music::lyrics::parse_lrc(&content) } else { Vec::new() };
+        let rows: Vec<MusicLyricLine> = lines.iter().map(|(ms, t)| MusicLyricLine {
+            time: fmt_clock(*ms as f64 / 1000.0).into(), text: t.clone().into() }).collect();
+        w0.set_music_lyrics_view_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+        w0.set_music_lyrics_view_plain(if synced { String::new() } else { content }.into());
+        w0.set_music_lyrics_view_status(if synced { "Synced" } else { "Normal" }.into());
+        w0.set_music_lyrics_view_mode("lyrics".into());
+        w0.set_music_lyrics_view_dirty(true); // previewed, not yet saved
+    });
+    // Back — return from a previewed result to the results list.
+    let w = window.as_weak();
+    window.on_music_lyrics_view_back(move || {
+        if let Some(w0) = w.upgrade() { w0.set_music_lyrics_view_mode("results".into()); }
+    });
+    // Save the previewed lyrics to the library DB (np.p5.music.lyrics-synced).
+    let w = window.as_weak();
+    window.on_music_lyrics_view_save(move || {
+        let Some(_w0) = w.upgrade() else { return; };
+        let Some(id) = music_view_lyrics_id().lock().ok().and_then(|g| *g) else { return; };
+        let Some((synced, content)) = pending_view_lyrics().lock().ok().and_then(|g| g.clone()) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = tulipix_music::lyrics::store(&pool, id, &content, synced, "lrclib").await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_lyrics_view_dirty(false);
+                w.set_music_lyrics_view_status(if synced { "Synced" } else { "Normal" }.into());
+                // Flip the cached song's synced flag so the grid pill updates live,
+                // with no button press (np.p5.music.lyrics-pill-auto).
+                if let Ok(mut g) = music_songs().lock() {
+                    if let Some(s) = g.iter_mut().find(|s| s.item_id == id) { s.synced = synced; }
+                }
+                rebuild_music_songs_page(&w); // reflect the synced badge across the app
+                // If we just edited the now-playing track, refresh its live lyrics line.
+                if current_music_id(&w) == Some(id) { load_music_lyrics(&w); }
+            });
+        });
+    });
+    // Open the library lyrics manager — build the list + counts.
+    let w = window.as_weak();
+    window.on_music_open_lyrics_manager(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_lyrics_mgr_page(0);
+        w0.set_music_lyrics_mgr_mode("list".into());
+        w0.set_music_lyrics_mgr_open(true);
+        rebuild_lyrics_manager(&w0);
+    });
+    // Lyrics manager pagination.
+    let w = window.as_weak();
+    window.on_music_lyrics_mgr_set_page(move |d| {
+        let Some(w0) = w.upgrade() else { return; };
+        let pages = w0.get_music_lyrics_mgr_pages().max(1);
+        let cur = w0.get_music_lyrics_mgr_page();
+        let next = (cur + d).clamp(0, pages - 1);
+        if next != cur { w0.set_music_lyrics_mgr_page(next); publish_lyrics_mgr_page(&w0); }
+    });
+    // Manager: click a stat card to filter the list (all / synced / missing).
+    let w = window.as_weak();
+    window.on_music_lyrics_mgr_set_filter(move |f| {
+        let Some(w0) = w.upgrade() else { return; };
+        let f = f.to_string();
+        // Toggle off when re-clicking the active filter.
+        let next = if w0.get_music_lyrics_mgr_filter() == f.as_str() { "all".to_string() } else { f };
+        w0.set_music_lyrics_mgr_filter(next.into());
+        w0.set_music_lyrics_mgr_page(0);
+        publish_lyrics_mgr_page(&w0);
+    });
+    // Manager: view a song's stored lyrics inside the popup (no playback).
+    let w = window.as_weak();
+    window.on_music_lyrics_mgr_view(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let item_id = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()).unwrap_or(-1);
+        if let Ok(mut g) = music_view_lyrics_id().lock() { *g = Some(item_id); }
+        w0.set_music_lyrics_view_rows(slint::ModelRc::new(slint::VecModel::<MusicLyricLine>::default()));
+        w0.set_music_lyrics_view_plain("Loading…".into());
+        w0.set_music_lyrics_mgr_mode("lyrics".into());
+        view_lyrics_load(&w0, item_id);
+    });
+    // Manager: open the manual search page for a song (prefill from its tags).
+    let w = window.as_weak();
+    window.on_music_lyrics_mgr_search_open(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let item_id = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()).unwrap_or(-1);
+        if let Ok(mut g) = music_view_lyrics_id().lock() { *g = Some(item_id); }
+        if let Ok(mut g) = pending_view_lyrics().lock() { *g = None; }
+        w0.set_music_lyrics_view_dirty(false);
+        w0.set_music_lyrics_view_mode("results".into()); // start on the search/browse sub-view
+        w0.set_music_lyrics_view_results(slint::ModelRc::new(slint::VecModel::<LyricsResult>::default()));
+        // Prefill the search fields from this song's metadata.
+        if let Some((t, a)) = music_songs().lock().ok().and_then(|g| g.iter().find(|s| s.pos == pos).map(|s| (s.title.clone(), s.artist.clone()))) {
+            w0.set_music_lyrics_view_q_name(t.into());
+            w0.set_music_lyrics_view_q_artist(a.into());
+            w0.set_music_lyrics_view_q_album("".into());
+        }
+        w0.set_music_lyrics_mgr_mode("search".into());
+    });
+    // Manager: back to the list (refresh counts/statuses).
+    let w = window.as_weak();
+    window.on_music_lyrics_mgr_back(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_lyrics_mgr_mode("list".into());
+        rebuild_lyrics_manager(&w0);
+    });
+    // ── Metadata manager (np.p5.atmusic.metadata-manager) ──
+    let w = window.as_weak();
+    window.on_music_open_meta_manager(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        build_meta_rows(&w0);
+        w0.set_music_meta_mgr_page(0);
+        w0.set_music_meta_mgr_open(true);
+        publish_meta_page(&w0);
+    });
+    let w = window.as_weak();
+    window.on_music_meta_mgr_set_page(move |d| {
+        let Some(w0) = w.upgrade() else { return; };
+        let pages = w0.get_music_meta_mgr_pages().max(1);
+        let next = (w0.get_music_meta_mgr_page() + d).clamp(0, pages - 1);
+        w0.set_music_meta_mgr_page(next);
+        publish_meta_page(&w0);
+    });
+    // Stat-card filter (all | tagged | missing) — reset to page 0, republish.
+    let w = window.as_weak();
+    window.on_music_meta_mgr_set_filter(move |f| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_meta_mgr_filter(f);
+        w0.set_music_meta_mgr_page(0);
+        publish_meta_page(&w0);
+    });
+    // Edit a song's tags straight from the metadata manager (reuses the tag editor).
+    let w = window.as_weak();
+    window.on_music_meta_mgr_edit(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.invoke_music_song_edit_media(pos);
+    });
+    // Fetch a single song's metadata now.
+    let w = window.as_weak();
+    window.on_music_meta_fetch_one(move |pos| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let item_id = match music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) { Some(id) => id, None => return };
+        let stem = music_paths().lock().ok()
+            .and_then(|g| g.get(pos as usize).cloned())
+            .and_then(|p| p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string()))
+            .unwrap_or_default();
+        if stem.is_empty() { return; }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let client = reqwest::Client::new();
+            let res = fetch_and_store_meta(&pool, &client, item_id, &stem).await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                match res {
+                    Ok(Some(f)) => update_meta_row(&w, pos, "Matched", Some(&f)),
+                    Ok(None)    => update_meta_row(&w, pos, "No match", None),
+                    Err(_)      => update_meta_row(&w, pos, "Error", None),
+                }
+                populate_music_views(w.as_weak());
+            });
+        });
+    });
+    // Fetch every song's metadata (rate-limited to respect MusicBrainz's 1 req/s).
+    let w = window.as_weak();
+    window.on_music_meta_fetch_all(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        if w0.get_music_meta_fetch_status().starts_with('⟳') { return; } // already running
+        w0.set_music_meta_fetch_status("⟳ 0%".into());
+        w0.set_music_meta_fetch_progress(0.0);
+        let jobs: Vec<(i32, i64, String)> = {
+            let songs = music_songs().lock().map(|g| g.clone()).unwrap_or_default();
+            let paths = music_paths().lock().map(|g| g.clone()).unwrap_or_default();
+            let ids = music_ids().lock().map(|g| g.clone()).unwrap_or_default();
+            songs.iter().filter_map(|s| {
+                let item_id = *ids.get(s.pos as usize)?;
+                let stem = paths.get(s.pos as usize)
+                    .and_then(|p| p.file_stem()).and_then(|x| x.to_str()).unwrap_or("").to_string();
+                if stem.is_empty() { None } else { Some((s.pos, item_id, stem)) }
+            }).collect()
+        };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let client = reqwest::Client::new();
+            let total = jobs.len().max(1);
+            for (i, (pos, item_id, stem)) in jobs.into_iter().enumerate() {
+                let res = fetch_and_store_meta(&pool, &client, item_id, &stem).await;
+                let frac = (i + 1) as f32 / total as f32;
+                let _ = weak.upgrade_in_event_loop(move |w| {
+                    match res {
+                        Ok(Some(f)) => update_meta_row(&w, pos, "Matched", Some(&f)),
+                        Ok(None)    => update_meta_row(&w, pos, "No match", None),
+                        Err(_)      => update_meta_row(&w, pos, "Error", None),
+                    }
+                    w.set_music_meta_fetch_progress(frac);
+                    w.set_music_meta_fetch_status(format!("⟳ {}%", (frac * 100.0) as i32).into());
+                });
+                tokio::time::sleep(std::time::Duration::from_millis(1100)).await;
+            }
+            let _ = weak.upgrade_in_event_loop(|w| {
+                w.set_music_meta_fetch_status("".into());
+                w.set_music_meta_fetch_progress(0.0);
+                populate_music_views(w.as_weak());
+            });
+        });
+    });
+    // Batch lyrics sync — fetch LRCLIB lyrics for every library track missing them.
+    let w = window.as_weak();
+    window.on_music_sync_all_lyrics(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        if w0.get_music_lyrics_sync_status().starts_with('⟳') { return; } // already running
+        w0.set_music_lyrics_sync_status("⟳ 0%".into());
+        w0.set_music_lyrics_sync_progress(0.0);
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let rows: Vec<(i64, Option<String>, Option<String>, Option<String>, f64)> = sqlx::query_as(
+                "SELECT tm.item_id, tm.title, ar.name, al.title, COALESCE(tm.duration_s, 0)
+                 FROM track_meta tm
+                 LEFT JOIN artists ar ON ar.id = tm.artist_id
+                 LEFT JOIN albums  al ON al.id = tm.album_id
+                 LEFT JOIN lyrics  ly ON ly.item_id = tm.item_id
+                 WHERE (ly.content IS NULL OR ly.content = '') AND tm.title IS NOT NULL AND tm.title <> ''")
+                .fetch_all(&pool).await.unwrap_or_default();
+            let total = rows.len();
+            if total == 0 { let _ = weak.upgrade_in_event_loop(|w| w.set_music_lyrics_sync_status("✓ all synced".into())); return; }
+            let client = reqwest::Client::new();
+            let (mut done, mut found) = (0usize, 0usize);
+            for (id, title, artist, album, dur) in rows {
+                let title = title.unwrap_or_default();
+                let artist = artist.unwrap_or_default();
+                let album = album.unwrap_or_default();
+                if !title.is_empty() {
+                    let url = tulipix_music::lyrics::get_url(&artist, &title, &album, dur);
+                    if let Ok(resp) = client.get(&url)
+                        .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
+                        .send().await {
+                        if let Ok(json) = resp.json::<serde_json::Value>().await {
+                            let synced = json["syncedLyrics"].as_str().unwrap_or("");
+                            let plain = json["plainLyrics"].as_str().unwrap_or("");
+                            if !synced.is_empty() { let _ = tulipix_music::lyrics::store(&pool, id, synced, true, "lrclib").await; found += 1; }
+                            else if !plain.is_empty() { let _ = tulipix_music::lyrics::store(&pool, id, plain, false, "lrclib").await; found += 1; }
+                        }
+                    }
+                }
+                done += 1;
+                if done % 4 == 0 || done == total {
+                    let pct = done * 100 / total;
+                    let frac = done as f32 / total as f32;
+                    let _ = weak.upgrade_in_event_loop(move |w| {
+                        w.set_music_lyrics_sync_status(format!("⟳ {pct}%").into());
+                        w.set_music_lyrics_sync_progress(frac);
+                    });
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(150)).await; // be gentle on LRCLIB
+            }
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_lyrics_sync_status(format!("✓ {found} found").into());
+                w.set_music_lyrics_sync_progress(1.0);
+                // Re-derive synced flags from the DB so every grid pill updates live.
+                populate_music_views(w.as_weak());
+                if w.get_music_lyrics_mgr_open() { rebuild_lyrics_manager(&w); }
+            });
+        });
+    });
     // Songs list sort (toggles direction when the same column is re-picked).
     let w = window.as_weak();
     window.on_music_set_song_sort(move |s| {
@@ -1117,9 +1736,23 @@ fn main() -> Result<()> {
     window.on_music_search(move |q| {
         let Some(w) = w.upgrade() else { return; };
         if let Ok(mut g) = music_query_filter().lock() { *g = q.to_string(); }
+        // Typing a query jumps off Home (nothing to search there) into Songs.
+        if !q.trim().is_empty() && w.get_music_lib_tab() == "home" { w.set_music_lib_tab("songs".into()); }
+        // Search acts on whatever the current My Music sub-tab shows.
         w.set_music_song_page(0);
         rebuild_music_songs_page(&w);
         rebuild_grouped_search(&w, q.as_str()); // np.p5.atmusic.lib-grouped-search
+        // Search acts on whatever sub-tab is showing — filter that tab's view.
+        let tab = w.get_music_lib_tab().to_string();
+        match tab.as_str() {
+            "albums" | "artists" | "genres" | "folders" | "playlists" => {
+                w.set_music_browse_page(0);
+                rebuild_browse_tab(&w, &tab);
+            }
+            "favorites" => { w.set_music_fav_page(0); rebuild_fav_page(&w); }
+            "history" => { rebuild_history_page(&w); }
+            _ => {}
+        }
     });
     // Songs list/grid view toggle (thumb styling).
     let w = window.as_weak();
@@ -1144,7 +1777,26 @@ fn main() -> Result<()> {
         } else if s == "count" { "desc" } else { "asc" };
         w.set_music_browse_sort(s.into());
         w.set_music_browse_dir(dir.into());
+        w.set_music_browse_page(0);
         rebuild_browse_tab(&w, &w.get_music_lib_tab());
+    });
+    // Albums/Artists pagination (delta −1 / +1, clamped to page count).
+    let w = window.as_weak();
+    window.on_music_set_browse_page(move |delta| {
+        let Some(w) = w.upgrade() else { return; };
+        let pages = w.get_music_browse_pages().max(1);
+        let next = (w.get_music_browse_page() + delta).clamp(0, pages - 1);
+        w.set_music_browse_page(next);
+        rebuild_browse_tab(&w, &w.get_music_lib_tab());
+    });
+    // Favorites pagination (20/page).
+    let w = window.as_weak();
+    window.on_music_set_fav_page(move |delta| {
+        let Some(w) = w.upgrade() else { return; };
+        let pages = w.get_music_fav_pages().max(1);
+        let next = (w.get_music_fav_page() + delta).clamp(0, pages - 1);
+        w.set_music_fav_page(next);
+        rebuild_fav_page(&w);
     });
     // Shuffle toggle (affects Next).
     let w = window.as_weak();
@@ -1189,10 +1841,20 @@ fn main() -> Result<()> {
         w.set_music_jump_text("".into());
         rebuild_music_songs_page(&w);
     });
+    // History pagination — 30 plays / page, up to 5 pages (np.p5.atmusic.history-page).
+    let w = window.as_weak();
+    window.on_music_set_history_page(move |d| {
+        let Some(w) = w.upgrade() else { return; };
+        let pages = w.get_music_history_pages().max(1);
+        let next = (w.get_music_history_page() + d).clamp(1, pages);
+        w.set_music_history_page(next);
+        rebuild_history_page(&w);
+    });
     // AT parity — clear the playback history (np.p5.atmusic.history-page).
     let w = window.as_weak();
     window.on_music_clear_history(move || {
-        let Some(_w0) = w.upgrade() else { return; };
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_history_page(1);
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("music").await else { return; };
@@ -1231,6 +1893,144 @@ fn main() -> Result<()> {
         });
         let _ = w0;
     });
+    // Favorite an album / artist (heart on its browse thumb) — np.p5.music.fav-collections.
+    let w = window.as_weak();
+    window.on_music_album_fav(move |pos| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let Some(item_id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query("ALTER TABLE albums ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+            if let Some(aid) = sqlx::query_scalar::<_, Option<i64>>("SELECT album_id FROM track_meta WHERE item_id = ?")
+                .bind(item_id).fetch_optional(&pool).await.ok().flatten().flatten() {
+                let _ = sqlx::query("UPDATE albums SET loved = CASE COALESCE(loved,0) WHEN 1 THEN 0 ELSE 1 END WHERE id = ?")
+                    .bind(aid).execute(&pool).await;
+                let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
+            }
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_artist_fav(move |pos| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let Some(item_id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query("ALTER TABLE artists ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+            if let Some(aid) = sqlx::query_scalar::<_, Option<i64>>("SELECT artist_id FROM track_meta WHERE item_id = ?")
+                .bind(item_id).fetch_optional(&pool).await.ok().flatten().flatten() {
+                let _ = sqlx::query("UPDATE artists SET loved = CASE COALESCE(loved,0) WHEN 1 THEN 0 ELSE 1 END WHERE id = ?")
+                    .bind(aid).execute(&pool).await;
+                let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
+            }
+        });
+    });
+    // Rate an album / artist (stars on its browse thumb).
+    let w = window.as_weak();
+    window.on_music_album_rate(move |pos, n| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let Some(item_id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query("ALTER TABLE albums ADD COLUMN rating INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+            if let Some(aid) = sqlx::query_scalar::<_, Option<i64>>("SELECT album_id FROM track_meta WHERE item_id = ?")
+                .bind(item_id).fetch_optional(&pool).await.ok().flatten().flatten() {
+                let _ = sqlx::query("UPDATE albums SET rating = ? WHERE id = ?").bind(n as i64).bind(aid).execute(&pool).await;
+                let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
+            }
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_artist_rate(move |pos, n| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let Some(item_id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query("ALTER TABLE artists ADD COLUMN rating INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+            if let Some(aid) = sqlx::query_scalar::<_, Option<i64>>("SELECT artist_id FROM track_meta WHERE item_id = ?")
+                .bind(item_id).fetch_optional(&pool).await.ok().flatten().flatten() {
+                let _ = sqlx::query("UPDATE artists SET rating = ? WHERE id = ?").bind(n as i64).bind(aid).execute(&pool).await;
+                let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
+            }
+        });
+    });
+    // Favourite / rate the open album or artist (info-box buttons).
+    let w = window.as_weak();
+    window.on_music_detail_fav(move || {
+        let Some(_w0) = w.upgrade() else { return; };
+        let (kind, id, _) = music_detail().lock().map(|g| g.clone()).unwrap_or_default();
+        if id < 0 || (kind != "album" && kind != "artist") { return; }
+        let table = if kind == "album" { "albums" } else { "artists" };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN loved INTEGER NOT NULL DEFAULT 0")).execute(&pool).await;
+            let _ = sqlx::query(&format!("UPDATE {table} SET loved = CASE COALESCE(loved,0) WHEN 1 THEN 0 ELSE 1 END WHERE id = ?"))
+                .bind(id).execute(&pool).await;
+            let loved: i64 = sqlx::query_scalar(&format!("SELECT COALESCE(loved,0) FROM {table} WHERE id = ?"))
+                .bind(id).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
+            let _ = weak.upgrade_in_event_loop(move |w| { w.set_music_detail_loved(loved != 0); populate_music_views(w.as_weak()); });
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_detail_rate(move |n| {
+        let Some(w0) = w.upgrade() else { return; };
+        let (kind, id, _) = music_detail().lock().map(|g| g.clone()).unwrap_or_default();
+        if id < 0 || (kind != "album" && kind != "artist") { return; }
+        let table = if kind == "album" { "albums" } else { "artists" };
+        w0.set_music_detail_stars(n);
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN rating INTEGER NOT NULL DEFAULT 0")).execute(&pool).await;
+            let _ = sqlx::query(&format!("UPDATE {table} SET rating = ? WHERE id = ?")).bind(n as i64).bind(id).execute(&pool).await;
+            let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
+        });
+    });
+    // Genre detail — open the genre's page (list) before any playback.
+    let w = window.as_weak();
+    window.on_music_genre_open(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(item_id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            if let Some(genre) = sqlx::query_scalar::<_, Option<String>>("SELECT genre FROM track_meta WHERE item_id = ?")
+                .bind(item_id).fetch_optional(&pool).await.ok().flatten().flatten() {
+                if !genre.is_empty() { let _ = weak.upgrade_in_event_loop(move |w| open_genre_detail(&w, genre)); }
+            }
+        });
+        let _ = w0;
+    });
+    // Right-click a genre tile on the grid → pick a cover image for that genre.
+    let w = window.as_weak();
+    window.on_music_genre_set_art(move |pos| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let Some(item_id) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+        let Some(file) = rfd::FileDialog::new().set_title("Choose genre cover")
+            .add_filter("Images", &["jpg", "jpeg", "png", "webp"]).pick_file() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let genre: Option<String> = sqlx::query_scalar("SELECT genre FROM track_meta WHERE item_id = ?")
+                .bind(item_id).fetch_optional(&pool).await.ok().flatten().flatten();
+            let Some(genre) = genre.filter(|g| !g.is_empty()) else { return; };
+            let dir = tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("music_covers");
+            let _ = std::fs::create_dir_all(&dir);
+            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
+            let safe: String = genre.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+            let dest = dir.join(format!("genre-{safe}.{ext}"));
+            if std::fs::copy(&file, &dest).is_err() { return; }
+            let dest_s = dest.to_string_lossy().to_string();
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                save_music_pref(&format!("music.genre.cover.{genre}"), &dest_s);
+                populate_music_views(w.as_weak());
+            });
+        });
+    });
     // AT parity — remove a scanned root (np.p5.atmusic.lib-folder-mgmt): forget it,
     // re-scan the rest, refresh the roots list + library views.
     let w = window.as_weak();
@@ -1239,9 +2039,114 @@ fn main() -> Result<()> {
         let roots = load_watched_folders();
         let Some(path) = roots.get(i as usize).cloned() else { return; };
         forget_watched_folder(&w0, &path.to_string_lossy());
+        // Drop the removed root's tracks from the accumulator so they vanish
+        // without waiting for a rescan of the remaining roots.
+        prune_music_full_under(&path);
+        rebuild_music_tiles(&w0);
         for p in load_watched_folders() { if p.exists() { add_folder_path(&w0, p); } }
         populate_folder_roots(&w0);
         populate_music_views(w0.as_weak());
+    });
+    // Folder → its own songs page (detail overlay listing that folder's tracks).
+    let w = window.as_weak();
+    window.on_music_folder_open(move |pos| {
+        if let Some(w0) = w.upgrade() { open_folder_detail(&w0, pos); }
+    });
+    // Right-click a folder → remove its tracks from the music library.
+    let w = window.as_weak();
+    window.on_music_folder_remove(move |pos| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let Some(dir) = music_paths().lock().ok()
+            .and_then(|g| g.get(pos as usize).and_then(|p| p.parent().map(|d| d.to_path_buf()))) else { return; };
+        let ids = folder_track_ids(&dir);
+        if ids.is_empty() { return; }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            for id in &ids {
+                let _ = sqlx::query("DELETE FROM items WHERE id = ?").bind(id).execute(&pool).await;
+            }
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                prune_music_full_under(&dir);
+                rebuild_music_tiles(&w);
+                populate_music_views(w.as_weak());
+            });
+        });
+    });
+    // Right-click a folder → reveal it in the OS file manager.
+    let w = window.as_weak();
+    window.on_music_folder_find_system(move |pos| {
+        let _ = w;
+        let Some(dir) = music_paths().lock().ok()
+            .and_then(|g| g.get(pos as usize).and_then(|p| p.parent().map(|d| d.to_path_buf()))) else { return; };
+        open_in_default_app(&dir);
+    });
+    // Reassign a folder to the next of the 5 music sections (np.p5.atmusic.folder-sections).
+    let w = window.as_weak();
+    window.on_music_folder_cycle_section(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(folder) = music_paths().lock().ok()
+            .and_then(|g| g.get(pos as usize).and_then(|p| p.parent().map(|d| d.display().to_string()))) else { return; };
+        let next = cycle_folder_section(&folder);
+        tracing::info!(folder = %folder, section = %next, "music folder section reassigned");
+        populate_music_views(w0.as_weak());
+    });
+    // Player redesign — sleep timer set to a chosen interval (np.p4.music.sleep-timer).
+    let w = window.as_weak();
+    window.on_music_set_sleep(move |min| {
+        use std::sync::atomic::Ordering;
+        let Some(w0) = w.upgrade() else { return; };
+        let min = min.max(0);
+        w0.set_music_sleep_min(min);
+        let tok = SLEEP_GEN.fetch_add(1, Ordering::SeqCst) + 1; // cancels any prior timer
+        if min > 0 {
+            let weak = w.clone();
+            tokio::runtime::Handle::current().spawn(async move {
+                tokio::time::sleep(std::time::Duration::from_secs(min as u64 * 60)).await;
+                if SLEEP_GEN.load(Ordering::SeqCst) != tok { return; } // superseded
+                let _ = weak.upgrade_in_event_loop(|w| {
+                    if let Ok(mut g) = music_proc().lock() {
+                        if let Some(mut c) = g.take() { let _ = c.kill(); let _ = c.wait(); }
+                    }
+                    w.set_music_playing(false);
+                    w.set_music_sleep_min(0);
+                });
+            });
+        }
+    });
+    // Zen player — true OS fullscreen (no title bar) on enter, restore on exit.
+    let w = window.as_weak();
+    window.on_music_enter_zen(move || { if let Some(w) = w.upgrade() { w.window().set_fullscreen(true); } });
+    let w = window.as_weak();
+    window.on_music_exit_zen(move || { if let Some(w) = w.upgrade() { w.window().set_fullscreen(false); } });
+    // Click the now-playing title/artist anywhere in the player → open that page.
+    let w = window.as_weak();
+    window.on_music_open_now_album(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(id) = current_music_id(&w0) else { return; };
+        if w0.get_music_fullscreen() { w0.set_music_fullscreen(false); w0.window().set_fullscreen(false); }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            if let Some(aid) = sqlx::query_scalar::<_, Option<i64>>("SELECT album_id FROM track_meta WHERE item_id = ?")
+                .bind(id).fetch_optional(&pool).await.ok().flatten().flatten() {
+                let _ = weak.upgrade_in_event_loop(move |w| open_album_detail(&w, aid));
+            }
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_open_now_artist(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(id) = current_music_id(&w0) else { return; };
+        if w0.get_music_fullscreen() { w0.set_music_fullscreen(false); w0.window().set_fullscreen(false); }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            if let Some(aid) = sqlx::query_scalar::<_, Option<i64>>("SELECT artist_id FROM track_meta WHERE item_id = ?")
+                .bind(id).fetch_optional(&pool).await.ok().flatten().flatten() {
+                let _ = weak.upgrade_in_event_loop(move |w| open_artist_detail(&w, aid));
+            }
+        });
     });
     // AT parity — manual LRCLIB search/picker (np.p5.atmusic.lyrics-search-modal).
     let w = window.as_weak();
@@ -1302,7 +2207,14 @@ fn main() -> Result<()> {
             if let Ok(pool) = pool_for("music").await {
                 let _ = tulipix_music::lyrics::store(&pool, id, &content, synced, "lrclib-manual").await;
             }
-            let _ = weak.upgrade_in_event_loop(|w| load_music_lyrics(&w));
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                load_music_lyrics(&w);
+                // Real-time: flag the song as synced in the list + repaint.
+                if let Ok(mut g) = music_songs().lock() {
+                    if let Some(s) = g.iter_mut().find(|s| s.item_id == id) { s.synced = synced; }
+                }
+                rebuild_music_songs_page(&w);
+            });
         });
     });
     // AT parity — dockable side panel (np.p5.atmusic.sidebar-panels): set the
@@ -1319,6 +2231,61 @@ fn main() -> Result<()> {
     });
     let w = window.as_weak();
     window.on_music_detail_close(move || { if let Some(w) = w.upgrade() { w.set_music_detail_open(false); } });
+    // Album page → open the album's artist (click the artist name in the info box).
+    let w = window.as_weak();
+    window.on_music_detail_open_artist(move || {
+        let Some(_w0) = w.upgrade() else { return; };
+        let ids = music_detail().lock().map(|g| g.2.clone()).unwrap_or_default();
+        let Some(first) = ids.first().copied() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            if let Some(aid) = sqlx::query_scalar::<_, Option<i64>>("SELECT artist_id FROM track_meta WHERE item_id = ?")
+                .bind(first).fetch_optional(&pool).await.ok().flatten().flatten() {
+                let _ = weak.upgrade_in_event_loop(move |w| open_artist_detail(&w, aid));
+            }
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_set_detail_page(move |delta| {
+        let Some(w) = w.upgrade() else { return; };
+        let pages = w.get_music_detail_pages().max(1);
+        let next = (w.get_music_detail_page() + delta).clamp(0, pages - 1);
+        w.set_music_detail_page(next);
+        publish_detail_page(&w);
+    });
+    // Sort the open detail's tracks by an attribute (title/artist/duration).
+    let w = window.as_weak();
+    window.on_music_set_detail_sort(move |s| {
+        let Some(w) = w.upgrade() else { return; };
+        let s = s.to_string();
+        let dir = if w.get_music_detail_sort() == s.as_str() {
+            if w.get_music_detail_sort_dir() == "asc" { "desc" } else { "asc" }
+        } else { "asc" };
+        w.set_music_detail_sort(s.clone().into());
+        w.set_music_detail_sort_dir(dir.into());
+        let dur_secs = |d: &str| -> i64 {
+            let mut it = d.split(':').filter_map(|x| x.trim().parse::<i64>().ok());
+            match (it.next(), it.next()) { (Some(m), Some(sec)) => m * 60 + sec, (Some(sec), None) => sec, _ => 0 }
+        };
+        DETAIL_ROWS.with(|r| {
+            let mut v = r.borrow_mut();
+            match s.as_str() {
+                "title"    => v.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
+                "artist"   => v.sort_by(|a, b| a.artist.to_lowercase().cmp(&b.artist.to_lowercase())),
+                "duration" => v.sort_by(|a, b| dur_secs(a.duration.as_str()).cmp(&dur_secs(b.duration.as_str()))),
+                "album"    => {
+                    let alb_of: std::collections::HashMap<i32, String> = music_songs().lock()
+                        .map(|g| g.iter().map(|s| (s.pos, s.album.to_lowercase())).collect()).unwrap_or_default();
+                    v.sort_by(|a, b| alb_of.get(&a.index).cmp(&alb_of.get(&b.index)));
+                }
+                _ => {}
+            }
+            if dir == "desc" { v.reverse(); }
+        });
+        w.set_music_detail_page(0);
+        publish_detail_page(&w);
+    });
     let w = window.as_weak();
     window.on_music_detail_play_all(move || { if let Some(w) = w.upgrade() { detail_play(&w, false); } });
     let w = window.as_weak();
@@ -1370,7 +2337,10 @@ fn main() -> Result<()> {
     window.on_music_detail_replace_art(move || {
         let Some(w0) = w.upgrade() else { return; };
         let (kind, id, _) = music_detail().lock().map(|g| g.clone()).unwrap_or_default();
-        if id < 0 { return; }
+        // Genre detail has no DB row (id = -1); its cover is a per-genre pref keyed
+        // on the genre name (np.p4.music.genre-art).
+        let genre_name = w0.get_music_detail_title().to_string();
+        if kind != "genre" && id < 0 { return; }
         let Some(file) = rfd::FileDialog::new().set_title("Choose image")
             .add_filter("Images", &["jpg", "jpeg", "png", "webp"]).pick_file() else { return; };
         w0.set_music_detail_status("Updating art…".into());
@@ -1380,21 +2350,31 @@ fn main() -> Result<()> {
             let dir = tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("music_covers");
             let _ = std::fs::create_dir_all(&dir);
             let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
-            let dest = dir.join(format!("{kind}-{id}.{ext}"));
+            let dest = if kind == "genre" {
+                let safe: String = genre_name.chars().map(|c| if c.is_alphanumeric() { c } else { '_' }).collect();
+                dir.join(format!("genre-{safe}.{ext}"))
+            } else { dir.join(format!("{kind}-{id}.{ext}")) };
             let ok = std::fs::copy(&file, &dest).is_ok();
             if ok {
                 if kind == "album" {
                     let _ = sqlx::query("UPDATE albums SET cover_path = ? WHERE id = ?")
                         .bind(dest.to_string_lossy().as_ref()).bind(id).execute(&pool).await;
-                } else {
+                } else if kind == "artist" {
                     let _ = sqlx::query("UPDATE artists SET image_path = ? WHERE id = ?")
                         .bind(dest.to_string_lossy().as_ref()).bind(id).execute(&pool).await;
                 }
             }
+            let dest_s = dest.to_string_lossy().to_string();
             let _ = weak.upgrade_in_event_loop(move |w| {
                 w.set_music_detail_status(if ok { "✓ Art updated.".into() } else { "Couldn't read that image.".into() });
                 if ok {
-                    if kind == "album" { open_album_detail(&w, id); } else { open_artist_detail(&w, id); }
+                    if kind == "album" { open_album_detail(&w, id); }
+                    else if kind == "artist" { open_artist_detail(&w, id); }
+                    else if kind == "genre" {
+                        save_music_pref(&format!("music.genre.cover.{genre_name}"), &dest_s);
+                        open_genre_detail(&w, genre_name.clone());
+                        populate_music_views(w.as_weak());
+                    }
                 }
             });
         });
@@ -1459,6 +2439,14 @@ fn main() -> Result<()> {
         save_music_pref("music.gapless", if on { "1" } else { "0" });
         music_ipc(&["set_property", "gapless-audio", if on { "yes" } else { "no" }]);
     });
+    // Home dashboard gradient outline (np.p4.music.home-connect) — persisted.
+    let w = window.as_weak();
+    window.on_music_toggle_home_connect(move || {
+        let Some(w) = w.upgrade() else { return; };
+        let on = !w.get_music_home_connect();
+        w.set_music_home_connect(on);
+        save_music_pref("music.home_connect", if on { "1" } else { "0" });
+    });
     let w = window.as_weak();
     window.on_music_set_crossfade(move |v| {
         let Some(w) = w.upgrade() else { return; };
@@ -1474,6 +2462,10 @@ fn main() -> Result<()> {
         save_music_pref("music.replaygain", r.as_str());
         let mpv = match r.as_str() { "track" => "track", "album" => "album", _ => "no" };
         music_ipc(&["set_property", "replaygain", mpv]);
+    });
+    // Visualizer style — persist the last-chosen style so it sticks across launches.
+    window.on_music_set_vis_style(move |s| {
+        save_music_pref("music.vis_style", &s.to_string());
     });
     // Scrobble opt-in (np.p5.music.scrobble) — toggle + persist.
     let w = window.as_weak();
@@ -1529,49 +2521,167 @@ fn main() -> Result<()> {
     window.on_music_tag_edit(move || {
         let Some(w) = w.upgrade() else { return; };
         if current_music_id(&w).is_none() { return; }
+        if let Ok(mut g) = tag_edit_target().lock() { *g = None; } // target = now-playing
         w.set_music_tag_title(w.get_music_np_title());
         let sub = w.get_music_np_sub();
         w.set_music_tag_artist(if sub == "Playing from your library" { "".into() } else { sub });
         w.set_music_tag_album("".into());
+        w.set_music_tag_album_artist("".into());
+        w.set_music_tag_date("".into());
+        w.set_music_tag_genre("".into());
+        w.set_music_tag_credits("".into());
+        w.set_music_tag_locked(false);
+        w.set_music_tag_fetch_status("".into());
+        w.set_music_tag_art(w.get_music_np_art());
         w.set_music_tag_open(true);
+        // Prefill stored fields + refresh the dropdown for the now-playing track.
+        if let Some(id) = current_music_id(&w) { prefill_tag_editor(&w.as_weak(), id); }
+    });
+    // Tag editor — pick a new cover image (writes the song's album cover).
+    let w = window.as_weak();
+    window.on_music_tag_change_art(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(id) = editing_target(&w0) else { return; };
+        let Some(file) = rfd::FileDialog::new().set_title("Choose cover art")
+            .add_filter("Images", &["jpg", "jpeg", "png", "webp"]).pick_file() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let album_id: Option<i64> = sqlx::query_scalar("SELECT album_id FROM track_meta WHERE item_id = ?")
+                .bind(id).fetch_optional(&pool).await.ok().flatten().flatten();
+            let Some(album_id) = album_id else {
+                let _ = weak.upgrade_in_event_loop(|w| w.set_music_tag_fetch_status("No album to attach art to.".into()));
+                return;
+            };
+            let dir = tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("music_covers");
+            let _ = std::fs::create_dir_all(&dir);
+            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
+            let dest = dir.join(format!("album-{album_id}.{ext}"));
+            if std::fs::copy(&file, &dest).is_err() { return; }
+            let _ = sqlx::query("UPDATE albums SET cover_path = ? WHERE id = ?")
+                .bind(dest.to_string_lossy().as_ref()).bind(album_id).execute(&pool).await;
+            // Load the Image on the UI thread (slint::Image is not Send).
+            let dest_s = dest.to_string_lossy().to_string();
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                let img = slint::Image::load_from_path(std::path::Path::new(&dest_s)).unwrap_or_default();
+                w.set_music_tag_art(img);
+                populate_music_views(w.as_weak());
+                refresh_open_detail(&w);
+            });
+        });
+    });
+    // Tag editor — fetch tags from MusicBrainz into the editor fields (review then Save).
+    let w = window.as_weak();
+    window.on_music_tag_fetch(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(id) = editing_target(&w0) else { return; };
+        // Build a query from the editor's current title/artist (fall back to filename).
+        let title_q = w0.get_music_tag_title().to_string();
+        let artist_q = w0.get_music_tag_artist().to_string();
+        w0.set_music_tag_fetch_status("Fetching…".into());
+        let pos = music_ids().lock().ok().and_then(|g| g.iter().position(|x| *x == id)).map(|p| p as i32).unwrap_or(-1);
+        let stem = if pos >= 0 { music_paths().lock().ok().and_then(|g| g.get(pos as usize).cloned())
+            .and_then(|p| p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())).unwrap_or_default() } else { String::new() };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let client = reqwest::Client::new();
+            let (aq, tq, _) = if !title_q.trim().is_empty() { (artist_q.clone(), title_q.clone(), None) }
+                else { parse_music_filename(&stem) };
+            let search = tulipix_music::musicbrainz::lookup_recording(&client, &aq, &tq).await;
+            let meta = search.ok().and_then(|s| tulipix_music::musicbrainz::best_metadata(&s));
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                match meta {
+                    Some(m) => {
+                        if !m.title.is_empty()  { w.set_music_tag_title(m.title.into()); }
+                        if !m.artist.is_empty() { w.set_music_tag_artist(m.artist.into()); }
+                        if !m.album.is_empty()  { w.set_music_tag_album(m.album.into()); }
+                        if let Some(g) = m.genre { w.set_music_tag_genre(g.into()); }
+                        if let Some(d) = m.release_date { w.set_music_tag_date(d.into()); }
+                        if !m.credits.is_empty() { w.set_music_tag_credits(m.credits.into()); }
+                        w.set_music_tag_fetch_status("✓ Fetched — review & Save".into());
+                    }
+                    None => w.set_music_tag_fetch_status("No match found.".into()),
+                }
+            });
+        });
+    });
+    // Tag editor — toggle the user-lock (persist immediately so Fetch-all honours it).
+    let w = window.as_weak();
+    window.on_music_tag_toggle_lock(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let on = !w0.get_music_tag_locked();
+        w0.set_music_tag_locked(on);
+        let Some(id) = editing_target(&w0) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN user_locked INTEGER DEFAULT 0").execute(&pool).await;
+            let _ = sqlx::query("UPDATE track_meta SET user_locked = ? WHERE item_id = ?")
+                .bind(if on { 1 } else { 0 }).bind(id).execute(&pool).await;
+            let _ = weak;
+        });
     });
     let w = window.as_weak();
     window.on_music_tag_save(move || {
         let Some(w0) = w.upgrade() else { return; };
         w0.set_music_tag_open(false);
-        let Some(id) = current_music_id(&w0) else { return; };
+        // Prefer the context-menu target (Edit media info on an arbitrary song),
+        // else fall back to the now-playing track.
+        let target = tag_edit_target().lock().ok().and_then(|g| *g);
+        let Some(id) = target.or_else(|| current_music_id(&w0)) else { return; };
+        if let Ok(mut g) = tag_edit_target().lock() { *g = None; }
         let title = w0.get_music_tag_title().to_string();
         let artist = w0.get_music_tag_artist().to_string();
         let album = w0.get_music_tag_album().to_string();
-        // Reflect immediately in the now-playing bar.
-        if !title.is_empty() { w0.set_music_np_title(title.clone().into()); }
-        w0.set_music_np_sub(if artist.is_empty() { "Playing from your library".into() } else { artist.clone().into() });
+        let album_artist = w0.get_music_tag_album_artist().to_string();
+        let release_date = w0.get_music_tag_date().to_string();
+        let genre = w0.get_music_tag_genre().to_string();
+        let credits = w0.get_music_tag_credits().to_string();
+        // Reflect immediately in the now-playing bar only when editing it.
+        if target.is_none() || target == current_music_id(&w0) {
+            if !title.is_empty() { w0.set_music_np_title(title.clone().into()); }
+            w0.set_music_np_sub(if artist.is_empty() { "Playing from your library".into() } else { artist.clone().into() });
+        }
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("music").await else { return; };
-            // Upsert the artist row and point track_meta at it; store title/album_artist/genre overrides.
+            let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN release_date TEXT").execute(&pool).await;
+            let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN credits TEXT").execute(&pool).await;
+            let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN user_locked INTEGER DEFAULT 0").execute(&pool).await;
+            // Upsert artist + album so the change shows on the Songs/Album/Artist
+            // pages (album name lives in albums.title via album_id).
             let artist_id: Option<i64> = if artist.is_empty() { None } else {
-                sqlx::query("INSERT INTO artists (name) VALUES (?) ON CONFLICT(name) DO NOTHING")
-                    .bind(&artist).execute(&pool).await.ok();
-                sqlx::query_scalar("SELECT id FROM artists WHERE name = ?").bind(&artist)
-                    .fetch_optional(&pool).await.ok().flatten()
+                tulipix_music::scan::get_or_create_artist(&pool, &artist).await.ok()
+            };
+            let year = release_date.get(0..4).and_then(|y| y.parse::<i64>().ok()).filter(|y| *y > 0);
+            let album_id: Option<i64> = if album.is_empty() { None } else {
+                tulipix_music::scan::get_or_create_album(&pool, &album, artist_id, year).await.ok()
             };
             let _ = sqlx::query(
-                "UPDATE track_meta SET title = ?, artist_id = COALESCE(?, artist_id), album_artist = ? WHERE item_id = ?")
+                "UPDATE track_meta SET title = ?, artist_id = COALESCE(?, artist_id),
+                    album_id = COALESCE(?, album_id), album_artist = ?,
+                    release_date = ?, genre = ?, credits = ?, year = COALESCE(?, year),
+                    user_locked = 1
+                 WHERE item_id = ?")
                 .bind(if title.is_empty() { None } else { Some(title.clone()) })
-                .bind(artist_id)
-                .bind(if album.is_empty() { None } else { Some(album.clone()) })
+                .bind(artist_id).bind(album_id)
+                .bind(if album_artist.trim().is_empty() { None } else { Some(album_artist.trim().to_string()) })
+                .bind(if release_date.trim().is_empty() { None } else { Some(release_date.trim().to_string()) })
+                .bind(if genre.trim().is_empty() { None } else { Some(genre.trim().to_string()) })
+                .bind(if credits.trim().is_empty() { None } else { Some(credits.trim().to_string()) })
+                .bind(year)
                 .bind(id).execute(&pool).await;
             // Write the tags back into the file itself via ffmpeg (np.p5.music.tag-editor),
-            // so the metadata survives a re-scan / shows in other players. Stream-copies
-            // to a sibling temp file then atomically renames over the original.
+            // so the metadata survives a re-scan / shows in other players.
             let path: Option<String> = sqlx::query_scalar("SELECT abs_path FROM items WHERE id = ?")
                 .bind(id).fetch_optional(&pool).await.ok().flatten();
             if let Some(path) = path {
                 let (title, artist, album) = (title.clone(), artist.clone(), album.clone());
                 let _ = tokio::task::spawn_blocking(move || write_audio_tags(&path, &title, &artist, &album)).await;
             }
-            let _ = weak.upgrade_in_event_loop(|w| populate_music_views(w.as_weak()));
+            // Refresh every surface: library lists + browse tiles, and the open
+            // album/artist/genre detail overlay if one is showing.
+            let _ = weak.upgrade_in_event_loop(|w| { populate_music_views(w.as_weak()); refresh_open_detail(&w); });
         });
     });
 
@@ -1582,29 +2692,644 @@ fn main() -> Result<()> {
         let Some(w0) = w.upgrade() else { return; };
         let url = w0.get_music_podcast_url().to_string();
         if url.trim().is_empty() { return; }
-        w0.set_music_podcast_url("".into());
+        // Keep the dialog open and show the busy/progress state; the URL stays put
+        // (so a failed add can be edited + retried) until it actually succeeds.
+        w0.set_music_podcast_add_busy(true);
+        w0.set_music_podcast_add_frac(0.0);
+        w0.set_music_podcast_add_status("Fetching feed…".into());
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
-            let Ok(pool) = pool_for("music").await else { return; };
+            let fail = |weak: slint::Weak<MainWindow>, msg: &'static str| {
+                let _ = weak.upgrade_in_event_loop(move |w| {
+                    w.set_music_podcast_add_busy(false);
+                    w.set_music_podcast_add_frac(0.0);
+                    w.set_music_podcast_add_status(msg.into());
+                });
+            };
+            let Ok(pool) = pool_for("podcasts").await else { fail(weak.clone(), "Database error"); return; };
             let client = reqwest::Client::new();
-            let Ok(resp) = client.get(url.trim()).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await else { return; };
-            let Ok(xml) = resp.text().await else { return; };
+            let Ok(resp) = client.get(url.trim()).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await
+                else { fail(weak.clone(), "Network error — check the URL"); return; };
+            let Ok(xml) = resp.text().await else { fail(weak.clone(), "Could not read the feed"); return; };
             let feed = tulipix_music::podcasts::parse_feed(&xml);
-            let _ = tulipix_music::podcasts::subscribe(&pool, url.trim(), &feed).await;
-            let _ = weak.upgrade_in_event_loop(|w| populate_podcasts(&w));
+            if feed.title.is_none() && feed.episodes.is_empty() { fail(weak.clone(), "Not a valid podcast feed"); return; }
+            // Drive the dialog progress bar per-episode (throttled to whole %).
+            let prog = weak.clone();
+            let mut last_pct = -1i32;
+            let res = tulipix_music::podcasts::subscribe_with_progress(&pool, url.trim(), &feed, move |done, total| {
+                let pct = ((done as f64 / total.max(1) as f64) * 100.0) as i32;
+                if pct == last_pct { return; }
+                last_pct = pct;
+                let frac = done as f32 / total.max(1) as f32;
+                let p = prog.clone();
+                let _ = p.upgrade_in_event_loop(move |w| {
+                    w.set_music_podcast_add_frac(frac);
+                    w.set_music_podcast_add_status(format!("{done} / {total} episodes").into());
+                });
+            }).await;
+            let ok = res.is_ok();
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_podcast_add_busy(false);
+                w.set_music_podcast_add_frac(0.0);
+                if ok {
+                    w.set_music_podcast_add_status("".into());
+                    w.set_music_podcast_add_open(false);
+                    w.set_music_podcast_url("".into());
+                    populate_podcasts(&w);
+                    populate_podcast_latest(&w);
+                } else {
+                    w.set_music_podcast_add_status("Subscribe failed".into());
+                }
+            });
+        });
+    });
+    // Clear ALL subscriptions + their cached files, with live removal progress.
+    let w = window.as_weak();
+    window.on_music_podcast_reset_all(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_reset_busy(true);
+        w0.set_music_podcast_reset_frac(0.0);
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else {
+                let _ = weak.upgrade_in_event_loop(|w| w.set_music_podcast_reset_busy(false));
+                return;
+            };
+            let paths: Vec<(Option<String>,)> = sqlx::query_as(
+                "SELECT downloaded_path FROM podcast_episodes WHERE downloaded_path IS NOT NULL")
+                .fetch_all(&pool).await.unwrap_or_default();
+            let total = paths.len().max(1);
+            for (i, (p,)) in paths.iter().enumerate() {
+                if let Some(p) = p { let _ = std::fs::remove_file(p); }
+                let frac = (i + 1) as f32 / total as f32;
+                let wk = weak.clone();
+                let _ = wk.upgrade_in_event_loop(move |w| w.set_music_podcast_reset_frac(frac));
+            }
+            let _ = sqlx::query("DELETE FROM podcast_episodes").execute(&pool).await;
+            let _ = sqlx::query("DELETE FROM podcasts").execute(&pool).await;
+            let _ = sqlx::query("VACUUM").execute(&pool).await;
+            if let Ok(mut g) = cur_podcast_id().lock() { *g = -1; }
+            let _ = weak.upgrade_in_event_loop(|w| {
+                w.set_music_podcast_reset_busy(false);
+                w.set_music_podcast_reset_frac(0.0);
+                w.set_music_podcast_detail_open(false);
+                refresh_podcast_views(&w);
+            });
+        });
+    });
+    // Set a custom artwork for the open podcast (detail page → "Change art").
+    let w = window.as_weak();
+    window.on_music_podcast_set_thumb(move || {
+        let Some(_w0) = w.upgrade() else { return; };
+        let pid = cur_podcast_id().lock().map(|g| *g).unwrap_or(-1);
+        if pid < 0 { return; }
+        let Some(file) = rfd::FileDialog::new().set_title("Choose podcast artwork")
+            .add_filter("Images", &["jpg", "jpeg", "png", "webp"]).pick_file() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let dir = tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("podcast_art");
+            let _ = std::fs::create_dir_all(&dir);
+            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
+            let dest = dir.join(format!("pod-custom-{pid}.{ext}"));
+            if std::fs::copy(&file, &dest).is_err() { return; }
+            let dest_s = dest.to_string_lossy().to_string();
+            // Store the local path in custom_image (not image_url) so a later
+            // feed refresh — which overwrites image_url — can never wipe it.
+            // resolve_artwork loads the local file directly.
+            let _ = sqlx::query("UPDATE podcasts SET custom_image = ? WHERE id = ?")
+                .bind(&dest_s).bind(pid).execute(&pool).await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                load_podcast_detail(&w, pid);
+                populate_podcasts(&w);
+                populate_podcast_latest(&w);
+            });
+        });
+    });
+    // Search across subscribed podcasts (title/author/category/feed + episode
+    // titles) — filters the Subscribed grid. Empty query restores the full list.
+    let w = window.as_weak();
+    window.on_music_podcast_search(move |q| {
+        let Some(w0) = w.upgrade() else { return; };
+        let q = q.to_string();
+        // Route the query to whichever podcast tab (or the single-podcast page) is
+        // active, so each surface filters independently.
+        let which = if w0.get_music_podcast_detail_open() { "detail" }
+            else { match w0.get_music_podcast_tab().as_str() {
+                "home" => "home", "trends" => "trends", "downloads" => "downloads", _ => "subs" } };
+        if let Ok(mut f) = pod_filters().lock() {
+            match which { "home" => f.home = q.clone(), "trends" => f.trends = q.clone(),
+                "downloads" => f.downloads = q.clone(), "detail" => f.detail = q.clone(), _ => f.subs = q.clone() };
+        }
+        match which {
+            "home" => populate_podcast_latest(&w0),
+            "trends" => render_trends(&w0),
+            "downloads" => { w0.set_music_podcast_dl_page(0); populate_podcast_downloads(&w0); }
+            "detail" => { w0.set_music_podcast_d_page(0);
+                if let Ok(g) = cur_podcast_id().lock() { load_podcast_detail(&w0, *g); } }
+            _ => { w0.set_music_podcast_cat("All".into()); w0.set_music_podcast_sub_page(0); populate_podcasts(&w0); }
+        }
+    });
+    // Trends — subscribe to a baked/hardcoded feed by its index in podc.md.
+    let w = window.as_weak();
+    window.on_music_podcast_trend_subscribe(move |idx| {
+        let Some(w0) = w.upgrade() else { return; };
+        let feeds = trend_feed_urls();
+        let Some(url) = feeds.get(idx as usize).cloned() else { return; };
+        w0.set_music_podcast_subscribing(true);
+        w0.set_music_podcast_subscribe_frac(0.0);
+        w0.set_music_podcast_subscribe_status("".into());
+        subscribe_feed_with_progress(w.clone(), url);
+    });
+    // Trends — sort + pagination (no network; renders from the session cache).
+    let w = window.as_weak();
+    window.on_music_podcast_trends_set_sort(move |s| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_trends_sort(s);
+        w0.set_music_podcast_trends_page(0);
+        render_trends(&w0);
+    });
+    let w = window.as_weak();
+    window.on_music_podcast_trends_set_page(move |d| {
+        let Some(w0) = w.upgrade() else { return; };
+        let next = (w0.get_music_podcast_trends_page() + d).clamp(0, (w0.get_music_podcast_trends_pages() - 1).max(0));
+        w0.set_music_podcast_trends_page(next);
+        render_trends(&w0);
+    });
+    // Trends — open the read-only info card for one feed (count + latest only).
+    let w = window.as_weak();
+    window.on_music_podcast_trend_info(move |idx| {
+        let Some(w0) = w.upgrade() else { return; };
+        let feeds = trend_feed_urls();
+        let Some(url) = feeds.get(idx as usize).cloned() else { return; };
+        if let Ok(mut g) = cur_trend_idx().lock() { *g = idx; }
+        if let Ok(mut g) = cur_info_feed().lock() { *g = url.clone(); }
+        // Pre-fill from the cache; the network fetch fills count/latest/desc.
+        let meta = trend_cache().lock().ok().and_then(|g| g.get(idx as usize).cloned());
+        w0.set_music_podcast_info_open(true);
+        w0.set_music_podcast_info_loading(true);
+        w0.set_music_podcast_info_episodes(0);
+        w0.set_music_podcast_info_latest("".into());
+        w0.set_music_podcast_info_desc("".into());
+        if let Some(m) = &meta {
+            w0.set_music_podcast_info_title(m.title.clone().into());
+            w0.set_music_podcast_info_author(m.author.clone().into());
+            w0.set_music_podcast_info_category(m.category.clone().into());
+            w0.set_music_podcast_info_image(m.art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default());
+        }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let subscribed = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM podcasts WHERE feed_url = ?")
+                .bind(&url).fetch_one(&pool).await.unwrap_or(0) > 0;
+            let client = reqwest::Client::new();
+            let (mut count, mut latest, mut desc) = (0i32, String::new(), String::new());
+            if let Ok(resp) = client.get(&url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
+                if let Ok(xml) = resp.text().await {
+                    let feed = tulipix_music::podcasts::parse_feed(&xml);
+                    count = feed.episodes.len() as i32;
+                    latest = feed.episodes.iter().filter_map(|e| e.published).max().map(fmt_date).unwrap_or_default();
+                    desc = feed.description;
+                }
+            }
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_podcast_info_loading(false);
+                w.set_music_podcast_info_episodes(count);
+                w.set_music_podcast_info_latest(latest.into());
+                w.set_music_podcast_info_desc(desc.into());
+                w.set_music_podcast_info_subscribed(subscribed);
+            });
+        });
+    });
+    // Info card for a SUBSCRIBED podcast (by DB id) — straight from the DB, no
+    // network. Shares the same popup as Trends.
+    let w = window.as_weak();
+    window.on_music_podcast_info_open_id(move |pid| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_info_open(true);
+        w0.set_music_podcast_info_loading(true);
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let row: Option<(String, String, String, String, String, String)> = sqlx::query_as(
+                "SELECT COALESCE(title, feed_url), COALESCE(author,''), COALESCE(category,''), COALESCE(description,''),
+                        COALESCE(NULLIF(custom_image,''), image_url, ''), feed_url
+                 FROM podcasts WHERE id = ?").bind(pid as i64).fetch_optional(&pool).await.ok().flatten();
+            let Some((title, author, category, desc, img, feed_url)) = row else { return; };
+            let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM podcast_episodes WHERE podcast_id = ?")
+                .bind(pid as i64).fetch_one(&pool).await.unwrap_or(0);
+            let latest_pub: Option<i64> = sqlx::query_scalar("SELECT MAX(published) FROM podcast_episodes WHERE podcast_id = ?")
+                .bind(pid as i64).fetch_one(&pool).await.ok().flatten();
+            let latest = latest_pub.map(fmt_date).unwrap_or_default();
+            // Track this feed for Save / thumb; map to a trend index if it's baked.
+            let tidx = trend_feed_urls().iter().position(|u| u == &feed_url).map(|p| p as i32).unwrap_or(-1);
+            if let Ok(mut g) = cur_trend_idx().lock() { *g = tidx; }
+            if let Ok(mut g) = cur_info_feed().lock() { *g = feed_url.clone(); }
+            let client = reqwest::Client::new();
+            let art = resolve_artwork(&client, &format!("pod-{pid}"), &img).await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_podcast_info_loading(false);
+                w.set_music_podcast_info_title(title.into());
+                w.set_music_podcast_info_author(author.into());
+                w.set_music_podcast_info_category(category.into());
+                w.set_music_podcast_info_desc(desc.into());
+                w.set_music_podcast_info_episodes(count as i32);
+                w.set_music_podcast_info_latest(latest.into());
+                w.set_music_podcast_info_subscribed(true);
+                w.set_music_podcast_info_image(art.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default());
+            });
+        });
+    });
+    // Info card — save the edited category (cache override + DB).
+    let w = window.as_weak();
+    window.on_music_podcast_info_save_category(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let url = cur_info_feed().lock().map(|g| g.clone()).unwrap_or_default();
+        if url.is_empty() { return; }
+        let idx = cur_trend_idx().lock().map(|g| *g).unwrap_or(-1);
+        let cat = w0.get_music_podcast_info_category().to_string();
+        if idx >= 0 { if let Ok(mut g) = trend_cache().lock() { if let Some(m) = g.get_mut(idx as usize) { m.category = cat.clone(); } } }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let _ = sqlx::query("UPDATE podcasts SET category = ? WHERE feed_url = ?").bind(&cat).bind(&url).execute(&pool).await;
+            let _ = weak.upgrade_in_event_loop(|w| { render_trends(&w); populate_podcasts(&w); });
+        });
+    });
+    // Info card — replace the thumbnail (cache + DB custom_image).
+    let w = window.as_weak();
+    window.on_music_podcast_info_set_thumb(move || {
+        let Some(_w0) = w.upgrade() else { return; };
+        let url = cur_info_feed().lock().map(|g| g.clone()).unwrap_or_default();
+        if url.is_empty() { return; }
+        let idx = cur_trend_idx().lock().map(|g| *g).unwrap_or(-1);
+        let Some(file) = rfd::FileDialog::new().set_title("Choose podcast artwork")
+            .add_filter("Images", &["jpg", "jpeg", "png", "webp"]).pick_file() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let dir = tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("podcast_art");
+            let _ = std::fs::create_dir_all(&dir);
+            let ext = file.extension().and_then(|e| e.to_str()).unwrap_or("jpg");
+            // Name by DB id when subscribed (so the grid's pod-{id} lookup finds it),
+            // else by trend index.
+            let pid: Option<i64> = sqlx::query_scalar("SELECT id FROM podcasts WHERE feed_url = ?").bind(&url).fetch_optional(&pool).await.ok().flatten();
+            let stem = match pid { Some(id) => format!("pod-custom-{id}"), None => format!("trend-custom-{idx}") };
+            let dest = dir.join(format!("{stem}.{ext}"));
+            if std::fs::copy(&file, &dest).is_err() { return; }
+            let dest_s = dest.to_string_lossy().to_string();
+            let _ = sqlx::query("UPDATE podcasts SET custom_image = ? WHERE feed_url = ?").bind(&dest_s).bind(&url).execute(&pool).await;
+            if idx >= 0 { if let Ok(mut g) = trend_cache().lock() { if let Some(m) = g.get_mut(idx as usize) { m.art = Some(dest.clone()); } } }
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_podcast_info_image(slint::Image::load_from_path(&dest).unwrap_or_default());
+                render_trends(&w);
+                populate_podcasts(&w);
+            });
+        });
+    });
+    // Info card — Subscribe to the open feed.
+    let w = window.as_weak();
+    window.on_music_podcast_info_subscribe(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let url = cur_info_feed().lock().map(|g| g.clone()).unwrap_or_default();
+        if url.is_empty() { return; }
+        w0.set_music_podcast_subscribing(true);
+        w0.set_music_podcast_subscribe_frac(0.0);
+        w0.set_music_podcast_subscribe_status("".into());
+        subscribe_feed_with_progress(w.clone(), url);
+    });
+    // Open the owning podcast's page from a downloaded episode's context menu.
+    let w = window.as_weak();
+    window.on_music_podcast_goto_show(move |ep_id| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let pid: Option<i64> = sqlx::query_scalar("SELECT podcast_id FROM podcast_episodes WHERE id = ?")
+                .bind(ep_id as i64).fetch_optional(&pool).await.ok().flatten();
+            if let Some(pid) = pid {
+                let _ = weak.upgrade_in_event_loop(move |w| open_podcast(&w, pid as i32));
+            }
         });
     });
     let w = window.as_weak();
     window.on_music_podcast_open(move |i| {
         if let Some(w) = w.upgrade() { open_podcast(&w, i); }
     });
-    // Stream the i-th episode of the open feed directly via mpv.
+    // Play an episode by DB id (works from any list — detail / Home / Downloads /
+    // mini-player). Prefers the offline copy; switches the bottom player to
+    // podcast mode; marks the episode played.
     let w = window.as_weak();
-    window.on_music_podcast_play(move |i| {
+    window.on_music_podcast_play(move |id| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let row: Option<(String, String, Option<String>, String, i64, String, String)> = sqlx::query_as(
+                "SELECT e.title, e.audio_url, e.downloaded_path, COALESCE(e.image_url,''),
+                        p.id, COALESCE(NULLIF(p.custom_image,''), p.image_url, ''), COALESCE(p.title,'')
+                 FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id WHERE e.id = ?")
+                .bind(id as i64).fetch_optional(&pool).await.ok().flatten();
+            let Some((title, url, dl, eimg, pid, pimg, show)) = row else { return; };
+            if url.is_empty() && dl.is_none() { return; }
+            let client = reqwest::Client::new();
+            let art = match cache_artwork(&client, &format!("ep-{id}"), &eimg).await {
+                Some(p) => Some(p),
+                None => cache_artwork(&client, &format!("pod-{pid}"), &pimg).await,
+            };
+            let _ = sqlx::query("UPDATE podcast_episodes SET played = 1 WHERE id = ?").bind(id as i64).execute(&pool).await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                let src = dl.clone().filter(|p| std::path::Path::new(p).exists()).unwrap_or(url);
+                play_music_url(&w, &src, &title);
+                w.set_music_player_mode("podcast".into());
+                w.set_music_np_title(title.into());
+                w.set_music_np_sub(if show.is_empty() { "Podcast".into() } else { show.into() });
+                w.set_music_np_accent(slint::Color::from_rgb_u8(0x8b, 0x5c, 0xf6));
+                if let Some(p) = art { if let Ok(im) = slint::Image::load_from_path(&p) { w.set_music_np_art(im); } }
+                // Open the mini-player centered in the page (podcasts have no bottom bar).
+                w.invoke_music_center_mini();
+                // Carry the chosen playback speed across episodes.
+                let sp = w.get_music_podcast_speed();
+                music_ipc(&["set_property", "audio-pitch-correction", "yes"]);
+                if (sp - 1.0).abs() > 0.01 { music_ipc(&["set_property", "speed", &sp.to_string()]); }
+                refresh_podcast_views(&w);
+                // Queue reflects WHERE playback started: a single-podcast page keeps
+                // its own episodes; the Downloads tab queues the downloads list;
+                // anything else (Home) queues the Latest-episodes feed.
+                if !w.get_music_podcast_detail_open() {
+                    if w.get_music_podcast_tab().as_str() == "downloads" {
+                        w.set_music_podcast_d_episodes(w.get_music_podcast_downloads());
+                    } else {
+                        w.set_music_podcast_d_episodes(w.get_music_podcast_latest());
+                    }
+                }
+            });
+        });
+    });
+    // Skip ±N seconds in the playing episode.
+    window.on_music_podcast_skip(move |secs| {
+        music_ipc(&["seek", &secs.to_string(), "relative"]);
+    });
+    // Set podcast playback speed (pitch-preserving) on the live stream.
+    let w = window.as_weak();
+    window.on_music_podcast_set_speed(move |s| {
         let Some(w0) = w.upgrade() else { return; };
-        let (url, title) = podcast_episodes().lock().ok()
-            .and_then(|g| g.get(i as usize).cloned()).unwrap_or_default();
-        if !url.is_empty() { play_music_url(&w0, &url, &title); }
+        let s = (s as f64).clamp(0.5, 3.0);
+        w0.set_music_podcast_speed(s as f32);
+        music_ipc(&["set_property", "audio-pitch-correction", "yes"]);
+        music_ipc(&["set_property", "speed", &s.to_string()]);
+    });
+    // Save (download) an episode by id to the app cache — streamed with a live
+    // inline progress bar (podcast-dl-id / podcast-dl-frac drive the UI).
+    let w = window.as_weak();
+    window.on_music_podcast_download(move |id| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let row: Option<(String, Option<String>)> = sqlx::query_as(
+                "SELECT audio_url, downloaded_path FROM podcast_episodes WHERE id = ?")
+                .bind(id as i64).fetch_optional(&pool).await.ok().flatten();
+            let Some((url, dl)) = row else { return; };
+            if url.is_empty() || dl.is_some() { return; }
+            let dir = tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("podcast_offline");
+            let _ = std::fs::create_dir_all(&dir);
+            let ext = url.split('?').next().unwrap_or(&url).rsplit('.').next()
+                .filter(|e| e.len() <= 4 && !e.contains('/')).unwrap_or("mp3").to_string();
+            let dest = dir.join(format!("ep-{id}.{ext}"));
+            // Mark this row as the in-flight download.
+            let wk = weak.clone();
+            let _ = wk.upgrade_in_event_loop(move |w| { w.set_music_podcast_dl_id(id); w.set_music_podcast_dl_frac(0.0); });
+            let client = reqwest::Client::new();
+            let ok = {
+                use std::io::Write;
+                let mut got: u64 = 0;
+                let mut last_pct: i32 = -1;
+                let result: Option<()> = async {
+                    let mut resp = client.get(&url)
+                        .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
+                        .send().await.ok()?;
+                    let total = resp.content_length();
+                    let mut file = std::fs::File::create(&dest).ok()?;
+                    while let Some(chunk) = resp.chunk().await.ok()? {
+                        file.write_all(&chunk).ok()?;
+                        got += chunk.len() as u64;
+                        if let Some(t) = total {
+                            if t > 0 {
+                                let pct = ((got as f64 / t as f64) * 100.0) as i32;
+                                if pct != last_pct {
+                                    last_pct = pct;
+                                    let frac = (got as f64 / t as f64) as f32;
+                                    let wk = weak.clone();
+                                    let _ = wk.upgrade_in_event_loop(move |w| w.set_music_podcast_dl_frac(frac));
+                                }
+                            }
+                        }
+                    }
+                    Some(())
+                }.await;
+                result.is_some()
+            };
+            if ok {
+                let _ = tulipix_music::podcasts::mark_downloaded(&pool, id as i64, dest.to_string_lossy().as_ref()).await;
+            } else {
+                let _ = std::fs::remove_file(&dest);
+            }
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_podcast_dl_id(-1);
+                w.set_music_podcast_dl_frac(0.0);
+                refresh_podcast_views(&w);
+            });
+        });
+    });
+    // Open the show-notes / transcript panel for an episode by id.
+    let w = window.as_weak();
+    window.on_music_podcast_transcript(move |id| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let row: Option<(String, String)> = sqlx::query_as(
+                "SELECT COALESCE(title,''), COALESCE(description,'') FROM podcast_episodes WHERE id = ?")
+                .bind(id as i64).fetch_optional(&pool).await.ok().flatten();
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                if let Some((title, desc)) = row {
+                    w.set_music_podcast_transcript_title(title.into());
+                    w.set_music_podcast_transcript_text(desc.into());
+                    w.set_music_podcast_transcript_open(true);
+                }
+            });
+        });
+    });
+    // Podcast sub-tab switch (Home / Subscribed / Downloads).
+    let w = window.as_weak();
+    window.on_music_podcast_set_tab(move |t| {
+        let Some(w0) = w.upgrade() else { return; };
+        // Pure UI swap. All three lists (Home/Subscribed/Downloads) are populated
+        // once on entering Podcasts and again on Refresh/Fetch/Add/Reset — so a
+        // tab change must NOT re-query the DB (that was the switch lag/stutter).
+        // Trends is the one exception: it fetches the baked feed list (cached for
+        // the session) the first time it's opened.
+        let is_trends = t == "trends";
+        w0.set_music_podcast_tab(t);
+        // Trends: build only the first time (or after a reset emptied it). The
+        // grid model + sort flags persist, so re-entering is an instant UI swap
+        // instead of re-decoding 21 cover images on every tab change.
+        if is_trends && w0.get_music_podcast_trends().row_count() == 0 {
+            populate_podcast_trends(&w0);
+        }
+    });
+    // Filter the Subscribed grid by category (reset to page 1).
+    let w = window.as_weak();
+    window.on_music_podcast_set_cat(move |c| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_cat(c);
+        w0.set_music_podcast_sub_page(0);
+        populate_podcasts(&w0);
+    });
+    // Subscribed / Home grid pagination (re-render from DB).
+    let w = window.as_weak();
+    window.on_music_podcast_sub_set_page(move |d| {
+        let Some(w0) = w.upgrade() else { return; };
+        let next = (w0.get_music_podcast_sub_page() + d).clamp(0, (w0.get_music_podcast_sub_pages() - 1).max(0));
+        w0.set_music_podcast_sub_page(next);
+        populate_podcasts(&w0);
+    });
+    let w = window.as_weak();
+    window.on_music_podcast_home_set_page(move |d| {
+        let Some(w0) = w.upgrade() else { return; };
+        let next = (w0.get_music_podcast_home_page() + d).clamp(0, (w0.get_music_podcast_home_pages() - 1).max(0));
+        w0.set_music_podcast_home_page(next);
+        populate_podcasts(&w0);
+    });
+    // Home "Your shows" — sort (name / category / latest episode).
+    let w = window.as_weak();
+    window.on_music_podcast_home_set_sort(move |s| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_home_sort(s);
+        w0.set_music_podcast_home_page(0);
+        populate_podcasts(&w0);
+    });
+    // Toggle a show's presence on Home "Your shows" (pin/unpin).
+    let w = window.as_weak();
+    window.on_music_podcast_toggle_home(move |pid| {
+        if w.upgrade().is_none() { return; }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let _ = sqlx::query("UPDATE podcasts SET home_pinned = 1 - COALESCE(home_pinned,0) WHERE id = ?")
+                .bind(pid as i64).execute(&pool).await;
+            // Reflect new pin state on the open detail page, if any.
+            let pinned: i64 = sqlx::query_scalar("SELECT COALESCE(home_pinned,0) FROM podcasts WHERE id = ?")
+                .bind(pid as i64).fetch_one(&pool).await.unwrap_or(0);
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_podcast_d_pinned(pinned != 0);
+                populate_podcasts(&w);
+            });
+        });
+    });
+    // Downloads tab — sort + pagination.
+    let w = window.as_weak();
+    window.on_music_podcast_dl_set_sort(move |s| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_dl_sort(s);
+        w0.set_music_podcast_dl_page(0);
+        populate_podcast_downloads(&w0);
+    });
+    let w = window.as_weak();
+    window.on_music_podcast_dl_set_page(move |d| {
+        let Some(w0) = w.upgrade() else { return; };
+        let next = (w0.get_music_podcast_dl_page() + d).clamp(0, (w0.get_music_podcast_dl_pages() - 1).max(0));
+        w0.set_music_podcast_dl_page(next);
+        populate_podcast_downloads(&w0);
+    });
+    // Re-fetch a single feed by id (Subscribed/Home context menu → Fetch).
+    let w = window.as_weak();
+    window.on_music_podcast_fetch(move |id| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let url: Option<String> = sqlx::query_scalar("SELECT feed_url FROM podcasts WHERE id = ?")
+                .bind(id as i64).fetch_optional(&pool).await.ok().flatten();
+            if let Some(url) = url {
+                let client = reqwest::Client::new();
+                if let Ok(resp) = client.get(&url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
+                    if let Ok(xml) = resp.text().await {
+                        let feed = tulipix_music::podcasts::parse_feed(&xml);
+                        let _ = tulipix_music::podcasts::subscribe(&pool, &url, &feed).await;
+                    }
+                }
+            }
+            let _ = weak.upgrade_in_event_loop(|w| refresh_podcast_views(&w));
+        });
+    });
+    // Unsubscribe a feed by id — removes it (and episodes, via cascade) everywhere.
+    let w = window.as_weak();
+    window.on_music_podcast_unsubscribe(move |id| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            // Drop any cached offline files for this feed first.
+            let paths: Vec<(Option<String>,)> = sqlx::query_as(
+                "SELECT downloaded_path FROM podcast_episodes WHERE podcast_id = ? AND downloaded_path IS NOT NULL")
+                .bind(id as i64).fetch_all(&pool).await.unwrap_or_default();
+            for (p,) in paths { if let Some(p) = p { let _ = std::fs::remove_file(&p); } }
+            let _ = sqlx::query("DELETE FROM podcast_episodes WHERE podcast_id = ?").bind(id as i64).execute(&pool).await;
+            let _ = sqlx::query("DELETE FROM podcasts WHERE id = ?").bind(id as i64).execute(&pool).await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                // If the open detail belongs to this feed, close it.
+                let cur = cur_podcast_id().lock().map(|g| *g).unwrap_or(-1);
+                if cur == id as i64 {
+                    w.set_music_podcast_detail_open(false);
+                    if let Ok(mut g) = cur_podcast_id().lock() { *g = -1; }
+                }
+                populate_podcasts(&w);
+                populate_podcast_latest(&w);
+                populate_podcast_downloads(&w);
+            });
+        });
+    });
+    // Remove an episode's offline copy (Downloads context menu).
+    let w = window.as_weak();
+    window.on_music_podcast_remove_download(move |id| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let path: Option<String> = sqlx::query_scalar("SELECT downloaded_path FROM podcast_episodes WHERE id = ?")
+                .bind(id as i64).fetch_optional(&pool).await.ok().flatten();
+            if let Some(p) = path { let _ = std::fs::remove_file(&p); }
+            let _ = sqlx::query("UPDATE podcast_episodes SET downloaded_path = NULL WHERE id = ?").bind(id as i64).execute(&pool).await;
+            let _ = weak.upgrade_in_event_loop(|w| refresh_podcast_views(&w));
+        });
+    });
+    // Detail page — sort (newest/oldest) + pagination.
+    let w = window.as_weak();
+    window.on_music_podcast_d_set_sort(move |s| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_d_sort(s);
+        w0.set_music_podcast_d_page(0);
+        let pid = cur_podcast_id().lock().map(|g| *g).unwrap_or(-1);
+        if pid >= 0 { load_podcast_detail(&w0, pid); }
+    });
+    let w = window.as_weak();
+    window.on_music_podcast_d_set_page(move |d| {
+        let Some(w0) = w.upgrade() else { return; };
+        let pages = w0.get_music_podcast_d_pages();
+        let next = (w0.get_music_podcast_d_page() + d).clamp(0, (pages - 1).max(0));
+        w0.set_music_podcast_d_page(next);
+        let pid = cur_podcast_id().lock().map(|g| *g).unwrap_or(-1);
+        if pid >= 0 { load_podcast_detail(&w0, pid); }
+    });
+    // Back from a podcast detail page to the grid.
+    let w = window.as_weak();
+    window.on_music_podcast_back(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_podcast_detail_open(false);
+        if let Ok(mut g) = cur_podcast_id().lock() { *g = -1; }
+        refresh_podcast_views(&w0);
     });
     // Audiobook play with pitch-preserving speed + resume (np.p5.music.audiobook-chapters).
     let w = window.as_weak();
@@ -1677,27 +3402,76 @@ fn main() -> Result<()> {
         let pos = book_bookmarks().lock().ok().and_then(|g| g.get(i as usize).copied());
         if let Some(pos) = pos { music_ipc(&["seek", &pos.to_string(), "absolute"]); }
     });
+    // Open a book (by folder) → build the detail hero + chapter list.
+    let w = window.as_weak();
+    window.on_music_audiobook_open(move |folder| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let folder = folder.to_string();
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let ids = tulipix_music::audiobooks::book_chapters(&pool, &folder).await.unwrap_or_default();
+            let _ = weak.upgrade_in_event_loop(move |w| fill_book_detail(&w, &folder, &ids));
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_audiobook_back(move || {
+        if let Some(w0) = w.upgrade() { w0.set_music_audiobook_detail_open(false); }
+    });
     // Re-fetch every subscribed podcast feed (np.p5.music.podcast-feeds auto-refresh).
     let w = window.as_weak();
     window.on_music_podcast_refresh(move || {
         let Some(w0) = w.upgrade() else { return; };
+        if w0.get_music_podcast_refresh_busy() { return; }
+        w0.set_music_podcast_refresh_busy(true);
+        w0.set_music_podcast_refresh_frac(0.0);
+        w0.set_music_podcast_refresh_status("↻ Starting…".into());
         let weak = w.clone();
-        let _ = w0;
         tokio::runtime::Handle::current().spawn(async move {
-            let Ok(pool) = pool_for("music").await else { return; };
-            let feeds: Vec<(String,)> = sqlx::query_as("SELECT feed_url FROM podcasts")
+            let Ok(pool) = pool_for("podcasts").await else {
+                let _ = weak.upgrade_in_event_loop(|w| w.set_music_podcast_refresh_busy(false));
+                return;
+            };
+            let feeds: Vec<(i64, String)> = sqlx::query_as("SELECT id, feed_url FROM podcasts")
                 .fetch_all(&pool).await.unwrap_or_default();
+            let n = feeds.len().max(1);
             let client = reqwest::Client::new();
-            for (url,) in feeds {
-                if let Ok(resp) = client.get(&url)
-                    .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
+            let mut total_added: i64 = 0;
+            for (i, (pid, url)) in feeds.iter().enumerate() {
+                let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM podcast_episodes WHERE podcast_id = ?")
+                    .bind(pid).fetch_one(&pool).await.unwrap_or(0);
+                if let Ok(resp) = client.get(url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
                     if let Ok(xml) = resp.text().await {
                         let feed = tulipix_music::podcasts::parse_feed(&xml);
-                        let _ = tulipix_music::podcasts::subscribe(&pool, &url, &feed).await;
+                        let prog = weak.clone();
+                        let base = i;
+                        let _ = tulipix_music::podcasts::subscribe_with_progress(&pool, url, &feed, move |done, total| {
+                            let frac = ((base as f32) + (done as f32 / total.max(1) as f32)) / n as f32;
+                            let p = prog.clone();
+                            let _ = p.upgrade_in_event_loop(move |w| {
+                                w.set_music_podcast_refresh_frac(frac);
+                                w.set_music_podcast_refresh_status(format!("↻ {}/{}", base + 1, n).into());
+                            });
+                        }).await;
                     }
                 }
+                let after: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM podcast_episodes WHERE podcast_id = ?")
+                    .bind(pid).fetch_one(&pool).await.unwrap_or(0);
+                total_added += (after - before).max(0);
+                let (frac, ii, added) = ((i + 1) as f32 / n as f32, i + 1, total_added);
+                let _ = weak.upgrade_in_event_loop(move |w| {
+                    w.set_music_podcast_refresh_frac(frac);
+                    w.set_music_podcast_refresh_status(format!("↻ {ii}/{n} · +{added}").into());
+                });
             }
-            let _ = weak.upgrade_in_event_loop(|w| populate_podcasts(&w));
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_podcast_refresh_busy(false);
+                w.set_music_podcast_refresh_frac(0.0);
+                w.set_music_podcast_refresh_status("".into());
+                populate_podcasts(&w);
+                populate_podcast_latest(&w);
+                populate_podcast_downloads(&w);
+            });
         });
     });
     // Fetch artist art + bio from MusicBrainz / Cover Art Archive (np.p5.music.art-bio).
@@ -1779,7 +3553,7 @@ fn main() -> Result<()> {
         let Some(w) = w.upgrade() else { return; };
         let open = !w.get_music_mini_open();
         w.set_music_mini_open(open);
-        if open { build_music_queue(&w); }
+        if open { build_music_queue(&w); load_music_lyrics(&w); }
     });
 
     // ── Phase 5 music — playlist builder / M3U / queue reorder ──────────────
@@ -1787,6 +3561,23 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_music_playlist_open(move |pid| {
         if let Some(w) = w.upgrade() { build_playlist_detail(&w, pid as i64); }
+    });
+    // Set a custom cover image for the open playlist (np.p5.music.playlists-builder).
+    let w = window.as_weak();
+    window.on_music_playlist_set_art(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let id = current_playlist().lock().map(|g| g.0).unwrap_or(-1);
+        if id < 0 { return; }
+        if let Some(path) = rfd::FileDialog::new()
+            .set_title("Choose playlist art")
+            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp"])
+            .pick_file()
+        {
+            let p = path.to_string_lossy().into_owned();
+            save_music_pref(&format!("music.playlist.cover.{id}"), &p);
+            w0.set_music_playlist_cover(slint::Image::load_from_path(&path).unwrap_or_default());
+            populate_music_views(w0.as_weak()); // reflect the art on the playlists grid too
+        }
     });
     let w = window.as_weak();
     window.on_music_playlist_back(move || {
@@ -1831,7 +3622,23 @@ fn main() -> Result<()> {
     });
     let w = window.as_weak();
     window.on_music_playlist_play_track(move |pos| {
-        if let Some(w) = w.upgrade() { play_music_at(&w, pos); }
+        let Some(w0) = w.upgrade() else { return; };
+        play_music_at(&w0, pos);
+        // Queue the rest of the playlist in its displayed order (np.p5.music.playlist-order).
+        let (_pid, ids) = current_playlist().lock().map(|g| g.clone()).unwrap_or((-1, Vec::new()));
+        let clicked_id = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied());
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = tulipix_music::queue::clear(&pool).await;
+            if let Some(start) = clicked_id.and_then(|cid| ids.iter().position(|x| *x == cid)) {
+                for off in 1..ids.len() {
+                    let id = ids[(start + off) % ids.len()];
+                    let _ = tulipix_music::queue::enqueue(&pool, id, "playlist").await;
+                }
+            }
+            let _ = weak.upgrade_in_event_loop(|w| build_music_queue(&w));
+        });
     });
     // Remove the i-th track from the open playlist.
     let w = window.as_weak();
@@ -1865,6 +3672,19 @@ fn main() -> Result<()> {
             }
         });
     });
+    // Playlist sort — Custom (saved/manual order = play order) | title | artist.
+    let w = window.as_weak();
+    window.on_music_playlist_sort_set(move |s| {
+        let Some(w0) = w.upgrade() else { return; };
+        let s = s.to_string();
+        let dir = if w0.get_music_playlist_sort() == s.as_str() {
+            if w0.get_music_playlist_sort_dir() == "asc" { "desc" } else { "asc" }
+        } else { "asc" };
+        w0.set_music_playlist_sort(s.clone().into());
+        w0.set_music_playlist_sort_dir(dir.into());
+        let pid = current_playlist().lock().map(|g| g.0).unwrap_or(-1);
+        if pid >= 0 { build_playlist_detail(&w0, pid); }
+    });
     // Import an M3U/M3U8/PLS file → new playlist of matched library tracks.
     let w = window.as_weak();
     window.on_music_playlist_import(move || {
@@ -1895,7 +3715,7 @@ fn main() -> Result<()> {
         });
     });
     // Export the current Up-Next queue (or the library) to an M3U file.
-    let w = window.as_weak();
+    let _w = window.as_weak();
     window.on_music_playlist_export(move || {
         let Some(file) = rfd::FileDialog::new().set_title("Export queue")
             .set_file_name("tulipix-queue.m3u8").add_filter("Playlists", &["m3u8", "m3u"]).save_file() else { return; };
@@ -1959,8 +3779,13 @@ fn main() -> Result<()> {
                 }
                 return;
             }
-            let bars = tulipix_music::visualizer::synthetic_bars(
-                tulipix_music::visualizer::DEFAULT_BARS, start.elapsed().as_secs_f64());
+            // Shape from the synthetic spectrum, energy from the REAL audio loudness
+            // (ebur128) so every style pulses to the actual beat, not just a clock.
+            let amp = MUSIC_LOUDNESS.load(std::sync::atomic::Ordering::Relaxed) as f32 / 1000.0;
+            let env = 0.18 + 0.82 * amp;
+            let bars: Vec<f32> = tulipix_music::visualizer::synthetic_bars(
+                tulipix_music::visualizer::DEFAULT_BARS, start.elapsed().as_secs_f64())
+                .into_iter().map(|b| (b * env).clamp(0.0, 1.0)).collect();
             w.set_music_vis_bars(slint::ModelRc::new(slint::VecModel::from(bars)));
         });
     }
@@ -1968,6 +3793,7 @@ fn main() -> Result<()> {
     {
         let s = tulipix_core::settings::Settings::load().unwrap_or_default();
         window.set_music_gapless(s.advanced.get("music.gapless").map(|v| v != "0").unwrap_or(true));
+        window.set_music_home_connect(s.advanced.get("music.home_connect").map(|v| v == "1").unwrap_or(false));
         window.set_music_crossfade(s.advanced.get("music.crossfade").and_then(|v| v.parse().ok()).unwrap_or(0.0));
         window.set_music_replaygain(s.advanced.get("music.replaygain").cloned().unwrap_or_else(|| "off".into()).into());
         window.set_music_device(s.advanced.get("music.device").cloned().unwrap_or_else(|| "auto".into()).into());
@@ -1975,6 +3801,9 @@ fn main() -> Result<()> {
         window.set_music_scrobble_on(s.advanced.get("music.scrobble").map(|v| v == "1").unwrap_or(false));
         let tsz = s.advanced.get("music.thumb_size").and_then(|v| v.parse::<f32>().ok()).unwrap_or(168.0).clamp(100.0, 300.0);
         window.set_music_thumb_size(tsz);
+        // Last-used visualizer style (0..4), default Line (4).
+        window.set_music_vis_style(s.advanced.get("music.vis_style").and_then(|v| v.parse::<i32>().ok()).unwrap_or(4).clamp(0, 4));
+        populate_eq_customs(&window);
         let weak = window.as_weak();
         std::thread::spawn(move || {
             let ids: Vec<slint::SharedString> = enumerate_audio_devices().iter().map(|d| d.id.clone().into()).collect();
@@ -2412,7 +4241,7 @@ fn main() -> Result<()> {
             };
             w.set_user(user);
             // Mode change can change tier → refresh the account-feature gate.
-            w.set_account_sync_allowed(tulipix_core::caps::is_allowed(tulipix_core::caps::Cap::SyncEnabled));
+            w.set_account_sync_allowed(true); // local-model: full access, every capability unlocked
             // Locking shows the screensaver as a lock screen.
             if action.as_str() == "lock" {
                 w.set_ambient_clock(clock_now().into());
@@ -2425,11 +4254,10 @@ fn main() -> Result<()> {
     // ── Settings panels: load persisted settings, seed the UI models ───────
     {
         let s = tulipix_core::settings::Settings::load().unwrap_or_default();
-        let choice = match s.theme.as_str() {
-            "light" => ThemeChoice::Light,
-            "extra-dark" => ThemeChoice::ExtraDark,
-            _ => ThemeChoice::System,
-        };
+        // Always launch in light theme regardless of the persisted choice
+        // (user preference). The in-session theme picker still works; we just
+        // never *start* dark.
+        let choice = ThemeChoice::Light;
         window.set_theme_choice(choice);
         apply_theme_choice(&window, choice);
         window.set_reduce_motion(s.reduce_motion);
@@ -3180,7 +5008,7 @@ fn main() -> Result<()> {
     });
 
     // ── Capability gating (np.p1.caps.ui / caps.events) ────────────────────
-    window.set_account_sync_allowed(tulipix_core::caps::is_allowed(tulipix_core::caps::Cap::SyncEnabled));
+    window.set_account_sync_allowed(true); // local-model: full access, every capability unlocked
     // Surface every capability denial as an upgrade nudge toast.
     let w = window.as_weak();
     tulipix_core::caps::on_denied(move |cap, tier| {
@@ -3302,20 +5130,104 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_lib_rescan_all(move || {
         let Some(w) = w.upgrade() else { return; };
+        set_lib_busy(&w.as_weak(), "Rescanning all libraries…", -1.0);
+        set_scan_silent(false); // surface the detailed per-section scan overlay
         for path in load_watched_folders() {
             if path.exists() { add_folder_path(&w, path); }
         }
+        populate_folder_roots(&w);
+        // The section scans run async; the scan overlay shows the live count,
+        // so clear the maintenance bar once the kicks are dispatched.
+        clear_lib_busy(&w.as_weak());
         tracing::info!("rescan-all requested");
     });
+    let w = window.as_weak();
     window.on_lib_clear_thumb_cache(move || {
-        if let Some(dir) = tulipix_core::paths::thumbs_dir() {
-            match std::fs::remove_dir_all(&dir) {
-                Ok(()) | Err(_) => { let _ = std::fs::create_dir_all(&dir); }
+        let Some(w) = w.upgrade() else { return; };
+        set_lib_busy(&w.as_weak(), "Clearing thumbnail cache…", -1.0);
+        let weak = w.as_weak();
+        tokio::runtime::Handle::current().spawn(async move {
+            if let Some(dir) = tulipix_core::paths::thumbs_dir() {
+                let _ = tokio::task::spawn_blocking(move || {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    let _ = std::fs::create_dir_all(&dir);
+                }).await;
+                tracing::info!("thumbnail cache cleared");
             }
-            tracing::info!(dir = %dir.display(), "thumbnail cache cleared");
-        }
+            clear_lib_busy(&weak);
+        });
     });
-    window.on_lib_rebuild_fts(move || tracing::info!("rebuild-fts requested (search index)"));
+    let w = window.as_weak();
+    window.on_lib_rebuild_fts(move || {
+        let Some(w) = w.upgrade() else { return; };
+        set_lib_busy(&w.as_weak(), "Rebuilding search index…", 0.0);
+        let weak = w.as_weak();
+        tokio::runtime::Handle::current().spawn(async move {
+            // Re-index the photo full-text-search table item-by-item so the
+            // FTS5 index matches the current library + tags + people. Driven
+            // through the maintenance progress bar.
+            if let Ok(pool) = pool_for("photos").await {
+                let ids: Vec<i64> = sqlx::query_scalar(
+                    "SELECT id FROM items WHERE section = 'photos' AND missing_since IS NULL")
+                    .fetch_all(&pool).await.unwrap_or_default();
+                let total = ids.len().max(1);
+                for (n, id) in ids.iter().enumerate() {
+                    let _ = tulipix_photos::search::index_item(&pool, *id).await;
+                    if n % 16 == 0 {
+                        set_lib_busy(&weak, "Rebuilding search index…", (n as f32) / (total as f32));
+                    }
+                }
+                tracing::info!(count = ids.len(), "FTS rebuild complete");
+            }
+            clear_lib_busy(&weak);
+        });
+    });
+    // Reset App — wipe every section DB row, watched folders, folder tags, the
+    // thumbnail cache, and all in-memory accumulators so the app starts fresh.
+    // Destructive, behind an explicit danger button in Settings → Libraries.
+    let w = window.as_weak();
+    window.on_lib_reset_app(move || {
+        let Some(w) = w.upgrade() else { return; };
+        set_lib_busy(&w.as_weak(), "Clearing all data — starting fresh…", -1.0);
+        // Forget persisted lists.
+        if let Some(p) = watched_folders_path() { let _ = std::fs::remove_file(p); }
+        if let Some(p) = folder_sections_path() { let _ = std::fs::remove_file(p); }
+        // Drop the thumbnail cache.
+        if let Some(dir) = tulipix_core::paths::thumbs_dir() {
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::create_dir_all(&dir);
+        }
+        // Clear in-memory accumulators so the grids empty immediately.
+        if let Ok(mut g) = photo_full().lock() { g.clear(); }
+        if let Ok(mut g) = video_full().lock() { g.clear(); }
+        if let Ok(mut g) = music_full().lock() { g.clear(); }
+        if let Ok(mut g) = music_paths().lock() { g.clear(); }
+        let weak = w.as_weak();
+        tokio::runtime::Handle::current().spawn(async move {
+            // Truncate the core items table per section. Derived views read via
+            // joins on items, so emptying it empties every section's library.
+            for section in ["photos", "videos", "music", "books"] {
+                if let Ok(pool) = pool_for(section).await {
+                    let _ = sqlx::query("DELETE FROM items").execute(&pool).await;
+                }
+            }
+            tracing::info!("app data reset — fresh start");
+            let _ = weak.upgrade_in_event_loop(|w| {
+                w.set_library_rows(slint::ModelRc::new(slint::VecModel::from(Vec::<LibraryRow>::new())));
+                rebuild_scan_rows(&w);
+                w.set_onboarding_lib_added(false);
+                // Rebuild every section view from the now-empty DBs.
+                rebuild_music_tiles(&w);
+                populate_music_views(w.as_weak());
+                populate_folder_roots(&w);
+                w.set_photos_total(0);
+                kick_category_refresh(w.as_weak(), w.get_photos_category().to_string(), w.get_photos_query().to_string());
+                kick_video_refresh(w.as_weak(), w.get_video_category().to_string());
+                refresh_books(&w);
+                clear_lib_busy(&w.as_weak());
+            });
+        });
+    });
     let w = window.as_weak();
     window.on_lib_row_remove(move |i| {
         let Some(w) = w.upgrade() else { return; };
@@ -3331,9 +5243,65 @@ fn main() -> Result<()> {
         rebuild_scan_rows(&w);
         tracing::info!(index = i, "library row removed");
     });
-    window.on_lib_row_rescan(move |i| tracing::info!(index = i, "library row rescan requested"));
-    window.on_lib_row_rethumb(move |i| tracing::info!(index = i, "library row rethumb requested"));
+    // Rescan a single watched location — re-walk just that row's folder.
+    let w = window.as_weak();
+    window.on_lib_row_rescan(move |i| {
+        let Some(w) = w.upgrade() else { return; };
+        let Some(row) = w.get_library_rows().row_data(i as usize) else { return; };
+        let path = PathBuf::from(row.path.to_string());
+        if !path.exists() { return; }
+        set_lib_busy(&w.as_weak(), &format!("Rescanning {}…", row.path), -1.0);
+        set_scan_silent(false);
+        add_folder_path(&w, path);
+        populate_folder_roots(&w);
+        clear_lib_busy(&w.as_weak());
+        tracing::info!(index = i, "library row rescan");
+    });
+    // Re-thumbnail a single location — drop its cached thumbs, then rescan so
+    // they regenerate.
+    let w = window.as_weak();
+    window.on_lib_row_rethumb(move |i| {
+        let Some(w) = w.upgrade() else { return; };
+        let Some(row) = w.get_library_rows().row_data(i as usize) else { return; };
+        let path = PathBuf::from(row.path.to_string());
+        if !path.exists() { return; }
+        set_lib_busy(&w.as_weak(), &format!("Re-thumbnailing {}…", row.path), -1.0);
+        // Clearing the whole thumb cache is the safe, simple option: the rescan
+        // below regenerates exactly the thumbs this folder needs.
+        if let Some(dir) = tulipix_core::paths::thumbs_dir() {
+            let _ = std::fs::remove_dir_all(&dir);
+            let _ = std::fs::create_dir_all(&dir);
+        }
+        set_scan_silent(false);
+        add_folder_path(&w, path);
+        clear_lib_busy(&w.as_weak());
+        tracing::info!(index = i, "library row rethumb");
+    });
     window.on_lib_row_edit_exclude(move |i| tracing::info!(index = i, "library row edit-exclude requested"));
+    // Music row: persist the chosen section (5-section dropdown + Save).
+    let w = window.as_weak();
+    window.on_lib_row_save_section(move |i, label| {
+        let Some(w) = w.upgrade() else { return; };
+        let model = w.get_library_rows();
+        let Some(mut row) = model.row_data(i as usize) else { return; };
+        if row.section != "music" { return; }
+        let key = music_section_key(&label);
+        let folder = row.path.to_string();
+        set_folder_section(&folder, key);
+        row.music_section = music_section_label(key).into();
+        model.set_row_data(i as usize, row);
+        // Keep is_audiobook in sync with the folder's section assignment.
+        let aud = key == "audiobooks";
+        let folder2 = folder.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            if let Ok(pool) = pool_for("music").await {
+                let _ = tulipix_music::audiobooks::set_folder_flag(&pool, &folder2, aud).await;
+            }
+        });
+        populate_music_views(w.as_weak());
+        populate_folder_roots(&w);
+        tracing::info!(index = i, section = key, "library music-row section saved");
+    });
 
     // ── Command palette ────────────────────────────────────────────────────
     let w = window.as_weak();
@@ -3402,11 +5370,17 @@ fn main() -> Result<()> {
         }
     }
 
+    // OS media-key support (XF86Audio Play/Pause/Next/Prev) via MPRIS on Linux,
+    // SMTC on Windows, MediaPlayer on macOS. Held alive for the app's lifetime.
+    setup_media_controls(&window);
+
     // Launch filling the screen (maximised, decorations kept) rather than a
     // small floating window.
     window.window().set_maximized(true);
     window.run()?;
 
+    // Stop all playback so nothing keeps playing after the window closes.
+    kill_all_mpv();
     // Tear down any rclone mounts spun up for the cloud section.
     cloud_unmount_all();
 
@@ -3433,6 +5407,9 @@ static VIDEOS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
 static MUSIC_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
 static BOOKS_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
 static CLOUD_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
+// Music sub-sections split out of music.db (no items FK — self-contained).
+static PODCASTS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
+static RADIO_POOL:    OnceLock<sqlx::SqlitePool> = OnceLock::new();
 // Map photo tile index → absolute path so the click handler can pop the
 // viewer with the original (not the 320px thumb).
 static PHOTO_PATHS: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();
@@ -3764,7 +5741,7 @@ fn kick_category_refresh(weak: slint::Weak<MainWindow>, category: String, query:
                                             thumb: slint::Image::load_from_path(thumb).unwrap_or_default(),
                                             label: label.clone().into(), col: i as i32, row: 0, index: i as i32,
                                             starred: starred.contains(p), selected: false,
-                                            color_label: color_label.into(), is_live, stack_count,
+                                            color_label: color_label.into(), is_live, stack_count, count: 0,
                                         }
                                     })
                                 }).collect()
@@ -4076,6 +6053,7 @@ fn populate_timeline(w: &MainWindow, order: Vec<(String, String)>, query: &str) 
             color_label: color_label.into(),
             is_live,
             stack_count,
+            count: 0,
         });
         paths.push(orig.clone());
     }
@@ -4174,6 +6152,7 @@ fn apply_photo_filter(w: &MainWindow, query: &str) {
             color_label: color_label.into(),
             is_live,
             stack_count,
+            count: 0,
         });
         paths.push(orig.clone());
     }
@@ -4493,6 +6472,7 @@ fn incremented_stem(dir: &std::path::Path, base: &str, ext: &str) -> String {
 
 /// Resolve the super-resolution model path: `TULIPIX_SR_MODEL` env override,
 /// else `<data>/models/swin2sr-x4.onnx`. None ⇒ no real model installed.
+#[allow(dead_code)] // wired for the super-resolution feature (not yet on a UI path)
 fn sr_model_path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("TULIPIX_SR_MODEL") {
         let p = PathBuf::from(p);
@@ -4564,6 +6544,7 @@ fn editor_upscale(weak: slint::Weak<MainWindow>) {
 
 /// DeOldify colourise model path: `TULIPIX_COLORIZE_MODEL` env override, else
 /// `<data>/models/deoldify.onnx`.
+#[allow(dead_code)] // wired for the colourise feature (not yet on a UI path)
 fn colorize_model_path() -> Option<PathBuf> {
     if let Ok(p) = std::env::var("TULIPIX_COLORIZE_MODEL") {
         let p = PathBuf::from(p);
@@ -4997,6 +6978,16 @@ fn fmt_clock(secs: f64) -> String {
     if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
 }
 
+/// Unix-epoch seconds → "12 Jun 2022" (podcast episode dates).
+fn fmt_date(epoch: i64) -> String {
+    use chrono::{TimeZone, Utc, Datelike};
+    const MON: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    match Utc.timestamp_opt(epoch, 0).single() {
+        Some(dt) => format!("{} {} {}", dt.day(), MON[(dt.month0() as usize).min(11)], dt.year()),
+        None => String::new(),
+    }
+}
+
 // Currently-playing item (for watch_progress writeback) + pending resume seek.
 static PLAYER_ITEM: std::sync::OnceLock<std::sync::Mutex<Option<i64>>> = std::sync::OnceLock::new();
 fn player_item() -> &'static std::sync::Mutex<Option<i64>> {
@@ -5121,6 +7112,63 @@ fn persist_watched_folder(path: &std::path::Path) {
     }
 }
 
+// ── Music folder → section tag (np.p5.atmusic.folder-sections) ──────────────
+// Each scanned music folder can be assigned to one of the 5 top music sections
+// so the user controls where its tracks belong. Persisted next to the watched
+// folders so the assignment survives restarts.
+const MUSIC_SECTIONS: [&str; 5] = ["mymusic", "podcasts", "audiobooks", "radio", "youtube"];
+
+fn folder_sections_path() -> Option<PathBuf> {
+    tulipix_core::paths::config_dir().map(|d| d.join("music_folder_sections.json"))
+}
+fn load_folder_sections() -> std::collections::HashMap<String, String> {
+    folder_sections_path()
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|b| serde_json::from_str(&b).ok())
+        .unwrap_or_default()
+}
+fn save_folder_sections(map: &std::collections::HashMap<String, String>) {
+    let Some(file) = folder_sections_path() else { return; };
+    if let Some(parent) = file.parent() { let _ = std::fs::create_dir_all(parent); }
+    if let Ok(body) = serde_json::to_string_pretty(map) { let _ = std::fs::write(&file, body); }
+}
+/// Human label for a section key.
+fn music_section_label(key: &str) -> &'static str {
+    match key {
+        "podcasts"   => "Podcasts",
+        "audiobooks" => "Audiobooks",
+        "radio"      => "Radio",
+        "youtube"    => "YouTube",
+        _            => "My Music",
+    }
+}
+/// Section key for a human label (inverse of `music_section_label`).
+fn music_section_key(label: &str) -> &'static str {
+    match label {
+        "Podcasts"   => "podcasts",
+        "Audiobooks" => "audiobooks",
+        "Radio"      => "radio",
+        "YouTube"    => "youtube",
+        _            => "mymusic",
+    }
+}
+/// Persist a folder → section assignment (settings dropdown / chip both use this).
+fn set_folder_section(folder: &str, key: &str) {
+    let mut map = load_folder_sections();
+    map.insert(folder.to_string(), key.to_string());
+    save_folder_sections(&map);
+}
+/// Advance a folder's section tag to the next of the 5 and persist it.
+fn cycle_folder_section(folder: &str) -> String {
+    let mut map = load_folder_sections();
+    let cur = map.get(folder).map(|s| s.as_str()).unwrap_or("mymusic");
+    let idx = MUSIC_SECTIONS.iter().position(|s| *s == cur).unwrap_or(0);
+    let next = MUSIC_SECTIONS[(idx + 1) % MUSIC_SECTIONS.len()].to_string();
+    map.insert(folder.to_string(), next.clone());
+    save_folder_sections(&map);
+    next
+}
+
 /// Open a library video in the embedded player (np.p3.player.*): resume from
 /// the stored position (np.p3.watch-progress) and record the access for the
 /// Continue rail (np.p3.last-accessed). libmpv renders the frames in-window.
@@ -5158,9 +7206,12 @@ fn play_video_at(weak: slint::Weak<MainWindow>, idx: i32) {
 fn spawn_mpv_windowed(path: PathBuf, resume: Option<f64>, item_id: Option<i64>) {
     use std::io::{BufRead, BufReader, Write};
     let rt = tokio::runtime::Handle::current();
+    // Universal single stream: a new video stops music + any prior video.
+    kill_music_proc();
+    stop_video();
     std::thread::spawn(move || {
-        let sock = std::env::temp_dir().join(format!("tulipix-mpv-{}.sock", std::process::id()));
-        let _ = std::fs::remove_file(&sock);
+        let sock = mpv_ipc::endpoint("tulipix-mpv");
+        mpv_ipc::cleanup(&sock);
         let mut cmd = std::process::Command::new("mpv");
         cmd.arg(&path)
             .arg("--force-window=yes")
@@ -5168,17 +7219,19 @@ fn spawn_mpv_windowed(path: PathBuf, resume: Option<f64>, item_id: Option<i64>) 
             .arg("--keep-open=no")
             .arg(format!("--input-ipc-server={}", sock.display()));
         if let Some(r) = resume { if r > 1.0 { cmd.arg(format!("--start={r}")); } }
+        mpv_die_with_parent(&mut cmd);
         let mut child = match cmd.spawn() {
             Ok(c) => c,
             Err(e) => { tracing::error!(error = %e, "mpv window launch failed"); return; }
         };
+        let vpid = child.id();
+        VIDEO_PID.store(vpid, std::sync::atomic::Ordering::SeqCst);
         // Reader thread: observe time-pos + duration into a shared cell.
         let pos = std::sync::Arc::new(std::sync::Mutex::new((0f64, 0f64)));
         let pos2 = pos.clone();
         let sockp = sock.clone();
         let reader = std::thread::spawn(move || {
-            for _ in 0..60 { if sockp.exists() { break; } std::thread::sleep(std::time::Duration::from_millis(100)); }
-            let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&sockp) else { return; };
+            let Ok(mut stream) = mpv_ipc::connect(&sockp) else { return; };
             let _ = stream.write_all(
                 b"{\"command\":[\"observe_property\",1,\"time-pos\"]}\n{\"command\":[\"observe_property\",2,\"duration\"]}\n");
             let rd = BufReader::new(stream);
@@ -5198,6 +7251,7 @@ fn spawn_mpv_windowed(path: PathBuf, resume: Option<f64>, item_id: Option<i64>) 
             }
         });
         let _ = child.wait();
+        let _ = VIDEO_PID.compare_exchange(vpid, 0, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst);
         let _ = std::fs::remove_file(&sock);
         let _ = reader.join();
         let (p, d) = pos.lock().map(|g| *g).unwrap_or((0.0, 0.0));
@@ -5627,6 +7681,7 @@ struct BookRow {
     author: String,
     cover_path: Option<String>,
     is_comic: bool,
+    #[allow(dead_code)] // reading direction; carried for future right-to-left comic support
     rtl: bool,
     format: String,
     page: i64,
@@ -6410,6 +8465,39 @@ static MUSIC_PATHS: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::s
 fn music_paths() -> &'static std::sync::Mutex<Vec<PathBuf>> {
     MUSIC_PATHS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
+// Accumulated music tracks across ALL watched folders: (label, abs, thumb).
+// Like photo_full/video_full, this is the source of truth the tiles + paths are
+// rebuilt from, so adding a second folder ACCUMULATES instead of replacing the
+// first. Deduped by abs path.
+static MUSIC_FULL: std::sync::OnceLock<std::sync::Mutex<Vec<(String, PathBuf, PathBuf)>>> = std::sync::OnceLock::new();
+fn music_full() -> &'static std::sync::Mutex<Vec<(String, PathBuf, PathBuf)>> {
+    MUSIC_FULL.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+/// Rebuild the music tiles + playback-path list from the accumulated
+/// `music_full` set. Each tile's `index` is its playback position.
+fn rebuild_music_tiles(w: &MainWindow) {
+    let full = music_full().lock().map(|g| g.clone()).unwrap_or_default();
+    let mut paths: Vec<PathBuf> = Vec::with_capacity(full.len());
+    let mut tiles: Vec<PhotoTile> = Vec::with_capacity(full.len());
+    for (i, (label, orig, thumb_path)) in full.iter().enumerate() {
+        tiles.push(PhotoTile {
+            thumb: slint::Image::load_from_path(thumb_path).unwrap_or_default(),
+            label: label.clone().into(),
+            index: i as i32,
+            ..Default::default()
+        });
+        paths.push(orig.clone());
+    }
+    if let Ok(mut g) = music_paths().lock() { *g = paths; }
+    w.set_music_tiles(slint::ModelRc::new(slint::VecModel::from(tiles)));
+}
+/// Drop every accumulated music track whose abs path is under `dir` (used when
+/// a folder is removed from the library so its tiles disappear without a rescan).
+fn prune_music_full_under(dir: &std::path::Path) {
+    if let Ok(mut g) = music_full().lock() {
+        g.retain(|(_, orig, _)| !orig.starts_with(dir));
+    }
+}
 // Parallel to music_paths: the music.db item_id at each playback position, so
 // item_id-keyed features (dashboard / browse / rating) map back to a position.
 static MUSIC_IDS: std::sync::OnceLock<std::sync::Mutex<Vec<i64>>> = std::sync::OnceLock::new();
@@ -6423,12 +8511,13 @@ fn current_music_id(w: &MainWindow) -> Option<i64> {
 }
 
 /// One track's metadata for the detailed, sortable Songs list.
-struct SongMeta { pos: i32, title: String, artist: String, duration_s: f64, added: i64, plays: i64 }
+#[derive(Clone)]
+struct SongMeta { pos: i32, item_id: i64, title: String, artist: String, album: String, duration_s: f64, added: i64, plays: i64, loved: bool, stars: i32, synced: bool, release_date: String, is_audiobook: bool }
 static MUSIC_SONGS: std::sync::OnceLock<std::sync::Mutex<Vec<SongMeta>>> = std::sync::OnceLock::new();
 fn music_songs() -> &'static std::sync::Mutex<Vec<SongMeta>> {
     MUSIC_SONGS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
-const SONG_PAGE: usize = 30;
+const SONG_PAGE: usize = 35;
 const RECENT_PAGE: usize = 6;
 static MUSIC_QUERY: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
 fn music_query_filter() -> &'static std::sync::Mutex<String> {
@@ -6444,6 +8533,163 @@ fn music_recent() -> &'static std::sync::Mutex<Vec<SongMeta>> {
 thread_local! {
     static MUSIC_BROWSE: std::cell::RefCell<std::collections::HashMap<&'static str, Vec<(PhotoTile, i64)>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
+    // Full track list of the open album/artist/genre detail (display paginated 25/page).
+    static DETAIL_ROWS: std::cell::RefCell<Vec<MusicSongRow>> = std::cell::RefCell::new(Vec::new());
+    // Artist detail — the artist's albums column (2/row, 8/page, follows the track page).
+    static DETAIL_ARTIST_ALBUMS: std::cell::RefCell<Vec<PhotoTile>> = std::cell::RefCell::new(Vec::new());
+    // Metadata manager — every song's row (display paginated 30/page).
+    static META_ROWS: std::cell::RefCell<Vec<MetaMgrRow>> = std::cell::RefCell::new(Vec::new());
+}
+
+/// Split a filename stem on " - " into (artist, title, album?) per the user's
+/// "Artist - Title - Album" naming convention (np.p5.atmusic.metadata-manager).
+fn parse_music_filename(stem: &str) -> (String, String, Option<String>) {
+    let parts: Vec<&str> = stem.split(" - ").map(|s| s.trim()).filter(|s| !s.is_empty()).collect();
+    match parts.len() {
+        0 => (String::new(), stem.trim().to_string(), None),
+        1 => (String::new(), parts[0].to_string(), None),
+        2 => (parts[0].to_string(), parts[1].to_string(), None),
+        _ => (parts[0].to_string(), parts[1].to_string(), Some(parts[2..].join(" - "))),
+    }
+}
+
+/// Look the filename up on MusicBrainz and write the best match's title /
+/// artist / album / year / genre back to `track_meta` (creating artist/album
+/// rows as needed). Returns the fetched metadata for UI feedback.
+async fn fetch_and_store_meta(
+    pool: &sqlx::SqlitePool, client: &reqwest::Client, item_id: i64, stem: &str,
+) -> anyhow::Result<Option<tulipix_music::musicbrainz::FetchedMeta>> {
+    // Make sure the extra columns exist (idempotent).
+    let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN release_date TEXT").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN credits TEXT").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN user_locked INTEGER DEFAULT 0").execute(pool).await;
+    // Respect the user-lock — manually edited songs are never auto-overwritten.
+    let locked: i64 = sqlx::query_scalar("SELECT COALESCE(user_locked, 0) FROM track_meta WHERE item_id = ?")
+        .bind(item_id).fetch_optional(pool).await.ok().flatten().unwrap_or(0);
+    if locked != 0 { return Ok(None); }
+    let (artist_q, title_q, album_q) = parse_music_filename(stem);
+    if title_q.is_empty() { return Ok(None); }
+    let search = tulipix_music::musicbrainz::lookup_recording(client, &artist_q, &title_q).await?;
+    let Some(meta) = tulipix_music::musicbrainz::best_metadata(&search) else { return Ok(None); };
+    // Prefer MB values, fall back to the parsed filename where MB is blank.
+    let f_title  = if meta.title.is_empty()  { title_q.clone() }  else { meta.title.clone() };
+    let f_artist = if meta.artist.is_empty() { artist_q.clone() } else { meta.artist.clone() };
+    let f_album  = if meta.album.is_empty()  { album_q.unwrap_or_default() } else { meta.album.clone() };
+    let artist_id = if f_artist.is_empty() { None }
+        else { tulipix_music::scan::get_or_create_artist(pool, &f_artist).await.ok() };
+    let album_id = if f_album.is_empty() { None }
+        else { tulipix_music::scan::get_or_create_album(pool, &f_album, artist_id, meta.year).await.ok() };
+    let credits = if meta.credits.is_empty() { None } else { Some(meta.credits.clone()) };
+    sqlx::query(
+        "UPDATE track_meta SET title = ?, artist_id = COALESCE(?, artist_id),
+            album_id = COALESCE(?, album_id), genre = COALESCE(?, genre), year = COALESCE(?, year),
+            release_date = COALESCE(?, release_date), credits = COALESCE(?, credits)
+         WHERE item_id = ?")
+        .bind(&f_title).bind(artist_id).bind(album_id)
+        .bind(&meta.genre).bind(meta.year)
+        .bind(&meta.release_date).bind(&credits).bind(item_id)
+        .execute(pool).await?;
+    Ok(Some(meta))
+}
+
+/// Build the metadata-manager row list from the live song + path tables.
+fn build_meta_rows(w: &MainWindow) {
+    let songs = music_songs().lock().map(|g| g.clone()).unwrap_or_default();
+    let paths = music_paths().lock().map(|g| g.clone()).unwrap_or_default();
+    let rows: Vec<MetaMgrRow> = songs.iter().map(|s| {
+        let file = paths.get(s.pos as usize)
+            .and_then(|p| p.file_stem()).and_then(|x| x.to_str()).unwrap_or("").to_string();
+        // A song counts as "Tagged" when it already carries both artist + album.
+        let tagged = !s.artist.trim().is_empty() && !s.album.trim().is_empty();
+        MetaMgrRow {
+            file: file.into(), title: s.title.clone().into(), artist: s.artist.clone().into(),
+            album: s.album.clone().into(), status: if tagged { "Tagged".into() } else { "Pending".into() }, index: s.pos,
+        }
+    }).collect();
+    w.set_music_meta_mgr_total(rows.len() as i32);
+    META_ROWS.with(|r| *r.borrow_mut() = rows);
+}
+
+/// True when a metadata row counts as already-tagged (matched online or carries tags).
+fn meta_row_tagged(status: &str) -> bool { status == "Tagged" || status == "Matched" }
+
+/// Publish the current metadata-manager page (30 rows) + counts + page count,
+/// filtered by the active stat-card filter (all | tagged | missing).
+fn publish_meta_page(w: &MainWindow) {
+    const PER: usize = 30;
+    META_ROWS.with(|r| {
+        let all = r.borrow();
+        let total = all.len();
+        let tagged = all.iter().filter(|x| meta_row_tagged(&x.status)).count();
+        w.set_music_meta_mgr_total(total as i32);
+        w.set_music_meta_mgr_tagged(tagged as i32);
+        w.set_music_meta_mgr_missing((total - tagged) as i32);
+        let filter = w.get_music_meta_mgr_filter().to_string();
+        let filtered: Vec<MetaMgrRow> = all.iter().filter(|x| match filter.as_str() {
+            "tagged" => meta_row_tagged(&x.status),
+            "missing" => !meta_row_tagged(&x.status),
+            _ => true,
+        }).cloned().collect();
+        let pages = filtered.len().div_ceil(PER).max(1);
+        let page = (w.get_music_meta_mgr_page().max(0) as usize).min(pages - 1);
+        w.set_music_meta_mgr_pages(pages as i32);
+        w.set_music_meta_mgr_page(page as i32);
+        let slice: Vec<MetaMgrRow> = filtered.iter().skip(page * PER).take(PER).cloned().collect();
+        w.set_music_meta_mgr_rows(slint::ModelRc::new(slint::VecModel::from(slice)));
+    });
+}
+
+/// Update one metadata row's status (and tags, when a match was found), then
+/// republish the visible page.
+fn update_meta_row(w: &MainWindow, pos: i32, status: &str, fetched: Option<&tulipix_music::musicbrainz::FetchedMeta>) {
+    META_ROWS.with(|r| {
+        let mut all = r.borrow_mut();
+        if let Some(row) = all.iter_mut().find(|x| x.index == pos) {
+            row.status = status.into();
+            if let Some(f) = fetched {
+                if !f.title.is_empty()  { row.title  = f.title.clone().into(); }
+                if !f.artist.is_empty() { row.artist = f.artist.clone().into(); }
+                if !f.album.is_empty()  { row.album  = f.album.clone().into(); }
+            }
+        }
+    });
+    publish_meta_page(w);
+}
+/// Store the full artist-albums list and publish the first 8-per-page slice.
+fn set_detail_artist_albums(w: &MainWindow, albums: Vec<PhotoTile>) {
+    DETAIL_ARTIST_ALBUMS.with(|r| *r.borrow_mut() = albums);
+    publish_detail_artist_albums(w);
+}
+/// Publish the current 8-album page (keyed to the track page index).
+fn publish_detail_artist_albums(w: &MainWindow) {
+    const PER: usize = 8;
+    DETAIL_ARTIST_ALBUMS.with(|r| {
+        let all = r.borrow();
+        let page = w.get_music_detail_page().max(0) as usize;
+        let slice: Vec<PhotoTile> = all.iter().skip(page * PER).take(PER).cloned().collect();
+        w.set_music_detail_artist_albums(slint::ModelRc::new(slint::VecModel::from(slice)));
+    });
+}
+/// Store the detail's full rows and publish the first 25-track page.
+fn set_detail_rows(w: &MainWindow, rows: Vec<MusicSongRow>) {
+    DETAIL_ROWS.with(|r| *r.borrow_mut() = rows);
+    w.set_music_detail_page(0);
+    publish_detail_page(w);
+}
+/// Publish the current detail page (25 tracks) + page count.
+fn publish_detail_page(w: &MainWindow) {
+    const PER: usize = 25;
+    DETAIL_ROWS.with(|r| {
+        let rows = r.borrow();
+        let pages = rows.len().div_ceil(PER).max(1);
+        let page = (w.get_music_detail_page().max(0) as usize).min(pages - 1);
+        let slice: Vec<MusicSongRow> = rows.iter().skip(page * PER).take(PER).cloned().collect();
+        w.set_music_detail_pages(pages as i32);
+        w.set_music_detail_page(page as i32);
+        w.set_music_detail_tracks(slint::ModelRc::new(slint::VecModel::from(slice)));
+    });
+    // Keep the artist-albums column in step with the track page.
+    publish_detail_artist_albums(w);
 }
 fn browse_tab_key(tab: &str) -> Option<&'static str> {
     ["albums", "artists", "genres", "folders", "playlists"].into_iter().find(|k| *k == tab)
@@ -6453,14 +8699,15 @@ fn browse_tab_key(tab: &str) -> Option<&'static str> {
 /// unified grouped-search header (np.p5.atmusic.lib-grouped-search).
 fn rebuild_grouped_search(w: &MainWindow, q: &str) {
     let q = q.trim().to_lowercase();
-    let pick = |tab: &'static str| -> Vec<PhotoTile> {
+    let pick = |tab: &'static str, limit: usize| -> Vec<PhotoTile> {
         if q.is_empty() { return Vec::new(); }
         MUSIC_BROWSE.with(|m| m.borrow().get(tab).cloned().unwrap_or_default())
             .into_iter().filter(|(t, _)| t.label.to_lowercase().contains(&q))
-            .map(|(t, _)| t).take(12).collect()
+            .map(|(t, _)| t).take(limit).collect()
     };
-    w.set_music_search_artists(slint::ModelRc::new(slint::VecModel::from(pick("artists"))));
-    w.set_music_search_albums(slint::ModelRc::new(slint::VecModel::from(pick("albums"))));
+    // Artists: 9 per line × 2 lines = 18. Albums: 7 per line × 2 lines = 14.
+    w.set_music_search_artists(slint::ModelRc::new(slint::VecModel::from(pick("artists", 18))));
+    w.set_music_search_albums(slint::ModelRc::new(slint::VecModel::from(pick("albums", 14))));
 }
 fn set_browse_src(tab: &'static str, src: Vec<(PhotoTile, i64)>) {
     MUSIC_BROWSE.with(|m| { m.borrow_mut().insert(tab, src); });
@@ -6488,17 +8735,39 @@ fn rebuild_recent_page(w: &MainWindow) {
 fn rebuild_browse_tab(w: &MainWindow, tab: &str) {
     let Some(tab) = browse_tab_key(tab) else { return; };
     let mut v: Vec<(PhotoTile, i64)> = MUSIC_BROWSE.with(|m| m.borrow().get(tab).cloned().unwrap_or_default());
-    let by_count = w.get_music_browse_sort() == "count";
+    // Context search — filter the current browse tab by the search box query.
+    {
+        let q = music_query_filter().lock().map(|s| s.trim().to_lowercase()).unwrap_or_default();
+        if !q.is_empty() { v.retain(|(t, _)| t.label.to_lowercase().contains(&q)); }
+    }
+    let sort = w.get_music_browse_sort().to_string();
     let asc = w.get_music_browse_dir() == "asc";
     v.sort_by(|a, b| {
-        let o = if by_count { a.1.cmp(&b.1) } else { a.0.label.to_lowercase().cmp(&b.0.label.to_lowercase()) };
+        let o = match sort.as_str() {
+            "count"  => a.1.cmp(&b.1),
+            "rating" => a.0.stack_count.cmp(&b.0.stack_count),
+            _        => a.0.label.to_lowercase().cmp(&b.0.label.to_lowercase()),
+        };
         if asc { o } else { o.reverse() }
     });
-    let tiles: Vec<PhotoTile> = v.into_iter().map(|(t, _)| t).collect();
+    // Albums show their track count next to the name (easier visual sorting).
+    let tiles: Vec<PhotoTile> = v.into_iter().map(|(mut t, c)| {
+        if tab == "albums" || tab == "genres" { t.label = format!("{}  ·  {} tracks", t.label, c).into(); }
+        t
+    }).collect();
+    // Albums/Artists are paginated 21/page (Songs-grid style); the rest show all.
+    const BROWSE_PER: usize = 21;
+    let page_slice = |w: &MainWindow, tiles: Vec<PhotoTile>| -> Vec<PhotoTile> {
+        let pages = tiles.len().div_ceil(BROWSE_PER).max(1);
+        let page = (w.get_music_browse_page().max(0) as usize).min(pages - 1);
+        w.set_music_browse_pages(pages as i32);
+        w.set_music_browse_page(page as i32);
+        tiles.into_iter().skip(page * BROWSE_PER).take(BROWSE_PER).collect()
+    };
     match tab {
-        "albums"    => w.set_music_albums(slint::ModelRc::new(slint::VecModel::from(tiles))),
-        "artists"   => w.set_music_artists(slint::ModelRc::new(slint::VecModel::from(tiles))),
-        "genres"    => w.set_music_genres(slint::ModelRc::new(slint::VecModel::from(tiles))),
+        "albums"    => w.set_music_albums(slint::ModelRc::new(slint::VecModel::from(page_slice(w, tiles)))),
+        "artists"   => w.set_music_artists(slint::ModelRc::new(slint::VecModel::from(page_slice(w, tiles)))),
+        "genres"    => w.set_music_genres(slint::ModelRc::new(slint::VecModel::from(page_slice(w, tiles)))),
         "folders"   => w.set_music_folders(slint::ModelRc::new(slint::VecModel::from(tiles))),
         "playlists" => w.set_music_playlists(slint::ModelRc::new(slint::VecModel::from(tiles))),
         _ => {}
@@ -6636,6 +8905,35 @@ fn populate_folder_roots(w: &MainWindow) {
 }
 
 /// Favorites page (np.p5.atmusic.favorites-page) — all loved tracks.
+/// All loved track ids (favorites), paginated 20/page in the UI.
+static FAV_IDS: std::sync::OnceLock<std::sync::Mutex<Vec<i64>>> = std::sync::OnceLock::new();
+fn fav_ids() -> &'static std::sync::Mutex<Vec<i64>> {
+    FAV_IDS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+/// Filter item_ids by the current search query (title/artist substring),
+/// resolving each via the cached `music_songs` metadata. Empty query = all.
+fn filter_ids_by_query(ids: &[i64]) -> Vec<i64> {
+    let q = music_query_filter().lock().map(|s| s.trim().to_lowercase()).unwrap_or_default();
+    if q.is_empty() { return ids.to_vec(); }
+    let by_id: std::collections::HashMap<i64, (String, String)> = music_songs().lock()
+        .map(|g| g.iter().map(|s| (s.item_id, (s.title.to_lowercase(), s.artist.to_lowercase()))).collect())
+        .unwrap_or_default();
+    ids.iter().copied().filter(|id| by_id.get(id)
+        .map(|(t, a)| t.contains(&q) || a.contains(&q)).unwrap_or(false)).collect()
+}
+/// Publish one 20-track page of favorites + the page count.
+fn rebuild_fav_page(w: &MainWindow) {
+    const PER: usize = 20;
+    let all = fav_ids().lock().map(|g| g.clone()).unwrap_or_default();
+    let ids = filter_ids_by_query(&all);
+    let pages = ids.len().div_ceil(PER).max(1);
+    let page = (w.get_music_fav_page().max(0) as usize).min(pages - 1);
+    let slice: Vec<i64> = ids.iter().skip(page * PER).take(PER).copied().collect();
+    let rows = song_rows_for_ids(w, &slice);
+    w.set_music_fav_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+    w.set_music_fav_pages(pages as i32);
+    w.set_music_fav_page(page as i32);
+}
 fn populate_favorites(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
@@ -6644,23 +8942,45 @@ fn populate_favorites(w: &MainWindow) {
             "SELECT item_id FROM track_meta WHERE loved = 1 ORDER BY title COLLATE NOCASE")
             .fetch_all(&pool).await.unwrap_or_default();
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let rows = song_rows_for_ids(&w, &ids);
-            w.set_music_fav_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+            if let Ok(mut g) = fav_ids().lock() { *g = ids; }
+            w.set_music_fav_page(0);
+            rebuild_fav_page(&w);
         });
     });
 }
 
 /// Playback History page (np.p5.atmusic.history-page) — most-recent plays first.
+/// Cached ids so the search box can filter the list live.
+static HISTORY_IDS: std::sync::OnceLock<std::sync::Mutex<Vec<i64>>> = std::sync::OnceLock::new();
+fn history_ids() -> &'static std::sync::Mutex<Vec<i64>> {
+    HISTORY_IDS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+/// Re-publish history rows, applying the current search query filter and paging
+/// 30 plays per page (up to 5 pages = 150 most-recent plays).
+fn rebuild_history_page(w: &MainWindow) {
+    const PER: usize = 30;
+    const MAX_PAGES: usize = 5;
+    let all = history_ids().lock().map(|g| g.clone()).unwrap_or_default();
+    let ids = filter_ids_by_query(&all);
+    let pages = ((ids.len() + PER - 1) / PER).clamp(1, MAX_PAGES);
+    w.set_music_history_pages(pages as i32);
+    let page = (w.get_music_history_page().max(1) as usize).min(pages);
+    w.set_music_history_page(page as i32);
+    let start = (page - 1) * PER;
+    let slice: Vec<i64> = ids.iter().skip(start).take(PER).copied().collect();
+    let rows = song_rows_for_ids(w, &slice);
+    w.set_music_history_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+}
 fn populate_history(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("music").await else { return; };
         let ids: Vec<i64> = sqlx::query_scalar(
-            "SELECT item_id FROM play_history ORDER BY played_at DESC LIMIT 200")
+            "SELECT item_id FROM play_history ORDER BY played_at DESC LIMIT 150")
             .fetch_all(&pool).await.unwrap_or_default();
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let rows = song_rows_for_ids(&w, &ids);
-            w.set_music_history_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+            if let Ok(mut g) = history_ids().lock() { *g = ids; }
+            rebuild_history_page(&w);
         });
     });
 }
@@ -6682,6 +9002,10 @@ fn open_album_detail(w: &MainWindow, album_id: i64) {
              FROM albums al LEFT JOIN artists ar ON ar.id = al.artist_id WHERE al.id = ?")
             .bind(album_id).fetch_optional(&pool).await.ok().flatten();
         let Some((title, year, cover, artist)) = hdr else { return; };
+        let _ = sqlx::query("ALTER TABLE albums ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE albums ADD COLUMN rating INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let al_loved: i64 = sqlx::query_scalar("SELECT COALESCE(loved,0) FROM albums WHERE id = ?").bind(album_id).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
+        let al_rating: i64 = sqlx::query_scalar("SELECT COALESCE(rating,0) FROM albums WHERE id = ?").bind(album_id).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
         let ids: Vec<i64> = sqlx::query_scalar(
             "SELECT item_id FROM track_meta WHERE album_id = ? ORDER BY COALESCE(disc_no,0), COALESCE(track_no,0), title")
             .bind(album_id).fetch_all(&pool).await.unwrap_or_default();
@@ -6703,7 +9027,9 @@ fn open_album_detail(w: &MainWindow, album_id: i64) {
             w.set_music_detail_art(art);
             w.set_music_detail_bio("".into());
             w.set_music_detail_status("".into());
-            w.set_music_detail_tracks(slint::ModelRc::new(slint::VecModel::from(rows)));
+            w.set_music_detail_loved(al_loved != 0);
+            w.set_music_detail_stars(al_rating as i32);
+            set_detail_rows(&w, rows);
             w.set_music_detail_open(true);
         });
     });
@@ -6725,6 +9051,19 @@ fn open_artist_detail(w: &MainWindow, artist_id: i64) {
         let album_count: i64 = sqlx::query_scalar(
             "SELECT COUNT(DISTINCT album_id) FROM track_meta WHERE artist_id = ? AND album_id IS NOT NULL")
             .bind(artist_id).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
+        // This artist's own favourite / rating state (for the info-box buttons).
+        let _ = sqlx::query("ALTER TABLE artists ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE artists ADD COLUMN rating INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let ar_loved: i64 = sqlx::query_scalar("SELECT COALESCE(loved,0) FROM artists WHERE id = ?").bind(artist_id).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
+        let ar_rating: i64 = sqlx::query_scalar("SELECT COALESCE(rating,0) FROM artists WHERE id = ?").bind(artist_id).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
+        // Albums by this artist (cover + first track) for the 70/30 right column.
+        let _ = sqlx::query("ALTER TABLE albums ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE albums ADD COLUMN rating INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let alb: Vec<(i64, String, Option<String>, i64, i64, i64)> = sqlx::query_as(
+            "SELECT al.id, al.title, al.cover_path, MIN(tm.item_id), COALESCE(al.loved,0), COALESCE(al.rating,0) \
+             FROM track_meta tm JOIN albums al ON al.id = tm.album_id \
+             WHERE tm.artist_id = ? GROUP BY al.id ORDER BY al.title COLLATE NOCASE")
+            .bind(artist_id).fetch_all(&pool).await.unwrap_or_default();
         let sub = format!("{} track{}  ·  {} album{}",
             ids.len(), if ids.len() == 1 { "" } else { "s" },
             album_count, if album_count == 1 { "" } else { "s" });
@@ -6743,8 +9082,24 @@ fn open_artist_detail(w: &MainWindow, artist_id: i64) {
                 w.set_music_detail_subtitle(sub.into());
                 w.set_music_detail_art(art);
                 w.set_music_detail_bio(cached_bio.into());
+                w.set_music_detail_loved(ar_loved != 0);
+                w.set_music_detail_stars(ar_rating as i32);
                 w.set_music_detail_status("".into());
-                w.set_music_detail_tracks(slint::ModelRc::new(slint::VecModel::from(rows)));
+                set_detail_rows(&w, rows);
+                // Build the artist-albums column tiles (cover → first-track thumb).
+                let pos_of: std::collections::HashMap<i64, i32> = music_ids().lock()
+                    .map(|g| g.iter().enumerate().map(|(i, id)| (*id, i as i32)).collect()).unwrap_or_default();
+                let tiles = w.get_music_tiles();
+                let album_tiles: Vec<PhotoTile> = alb.iter().map(|(_aid, title, cover, first, loved, rating)| {
+                    let pos = pos_of.get(first).copied().unwrap_or(-1);
+                    let thumb = cover.as_ref().filter(|p| std::path::Path::new(p).exists())
+                        .map(|p| slint::Image::load_from_path(std::path::Path::new(p)).unwrap_or_default())
+                        .or_else(|| if pos >= 0 && (pos as usize) < tiles.row_count() { tiles.row_data(pos as usize).map(|t| t.thumb) } else { None })
+                        .unwrap_or_default();
+                    PhotoTile { thumb, label: title.clone().into(), index: pos,
+                        starred: *loved != 0, stack_count: *rating as i32, ..Default::default() }
+                }).collect();
+                set_detail_artist_albums(&w, album_tiles);
                 w.set_music_detail_open(true);
             }
         });
@@ -6765,6 +9120,81 @@ fn open_artist_detail(w: &MainWindow, artist_id: i64) {
             }
         }
     });
+}
+
+/// Open a Genre detail overlay (np.p4.music.browse) — all tracks in the genre,
+/// shown before playback like album/artist pages.
+fn open_genre_detail(w: &MainWindow, genre: String) {
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("music").await else { return; };
+        let ids: Vec<i64> = sqlx::query_scalar(
+            "SELECT item_id FROM track_meta WHERE genre = ? ORDER BY COALESCE(artist_id,0), COALESCE(album_id,0), title")
+            .bind(&genre).fetch_all(&pool).await.unwrap_or_default();
+        let sub = format!("{} track{}", ids.len(), if ids.len() == 1 { "" } else { "s" });
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            let rows = song_rows_for_ids(&w, &ids);
+            // Genre cover override wins over the first track's album art.
+            let art = load_music_pref(&format!("music.genre.cover.{genre}"))
+                .map(|c| slint::Image::load_from_path(std::path::Path::new(&c)).unwrap_or_default())
+                .filter(|im| im.size().width > 0)
+                .unwrap_or_else(|| rows.first().map(|r| r.thumb.clone()).unwrap_or_default());
+            if let Ok(mut g) = music_detail().lock() { *g = ("genre".into(), -1, ids.clone()); }
+            w.set_music_detail_kind("genre".into());
+            w.set_music_detail_title(genre.into());
+            w.set_music_detail_subtitle(sub.into());
+            w.set_music_detail_art(art);
+            w.set_music_detail_bio("".into());
+            w.set_music_detail_status("".into());
+            set_detail_rows(&w, rows);
+            w.set_music_detail_open(true);
+        });
+    });
+}
+
+/// Re-open whatever album/artist/genre detail overlay is currently showing, so a
+/// metadata edit reflects in the overlay without navigating away.
+fn refresh_open_detail(w: &MainWindow) {
+    if !w.get_music_detail_open() { return; }
+    let (kind, id, _) = music_detail().lock().map(|g| g.clone()).unwrap_or_default();
+    match kind.as_str() {
+        "album" if id >= 0 => open_album_detail(w, id),
+        "artist" if id >= 0 => open_artist_detail(w, id),
+        "genre" => open_genre_detail(w, w.get_music_detail_title().to_string()),
+        _ => {}
+    }
+}
+
+/// Item ids whose file lives directly in `dir` (one folder level), by playback
+/// position — using the in-memory paths/ids so no path SQL is needed.
+fn folder_track_ids(dir: &std::path::Path) -> Vec<i64> {
+    let paths = music_paths().lock().map(|g| g.clone()).unwrap_or_default();
+    let ids = music_ids().lock().map(|g| g.clone()).unwrap_or_default();
+    paths.iter().zip(ids.iter())
+        .filter(|(p, _)| p.parent() == Some(dir))
+        .map(|(_, id)| *id).collect()
+}
+/// Open a folder's own songs page (detail overlay) — its directly-contained tracks.
+fn open_folder_detail(w: &MainWindow, pos: i32) {
+    let Some(dir) = music_paths().lock().ok()
+        .and_then(|g| g.get(pos as usize).and_then(|p| p.parent().map(|d| d.to_path_buf()))) else { return; };
+    let pos_of: std::collections::HashMap<i64, i32> = music_ids().lock()
+        .map(|g| g.iter().enumerate().map(|(i, id)| (*id, i as i32)).collect()).unwrap_or_default();
+    let ids = folder_track_ids(&dir);
+    let title = dir.file_name().and_then(|s| s.to_str()).unwrap_or("Folder").to_string();
+    let sub = format!("{} track{}", ids.len(), if ids.len() == 1 { "" } else { "s" });
+    let rows = song_rows_for_ids(w, &ids);
+    let art = rows.first().map(|r| r.thumb.clone()).unwrap_or_default();
+    if let Ok(mut g) = music_detail().lock() { *g = ("folder".into(), -1, ids.clone()); }
+    w.set_music_detail_kind("folder".into());
+    w.set_music_detail_title(title.into());
+    w.set_music_detail_subtitle(sub.into());
+    w.set_music_detail_art(art);
+    w.set_music_detail_bio("".into());
+    w.set_music_detail_status("".into());
+    set_detail_rows(w, rows);
+    w.set_music_detail_open(true);
+    let _ = pos_of;
 }
 
 /// Queue all of the open detail's tracks and start playback (Play All / Shuffle).
@@ -6821,6 +9251,12 @@ fn dominant_color(path: &std::path::Path) -> Option<slint::Color> {
 
 /// Load a playlist's tracks into the detail view: rows (mapped to playback
 /// positions for play) + the ordered item ids (for remove).
+/// Custom cover image path for a playlist (stored in Settings, not the DB).
+fn playlist_cover_path(id: i64) -> Option<String> {
+    let s = tulipix_core::settings::Settings::load().ok()?;
+    s.advanced.get(&format!("music.playlist.cover.{id}")).cloned()
+        .filter(|p| std::path::Path::new(p).exists())
+}
 fn build_playlist_detail(w: &MainWindow, playlist_id: i64) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
@@ -6847,7 +9283,7 @@ fn build_playlist_detail(w: &MainWindow, playlist_id: i64) {
                 .map(|g| g.iter().map(|s| (s.pos, (s.title.clone(), s.artist.clone(), s.duration_s))).collect())
                 .unwrap_or_default();
             let tiles = w.get_music_tiles();
-            let rows: Vec<MusicSongRow> = item_ids.iter().map(|id| {
+            let mut rows: Vec<MusicSongRow> = item_ids.iter().map(|id| {
                 let pos = pos_of.get(id).copied().unwrap_or(-1);
                 let (title, artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
                 MusicSongRow {
@@ -6858,21 +9294,34 @@ fn build_playlist_detail(w: &MainWindow, playlist_id: i64) {
                     index: pos,
                 }
             }).collect();
-            if let Ok(mut g) = current_playlist().lock() { *g = (playlist_id, item_ids); }
+            // Apply the playlist sort — Custom keeps the saved/manual order.
+            let psort = w.get_music_playlist_sort().to_string();
+            match psort.as_str() {
+                "title"  => rows.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
+                "artist" => rows.sort_by(|a, b| a.artist.to_lowercase().cmp(&b.artist.to_lowercase())),
+                _ => {}
+            }
+            if psort != "custom" && w.get_music_playlist_sort_dir() == "desc" { rows.reverse(); }
+            // Cover: custom art (Settings) → else the first track's thumb.
+            let cover = playlist_cover_path(playlist_id)
+                .map(|p| slint::Image::load_from_path(std::path::Path::new(&p)).unwrap_or_default())
+                .or_else(|| rows.first().map(|r| r.thumb.clone()))
+                .unwrap_or_default();
+            // Persist the playlist in its *displayed* order so playback follows it.
+            let id_of_pos: std::collections::HashMap<i32, i64> = pos_of.iter().map(|(id, p)| (*p, *id)).collect();
+            let ordered_ids: Vec<i64> = rows.iter().filter_map(|r| id_of_pos.get(&r.index).copied()).collect();
+            if let Ok(mut g) = current_playlist().lock() { *g = (playlist_id, ordered_ids); }
             w.set_music_playlist_name(if name.is_empty() { "Playlist".into() } else { name.into() });
+            w.set_music_playlist_cover(cover);
             w.set_music_playlist_tracks(slint::ModelRc::new(slint::VecModel::from(rows)));
         });
     });
 }
 
-// Podcast feed ids parallel to the shown feed names; open episodes = (url, title).
-static PODCAST_FEED_IDS: std::sync::OnceLock<std::sync::Mutex<Vec<i64>>> = std::sync::OnceLock::new();
-fn podcast_feed_ids() -> &'static std::sync::Mutex<Vec<i64>> {
-    PODCAST_FEED_IDS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
-}
-static PODCAST_EPISODES: std::sync::OnceLock<std::sync::Mutex<Vec<(String, String)>>> = std::sync::OnceLock::new();
-fn podcast_episodes() -> &'static std::sync::Mutex<Vec<(String, String)>> {
-    PODCAST_EPISODES.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+// id of the podcast whose detail page is currently open.
+static CUR_PODCAST_ID: std::sync::OnceLock<std::sync::Mutex<i64>> = std::sync::OnceLock::new();
+fn cur_podcast_id() -> &'static std::sync::Mutex<i64> {
+    CUR_PODCAST_ID.get_or_init(|| std::sync::Mutex::new(-1))
 }
 // Bookmark positions (seconds) for the playing audiobook, parallel to the chips.
 static BOOK_BOOKMARKS: std::sync::OnceLock<std::sync::Mutex<Vec<f64>>> = std::sync::OnceLock::new();
@@ -6895,72 +9344,694 @@ fn load_book_bookmarks(w: &MainWindow, item_id: i64) {
     });
 }
 
-/// Fill the podcasts view with subscribed feed titles (np.p5.music.podcast-feeds).
+/// Cache an http(s) artwork URL to a local file (keyed by `key`), returning the
+/// path. Re-uses an already-downloaded file. Used for podcast/episode thumbs.
+async fn cache_artwork(client: &reqwest::Client, key: &str, url: &str) -> Option<std::path::PathBuf> {
+    if url.is_empty() || !url.starts_with("http") { return None; }
+    let dir = tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("podcast_art");
+    let _ = std::fs::create_dir_all(&dir);
+    let ext = url.rsplit('.').next().filter(|e| e.len() <= 4 && !e.contains('/')).unwrap_or("jpg");
+    let dest = dir.join(format!("{key}.{ext}"));
+    if dest.exists() { return Some(dest); }
+    let bytes = client.get(url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
+        .send().await.ok()?.bytes().await.ok()?;
+    std::fs::write(&dest, &bytes).ok()?;
+    Some(dest)
+}
+
+/// Resolve a podcast/show artwork source that may be either an http(s) URL OR a
+/// local file path (a user-supplied custom thumbnail). Local existing files are
+/// used as-is; URLs go through [`cache_artwork`].
+async fn resolve_artwork(client: &reqwest::Client, key: &str, src: &str) -> Option<std::path::PathBuf> {
+    if src.is_empty() { return None; }
+    let p = std::path::Path::new(src);
+    if p.is_file() { return Some(p.to_path_buf()); }
+    cache_artwork(client, key, src).await
+}
+
+/// Fill the Podcasts grid with subscribed feeds, filtered by the active
+/// category, plus the category-chip list (np.p5.music.podcast-feeds).
+// Send-safe subscription summary (no slint::Image).
+#[derive(Clone)]
+struct PodAllData {
+    id: i64,
+    title: String,
+    author: String,
+    category: String,
+    art: Option<std::path::PathBuf>,
+    unplayed: i64,
+    episodes: i64,
+    latest: i64,        // MAX(published) across this show's episodes (Home sort)
+    pinned: bool,       // home_pinned — shown on Home "Your shows"
+}
+const PODCAST_SUB_PAGE: usize = 21;   // Subscribed grid: 3 rows × 7
+const PODCAST_HOME_PAGE: usize = 14;  // Home "Your shows": 2 rows × 7
+const PODCAST_HOME_MAX_PAGES: usize = 2;  // Home caps at 2 pages; rest live on Subscribed
+
+// ── Trends (hardcoded podcast directory) ──────────────────────────────────
+// Feed URLs are baked into the binary from podc.md at the repo root, so the
+// Trends page stays populated even after a full podcast-library reset. Edit
+// podc.md (one feed URL per line; '#'/blank lines ignored) and rebuild to add
+// more. Per-feed metadata (title/author/art/category) is fetched live and
+// cached for the session.
+const TREND_FEEDS_RAW: &str = include_str!("../../../podc.md");
+
+fn trend_feed_urls() -> Vec<String> {
+    TREND_FEEDS_RAW.lines()
+        .map(|l| l.trim())
+        .filter(|l| l.starts_with("http"))
+        .map(|s| s.to_string())
+        .collect()
+}
+
+#[derive(Clone)]
+struct TrendMeta {
+    feed_url: String,
+    title: String,
+    author: String,
+    category: String,
+    art: Option<std::path::PathBuf>,
+}
+
+fn trend_cache() -> &'static std::sync::Mutex<Vec<TrendMeta>> {
+    static C: OnceLock<std::sync::Mutex<Vec<TrendMeta>>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+const PODCAST_TREND_PAGE: usize = 21;   // Trends grid: 3 rows × 7
+
+fn cur_trend_idx() -> &'static std::sync::Mutex<i32> {
+    static C: OnceLock<std::sync::Mutex<i32>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(-1))
+}
+
+// Feed URL of the podcast whose info card is open (Trends or Subscribed) — drives
+// Save-category / Update-thumb / Subscribe regardless of how it was opened.
+fn cur_info_feed() -> &'static std::sync::Mutex<String> {
+    static C: OnceLock<std::sync::Mutex<String>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(String::new()))
+}
+
+// Per-tab podcast search filters — each tab (and the single-podcast page) keeps
+// its own query so search works independently across Home/Trends/Subscribed/
+// Downloads and the detail page.
+#[derive(Default, Clone)]
+struct PodFilters { home: String, trends: String, subs: String, downloads: String, detail: String }
+fn pod_filters() -> &'static std::sync::Mutex<PodFilters> {
+    static C: OnceLock<std::sync::Mutex<PodFilters>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(PodFilters::default()))
+}
+fn pod_filter(which: &str) -> String {
+    let g = pod_filters().lock().map(|f| f.clone()).unwrap_or_default();
+    match which { "home" => g.home, "trends" => g.trends, "subs" => g.subs, "downloads" => g.downloads, "detail" => g.detail, _ => String::new() }
+}
+
+/// Render the Trends grid from the session cache: sort (name/category), paginate
+/// (21/page), and flag which feeds are already subscribed. No network.
+fn render_trends(w: &MainWindow) {
+    let weak = w.as_weak();
+    let sort = w.get_music_podcast_trends_sort().to_string();
+    let page = w.get_music_podcast_trends_page().max(0) as usize;
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("podcasts").await else { return; };
+        let subs: Vec<(String,)> = sqlx::query_as("SELECT feed_url FROM podcasts").fetch_all(&pool).await.unwrap_or_default();
+        let subset: std::collections::HashSet<String> = subs.into_iter().map(|(u,)| u).collect();
+        let metas = trend_cache().lock().map(|g| g.clone()).unwrap_or_default();
+        // Keep the original (feed-order) index for subscribe/info-by-index.
+        let mut indexed: Vec<(usize, TrendMeta)> = metas.into_iter().enumerate().collect();
+        // Filter (Trends search) — title/author/category.
+        let filter = pod_filter("trends");
+        let needle = filter.trim().to_lowercase();
+        if !needle.is_empty() {
+            indexed.retain(|(_, m)| m.title.to_lowercase().contains(&needle)
+                || m.author.to_lowercase().contains(&needle)
+                || m.category.to_lowercase().contains(&needle));
+        }
+        match sort.as_str() {
+            "category" => indexed.sort_by(|a, b| a.1.category.to_lowercase().cmp(&b.1.category.to_lowercase())
+                .then(a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase()))),
+            "subscribed" => indexed.sort_by(|a, b| subset.contains(&b.1.feed_url).cmp(&subset.contains(&a.1.feed_url))
+                .then(a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase()))),
+            "unsubscribed" => indexed.sort_by(|a, b| subset.contains(&a.1.feed_url).cmp(&subset.contains(&b.1.feed_url))
+                .then(a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase()))),
+            _ => indexed.sort_by(|a, b| a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase())),
+        }
+        let total = indexed.len();
+        let pages = ((total + PODCAST_TREND_PAGE - 1) / PODCAST_TREND_PAGE).max(1);
+        let page = page.min(pages - 1);
+        let slice: Vec<(usize, TrendMeta)> = indexed.into_iter().skip(page * PODCAST_TREND_PAGE).take(PODCAST_TREND_PAGE).collect();
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            let rows: Vec<PodcastTrendCard> = slice.iter().map(|(i, m)| PodcastTrendCard {
+                title: m.title.clone().into(),
+                author: m.author.clone().into(),
+                category: m.category.clone().into(),
+                image: m.art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default(),
+                feed_url: m.feed_url.clone().into(),
+                subscribed: subset.contains(&m.feed_url),
+                index: *i as i32,
+            }).collect();
+            w.set_music_podcast_trends(slint::ModelRc::new(slint::VecModel::from(rows)));
+            w.set_music_podcast_trends_pages(pages as i32);
+            w.set_music_podcast_trends_page(page as i32);
+        });
+    });
+}
+
+/// Subscribe to `url`, driving the subscribe progress bar (Trends button /
+/// info-card Subscribe) as episodes are stored, then refresh the grids.
+fn subscribe_feed_with_progress(weak: slint::Weak<MainWindow>, url: String) {
+    tokio::runtime::Handle::current().spawn(async move {
+        let finish = |weak: slint::Weak<MainWindow>| { let _ = weak.upgrade_in_event_loop(|w| { w.set_music_podcast_subscribing(false); }); };
+        let Ok(pool) = pool_for("podcasts").await else { finish(weak); return; };
+        let client = reqwest::Client::new();
+        let resp = match client.get(&url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
+            Ok(r) => r, Err(_) => { finish(weak); return; } };
+        let xml = match resp.text().await { Ok(x) => x, Err(_) => { finish(weak); return; } };
+        let feed = tulipix_music::podcasts::parse_feed(&xml);
+        if feed.title.is_none() && feed.episodes.is_empty() { finish(weak); return; }
+        let cbw = weak.clone();
+        let _ = tulipix_music::podcasts::subscribe_with_progress(&pool, &url, &feed, move |done, total| {
+            // Throttle UI updates (~40 steps max) so we don't flood the event loop.
+            let step = (total / 40).max(1);
+            if total > 0 && (done % step == 0 || done >= total) {
+                let frac = done as f32 / total as f32;
+                let status = format!("Adding… {done}/{total}");
+                let _ = cbw.upgrade_in_event_loop(move |w| {
+                    w.set_music_podcast_subscribe_frac(frac);
+                    w.set_music_podcast_subscribe_status(status.into());
+                });
+            }
+        }).await;
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_music_podcast_subscribe_frac(1.0);
+            w.set_music_podcast_subscribing(false);
+            w.set_music_podcast_info_subscribed(true);
+            render_trends(&w);             // flip the card to ✓ Subscribed
+            populate_podcasts(&w);
+            populate_podcast_latest(&w);
+        });
+    });
+}
+
+/// Populate the Trends grid. Metadata is persisted in the `podcast_trends` table:
+/// loaded from there on every launch (no network), and only feeds NOT yet in the
+/// table are fetched + saved. Session-cached after the first build.
+fn populate_podcast_trends(w: &MainWindow) {
+    let weak = w.as_weak();
+    let feeds = trend_feed_urls();
+    let cached_now = trend_cache().lock().map(|g| g.len()).unwrap_or(0);
+    if cached_now == feeds.len() { render_trends(w); return; }
+    w.set_music_podcast_trends_loading(true);
+    tokio::runtime::Handle::current().spawn(async move {
+        let client = reqwest::Client::new();
+        // 1. Load whatever's already cached in the DB.
+        let mut stored: std::collections::HashMap<String, TrendMeta> = std::collections::HashMap::new();
+        if let Ok(pool) = pool_for("podcasts").await {
+            let rows: Vec<(String, String, String, String, Option<String>)> = sqlx::query_as(
+                "SELECT feed_url, COALESCE(title,''), COALESCE(author,''), COALESCE(category,''), art_path FROM podcast_trends")
+                .fetch_all(&pool).await.unwrap_or_default();
+            for (feed_url, title, author, category, art_path) in rows {
+                let art = art_path.filter(|p| !p.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .filter(|p| p.exists());
+                stored.insert(feed_url.clone(), TrendMeta { feed_url, title, author, category, art });
+            }
+        }
+        // 2. Fetch only the feeds missing from the DB (concurrently), then persist.
+        let missing: Vec<(usize, String)> = feeds.iter().enumerate()
+            .filter(|(_, u)| !stored.contains_key(*u)).map(|(i, u)| (i, u.clone())).collect();
+        let handles: Vec<_> = missing.into_iter().map(|(i, url)| {
+            let client = client.clone();
+            tokio::spawn(async move {
+                let (mut title, mut author, mut category, mut art) = (String::new(), String::new(), String::new(), None);
+                if let Ok(resp) = client.get(&url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
+                    if let Ok(xml) = resp.text().await {
+                        let feed = tulipix_music::podcasts::parse_feed(&xml);
+                        title = feed.title.unwrap_or_default();
+                        author = feed.author;
+                        category = feed.category;
+                        art = resolve_artwork(&client, &format!("trend-{i}"), &feed.image_url).await;
+                    }
+                }
+                if title.is_empty() { title = url.clone(); }
+                if category.is_empty() { category = "Other".to_string(); }
+                TrendMeta { feed_url: url, title, author, category, art }
+            })
+        }).collect();
+        let mut fetched: Vec<TrendMeta> = Vec::new();
+        for h in handles { if let Ok(m) = h.await { fetched.push(m); } }
+        // Persist the newly fetched rows.
+        if !fetched.is_empty() {
+            if let Ok(pool) = pool_for("podcasts").await {
+                let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
+                for m in &fetched {
+                    let art_s = m.art.as_ref().map(|p| p.to_string_lossy().to_string()).unwrap_or_default();
+                    let _ = sqlx::query(
+                        "INSERT INTO podcast_trends (feed_url, title, author, category, art_path, fetched_at)
+                         VALUES (?,?,?,?,?,?)
+                         ON CONFLICT(feed_url) DO UPDATE SET title=excluded.title, author=excluded.author,
+                            category=excluded.category, art_path=excluded.art_path, fetched_at=excluded.fetched_at")
+                        .bind(&m.feed_url).bind(&m.title).bind(&m.author).bind(&m.category).bind(&art_s).bind(now)
+                        .execute(&pool).await;
+                }
+            }
+            for m in fetched { stored.insert(m.feed_url.clone(), m); }
+        }
+        // 3. Build the cache in feed (podc.md) order.
+        let metas: Vec<TrendMeta> = feeds.iter().filter_map(|u| stored.get(u).cloned()).collect();
+        if let Ok(mut g) = trend_cache().lock() { *g = metas; }
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_music_podcast_trends_loading(false);
+            render_trends(&w);
+        });
+    });
+}
+
 fn populate_podcasts(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
-        let Ok(pool) = pool_for("music").await else { return; };
-        // Title + unplayed-episode count (np.p5.music.podcast-feeds unplayed badge).
-        let rows: Vec<(i64, String, i64)> = sqlx::query_as(
-            "SELECT p.id, COALESCE(p.title, p.feed_url),
-                    (SELECT COUNT(*) FROM podcast_episodes e WHERE e.podcast_id = p.id AND COALESCE(e.played,0) = 0)
-             FROM podcasts p ORDER BY p.title COLLATE NOCASE")
-            .fetch_all(&pool).await.unwrap_or_default();
+        let Ok(pool) = pool_for("podcasts").await else { return; };
+        let filter = pod_filter("subs");
+        let like = format!("%{}%", filter.trim());
+        let base = "SELECT p.id, COALESCE(p.title, p.feed_url), COALESCE(p.author,''), COALESCE(NULLIF(p.custom_image,''), p.image_url, ''), COALESCE(p.category,''),
+                    (SELECT COUNT(*) FROM podcast_episodes e WHERE e.podcast_id = p.id AND COALESCE(e.played,0) = 0),
+                    (SELECT COUNT(*) FROM podcast_episodes e WHERE e.podcast_id = p.id),
+                    (SELECT COALESCE(MAX(e.published),0) FROM podcast_episodes e WHERE e.podcast_id = p.id),
+                    COALESCE(p.home_pinned,0)
+             FROM podcasts p";
+        let rows: Vec<(i64, String, String, String, String, i64, i64, i64, i64)> = if filter.trim().is_empty() {
+            sqlx::query_as(&format!("{base} ORDER BY p.title COLLATE NOCASE")).fetch_all(&pool).await.unwrap_or_default()
+        } else {
+            sqlx::query_as(&format!("{base} WHERE p.title LIKE ?1 OR p.author LIKE ?1 OR p.category LIKE ?1 OR p.feed_url LIKE ?1
+                    OR EXISTS (SELECT 1 FROM podcast_episodes e WHERE e.podcast_id = p.id AND e.title LIKE ?1)
+                 ORDER BY p.title COLLATE NOCASE"))
+                .bind(&like).fetch_all(&pool).await.unwrap_or_default()
+        };
+        let client = reqwest::Client::new();
+        let mut all: Vec<PodAllData> = Vec::with_capacity(rows.len());
+        for (id, title, author, img, category, unplayed, episodes, latest, pinned) in rows {
+            let art = resolve_artwork(&client, &format!("pod-{id}"), &img).await;
+            all.push(PodAllData { id, title, author, category, art, unplayed, episodes, latest, pinned: pinned != 0 });
+        }
+        let _ = weak.upgrade_in_event_loop(move |w| render_podcast_cards(&w, &all));
+    });
+}
+
+/// Build the Subscribed (filtered + 21/page) and Home (14/page) card models
+/// from the full subscription list on the UI thread.
+fn render_podcast_cards(w: &MainWindow, all: &[PodAllData]) {
+    let to_card = |i: usize, d: &PodAllData| PodcastCard {
+        id: d.id as i32,
+        title: d.title.clone().into(),
+        author: d.author.clone().into(),
+        category: d.category.clone().into(),
+        image: d.art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default(),
+        unplayed: d.unplayed as i32,
+        episodes: d.episodes as i32,
+        index: i as i32,
+        home_pinned: d.pinned,
+    };
+    w.set_music_podcast_total(all.len() as i32);
+    // Categories.
+    let mut cats: Vec<String> = vec!["All".into()];
+    for d in all { if !d.category.is_empty() && !cats.iter().any(|x| *x == d.category) { cats.push(d.category.clone()); } }
+    let cat_models: Vec<slint::SharedString> = cats.iter().map(|c| c.clone().into()).collect();
+    w.set_music_podcast_categories(slint::ModelRc::new(slint::VecModel::from(cat_models)));
+    // Subscribed — category filter + 21/page.
+    let active = w.get_music_podcast_cat().to_string();
+    let filtered: Vec<(usize, &PodAllData)> = all.iter().enumerate()
+        .filter(|(_, d)| active == "All" || d.category == active).collect();
+    let sub_pages = ((filtered.len() + PODCAST_SUB_PAGE - 1) / PODCAST_SUB_PAGE).max(1);
+    let sub_page = (w.get_music_podcast_sub_page().max(0) as usize).min(sub_pages - 1);
+    let sub_cards: Vec<PodcastCard> = filtered.iter().skip(sub_page * PODCAST_SUB_PAGE).take(PODCAST_SUB_PAGE)
+        .map(|(i, d)| to_card(*i, d)).collect();
+    w.set_music_podcast_sub_pages(sub_pages as i32);
+    w.set_music_podcast_sub_page(sub_page as i32);
+    w.set_music_podcast_cards(slint::ModelRc::new(slint::VecModel::from(sub_cards)));
+    // Home "Your shows" — only shows the user pinned (home_pinned), capped at 2
+    // pages; the rest live on the Subscribed tab. 14/page, sortable.
+    let home_sort = w.get_music_podcast_home_sort().to_string();
+    let mut home_order: Vec<(usize, &PodAllData)> = all.iter().enumerate().filter(|(_, d)| d.pinned).collect();
+    match home_sort.as_str() {
+        "category" => home_order.sort_by(|a, b| a.1.category.to_lowercase().cmp(&b.1.category.to_lowercase())
+            .then(a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase()))),
+        "latest" => home_order.sort_by(|a, b| b.1.latest.cmp(&a.1.latest)
+            .then(a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase()))),
+        _ => home_order.sort_by(|a, b| a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase())),
+    }
+    let home_total = home_order.len().min(PODCAST_HOME_PAGE * PODCAST_HOME_MAX_PAGES);  // cap to 2 pages
+    let home_pages = ((home_total + PODCAST_HOME_PAGE - 1) / PODCAST_HOME_PAGE).max(1);
+    let home_page = (w.get_music_podcast_home_page().max(0) as usize).min(home_pages - 1);
+    let home_cards: Vec<PodcastCard> = home_order.iter().take(home_total)
+        .skip(home_page * PODCAST_HOME_PAGE).take(PODCAST_HOME_PAGE)
+        .map(|(i, d)| to_card(*i, d)).collect();
+    w.set_music_podcast_home_pages(home_pages as i32);
+    w.set_music_podcast_home_page(home_page as i32);
+    w.set_music_podcast_home_cards(slint::ModelRc::new(slint::VecModel::from(home_cards)));
+}
+
+/// Open a feed's detail page by podcast id — header + episode list.
+fn open_podcast(w: &MainWindow, pid_i32: i32) {
+    let pid = pid_i32 as i64;
+    if pid < 0 { return; }
+    if let Ok(mut g) = cur_podcast_id().lock() { *g = pid; }
+    // Clear the previous feed's header + episodes synchronously so opening a
+    // different podcast never flashes the old one while the new page loads.
+    w.set_music_podcast_d_title("Loading…".into());
+    w.set_music_podcast_d_author("".into());
+    w.set_music_podcast_d_category("".into());
+    w.set_music_podcast_d_desc("".into());
+    w.set_music_podcast_d_image(slint::Image::default());
+    w.set_music_podcast_d_episodes(slint::ModelRc::new(slint::VecModel::from(Vec::<PodcastEpisodeRow>::new())));
+    w.set_music_podcast_detail_open(true);
+    w.set_music_podcast_d_page(0);
+    w.set_music_podcast_d_id(pid_i32);
+    load_podcast_detail(w, pid);
+}
+
+const PODCAST_PAGE: i64 = 15;
+
+/// (Re)load the header + a 20-episode page for podcast `pid` into the detail
+/// view, ordered by the chosen sort (newest/oldest first).
+fn load_podcast_detail(w: &MainWindow, pid: i64) {
+    let sort = w.get_music_podcast_d_sort().to_string();
+    let page = w.get_music_podcast_d_page().max(0) as i64;
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("podcasts").await else { return; };
+        let head: Option<(String, String, String, String, String, i64)> = sqlx::query_as(
+            "SELECT COALESCE(title, feed_url), COALESCE(author,''), COALESCE(category,''), COALESCE(description,''), COALESCE(NULLIF(custom_image,''), image_url, ''), COALESCE(home_pinned,0)
+             FROM podcasts WHERE id = ?").bind(pid).fetch_optional(&pool).await.ok().flatten();
+        let filter = pod_filter("detail");
+        let like = format!("%{}%", filter.trim());
+        let has_f = !filter.trim().is_empty();
+        let extra = if has_f { " AND title LIKE ?".to_string() } else { String::new() };
+        let total: i64 = {
+            let cq = format!("SELECT COUNT(*) FROM podcast_episodes WHERE podcast_id = ?{extra}");
+            let mut qb = sqlx::query_scalar(&cq).bind(pid);
+            if has_f { qb = qb.bind(like.clone()); }
+            qb.fetch_one(&pool).await.unwrap_or(0)
+        };
+        let pages = ((total + PODCAST_PAGE - 1) / PODCAST_PAGE).max(1);
+        let page = page.min(pages - 1);
+        let order = if sort == "old" { "ASC" } else { "DESC" };
+        let q = format!(
+            "SELECT id, COALESCE(title,''), audio_url, published, duration_s, COALESCE(image_url,''), downloaded_path, COALESCE(played,0)
+             FROM podcast_episodes WHERE podcast_id = ?{extra}
+             ORDER BY COALESCE(published,0) {order}, id {order} LIMIT ? OFFSET ?");
+        let mut qb = sqlx::query_as(&q).bind(pid);
+        if has_f { qb = qb.bind(like); }
+        let eps: Vec<(i64, String, String, Option<i64>, Option<f64>, String, Option<String>, i64)> =
+            qb.bind(PODCAST_PAGE).bind(page * PODCAST_PAGE)
+                .fetch_all(&pool).await.unwrap_or_default();
+        let client = reqwest::Client::new();
+        // Only the show artwork is fetched here (usually already cached from the
+        // grid). Per-episode thumbs are NOT fetched on the detail page — fetching
+        // 20 images serially was the main cause of the slow open; every row falls
+        // back to the show art, which is what most podcast apps show anyway.
+        let head_art = if let Some((_, _, _, _, img, _)) = &head { resolve_artwork(&client, &format!("pod-{pid}"), img).await } else { None };
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let names: Vec<slint::SharedString> = rows.iter()
-                .map(|(_, t, unplayed)| if *unplayed > 0 { format!("{t}  ·  {unplayed} new").into() } else { t.clone().into() })
-                .collect();
-            if let Ok(mut g) = podcast_feed_ids().lock() { *g = rows.iter().map(|(id, _, _)| *id).collect(); }
-            w.set_music_podcast_feeds(slint::ModelRc::new(slint::VecModel::from(names)));
+            if let Some((title, author, category, desc, _, pinned)) = &head {
+                w.set_music_podcast_d_title(title.clone().into());
+                w.set_music_podcast_d_author(author.clone().into());
+                w.set_music_podcast_d_category(category.clone().into());
+                w.set_music_podcast_d_desc(desc.clone().into());
+                w.set_music_podcast_d_pinned(*pinned != 0);
+            }
+            w.set_music_podcast_d_image(head_art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default());
+            w.set_music_podcast_d_total(total as i32);
+            w.set_music_podcast_d_pages(pages as i32);
+            w.set_music_podcast_d_page(page as i32);
+            let rows: Vec<PodcastEpisodeRow> = eps.iter().enumerate().map(|(i, (id, title, _url, pub_, dur, _img, dl, played))| PodcastEpisodeRow {
+                id: *id as i32,
+                title: title.clone().into(),
+                show: slint::SharedString::new(),
+                date: pub_.map(fmt_date).unwrap_or_default().into(),
+                duration: dur.map(|d| fmt_clock(d).into()).unwrap_or_default(),
+                // Show artwork for every row (per-episode thumbs skipped for speed).
+                image: head_art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default(),
+                played: *played != 0,
+                downloaded: dl.is_some(),
+                index: i as i32,
+            }).collect();
+            w.set_music_podcast_d_episodes(slint::ModelRc::new(slint::VecModel::from(rows)));
         });
     });
 }
 
-/// Open a feed's episode list (np.p5.music.podcast-feeds).
-fn open_podcast(w: &MainWindow, idx: i32) {
-    let (pid, name) = {
-        let ids = podcast_feed_ids().lock().map(|g| g.clone()).unwrap_or_default();
-        let feeds = w.get_music_podcast_feeds();
-        let Some(&pid) = ids.get(idx as usize) else { return; };
-        let name = feeds.row_data(idx as usize).map(|s| s.to_string()).unwrap_or_default();
-        (pid, name)
-    };
-    w.set_music_podcast_sel(name.into());
+// Send-safe intermediate (no slint::Image) for cross-thread episode rows.
+#[derive(Clone)]
+struct EpRowData {
+    id: i32,
+    title: String,
+    show: String,
+    date: String,
+    duration: String,
+    art: Option<std::path::PathBuf>,
+    played: bool,
+    downloaded: bool,
+}
+
+/// Build the Home (Latest) feed — newest 14, one episode per show. Episode art
+/// falls back to the show's feed artwork.
+fn populate_podcast_latest(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
-        let Ok(pool) = pool_for("music").await else { return; };
-        let eps: Vec<(String, String, Option<f64>)> = sqlx::query_as(
-            "SELECT title, audio_url, duration_s FROM podcast_episodes WHERE podcast_id = ? ORDER BY id DESC")
-            .bind(pid).fetch_all(&pool).await.unwrap_or_default();
+        let Ok(pool) = pool_for("podcasts").await else { return; };
+        let filter = pod_filter("home");
+        let like = format!("%{}%", filter.trim());
+        let extra = if filter.trim().is_empty() { "" } else { " AND (e.title LIKE ?1 OR p.title LIKE ?1)" };
+        let q = format!(
+            "SELECT e.id, COALESCE(e.title,''), e.audio_url, e.published, e.duration_s,
+                    COALESCE(e.image_url,''), COALESCE(NULLIF(p.custom_image,''), p.image_url, ''), p.id, e.downloaded_path, COALESCE(e.played,0), COALESCE(p.title,'')
+             FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id
+             WHERE e.id = (SELECT e2.id FROM podcast_episodes e2 WHERE e2.podcast_id = e.podcast_id
+                           ORDER BY COALESCE(e2.published,0) DESC, e2.id DESC LIMIT 1){extra}
+             ORDER BY COALESCE(e.published,0) DESC, e.id DESC LIMIT 14");
+        let mut qb = sqlx::query_as(&q);
+        if !filter.trim().is_empty() { qb = qb.bind(like); }
+        let eps: Vec<EpQueryRow> = qb.fetch_all(&pool).await.unwrap_or_default();
+        let data = build_episode_data(eps).await;
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let rows: Vec<MusicSongRow> = eps.iter().enumerate().map(|(i, (title, _url, dur))| MusicSongRow {
-                thumb: slint::Image::default(),
-                title: title.clone().into(),
-                artist: "Episode".into(),
-                duration: dur.map(|d| fmt_clock(d).into()).unwrap_or_default(),
-                index: i as i32,
-            }).collect();
-            if let Ok(mut g) = podcast_episodes().lock() {
-                *g = eps.iter().map(|(t, u, _)| (u.clone(), t.clone())).collect();
-            }
-            w.set_music_podcast_episodes(slint::ModelRc::new(slint::VecModel::from(rows)));
+            w.set_music_podcast_latest(slint::ModelRc::new(slint::VecModel::from(rows_from_data(&data))));
         });
     });
+}
+
+const PODCAST_DL_PAGE: i64 = 20;
+
+/// Build the Downloads tab — cached episodes, sorted + paginated (20/page).
+fn populate_podcast_downloads(w: &MainWindow) {
+    let weak = w.as_weak();
+    let sort = w.get_music_podcast_dl_sort().to_string();
+    let page = w.get_music_podcast_dl_page().max(0) as i64;
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("podcasts").await else { return; };
+        let filter = pod_filter("downloads");
+        let like = format!("%{}%", filter.trim());
+        let has_f = !filter.trim().is_empty();
+        let extra = if has_f { " AND (e.title LIKE ? OR p.title LIKE ?)".to_string() } else { String::new() };
+        let total: i64 = {
+            let cq = format!("SELECT COUNT(*) FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id WHERE e.downloaded_path IS NOT NULL{extra}");
+            let mut qb = sqlx::query_scalar(&cq);
+            if has_f { qb = qb.bind(like.clone()).bind(like.clone()); }
+            qb.fetch_one(&pool).await.unwrap_or(0)
+        };
+        let pages = ((total + PODCAST_DL_PAGE - 1) / PODCAST_DL_PAGE).max(1);
+        let page = page.min(pages - 1);
+        let order = if sort == "old" { "ASC" } else { "DESC" };
+        let q = format!(
+            "SELECT e.id, COALESCE(e.title,''), e.audio_url, e.published, e.duration_s,
+                    COALESCE(e.image_url,''), COALESCE(NULLIF(p.custom_image,''), p.image_url, ''), p.id, e.downloaded_path, COALESCE(e.played,0), COALESCE(p.title,'')
+             FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id
+             WHERE e.downloaded_path IS NOT NULL{extra}
+             ORDER BY COALESCE(e.published,0) {order}, e.id {order} LIMIT ? OFFSET ?");
+        let mut qb = sqlx::query_as(&q);
+        if has_f { qb = qb.bind(like.clone()).bind(like); }
+        let eps: Vec<EpQueryRow> =
+            qb.bind(PODCAST_DL_PAGE).bind(page * PODCAST_DL_PAGE).fetch_all(&pool).await.unwrap_or_default();
+        let data = build_episode_data(eps).await;
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_music_podcast_dl_pages(pages as i32);
+            w.set_music_podcast_dl_page(page as i32);
+            w.set_music_podcast_downloads(slint::ModelRc::new(slint::VecModel::from(rows_from_data(&data))));
+        });
+    });
+}
+
+// Cross-show episode query row: id, title, audio_url, published, duration_s,
+// episode_image, show_image, podcast_id, downloaded_path, played, show_title.
+type EpQueryRow = (i64, String, String, Option<i64>, Option<f64>, String, String, i64, Option<String>, i64, String);
+
+/// Off-thread: cache artwork + flatten a cross-show episode query into Send data.
+async fn build_episode_data(eps: Vec<EpQueryRow>) -> Vec<EpRowData> {
+    let client = reqwest::Client::new();
+    let mut out = Vec::with_capacity(eps.len());
+    for (id, title, _url, pub_, dur, ep_img, show_img, pid, dl, played, show) in eps {
+        // Prefer the episode's own image; else the show artwork — keyed `pod-{id}`
+        // so it reuses the file the grid already cached (instant, never blank).
+        let art = if !ep_img.is_empty() { cache_artwork(&client, &format!("ep-{id}"), &ep_img).await } else { None };
+        let art = match art {
+            Some(p) => Some(p),
+            None if !show_img.is_empty() => resolve_artwork(&client, &format!("pod-{pid}"), &show_img).await,
+            None => None,
+        };
+        out.push(EpRowData {
+            id: id as i32,
+            title,
+            show,
+            date: pub_.map(fmt_date).unwrap_or_default(),
+            duration: dur.map(fmt_clock).unwrap_or_default(),
+            art,
+            played: played != 0,
+            downloaded: dl.is_some(),
+        });
+    }
+    out
+}
+
+/// On the UI thread: turn Send data into UI rows (loads slint::Image).
+fn rows_from_data(data: &[EpRowData]) -> Vec<PodcastEpisodeRow> {
+    data.iter().enumerate().map(|(i, d)| PodcastEpisodeRow {
+        id: d.id,
+        title: d.title.clone().into(),
+        show: d.show.clone().into(),
+        date: d.date.clone().into(),
+        duration: d.duration.clone().into(),
+        image: d.art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default(),
+        played: d.played,
+        downloaded: d.downloaded,
+        index: i as i32,
+    }).collect()
+}
+
+/// Repopulate whichever podcast surface is currently visible.
+fn refresh_podcast_views(w: &MainWindow) {
+    match w.get_music_podcast_tab().as_str() {
+        "home" => { populate_podcasts(w); populate_podcast_latest(w); }
+        "downloads" => populate_podcast_downloads(w),
+        _ => populate_podcasts(w),
+    }
+    if w.get_music_podcast_detail_open() {
+        let pid = cur_podcast_id().lock().map(|g| *g).unwrap_or(-1);
+        if pid >= 0 { load_podcast_detail(w, pid); }
+    }
 }
 
 /// Fill the audiobooks view with `is_audiobook` library tracks (np.p5.music.audiobook-chapters).
+/// Folder basename → book title.
+fn book_title(folder: &str) -> String {
+    std::path::Path::new(folder).file_name()
+        .map(|s| s.to_string_lossy().to_string())
+        .filter(|s| !s.is_empty())
+        .unwrap_or_else(|| folder.to_string())
+}
+
+/// Seconds → "8h 12m" / "47m" pretty duration for book cards.
+fn fmt_hm(secs: f64) -> String {
+    let total = secs.max(0.0) as i64;
+    let h = total / 3600;
+    let m = (total % 3600) / 60;
+    if h > 0 { format!("{}h {}m", h, m) } else { format!("{}m", m) }
+}
+
+/// In-memory maps used to turn library positions into title/artist/duration +
+/// cover art (shared by the audiobook card + detail builders).
+fn music_pos_maps() -> (std::collections::HashMap<i64, i32>, std::collections::HashMap<i32, (String, String, f64)>) {
+    let pos_of = music_ids().lock()
+        .map(|g| g.iter().enumerate().map(|(i, id)| (*id, i as i32)).collect()).unwrap_or_default();
+    let by_pos = music_songs().lock()
+        .map(|g| g.iter().map(|s| (s.pos, (s.title.clone(), s.artist.clone(), s.duration_s))).collect()).unwrap_or_default();
+    (pos_of, by_pos)
+}
+
+/// Build one audiobook card from a folder's ordered chapter ids.
+fn build_book_card(w: &MainWindow, folder: &str, ids: &[i64],
+                   pos_of: &std::collections::HashMap<i64, i32>,
+                   by_pos: &std::collections::HashMap<i32, (String, String, f64)>) -> BookCard {
+    let tiles = w.get_music_tiles();
+    let mut total = 0.0;
+    let mut cover = slint::Image::default();
+    let mut first = true;
+    for id in ids {
+        let Some(&pos) = pos_of.get(id) else { continue; };
+        let (_t, _a, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
+        total += dur;
+        if first {
+            first = false;
+            if pos >= 0 && (pos as usize) < tiles.row_count() {
+                cover = tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default();
+            }
+        }
+    }
+    BookCard {
+        id: folder.into(),
+        title: book_title(folder).into(),
+        author: "".into(),
+        cover,
+        chapters: ids.len() as i32,
+        total_time: fmt_hm(total).into(),
+        resume_frac: 0.0,
+    }
+}
+
+/// Fill the audiobook detail hero + chapter list for one folder.
+fn fill_book_detail(w: &MainWindow, folder: &str, ids: &[i64]) {
+    let (pos_of, by_pos) = music_pos_maps();
+    let tiles = w.get_music_tiles();
+    let mut total = 0.0;
+    let mut first_pos = -1;
+    let mut rows: Vec<ChapterRow> = Vec::new();
+    for id in ids {
+        let Some(&pos) = pos_of.get(id) else { continue; };
+        if first_pos < 0 { first_pos = pos; }
+        let (title, _artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
+        total += dur;
+        let n = rows.len() + 1;
+        rows.push(ChapterRow {
+            title: if title.is_empty() { format!("Chapter {}", n).into() } else { title.into() },
+            duration: if dur > 0.0 { fmt_clock(dur).into() } else { "".into() },
+            index: pos,
+            played: false,
+        });
+    }
+    let cover = if first_pos >= 0 && (first_pos as usize) < tiles.row_count() {
+        tiles.row_data(first_pos as usize).map(|t| t.thumb).unwrap_or_default()
+    } else { slint::Image::default() };
+    w.set_music_ab_d_title(book_title(folder).into());
+    w.set_music_ab_d_author("".into());
+    w.set_music_ab_d_cover(cover);
+    w.set_music_ab_d_total(fmt_hm(total).into());
+    w.set_music_ab_d_chapters(slint::ModelRc::new(slint::VecModel::from(rows)));
+    w.set_music_ab_d_resume_index(first_pos);
+    w.set_music_audiobook_detail_open(true);
+}
+
 fn populate_audiobooks(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("music").await else { return; };
+        // Reflect folder→section assignments: flag every audiobook-section
+        // folder so its (now-scanned) tracks show up grouped below.
+        for (folder, key) in load_folder_sections() {
+            if key == "audiobooks" {
+                // Metadata-gated flag (whole-folder fallback). Re-applied here so
+                // it self-heals once the async tag ingest has filled genre/container.
+                let _ = tulipix_music::audiobooks::flag_audiobook_folder(&pool, &folder).await;
+            }
+        }
         let ids: Vec<i64> = sqlx::query_scalar(
             "SELECT item_id FROM track_meta WHERE is_audiobook = 1")
             .fetch_all(&pool).await.unwrap_or_default();
+        // One (folder, ordered chapter ids) entry per book card.
+        let books = tulipix_music::audiobooks::book_folders(&pool).await.unwrap_or_default();
+        let mut book_ids: Vec<(String, Vec<i64>)> = Vec::with_capacity(books.len());
+        for (folder, _n) in &books {
+            let cids = tulipix_music::audiobooks::book_chapters(&pool, folder).await.unwrap_or_default();
+            book_ids.push((folder.clone(), cids));
+        }
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let pos_of: std::collections::HashMap<i64, i32> = music_ids().lock()
-                .map(|g| g.iter().enumerate().map(|(i, id)| (*id, i as i32)).collect()).unwrap_or_default();
-            let by_pos: std::collections::HashMap<i32, (String, String, f64)> = music_songs().lock()
-                .map(|g| g.iter().map(|s| (s.pos, (s.title.clone(), s.artist.clone(), s.duration_s))).collect()).unwrap_or_default();
+            let (pos_of, by_pos) = music_pos_maps();
             let tiles = w.get_music_tiles();
             let rows: Vec<MusicSongRow> = ids.iter().filter_map(|id| pos_of.get(id).copied()).map(|pos| {
                 let (title, artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
@@ -6973,6 +10044,10 @@ fn populate_audiobooks(w: &MainWindow) {
                 }
             }).collect();
             w.set_music_audiobooks(slint::ModelRc::new(slint::VecModel::from(rows)));
+            let cards: Vec<BookCard> = book_ids.iter()
+                .map(|(folder, cids)| build_book_card(&w, folder, cids, &pos_of, &by_pos))
+                .collect();
+            w.set_music_audiobook_cards(slint::ModelRc::new(slint::VecModel::from(cards)));
         });
     });
 }
@@ -6984,12 +10059,17 @@ fn play_music_url(w: &MainWindow, url: &str, title: &str) {
     if let Ok(mut g) = music_proc().lock() {
         if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
     }
-    let sock = std::env::temp_dir().join(format!("tulipix-music-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&sock);
+    let sock = mpv_ipc::endpoint("tulipix-music");
+    mpv_ipc::cleanup(&sock);
     let mut cmd = std::process::Command::new("mpv");
     cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
         .arg(format!("--input-ipc-server={}", sock.display()))
         .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
+    // Carry the mute state across track changes (each track is a fresh mpv).
+    if w.get_music_muted() { cmd.arg("--mute=yes"); }
+    cmd.arg(format!("--af={}", music_full_af(&music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10])))));
+    stop_video(); // music takes over the universal stream from any video
+    mpv_die_with_parent(&mut cmd);
     match cmd.arg(url).spawn() {
         Ok(child) => { if let Ok(mut g) = music_proc().lock() { *g = Some(child); } }
         Err(e) => { tracing::error!(error = %e, "mpv stream launch failed"); return; }
@@ -6998,8 +10078,7 @@ fn play_music_url(w: &MainWindow, url: &str, title: &str) {
     let weak = w.as_weak();
     std::thread::spawn(move || {
         use std::io::{BufRead, BufReader, Write};
-        for _ in 0..50 { if sock.exists() { break; } std::thread::sleep(std::time::Duration::from_millis(60)); }
-        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&sock) {
+        if let Ok(mut stream) = mpv_ipc::connect(&sock) {
             let _ = stream.write_all(concat!(
                 "{\"command\":[\"observe_property\",1,\"time-pos\"]}\n",
                 "{\"command\":[\"observe_property\",2,\"duration\"]}\n",
@@ -7040,13 +10119,70 @@ fn save_music_pref(key: &str, val: &str) {
     let _ = s.save();
 }
 
+/// Read one `music.*` preference from Settings.advanced.
+fn load_music_pref(key: &str) -> Option<String> {
+    tulipix_core::settings::Settings::load().ok().and_then(|s| s.advanced.get(key).cloned())
+}
+
+/// The item id the tag editor targets — explicit context-menu target, else the
+/// now-playing track.
+fn editing_target(w: &MainWindow) -> Option<i64> {
+    tag_edit_target().lock().ok().and_then(|g| *g).or_else(|| current_music_id(w))
+}
+
+/// The album-art thumbnail for a playback position (from the live tiles model).
+fn tile_thumb_at(w: &MainWindow, pos: i32) -> slint::Image {
+    use slint::Model;
+    if pos < 0 { return slint::Image::default(); }
+    let tiles = w.get_music_tiles();
+    if (pos as usize) < tiles.row_count() {
+        tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default()
+    } else { slint::Image::default() }
+}
+
+/// Fill the tag-editor dropdown + stored fields (release date / genre / album
+/// artist / credits / lock) for an item, async (np.p5.music.tag-editor).
+fn prefill_tag_editor(weak: &slint::Weak<MainWindow>, id: i64) {
+    let weak = weak.clone();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("music").await else { return; };
+        let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN release_date TEXT").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN credits TEXT").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN user_locked INTEGER DEFAULT 0").execute(&pool).await;
+        let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>, i64)> = sqlx::query_as(
+            "SELECT release_date, genre, album_artist, credits, COALESCE(user_locked,0) FROM track_meta WHERE item_id = ?")
+            .bind(id).fetch_optional(&pool).await.ok().flatten();
+        let opts: Vec<String> = sqlx::query_scalar(
+            "SELECT DISTINCT genre FROM track_meta WHERE genre IS NOT NULL AND genre != '' ORDER BY genre")
+            .fetch_all(&pool).await.unwrap_or_default();
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            if let Some((d, g, aa, cr, lk)) = row {
+                if let Some(d) = d { w.set_music_tag_date(d.into()); }
+                if let Some(g) = g { w.set_music_tag_genre(g.into()); }
+                if let Some(aa) = aa { w.set_music_tag_album_artist(aa.into()); }
+                if let Some(cr) = cr { w.set_music_tag_credits(cr.into()); }
+                w.set_music_tag_locked(lk != 0);
+            }
+            let opts: Vec<slint::SharedString> = opts.into_iter().map(|s| s.into()).collect();
+            w.set_music_genre_options(slint::ModelRc::new(slint::VecModel::from(opts)));
+        });
+    });
+}
+
 /// Recompute the highlighted lyric line for the current playhead + offset.
 fn update_lyrics_active(w: &MainWindow) {
     let t_ms = (w.get_music_pos() as f64 * 1000.0) as i64 - w.get_music_lyrics_offset_ms() as i64;
-    let active = music_lyrics_lines().lock().ok()
-        .and_then(|g| tulipix_music::lyrics::active_line(&g, t_ms))
-        .map(|i| i as i32).unwrap_or(-1);
+    let (active, prog) = music_lyrics_lines().lock().ok().map(|g| {
+        let a = tulipix_music::lyrics::active_line(&g, t_ms);
+        let p = a.map(|i| {
+            let start = g[i].0;
+            let end = g.get(i + 1).map(|l| l.0).unwrap_or(start + 4000);
+            (((t_ms - start) as f64) / ((end - start).max(1) as f64)).clamp(0.0, 1.0) as f32
+        }).unwrap_or(0.0);
+        (a.map(|i| i as i32).unwrap_or(-1), p)
+    }).unwrap_or((-1, 0.0));
     if w.get_music_lyrics_active() != active { w.set_music_lyrics_active(active); }
+    w.set_music_lyrics_line_progress(prog); // karaoke wipe within the current line
 }
 
 /// mpv `--key=value` args for the persisted audio config (device / exclusive /
@@ -7109,6 +10245,165 @@ fn discover_cast_devices() -> Vec<tulipix_music::cast::CastDevice> {
     out
 }
 
+/// Stop playback immediately (kill mpv, suppress auto-advance). Used when the
+/// user only wants to *check* lyrics, not play (np.p5.music.lyrics).
+#[allow(dead_code)] // kept for the lyrics-only "check, don't play" path
+fn stop_music(w: &MainWindow) {
+    MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if let Ok(mut g) = music_proc().lock() {
+        if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
+    }
+    w.set_music_playing(false);
+}
+
+/// The track id currently shown in the read-only lyrics-view popup.
+static MUSIC_VIEW_LYRICS_ID: std::sync::OnceLock<std::sync::Mutex<Option<i64>>> = std::sync::OnceLock::new();
+fn music_view_lyrics_id() -> &'static std::sync::Mutex<Option<i64>> {
+    MUSIC_VIEW_LYRICS_ID.get_or_init(|| std::sync::Mutex::new(None))
+}
+/// Target track for the tag editor when opened from a song's context menu
+/// (Edit media info). `None` ⇒ the editor targets the now-playing track.
+static TAG_EDIT_TARGET: std::sync::OnceLock<std::sync::Mutex<Option<i64>>> = std::sync::OnceLock::new();
+fn tag_edit_target() -> &'static std::sync::Mutex<Option<i64>> {
+    TAG_EDIT_TARGET.get_or_init(|| std::sync::Mutex::new(None))
+}
+/// Previewed-but-unsaved lyrics from a popup re-search: (synced, content).
+static PENDING_VIEW_LYRICS: std::sync::OnceLock<std::sync::Mutex<Option<(bool, String)>>> = std::sync::OnceLock::new();
+fn pending_view_lyrics() -> &'static std::sync::Mutex<Option<(bool, String)>> {
+    PENDING_VIEW_LYRICS.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Populate the lyrics-view popup for a specific track without touching playback.
+/// Loads stored lyrics (DB) or fetches from LRCLIB, then fills the viewer rows +
+/// prefills the re-search fields with the track's name/artist/album.
+fn view_lyrics_load(w: &MainWindow, id: i64) {
+    w.set_music_lyrics_view_rows(slint::ModelRc::new(slint::VecModel::<MusicLyricLine>::default()));
+    w.set_music_lyrics_view_plain("Loading…".into());
+    w.set_music_lyrics_view_title("".into());
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("music").await else { return; };
+        let sig: Option<(Option<String>, Option<String>, Option<String>, f64)> = sqlx::query_as(
+            "SELECT tm.title, ar.name, al.title, COALESCE(tm.duration_s, 0)
+             FROM track_meta tm
+             LEFT JOIN artists ar ON ar.id = tm.artist_id
+             LEFT JOIN albums  al ON al.id = tm.album_id
+             WHERE tm.item_id = ?")
+            .bind(id).fetch_optional(&pool).await.ok().flatten();
+        let (title, artist, album, dur) = match sig {
+            Some((t, ar, al, d)) => (t.unwrap_or_default(), ar.unwrap_or_default(), al.unwrap_or_default(), d),
+            None => (String::new(), String::new(), String::new(), 0.0),
+        };
+        let mut row: Option<(i64, String)> = sqlx::query_as(
+            "SELECT synced, content FROM lyrics WHERE item_id = ?")
+            .bind(id).fetch_optional(&pool).await.ok().flatten();
+        if row.as_ref().map(|(_, c)| c.is_empty()).unwrap_or(true) && !title.is_empty() {
+            let url = tulipix_music::lyrics::get_url(&artist, &title, &album, dur);
+            let client = reqwest::Client::new();
+            if let Ok(resp) = client.get(&url)
+                .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
+                .send().await {
+                if let Ok(json) = resp.json::<serde_json::Value>().await {
+                    let synced = json["syncedLyrics"].as_str().unwrap_or("");
+                    let plain = json["plainLyrics"].as_str().unwrap_or("");
+                    if !synced.is_empty() { let _ = tulipix_music::lyrics::store(&pool, id, synced, true, "lrclib").await; row = Some((1, synced.to_string())); }
+                    else if !plain.is_empty() { let _ = tulipix_music::lyrics::store(&pool, id, plain, false, "lrclib").await; row = Some((0, plain.to_string())); }
+                }
+            }
+        }
+        let (synced, content) = row.unwrap_or((0, String::new()));
+        let lines = if synced != 0 { tulipix_music::lyrics::parse_lrc(&content) } else { Vec::new() };
+        let status = if synced != 0 { "Synced" } else if content.is_empty() { "Not Found" } else { "Normal" };
+        let sub = if album.is_empty() { artist.clone() } else if artist.is_empty() { album.clone() } else { format!("{artist} · {album}") };
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_music_lyrics_view_mode("lyrics".into());
+            w.set_music_lyrics_view_results(slint::ModelRc::new(slint::VecModel::<LyricsResult>::default()));
+            w.set_music_lyrics_view_title(title.clone().into());
+            w.set_music_lyrics_view_sub(sub.into());
+            w.set_music_lyrics_view_status(status.into());
+            w.set_music_lyrics_view_q_name(title.into());
+            w.set_music_lyrics_view_q_artist(artist.into());
+            w.set_music_lyrics_view_q_album(album.into());
+            let rows: Vec<MusicLyricLine> = lines.iter().map(|(ms, t)| MusicLyricLine {
+                time: fmt_clock(*ms as f64 / 1000.0).into(), text: t.clone().into() }).collect();
+            w.set_music_lyrics_view_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+            w.set_music_lyrics_view_plain(if synced == 0 {
+                if content.is_empty() { "No lyrics found — try Search below.".to_string() } else { content }
+            } else { String::new() }.into());
+        });
+    });
+}
+
+/// LRCLIB search candidates for the lyrics popup: (synced, content) per result.
+static LYRICS_SEARCH_RESULTS: std::sync::OnceLock<std::sync::Mutex<Vec<(bool, String)>>> = std::sync::OnceLock::new();
+fn lyrics_search_results() -> &'static std::sync::Mutex<Vec<(bool, String)>> {
+    LYRICS_SEARCH_RESULTS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+thread_local! {
+    /// Full library lyrics-manager list (one row per song), paged 20/screen.
+    static LYRICS_MGR_ROWS: std::cell::RefCell<Vec<LyricsMgrRow>> = const { std::cell::RefCell::new(Vec::new()) };
+}
+const LYRICS_MGR_PAGE: usize = 20;
+
+/// Publish the current lyrics-manager page (20 rows) + counters to the UI.
+fn publish_lyrics_mgr_page(w: &MainWindow) {
+    LYRICS_MGR_ROWS.with(|r| {
+        let all = r.borrow();
+        let total = all.len();
+        let synced = all.iter().filter(|x| x.status == "Synced").count();
+        let missing = all.iter().filter(|x| x.status == "Missing").count();
+        // Filter the visible rows by the active stat-card filter (counts stay full).
+        let filter = w.get_music_lyrics_mgr_filter().to_string();
+        let filtered: Vec<LyricsMgrRow> = all.iter().filter(|x| match filter.as_str() {
+            "synced" => x.status == "Synced",
+            "normal" => x.status == "Normal",
+            "missing" => x.status == "Missing",
+            _ => true,
+        }).cloned().collect();
+        let pages = filtered.len().div_ceil(LYRICS_MGR_PAGE).max(1);
+        let page = (w.get_music_lyrics_mgr_page() as usize).min(pages - 1);
+        let slice: Vec<LyricsMgrRow> = filtered.iter().skip(page * LYRICS_MGR_PAGE).take(LYRICS_MGR_PAGE).cloned().collect();
+        w.set_music_lyrics_mgr_rows(slint::ModelRc::new(slint::VecModel::from(slice)));
+        w.set_music_lyrics_mgr_total(total as i32);
+        w.set_music_lyrics_mgr_synced(synced as i32);
+        w.set_music_lyrics_mgr_missing(missing as i32);
+        w.set_music_lyrics_mgr_page(page as i32);
+        w.set_music_lyrics_mgr_pages(pages as i32);
+        w.set_music_lyrics_sync_progress(if total > 0 { (total - missing) as f32 / total as f32 } else { 0.0 });
+    });
+}
+
+/// Rebuild the lyrics-manager list from the song library + the lyrics table.
+fn rebuild_lyrics_manager(w: &MainWindow) {
+    let songs: Vec<(i32, i64, String, String)> = match music_songs().lock() {
+        Ok(g) => g.iter().map(|s| (s.pos, s.item_id, s.title.clone(), s.artist.clone())).collect(),
+        Err(_) => return,
+    };
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("music").await else { return; };
+        // item_id → synced flag, for tracks that actually have lyric content.
+        let rows: Vec<(i64, i64)> = sqlx::query_as(
+            "SELECT item_id, synced FROM lyrics WHERE content IS NOT NULL AND content <> ''")
+            .fetch_all(&pool).await.unwrap_or_default();
+        let map: std::collections::HashMap<i64, i64> = rows.into_iter().collect();
+        let list: Vec<LyricsMgrRow> = songs.iter().map(|(pos, id, title, artist)| {
+            let status = match map.get(id) {
+                Some(s) if *s != 0 => "Synced",
+                Some(_) => "Normal",
+                None => "Missing",
+            };
+            LyricsMgrRow { title: title.clone().into(), artist: artist.clone().into(),
+                status: status.into(), index: *pos }
+        }).collect();
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            LYRICS_MGR_ROWS.with(|r| *r.borrow_mut() = list);
+            publish_lyrics_mgr_page(&w);
+        });
+    });
+}
+
 /// Load synced/plain lyrics for the current track from the lyrics table (empty
 /// when none — LRCLIB fetch needs network). Parses synced LRC into rows for the
 /// scrolling highlight (np.p4.music.lyrics / np.p5.music.lyrics-synced).
@@ -7156,6 +10451,9 @@ fn load_music_lyrics(w: &MainWindow) {
         let (synced, content) = row.unwrap_or((0, String::new()));
         let lines = if synced != 0 { tulipix_music::lyrics::parse_lrc(&content) } else { Vec::new() };
         let _ = weak.upgrade_in_event_loop(move |w| {
+            // Drop stale results: the track may have changed while we fetched, which
+            // would otherwise show the previous song's lyrics (sync bug).
+            if current_music_id(&w) != Some(id) { return; }
             w.set_music_lyrics_text(content.into());
             if !lines.is_empty() {
                 let rows: Vec<MusicLyricLine> = lines.iter().map(|(ms, t)| MusicLyricLine {
@@ -7217,6 +10515,12 @@ fn sort_music_songs(sort: &str, dir: &str) {
             "title"  => a.title.to_lowercase().cmp(&b.title.to_lowercase()),
             "artist" => a.artist.to_lowercase().cmp(&b.artist.to_lowercase()),
             "plays"  => a.plays.cmp(&b.plays),
+            "rating" => a.stars.cmp(&b.stars).then(a.title.to_lowercase().cmp(&b.title.to_lowercase())),
+            // Release date — songs without one sort last (treated as far-future).
+            "release" => {
+                let key = |s: &str| if s.trim().is_empty() { "9999".to_string() } else { s.to_string() };
+                key(&a.release_date).cmp(&key(&b.release_date)).then(a.title.to_lowercase().cmp(&b.title.to_lowercase()))
+            },
             _        => a.added.cmp(&b.added),
         };
         if dir == "asc" { o } else { o.reverse() }
@@ -7228,11 +10532,16 @@ fn rebuild_music_songs_page(w: &MainWindow) {
     let g = match music_songs().lock() { Ok(g) => g, Err(_) => return };
     let q = music_query_filter().lock().map(|s| s.to_lowercase()).unwrap_or_default();
     // Filter by the search box (title/artist substring) before paginating.
+    // Audiobook-flagged tracks are excluded — they live in the Audiobooks
+    // section, not the My Music Songs list (np.p5.music.audiobook-detect).
     let view: Vec<&SongMeta> = g.iter().filter(|s| {
-        q.is_empty() || s.title.to_lowercase().contains(&q) || s.artist.to_lowercase().contains(&q)
+        !s.is_audiobook
+            && (q.is_empty() || s.title.to_lowercase().contains(&q) || s.artist.to_lowercase().contains(&q))
     }).collect();
     let total = view.len();
-    let pages = total.div_ceil(SONG_PAGE).max(1);
+    // Smaller pages while searching so songs stay above the artists/albums rows.
+    let per = if q.is_empty() { SONG_PAGE } else { 14 };
+    let pages = total.div_ceil(per).max(1);
     let page = (w.get_music_song_page() as usize).min(pages - 1);
     let tiles = w.get_music_tiles();
     let thumb_at = |pos: i32| -> slint::Image {
@@ -7240,14 +10549,28 @@ fn rebuild_music_songs_page(w: &MainWindow) {
             tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default()
         } else { slint::Image::default() }
     };
-    let rows: Vec<MusicSongRow> = view.iter().skip(page * SONG_PAGE).take(SONG_PAGE).map(|s| MusicSongRow {
+    let page_rows: Vec<&SongMeta> = view.iter().skip(page * per).take(per).copied().collect();
+    let rows: Vec<MusicSongRow> = page_rows.iter().map(|s| MusicSongRow {
         thumb: thumb_at(s.pos),
         title: s.title.clone().into(),
         artist: s.artist.clone().into(),
         duration: if s.duration_s > 0.0 { fmt_clock(s.duration_s).into() } else { "".into() },
         index: s.pos,
     }).collect();
+    // Rich list rows with the lyrics / fav / star columns.
+    let rows_ex: Vec<SongRowEx> = page_rows.iter().map(|s| SongRowEx {
+        thumb: thumb_at(s.pos),
+        title: s.title.clone().into(),
+        artist: s.artist.clone().into(),
+        album: s.album.clone().into(),
+        duration: if s.duration_s > 0.0 { fmt_clock(s.duration_s).into() } else { "".into() },
+        index: s.pos,
+        loved: s.loved,
+        stars: s.stars,
+        synced: s.synced,
+    }).collect();
     w.set_music_songs(slint::ModelRc::new(slint::VecModel::from(rows)));
+    w.set_music_songs_ex(slint::ModelRc::new(slint::VecModel::from(rows_ex)));
     w.set_music_song_total(total as i32);
     w.set_music_song_pages(pages as i32);
     w.set_music_song_page(page as i32);
@@ -7373,23 +10696,62 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
         let albums = tulipix_music::browse::albums(&pool).await.unwrap_or_default();
         let artists = tulipix_music::browse::artists(&pool).await.unwrap_or_default();
         let genres = tulipix_music::browse::genres(&pool).await.unwrap_or_default();
+        // Favorited albums/artists (np.p5.music.fav-collections). The `loved`
+        // columns are added on demand; ignore the error when they already exist.
+        let _ = sqlx::query("ALTER TABLE albums ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE artists ADD COLUMN loved INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE albums ADD COLUMN rating INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE artists ADD COLUMN rating INTEGER NOT NULL DEFAULT 0").execute(&pool).await;
+        let loved_albums: std::collections::HashSet<i64> = sqlx::query_scalar("SELECT id FROM albums WHERE loved = 1")
+            .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
+        let loved_artists: std::collections::HashSet<i64> = sqlx::query_scalar("SELECT id FROM artists WHERE loved = 1")
+            .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
+        let album_rating: std::collections::HashMap<i64, i64> = sqlx::query_as("SELECT id, rating FROM albums WHERE rating > 0")
+            .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
+        let artist_rating: std::collections::HashMap<i64, i64> = sqlx::query_as("SELECT id, rating FROM artists WHERE rating > 0")
+            .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
         // Per-track grouping keys, to resolve a group's first playback position.
         let meta: Vec<(i64, Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
-            "SELECT item_id, album_id, artist_id, genre FROM track_meta").fetch_all(&pool).await.unwrap_or_default();
+            "SELECT item_id, album_id, artist_id, genre FROM track_meta WHERE is_audiobook = 0").fetch_all(&pool).await.unwrap_or_default();
         // Detailed Songs list rows (np.p4.music.browse list view).
-        let song_rows: Vec<(i64, Option<String>, Option<String>, Option<f64>, i64, i64)> = sqlx::query_as(
-            "SELECT tm.item_id, tm.title, ar.name, tm.duration_s, it.added, tm.play_count \
+        // On-demand columns (idempotent) so the SELECT below never fails on older DBs.
+        let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN release_date TEXT").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN credits TEXT").execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN user_locked INTEGER DEFAULT 0").execute(&pool).await;
+        // music_songs stays complete (incl. audiobooks) so the Audiobooks section
+        // can resolve each chapter's title/duration by position; the My Music
+        // Songs *list* filters audiobooks out at render in rebuild_music_songs_page.
+        let song_rows: Vec<(i64, Option<String>, Option<String>, Option<f64>, i64, i64, i64, i64, Option<i64>, Option<String>, Option<String>, i64)> = sqlx::query_as(
+            "SELECT tm.item_id, tm.title, ar.name, tm.duration_s, it.added, tm.play_count, \
+                    COALESCE(tm.loved,0), COALESCE(tm.rating,0), \
+                    (SELECT ly.synced FROM lyrics ly WHERE ly.item_id = tm.item_id), al.title, tm.release_date, \
+                    tm.is_audiobook \
              FROM track_meta tm JOIN items it ON it.id = tm.item_id AND it.missing_since IS NULL \
-             LEFT JOIN artists ar ON ar.id = tm.artist_id").fetch_all(&pool).await.unwrap_or_default();
+             LEFT JOIN artists ar ON ar.id = tm.artist_id \
+             LEFT JOIN albums al ON al.id = tm.album_id").fetch_all(&pool).await.unwrap_or_default();
         // Folder hierarchy (np.p4.music.folders) — folder path per track.
         let folder_rows: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT item_id, folder FROM track_meta WHERE folder IS NOT NULL AND folder != ''")
+            "SELECT item_id, folder FROM track_meta WHERE folder IS NOT NULL AND folder != '' AND is_audiobook = 0")
             .fetch_all(&pool).await.unwrap_or_default();
-        // Playlists (np.p4.music.playlists) — name + first track.
-        let playlist_rows: Vec<(i64, String, i64, Option<i64>)> = sqlx::query_as(
-            "SELECT p.id, p.name, COUNT(pi.item_id), MIN(pi.item_id) \
+        // Playlists (np.p4.music.playlists) — name + first track. Smart playlists
+        // (Loved / Recently Added) compute their tracks from a rule, so the LEFT
+        // JOIN count is 0 — resolve those via the rule so counts/covers are real.
+        let playlist_raw: Vec<(i64, String, i64, Option<i64>, i64, Option<String>)> = sqlx::query_as(
+            "SELECT p.id, p.name, COUNT(pi.item_id), MIN(pi.item_id), COALESCE(p.is_smart,0), p.rule_json \
              FROM playlists p LEFT JOIN playlist_items pi ON pi.playlist_id = p.id GROUP BY p.id")
             .fetch_all(&pool).await.unwrap_or_default();
+        let mut playlist_rows: Vec<(i64, String, i64, Option<i64>)> = Vec::with_capacity(playlist_raw.len());
+        for (pid, name, n, first, is_smart, rule_json) in playlist_raw {
+            if is_smart != 0 {
+                let ids = match rule_json.as_ref().and_then(|j| serde_json::from_str::<tulipix_music::playlists::SmartRule>(j).ok()) {
+                    Some(rule) => tulipix_music::playlists::evaluate(&pool, &rule).await.unwrap_or_default(),
+                    None => Vec::new(),
+                };
+                playlist_rows.push((pid, name, ids.len() as i64, ids.first().copied()));
+            } else {
+                playlist_rows.push((pid, name, n, first));
+            }
+        }
 
         let _ = weak.upgrade_in_event_loop(move |w| {
             let id_of: std::collections::HashMap<String, i64> = id_rows.into_iter()
@@ -7438,28 +10800,48 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
                     .or_else(|| tile_at(pos).map(|t| t.thumb))
                     .unwrap_or_default();
                 let label = match &a.artist { Some(ar) => format!("{} · {}", a.title, ar), None => a.title.clone() };
-                (PhotoTile { thumb, label: label.into(), index: pos, ..Default::default() }, a.track_count)
+                (PhotoTile { thumb, label: label.into(), index: pos, starred: loved_albums.contains(&a.album_id),
+                    stack_count: album_rating.get(&a.album_id).copied().unwrap_or(0) as i32,
+                    count: a.track_count as i32, ..Default::default() }, a.track_count)
             }).collect();
             set_browse_src("albums", album_tiles_src.clone());
             rebuild_browse_tab(&w, "albums");
+            // Favorited albums → the categorized Favorites page.
+            let fav_album_tiles: Vec<PhotoTile> = album_tiles_src.iter().filter(|(t, _)| t.starred).map(|(t, _)| t.clone()).collect();
+            w.set_music_fav_albums(slint::ModelRc::new(slint::VecModel::from(fav_album_tiles)));
 
-            // Artists / Genres — label-only chips (index = first track position).
-            let artist_src: Vec<(PhotoTile, i64)> = artists.iter().map(|(id, name, n)| (PhotoTile {
-                label: format!("{name} · {n}").into(),
-                index: first_artist.get(id).copied().unwrap_or(-1), ..Default::default()
-            }, *n)).collect();
-            set_browse_src("artists", artist_src);
+            // Artists — cover from the artist's first track (album art); Genres stay label-only.
+            let artist_src: Vec<(PhotoTile, i64)> = artists.iter().map(|(id, name, n)| {
+                let pos = first_artist.get(id).copied().unwrap_or(-1);
+                (PhotoTile {
+                    thumb: tile_at(pos).map(|t| t.thumb).unwrap_or_default(),
+                    label: name.clone().into(), index: pos, starred: loved_artists.contains(id),
+                    stack_count: artist_rating.get(id).copied().unwrap_or(0) as i32,
+                    count: *n as i32, ..Default::default()
+                }, *n)
+            }).collect();
+            set_browse_src("artists", artist_src.clone());
             rebuild_browse_tab(&w, "artists");
-            let genre_src: Vec<(PhotoTile, i64)> = genres.iter().map(|(g, n)| (PhotoTile {
-                label: format!("{g} · {n}").into(),
-                index: first_genre.get(g).copied().unwrap_or(-1), ..Default::default()
-            }, *n)).collect();
+            // Favorited artists → the categorized Favorites page.
+            let fav_artist_tiles: Vec<PhotoTile> = artist_src.iter().filter(|(t, _)| t.starred).map(|(t, _)| t.clone()).collect();
+            w.set_music_fav_artists(slint::ModelRc::new(slint::VecModel::from(fav_artist_tiles)));
+            // Per-genre cover override (music.genre.cover.<genre>) wins over the
+            // first-track album art (np.p4.music.browse / genre-art).
+            let gcovers = tulipix_core::settings::Settings::load().map(|s| s.advanced).unwrap_or_default();
+            let genre_src: Vec<(PhotoTile, i64)> = genres.iter().map(|(g, n)| {
+                let pos = first_genre.get(g).copied().unwrap_or(-1);
+                let thumb = gcovers.get(&format!("music.genre.cover.{g}"))
+                    .map(|c| slint::Image::load_from_path(std::path::Path::new(c)).unwrap_or_default())
+                    .or_else(|| tile_at(pos).map(|t| t.thumb))
+                    .unwrap_or_default();
+                (PhotoTile { thumb, label: g.clone().into(), index: pos, ..Default::default() }, *n)
+            }).collect();
             set_browse_src("genres", genre_src);
             rebuild_browse_tab(&w, "genres");
 
             // Detailed Songs list — map each track to its playback position, with
             // a filename fallback for missing titles.
-            let metas: Vec<SongMeta> = song_rows.into_iter().filter_map(|(id, title, artist, dur, added, plays)| {
+            let metas: Vec<SongMeta> = song_rows.into_iter().filter_map(|(id, title, artist, dur, added, plays, loved, rating, synced, album, release, is_audiobook)| {
                 let pos = *pos_of.get(&id)?;
                 let title = title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| {
                     paths.get(pos as usize)
@@ -7467,12 +10849,29 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
                         .unwrap_or("Unknown").to_string()
                 });
                 Some(SongMeta {
-                    pos, title,
+                    pos, item_id: id, title,
                     artist: artist.unwrap_or_default(),
+                    album: album.unwrap_or_default(),
                     duration_s: dur.unwrap_or(0.0),
                     added, plays,
+                    loved: loved != 0, stars: rating as i32, synced: synced.is_some(),
+                    release_date: release.unwrap_or_default(),
+                    is_audiobook: is_audiobook != 0,
                 })
             }).collect();
+            // Auto-fill the Songs-row pills with current coverage (lyrics synced %,
+            // tags present %) so they reflect library state without opening either
+            // manager (np.p5.atmusic.songs-pills).
+            {
+                let total = metas.len();
+                if total > 0 {
+                    let synced_n = metas.iter().filter(|m| m.synced).count();
+                    let tagged_n = metas.iter()
+                        .filter(|m| !m.artist.trim().is_empty() && !m.album.trim().is_empty()).count();
+                    w.set_music_lyrics_sync_progress(synced_n as f32 / total as f32);
+                    w.set_music_meta_fetch_progress(tagged_n as f32 / total as f32);
+                }
+            }
             // title/artist/duration by item_id, for the Home "Recently played" list.
             let info: std::collections::HashMap<i64, (String, String, f64)> = metas.iter()
                 .map(|m| (ids[m.pos as usize], (m.title.clone(), m.artist.clone(), m.duration_s)))
@@ -7481,7 +10880,7 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
             let recent_pool: Vec<SongMeta> = recent.iter().take(18).filter_map(|id| {
                 let pos = *pos_of.get(id)?;
                 let (title, artist, dur) = info.get(id).cloned().unwrap_or_default();
-                Some(SongMeta { pos, title, artist, duration_s: dur, added: 0, plays: 0 })
+                Some(SongMeta { pos, item_id: *id, title, artist, album: String::new(), duration_s: dur, added: 0, plays: 0, loved: false, stars: 0, synced: false, release_date: String::new(), is_audiobook: false })
             }).collect();
             if let Ok(mut g) = music_recent().lock() { *g = recent_pool; }
             w.set_music_recent_page(0);
@@ -7490,8 +10889,10 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
             // Top artists / albums (most tracks first, capped) for the Home grids.
             let mut top_artist_src = artists.clone();
             top_artist_src.sort_by(|a, b| b.2.cmp(&a.2));
-            let top_artist_tiles: Vec<PhotoTile> = top_artist_src.iter().take(4).map(|(id, name, _)| PhotoTile {
-                label: name.clone().into(), index: first_artist.get(id).copied().unwrap_or(-1), ..Default::default()
+            let top_artist_tiles: Vec<PhotoTile> = top_artist_src.iter().take(6).map(|(id, name, _)| {
+                let pos = first_artist.get(id).copied().unwrap_or(-1);
+                PhotoTile { thumb: tile_at(pos).map(|t| t.thumb).unwrap_or_default(),
+                    label: name.clone().into(), index: pos, ..Default::default() }
             }).collect();
             w.set_music_top_artists(slint::ModelRc::new(slint::VecModel::from(top_artist_tiles)));
             let mut top_album_src: Vec<_> = album_tiles_src.clone();
@@ -7508,12 +10909,17 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
             for (_, folder) in &folder_rows { *folder_counts.entry(folder.clone()).or_insert(0) += 1; }
             let mut folder_keys: Vec<&String> = first_folder.keys().collect();
             folder_keys.sort();
+            // Section tag per folder (np.p5.atmusic.folder-sections) — carried in
+            // `color_label` so the Folders grid can render the assignment chip.
+            let sec_map = load_folder_sections();
             let folder_src: Vec<(PhotoTile, i64)> = folder_keys.iter().map(|folder| {
                 let base = std::path::Path::new(folder.as_str()).file_name()
                     .and_then(|s| s.to_str()).unwrap_or(folder.as_str());
                 let n = folder_counts.get(*folder).copied().unwrap_or(0);
+                let sec = sec_map.get(*folder).cloned().unwrap_or_else(|| "mymusic".to_string());
                 (PhotoTile {
                     label: format!("🗂 {base} · {n}").into(),
+                    color_label: sec.into(),
                     index: first_folder.get(*folder).copied().unwrap_or(-1), ..Default::default()
                 }, n)
             }).collect();
@@ -7522,10 +10928,18 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
 
             // Playlists — `index` carries the playlist DB id so playlist-open can
             // load its tracks (np.p5.music.playlists-builder).
-            let playlist_src: Vec<(PhotoTile, i64)> = playlist_rows.iter().map(|(pid, name, n, _first)| (PhotoTile {
-                label: format!("{name} · {n}").into(),
-                index: *pid as i32, ..Default::default()
-            }, *n)).collect();
+            let playlist_src: Vec<(PhotoTile, i64)> = playlist_rows.iter().map(|(pid, name, n, first)| {
+                // Cover: custom playlist art → else the first track's album thumb.
+                let pos = first.and_then(|fid| pos_of.get(&fid).copied()).unwrap_or(-1);
+                let thumb = playlist_cover_path(*pid)
+                    .map(|p| slint::Image::load_from_path(std::path::Path::new(&p)).unwrap_or_default())
+                    .or_else(|| tile_at(pos).map(|t| t.thumb))
+                    .unwrap_or_default();
+                (PhotoTile {
+                    label: format!("{name} · {n}").into(), thumb,
+                    index: *pid as i32, ..Default::default()
+                }, *n)
+            }).collect();
             set_browse_src("playlists", playlist_src);
             rebuild_browse_tab(&w, "playlists");
 
@@ -7544,6 +10958,48 @@ static MUSIC_PROC: std::sync::OnceLock<std::sync::Mutex<Option<std::process::Chi
 fn music_proc() -> &'static std::sync::Mutex<Option<std::process::Child>> {
     MUSIC_PROC.get_or_init(|| std::sync::Mutex::new(None))
 }
+/// PID of the windowed video mpv (0 = none). Tracked so music↔video share one
+/// "universal" stream and so playback dies with the app.
+static VIDEO_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// Make a spawned child die with us — on Linux the kernel sends SIGKILL when
+/// the parent (tulipix) exits for ANY reason (close, crash, kill), so mpv never
+/// orphans. `PR_SET_PDEATHSIG` is Linux-only; on other OSes children are reaped
+/// by `kill_all_mpv()` on window close + `child.kill()` on track change.
+#[cfg(target_os = "linux")]
+fn mpv_die_with_parent(cmd: &mut std::process::Command) {
+    use std::os::unix::process::CommandExt;
+    unsafe {
+        cmd.pre_exec(|| {
+            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0);
+            Ok(())
+        });
+    }
+}
+#[cfg(not(target_os = "linux"))]
+fn mpv_die_with_parent(_cmd: &mut std::process::Command) {
+    // macOS/Windows: no PR_SET_PDEATHSIG. A Win32 Job Object with
+    // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE would harden crash-time cleanup.
+}
+/// Kill the windowed video mpv if one is running.
+fn stop_video() {
+    let pid = VIDEO_PID.swap(0, std::sync::atomic::Ordering::SeqCst);
+    if pid == 0 { return; }
+    #[cfg(windows)]
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/F", "/T"]).status();
+    #[cfg(not(windows))]
+    let _ = std::process::Command::new("kill").arg("-9").arg(pid.to_string()).status();
+}
+/// Kill the headless music mpv if one is running.
+fn kill_music_proc() {
+    MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst); // suppress auto-advance
+    if let Ok(mut g) = music_proc().lock() {
+        if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
+    }
+}
+/// Stop every mpv we spawned — called when the app window closes so nothing keeps
+/// playing in the background (np: universal-player teardown).
+fn kill_all_mpv() { kill_music_proc(); stop_video(); }
 /// Generation counter for the music sleep timer; bumped on each cycle so a
 /// pending timer task knows it was superseded.
 static SLEEP_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -7574,12 +11030,40 @@ fn music_eq_af(gains: &[f64; 10]) -> String {
     format!("anequalizer=params=%{}%{}", entries.len(), entries)
 }
 
+/// Live momentary loudness (LUFS) from the ebur128 visualizer filter, stored as
+/// a normalized 0..1000 amplitude so the visualizer pulses to the actual audio.
+static MUSIC_LOUDNESS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
+/// LUFS → 0..1 envelope (≈ -45 dB silence .. -6 dB loud).
+fn loudness_to_amp(lufs: f64) -> f32 { (((lufs + 45.0) / 39.0).clamp(0.0, 1.0)) as f32 }
+/// Append the ebur128 metering filter (labelled `vis`) to the EQ `af` so we can
+/// read real loudness. Empty EQ → just the meter.
+fn music_full_af(eq_af: &str) -> String {
+    const VIS: &str = "@vis:ebur128=metadata=1:video=0";
+    if eq_af.is_empty() { VIS.to_string() } else { format!("{eq_af},{VIS}") }
+}
+
 /// Apply the current EQ gains to the live track + reflect them in the UI bands.
 fn apply_music_eq(w: &MainWindow) {
     let gains = music_eq().lock().map(|g| *g).unwrap_or([0.0; 10]);
-    music_ipc(&["set_property", "af", &music_eq_af(&gains)]); // empty clears
+    music_ipc(&["set_property", "af", &music_full_af(&music_eq_af(&gains))]);
     let bands: Vec<f32> = gains.iter().map(|g| *g as f32).collect();
     w.set_music_eq_bands(slint::ModelRc::new(slint::VecModel::from(bands)));
+}
+
+/// Saved custom EQ profiles, persisted as JSON in Settings.advanced.
+fn load_eq_customs() -> Vec<(String, Vec<f64>)> {
+    let s = tulipix_core::settings::Settings::load().unwrap_or_default();
+    s.advanced.get("music.eq.custom")
+        .and_then(|j| serde_json::from_str::<Vec<(String, Vec<f64>)>>(j).ok())
+        .unwrap_or_default()
+}
+fn save_eq_customs(list: &[(String, Vec<f64>)]) {
+    if let Ok(j) = serde_json::to_string(list) { save_music_pref("music.eq.custom", &j); }
+}
+/// Publish the custom-profile names into the EQ popup.
+fn populate_eq_customs(w: &MainWindow) {
+    let names: Vec<slint::SharedString> = load_eq_customs().into_iter().map(|(n, _)| n.into()).collect();
+    w.set_music_eq_custom_names(slint::ModelRc::new(slint::VecModel::from(names)));
 }
 
 /// Send a single JSON command to the live music mpv over its IPC socket.
@@ -7592,7 +11076,7 @@ fn music_ipc(args: &[&str]) {
             if a.parse::<f64>().is_ok() || **a == *"true" || **a == *"false" { a.to_string() }
             else { format!("\"{a}\"") }
         }).collect::<Vec<_>>().join(","));
-    if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&sock) {
+    if let Ok(mut s) = mpv_ipc::connect(&sock) {
         let _ = s.write_all(payload.as_bytes());
     }
 }
@@ -7606,6 +11090,8 @@ fn music_ipc(args: &[&str]) {
 fn advance_music(w: &MainWindow) {
     // "Repeat one" always re-plays the current track, ignoring the queue.
     if w.get_music_repeat() == "one" { advance_sequential(w); return; }
+    // Shuffle overrides the sequential auto-queue — pick a random next track.
+    if w.get_music_shuffle() { advance_sequential(w); return; }
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("music").await else {
@@ -7664,18 +11150,21 @@ fn play_music_at(w: &MainWindow, idx: i32) {
     if let Ok(mut g) = music_proc().lock() {
         if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
     }
-    let sock = std::env::temp_dir().join(format!("tulipix-music-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&sock);
+    let sock = mpv_ipc::endpoint("tulipix-music");
+    mpv_ipc::cleanup(&sock);
     let mut cmd = std::process::Command::new("mpv");
     cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
         .arg(format!("--input-ipc-server={}", sock.display()))
         .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
+    // Carry the mute state across track changes (each track is a fresh mpv).
+    if w.get_music_muted() { cmd.arg("--mute=yes"); }
+    stop_video(); // music takes over the universal stream from any video
+    mpv_die_with_parent(&mut cmd);
     let s = tulipix_core::settings::Settings::load().unwrap_or_default();
-    if let Some(name) = s.advanced.get("music.eq-preset") {
-        if let Some(eq) = tulipix_music::eq::Equalizer::preset(name.trim()) {
-            cmd.arg(format!("--af={}", eq.mpv_af()));
-        }
-    }
+    // Always attach the ebur128 meter (+ EQ if any) so the visualizer pulses to
+    // the real audio loudness (np.p5.music.visualizer — beat sync).
+    let eq_af = music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10]));
+    cmd.arg(format!("--af={}", music_full_af(&eq_af)));
     // Apply persisted audio config: device / exclusive / gapless / replaygain
     // (np.p5.music.output / .gapless / .replaygain).
     for a in music_audio_args(&s) { cmd.arg(a); }
@@ -7690,19 +11179,26 @@ fn play_music_at(w: &MainWindow, idx: i32) {
     let weak = w.as_weak();
     std::thread::spawn(move || {
         use std::io::{BufRead, BufReader, Write};
-        for _ in 0..50 { if sock.exists() { break; } std::thread::sleep(std::time::Duration::from_millis(60)); }
-        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&sock) {
+        if let Ok(mut stream) = mpv_ipc::connect(&sock) {
             let _ = stream.write_all(concat!(
                 "{\"command\":[\"observe_property\",1,\"time-pos\"]}\n",
                 "{\"command\":[\"observe_property\",2,\"duration\"]}\n",
                 "{\"command\":[\"observe_property\",3,\"pause\"]}\n",
                 "{\"command\":[\"observe_property\",4,\"volume\"]}\n",
-                "{\"command\":[\"observe_property\",5,\"mute\"]}\n").as_bytes());
+                "{\"command\":[\"observe_property\",5,\"mute\"]}\n",
+                "{\"command\":[\"observe_property\",6,\"af-metadata/vis/lavfi.r128.M\"]}\n").as_bytes());
             let rd = BufReader::new(stream);
             for line in rd.lines().map_while(Result::ok) {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
                 if v["event"] != "property-change" { continue; }
                 let name = v["name"].as_str().unwrap_or("").to_string();
+                // Real loudness → atomic (handled in-thread, no event-loop hop per frame).
+                if name == "af-metadata/vis/lavfi.r128.M" {
+                    if let Some(l) = v["data"].as_str().and_then(|s| s.parse::<f64>().ok()) {
+                        MUSIC_LOUDNESS.store((loudness_to_amp(l) * 1000.0) as i32, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    continue;
+                }
                 let wk = weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(w) = wk.upgrade() else { return; };
@@ -7712,7 +11208,7 @@ fn play_music_at(w: &MainWindow, idx: i32) {
                             update_lyrics_active(&w); }
                         "duration" => if let Some(d) = v["data"].as_f64() {
                             w.set_music_dur(d as f32); w.set_music_dur_label(fmt_clock(d).into()); }
-                        "pause"  => if let Some(p) = v["data"].as_bool() { w.set_music_playing(!p); }
+                        "pause"  => if let Some(p) = v["data"].as_bool() { w.set_music_playing(!p); media_set_playing(!p); }
                         "volume" => if let Some(d) = v["data"].as_f64() { w.set_music_volume(d as f32); }
                         "mute"   => if let Some(m) = v["data"].as_bool() { w.set_music_muted(m); }
                         _ => {}
@@ -7745,11 +11241,13 @@ fn play_music_at(w: &MainWindow, idx: i32) {
     w.set_music_np_art(art);
     w.set_music_np_index(idx);
     w.set_music_np_total(total);
+    w.set_music_player_mode("music".into()); // library track → music-mode player
     w.set_music_playing(true);
     w.set_music_pos(0.0); w.set_music_dur(0.0);
     w.set_music_pos_label("0:00".into()); w.set_music_dur_label("0:00".into());
     w.set_music_np_loved(false);
     w.set_music_np_stars(0);
+    w.set_music_np_album("".into());
     if let Some(id) = current_music_id(w) {
         let weak = w.as_weak();
         let scrobble = w.get_music_scrobble_on();
@@ -7770,17 +11268,22 @@ fn play_music_at(w: &MainWindow, idx: i32) {
                     submit_scrobbles();
                 }
             }
-            let (loved, stars): (i64, i64) = sqlx::query_as(
-                "SELECT COALESCE(loved,0), COALESCE(rating,0) FROM track_meta WHERE item_id = ?")
-                .bind(id).fetch_optional(&pool).await.ok().flatten().unwrap_or((0, 0));
+            let row: Option<(i64, i64, Option<String>)> = sqlx::query_as(
+                "SELECT COALESCE(tm.loved,0), COALESCE(tm.rating,0), al.title
+                 FROM track_meta tm LEFT JOIN albums al ON al.id = tm.album_id
+                 WHERE tm.item_id = ?")
+                .bind(id).fetch_optional(&pool).await.ok().flatten();
+            let (loved, stars, album) = row.unwrap_or((0, 0, None));
             let _ = weak.upgrade_in_event_loop(move |w| {
                 w.set_music_np_loved(loved != 0);
                 w.set_music_np_stars(stars as i32);
+                w.set_music_np_album(album.unwrap_or_default().into());
             });
         });
     }
-    // Refresh lyrics (synced highlight) for the new track if the panel is open.
-    if w.get_music_player_panel() == "lyrics" { load_music_lyrics(w); }
+    // Always refresh lyrics for the new track so the now-playing lyric line
+    // (above the seekbar) syncs automatically — independent of the side panel.
+    load_music_lyrics(w);
 }
 
 /// Load the photo at `idx` from the current library list into the viewer,
@@ -8199,6 +11702,82 @@ fn human_size(bytes: u64) -> String {
     if unit == "bytes" { format!("{raw} bytes") } else { format!("{val:.2} {unit} ({raw} bytes)") }
 }
 
+/// Minimal URL query-component percent-encoder (spaces → +).
+fn urlencoding(s: &str) -> String {
+    s.bytes().map(|b| match b {
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+        b' ' => "+".to_string(),
+        _ => format!("%{b:02X}"),
+    }).collect()
+}
+
+thread_local! {
+    /// OS media-control handle, held on the UI thread so playback-state updates
+    /// (which must mirror real state or the DE sends the wrong key event) and the
+    /// initial registration share one connection.
+    static MEDIA_CONTROLS: std::cell::RefCell<Option<souvlaki::MediaControls>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Mirror the real playback state to the OS media surface so the desktop sends
+/// the correct Play vs Pause event for the next media-key press.
+fn media_set_playing(playing: bool) {
+    MEDIA_CONTROLS.with(|c| {
+        if let Some(ctrl) = c.borrow_mut().as_mut() {
+            let st = if playing {
+                souvlaki::MediaPlayback::Playing { progress: None }
+            } else {
+                souvlaki::MediaPlayback::Paused { progress: None }
+            };
+            let _ = ctrl.set_playback(st);
+        }
+    });
+}
+
+/// Register an OS media-control surface (MPRIS / SMTC / MediaPlayer) so the
+/// hardware/keyboard media keys drive playback (np.p4.music.player-keys).
+fn setup_media_controls(window: &MainWindow) {
+    use souvlaki::{MediaControlEvent, MediaControls, MediaPlayback, PlatformConfig};
+    let config = PlatformConfig { dbus_name: "tulipix", display_name: "Tulipix", hwnd: None };
+    let mut controls = match MediaControls::new(config) {
+        Ok(c) => c,
+        Err(e) => { tracing::warn!(error = ?e, "media controls unavailable"); return; }
+    };
+    let weak = window.as_weak();
+    let attached = controls.attach(move |event: MediaControlEvent| {
+        let weak = weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(w) = weak.upgrade() else { return; };
+            match event {
+                MediaControlEvent::Toggle => w.invoke_music_toggle_pause(),
+                MediaControlEvent::Play  => if !w.get_music_playing() { w.invoke_music_toggle_pause(); },
+                MediaControlEvent::Pause => if  w.get_music_playing() { w.invoke_music_toggle_pause(); },
+                MediaControlEvent::Stop  => if  w.get_music_playing() { w.invoke_music_toggle_pause(); },
+                MediaControlEvent::Next     => w.invoke_music_next(),
+                MediaControlEvent::Previous => w.invoke_music_prev(),
+                _ => {}
+            }
+        });
+    });
+    if let Err(e) = attached { tracing::warn!(error = ?e, "media controls attach failed"); return; }
+    // Advertise as Playing so desktop environments route the media keys to us.
+    let _ = controls.set_playback(MediaPlayback::Playing { progress: None });
+    MEDIA_CONTROLS.with(|c| *c.borrow_mut() = Some(controls));
+}
+
+/// Open a file in the OS default application (Play in default player).
+fn open_in_default_app(path: &std::path::Path) {
+    #[cfg(target_os = "linux")]
+    let prog = "xdg-open";
+    #[cfg(target_os = "macos")]
+    let prog = "open";
+    #[cfg(target_os = "windows")]
+    let prog = "explorer";
+    match std::process::Command::new(prog).arg(path).spawn() {
+        Ok(_) => {}
+        Err(e) => tracing::error!(error = %e, ?path, "open in default app failed"),
+    }
+}
+
 // ── Data-driven Settings panels (AI · Endpoints · Security · Data · System) ──
 
 fn si(key: &str, kind: &str, label: &str, desc: &str, value: &str, on: bool, state: &str) -> SettingItem {
@@ -8420,6 +11999,8 @@ async fn pool_for(section: &str) -> Result<sqlx::SqlitePool> {
         "music"  => &MUSIC_POOL,
         "books"  => &BOOKS_POOL,
         "cloud"  => &CLOUD_POOL,
+        "podcasts" => &PODCASTS_POOL,
+        "radio"    => &RADIO_POOL,
         _ => anyhow::bail!("unknown section"),
     };
     if let Some(p) = cache.get() { return Ok(p.clone()); }
@@ -8452,12 +12033,67 @@ async fn pool_for(section: &str) -> Result<sqlx::SqlitePool> {
         }
         "videos" => tulipix_videos::schema::apply(&pool).await?,
         "music"  => tulipix_music::schema::apply(&pool).await?,
+        "podcasts" => {
+            tulipix_music::podcasts::apply_schema(&pool).await?;
+            // One-time lift of legacy rows out of the shared music.db.
+            migrate_split_from_music(&pool, &[
+                ("podcasts",
+                 "id, feed_url, title, author, image_url, category, description, last_checked"),
+                ("podcast_episodes",
+                 "id, podcast_id, guid, title, audio_url, published, duration_s, \
+                  description, image_url, downloaded_path, position_s, played"),
+            ]).await;
+        }
+        "radio" => {
+            tulipix_music::radio::apply_schema(&pool).await?;
+            migrate_split_from_music(&pool, &[
+                ("radio_stations",
+                 "id, station_uuid, name, url, favicon, country, tags, favourite"),
+            ]).await;
+        }
         "books"  => tulipix_books::schema::apply(&pool).await?,
         "cloud"  => tulipix_cloud::schema::apply(&pool).await?,
         _ => {}
     }
     let _ = cache.set(pool.clone());
     Ok(pool)
+}
+
+/// One-time migration: move `tables` (each `(name, explicit_column_list)`) out
+/// of the legacy shared `music.db` into the freshly-opened section `dest` pool.
+///
+/// Idempotent: no-ops once the source tables are gone (so it's safe to run on
+/// every section open). Copies are parent→child (FK order); drops are the
+/// reverse. Everything runs on a single acquired connection because `ATTACH` is
+/// connection-scoped and the pool would otherwise hand later statements a
+/// different connection that never saw the attach.
+async fn migrate_split_from_music(dest: &sqlx::SqlitePool, tables: &[(&str, &str)]) {
+    let Some(music_path) = tulipix_core::paths::db_path("music") else { return; };
+    if !music_path.exists() { return; }
+    let Ok(mut conn) = dest.acquire().await else { return; };
+    // Attach the legacy DB read/write so we can also drop the moved tables.
+    if sqlx::query(&format!("ATTACH DATABASE '{}' AS legacy", music_path.display()))
+        .execute(&mut *conn).await.is_err() { return; }
+    // Copy parent→child.
+    let mut moved_any = false;
+    for (table, cols) in tables {
+        let exists: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM legacy.sqlite_master WHERE type='table' AND name = ?")
+            .bind(*table).fetch_optional(&mut *conn).await.ok().flatten();
+        if exists.is_none() { continue; }
+        moved_any = true;
+        let _ = sqlx::query(&format!(
+            "INSERT OR IGNORE INTO {table} ({cols}) SELECT {cols} FROM legacy.{table}"))
+            .execute(&mut *conn).await;
+    }
+    // Drop child→parent so foreign keys in the legacy DB don't block the drop.
+    if moved_any {
+        for (table, _) in tables.iter().rev() {
+            let _ = sqlx::query(&format!("DROP TABLE IF EXISTS legacy.{table}")).execute(&mut *conn).await;
+        }
+        tracing::info!("migrated {} table(s) out of music.db into a split section DB", tables.len());
+    }
+    let _ = sqlx::query("DETACH DATABASE legacy").execute(&mut *conn).await;
 }
 
 fn section_for_ext(ext: &str) -> Option<&'static str> {
@@ -8484,6 +12120,7 @@ fn classify_folder(root: &std::path::Path) -> std::collections::HashMap<&'static
     counts
 }
 
+#[allow(dead_code)] // section→enum helper kept alongside lib_section_enum's siblings
 fn lib_section_enum(section: &str) -> LibrarySection {
     match section {
         "videos" => LibrarySection::Videos,
@@ -8906,6 +12543,7 @@ fn kick_section_scan(
                     color_label: "".into(),
                     is_live: false,
                     stack_count: 0,
+                    count: 0,
                 });
                 paths.push(orig);
             }
@@ -8945,13 +12583,23 @@ fn kick_section_scan(
                     kick_video_refresh(w.as_weak(), cat);
                 }
                 "music"  => {
-                    if let Ok(mut g) = music_paths().lock() { *g = paths; }
-                    // Stamp each tile's index with its playback position so rail /
-                    // browse clicks (which pass tile.index) resolve correctly.
-                    let mut out = out;
-                    for (i, t) in out.iter_mut().enumerate() { t.index = i as i32; }
-                    w.set_music_tiles(slint::ModelRc::new(slint::VecModel::from(out)));
+                    let _ = (paths, out, n);
+                    // Accumulate this folder's tracks (dedup by abs path) so adding
+                    // a second folder ADDS to the library instead of replacing the
+                    // first. The DB already holds every folder's items; this keeps
+                    // the in-memory tiles/paths in sync with that.
+                    if let Ok(mut g) = music_full().lock() {
+                        let have: std::collections::HashSet<String> =
+                            g.iter().map(|(_, o, _)| o.to_string_lossy().into_owned()).collect();
+                        for row in full {
+                            if !have.contains(&row.1.to_string_lossy().into_owned()) { g.push(row); }
+                        }
+                    }
+                    rebuild_music_tiles(&w);
                     populate_music_views(w.as_weak());
+                    // Refresh the scanned-roots list (Folders tab) so a freshly
+                    // added music folder shows up immediately with its count.
+                    populate_folder_roots(&w);
                     // Extract tags (title/artist/album/…) for items lacking them,
                     // then refresh the views (np.p4.music.tags).
                     ingest_music_tags(w.as_weak());

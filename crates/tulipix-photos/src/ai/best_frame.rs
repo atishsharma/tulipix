@@ -11,7 +11,7 @@
 //! per-candidate breakdown so the UI can show "why this frame".
 
 use anyhow::Result;
-use image::{DynamicImage, GenericImageView, GrayImage};
+use image::{DynamicImage, GrayImage};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]

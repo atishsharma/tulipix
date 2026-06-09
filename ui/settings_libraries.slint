@@ -1,5 +1,5 @@
 import { Theme } from "tokens.slint";
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, ComboBox } from "std-widgets.slint";
 
 export struct LibraryRow {
     id: string,
@@ -9,6 +9,9 @@ export struct LibraryRow {
     item-count: int,
     size-pretty: string,
     cadence: string,
+    // For music rows: the human label of the assigned music section
+    // (My Music / Podcasts / Audiobooks / Radio / YouTube). "" elsewhere.
+    music-section: string,
 }
 
 component Btn inherits Rectangle {
@@ -42,6 +45,7 @@ component RowItem inherits Rectangle {
     callback rethumb();
     callback edit-exclude();
     callback remove-lib();
+    callback save-section(string); // music rows: persist the chosen section
     height: 80px;
     border-radius: Theme.radius-md;
     background: Theme.panel-2;
@@ -55,8 +59,22 @@ component RowItem inherits Rectangle {
             horizontal-stretch: 1;
             Text { text: data.path; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
             Text {
-                text: data.section + " · " + data.item-count + " items · " + data.size-pretty + " · last scan " + data.last-scan + " · " + data.cadence;
+                text: data.section + " · " + data.item-count + " items · last scan " + data.last-scan + " · " + data.cadence;
                 color: Theme.text-dim; font-size: 11px; overflow: elide;
+            }
+        }
+        // Music rows get a 5-section selector + Save so a folder can be routed
+        // to one of the 5 music sections from Settings (np.p5.atmusic.folder-sections).
+        if data.section == "music": VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            HorizontalLayout {
+                spacing: 6px;
+                sec-cb := ComboBox {
+                    width: 124px; height: 30px;
+                    model: ["My Music", "Podcasts", "Audiobooks", "Radio", "YouTube"];
+                    current-value: data.music-section == "" ? "My Music" : data.music-section;
+                }
+                Btn { label: "Save"; primary: true; width: 56px; clicked => { root.save-section(sec-cb.current-value); } }
             }
         }
         VerticalLayout { alignment: center; Btn { label: "Rescan";   clicked => { root.rescan(); } } }
@@ -68,14 +86,20 @@ component RowItem inherits Rectangle {
 
 export component SettingsLibraries inherits Rectangle {
     in property <[LibraryRow]> rows;
+    // Maintenance progress driven from Rust: busy-task is the human label of
+    // the running op ("" = idle); busy-frac is 0..1 (negative = indeterminate).
+    in property <string> busy-task;
+    in property <float> busy-frac;
     callback add-location();
     callback rescan-all();
     callback clear-thumb-cache();
     callback rebuild-fts();
+    callback reset-app();
     callback row-rescan(int);
     callback row-rethumb(int);
     callback row-edit-exclude(int);
     callback row-remove(int);
+    callback row-save-section(int, string);
     background: transparent;
 
     VerticalLayout {
@@ -90,6 +114,33 @@ export component SettingsLibraries inherits Rectangle {
             Btn { label: "Rescan All"; width: 100px; clicked => { root.rescan-all(); } }
             Btn { label: "Clear Thumb Cache"; width: 150px; clicked => { root.clear-thumb-cache(); } }
             Btn { label: "Rebuild FTS"; width: 120px; clicked => { root.rebuild-fts(); } }
+            Rectangle { horizontal-stretch: 1; }
+            // Wipes every section DB, watched folders, tags + thumb cache to
+            // start the app completely fresh.
+            Btn { label: "Reset App"; danger: true; width: 110px; clicked => { root.reset-app(); } }
+        }
+        // Maintenance progress bar — shows what Rescan All / Clear Thumb Cache /
+        // Rebuild FTS is currently doing. Hidden while idle.
+        if root.busy-task != "": VerticalLayout {
+            spacing: 5px;
+            HorizontalLayout {
+                Text { text: root.busy-task; color: Theme.text; font-size: 11px; font-weight: 600;
+                    horizontal-stretch: 1; vertical-alignment: center; }
+                Text { text: root.busy-frac >= 0 ? Math.round(root.busy-frac * 100) + "%" : "working…";
+                    color: Theme.text-dim; font-size: 11px; vertical-alignment: center; }
+            }
+            Rectangle {
+                height: 6px; border-radius: 3px; background: Theme.panel; clip: true;
+                border-width: 1px; border-color: Theme.outline;
+                // Determinate fill when busy-frac >= 0; a soft full bar otherwise.
+                Rectangle {
+                    x: 0; y: 0; height: parent.height;
+                    width: root.busy-frac >= 0 ? parent.width * Math.max(0, Math.min(1, root.busy-frac)) : parent.width;
+                    border-radius: 3px;
+                    background: @linear-gradient(90deg, Theme.brand, #8b5cf6);
+                    animate width { duration: 180ms; easing: ease-out; }
+                }
+            }
         }
         ScrollView {
             vertical-stretch: 1;
@@ -101,6 +152,7 @@ export component SettingsLibraries inherits Rectangle {
                     rethumb => { root.row-rethumb(i); }
                     edit-exclude => { root.row-edit-exclude(i); }
                     remove-lib => { root.row-remove(i); }
+                    save-section(s) => { root.row-save-section(i, s); }
                 }
                 if root.rows.length == 0: Rectangle {
                     height: 80px;

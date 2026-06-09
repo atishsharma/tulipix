@@ -13,23 +13,46 @@ export component HdrChip inherits Rectangle {
     in property <bool> active: false;
     in property <bool> dark: false;
     in property <bool> blink: false;
+    // Overridable dark-branch colours so a themed caller (e.g. Music's light
+    // mode) can supply readable surfaces/text instead of the baked white alphas.
+    in property <color> dk-idle:   #ffffff0d;
+    in property <color> dk-hover:  #ffffff1a;
+    in property <color> dk-text:   #d6d6da;
+    in property <color> dk-border: #ffffff22;
+    // Colored-gradient variant: when has-grad, the chip carries its own vivid hue
+    // (idle = faint tint wash, active/hover = full gradient) so a row of chips can
+    // read as 5 distinct colors in both light and dark themes.
+    in property <brush> grad;
+    in property <bool> has-grad: false;
+    in property <color> tint: #ec4899;
+    // Light-mode flag so colored (has-grad) chips can darken their text + deepen
+    // the idle wash for readability on a light canvas.
+    in property <bool> light-theme: false;
     callback clicked();
     height: 36px; min-width: 84px;
     horizontal-stretch: 0; vertical-stretch: 0;
     border-radius: self.height / 2;
     clip: true;
-    background: active
-        ? accent
-        : (dark
-            ? (touch.has-hover ? #ffffff1a : #ffffff0d)
-            : (touch.has-hover ? #e8eaed : #f1f3f4));
-    border-width: (dark && !active) ? 1px : 0px;
-    border-color: #ffffff22;
+    background: has-grad
+        ? (active ? grad : (touch.has-hover
+            ? tint.with-alpha(light-theme ? 0.34 : 0.30)
+            : tint.with-alpha(light-theme ? 0.20 : 0.15)))
+        : (active
+            ? accent
+            : (dark
+                ? (touch.has-hover ? dk-hover : dk-idle)
+                : (touch.has-hover ? #e8eaed : #f1f3f4)));
+    border-width: has-grad ? (active ? 0px : 1px) : ((dark && !active) ? 1px : 0px);
+    border-color: has-grad ? tint.with-alpha(light-theme ? 0.85 : 0.55) : dk-border;
     animate background { duration: 140ms; easing: ease-out; }
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     Text {
-        text: label; font-size: 13px; font-weight: 600;
-        color: active ? active-text : (dark ? #d6d6da : #3c4043);
+        text: label; font-size: 13px; font-weight: has-grad ? 700 : 600;
+        // On a light canvas the bright tints (teal/amber) wash out — darken the
+        // idle text so it stays legible; active text stays white on the gradient.
+        // Inactive coloured chips: darken on light, brighten toward white on dark
+        // so the label stays legible against the faint tint wash either way.
+        color: active ? active-text : (has-grad ? (light-theme ? tint.mix(#000000, 0.72) : tint.mix(#ffffff, 0.5)) : (dark ? dk-text : #3c4043));
         width: 100%; height: 100%;
         horizontal-alignment: center; vertical-alignment: center;
     }

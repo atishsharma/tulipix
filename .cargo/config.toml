@@ -1,0 +1,10 @@
+# ── Build config (committed — must stay cross-platform / stable-safe) ────────
+# Only host-scoped, no-op-elsewhere settings live here. The Linux-only fast-dev
+# knobs (Cranelift debug codegen + sccache) are NOT global — they break stable
+# and Windows/macOS builds — so `just run` / `just run-dev` inject them at the
+# CLI with `cargo +nightly --config …` + RUSTC_WRAPPER=sccache instead.
+
+# mold: fastest linker. Scoped to the Linux GNU target, so it is simply ignored
+# when building for Windows/macOS. Requires `mold` on PATH (Linux dev only).
+[target.x86_64-unknown-linux-gnu]
+rustflags = ["-C", "link-arg=-fuse-ld=mold"]

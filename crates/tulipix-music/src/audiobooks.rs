@@ -63,10 +63,132 @@ pub async fn bookmarks(pool: &SqlitePool, item_id: i64) -> Result<Vec<(f64, Stri
     Ok(rows.into_iter().map(|(p, l)| (p, l.unwrap_or_default())).collect())
 }
 
+/// Set (or clear) `is_audiobook` for every track whose `folder` matches.
+/// Returns the number of track_meta rows updated.
+pub async fn set_folder_flag(pool: &SqlitePool, folder: &str, on: bool) -> Result<u64> {
+    let res = sqlx::query("UPDATE track_meta SET is_audiobook = ? WHERE folder = ?")
+        .bind(if on { 1 } else { 0 })
+        .bind(folder)
+        .execute(pool)
+        .await?;
+    Ok(res.rows_affected())
+}
+
+// SQL predicate: a track whose metadata marks it as spoken-word audiobook
+// material — an `.m4b`-style container, or an audiobook/spoken/speech genre.
+const AUDIOBOOK_META: &str =
+    "(LOWER(COALESCE(container,'')) LIKE '%m4b%' \
+      OR LOWER(COALESCE(genre,'')) LIKE '%audiobook%' \
+      OR LOWER(COALESCE(genre,'')) LIKE '%audio book%' \
+      OR LOWER(COALESCE(genre,'')) LIKE '%spoken%' \
+      OR LOWER(COALESCE(genre,'')) LIKE '%speech%')";
+
+/// Flag a folder that the user added via the **Audiobooks** section
+/// (np.p5.music.audiobook-detect).
+///
+/// Detection — metadata-gated with a whole-folder fallback:
+/// * If **any** track in the folder carries audiobook metadata
+///   ([`AUDIOBOOK_META`]), gate per-file on that signal: flag the matching
+///   tracks and *hide* the rest (set `items.missing_since`) so non-audiobook
+///   files never leak into My Music.
+/// * If **no** track has such metadata, the user added the whole folder as
+///   audiobooks, so flag every track in it (nothing hidden).
+///
+/// Returns `(flagged, hidden)`.
+pub async fn flag_audiobook_folder(pool: &SqlitePool, folder: &str) -> Result<(u64, u64)> {
+    let with_meta: i64 = sqlx::query_scalar(
+        &format!("SELECT COUNT(*) FROM track_meta WHERE folder = ? AND {AUDIOBOOK_META}"))
+        .bind(folder).fetch_one(pool).await?;
+
+    // No metadata signal anywhere → trust the section: whole folder is audiobook.
+    if with_meta == 0 {
+        let n = set_folder_flag(pool, folder, true).await?;
+        return Ok((n, 0));
+    }
+
+    // Per-file gate: flag the audiobook tracks, clear the flag on the rest
+    // (in case a prior whole-folder pass set it), and hide the non-audiobooks.
+    let flagged = sqlx::query(
+        &format!("UPDATE track_meta SET is_audiobook = 1 WHERE folder = ? AND {AUDIOBOOK_META}"))
+        .bind(folder).execute(pool).await?.rows_affected();
+    sqlx::query(
+        &format!("UPDATE track_meta SET is_audiobook = 0 WHERE folder = ? AND NOT {AUDIOBOOK_META}"))
+        .bind(folder).execute(pool).await?;
+    let hidden = sqlx::query(
+        &format!("UPDATE items SET missing_since = ? \
+                  WHERE missing_since IS NULL AND id IN (\
+                     SELECT item_id FROM track_meta WHERE folder = ? AND NOT {AUDIOBOOK_META})"))
+        .bind(now()).bind(folder).execute(pool).await?.rows_affected();
+    Ok((flagged, hidden))
+}
+
+/// Distinct audiobook folders with chapter counts, ordered by folder path.
+/// One row per book card (np.p5.music.audiobook-chapters).
+pub async fn book_folders(pool: &SqlitePool) -> Result<Vec<(String, i64)>> {
+    let rows: Vec<(String, i64)> = sqlx::query_as(
+        "SELECT folder, COUNT(*) AS n FROM track_meta \
+         WHERE is_audiobook = 1 AND folder IS NOT NULL AND folder <> '' \
+         GROUP BY folder ORDER BY folder")
+        .fetch_all(pool).await?;
+    Ok(rows)
+}
+
+/// item_ids of one book's chapters, ordered by track_no then item_id.
+pub async fn book_chapters(pool: &SqlitePool, folder: &str) -> Result<Vec<i64>> {
+    let rows: Vec<i64> = sqlx::query_scalar(
+        "SELECT item_id FROM track_meta \
+         WHERE is_audiobook = 1 AND folder = ? \
+         ORDER BY COALESCE(track_no, 1000000), item_id")
+        .bind(folder).fetch_all(pool).await?;
+    Ok(rows)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::schema::tests::{open_pool, add_track};
+
+    #[tokio::test]
+    async fn folder_flag_scopes_to_one_folder() {
+        let (_t, pool) = open_pool().await;
+        let a = add_track(&pool, "/books/dune/ch01.mp3").await;
+        let b = add_track(&pool, "/books/dune/ch02.mp3").await;
+        let c = add_track(&pool, "/music/song.mp3").await;
+        for (id, folder) in [(a, "/books/dune"), (b, "/books/dune"), (c, "/music")] {
+            sqlx::query("UPDATE track_meta SET folder = ? WHERE item_id = ?")
+                .bind(folder).bind(id).execute(&pool).await.unwrap();
+        }
+        let n = set_folder_flag(&pool, "/books/dune", true).await.unwrap();
+        assert_eq!(n, 2);
+        let flagged: Vec<i64> = sqlx::query_scalar(
+            "SELECT item_id FROM track_meta WHERE is_audiobook = 1 ORDER BY item_id")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(flagged, vec![a, b]);
+        let n2 = set_folder_flag(&pool, "/books/dune", false).await.unwrap();
+        assert_eq!(n2, 2);
+        let still: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_meta WHERE is_audiobook = 1")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(still, 0);
+    }
+
+    #[tokio::test]
+    async fn book_folders_groups_and_counts() {
+        let (_t, pool) = open_pool().await;
+        let a = add_track(&pool, "/books/dune/ch01.mp3").await;
+        let b = add_track(&pool, "/books/dune/ch02.mp3").await;
+        let c = add_track(&pool, "/books/hobbit/all.m4b").await;
+        for (id, folder) in [(a, "/books/dune"), (b, "/books/dune"), (c, "/books/hobbit")] {
+            sqlx::query("UPDATE track_meta SET folder = ?, is_audiobook = 1 WHERE item_id = ?")
+                .bind(folder).bind(id).execute(&pool).await.unwrap();
+        }
+        let books = book_folders(&pool).await.unwrap();
+        assert_eq!(books, vec![
+            ("/books/dune".to_string(), 2),
+            ("/books/hobbit".to_string(), 1),
+        ]);
+        let dune = book_chapters(&pool, "/books/dune").await.unwrap();
+        assert_eq!(dune, vec![a, b]);
+    }
 
     #[test]
     fn speed_clamps_and_keeps_pitch() {

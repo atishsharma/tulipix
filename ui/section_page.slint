@@ -13,6 +13,7 @@ export struct PhotoTile {
     color-label: string,  // "" | "red" | "orange" | "yellow" | "green" | "blue" | "purple"
     is-live: bool,        // live photo badge (still+video pair)
     stack-count: int,     // 0 = single photo; >0 = stack with N items
+    count: int,           // music: track count shown as a corner badge on album/artist tiles
 }
 
 // Toolbar pill — small action chip shown under the header.

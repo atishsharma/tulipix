@@ -60,6 +60,8 @@ sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true
 walkdir = "2"
+# OS media-key / now-playing integration (Linux MPRIS · Windows SMTC · macOS).
+souvlaki = "0.7"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 sha2 = "0.10"
 kamadak-exif = "0.6"
@@ -72,6 +74,10 @@ tulipix-sync = { path = "../tulipix-sync", optional = true }
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 mimalloc = { version = "0.1", default-features = false, optional = true }
 tikv-jemallocator = { version = "0.6", optional = true }
+
+# PR_SET_PDEATHSIG (mpv_die_with_parent) is the only libc use — Linux-only.
+[target.'cfg(target_os = "linux")'.dependencies]
+libc = "0.2"
 
 [build-dependencies]
 slint-build.workspace = true

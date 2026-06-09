@@ -1,46 +1,13 @@
 # Bundled binaries manifest. SHA-256 values MUST be filled before shipping.
 # Placeholder hashes ("TBD") cause fetch-resources to fail safely.
 
-[[binary]]
-name = "ffmpeg"
-version = "n124549-g1572784128"
-# Pinned BtbN build tag autobuild-2026-05-19-14-39 (master snapshot).
-# macOS sources pinned: evermeet 8.1.1 (intel), osxexperts 7.1.1 (arm).
-[[binary.sources]]
-os = "linux"
-arch = "x86_64"
-url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-05-19-14-39/ffmpeg-N-124549-g1572784128-linux64-gpl.tar.xz"
-sha256 = "a10d74b0328983b645b6049289c58e254f2f9379eba201e783da05a333f4af37"
-archive = "tar.xz"
-extract = ["bin/ffmpeg", "bin/ffprobe"]
-[[binary.sources]]
-os = "linux"
-arch = "aarch64"
-url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-05-19-14-39/ffmpeg-N-124549-g1572784128-linuxarm64-gpl.tar.xz"
-sha256 = "74f5bdf7461a32b6a2798262426d2200178365585dc24fa7da9a3de9a712696c"
-archive = "tar.xz"
-extract = ["bin/ffmpeg", "bin/ffprobe"]
-[[binary.sources]]
-os = "windows"
-arch = "x86_64"
-url = "https://github.com/BtbN/FFmpeg-Builds/releases/download/autobuild-2026-05-19-14-39/ffmpeg-N-124549-g1572784128-win64-gpl.zip"
-sha256 = "eb88db8b36ec3c03975427b283692877ccc4b3923b1b19d805b64fe7570210ae"
-archive = "zip"
-extract = ["bin/ffmpeg.exe", "bin/ffprobe.exe"]
-[[binary.sources]]
-os = "macos"
-arch = "x86_64"
-url = "https://evermeet.cx/ffmpeg/ffmpeg-8.1.1.zip"
-sha256 = "4610988e2f54c243c50da73a09e4e2c36d9bb77546f9aa6c84cb328dcb1a98c1"
-archive = "zip"
-extract = ["ffmpeg"]
-[[binary.sources]]
-os = "macos"
-arch = "aarch64"
-url = "https://www.osxexperts.net/ffmpeg711arm.zip"
-sha256 = "59e39a5cec2e5d2307ed079c53227a9181e64b87454ed4de998349e044bfdc70"
-archive = "zip"
-extract = ["ffmpeg"]
+# ffmpeg/ffprobe are NOT bundled — resolved from system PATH via tool_bin's
+# fallback. The BtbN full-static GPL builds were ~194 MB each (+136 MB orphan
+# archive); unbundling drops the install from 718 MB to ~194 MB. To re-bundle
+# later, restore the [[binary]] block AND add a tar.xz extractor to
+# fetch-resources (the `archive = "tar.xz"` arm currently raw-saves, never
+# unpacks — that bug is what left the orphan .bin). Prefer a `-gpl-shared`
+# build (tiny binaries + shared libav*.so) over the full static one.
 
 # whisper.cpp main executable.
 # Windows prebuilt ships upstream; other platforms build from pinned source tarball

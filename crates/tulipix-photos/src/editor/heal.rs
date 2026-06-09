@@ -6,7 +6,7 @@
 //! and the UI flips the row into "needs model" state.
 
 use anyhow::{anyhow, Result};
-use image::{DynamicImage, GrayImage, ImageBuffer, Rgba};
+use image::{DynamicImage, GrayImage, Rgba};
 use std::path::Path;
 
 pub trait Healer: Send + Sync {

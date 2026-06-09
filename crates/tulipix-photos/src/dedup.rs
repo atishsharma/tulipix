@@ -10,7 +10,7 @@
 //! show each cluster as a single row with a Keep/Drop picker.
 
 use anyhow::{Context, Result};
-use image::{imageops::FilterType, GenericImageView, ImageReader};
+use image::{imageops::FilterType, ImageReader};
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::io::Read;
@@ -42,7 +42,7 @@ pub fn phash_file(path: &Path) -> Result<String> {
     Ok(hex(&phash_bytes(&img.to_luma8(), img.width(), img.height())))
 }
 
-fn phash_bytes(luma: &image::GrayImage, w: u32, h: u32) -> [u8; 8] {
+fn phash_bytes(luma: &image::GrayImage, _w: u32, _h: u32) -> [u8; 8] {
     // Resize to 32x32, take the top-left 8x8 of a DCT-II proxy.
     let small = image::imageops::resize(luma, 32, 32, FilterType::Triangle);
     let mut sum = 0f32;

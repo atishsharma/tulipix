@@ -1,3 +1,7 @@
 [toolchain]
+# Stable by default so `cargo build` works out-of-box on Linux, Windows and
+# macOS. The Linux fast-dev path (`just run` / `just run-dev`) opts into nightly
+# explicitly via `cargo +nightly` for the Cranelift debug codegen backend, so
+# nightly must also be installed on Linux dev machines for that path.
 channel = "stable"
 components = ["rustfmt", "clippy"]

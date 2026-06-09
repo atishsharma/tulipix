@@ -59,13 +59,72 @@ pub struct Recording {
     pub score: i64,
     #[serde(default)]
     pub title: String,
+    #[serde(default, rename = "artist-credit")]
+    pub artist_credit: Vec<ArtistCredit>,
     #[serde(default)]
     pub releases: Vec<Release>,
+    #[serde(default)]
+    pub tags: Vec<Tag>,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct ArtistCredit {
+    #[serde(default)]
+    pub name: String,
+}
+
+#[derive(Debug, Deserialize, Clone, Default)]
+pub struct Tag {
+    #[serde(default)]
+    pub count: i64,
+    #[serde(default)]
+    pub name: String,
 }
 
 #[derive(Debug, Deserialize, Clone)]
 pub struct Release {
     pub id: String,
+    #[serde(default)]
+    pub title: String,
+    #[serde(default)]
+    pub date: Option<String>,
+}
+
+/// Rich metadata distilled from a recording search, ready to write to the DB.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct FetchedMeta {
+    pub title: String,
+    pub artist: String,
+    pub album: String,
+    pub year: Option<i64>,
+    pub release_date: Option<String>,
+    pub genre: Option<String>,
+    pub credits: String,
+    pub cover_url: Option<String>,
+}
+
+/// Distil the best recording match into a `FetchedMeta` (title / artist / album
+/// / year / genre / cover). Returns `None` when the search yielded nothing.
+pub fn best_metadata(search: &RecordingSearch) -> Option<FetchedMeta> {
+    let r = best_match(search)?;
+    let artist = {
+        let names: Vec<&str> = r.artist_credit.iter().map(|a| a.name.as_str()).filter(|n| !n.is_empty()).collect();
+        names.join(", ")
+    };
+    let rel = r.releases.first();
+    let album = rel.map(|x| x.title.clone()).unwrap_or_default();
+    let release_date = rel.and_then(|x| x.date.clone()).filter(|d| !d.is_empty());
+    let year = release_date.as_deref()
+        .and_then(|d| d.get(0..4)).and_then(|y| y.parse::<i64>().ok())
+        .filter(|y| *y > 0);
+    let genre = r.tags.iter().max_by_key(|t| t.count)
+        .map(|t| t.name.clone()).filter(|g| !g.is_empty());
+    // Credits is a manual roles field (writer / singer / producer) — the MB
+    // recording search only yields performer names (== artist), so don't
+    // auto-fill it and duplicate the Song artist.
+    let credits = String::new();
+    let cover_url = rel.map(|x| cover_front_url(&x.id));
+    Some(FetchedMeta { title: r.title.clone(), artist, album, year, release_date, genre, credits, cover_url })
 }
 
 /// Highest-scoring recording, if any.
@@ -176,8 +235,8 @@ mod tests {
     #[test]
     fn best_match_picks_top_score() {
         let s = RecordingSearch { recordings: vec![
-            Recording { id: "a".into(), score: 70, title: "x".into(), releases: vec![] },
-            Recording { id: "b".into(), score: 99, title: "y".into(), releases: vec![] },
+            Recording { id: "a".into(), score: 70, title: "x".into(), artist_credit: vec![], releases: vec![], tags: vec![] },
+            Recording { id: "b".into(), score: 99, title: "y".into(), artist_credit: vec![], releases: vec![], tags: vec![] },
         ]};
         assert_eq!(best_match(&s).unwrap().id, "b");
         assert!(best_match(&RecordingSearch { recordings: vec![] }).is_none());

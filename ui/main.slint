@@ -1,4 +1,5 @@
 import { Theme, Section, Accent } from "tokens.slint";
+import { ScrollView } from "std-widgets.slint";
 import { Sidebar } from "sidebar.slint";
 import { Orbs } from "orbs.slint";
 import { SectionPage, PhotoTile } from "section_page.slint";
@@ -7,7 +8,8 @@ import { PhotoEditor } from "photo_editor.slint";
 import { SharedHero, HeroRect } from "shared_element.slint";
 import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
-import { MusicPage, MusicSongRow, MusicLyricLine, MusicFullscreen, MusicMini } from "page_music.slint";
+import { MusicPage, MusicFullscreen, MusicMini, PodcastMini } from "page_music.slint";
+import { MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow } from "music_common.slint";
 import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry } from "page_cloud.slint";
@@ -70,6 +72,23 @@ component SettingsTab inherits Rectangle {
             font-size: 12px; font-weight: active ? 600 : 500;
             vertical-alignment: center; horizontal-alignment: center;
         }
+    }
+}
+
+// Small pill button used in the Account scaffold panel.
+component AcctBtn inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    height: 28px; min-width: 96px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: 8px;
+    background: touch.has-hover ? Theme.panel : Theme.panel-2;
+    border-color: Theme.outline; border-width: 1px;
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px;
+        Text { text: label; color: Theme.text; font-size: 11px; font-weight: 600;
+            vertical-alignment: center; horizontal-alignment: center; }
     }
 }
 
@@ -166,6 +185,8 @@ component SettingsPage inherits Rectangle {
     in property <UserState> user;
     in property <[ApiKeyRow]> api-rows;
     in property <[LibraryRow]> library-rows;
+    in property <string> lib-busy-task;
+    in property <float> lib-busy-frac;
     in property <[ScanLibraryRow]> scan-rows;
     in property <string> default-cadence;
 
@@ -187,11 +208,13 @@ component SettingsPage inherits Rectangle {
     callback lib-add();
     callback lib-rescan-all();
     callback lib-clear-thumb-cache();
+    callback lib-reset-app();
     callback lib-rebuild-fts();
     callback lib-row-rescan(int);
     callback lib-row-rethumb(int);
     callback lib-row-edit-exclude(int);
     callback lib-row-remove(int);
+    callback lib-row-save-section(int, string);
     callback set-default-cadence(string);
     callback set-cadence-override(string, string);
 
@@ -293,14 +316,18 @@ component SettingsPage inherits Rectangle {
                 SettingsLibraries {
                     width: parent.width; height: parent.height;
                     rows: root.library-rows;
+                    busy-task: root.lib-busy-task;
+                    busy-frac: root.lib-busy-frac;
                     add-location => { root.lib-add(); }
                     rescan-all => { root.lib-rescan-all(); }
                     clear-thumb-cache => { root.lib-clear-thumb-cache(); }
                     rebuild-fts => { root.lib-rebuild-fts(); }
+                    reset-app => { root.lib-reset-app(); }
                     row-rescan(i) => { root.lib-row-rescan(i); }
                     row-rethumb(i) => { root.lib-row-rethumb(i); }
                     row-edit-exclude(i) => { root.lib-row-edit-exclude(i); }
                     row-remove(i) => { root.lib-row-remove(i); }
+                    row-save-section(i, s) => { root.lib-row-save-section(i, s); }
                 }
             }
 
@@ -387,15 +414,45 @@ component SettingsPage inherits Rectangle {
             if active-tab == "account": Rectangle {
                 width: parent.width; height: parent.height;
                 background: transparent;
-                VerticalLayout {
+                ScrollView {
+                  width: parent.width; height: parent.height;
+                  VerticalLayout {
                     spacing: 16px; padding: 4px;
+
+                    // ── Profile (scaffold) ─────────────────────────────────
+                    Text { text: "Profile"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
+                    Rectangle {
+                        height: 92px; border-radius: Theme.radius-md;
+                        background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
+                        HorizontalLayout {
+                            padding: 16px; spacing: 14px;
+                            Rectangle {
+                                width: 56px; height: 56px; border-radius: 28px;
+                                background: @linear-gradient(135deg, Theme.brand, Theme.brand-2);
+                                y: (parent.height - self.height) / 2; horizontal-stretch: 0;
+                                Text { text: user.avatar-emoji == "" ? "👤" : user.avatar-emoji; font-size: 26px;
+                                    horizontal-alignment: center; vertical-alignment: center; }
+                            }
+                            VerticalLayout {
+                                alignment: center; spacing: 3px; horizontal-stretch: 1;
+                                Text { text: user.display-name == "" ? "Local user" : user.display-name; color: Theme.text; font-size: 15px; font-weight: 700; }
+                                Text { text: user.secondary; color: Theme.text-dim; font-size: 11px; }
+                            }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0; spacing: 6px;
+                                AcctBtn { label: "Edit Profile"; clicked => { root.user-action("edit-profile"); } }
+                                AcctBtn { label: "Sign In / Out"; clicked => { root.user-action("sign-in"); } }
+                            }
+                        }
+                    }
+
+                    // ── Mode ───────────────────────────────────────────────
                     Text { text: "Mode"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
                     HorizontalLayout {
                         spacing: 14px; alignment: start;
                         ModeCard {
                             active: user.mode == Mode.local;
                             title: "🏠  Local Mode";
-                            subtitle: "Everything stays on this device.\nNo accounts, no telemetry.";
+                            subtitle: "Everything stays on this device.\nFull access, no accounts.";
                             grad-a: #4f46e5; grad-b: #7c3aed;
                             clicked => { root.user-action("switch-to-local"); }
                         }
@@ -406,31 +463,51 @@ component SettingsPage inherits Rectangle {
                             grad-a: #14b8a6; grad-b: #06b6d4;
                             clicked => { root.user-action("switch-to-account"); }
                         }
-                        // Current mode pill (np.p1.sidebar.mode-pill component, re-homed here).
                         VerticalLayout {
                             alignment: center; horizontal-stretch: 0;
                             ModePill { mode: user.mode; }
                         }
                     }
 
-                    // Capability gate (np.p1.caps.ui): account-tier sync feature.
-                    Text { text: "Sync & sharing"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
-                    Gated {
-                        allowed: root.account-sync-allowed;
-                        mode: GateMode.upgrade-cta;
-                        upgrade-label: "Sync & shared albums need Account Plus";
-                        upgrade-clicked => { root.user-action("upgrade-sync"); }
-                        Rectangle {
-                            height: 64px; border-radius: Theme.radius-md;
-                            background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
-                            HorizontalLayout {
-                                padding: 14px;
-                                Text { text: "Sync is active — shared albums & multi-device profiles enabled.";
-                                    color: Theme.text; font-size: 13px; vertical-alignment: center; }
-                            }
+                    // ── Managed profiles (scaffold) ────────────────────────
+                    Text { text: "Profiles"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
+                    Rectangle {
+                        height: 56px; border-radius: Theme.radius-md;
+                        background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
+                        HorizontalLayout {
+                            padding: 14px; spacing: 10px;
+                            Text { text: "👤  " + (user.display-name == "" ? "Local user" : user.display-name) + "  ·  Owner";
+                                color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+                            VerticalLayout { alignment: center; AcctBtn { label: "Add profile"; clicked => { root.user-action("profiles"); } } }
                         }
                     }
-                    Rectangle { vertical-stretch: 1; }
+
+                    // ── Subscription / plan (scaffold) ─────────────────────
+                    Text { text: "Plan"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
+                    Rectangle {
+                        height: 56px; border-radius: Theme.radius-md;
+                        background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
+                        HorizontalLayout {
+                            padding: 14px; spacing: 10px;
+                            Text { text: "Local · Full access — every feature is unlocked on this device.";
+                                color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+                            VerticalLayout { alignment: center; AcctBtn { label: "Manage"; clicked => { root.user-action("manage-plan"); } } }
+                        }
+                    }
+
+                    // ── Sync & sharing ─────────────────────────────────────
+                    Text { text: "Sync & sharing"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
+                    Rectangle {
+                        height: 64px; border-radius: Theme.radius-md;
+                        background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
+                        HorizontalLayout {
+                            padding: 14px;
+                            Text { text: "Sync, shared albums & multi-device profiles are available.";
+                                color: Theme.text; font-size: 13px; vertical-alignment: center; }
+                        }
+                    }
+                    Rectangle { vertical-stretch: 1; min-height: 12px; }
+                  }
                 }
             }
         }
@@ -438,7 +515,7 @@ component SettingsPage inherits Rectangle {
 }
 
 export component MainWindow inherits Window {
-    title: "Tulipix";
+    title: root.music-fullscreen ? "Tulipix Music - Zen" : "Tulipix";
     min-width: 1100px;
     min-height: 720px;
     preferred-width: 1320px;
@@ -448,6 +525,7 @@ export component MainWindow inherits Window {
     default-font-size: 13px;
 
     in-out property <string> active-section: "photos";
+    callback section-changed(string);   // sidebar section click → preload that section
     in-out property <string> active-settings-tab: "appearance";
     in-out property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local };
     in-out property <ThemeChoice> theme-choice: ThemeChoice.system;
@@ -457,6 +535,8 @@ export component MainWindow inherits Window {
 
     in-out property <[ApiKeyRow]> api-rows: [];
     in-out property <[LibraryRow]> library-rows: [];
+    in-out property <string> lib-busy-task: "";
+    in-out property <float> lib-busy-frac: 0;
     in-out property <[ScanLibraryRow]> scan-rows: [];
     in-out property <[SettingItem]> ai-rows: [];
     in-out property <[SettingItem]> endpoint-rows: [];
@@ -732,10 +812,13 @@ export component MainWindow inherits Window {
     in-out property <[MusicSongRow]> music-recent-rows: [];
     in-out property <int> music-recent-page: 0;
     in-out property <int> music-recent-pages: 1;
-    in-out property <string> music-songs-view: "list";
+    in-out property <string> music-songs-view: "grid";
     in-out property <string> music-browse-sort: "name";
     in-out property <string> music-browse-dir: "asc";
+    in-out property <int> music-browse-page: 0;
+    in-out property <int> music-browse-pages: 1;
     in-out property <bool> music-shuffle: false;
+    in-out property <int> music-vis-style: 4;   // 0 Bars · 1 Mirror · 2 Dots · 3 Levels · 4 Line (default)
     in-out property <bool> music-np-loved: false;
     in-out property <int> music-np-stars: 0;
     in-out property <float> music-pos: 0;
@@ -750,6 +833,10 @@ export component MainWindow inherits Window {
     in-out property <string> music-lyrics-text: "";
     in-out property <string> music-eq-preset: "flat";
     in-out property <[float]> music-eq-bands: [0, 0, 0, 0, 0, 0, 0, 0, 0, 0];
+    in-out property <[string]> music-eq-custom-names: [];
+    callback music-eq-save-profile();
+    callback music-eq-load-profile(string);
+    callback music-eq-delete-profile(string);
     callback music-toggle-pause();
     callback music-seek(float);
     callback music-set-volume(float);
@@ -761,11 +848,88 @@ export component MainWindow inherits Window {
     callback music-add-to-playlist();
     callback music-set-eq-band(int, float);
     in-out property <[MusicSongRow]> music-songs: [];
+    in-out property <[SongRowEx]> music-songs-ex: [];
+    callback music-row-fav(int);
+    callback music-row-rate(int, int);
+    callback music-row-find-lyrics(int);
+    callback music-row-view-lyrics(int);
+    // Song right-click context-menu actions.
+    callback music-song-play-default(int);
+    callback music-song-properties(int);
+    callback music-song-edit-media(int);
+    callback music-song-delete(int);
+    // Media-info / Properties dialog.
+    in-out property <bool> music-song-props-open: false;
+    in-out property <int> music-props-pos: -1;
+    in-out property <string> music-props-title: "";
+    in-out property <string> music-props-artist: "";
+    in-out property <string> music-props-album: "";
+    in-out property <string> music-props-genre: "";
+    in-out property <string> music-props-release: "";
+    in-out property <string> music-props-credits: "";
+    in-out property <string> music-props-duration: "";
+    in-out property <string> music-props-path: "";
+    in-out property <string> music-props-format: "";
+    in-out property <string> music-props-size: "";
+    callback music-sync-all-lyrics();
+    in-out property <string> music-lyrics-sync-status: "";
+    in-out property <float> music-lyrics-sync-progress: 0;
+    // Library lyrics manager popup.
+    in-out property <bool> music-lyrics-mgr-open: false;
+    in-out property <int> music-lyrics-mgr-total: 0;
+    in-out property <int> music-lyrics-mgr-synced: 0;
+    in-out property <int> music-lyrics-mgr-missing: 0;
+    in-out property <int> music-lyrics-mgr-page: 0;
+    in-out property <int> music-lyrics-mgr-pages: 1;
+    in-out property <[LyricsMgrRow]> music-lyrics-mgr-rows: [];
+    in-out property <string> music-lyrics-mgr-mode: "list";
+    in-out property <string> music-lyrics-mgr-filter: "all";
+    callback music-open-lyrics-manager();
+    callback music-lyrics-mgr-set-page(int);
+    callback music-lyrics-mgr-set-filter(string);
+    callback music-lyrics-mgr-view(int);
+    callback music-lyrics-mgr-search-open(int);
+    callback music-lyrics-mgr-back();
+    // Library metadata manager (np.p5.atmusic.metadata-manager).
+    in-out property <bool> music-meta-mgr-open: false;
+    in-out property <int> music-meta-mgr-total: 0;
+    in-out property <int> music-meta-mgr-tagged: 0;
+    in-out property <int> music-meta-mgr-missing: 0;
+    in-out property <[MetaMgrRow]> music-meta-mgr-rows: [];
+    in-out property <int> music-meta-mgr-page: 0;
+    in-out property <int> music-meta-mgr-pages: 1;
+    in-out property <string> music-meta-mgr-filter: "all";
+    in-out property <string> music-meta-fetch-status: "";
+    in-out property <float> music-meta-fetch-progress: 0;
+    callback music-open-meta-manager();
+    callback music-meta-mgr-set-page(int);
+    callback music-meta-mgr-set-filter(string);
+    callback music-meta-mgr-edit(int);
+    callback music-meta-fetch-all();
+    callback music-meta-fetch-one(int);
+    // Read-only lyrics-view popup (no playback) + re-search.
+    in-out property <bool> music-lyrics-view-open: false;
+    in-out property <string> music-lyrics-view-title: "";
+    in-out property <string> music-lyrics-view-plain: "";
+    in-out property <[MusicLyricLine]> music-lyrics-view-rows: [];
+    in-out property <string> music-lyrics-view-q-name: "";
+    in-out property <string> music-lyrics-view-q-artist: "";
+    in-out property <string> music-lyrics-view-q-album: "";
+    in-out property <bool> music-lyrics-view-dirty: false;
+    in-out property <string> music-lyrics-view-sub: "";
+    in-out property <string> music-lyrics-view-status: "";
+    in-out property <string> music-lyrics-view-mode: "lyrics";
+    in-out property <bool> music-lyrics-view-searching: false;
+    in-out property <[LyricsResult]> music-lyrics-view-results: [];
+    callback music-lyrics-view-pick(int);
+    callback music-lyrics-view-back();
+    callback music-lyrics-view-search();
+    callback music-lyrics-view-save();
     in-out property <int> music-song-total: 0;
     in-out property <int> music-song-page: 0;
     in-out property <int> music-song-pages: 1;
-    in-out property <string> music-song-sort: "added";
-    in-out property <string> music-song-dir: "desc";
+    in-out property <string> music-song-sort: "title";
+    in-out property <string> music-song-dir: "asc";
     callback music-set-view(string);
     callback music-set-lib-tab(string);
     callback music-cycle-sleep();
@@ -777,21 +941,25 @@ export component MainWindow inherits Window {
     callback music-set-songs-view(string);
     callback music-set-recent-page(int);
     callback music-set-browse-sort(string);
+    callback music-set-browse-page(int);
     callback music-toggle-shuffle();
     // Phase 5 music — synced lyrics / audio output / visualizer / cast / tags.
     in-out property <[MusicLyricLine]> music-lyrics-rows: [];
     in-out property <int> music-lyrics-active: -1;
+    in-out property <float> music-lyrics-line-progress: 0;
     in-out property <int> music-lyrics-offset-ms: 0;
     callback music-lyrics-offset(int);
     in-out property <[string]> music-devices: [];
     in-out property <string> music-device: "auto";
     in-out property <bool> music-exclusive: false;
     in-out property <bool> music-gapless: true;
+    in-out property <bool> music-home-connect: false;
     in-out property <float> music-crossfade: 0;
     in-out property <string> music-replaygain: "off";
     callback music-set-device(string);
     callback music-toggle-exclusive();
     callback music-toggle-gapless();
+    callback music-toggle-home-connect();
     callback music-set-crossfade(float);
     callback music-set-replaygain(string);
     in-out property <[string]> music-cast-devices: [];
@@ -806,14 +974,28 @@ export component MainWindow inherits Window {
     in-out property <string> music-tag-title: "";
     in-out property <string> music-tag-artist: "";
     in-out property <string> music-tag-album: "";
+    in-out property <string> music-tag-album-artist: "";
+    in-out property <string> music-tag-date: "";
+    in-out property <string> music-tag-genre: "";
+    in-out property <string> music-tag-credits: "";
+    in-out property <image> music-tag-art;
+    in-out property <bool> music-tag-locked: false;
+    in-out property <string> music-tag-fetch-status: "";
+    in property <[string]> music-genre-options: [];
+    callback music-set-vis-style(int);
     callback music-tag-edit();
     callback music-tag-save();
+    callback music-tag-change-art();
+    callback music-tag-fetch();
+    callback music-tag-toggle-lock();
     // Phase 5 music — playlist builder / M3U / queue reorder.
     in-out property <[MusicSongRow]> music-playlist-tracks: [];
     in-out property <string> music-playlist-name: "";
+    in-out property <image> music-playlist-cover;
     in-out property <bool> music-playlist-new-open: false;
     in-out property <string> music-playlist-new-name: "";
     callback music-playlist-open(int);
+    callback music-playlist-set-art();
     callback music-playlist-back();
     callback music-playlist-create();
     callback music-playlist-create-smart(string);
@@ -826,16 +1008,127 @@ export component MainWindow inherits Window {
     callback music-add-pick(int);
     callback music-queue-move(int, int);
     // Phase 5 music — podcasts / audiobooks / artist bio.
-    in-out property <[string]> music-podcast-feeds: [];
-    in-out property <[MusicSongRow]> music-podcast-episodes: [];
-    in-out property <string> music-podcast-sel: "";
+    in-out property <string> music-podcast-tab: "home";   // home | subscribed | downloads
+    callback music-podcast-set-tab(string);
+    in-out property <int> music-podcast-total: 0;
+    in-out property <[PodcastCard]> music-podcast-cards: [];
+    in-out property <int> music-podcast-sub-page: 0;
+    in-out property <int> music-podcast-sub-pages: 1;
+    callback music-podcast-sub-set-page(int);
+    in-out property <[PodcastCard]> music-podcast-home-cards: [];
+    in-out property <int> music-podcast-home-page: 0;
+    in-out property <int> music-podcast-home-pages: 1;
+    callback music-podcast-home-set-page(int);
+    in-out property <string> music-podcast-home-sort: "name";
+    callback music-podcast-home-set-sort(string);
+    callback music-podcast-toggle-home(int);
+    in-out property <bool> music-podcast-d-pinned: false;
+    in-out property <int> music-podcast-d-id: -1;
+    in-out property <[PodcastTrendCard]> music-podcast-trends: [];
+    in-out property <bool> music-podcast-trends-loading: false;
+    callback music-podcast-trend-subscribe(int);
+    callback music-podcast-trend-info(int);
+    callback music-podcast-info-open-id(int);
+    in-out property <string> music-podcast-trends-sort: "name";
+    callback music-podcast-trends-set-sort(string);
+    in-out property <int> music-podcast-trends-page: 0;
+    in-out property <int> music-podcast-trends-pages: 1;
+    callback music-podcast-trends-set-page(int);
+    // Podcast info card state.
+    in-out property <bool> music-podcast-info-open: false;
+    in-out property <bool> music-podcast-info-loading: false;
+    in-out property <string> music-podcast-info-title: "";
+    in-out property <string> music-podcast-info-author: "";
+    in-out property <string> music-podcast-info-category: "";
+    in-out property <string> music-podcast-info-desc: "";
+    in-out property <image> music-podcast-info-image;
+    in-out property <int> music-podcast-info-episodes: 0;
+    in-out property <string> music-podcast-info-latest: "";
+    in-out property <bool> music-podcast-info-subscribed: false;
+    callback music-podcast-info-save-category();
+    callback music-podcast-info-set-thumb();
+    callback music-podcast-info-subscribe();
+    callback music-podcast-goto-show(int);
+    in-out property <[string]> music-podcast-categories: [];
+    in-out property <string> music-podcast-cat: "All";
     in-out property <string> music-podcast-url: "";
+    in-out property <bool> music-podcast-add-open: false;
+    in-out property <bool> music-podcast-add-busy: false;
+    in-out property <float> music-podcast-add-frac: 0;
+    in-out property <string> music-podcast-add-status: "";
+    in-out property <bool> music-podcast-reset-busy: false;
+    in-out property <float> music-podcast-reset-frac: 0;
+    in-out property <bool> music-podcast-refresh-busy: false;
+    in-out property <float> music-podcast-refresh-frac: 0;
+    in-out property <string> music-podcast-refresh-status: "";
+    in-out property <bool> music-podcast-subscribing: false;
+    in-out property <float> music-podcast-subscribe-frac: 0;
+    in-out property <string> music-podcast-subscribe-status: "";
+    in-out property <[PodcastEpisodeRow]> music-podcast-latest: [];
+    in-out property <[PodcastEpisodeRow]> music-podcast-downloads: [];
+    in-out property <string> music-podcast-dl-sort: "new";
+    in-out property <int> music-podcast-dl-page: 0;
+    in-out property <int> music-podcast-dl-pages: 1;
+    callback music-podcast-dl-set-sort(string);
+    callback music-podcast-dl-set-page(int);
     callback music-podcast-subscribe();
+    callback music-podcast-set-cat(string);
     callback music-podcast-open(int);
-    callback music-podcast-play(int);
+    callback music-podcast-fetch(int);
+    callback music-podcast-unsubscribe(int);
+    callback music-podcast-remove-download(int);
+    callback music-podcast-play(int);     // by episode DB id
     callback music-podcast-refresh();
+    callback music-podcast-reset-all();   // clear every subscription + cached files
+    callback music-podcast-set-thumb();   // pick a custom artwork for the open podcast
+    callback music-podcast-search(string); // search across subscribed podcasts
+    // Single-podcast detail page + transcript panel.
+    in-out property <bool> music-podcast-detail-open: false;
+    in-out property <string> music-podcast-d-title: "";
+    in-out property <string> music-podcast-d-author: "";
+    in-out property <string> music-podcast-d-category: "";
+    in-out property <string> music-podcast-d-desc: "";
+    in-out property <image> music-podcast-d-image;
+    in-out property <[PodcastEpisodeRow]> music-podcast-d-episodes: [];
+    in-out property <string> music-podcast-d-sort: "new";
+    in-out property <int> music-podcast-d-page: 0;
+    in-out property <int> music-podcast-d-pages: 1;
+    in-out property <int> music-podcast-d-total: 0;
+    callback music-podcast-d-set-sort(string);
+    callback music-podcast-d-set-page(int);
+    callback music-podcast-back();
+    callback music-podcast-download(int);
+    callback music-podcast-transcript(int);
+    in-out property <int> music-podcast-dl-id: -1;
+    in-out property <float> music-podcast-dl-frac: 0;
+    in-out property <bool> music-podcast-transcript-open: false;
+    in-out property <string> music-podcast-transcript-title: "";
+    in-out property <string> music-podcast-transcript-text: "";
+    // Bottom-player mode + podcast transport (np.p5.music — 5-section player).
+    in-out property <string> music-player-mode: "music";   // music | podcast
+    in-out property <float> music-podcast-speed: 1.0;
+    callback music-podcast-skip(int);          // seconds, +/-
+    callback music-podcast-set-speed(float);
     callback music-playlist-move(int, int);
+    in-out property <string> music-playlist-sort: "custom";
+    in-out property <string> music-playlist-sort-dir: "asc";
+    callback music-playlist-sort-set(string);
     in-out property <[MusicSongRow]> music-audiobooks: [];
+    // Folder-grouped audiobook cards + hero-detail state.
+    in property <[BookCard]> music-audiobook-cards: [];
+    in-out property <bool> music-audiobook-detail-open: false;
+    in-out property <string> music-ab-d-title;
+    in-out property <string> music-ab-d-author;
+    in property <image> music-ab-d-cover;
+    in-out property <string> music-ab-d-total;
+    in property <[ChapterRow]> music-ab-d-chapters: [];
+    in-out property <int> music-ab-d-resume-index: -1;
+    callback music-audiobook-open(string);
+    callback music-audiobook-back();
+    // + Add → pick folder → assign music sub-section popup.
+    in-out property <string> music-pending-add-path: "";
+    in-out property <bool> music-add-section-open: false;
+    callback music-confirm-add-section(string);
     in-out property <float> music-book-speed: 1.0;
     in-out property <bool> music-book-skip-silence-on: false;
     in-out property <[string]> music-book-bookmarks: [];
@@ -856,21 +1149,47 @@ export component MainWindow inherits Window {
     in-out property <string> music-jump-text: "";
     callback music-jump-page(int);
     in-out property <[MusicSongRow]> music-fav-rows: [];
+    in-out property <[PhotoTile]> music-fav-artists: [];
+    in-out property <[PhotoTile]> music-fav-albums: [];
+    in-out property <int> music-fav-page: 0;
+    in-out property <int> music-fav-pages: 1;
+    callback music-set-fav-page(int);
+    callback music-album-fav(int);
+    callback music-artist-fav(int);
+    callback music-album-rate(int, int);
+    callback music-artist-rate(int, int);
     in-out property <[MusicSongRow]> music-history-rows: [];
+    in-out property <int> music-history-page: 1;
+    in-out property <int> music-history-pages: 1;
+    callback music-set-history-page(int);
     callback music-clear-history();
     in-out property <[PhotoTile]> music-search-artists: [];
     in-out property <[PhotoTile]> music-search-albums: [];
     // Album / Artist detail overlay (Batch 35).
     in-out property <bool> music-detail-open: false;
+    in-out property <int> music-detail-page: 0;
+    in-out property <int> music-detail-pages: 1;
+    callback music-set-detail-page(int);
+    in-out property <string> music-detail-sort: "";
+    in-out property <string> music-detail-sort-dir: "asc";
+    callback music-set-detail-sort(string);
     in-out property <string> music-detail-kind: "album";
     in-out property <string> music-detail-title: "";
     in-out property <string> music-detail-subtitle: "";
     in-out property <image> music-detail-art;
     in-out property <string> music-detail-bio: "";
     in-out property <[MusicSongRow]> music-detail-tracks: [];
+    in-out property <[PhotoTile]> music-detail-artist-albums: [];
     in-out property <string> music-detail-status: "";
+    in-out property <bool> music-detail-loved: false;
+    in-out property <int> music-detail-stars: 0;
+    callback music-detail-fav();
+    callback music-detail-rate(int);
+    callback music-detail-open-artist();
     callback music-album-open(int);
     callback music-artist-open(int);
+    callback music-genre-open(int);
+    callback music-genre-set-art(int);
     callback music-detail-close();
     callback music-detail-play-all();
     callback music-detail-shuffle();
@@ -880,8 +1199,18 @@ export component MainWindow inherits Window {
     // Folder management + lyrics search (Batch 36).
     in-out property <[string]> music-folder-roots: [];
     callback music-folder-remove-root(int);
+    callback music-folder-open(int);
+    callback music-folder-find-system(int);
+    callback music-folder-remove(int);
+    callback music-folder-cycle-section(int);
     in-out property <string> music-side-panel: "";
     callback music-side-panel-show(string);
+    in-out property <string> music-np-album: "";
+    callback music-set-sleep(int);
+    callback music-enter-zen();   // true OS fullscreen for the zen player
+    callback music-exit-zen();
+    callback music-open-now-album();   // current track → album page
+    callback music-open-now-artist();  // current track → artist page
     in-out property <bool> music-lyrics-search-open: false;
     in-out property <string> music-lyrics-search-query: "";
     in-out property <[string]> music-lyrics-search-results: [];
@@ -892,8 +1221,24 @@ export component MainWindow inherits Window {
     in-out property <bool> music-fullscreen: false;
     in-out property <string> music-fs-tab: "lyrics";
     in-out property <bool> music-mini-open: false;
+    in-out property <bool> music-mini-bubble: false;
     in-out property <length> music-mini-x: 0px;
     in-out property <length> music-mini-y: 0px;
+    // Uniform scale (keeps the 300×470 aspect ratio); 1.0 = original, 3.0 = 300%.
+    in-out property <float> music-mini-scale: 1.0;
+    property <length> music-mini-w: 300px * root.music-mini-scale;
+    // Podcast mini has one fewer control row than the music mini (the full-width
+    // speed slider became an inline pill), so it gets a shorter shell — no blank gap.
+    property <length> music-mini-h: (root.music-player-mode == "podcast" ? 456px : 470px) * root.music-mini-scale;
+    // Open the mini-player centered in the page (used when a podcast starts).
+    callback music-center-mini();
+    music-center-mini => {
+        root.music-mini-bubble = false;
+        root.music-mini-open = true;
+        root.music-mini-x = (root.width - root.music-mini-w) / 2;
+        root.music-mini-y = (root.height - root.music-mini-h) / 2;
+    }
+    in-out property <length> music-bubble-y: -1px;   // <0 = uninitialised (centre on show)
     in-out property <bool> music-mini-show-queue: false;
     callback music-open-fullscreen();
     callback music-open-mini();
@@ -1066,11 +1411,13 @@ export component MainWindow inherits Window {
     callback lib-add();
     callback lib-rescan-all();
     callback lib-clear-thumb-cache();
+    callback lib-reset-app();
     callback lib-rebuild-fts();
     callback lib-row-rescan(int);
     callback lib-row-rethumb(int);
     callback lib-row-edit-exclude(int);
     callback lib-row-remove(int);
+    callback lib-row-save-section(int, string);
 
     callback set-default-cadence(string);
     callback set-cadence-override(string, string);
@@ -1123,6 +1470,20 @@ export component MainWindow inherits Window {
             if e.text == "?" {
                 root.shortcuts-open = true; return accept;
             }
+            // Music playback shortcuts — arrows seek/volume, space play/pause
+            // (np.p4.music.player-keys). Active in Music OR whenever the
+            // app-wide mini-player is open on any other section.
+            if (root.active-section == "music" || root.music-mini-open) && !root.viewer-open {
+                if e.text == Key.LeftArrow  { root.music-seek(Math.max(0, root.music-pos - 5)); return accept; }
+                if e.text == Key.RightArrow { root.music-seek(Math.min(root.music-dur, root.music-pos + 5)); return accept; }
+                if e.text == Key.UpArrow    { root.music-set-volume(Math.min(130, root.music-volume + 5)); return accept; }
+                if e.text == Key.DownArrow  { root.music-set-volume(Math.max(0, root.music-volume - 5)); return accept; }
+                if e.text == " "            { root.music-toggle-pause(); return accept; }
+            }
+            // Escape minimises the open mini-player to its bubble (any mode).
+            if root.music-mini-open && !root.music-mini-bubble && e.text == Key.Escape {
+                root.music-mini-bubble = true; return accept;
+            }
             // Multi-select keyboard (np.p2.multiselect) — photos section only.
             if root.active-section == "photos" {
                 if (e.modifiers.control || e.modifiers.meta) && e.text == "a" {
@@ -1150,6 +1511,7 @@ export component MainWindow inherits Window {
             active-section <=> root.active-section;
             user: root.user;
             user-action(a) => { root.user-action(a); }
+            section-changed(s) => { root.section-changed(s); }
         }
 
         ContentSurface {
@@ -1251,7 +1613,7 @@ export component MainWindow inherits Window {
                 discover-upcoming: root.video-discover-upcoming;
                 discover-on-air: root.video-discover-on-air;
                 refresh-discover => { root.video-refresh-discover(); } }
-            if active-section == "music":    MusicPage  { width: parent.width; height: parent.height; item-count: root.music-tiles.length; tiles: root.music-tiles;
+            if active-section == "music":    MusicPage  { width: parent.width; height: parent.height; item-count: root.music-song-total; tiles: root.music-tiles;
                 np-title: root.music-np-title; np-sub: root.music-np-sub; np-art: root.music-np-art; playing: root.music-playing;
                 view <=> root.music-view; sleep-min: root.music-sleep-min;
                 lib-tab <=> root.music-lib-tab;
@@ -1261,6 +1623,7 @@ export component MainWindow inherits Window {
                 folders: root.music-folders; playlists: root.music-playlists; recent-rows: root.music-recent-rows;
                 recent-page: root.music-recent-page; recent-pages: root.music-recent-pages;
                 browse-sort <=> root.music-browse-sort; browse-dir <=> root.music-browse-dir; shuffle: root.music-shuffle;
+                browse-page: root.music-browse-page; browse-pages: root.music-browse-pages; set-browse-page(d) => { root.music-set-browse-page(d); }
                 set-recent-page(d) => { root.music-set-recent-page(d); } set-browse-sort(s) => { root.music-set-browse-sort(s); }
                 toggle-shuffle => { root.music-toggle-shuffle(); }
                 songs-view <=> root.music-songs-view; set-songs-view(v) => { root.music-set-songs-view(v); }
@@ -1274,7 +1637,45 @@ export component MainWindow inherits Window {
                 toggle-panel(p) => { root.music-toggle-panel(p); } set-eq(e) => { root.music-set-eq(e); }
                 play-queue(i) => { root.music-play-queue(i); } add-to-playlist => { root.music-add-to-playlist(); }
                 eq-bands: root.music-eq-bands; set-eq-band(i, v) => { root.music-set-eq-band(i, v); }
-                songs: root.music-songs; song-total: root.music-song-total; song-page: root.music-song-page;
+                eq-custom-names: root.music-eq-custom-names; eq-save-profile => { root.music-eq-save-profile(); } eq-load-profile(n) => { root.music-eq-load-profile(n); } eq-delete-profile(n) => { root.music-eq-delete-profile(n); }
+                songs: root.music-songs; songs-ex: root.music-songs-ex;
+                row-fav(i) => { root.music-row-fav(i); } row-rate(i, n) => { root.music-row-rate(i, n); } row-find-lyrics(i) => { root.music-row-find-lyrics(i); }
+                row-view-lyrics(i) => { root.music-row-view-lyrics(i); }
+                song-play-default(i) => { root.music-song-play-default(i); } song-view-album(i) => { root.music-album-open(i); }
+                song-view-artist(i) => { root.music-artist-open(i); } song-properties(i) => { root.music-song-properties(i); }
+                song-edit-media(i) => { root.music-song-edit-media(i); }
+                song-delete(i) => { root.music-song-delete(i); }
+                song-props-open <=> root.music-song-props-open; props-pos <=> root.music-props-pos; props-title: root.music-props-title; props-artist: root.music-props-artist;
+                props-album: root.music-props-album; props-genre: root.music-props-genre; props-duration: root.music-props-duration;
+                props-release: root.music-props-release; props-credits: root.music-props-credits;
+                props-path: root.music-props-path; props-format: root.music-props-format; props-size: root.music-props-size;
+                sync-all-lyrics => { root.music-sync-all-lyrics(); } lyrics-sync-status: root.music-lyrics-sync-status; lyrics-sync-progress: root.music-lyrics-sync-progress;
+                lyrics-mgr-open <=> root.music-lyrics-mgr-open; lyrics-mgr-total: root.music-lyrics-mgr-total;
+                lyrics-mgr-synced: root.music-lyrics-mgr-synced; lyrics-mgr-missing: root.music-lyrics-mgr-missing;
+                lyrics-mgr-page: root.music-lyrics-mgr-page; lyrics-mgr-pages: root.music-lyrics-mgr-pages; lyrics-mgr-rows: root.music-lyrics-mgr-rows;
+                open-lyrics-manager => { root.music-open-lyrics-manager(); } lyrics-mgr-set-page(d) => { root.music-lyrics-mgr-set-page(d); }
+                lyrics-mgr-mode <=> root.music-lyrics-mgr-mode;
+                lyrics-mgr-view(i) => { root.music-lyrics-mgr-view(i); } lyrics-mgr-search-open(i) => { root.music-lyrics-mgr-search-open(i); }
+                lyrics-mgr-back => { root.music-lyrics-mgr-back(); }
+                meta-mgr-open <=> root.music-meta-mgr-open; meta-mgr-total: root.music-meta-mgr-total; meta-mgr-rows: root.music-meta-mgr-rows;
+                meta-mgr-tagged: root.music-meta-mgr-tagged; meta-mgr-missing: root.music-meta-mgr-missing;
+                meta-mgr-page: root.music-meta-mgr-page; meta-mgr-pages: root.music-meta-mgr-pages;
+                meta-mgr-filter <=> root.music-meta-mgr-filter;
+                meta-fetch-status: root.music-meta-fetch-status; meta-fetch-progress: root.music-meta-fetch-progress;
+                open-meta-manager => { root.music-open-meta-manager(); } meta-mgr-set-page(d) => { root.music-meta-mgr-set-page(d); }
+                meta-mgr-set-filter(f) => { root.music-meta-mgr-set-filter(f); } meta-mgr-edit(i) => { root.music-meta-mgr-edit(i); }
+                meta-fetch-all => { root.music-meta-fetch-all(); } meta-fetch-one(i) => { root.music-meta-fetch-one(i); }
+                lyrics-mgr-filter <=> root.music-lyrics-mgr-filter; lyrics-mgr-set-filter(f) => { root.music-lyrics-mgr-set-filter(f); }
+                lyrics-view-open <=> root.music-lyrics-view-open; lyrics-view-title: root.music-lyrics-view-title;
+                lyrics-view-plain: root.music-lyrics-view-plain; lyrics-view-rows: root.music-lyrics-view-rows;
+                lyrics-view-q-name <=> root.music-lyrics-view-q-name; lyrics-view-q-artist <=> root.music-lyrics-view-q-artist;
+                lyrics-view-q-album <=> root.music-lyrics-view-q-album; lyrics-view-search => { root.music-lyrics-view-search(); }
+                lyrics-view-dirty: root.music-lyrics-view-dirty; lyrics-view-save => { root.music-lyrics-view-save(); }
+                lyrics-view-sub: root.music-lyrics-view-sub; lyrics-view-status: root.music-lyrics-view-status;
+                lyrics-view-mode <=> root.music-lyrics-view-mode; lyrics-view-results: root.music-lyrics-view-results;
+                lyrics-view-searching: root.music-lyrics-view-searching;
+                lyrics-view-pick(i) => { root.music-lyrics-view-pick(i); } lyrics-view-back => { root.music-lyrics-view-back(); }
+                song-total: root.music-song-total; song-page: root.music-song-page;
                 song-pages: root.music-song-pages; song-sort: root.music-song-sort; song-dir: root.music-song-dir;
                 set-song-sort(s) => { root.music-set-song-sort(s); } set-song-page(d) => { root.music-set-song-page(d); }
                 query <=> root.music-query; search(q) => { root.music-search(q); }
@@ -1283,19 +1684,26 @@ export component MainWindow inherits Window {
                 set-lib-tab(t) => { root.music-set-lib-tab(t); }
                 love => { root.music-love(); } rate(n) => { root.music-rate(n); }
                 lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active; lyrics-offset-ms: root.music-lyrics-offset-ms;
+                lyrics-line-progress: root.music-lyrics-line-progress;
                 lyrics-offset(d) => { root.music-lyrics-offset(d); }
                 devices: root.music-devices; device <=> root.music-device; exclusive <=> root.music-exclusive;
                 gapless <=> root.music-gapless; crossfade <=> root.music-crossfade; replaygain <=> root.music-replaygain;
+                home-connect <=> root.music-home-connect; toggle-home-connect => { root.music-toggle-home-connect(); }
                 set-device(d) => { root.music-set-device(d); } toggle-exclusive => { root.music-toggle-exclusive(); }
                 toggle-gapless => { root.music-toggle-gapless(); } set-crossfade(v) => { root.music-set-crossfade(v); }
                 set-replaygain(r) => { root.music-set-replaygain(r); }
                 cast-devices: root.music-cast-devices; cast-target <=> root.music-cast-target;
                 scan-cast => { root.music-scan-cast(); } set-cast(c) => { root.music-set-cast(c); }
-                vis-bars: root.music-vis-bars; instant-mix => { root.music-instant-mix(); }
+                vis-bars: root.music-vis-bars; vis-style <=> root.music-vis-style; vis-style-changed(s) => { root.music-set-vis-style(s); } instant-mix => { root.music-instant-mix(); }
                 scrobble-on <=> root.music-scrobble-on; toggle-scrobble => { root.music-toggle-scrobble(); }
-                tag-open <=> root.music-tag-open; tag-title <=> root.music-tag-title; tag-artist <=> root.music-tag-artist; tag-album <=> root.music-tag-album;
+                tag-open <=> root.music-tag-open; tag-title <=> root.music-tag-title; tag-artist <=> root.music-tag-artist; tag-album <=> root.music-tag-album; tag-date <=> root.music-tag-date;
+                tag-genre <=> root.music-tag-genre; genre-options: root.music-genre-options;
+                tag-album-artist <=> root.music-tag-album-artist; tag-credits <=> root.music-tag-credits;
+                tag-art: root.music-tag-art; tag-locked <=> root.music-tag-locked; tag-fetch-status: root.music-tag-fetch-status;
+                tag-change-art => { root.music-tag-change-art(); } tag-fetch => { root.music-tag-fetch(); } tag-toggle-lock => { root.music-tag-toggle-lock(); }
                 tag-edit => { root.music-tag-edit(); } tag-save => { root.music-tag-save(); }
                 playlist-tracks: root.music-playlist-tracks; playlist-name <=> root.music-playlist-name;
+                playlist-cover: root.music-playlist-cover; playlist-set-art => { root.music-playlist-set-art(); }
                 playlist-new-open <=> root.music-playlist-new-open; playlist-new-name <=> root.music-playlist-new-name;
                 playlist-open(i) => { root.music-playlist-open(i); } playlist-back => { root.music-playlist-back(); }
                 playlist-create => { root.music-playlist-create(); } playlist-create-smart(k) => { root.music-playlist-create-smart(k); }
@@ -1304,11 +1712,80 @@ export component MainWindow inherits Window {
                 add-pick-open <=> root.music-add-pick-open; playlist-picker: root.music-playlist-picker; add-pick(i) => { root.music-add-pick(i); }
                 queue-move(f, t) => { root.music-queue-move(f, t); }
                 playlist-move(f, t) => { root.music-playlist-move(f, t); }
-                podcast-feeds: root.music-podcast-feeds; podcast-episodes: root.music-podcast-episodes;
-                podcast-sel <=> root.music-podcast-sel; podcast-url <=> root.music-podcast-url;
-                podcast-subscribe => { root.music-podcast-subscribe(); } podcast-open(i) => { root.music-podcast-open(i); } podcast-play(i) => { root.music-podcast-play(i); }
+                playlist-sort <=> root.music-playlist-sort; playlist-sort-dir <=> root.music-playlist-sort-dir;
+                playlist-sort-set(s) => { root.music-playlist-sort-set(s); }
+                podcast-tab <=> root.music-podcast-tab; podcast-set-tab(t) => { root.music-podcast-set-tab(t); }
+                podcast-total: root.music-podcast-total;
+                podcast-cards: root.music-podcast-cards; podcast-categories: root.music-podcast-categories;
+                podcast-sub-page: root.music-podcast-sub-page; podcast-sub-pages: root.music-podcast-sub-pages;
+                podcast-sub-set-page(d) => { root.music-podcast-sub-set-page(d); }
+                podcast-home-cards: root.music-podcast-home-cards;
+                podcast-home-page: root.music-podcast-home-page; podcast-home-pages: root.music-podcast-home-pages;
+                podcast-home-set-page(d) => { root.music-podcast-home-set-page(d); }
+                podcast-home-sort <=> root.music-podcast-home-sort;
+                podcast-home-set-sort(s) => { root.music-podcast-home-set-sort(s); }
+                podcast-toggle-home(id) => { root.music-podcast-toggle-home(id); }
+                podcast-d-pinned: root.music-podcast-d-pinned;
+                podcast-d-id: root.music-podcast-d-id;
+                podcast-trends: root.music-podcast-trends; podcast-trends-loading: root.music-podcast-trends-loading;
+                podcast-trend-subscribe(i) => { root.music-podcast-trend-subscribe(i); }
+                podcast-trend-info(i) => { root.music-podcast-trend-info(i); }
+                podcast-info-open-id(i) => { root.music-podcast-info-open-id(i); }
+                podcast-trends-sort <=> root.music-podcast-trends-sort;
+                podcast-trends-set-sort(s) => { root.music-podcast-trends-set-sort(s); }
+                podcast-trends-page: root.music-podcast-trends-page; podcast-trends-pages: root.music-podcast-trends-pages;
+                podcast-trends-set-page(d) => { root.music-podcast-trends-set-page(d); }
+                podcast-info-open <=> root.music-podcast-info-open; podcast-info-loading: root.music-podcast-info-loading;
+                podcast-info-title: root.music-podcast-info-title; podcast-info-author: root.music-podcast-info-author;
+                podcast-info-category <=> root.music-podcast-info-category; podcast-info-desc: root.music-podcast-info-desc;
+                podcast-info-image: root.music-podcast-info-image; podcast-info-episodes: root.music-podcast-info-episodes;
+                podcast-info-latest: root.music-podcast-info-latest; podcast-info-subscribed: root.music-podcast-info-subscribed;
+                podcast-info-save-category => { root.music-podcast-info-save-category(); }
+                podcast-info-set-thumb => { root.music-podcast-info-set-thumb(); }
+                podcast-info-subscribe => { root.music-podcast-info-subscribe(); }
+                podcast-speed: root.music-podcast-speed; podcast-set-speed(v) => { root.music-podcast-set-speed(v); }
+                podcast-goto-show(i) => { root.music-podcast-goto-show(i); }
+                podcast-cat <=> root.music-podcast-cat; podcast-url <=> root.music-podcast-url;
+                podcast-add-open <=> root.music-podcast-add-open;
+                podcast-add-busy: root.music-podcast-add-busy; podcast-add-frac: root.music-podcast-add-frac;
+                podcast-add-status: root.music-podcast-add-status;
+                podcast-reset-busy: root.music-podcast-reset-busy; podcast-reset-frac: root.music-podcast-reset-frac;
+                podcast-refresh-busy: root.music-podcast-refresh-busy; podcast-refresh-frac: root.music-podcast-refresh-frac;
+                podcast-refresh-status: root.music-podcast-refresh-status;
+                podcast-subscribing: root.music-podcast-subscribing; podcast-subscribe-frac: root.music-podcast-subscribe-frac;
+                podcast-subscribe-status: root.music-podcast-subscribe-status;
+                podcast-latest: root.music-podcast-latest; podcast-downloads: root.music-podcast-downloads;
+                podcast-dl-sort <=> root.music-podcast-dl-sort; podcast-dl-page: root.music-podcast-dl-page; podcast-dl-pages: root.music-podcast-dl-pages;
+                podcast-dl-set-sort(s) => { root.music-podcast-dl-set-sort(s); } podcast-dl-set-page(d) => { root.music-podcast-dl-set-page(d); }
+                podcast-subscribe => { root.music-podcast-subscribe(); } podcast-set-cat(c) => { root.music-podcast-set-cat(c); }
+                podcast-open(id) => { root.music-podcast-open(id); } podcast-play(id) => { root.music-podcast-play(id); }
+                podcast-skip(s) => { root.music-podcast-skip(s); }
+                podcast-fetch(id) => { root.music-podcast-fetch(id); } podcast-unsubscribe(id) => { root.music-podcast-unsubscribe(id); }
+                podcast-remove-download(id) => { root.music-podcast-remove-download(id); }
                 podcast-refresh => { root.music-podcast-refresh(); }
+                podcast-reset-all => { root.music-podcast-reset-all(); }
+                podcast-set-thumb => { root.music-podcast-set-thumb(); }
+                podcast-search(q) => { root.music-podcast-search(q); }
+                podcast-loaded: root.music-player-mode == "podcast" && root.music-np-title != "";
+                podcast-detail-open <=> root.music-podcast-detail-open;
+                podcast-d-title: root.music-podcast-d-title; podcast-d-author: root.music-podcast-d-author;
+                podcast-d-category: root.music-podcast-d-category; podcast-d-desc: root.music-podcast-d-desc;
+                podcast-d-image: root.music-podcast-d-image; podcast-d-episodes: root.music-podcast-d-episodes;
+                podcast-d-sort <=> root.music-podcast-d-sort; podcast-d-page: root.music-podcast-d-page;
+                podcast-d-pages: root.music-podcast-d-pages; podcast-d-total: root.music-podcast-d-total;
+                podcast-d-set-sort(s) => { root.music-podcast-d-set-sort(s); } podcast-d-set-page(d) => { root.music-podcast-d-set-page(d); }
+                podcast-dl-id: root.music-podcast-dl-id; podcast-dl-frac: root.music-podcast-dl-frac;
+                podcast-back => { root.music-podcast-back(); } podcast-download(i) => { root.music-podcast-download(i); }
+                podcast-transcript(i) => { root.music-podcast-transcript(i); }
+                podcast-transcript-open <=> root.music-podcast-transcript-open;
+                podcast-transcript-title: root.music-podcast-transcript-title; podcast-transcript-text: root.music-podcast-transcript-text;
                 audiobooks: root.music-audiobooks; book-speed <=> root.music-book-speed;
+                audiobook-cards: root.music-audiobook-cards;
+                audiobook-detail-open <=> root.music-audiobook-detail-open;
+                ab-d-title <=> root.music-ab-d-title; ab-d-author <=> root.music-ab-d-author;
+                ab-d-cover: root.music-ab-d-cover; ab-d-total <=> root.music-ab-d-total;
+                ab-d-chapters: root.music-ab-d-chapters; ab-d-resume-index <=> root.music-ab-d-resume-index;
+                audiobook-open(f) => { root.music-audiobook-open(f); } audiobook-back => { root.music-audiobook-back(); }
                 book-skip-silence-on <=> root.music-book-skip-silence-on; book-bookmarks: root.music-book-bookmarks;
                 audiobook-play(i) => { root.music-audiobook-play(i); } set-book-speed(s) => { root.music-set-book-speed(s); } book-chapter(d) => { root.music-book-chapter(d); }
                 book-skip-silence => { root.music-book-skip-silence(); } book-bookmark => { root.music-book-bookmark(); } book-bookmark-jump(i) => { root.music-book-bookmark-jump(i); }
@@ -1316,25 +1793,41 @@ export component MainWindow inherits Window {
                 np-accent: root.music-np-accent; thumb-size <=> root.music-thumb-size; set-thumb-size(v) => { root.music-set-thumb-size(v); }
                 play-all => { root.music-play-all(); } shuffle-all => { root.music-shuffle-all(); }
                 jump-text <=> root.music-jump-text; jump-page(p) => { root.music-jump-page(p); }
-                fav-rows: root.music-fav-rows; history-rows: root.music-history-rows; clear-history => { root.music-clear-history(); }
+                fav-rows: root.music-fav-rows; fav-page: root.music-fav-page; fav-pages: root.music-fav-pages; set-fav-page(d) => { root.music-set-fav-page(d); }
+                fav-artists: root.music-fav-artists; fav-albums: root.music-fav-albums;
+                album-fav(i) => { root.music-album-fav(i); } artist-fav(i) => { root.music-artist-fav(i); }
+                album-rate(i, n) => { root.music-album-rate(i, n); } artist-rate(i, n) => { root.music-artist-rate(i, n); }
+                history-rows: root.music-history-rows; clear-history => { root.music-clear-history(); }
+                history-page: root.music-history-page; history-pages: root.music-history-pages; set-history-page(d) => { root.music-set-history-page(d); }
                 search-artists: root.music-search-artists; search-albums: root.music-search-albums;
                 detail-open <=> root.music-detail-open; detail-kind: root.music-detail-kind;
                 detail-title: root.music-detail-title; detail-subtitle: root.music-detail-subtitle;
                 detail-art: root.music-detail-art; detail-bio: root.music-detail-bio;
                 detail-tracks: root.music-detail-tracks; detail-status: root.music-detail-status;
-                album-open(i) => { root.music-album-open(i); } artist-open(i) => { root.music-artist-open(i); }
+                detail-artist-albums: root.music-detail-artist-albums; detail-open-artist => { root.music-detail-open-artist(); }
+                detail-loved: root.music-detail-loved; detail-stars: root.music-detail-stars;
+                detail-fav => { root.music-detail-fav(); } detail-rate(n) => { root.music-detail-rate(n); }
+                detail-page: root.music-detail-page; detail-pages: root.music-detail-pages; set-detail-page(d) => { root.music-set-detail-page(d); }
+                detail-sort: root.music-detail-sort; detail-sort-dir: root.music-detail-sort-dir; set-detail-sort(s) => { root.music-set-detail-sort(s); }
+                album-open(i) => { root.music-album-open(i); } artist-open(i) => { root.music-artist-open(i); } genre-open(i) => { root.music-genre-open(i); }
+                genre-set-art(i) => { root.music-genre-set-art(i); }
                 detail-close => { root.music-detail-close(); } detail-play-all => { root.music-detail-play-all(); }
                 detail-shuffle => { root.music-detail-shuffle(); } detail-fetch-meta => { root.music-detail-fetch-meta(); }
                 detail-replace-art => { root.music-detail-replace-art(); } detail-play-track(i) => { root.music-detail-play-track(i); }
                 folder-roots: root.music-folder-roots; folder-add => { root.pick-folder(); }
                 folder-rescan => { root.refresh-library(); } folder-remove-root(i) => { root.music-folder-remove-root(i); }
+                folder-open(i) => { root.music-folder-open(i); } folder-remove(i) => { root.music-folder-remove(i); }
+                folder-find-system(i) => { root.music-folder-find-system(i); }
+                folder-cycle-section(i) => { root.music-folder-cycle-section(i); }
                 lyrics-search-open <=> root.music-lyrics-search-open; lyrics-search-query <=> root.music-lyrics-search-query;
                 lyrics-search-results: root.music-lyrics-search-results; lyrics-search-status: root.music-lyrics-search-status;
                 lyrics-search => { root.music-lyrics-search(); } lyrics-search-pick(i) => { root.music-lyrics-search-pick(i); }
                 side-panel <=> root.music-side-panel; side-panel-show(s) => { root.music-side-panel-show(s); }
+                np-album: root.music-np-album; set-sleep(m) => { root.music-set-sleep(m); }
+                open-now-album => { root.music-open-now-album(); } open-now-artist => { root.music-open-now-artist(); }
                 mini-active: root.music-mini-open;
                 open-mini => {
-                    if (root.music-mini-x == 0px && root.music-mini-y == 0px) { root.music-mini-x = root.width - 340px; root.music-mini-y = root.height - 200px; }
+                    if (root.music-mini-x == 0px && root.music-mini-y == 0px) { root.music-mini-x = (root.width - root.music-mini-w)/2; root.music-mini-y = (root.height - root.music-mini-h)/2; }
                     root.music-open-mini();
                 }
                 open-fullscreen => { root.music-open-fullscreen(); }
@@ -1387,6 +1880,8 @@ export component MainWindow inherits Window {
                 user: root.user;
                 api-rows: root.api-rows;
                 library-rows: root.library-rows;
+                lib-busy-task: root.lib-busy-task;
+                lib-busy-frac: root.lib-busy-frac;
                 scan-rows: root.scan-rows;
                 ai-rows: root.ai-rows;
                 endpoint-rows: root.endpoint-rows;
@@ -1406,16 +1901,26 @@ export component MainWindow inherits Window {
                 lib-rescan-all => { root.lib-rescan-all(); }
                 lib-clear-thumb-cache => { root.lib-clear-thumb-cache(); }
                 lib-rebuild-fts => { root.lib-rebuild-fts(); }
+                lib-reset-app => { root.lib-reset-app(); }
                 lib-row-rescan(i) => { root.lib-row-rescan(i); }
                 lib-row-rethumb(i) => { root.lib-row-rethumb(i); }
                 lib-row-edit-exclude(i) => { root.lib-row-edit-exclude(i); }
                 lib-row-remove(i) => { root.lib-row-remove(i); }
+                lib-row-save-section(i, s) => { root.lib-row-save-section(i, s); }
                 set-default-cadence(c) => { root.set-default-cadence(c); }
                 set-cadence-override(id, c) => { root.set-cadence-override(id, c); }
             }
         }
     }
         init => { key-scope.focus(); }
+        // Re-grab key focus whenever the section changes so playback shortcuts
+        // work across the whole Music page without first clicking the player.
+        property <string> watch-section: root.active-section;
+        changed watch-section => { key-scope.focus(); }
+        // Also re-grab focus when the mini-player opens so its transport keys
+        // (space/arrows) work even on non-music sections.
+        property <bool> watch-mini: root.music-mini-open;
+        changed watch-mini => { if (root.music-mini-open) { key-scope.focus(); } }
     }
 
     // Right-click context menu for photo tiles. Declared after the shell so it
@@ -1474,25 +1979,29 @@ export component MainWindow inherits Window {
     // Full-screen music player page (above all sections).
     if root.music-fullscreen: MusicFullscreen {
         width: 100%; height: 100%;
-        art: root.music-np-art; title: root.music-np-title; sub: root.music-np-sub; playing: root.music-playing;
+        art: root.music-np-art; accent: root.music-np-accent; title: root.music-np-title; sub: root.music-np-sub; playing: root.music-playing;
         pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
         volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat; shuffle: root.music-shuffle;
         np-loved: root.music-np-loved; np-stars: root.music-np-stars;
+        album: root.music-np-album; vis-bars: root.music-vis-bars; vis-style <=> root.music-vis-style; vis-style-changed(s) => { root.music-set-vis-style(s); }
         queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
+        podcast-mode: root.music-player-mode == "podcast"; speed: root.music-podcast-speed; set-speed(v) => { root.music-podcast-set-speed(v); }
         tab <=> root.music-fs-tab;
-        close => { root.music-fullscreen = false; }
+        close => { root.music-fullscreen = false; root.music-exit-zen(); }
+        init => { root.music-enter-zen(); self.zen-lyrics = true; }
         playpause => { root.music-toggle-pause(); }
         next => { root.music-next(); } prev => { root.music-prev(); }
         seek(s) => { root.music-seek(s); } set-volume(v) => { root.music-set-volume(v); }
         toggle-mute => { root.music-toggle-mute(); } cycle-repeat => { root.music-cycle-repeat(); }
         toggle-shuffle => { root.music-toggle-shuffle(); }
         play-queue(i) => { root.music-play-queue(i); } love => { root.music-love(); } rate(n) => { root.music-rate(n); }
+        open-now-album => { root.music-open-now-album(); } open-now-artist => { root.music-open-now-artist(); }
     }
 
     // App-wide draggable mini-player (over every section).
-    if root.music-mini-open: Rectangle {
+    if root.music-mini-open && !root.music-mini-bubble: Rectangle {
         x: root.music-mini-x; y: root.music-mini-y;
-        width: 320px; height: root.music-mini-show-queue ? 350px : 168px;
+        width: root.music-mini-w; height: root.music-mini-h;
         dragmini := TouchArea {
             mouse-cursor: move;
             moved => {
@@ -1502,16 +2011,83 @@ export component MainWindow inherits Window {
                 }
             }
         }
-        MusicMini {
+        // Music mode — full music mini player (vinyl / queue / lyrics).
+        if root.music-player-mode != "podcast": MusicMini {
             width: 100%; height: 100%;
-            art: root.music-np-art; title: root.music-np-title; sub: root.music-np-sub; playing: root.music-playing;
-            pos: root.music-pos; dur: root.music-dur; volume: root.music-volume; muted: root.music-muted;
-            queue-rows: root.music-queue-rows; show-queue <=> root.music-mini-show-queue;
+            uiscale: root.music-mini-scale;
+            art: root.music-np-art; accent: root.music-np-accent; title: root.music-np-title; sub: root.music-np-sub; album: root.music-np-album; playing: root.music-playing;
+            pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
+            shuffle: root.music-shuffle; volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat;
+            queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
+            cycle-repeat => { root.music-cycle-repeat(); }
             close => { root.music-mini-open = false; }
+            minimise => { root.music-mini-bubble = true; }
             playpause => { root.music-toggle-pause(); }
             next => { root.music-next(); } prev => { root.music-prev(); }
             seek(s) => { root.music-seek(s); } set-volume(v) => { root.music-set-volume(v); }
-            toggle-mute => { root.music-toggle-mute(); } play-queue(i) => { root.music-play-queue(i); }
+            toggle-mute => { root.music-toggle-mute(); } toggle-shuffle => { root.music-toggle-shuffle(); } play-queue(i) => { root.music-play-queue(i); }
+        }
+        // Podcast mode — spoken-word tuned player (−15s / +30s / speed / notes).
+        if root.music-player-mode == "podcast": PodcastMini {
+            width: 100%; height: 100%;
+            uiscale: root.music-mini-scale;
+            art: root.music-np-art; accent: root.music-np-accent; title: root.music-np-title; sub: root.music-np-sub; playing: root.music-playing;
+            pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
+            speed: root.music-podcast-speed; episodes: root.music-podcast-d-episodes; summary: root.music-podcast-d-desc;
+            volume: root.music-volume; muted: root.music-muted;
+            close => { root.music-mini-open = false; }
+            minimise => { root.music-mini-bubble = true; }
+            playpause => { root.music-toggle-pause(); }
+            skip(s) => { root.music-podcast-skip(s); }
+            seek(s) => { root.music-seek(s); }
+            set-speed(v) => { root.music-podcast-set-speed(v); }
+            set-volume(v) => { root.music-set-volume(v); }
+            toggle-mute => { root.music-toggle-mute(); }
+            play-episode(id) => { root.music-podcast-play(id); }
+        }
+        // Resize handles — drag either bottom corner; uniform scale keeps the
+        // aspect ratio (100%–300%). A curved arc shows on hover.
+        // Bottom-right.
+        Rectangle { width: 24px; height: 24px; x: parent.width - self.width; y: parent.height - self.height;
+            Rectangle { width: 16px; height: 16px; border-radius: 8px; x: 2px; y: 2px;
+                background: transparent; border-width: 2px;
+                border-color: brh.has-hover || brh.pressed ? root.music-np-accent : #ffffff55; }
+            brh := TouchArea { mouse-cursor: nwse-resize;
+                moved => { if (self.pressed) {
+                    root.music-mini-scale = Math.clamp(root.music-mini-scale + (self.mouse-x - self.pressed-x) / 300px, 1.0, 3.0);
+                } } } }
+    }
+    // Minimised bubble — pinned to the right edge (Android-style). Drag up/down
+    // to reposition; tap to restore the full mini-player.
+    if root.music-mini-open && root.music-mini-bubble: Rectangle {
+        x: root.width - 78px;
+        y: root.music-bubble-y < 0px ? root.height / 2 - 30px : root.music-bubble-y;
+        width: 60px; height: 60px;
+        // Pulsing accent ring (animated, not clipped).
+        Rectangle { width: 60px; height: 60px; border-radius: 30px; background: transparent;
+            border-width: 3px; border-color: root.music-np-accent;
+            opacity: 0.45 + 0.55 * Math.abs(Math.sin((animation-tick() / 1ms / 280) * 1rad)); }
+        // Clipped circular art — spins like a record while playing.
+        Rectangle { width: 56px; height: 56px; border-radius: 28px; clip: true; x: 2px; y: 2px;
+            background: #14141b; drop-shadow-blur: 26px; drop-shadow-color: root.music-np-accent;
+            Image { source: root.music-np-art; image-fit: cover; width: 100%; height: 100%; opacity: 0.9;
+                transform-rotation: root.music-playing ? Math.mod(animation-tick() / 1ms / 14, 360) * 1deg : 0deg; }
+            if root.music-np-title == "": Text { text: "♪"; color: #ec4899; font-size: 24px; horizontal-alignment: center; vertical-alignment: center; } }
+        // Center spindle dot — the record-player hub.
+        Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #14141b; border-width: 1.5px; border-color: #ffffffcc;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+        bta := TouchArea {
+            mouse-cursor: pointer;
+            property <bool> dragged: false;
+            moved => {
+                if (self.pressed) {
+                    root.music-bubble-y = Math.clamp((root.music-bubble-y < 0px ? root.height / 2 - 30px : root.music-bubble-y)
+                        + (self.mouse-y - self.pressed-y), 8px, root.height - 68px);
+                    self.dragged = true;
+                }
+            }
+            pointer-event(e) => { if (e.kind == PointerEventKind.down) { self.dragged = false; } }
+            clicked => { if (!self.dragged) { root.music-mini-bubble = false; } }
         }
     }
 
@@ -2024,6 +2600,59 @@ export component MainWindow inherits Window {
         crop-apply(x, y, w, h) => { root.editor-crop(x, y, w, h); }
         resize-apply(w, h) => { root.editor-resize(w, h); }
         close => { root.editor-close(); root.editor-open = false; key-scope.focus(); }
+    }
+
+    // Add-folder → assign music sub-section popup. After + Add picks a folder,
+    // the user classifies it into one of the 5 music sections; choosing
+    // Audiobooks flags every track in that folder as an audiobook.
+    if root.music-add-section-open: Rectangle {
+        x: 0; y: 0; width: root.width; height: root.height;
+        background: #000000aa;
+        TouchArea { clicked => { root.music-add-section-open = false; } } // scrim dismiss
+        Rectangle {
+            width: 460px; height: 360px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            border-radius: Theme.radius-lg;
+            background: Theme.modal;
+            border-color: Accent.color.with-alpha(0.5); border-width: 1px;
+            drop-shadow-blur: 32px; drop-shadow-color: #000000aa;
+            TouchArea {} // swallow clicks so they don't dismiss
+            VerticalLayout {
+                padding: 22px; spacing: 12px;
+                Text { text: "Add to library"; color: Theme.text; font-size: 18px; font-weight: 700; }
+                Text { text: "Classify this folder. Audiobooks get chapter nav + position-remember.";
+                    color: Theme.text-dim; font-size: 12px; wrap: word-wrap; }
+                Text { text: root.music-pending-add-path; color: Accent.color; font-size: 11px;
+                    overflow: elide; }
+                Rectangle { height: 1px; background: Theme.outline; }
+                for opt[i] in [
+                    { key: "mymusic",    label: "🎵  My Music",   sub: "Songs, albums, artists" },
+                    { key: "podcasts",   label: "🎙  Podcasts",   sub: "RSS feeds + episodes" },
+                    { key: "audiobooks", label: "📚  Audiobooks",  sub: "Chapters + resume + speed" },
+                    { key: "radio",      label: "📻  Radio",      sub: "Stream stations" },
+                    { key: "youtube",    label: "▶  YouTube",     sub: "Downloads" },
+                ]: Rectangle {
+                    height: 44px; border-radius: 10px;
+                    background: oa.has-hover ? Accent.color.with-alpha(0.16) : Theme.panel;
+                    border-width: 1px; border-color: oa.has-hover ? Accent.color.with-alpha(0.5) : Theme.outline;
+                    animate background { duration: 100ms; }
+                    oa := TouchArea { mouse-cursor: pointer;
+                        clicked => { root.music-confirm-add-section(opt.key); root.music-add-section-open = false; } }
+                    HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 10px;
+                        VerticalLayout { alignment: center; Text { text: opt.label; color: Theme.text; font-size: 14px; font-weight: 700; } }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout { alignment: center; Text { text: opt.sub; color: Theme.text-dim; font-size: 11px; } } }
+                }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { alignment: end;
+                    Rectangle { width: 90px; height: 32px; border-radius: 8px;
+                        background: ca.has-hover ? Theme.panel-2 : Theme.panel;
+                        border-width: 1px; border-color: Theme.outline;
+                        ca := TouchArea { mouse-cursor: pointer; clicked => { root.music-add-section-open = false; } }
+                        Text { text: "Cancel"; color: Theme.text; font-size: 12px;
+                            horizontal-alignment: center; vertical-alignment: center; } } }
+            }
+        }
     }
 
     // Capability-denied nudge toast (np.p1.caps.events). Auto-clears.

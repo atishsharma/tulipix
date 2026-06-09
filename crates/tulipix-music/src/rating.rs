@@ -28,7 +28,7 @@ pub async fn toggle_loved(pool: &SqlitePool, item_id: i64) -> Result<bool> {
 pub async fn loved(pool: &SqlitePool, limit: i64) -> Result<Vec<i64>> {
     let rows: Vec<(i64,)> = sqlx::query_as(
         "SELECT track_meta.item_id FROM track_meta JOIN items ON items.id = track_meta.item_id
-         WHERE track_meta.loved = 1 AND items.missing_since IS NULL
+         WHERE track_meta.loved = 1 AND items.missing_since IS NULL AND track_meta.is_audiobook = 0
          ORDER BY track_meta.last_played DESC NULLS LAST LIMIT ?",
     ).bind(limit).fetch_all(pool).await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())

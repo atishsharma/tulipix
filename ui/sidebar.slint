@@ -47,6 +47,18 @@ component NavRow inherits Rectangle {
         animate height { duration: 180ms; easing: ease-out; }
     }
 
+    // Double outline ring on the active row — an inner accent ring inset from
+    // the row's own border gives a layered, two-ring "selected" look when a
+    // section is clicked in the main app.
+    if active: Rectangle {
+        x: 3px; y: 3px;
+        width: parent.width - 6px; height: parent.height - 6px;
+        border-radius: max(0px, parent.border-radius - 3px);
+        background: transparent;
+        border-width: 1.5px;
+        border-color: accent.with-alpha(0.9);
+    }
+
     // Hover wash — accent at low alpha.
     if touch.has-hover && !active: Rectangle {
         x: 0; y: 0;
@@ -185,7 +197,7 @@ component BrandHeader inherits Rectangle {
 export component Sidebar inherits Rectangle {
     in-out property <string> active-section: "photos";
     in property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local };
-    in-out property <bool> collapsed: false;
+    in-out property <bool> collapsed: true;
     callback section-changed(string);
     callback user-action(string);
 

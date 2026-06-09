@@ -12,7 +12,7 @@
 //! Oldest-access-first removal until usage drops to 90 % of the cap.
 
 use crate::thumbs::CACHE_CAP_BYTES;
-use std::collections::{HashMap, HashSet, VecDeque};
+use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 

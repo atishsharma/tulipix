@@ -19,14 +19,14 @@ async fn ids(pool: &SqlitePool, sql: &str, limit: i64) -> Result<Vec<i64>> {
 pub async fn recently_played(pool: &SqlitePool, limit: i64) -> Result<Vec<i64>> {
     ids(pool,
         "SELECT track_meta.item_id FROM track_meta JOIN items ON items.id = track_meta.item_id
-         WHERE last_played IS NOT NULL AND items.missing_since IS NULL
+         WHERE last_played IS NOT NULL AND items.missing_since IS NULL AND track_meta.is_audiobook = 0
          ORDER BY last_played DESC LIMIT ?", limit).await
 }
 
 pub async fn most_played(pool: &SqlitePool, limit: i64) -> Result<Vec<i64>> {
     ids(pool,
         "SELECT track_meta.item_id FROM track_meta JOIN items ON items.id = track_meta.item_id
-         WHERE play_count > 0 AND items.missing_since IS NULL
+         WHERE play_count > 0 AND items.missing_since IS NULL AND track_meta.is_audiobook = 0
          ORDER BY play_count DESC LIMIT ?", limit).await
 }
 
@@ -35,7 +35,7 @@ pub async fn new_this_week(pool: &SqlitePool, limit: i64) -> Result<Vec<i64>> {
     let cutoff = now() - 7 * 86_400;
     let rows: Vec<(i64,)> = sqlx::query_as(
         "SELECT track_meta.item_id FROM track_meta JOIN items ON items.id = track_meta.item_id
-         WHERE items.added >= ? AND items.missing_since IS NULL
+         WHERE items.added >= ? AND items.missing_since IS NULL AND track_meta.is_audiobook = 0
          ORDER BY items.added DESC LIMIT ?",
     ).bind(cutoff).bind(limit).fetch_all(pool).await?;
     Ok(rows.into_iter().map(|(id,)| id).collect())

@@ -28,7 +28,7 @@ pub fn chunk_sentences(text: &str, max_chars: usize) -> Vec<String> {
     let max = max_chars.max(1);
     let mut out = Vec::new();
     let mut cur = String::new();
-    let mut flush = |cur: &mut String, out: &mut Vec<String>| {
+    let flush = |cur: &mut String, out: &mut Vec<String>| {
         let t = cur.trim();
         if !t.is_empty() { out.push(t.to_string()); }
         cur.clear();
