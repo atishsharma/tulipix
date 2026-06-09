@@ -17,8 +17,11 @@ pub struct AlbumRow {
     pub track_count: i64,
 }
 
+// My Music browse views exclude audiobook-flagged tracks — those live only in
+// the Audiobooks section (np.p5.music.audiobook-detect).
 const PRESENT: &str =
-    " JOIN items ON items.id = track_meta.item_id WHERE items.missing_since IS NULL ";
+    " JOIN items ON items.id = track_meta.item_id \
+      WHERE items.missing_since IS NULL AND track_meta.is_audiobook = 0 ";
 
 pub async fn albums(pool: &SqlitePool) -> Result<Vec<AlbumRow>> {
     let rows: Vec<(i64, String, Option<String>, Option<i64>, Option<String>, i64)> = sqlx::query_as(
@@ -26,6 +29,7 @@ pub async fn albums(pool: &SqlitePool) -> Result<Vec<AlbumRow>> {
          FROM albums
          JOIN track_meta ON track_meta.album_id = albums.id
          JOIN items ON items.id = track_meta.item_id AND items.missing_since IS NULL
+            AND track_meta.is_audiobook = 0
          LEFT JOIN artists ON artists.id = albums.artist_id
          GROUP BY albums.id ORDER BY albums.title COLLATE NOCASE",
     ).fetch_all(pool).await?;
@@ -55,6 +59,7 @@ pub async fn artists(pool: &SqlitePool) -> Result<Vec<(i64, String, i64)>> {
          FROM artists
          JOIN track_meta ON track_meta.artist_id = artists.id
          JOIN items ON items.id = track_meta.item_id AND items.missing_since IS NULL
+            AND track_meta.is_audiobook = 0
          GROUP BY artists.id ORDER BY artists.name COLLATE NOCASE",
     ).fetch_all(pool).await?)
 }

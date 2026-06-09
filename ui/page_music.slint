@@ -1888,7 +1888,7 @@ export component MusicPage inherits Rectangle {
             VerticalLayout { padding: 36px; padding-top: 20px; spacing: 18px;
                 Text { text: "Audiobooks"; color: MusicTheme.fg; font-size: 26px; font-weight: 800; }
                 if root.audiobook-cards.length == 0: Text {
-                    text: "No audiobooks yet — use + Add (top-right), pick a folder and assign it to Audiobooks; or mark a track via its tag editor.";
+                    text: "No audiobooks yet — open this Audiobooks tab and use + Add (top-right) to pick a folder; files with audiobook metadata are added here (the rest are skipped).";
                     color: MusicTheme.fg-dim2; font-size: 13px; }
                 Rectangle { horizontal-stretch: 1;
                     property <int> cols: 6;

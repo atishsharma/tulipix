@@ -1613,7 +1613,7 @@ export component MainWindow inherits Window {
                 discover-upcoming: root.video-discover-upcoming;
                 discover-on-air: root.video-discover-on-air;
                 refresh-discover => { root.video-refresh-discover(); } }
-            if active-section == "music":    MusicPage  { width: parent.width; height: parent.height; item-count: root.music-tiles.length; tiles: root.music-tiles;
+            if active-section == "music":    MusicPage  { width: parent.width; height: parent.height; item-count: root.music-song-total; tiles: root.music-tiles;
                 np-title: root.music-np-title; np-sub: root.music-np-sub; np-art: root.music-np-art; playing: root.music-playing;
                 view <=> root.music-view; sleep-min: root.music-sleep-min;
                 lib-tab <=> root.music-lib-tab;

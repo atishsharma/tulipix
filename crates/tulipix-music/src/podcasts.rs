@@ -42,6 +42,17 @@ CREATE TABLE IF NOT EXISTS podcast_episodes (
 );
 CREATE INDEX IF NOT EXISTS podcast_episodes_pod_idx ON podcast_episodes(podcast_id, published DESC);
 CREATE INDEX IF NOT EXISTS podcast_episodes_dl_idx  ON podcast_episodes(downloaded_path);
+
+-- Trends metadata cache: fetched once from the baked feed list (podc.md), then
+-- loaded from here on every launch so we never re-fetch the network on startup.
+CREATE TABLE IF NOT EXISTS podcast_trends (
+    feed_url   TEXT PRIMARY KEY,
+    title      TEXT,
+    author     TEXT,
+    category   TEXT,
+    art_path   TEXT,
+    fetched_at INTEGER
+);
 "#;
 
 /// Apply the podcasts schema to a (podcasts.db) pool. Idempotent.
@@ -51,6 +62,9 @@ pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     // A user-set thumbnail lives here so a feed refresh (which overwrites
     // image_url) can never clobber it. Ignore the error when it already exists.
     let _ = sqlx::query("ALTER TABLE podcasts ADD COLUMN custom_image TEXT").execute(pool).await;
+    // `home_pinned` marks shows the user added to Home "Your shows". Ignore error
+    // when the column already exists.
+    let _ = sqlx::query("ALTER TABLE podcasts ADD COLUMN home_pinned INTEGER NOT NULL DEFAULT 0").execute(pool).await;
     Ok(())
 }
 
@@ -232,19 +246,50 @@ pub async fn subscribe_with_progress<F: FnMut(usize, usize)>(
         .bind(&feed.category).bind(&feed.description).bind(now()).execute(pool).await?;
     let pid: i64 = sqlx::query_scalar("SELECT id FROM podcasts WHERE feed_url = ?").bind(feed_url).fetch_one(pool).await?;
     let total = feed.episodes.len();
-    for (i, ep) in feed.episodes.iter().enumerate() {
-        // Upsert keeps user state (played/position/downloaded_path) while
-        // refreshing title/description as the feed evolves.
-        sqlx::query(
-            "INSERT INTO podcast_episodes (podcast_id, guid, title, audio_url, duration_s, published, description, image_url)
-             VALUES (?,?,?,?,?,?,?,?)
-             ON CONFLICT(podcast_id, guid) DO UPDATE SET
-                title=excluded.title, duration_s=excluded.duration_s,
-                published=excluded.published, description=excluded.description, image_url=excluded.image_url")
-            .bind(pid).bind(&ep.guid).bind(&ep.title).bind(&ep.audio_url)
-            .bind(ep.duration_s).bind(ep.published).bind(&ep.description).bind(&ep.image_url)
-            .execute(pool).await?;
-        on_progress(i + 1, total);
+    // Insert episodes in parallel chunks, each chunk wrapped in its own
+    // transaction. Batching commits (instead of one autocommit per row) is the
+    // big win; the chunks run concurrently (WAL + busy_timeout make this safe)
+    // and the pool serialises the actual writes. Subscribing a 300-episode feed
+    // drops from "insert one by one" to a handful of batched commits.
+    if total > 0 {
+        use std::sync::Arc;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        // ~6 chunks (capped so we never exhaust the connection pool).
+        let chunks = total.min(6).max(1);
+        let chunk_size = total.div_ceil(chunks);
+        let eps = Arc::new(feed.episodes.clone());
+        let done = Arc::new(AtomicUsize::new(0));
+        let mut handles = Vec::new();
+        for start in (0..total).step_by(chunk_size) {
+            let end = (start + chunk_size).min(total);
+            let pool = pool.clone();
+            let eps = eps.clone();
+            let done = done.clone();
+            handles.push(tokio::spawn(async move {
+                let mut tx = pool.begin().await?;
+                for ep in &eps[start..end] {
+                    // Upsert keeps user state (played/position/downloaded_path)
+                    // while refreshing title/description as the feed evolves.
+                    sqlx::query(
+                        "INSERT INTO podcast_episodes (podcast_id, guid, title, audio_url, duration_s, published, description, image_url)
+                         VALUES (?,?,?,?,?,?,?,?)
+                         ON CONFLICT(podcast_id, guid) DO UPDATE SET
+                            title=excluded.title, duration_s=excluded.duration_s,
+                            published=excluded.published, description=excluded.description, image_url=excluded.image_url")
+                        .bind(pid).bind(&ep.guid).bind(&ep.title).bind(&ep.audio_url)
+                        .bind(ep.duration_s).bind(ep.published).bind(&ep.description).bind(&ep.image_url)
+                        .execute(&mut *tx).await?;
+                    done.fetch_add(1, Ordering::Relaxed);
+                }
+                tx.commit().await?;
+                Ok::<(), sqlx::Error>(())
+            }));
+        }
+        // Await each chunk, reporting cumulative progress as they land.
+        for h in handles {
+            h.await.map_err(|e| sqlx::Error::Protocol(e.to_string()))??;
+            on_progress(done.load(Ordering::Relaxed), total);
+        }
     }
     // Keep the table bounded on high-volume feeds (newest N + anything the user
     // touched). This is what stops podcasts.db ballooning over time.

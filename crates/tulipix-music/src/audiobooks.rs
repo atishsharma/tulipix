@@ -74,6 +74,54 @@ pub async fn set_folder_flag(pool: &SqlitePool, folder: &str, on: bool) -> Resul
     Ok(res.rows_affected())
 }
 
+// SQL predicate: a track whose metadata marks it as spoken-word audiobook
+// material — an `.m4b`-style container, or an audiobook/spoken/speech genre.
+const AUDIOBOOK_META: &str =
+    "(LOWER(COALESCE(container,'')) LIKE '%m4b%' \
+      OR LOWER(COALESCE(genre,'')) LIKE '%audiobook%' \
+      OR LOWER(COALESCE(genre,'')) LIKE '%audio book%' \
+      OR LOWER(COALESCE(genre,'')) LIKE '%spoken%' \
+      OR LOWER(COALESCE(genre,'')) LIKE '%speech%')";
+
+/// Flag a folder that the user added via the **Audiobooks** section
+/// (np.p5.music.audiobook-detect).
+///
+/// Detection — metadata-gated with a whole-folder fallback:
+/// * If **any** track in the folder carries audiobook metadata
+///   ([`AUDIOBOOK_META`]), gate per-file on that signal: flag the matching
+///   tracks and *hide* the rest (set `items.missing_since`) so non-audiobook
+///   files never leak into My Music.
+/// * If **no** track has such metadata, the user added the whole folder as
+///   audiobooks, so flag every track in it (nothing hidden).
+///
+/// Returns `(flagged, hidden)`.
+pub async fn flag_audiobook_folder(pool: &SqlitePool, folder: &str) -> Result<(u64, u64)> {
+    let with_meta: i64 = sqlx::query_scalar(
+        &format!("SELECT COUNT(*) FROM track_meta WHERE folder = ? AND {AUDIOBOOK_META}"))
+        .bind(folder).fetch_one(pool).await?;
+
+    // No metadata signal anywhere → trust the section: whole folder is audiobook.
+    if with_meta == 0 {
+        let n = set_folder_flag(pool, folder, true).await?;
+        return Ok((n, 0));
+    }
+
+    // Per-file gate: flag the audiobook tracks, clear the flag on the rest
+    // (in case a prior whole-folder pass set it), and hide the non-audiobooks.
+    let flagged = sqlx::query(
+        &format!("UPDATE track_meta SET is_audiobook = 1 WHERE folder = ? AND {AUDIOBOOK_META}"))
+        .bind(folder).execute(pool).await?.rows_affected();
+    sqlx::query(
+        &format!("UPDATE track_meta SET is_audiobook = 0 WHERE folder = ? AND NOT {AUDIOBOOK_META}"))
+        .bind(folder).execute(pool).await?;
+    let hidden = sqlx::query(
+        &format!("UPDATE items SET missing_since = ? \
+                  WHERE missing_since IS NULL AND id IN (\
+                     SELECT item_id FROM track_meta WHERE folder = ? AND NOT {AUDIOBOOK_META})"))
+        .bind(now()).bind(folder).execute(pool).await?.rows_affected();
+    Ok((flagged, hidden))
+}
+
 /// Distinct audiobook folders with chapter counts, ordered by folder path.
 /// One row per book card (np.p5.music.audiobook-chapters).
 pub async fn book_folders(pool: &SqlitePool) -> Result<Vec<(String, i64)>> {

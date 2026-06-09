@@ -18,6 +18,7 @@ slint::include_modules!();
 #[cfg(feature = "dev-reload")]
 mod dev_reload;
 mod mpv;
+mod mpv_ipc;
 mod books;
 mod cloud;
 
@@ -385,17 +386,44 @@ fn main() -> Result<()> {
         }
     }
 
+    // Add a freshly-picked folder straight into one music sub-section
+    // (mymusic|podcasts|audiobooks|radio|youtube). The Add button is
+    // section-scoped — whatever music tab is open is where the folder lands; no
+    // universal "which section?" popup. Audiobooks get metadata-gated flagging
+    // (np.p5.music.audiobook-detect): only files that look like audiobooks are
+    // kept (whole-folder fallback when none carry the metadata).
+    fn music_add_folder_to_section(window: &MainWindow, path: PathBuf, key: &str) {
+        let path_str = path.display().to_string();
+        set_folder_section(&path_str, key);
+        persist_watched_folder(&path);
+        set_scan_silent(false);
+        add_folder_path(window, path);
+        let aud = key == "audiobooks";
+        tokio::runtime::Handle::current().spawn(async move {
+            if let Ok(pool) = pool_for("music").await {
+                if aud {
+                    let _ = tulipix_music::audiobooks::flag_audiobook_folder(&pool, &path_str).await;
+                } else {
+                    // Re-adding a folder to a non-audiobook section clears any
+                    // stale audiobook flag so its tracks return to My Music.
+                    let _ = tulipix_music::audiobooks::set_folder_flag(&pool, &path_str, false).await;
+                }
+            }
+        });
+    }
+
     let w = window.as_weak();
     window.on_pick_folder(move || {
         let Some(w) = w.upgrade() else { return; };
         let section = w.get_active_section().to_string();
-        // On the music page, pick the folder first, then let the user classify
-        // it into one of the 5 music sub-sections via a popup (Audiobooks flags
-        // the folder's tracks). Other sections add directly.
+        // On the music page the Add button is section-scoped: the folder lands
+        // in whichever music sub-section is currently open (music-view), with no
+        // universal "which section?" popup. Other sections add directly.
         if section == "music" {
             let Some(path) = rfd::FileDialog::new().set_title("Add music folder").pick_folder() else { return; };
-            w.set_music_pending_add_path(path.display().to_string().into());
-            w.set_music_add_section_open(true);
+            let key = w.get_music_view().to_string();
+            music_add_folder_to_section(&w, path, &key);
+            if w.get_library_rows().row_count() > 0 { w.set_onboarding_lib_added(true); }
             return;
         }
         pick_and_append(&w, &section);
@@ -411,21 +439,8 @@ fn main() -> Result<()> {
         let Some(w) = w.upgrade() else { return; };
         let path_str = w.get_music_pending_add_path().to_string();
         if path_str.is_empty() { return; }
-        let key = key.to_string();
-        let path = PathBuf::from(&path_str);
-        set_folder_section(&path_str, &key);
-        persist_watched_folder(&path);
-        set_scan_silent(false);
-        add_folder_path(&w, path);
+        music_add_folder_to_section(&w, PathBuf::from(&path_str), &key.to_string());
         if w.get_library_rows().row_count() > 0 { w.set_onboarding_lib_added(true); }
-        // Apply the audiobook flag for this folder (idempotent; re-applied on
-        // view-switch once the scan has inserted the tracks).
-        let aud = key == "audiobooks";
-        tokio::runtime::Handle::current().spawn(async move {
-            if let Ok(pool) = pool_for("music").await {
-                let _ = tulipix_music::audiobooks::set_folder_flag(&pool, &path_str, aud).await;
-            }
-        });
     });
 
     let w = window.as_weak();
@@ -7195,8 +7210,8 @@ fn spawn_mpv_windowed(path: PathBuf, resume: Option<f64>, item_id: Option<i64>) 
     kill_music_proc();
     stop_video();
     std::thread::spawn(move || {
-        let sock = std::env::temp_dir().join(format!("tulipix-mpv-{}.sock", std::process::id()));
-        let _ = std::fs::remove_file(&sock);
+        let sock = mpv_ipc::endpoint("tulipix-mpv");
+        mpv_ipc::cleanup(&sock);
         let mut cmd = std::process::Command::new("mpv");
         cmd.arg(&path)
             .arg("--force-window=yes")
@@ -7216,8 +7231,7 @@ fn spawn_mpv_windowed(path: PathBuf, resume: Option<f64>, item_id: Option<i64>) 
         let pos2 = pos.clone();
         let sockp = sock.clone();
         let reader = std::thread::spawn(move || {
-            for _ in 0..60 { if sockp.exists() { break; } std::thread::sleep(std::time::Duration::from_millis(100)); }
-            let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&sockp) else { return; };
+            let Ok(mut stream) = mpv_ipc::connect(&sockp) else { return; };
             let _ = stream.write_all(
                 b"{\"command\":[\"observe_property\",1,\"time-pos\"]}\n{\"command\":[\"observe_property\",2,\"duration\"]}\n");
             let rd = BufReader::new(stream);
@@ -8498,7 +8512,7 @@ fn current_music_id(w: &MainWindow) -> Option<i64> {
 
 /// One track's metadata for the detailed, sortable Songs list.
 #[derive(Clone)]
-struct SongMeta { pos: i32, item_id: i64, title: String, artist: String, album: String, duration_s: f64, added: i64, plays: i64, loved: bool, stars: i32, synced: bool, release_date: String }
+struct SongMeta { pos: i32, item_id: i64, title: String, artist: String, album: String, duration_s: f64, added: i64, plays: i64, loved: bool, stars: i32, synced: bool, release_date: String, is_audiobook: bool }
 static MUSIC_SONGS: std::sync::OnceLock<std::sync::Mutex<Vec<SongMeta>>> = std::sync::OnceLock::new();
 fn music_songs() -> &'static std::sync::Mutex<Vec<SongMeta>> {
     MUSIC_SONGS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
@@ -10001,7 +10015,9 @@ fn populate_audiobooks(w: &MainWindow) {
         // folder so its (now-scanned) tracks show up grouped below.
         for (folder, key) in load_folder_sections() {
             if key == "audiobooks" {
-                let _ = tulipix_music::audiobooks::set_folder_flag(&pool, &folder, true).await;
+                // Metadata-gated flag (whole-folder fallback). Re-applied here so
+                // it self-heals once the async tag ingest has filled genre/container.
+                let _ = tulipix_music::audiobooks::flag_audiobook_folder(&pool, &folder).await;
             }
         }
         let ids: Vec<i64> = sqlx::query_scalar(
@@ -10043,8 +10059,8 @@ fn play_music_url(w: &MainWindow, url: &str, title: &str) {
     if let Ok(mut g) = music_proc().lock() {
         if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
     }
-    let sock = std::env::temp_dir().join(format!("tulipix-music-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&sock);
+    let sock = mpv_ipc::endpoint("tulipix-music");
+    mpv_ipc::cleanup(&sock);
     let mut cmd = std::process::Command::new("mpv");
     cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
         .arg(format!("--input-ipc-server={}", sock.display()))
@@ -10062,8 +10078,7 @@ fn play_music_url(w: &MainWindow, url: &str, title: &str) {
     let weak = w.as_weak();
     std::thread::spawn(move || {
         use std::io::{BufRead, BufReader, Write};
-        for _ in 0..50 { if sock.exists() { break; } std::thread::sleep(std::time::Duration::from_millis(60)); }
-        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&sock) {
+        if let Ok(mut stream) = mpv_ipc::connect(&sock) {
             let _ = stream.write_all(concat!(
                 "{\"command\":[\"observe_property\",1,\"time-pos\"]}\n",
                 "{\"command\":[\"observe_property\",2,\"duration\"]}\n",
@@ -10517,8 +10532,11 @@ fn rebuild_music_songs_page(w: &MainWindow) {
     let g = match music_songs().lock() { Ok(g) => g, Err(_) => return };
     let q = music_query_filter().lock().map(|s| s.to_lowercase()).unwrap_or_default();
     // Filter by the search box (title/artist substring) before paginating.
+    // Audiobook-flagged tracks are excluded — they live in the Audiobooks
+    // section, not the My Music Songs list (np.p5.music.audiobook-detect).
     let view: Vec<&SongMeta> = g.iter().filter(|s| {
-        q.is_empty() || s.title.to_lowercase().contains(&q) || s.artist.to_lowercase().contains(&q)
+        !s.is_audiobook
+            && (q.is_empty() || s.title.to_lowercase().contains(&q) || s.artist.to_lowercase().contains(&q))
     }).collect();
     let total = view.len();
     // Smaller pages while searching so songs stay above the artists/albums rows.
@@ -10694,22 +10712,26 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
             .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
         // Per-track grouping keys, to resolve a group's first playback position.
         let meta: Vec<(i64, Option<i64>, Option<i64>, Option<String>)> = sqlx::query_as(
-            "SELECT item_id, album_id, artist_id, genre FROM track_meta").fetch_all(&pool).await.unwrap_or_default();
+            "SELECT item_id, album_id, artist_id, genre FROM track_meta WHERE is_audiobook = 0").fetch_all(&pool).await.unwrap_or_default();
         // Detailed Songs list rows (np.p4.music.browse list view).
         // On-demand columns (idempotent) so the SELECT below never fails on older DBs.
         let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN release_date TEXT").execute(&pool).await;
         let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN credits TEXT").execute(&pool).await;
         let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN user_locked INTEGER DEFAULT 0").execute(&pool).await;
-        let song_rows: Vec<(i64, Option<String>, Option<String>, Option<f64>, i64, i64, i64, i64, Option<i64>, Option<String>, Option<String>)> = sqlx::query_as(
+        // music_songs stays complete (incl. audiobooks) so the Audiobooks section
+        // can resolve each chapter's title/duration by position; the My Music
+        // Songs *list* filters audiobooks out at render in rebuild_music_songs_page.
+        let song_rows: Vec<(i64, Option<String>, Option<String>, Option<f64>, i64, i64, i64, i64, Option<i64>, Option<String>, Option<String>, i64)> = sqlx::query_as(
             "SELECT tm.item_id, tm.title, ar.name, tm.duration_s, it.added, tm.play_count, \
                     COALESCE(tm.loved,0), COALESCE(tm.rating,0), \
-                    (SELECT ly.synced FROM lyrics ly WHERE ly.item_id = tm.item_id), al.title, tm.release_date \
+                    (SELECT ly.synced FROM lyrics ly WHERE ly.item_id = tm.item_id), al.title, tm.release_date, \
+                    tm.is_audiobook \
              FROM track_meta tm JOIN items it ON it.id = tm.item_id AND it.missing_since IS NULL \
              LEFT JOIN artists ar ON ar.id = tm.artist_id \
              LEFT JOIN albums al ON al.id = tm.album_id").fetch_all(&pool).await.unwrap_or_default();
         // Folder hierarchy (np.p4.music.folders) — folder path per track.
         let folder_rows: Vec<(i64, String)> = sqlx::query_as(
-            "SELECT item_id, folder FROM track_meta WHERE folder IS NOT NULL AND folder != ''")
+            "SELECT item_id, folder FROM track_meta WHERE folder IS NOT NULL AND folder != '' AND is_audiobook = 0")
             .fetch_all(&pool).await.unwrap_or_default();
         // Playlists (np.p4.music.playlists) — name + first track. Smart playlists
         // (Loved / Recently Added) compute their tracks from a rule, so the LEFT
@@ -10819,7 +10841,7 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
 
             // Detailed Songs list — map each track to its playback position, with
             // a filename fallback for missing titles.
-            let metas: Vec<SongMeta> = song_rows.into_iter().filter_map(|(id, title, artist, dur, added, plays, loved, rating, synced, album, release)| {
+            let metas: Vec<SongMeta> = song_rows.into_iter().filter_map(|(id, title, artist, dur, added, plays, loved, rating, synced, album, release, is_audiobook)| {
                 let pos = *pos_of.get(&id)?;
                 let title = title.filter(|t| !t.trim().is_empty()).unwrap_or_else(|| {
                     paths.get(pos as usize)
@@ -10834,6 +10856,7 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
                     added, plays,
                     loved: loved != 0, stars: rating as i32, synced: synced.is_some(),
                     release_date: release.unwrap_or_default(),
+                    is_audiobook: is_audiobook != 0,
                 })
             }).collect();
             // Auto-fill the Songs-row pills with current coverage (lyrics synced %,
@@ -10857,7 +10880,7 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
             let recent_pool: Vec<SongMeta> = recent.iter().take(18).filter_map(|id| {
                 let pos = *pos_of.get(id)?;
                 let (title, artist, dur) = info.get(id).cloned().unwrap_or_default();
-                Some(SongMeta { pos, item_id: *id, title, artist, album: String::new(), duration_s: dur, added: 0, plays: 0, loved: false, stars: 0, synced: false, release_date: String::new() })
+                Some(SongMeta { pos, item_id: *id, title, artist, album: String::new(), duration_s: dur, added: 0, plays: 0, loved: false, stars: 0, synced: false, release_date: String::new(), is_audiobook: false })
             }).collect();
             if let Ok(mut g) = music_recent().lock() { *g = recent_pool; }
             w.set_music_recent_page(0);
@@ -10938,8 +10961,11 @@ fn music_proc() -> &'static std::sync::Mutex<Option<std::process::Child>> {
 /// PID of the windowed video mpv (0 = none). Tracked so music↔video share one
 /// "universal" stream and so playback dies with the app.
 static VIDEO_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-/// Make a spawned child die with us — the kernel sends SIGKILL when the parent
-/// (tulipix) exits for ANY reason (close, crash, kill), so mpv never orphans.
+/// Make a spawned child die with us — on Linux the kernel sends SIGKILL when
+/// the parent (tulipix) exits for ANY reason (close, crash, kill), so mpv never
+/// orphans. `PR_SET_PDEATHSIG` is Linux-only; on other OSes children are reaped
+/// by `kill_all_mpv()` on window close + `child.kill()` on track change.
+#[cfg(target_os = "linux")]
 fn mpv_die_with_parent(cmd: &mut std::process::Command) {
     use std::os::unix::process::CommandExt;
     unsafe {
@@ -10949,10 +10975,20 @@ fn mpv_die_with_parent(cmd: &mut std::process::Command) {
         });
     }
 }
+#[cfg(not(target_os = "linux"))]
+fn mpv_die_with_parent(_cmd: &mut std::process::Command) {
+    // macOS/Windows: no PR_SET_PDEATHSIG. A Win32 Job Object with
+    // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE would harden crash-time cleanup.
+}
 /// Kill the windowed video mpv if one is running.
 fn stop_video() {
     let pid = VIDEO_PID.swap(0, std::sync::atomic::Ordering::SeqCst);
-    if pid != 0 { let _ = std::process::Command::new("kill").arg("-9").arg(pid.to_string()).status(); }
+    if pid == 0 { return; }
+    #[cfg(windows)]
+    let _ = std::process::Command::new("taskkill")
+        .args(["/PID", &pid.to_string(), "/F", "/T"]).status();
+    #[cfg(not(windows))]
+    let _ = std::process::Command::new("kill").arg("-9").arg(pid.to_string()).status();
 }
 /// Kill the headless music mpv if one is running.
 fn kill_music_proc() {
@@ -11040,7 +11076,7 @@ fn music_ipc(args: &[&str]) {
             if a.parse::<f64>().is_ok() || **a == *"true" || **a == *"false" { a.to_string() }
             else { format!("\"{a}\"") }
         }).collect::<Vec<_>>().join(","));
-    if let Ok(mut s) = std::os::unix::net::UnixStream::connect(&sock) {
+    if let Ok(mut s) = mpv_ipc::connect(&sock) {
         let _ = s.write_all(payload.as_bytes());
     }
 }
@@ -11114,8 +11150,8 @@ fn play_music_at(w: &MainWindow, idx: i32) {
     if let Ok(mut g) = music_proc().lock() {
         if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
     }
-    let sock = std::env::temp_dir().join(format!("tulipix-music-{}.sock", std::process::id()));
-    let _ = std::fs::remove_file(&sock);
+    let sock = mpv_ipc::endpoint("tulipix-music");
+    mpv_ipc::cleanup(&sock);
     let mut cmd = std::process::Command::new("mpv");
     cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
         .arg(format!("--input-ipc-server={}", sock.display()))
@@ -11143,8 +11179,7 @@ fn play_music_at(w: &MainWindow, idx: i32) {
     let weak = w.as_weak();
     std::thread::spawn(move || {
         use std::io::{BufRead, BufReader, Write};
-        for _ in 0..50 { if sock.exists() { break; } std::thread::sleep(std::time::Duration::from_millis(60)); }
-        if let Ok(mut stream) = std::os::unix::net::UnixStream::connect(&sock) {
+        if let Ok(mut stream) = mpv_ipc::connect(&sock) {
             let _ = stream.write_all(concat!(
                 "{\"command\":[\"observe_property\",1,\"time-pos\"]}\n",
                 "{\"command\":[\"observe_property\",2,\"duration\"]}\n",
