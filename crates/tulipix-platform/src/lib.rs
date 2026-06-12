@@ -12,8 +12,11 @@ pub mod widgets;
 
 use anyhow::Result;
 use keyring::Entry;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use muda::{accelerator::{Accelerator, Code, Modifiers}, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::str::FromStr;
+#[cfg(any(target_os = "windows", target_os = "macos", feature = "tray"))]
 use std::cell::RefCell;
 #[cfg(feature = "tray")]
 use tray_icon::{menu::Menu as TrayMenu, TrayIcon, TrayIconBuilder};
@@ -151,6 +154,7 @@ pub fn default_menubar() -> MenuSpec {
     ]}
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn parse_accel(s: &str) -> Option<Accelerator> {
     let mut mods = Modifiers::empty();
     let mut key: Option<Code> = None;
@@ -170,15 +174,17 @@ fn parse_accel(s: &str) -> Option<Accelerator> {
     key.map(|k| Accelerator::new(Some(mods), k))
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 thread_local! {
     static INSTALLED_MENU: RefCell<Option<Menu>> = const { RefCell::new(None) };
 }
 
 /// Install the native menu bar. Per-OS: macOS attaches via `Menu::init_for_nsapp`,
-/// Windows attaches via `Menu::init_for_hwnd`, Linux via `Menu::init_for_gtk_window`
-/// (returned by Slint's winit backend — caller wires it in app init).
+/// Windows attaches via `Menu::init_for_hwnd`. Linux has no native menubar —
+/// muda would need a GTK window, which the Slint winit backend never provides.
 /// Returns a clone of the underlying Menu (cheap — internally Rc-counted) so
 /// callers can hand it to the platform attach call.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub fn install_menubar(spec: &MenuSpec) -> Menu {
     INSTALLED_MENU.with(|cell| {
         if let Some(m) = cell.borrow().as_ref() { return m.clone(); }
@@ -201,12 +207,20 @@ pub fn install_menubar(spec: &MenuSpec) -> Menu {
     })
 }
 
+/// No-op on Linux: no GTK window to attach a muda menubar to.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+pub fn install_menubar(_spec: &MenuSpec) {}
+
 /// Drain pending muda menu events. Caller polls in the UI tick.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub fn drain_menu_events<F: FnMut(&str)>(mut handler: F) {
     while let Ok(ev) = MenuEvent::receiver().try_recv() {
         handler(ev.id.0.as_str());
     }
 }
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+pub fn drain_menu_events<F: FnMut(&str)>(_handler: F) {}
 
 // ── Tray icon ──────────────────────────────────────────────────────────
 
@@ -282,6 +296,7 @@ mod tests {
         assert_eq!(labels, vec!["Tulipix", "File", "Edit", "View", "Library", "Window", "Help"]);
     }
 
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     #[test]
     fn parse_accel_basic() {
         assert!(parse_accel("Ctrl+L").is_some());

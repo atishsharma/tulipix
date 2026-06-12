@@ -42,9 +42,10 @@ impl Settings {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
-pub enum ViewMode { Library, Folders, Timeline }
+#[derive(Default)]
+pub enum ViewMode { #[default]
+Library, Folders, Timeline }
 
-impl Default for ViewMode { fn default() -> Self { ViewMode::Library } }
 
 impl Settings {
     pub fn load() -> Result<Self> {

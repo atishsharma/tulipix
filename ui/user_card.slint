@@ -48,18 +48,16 @@ export component UserCard inherits Rectangle {
     in-out property <bool> menu-open: false;
     in property <bool> collapsed: false;   // sidebar collapsed → avatar only
 
-    callback action-switch-mode();
-    callback action-sign-in();
+    callback action-switch-mode();   // lock/unlock toggle — local-only app
     callback action-profiles();
     callback action-lock();
     callback action-edit-profile();
-    callback action-settings-account();
+    callback action-settings-account(); // opens Settings → Profile
 
     height: 64px;
 
     frost := PanelFrost {
         accent:
-            user.mode == Mode.account ? #14b8a6 :
             user.mode == Mode.locked  ? #475569 :
                                         Theme.brand;
         width: parent.width;
@@ -122,21 +120,19 @@ export component UserCard inherits Rectangle {
         y: -self.height - 6px;
         x: 0;
         width: max(parent.width, 200px);
-        height: 212px;
+        height: 178px;
         z: 10;
         VerticalLayout {
             padding: 8px; spacing: 2px;
             MenuItem {
-                label: user.mode == Mode.locked ? "Unlock"
-                    : (user.mode == Mode.account ? "Switch to Local Mode" : "Switch to Account Mode");
+                label: user.mode == Mode.locked ? "Unlock" : "Lock Now";
                 prominent: true;
                 clicked => { root.action-switch-mode(); root.menu-open = false; }
             }
             Rectangle { height: 1px; background: Theme.outline; }
-            MenuItem { label: "Sign In / Sign Out"; clicked => { root.action-sign-in(); root.menu-open = false; } }
             MenuItem { label: "Manage Profiles"; clicked => { root.action-profiles(); root.menu-open = false; } }
             MenuItem { label: "Edit Profile"; clicked => { root.action-edit-profile(); root.menu-open = false; } }
-            MenuItem { label: "Settings → Account";
+            MenuItem { label: "Settings → Profile";
                 clicked => { root.action-settings-account(); root.menu-open = false; }
             }
         }

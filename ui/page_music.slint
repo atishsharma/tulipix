@@ -1272,6 +1272,13 @@ export component MusicPage inherits Rectangle {
     in-out property <float> book-speed: 1.0;
     in-out property <bool> book-skip-silence-on: false;
     in property <[string]> book-bookmarks: [];
+    // Audiobooks sub-tab (all | progress | finished | folders) + folder rows.
+    in-out property <string> ab-tab: "all";
+    in property <[string]> ab-folders: [];
+    callback ab-set-tab(string);
+    callback audiobook-set-cover();          // pick custom art for the open book
+    callback audiobook-set-cover-for(string); // pick custom art for a folder card
+    callback ab-folder-find(string);          // reveal the book folder in the file manager
     callback audiobook-play(int);
     callback set-book-speed(float);
     callback book-chapter(int);     // ±1
@@ -1515,8 +1522,10 @@ export component MusicPage inherits Rectangle {
                 if root.view == "podcasts" && root.podcast-detail-open: VerticalLayout { alignment: center;
                     MusicTab { label: "‹ Back to podcasts"; has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: true; clicked => { root.podcast-back(); } } }
                 if root.view == "audiobooks": VerticalLayout { alignment: center; HorizontalLayout { spacing: 8px;
-                    MusicTab { label: "All"; active: true; }
-                    MusicTab { label: "In progress"; } MusicTab { label: "Finished"; } } }
+                    MusicTab { label: "All";          active: root.ab-tab == "all";      clicked => { root.ab-set-tab("all"); } }
+                    MusicTab { label: "In progress";  active: root.ab-tab == "progress"; clicked => { root.ab-set-tab("progress"); } }
+                    MusicTab { label: "Finished";     active: root.ab-tab == "finished"; clicked => { root.ab-set-tab("finished"); } }
+                    MusicTab { label: "📂 Folders";    active: root.ab-tab == "folders";  clicked => { root.ab-set-tab("folders"); } } } }
                 if root.view == "radio": VerticalLayout { alignment: center; HorizontalLayout { spacing: 8px;
                     MusicTab { label: "Browse"; active: true; }
                     MusicTab { label: "Favourites"; } MusicTab { label: "Recent"; } } }
@@ -1584,6 +1593,42 @@ export component MusicPage inherits Rectangle {
                 // Mini-player toggle (only when nothing's loaded — otherwise it lives in the cluster).
                 if root.view == "podcasts" && !root.podcast-loaded: VerticalLayout { alignment: center;
                     PlayerBtn { icon: Icons.pip; size: 34px; isz: 16px; active: root.mini-active; clicked => { root.open-mini(); } } }
+                // ── Audiobook now-playing cluster — same pattern as podcasts,
+                // tuned for long-form listening: ±30s skip, chapter step,
+                // pitch-preserving speed cycle, mini-player (np.p5.music.audiobook-chapters).
+                if root.view == "audiobooks": VerticalLayout { alignment: center;
+                    Rectangle {
+                        property <angle> ga: (Math.mod(animation-tick() / 18ms, 360)) * 1deg;
+                        border-radius: 19px;
+                        background: root.playing
+                            ? @linear-gradient(ga, #3b82f6, #3b82f640, #06b6d4, #3b82f6)
+                            : transparent;
+                        HorizontalLayout { padding: root.playing ? 2px : 0px;
+                            Rectangle { border-radius: 17px; background: root.playing ? MusicTheme.surf-header2 : transparent;
+                                HorizontalLayout { padding-left: 6px; padding-right: 6px; padding-top: 5px; padding-bottom: 5px; spacing: 5px;
+                                    Rectangle { width: 38px; height: 34px; border-radius: 17px; background: abchb.has-hover ? MusicTheme.surf1 : transparent;
+                                        abchb := TouchArea { mouse-cursor: pointer; clicked => { root.book-chapter(-1); } }
+                                        Text { text: "⏮"; color: MusicTheme.fg2; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; } }
+                                    Rectangle { width: 40px; height: 34px; border-radius: 17px; background: ab30b.has-hover ? MusicTheme.surf1 : transparent;
+                                        ab30b := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-skip(-30); } }
+                                        Text { text: "↺30"; color: MusicTheme.fg2; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                                    Rectangle { width: 38px; height: 34px; border-radius: 17px; background: abpp.has-hover ? #3b82f6 : MusicTheme.surf1;
+                                        abpp := TouchArea { mouse-cursor: pointer; clicked => { root.np-playpause(); } }
+                                        AppIcon { source: root.playing ? Icons.pause : Icons.play; tint: MusicTheme.fg; width: 15px; height: 15px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } }
+                                    Rectangle { width: 40px; height: 34px; border-radius: 17px; background: ab30f.has-hover ? MusicTheme.surf1 : transparent;
+                                        ab30f := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-skip(30); } }
+                                        Text { text: "30↻"; color: MusicTheme.fg2; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                                    Rectangle { width: 38px; height: 34px; border-radius: 17px; background: abchf.has-hover ? MusicTheme.surf1 : transparent;
+                                        abchf := TouchArea { mouse-cursor: pointer; clicked => { root.book-chapter(1); } }
+                                        Text { text: "⏭"; color: MusicTheme.fg2; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; } }
+                                    // Pitch-preserving speed cycle (audiobook range up to 3×).
+                                    Rectangle { width: 50px; height: 34px; border-radius: 17px; background: abspd.has-hover ? #3b82f6 : MusicTheme.surf1;
+                                        abspd := TouchArea { mouse-cursor: pointer; clicked => {
+                                            root.set-book-speed(root.book-speed >= 3.0 ? 0.75 : (root.book-speed >= 2.0 ? 3.0 : (root.book-speed >= 1.5 ? 2.0 : (root.book-speed >= 1.25 ? 1.5 : (root.book-speed >= 1.0 ? 1.25 : 1.0))))); } }
+                                        Text { text: root.book-speed + "×"; color: MusicTheme.fg; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                                    Rectangle { width: 38px; height: 34px; border-radius: 17px; background: abmn.has-hover || root.mini-active ? #3b82f6 : MusicTheme.surf1;
+                                        abmn := TouchArea { mouse-cursor: pointer; clicked => { root.open-mini(); } }
+                                        AppIcon { source: Icons.pip; tint: MusicTheme.fg; width: 16px; height: 16px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } } } } } }
                 if root.view == "podcasts": VerticalLayout { alignment: center; Rectangle { width: 4px; } }
                 // Settings — far right edge.
                 if root.view == "podcasts": VerticalLayout { alignment: center;
@@ -1814,15 +1859,14 @@ export component MusicPage inherits Rectangle {
                                 Text { text: "PODCAST"; color: MusicTheme.fg-dim; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
                                 Text { text: root.podcast-d-title; color: MusicTheme.fg; font-size: 28px; font-weight: 800; overflow: elide; }
                                 if root.podcast-d-author != "": Text { text: root.podcast-d-author; color: MusicTheme.fg3; font-size: 14px; overflow: elide; }
+                                // One line: category · episode count · Home pin · Info.
                                 HorizontalLayout { spacing: 8px; alignment: start;
-                                    if root.podcast-d-category != "": Rectangle { height: 24px; border-radius: 12px; background: MusicTheme.light ? #8b5cf626 : #8b5cf633; horizontal-stretch: 0;
+                                    if root.podcast-d-category != "": VerticalLayout { alignment: center; Rectangle { height: 30px; border-radius: 15px; background: MusicTheme.light ? #8b5cf626 : #8b5cf633; horizontal-stretch: 0;
                                         HorizontalLayout { padding-left: 10px; padding-right: 10px;
-                                            Text { text: root.podcast-d-category; color: MusicTheme.light ? #6d28d9 : #c4b5fd; font-size: 11px; font-weight: 700; vertical-alignment: center; } } }
-                                    Rectangle { height: 24px; border-radius: 12px; background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line; horizontal-stretch: 0;
+                                            Text { text: root.podcast-d-category; color: MusicTheme.light ? #6d28d9 : #c4b5fd; font-size: 11px; font-weight: 700; vertical-alignment: center; } } } }
+                                    VerticalLayout { alignment: center; Rectangle { height: 30px; border-radius: 15px; background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line; horizontal-stretch: 0;
                                         HorizontalLayout { padding-left: 10px; padding-right: 10px;
                                             Text { text: root.podcast-d-total + " episodes"; color: MusicTheme.fg2; font-size: 12px; font-weight: 700; vertical-alignment: center; } } } }
-                                // Action row — pin to Home "Your shows" + Podcast info.
-                                HorizontalLayout { spacing: 8px; alignment: start;
                                     Rectangle { height: 30px; border-radius: 15px; horizontal-stretch: 0;
                                         background: root.podcast-d-pinned ? #f59e0b22 : (ahb.has-hover ? #7c3aed : #8b5cf6);
                                         border-width: root.podcast-d-pinned ? 1px : 0px; border-color: #f59e0b;
@@ -1839,34 +1883,40 @@ export component MusicPage inherits Rectangle {
                                 if root.podcast-d-desc != "": Text { text: root.podcast-d-desc; color: MusicTheme.fg2; font-size: 13px;
                                     wrap: word-wrap; overflow: elide; height: 54px; }
                                 Rectangle { vertical-stretch: 1; }
-                                // Sort + pagination row (inside the card footer).
-                                HorizontalLayout { spacing: 8px; alignment: start;
-                                    VerticalLayout { alignment: center; Text { text: "Sort"; color: MusicTheme.fg-dim; font-size: 12px; vertical-alignment: center; } }
-                                    VerticalLayout { alignment: center; SortChip {
-                                        label: root.podcast-d-sort == "new" ? "↓ Newest" : "↑ Oldest";
-                                        clicked => { root.podcast-d-set-sort(root.podcast-d-sort == "new" ? "old" : "new"); } } }
-                                    Rectangle { horizontal-stretch: 1; }
-                                    if root.podcast-d-pages > 1: VerticalLayout { alignment: center; Rectangle { width: 28px; height: 28px; border-radius: 14px; background: dppp.has-hover ? #8b5cf6 : #8b5cf666;
-                                        dppp := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-d-set-page(-1); } }
-                                        Text { text: "◀"; color: #ffffff; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; } } }
-                                    if root.podcast-d-pages > 1: VerticalLayout { alignment: center; Text { text: (root.podcast-d-page + 1) + "/" + root.podcast-d-pages; color: MusicTheme.fg2; font-size: 12px; vertical-alignment: center; } }
-                                    if root.podcast-d-pages > 1: VerticalLayout { alignment: center; Rectangle { width: 28px; height: 28px; border-radius: 14px; background: dnnp.has-hover ? #8b5cf6 : #8b5cf666;
-                                        dnnp := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-d-set-page(1); } }
-                                        Text { text: "▶"; color: #ffffff; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; } } } } } }
-                        // BIG round Back — OUTSIDE the info box, cover-sized, glows on hover.
-                        Rectangle { width: 280px; height: 280px; border-radius: 140px; horizontal-stretch: 0; vertical-stretch: 0;
+                                // (Sort + pagination both live under the Back button now.)
+                            } }
+                        // Back + Sort column — Back shortened so the outlined
+                        // Sort box fits beneath, both cover-height together.
+                        Rectangle { width: 280px; height: 280px; horizontal-stretch: 0; vertical-stretch: 0;
                             y: (parent.height - self.height)/2;
-                            background: dbkp.has-hover ? #8b5cf6 : MusicTheme.surf1;
-                            border-width: 2px; border-color: dbkp.has-hover ? #8b5cf6 : MusicTheme.line;
-                            drop-shadow-blur: dbkp.has-hover ? 34px : 0px; drop-shadow-color: #8b5cf6aa;
-                            animate background, drop-shadow-blur, border-color { duration: 180ms; easing: ease-out; }
-                            dbkp := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-back(); } }
-                            VerticalLayout { alignment: center; spacing: 4px;
-                                HorizontalLayout { alignment: center;
-                                    AppIcon { source: Icons.chevron-left; tint: dbkp.has-hover ? #ffffff : MusicTheme.fg2;
-                                        width: dbkp.has-hover ? 56px : 48px; height: dbkp.has-hover ? 56px : 48px;
-                                        animate width, height { duration: 160ms; easing: ease-out; } } }
-                                Text { text: "Back"; color: dbkp.has-hover ? #ffffff : MusicTheme.fg2; font-size: 16px; font-weight: 700; horizontal-alignment: center; } } }
+                            VerticalLayout { spacing: 12px;
+                                Rectangle { height: 208px; border-radius: 36px;
+                                    background: dbkp.has-hover ? #8b5cf6 : MusicTheme.surf1;
+                                    border-width: 2px; border-color: dbkp.has-hover ? #8b5cf6 : MusicTheme.line;
+                                    drop-shadow-blur: dbkp.has-hover ? 34px : 0px; drop-shadow-color: #8b5cf6aa;
+                                    animate background, drop-shadow-blur, border-color { duration: 180ms; easing: ease-out; }
+                                    dbkp := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-back(); } }
+                                    VerticalLayout { alignment: center; spacing: 4px;
+                                        HorizontalLayout { alignment: center;
+                                            AppIcon { source: Icons.chevron-left; tint: dbkp.has-hover ? #ffffff : MusicTheme.fg2;
+                                                width: dbkp.has-hover ? 52px : 44px; height: dbkp.has-hover ? 52px : 44px;
+                                                animate width, height { duration: 160ms; easing: ease-out; } } }
+                                        Text { text: "Back"; color: dbkp.has-hover ? #ffffff : MusicTheme.fg2; font-size: 16px; font-weight: 700; horizontal-alignment: center; } } }
+                                // Sort + pagination — their own outlined box under Back.
+                                Rectangle { height: 60px; border-radius: 16px;
+                                    background: MusicTheme.surf00; border-width: 1px; border-color: MusicTheme.line;
+                                    HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 6px;
+                                        VerticalLayout { alignment: center; SortChip {
+                                            label: root.podcast-d-sort == "new" ? "↓ Newest" : "↑ Oldest";
+                                            clicked => { root.podcast-d-set-sort(root.podcast-d-sort == "new" ? "old" : "new"); } } }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        if root.podcast-d-pages > 1: VerticalLayout { alignment: center; Rectangle { width: 26px; height: 26px; border-radius: 13px; background: dppp.has-hover ? #8b5cf6 : #8b5cf666;
+                                            dppp := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-d-set-page(-1); } }
+                                            Text { text: "◀"; color: #ffffff; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; } } }
+                                        if root.podcast-d-pages > 1: VerticalLayout { alignment: center; Text { text: (root.podcast-d-page + 1) + "/" + root.podcast-d-pages; color: MusicTheme.fg2; font-size: 12px; vertical-alignment: center; } }
+                                        if root.podcast-d-pages > 1: VerticalLayout { alignment: center; Rectangle { width: 26px; height: 26px; border-radius: 13px; background: dnnp.has-hover ? #8b5cf6 : #8b5cf666;
+                                            dnnp := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-d-set-page(1); } }
+                                            Text { text: "▶"; color: #ffffff; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; } } } } } } }
                         Rectangle { horizontal-stretch: 1; } } }
                 // Episode list.
                 VerticalLayout { padding-left: 36px; padding-right: 36px; padding-bottom: 24px; spacing: 2px;
@@ -1882,11 +1932,71 @@ export component MusicPage inherits Rectangle {
         }
 
         // Audiobooks (np.p5.music.audiobook-chapters) — speed + chapters + resume.
-        // ── Audiobooks: folder-grouped card grid ────────────────────────────
-        if root.view == "audiobooks" && !root.audiobook-detail-open: ScrollView {
+        // ── Audiobooks: folder cards (same style as My Music Folders) ───────
+        // Each audiobook folder = one book: cover thumb, left-click opens,
+        // right-click menu with Open / Find in system / Change art.
+        if root.view == "audiobooks" && !root.audiobook-detail-open && root.ab-tab == "folders": ScrollView {
             vertical-stretch: 1; horizontal-stretch: 1;
-            VerticalLayout { padding: 36px; padding-top: 20px; spacing: 18px;
-                Text { text: "Audiobooks"; color: MusicTheme.fg; font-size: 26px; font-weight: 800; }
+            property <int> watch-n: root.audiobook-cards.length;
+            changed watch-n => { self.viewport-y = 0; }
+            VerticalLayout { padding: 36px; padding-top: 20px; spacing: 16px; alignment: start;
+                Text { text: "Audiobook folders"; color: MusicTheme.fg; font-size: 26px; font-weight: 800; }
+                if root.audiobook-cards.length == 0: Text {
+                    text: "No folders yet — use + Add (top-right) and assign the folder to Audiobooks.";
+                    color: MusicTheme.fg-dim2; font-size: 13px; }
+                if root.audiobook-cards.length > 0: Rectangle {
+                    horizontal-stretch: 1;
+                    property <int> gcols: Math.max(1, Math.min(7, Math.floor(self.width / 150px)));
+                    property <length> cell: self.width / gcols;
+                    property <length> rowh: cell + 34px;
+                    height: Math.ceil(root.audiobook-cards.length / gcols) * rowh;
+                    for c[idx] in root.audiobook-cards: abfcell := VerticalLayout { spacing: 8px;
+                        width: cell - 16px; x: Math.mod(idx, gcols) * cell + 8px; y: Math.floor(idx / gcols) * rowh;
+                        property <length> fmx: 0;
+                        property <length> fmy: 0;
+                        Rectangle { width: cell - 16px; height: cell - 16px; border-radius: 12px; clip: true;
+                            background: @linear-gradient(135deg, #3b82f655 0%, #06b6d455 100%);
+                            border-width: abfcard.has-hover ? 2px : 0px; border-color: #3b82f6;
+                            drop-shadow-blur: abfcard.has-hover ? 24px : 0px; drop-shadow-color: #3b82f6aa;
+                            animate drop-shadow-blur, border-width { duration: 130ms; }
+                            if c.cover.width == 0: Text { text: "📚"; font-size: 44px; horizontal-alignment: center; vertical-alignment: center; }
+                            if c.cover.width > 0: Image { source: c.cover; image-fit: cover; width: 100%; height: 100%; }
+                            abfcard := TouchArea { mouse-cursor: pointer;
+                                pointer-event(e) => {
+                                    if (e.kind == PointerEventKind.up && e.button == PointerEventButton.left)  { root.audiobook-open(c.id); }
+                                    if (e.kind == PointerEventKind.down && e.button == PointerEventButton.right) {
+                                        abfcell.fmx = self.mouse-x; abfcell.fmy = Math.min(self.mouse-y, self.height - 30px); abfmenu.show(); }
+                                } }
+                            abfmenu := PopupWindow { x: abfcell.fmx; y: abfcell.fmy; width: 220px; height: 110px; close-policy: close-on-click-outside;
+                                Rectangle { width: 100%; height: 100%; border-radius: 12px; background: MusicTheme.surf-pop;
+                                    border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: 34px; drop-shadow-color: #000000e6;
+                                    VerticalLayout { padding: 6px; spacing: 1px;
+                                        MusicMenuRow { label: "▶   Open"; clicked => { abfmenu.close(); root.audiobook-open(c.id); } }
+                                        MusicMenuRow { label: "🔎   Find in system"; clicked => { abfmenu.close(); root.ab-folder-find(c.id); } }
+                                        MusicMenuRow { label: "🖼   Change art"; clicked => { abfmenu.close(); root.audiobook-set-cover-for(c.id); } } } } }
+                            if abfcard.has-hover: Rectangle { width: 100%; height: 100%; background: #00000044;
+                                Text { text: "▶ Open  ·  right-click for options"; color: #ffffff; font-size: 9px; horizontal-alignment: center; vertical-alignment: center; wrap: word-wrap; } } }
+                        Text { text: c.title; color: MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; width: cell - 16px; horizontal-alignment: center; }
+                    }
+                }
+            }
+        }
+
+        // ── Audiobooks: folder-grouped card grid ────────────────────────────
+        if root.view == "audiobooks" && !root.audiobook-detail-open && root.ab-tab != "folders": ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            // New cards land with the viewport at the TOP — a ScrollView keeps
+            // its old viewport-y across content swaps, which left fresh lists
+            // opening scrolled to the bottom.
+            property <int> watch-n: root.audiobook-cards.length;
+            property <string> watch-t: root.ab-tab;
+            changed watch-n => { self.viewport-y = 0; }
+            changed watch-t => { self.viewport-y = 0; }
+            // alignment: start pins content directly under the header row —
+            // without it the layout can park content at the page bottom.
+            VerticalLayout { padding: 36px; padding-top: 20px; spacing: 18px; alignment: start;
+                Text { text: root.ab-tab == "progress" ? "In progress" : (root.ab-tab == "finished" ? "Finished" : "Audiobooks");
+                    color: MusicTheme.fg; font-size: 26px; font-weight: 800; }
                 if root.audiobook-cards.length == 0: Text {
                     text: "No audiobooks yet — open this Audiobooks tab and use + Add (top-right) to pick a folder; files with audiobook metadata are added here (the rest are skipped).";
                     color: MusicTheme.fg-dim2; font-size: 13px; }
@@ -1905,17 +2015,31 @@ export component MusicPage inherits Rectangle {
         }
 
         // ── Audiobooks: hero detail + chapter list ──────────────────────────
-        if root.view == "audiobooks" && root.audiobook-detail-open: ScrollView {
-            vertical-stretch: 1; horizontal-stretch: 1;
+        // FocusScope: Escape closes the open book back to the card grid.
+        if root.view == "audiobooks" && root.audiobook-detail-open: FocusScope {
+            init => { self.focus(); }
+            key-pressed(e) => {
+                if (e.text == Key.Escape) { root.audiobook-back(); return accept; }
+                return reject;
+            }
+            ScrollView {
+            width: 100%; height: 100%;
             VerticalLayout { padding: 0px; spacing: 16px; alignment: start;
                 // Hero.
                 Rectangle { height: 300px; horizontal-stretch: 1; clip: true;
                     Rectangle { width: parent.width; height: parent.height;
                         background: @linear-gradient(180deg, #3b82f659, MusicTheme.surf-page); }
                     HorizontalLayout { padding-left: 36px; padding-right: 36px; padding-top: 18px; padding-bottom: 16px; spacing: 22px;
-                        BookCover { width: 260px; height: 260px; glyph-size: 56px; cover: root.ab-d-cover;
-                            y: (parent.height - self.height)/2; border-width: 1px; border-color: MusicTheme.line;
-                            drop-shadow-blur: 24px; drop-shadow-color: #000000aa; }
+                        // Cover — click to set your own art (saved per book).
+                        Rectangle { width: 260px; height: 260px; y: (parent.height - self.height)/2;
+                            BookCover { width: 260px; height: 260px; glyph-size: 56px; cover: root.ab-d-cover;
+                                border-width: 1px; border-color: MusicTheme.line;
+                                drop-shadow-blur: 24px; drop-shadow-color: #000000aa; }
+                            abca := TouchArea { mouse-cursor: pointer; clicked => { root.audiobook-set-cover(); } }
+                            Rectangle { width: 100%; height: 34px; y: parent.height - self.height; border-radius: 8px;
+                                background: #000000bb; opacity: abca.has-hover ? 1 : 0; animate opacity { duration: 120ms; }
+                                Text { text: "✎ Change art"; color: #ffffff; font-size: 11px; font-weight: 700;
+                                    horizontal-alignment: center; vertical-alignment: center; } } }
                         VerticalLayout { horizontal-stretch: 1; padding-top: 20px; spacing: 8px; alignment: start;
                             HorizontalLayout { spacing: 10px;
                                 Text { text: "AUDIOBOOK"; color: MusicTheme.fg-dim; font-size: 11px; font-weight: 700; letter-spacing: 2px; vertical-alignment: center; }
@@ -1948,6 +2072,7 @@ export component MusicPage inherits Rectangle {
                     for cr[i] in root.ab-d-chapters: ChapterItem {
                         chapter: cr; n: i + 1; play => { root.audiobook-play(cr.index); } }
                 }
+            }
             }
         }
 
@@ -2360,8 +2485,9 @@ export component MusicPage inherits Rectangle {
 
 
         // ── Glassmorphism now-playing player (np.p4.music.player) ─────────
-        // Hidden on the Podcasts view — podcasts play in the centered mini-player.
-        if tiles.length > 0 && root.view != "podcasts": Rectangle {
+        // Hidden on Podcasts AND Audiobooks — both long-form sections use the
+        // compact header transport + the floating mini-player instead.
+        if tiles.length > 0 && root.view != "podcasts" && root.view != "audiobooks": Rectangle {
             height: 124px; horizontal-stretch: 1;
             background: MusicTheme.surf-player;
             border-width: 1px; border-color: MusicTheme.line;

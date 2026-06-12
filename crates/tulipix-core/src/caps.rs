@@ -10,7 +10,7 @@ const ALL_CAPS: &[&str] = &[
     "ai.tag-cluster", "ai.inpaint", "ai.segment", "ai.colorize", "ai.subtitle-gen",
     "photos.nondestructive-edit", "photos.collage", "photos.raw-timeline",
     "player.hw-decode", "player.hdr-tonemap",
-    "sync.enabled", "sync.shared-albums", "sync.remote-stream", "sync.profiles",
+    "profiles.managed",
     "plugins.install", "plugins.custom-scraper",
     "tools.bulk-metadata", "tools.ffmpeg-ui", "tools.dedup",
     "photos.ai.captions", "ai.voice", "ai.cloud-offload", "mcp.server", "mcp.server.write",
@@ -28,13 +28,11 @@ pub fn trace_enabled() -> bool {
     TRACE.load(Ordering::Relaxed)
 }
 
+// Local-only app: account tiers removed 2026-06-10 — local has full access.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Tier {
     LocalBasic,
     LocalPro,
-    AccountFree,
-    AccountPlus,
-    AccountPro,
     Admin,
     Guest,
     Kid,
@@ -45,9 +43,6 @@ impl Tier {
         match self {
             Tier::LocalBasic => "local_basic",
             Tier::LocalPro => "local_pro",
-            Tier::AccountFree => "account_free",
-            Tier::AccountPlus => "account_plus",
-            Tier::AccountPro => "account_pro",
             Tier::Admin => "admin",
             Tier::Guest => "guest",
             Tier::Kid => "kid",
@@ -57,9 +52,6 @@ impl Tier {
         Some(match s {
             "local_basic" => Tier::LocalBasic,
             "local_pro" => Tier::LocalPro,
-            "account_free" => Tier::AccountFree,
-            "account_plus" => Tier::AccountPlus,
-            "account_pro" => Tier::AccountPro,
             "admin" => Tier::Admin,
             "guest" => Tier::Guest,
             "kid" => Tier::Kid,
@@ -92,10 +84,8 @@ pub enum Cap {
     PhotosRawTimeline,
     PlayerHwDecode,
     PlayerHdrTonemap,
-    SyncEnabled,
-    SyncSharedAlbums,
-    SyncRemoteStream,
-    SyncProfiles,
+    // sync.* caps removed 2026-06-10 — local-only app, no sync backend.
+    LocalProfiles,
     PluginsInstall,
     PluginsCustomScraper,
     ToolsBulkMetadata,
@@ -134,10 +124,7 @@ impl Cap {
             Cap::PhotosRawTimeline => "photos.raw-timeline",
             Cap::PlayerHwDecode => "player.hw-decode",
             Cap::PlayerHdrTonemap => "player.hdr-tonemap",
-            Cap::SyncEnabled => "sync.enabled",
-            Cap::SyncSharedAlbums => "sync.shared-albums",
-            Cap::SyncRemoteStream => "sync.remote-stream",
-            Cap::SyncProfiles => "sync.profiles",
+            Cap::LocalProfiles => "profiles.managed",
             Cap::PluginsInstall => "plugins.install",
             Cap::PluginsCustomScraper => "plugins.custom-scraper",
             Cap::ToolsBulkMetadata => "tools.bulk-metadata",

@@ -156,8 +156,7 @@ mod tests {
     const CAPS: &str = r#"
 [tiers]
 local_basic  = []
-local_pro    = ["mcp.server"]
-account_pro  = ["mcp.server", "mcp.server.write"]
+local_pro    = ["mcp.server", "mcp.server.write"]
 "#;
 
     fn rpc(method: &str, params: Value) -> RpcRequest {
@@ -189,7 +188,7 @@ account_pro  = ["mcp.server", "mcp.server.write"]
     fn write_tool_requires_consent() {
         let _g = SERIAL.lock().unwrap_or_else(|e| e.into_inner());
         load_from_toml(CAPS, None).unwrap();
-        set_current_tier(Tier::AccountPro);
+        set_current_tier(Tier::LocalPro);
         let s = McpServer::new(Transport::Stdio);
         let params = serde_json::json!({ "name": "photos.tag", "arguments": { "id": 1, "tag": "x" } });
         let r = s.handle(rpc("tools/call", params.clone()));

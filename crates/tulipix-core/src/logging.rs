@@ -11,6 +11,12 @@ pub struct RollingJsonLog {
     inner: Mutex<Option<(String, std::fs::File)>>,
 }
 
+impl Default for RollingJsonLog {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RollingJsonLog {
     pub const fn new() -> Self { Self { inner: Mutex::new(None) } }
 

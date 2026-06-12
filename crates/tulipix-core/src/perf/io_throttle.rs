@@ -20,7 +20,7 @@ pub enum StorageKind { Hdd, SsdNvme }
 /// answer — better to let IO run than to falsely throttle a fast disk.
 pub fn detect(path: &Path) -> StorageKind {
     #[cfg(target_os = "linux")]
-    { return detect_linux(path).unwrap_or(StorageKind::SsdNvme); }
+    { detect_linux(path).unwrap_or(StorageKind::SsdNvme)}
     #[cfg(not(target_os = "linux"))]
     { let _ = path; StorageKind::SsdNvme }
 }

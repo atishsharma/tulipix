@@ -1,7 +1,7 @@
 //! Opt-in cloud LLM offload — Anthropic / OpenAI / Gemini.
 //!
-//! Local-first is the default; this module exists for tier-`account.pro+` users
-//! who want a beefier remote model for hard prompts. Every query goes through
+//! Local-first is the default; this opt-in module is for users with their own
+//! API keys who want a beefier remote model for hard prompts. Every query goes through
 //! a consent gate that shows a *redacted* preview of the outbound payload —
 //! the user must explicitly approve each query (or enable session-wide
 //! consent for the chosen provider). Cap-gated `ai.cloud-offload`.

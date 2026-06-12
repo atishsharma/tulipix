@@ -51,6 +51,7 @@ QODER.md
 .antigravitycli/
 docs/
 target/
+target-dev/
 .rtk/
 .windsurfrules
 tulipix_plan.html

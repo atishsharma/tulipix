@@ -21,7 +21,7 @@ pub enum Rule {
 /// Apply rules in order to a tag map, returning the changed map.
 pub fn apply(tags: &HashMap<String, String>, rules: &[Rule]) -> HashMap<String, String> {
     let mut out = tags.clone();
-    let is_empty = |m: &HashMap<String, String>, k: &str| m.get(k).map_or(true, |v| v.trim().is_empty());
+    let is_empty = |m: &HashMap<String, String>, k: &str| m.get(k).is_none_or(|v| v.trim().is_empty());
     for rule in rules {
         match rule {
             Rule::Set { field, value } => { out.insert(field.clone(), value.clone()); }

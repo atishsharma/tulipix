@@ -13,7 +13,7 @@ pub fn sha256_file(p: &Path) -> std::io::Result<String> {
         if n == 0 { break; }
         h.update(&buf[..n]);
     }
-    Ok(hex(&h.finalize()))
+    Ok(hex(h.finalize()))
 }
 
 fn hex(b: impl AsRef<[u8]>) -> String {

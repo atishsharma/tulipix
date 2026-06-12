@@ -4,9 +4,6 @@
 [tiers]
 local_basic   = ["platform.share-sheet", "mcp.server"]
 local_pro     = ["photos.scan", "videos.scan", "music.scan", "books.scan", "cloud.mount", "ai.face-cluster", "photos.ai.captions", "ai.voice", "ai.cloud-offload", "mcp.server", "mcp.server.write", "platform.share-sheet"]
-account_free  = ["photos.scan", "videos.scan", "music.scan", "books.scan", "platform.share-sheet", "mcp.server"]
-account_plus  = ["photos.scan", "videos.scan", "music.scan", "books.scan", "cloud.mount", "ai.face-cluster", "ai.upscale", "photos.ai.captions", "ai.voice", "platform.share-sheet", "mcp.server"]
-account_pro   = ["photos.scan", "videos.scan", "music.scan", "books.scan", "cloud.mount", "ai.face-cluster", "ai.upscale", "ai.stem-separation", "ai.tts", "sync.enabled", "photos.ai.captions", "ai.voice", "ai.cloud-offload", "mcp.server", "mcp.server.write", "platform.share-sheet"]
 admin         = ["*"]
 guest         = []
 kid           = ["photos.scan", "videos.scan", "music.scan", "books.scan", "platform.share-sheet"]
@@ -16,76 +13,43 @@ kid           = ["photos.scan", "videos.scan", "music.scan", "books.scan", "plat
 [quota.tmdb]
 local_basic = 100
 local_pro = 1000
-account_free = 500
-account_plus = -1
-account_pro = -1
 
 [quota.tvdb]
 local_basic = 100
 local_pro = 1000
-account_free = 500
-account_plus = -1
-account_pro = -1
 
 [quota.opensubtitles]
 local_basic = 20
 local_pro = 200
-account_free = 100
-account_plus = 1000
-account_pro = -1
 
 [quota.lrclib]
 local_basic = 200
 local_pro = -1
-account_free = 500
-account_plus = -1
-account_pro = -1
 
 [quota.musicbrainz]
 local_basic = 200
 local_pro = -1
-account_free = -1
-account_plus = -1
-account_pro = -1
 
 [quota.coverart]
 local_basic = 200
 local_pro = -1
-account_free = -1
-account_plus = -1
-account_pro = -1
 
 [quota.libretranslate]
 local_basic = 50
 local_pro = 500
-account_free = 200
-account_plus = -1
-account_pro = -1
 
 [quota.lastfm]
 local_basic = 100
 local_pro = 1000
-account_free = 500
-account_plus = -1
-account_pro = -1
 
 [quota.google_oauth]
 local_basic = 0
 local_pro = -1
-account_free = -1
-account_plus = -1
-account_pro = -1
 
 [quota.github_oauth]
 local_basic = 0
 local_pro = -1
-account_free = -1
-account_plus = -1
-account_pro = -1
 
 [quota.ytdlp_cookies]
 local_basic = 0
 local_pro = -1
-account_free = -1
-account_plus = -1
-account_pro = -1

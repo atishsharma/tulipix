@@ -23,18 +23,18 @@ mod books;
 mod cloud;
 
 fn detect_dark() -> bool {
-    // dark-light uses zbus on Linux which needs a Tokio reactor.
-    // Run the probe inside a one-shot single-threaded runtime so it works
-    // regardless of caller context.
+    // dark-light v2 reads the XDG portal color-scheme via zbus on Linux, which
+    // needs a Tokio reactor. Run the probe inside a one-shot single-threaded
+    // runtime so it works regardless of caller context.
     let mode = std::thread::spawn(|| {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
-        Some(rt.block_on(async { dark_light::detect() }))
+        rt.block_on(async { dark_light::detect() }).ok()
     })
     .join()
     .ok()
     .flatten()
     .unwrap_or(dark_light::Mode::Dark);
-    matches!(mode, dark_light::Mode::Dark | dark_light::Mode::Default)
+    matches!(mode, dark_light::Mode::Dark | dark_light::Mode::Unspecified)
 }
 
 fn apply_theme_choice(window: &MainWindow, choice: ThemeChoice) {
@@ -255,7 +255,7 @@ fn main() -> Result<()> {
             tracing::info!(idle, autolock, "ambient screensaver toggled");
         });
     });
-    window.on_ambient_dismissed(|| tulipix_core::idle::mark_active());
+    window.on_ambient_dismissed(tulipix_core::idle::mark_active);
 
     // Initial theme — start light (overridden below by persisted setting).
     apply_theme_choice(&window, ThemeChoice::Light);
@@ -439,7 +439,7 @@ fn main() -> Result<()> {
         let Some(w) = w.upgrade() else { return; };
         let path_str = w.get_music_pending_add_path().to_string();
         if path_str.is_empty() { return; }
-        music_add_folder_to_section(&w, PathBuf::from(&path_str), &key.to_string());
+        music_add_folder_to_section(&w, PathBuf::from(&path_str), key.as_ref());
         if w.get_library_rows().row_count() > 0 { w.set_onboarding_lib_added(true); }
     });
 
@@ -504,11 +504,30 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_book_toggle_invert(move || { if let Some(w) = w.upgrade() { reader_toggle_invert(&w); } });
     let w = window.as_weak();
-    window.on_book_set_font(move |px| { if let Some(w) = w.upgrade() { reader_set_typo(&w, Some(px), None, None); } });
+    window.on_book_toggle_guided(move || {
+        // np.p5.books.comic-guided — panel-by-panel reading on/off.
+        if let Some(w) = w.upgrade() {
+            READER.with(|r| {
+                let mut g = r.borrow_mut();
+                if let Some(s) = g.as_mut() {
+                    s.guided = !s.guided;
+                    s.panel = 0;
+                    s.panels_page = usize::MAX; // force re-detect on render
+                }
+            });
+            reader_render(&w);
+        }
+    });
     let w = window.as_weak();
-    window.on_book_set_line(move |lh| { if let Some(w) = w.upgrade() { reader_set_typo(&w, None, Some(lh), None); } });
+    window.on_book_set_font(move |px| { if let Some(w) = w.upgrade() { reader_set_typo(&w, Some(px), None, None, None); } });
     let w = window.as_weak();
-    window.on_book_set_family(move |fam| { if let Some(w) = w.upgrade() { reader_set_typo(&w, None, None, Some(fam)); } });
+    window.on_book_set_line(move |lh| { if let Some(w) = w.upgrade() { reader_set_typo(&w, None, Some(lh), None, None); } });
+    let w = window.as_weak();
+    window.on_book_set_family(move |fam| { if let Some(w) = w.upgrade() { reader_set_typo(&w, None, None, Some(fam), None); } });
+    let w = window.as_weak();
+    window.on_book_set_margin(move |m| { if let Some(w) = w.upgrade() { reader_set_typo(&w, None, None, None, Some(m)); } });
+    let w = window.as_weak();
+    window.on_book_reflow(move |width, height| { if let Some(w) = w.upgrade() { reader_reflow(&w, width, height); } });
     let w = window.as_weak();
     window.on_book_toggle_text_dark(move || {
         if let Some(w) = w.upgrade() { w.set_book_text_dark(!w.get_book_text_dark()); }
@@ -525,11 +544,14 @@ fn main() -> Result<()> {
             READER.with(|r| {
                 let mut g = r.borrow_mut();
                 if let Some(s) = g.as_mut() {
-                    if s.format == "epub" {
-                        // page here is actually a chapter index
-                        s.chapter = (page as usize).min(s.chapters.len().saturating_sub(1));
+                    if fmt_is_text(&s.format) {
+                        // `page` is a chapter index from the TOC → its first page.
+                        let c = (page as usize).min(s.chapter_starts.len().saturating_sub(1));
+                        s.page = s.chapter_starts.get(c).copied().unwrap_or(0);
+                        s.chapter = c;
                     } else {
                         s.comic.page = (page as usize).min(s.comic.total.saturating_sub(1));
+                        s.panel = 0; // guided view restarts on the jumped-to page
                     }
                 }
             });
@@ -544,10 +566,11 @@ fn main() -> Result<()> {
     });
     let w = window.as_weak();
     window.on_book_add_bookmark(move || {
-        let Some(_w0) = w.upgrade() else { return; };
+        let Some(w0) = w.upgrade() else { return; };
+        let color = w0.get_book_bm_color().to_string();
         let snap = READER.with(|r| {
             r.borrow().as_ref().map(|s| {
-                let page = if s.format == "cbz" { s.comic.page as i64 } else { s.chapter as i64 };
+                let page = if fmt_is_comic(&s.format) { s.comic.page as i64 } else { s.page as i64 };
                 (s.item_id, page)
             })
         });
@@ -557,14 +580,16 @@ fn main() -> Result<()> {
         let handle = tokio::runtime::Handle::current();
         handle.spawn(async move {
             if let Ok(pool) = pool_for("books").await {
-                let _ = tulipix_books::progress::add_bookmark(&pool, item_id, &page.to_string(), page, None).await;
+                let _ = tulipix_books::progress::add_bookmark(
+                    &pool, item_id, &page.to_string(), page, None, Some(&color)).await;
                 // Reload bookmarks into UI
                 if let Ok(bms) = tulipix_books::progress::bookmarks(&pool, item_id).await {
                     let _ = wk.upgrade_in_event_loop(move |w| {
-                        let rows: Vec<BookmarkRow> = bms.into_iter().map(|(id, pg, note)| BookmarkRow {
+                        let rows: Vec<BookmarkRow> = bms.into_iter().map(|(id, pg, note, color)| BookmarkRow {
                             id: id as i32,
                             page: pg as i32,
                             note: note.unwrap_or_default().into(),
+                            color: color.unwrap_or_default().into(),
                         }).collect();
                         w.set_book_bookmarks(slint::ModelRc::new(slint::VecModel::from(rows)));
                     });
@@ -578,10 +603,12 @@ fn main() -> Result<()> {
             READER.with(|r| {
                 let mut g = r.borrow_mut();
                 if let Some(s) = g.as_mut() {
-                    if s.format == "cbz" {
+                    if fmt_is_comic(&s.format) {
                         s.comic.page = (page as usize).min(s.comic.total.saturating_sub(1));
+                        s.panel = 0;
                     } else {
-                        s.chapter = (page as usize).min(s.chapters.len().saturating_sub(1));
+                        s.page = (page as usize).min(s.pages.len().saturating_sub(1));
+                        s.chapter = chapter_of_page(s, s.page);
                     }
                 }
             });
@@ -595,6 +622,8 @@ fn main() -> Result<()> {
         if let Some(w) = w.upgrade() {
             let new_mode = if w.get_book_read_mode().as_str() == "paginated" { "scroll" } else { "paginated" };
             w.set_book_read_mode(new_mode.into());
+            // Scroll mode shows the whole chapter; paginated shows one page.
+            reader_render(&w);
         }
     });
     let w = window.as_weak();
@@ -603,22 +632,78 @@ fn main() -> Result<()> {
     });
     let w = window.as_weak();
     window.on_book_tts_start(move || {
-        if let Some(w) = w.upgrade() {
-            w.set_book_reader_kind("unsupported".into());
-        }
+        // np.p4/p5.books.tts — read the current page aloud sentence by
+        // sentence, surfacing the spoken sentence in the reader overlay.
+        // Offline Piper voice first, platform TTS fallback per sentence.
+        let Some(_w) = w.upgrade() else { return; };
+        let text = READER.with(|r| r.borrow().as_ref()
+            .and_then(|s| s.pages.get(s.page).cloned()).unwrap_or_default());
+        if text.trim().is_empty() { return; }
+        // A bumped generation stops any previous run; the stop button bumps too.
+        let generation = TTS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+        let wk = w.clone();
+        std::thread::spawn(move || {
+            let sentences = tulipix_books::tts::chunk_sentences(&text, 400);
+            for sentence in sentences {
+                if TTS_GENERATION.load(std::sync::atomic::Ordering::SeqCst) != generation { break; }
+                let shown = sentence.clone();
+                let _ = wk.upgrade_in_event_loop(move |w| {
+                    w.set_book_tts_sentence(shown.into());
+                });
+                tts_speak_sentence(&sentence);
+            }
+            // Clear the overlay only if no newer run took over.
+            if TTS_GENERATION.load(std::sync::atomic::Ordering::SeqCst) == generation {
+                let _ = wk.upgrade_in_event_loop(move |w| {
+                    w.set_book_tts_sentence("".into());
+                });
+            }
+        });
+    });
+    let w = window.as_weak();
+    window.on_book_tts_stop(move || {
+        // Invalidate the running generation; the speaking thread notices
+        // before its next sentence.
+        TTS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        if let Some(w) = w.upgrade() { w.set_book_tts_sentence("".into()); }
+    });
+    let w = window.as_weak();
+    window.on_book_define(move |word| {
+        // np.p5.books.dictionary — definition + translation + Wikipedia lookup.
+        let Some(w0) = w.upgrade() else { return; };
+        let word = word.to_string().trim().to_string();
+        if word.is_empty() { return; }
+        w0.set_book_define_result(format!("Looking up “{word}”…").into());
+        let wk = w.clone();
+        let handle = tokio::runtime::Handle::current();
+        handle.spawn(async move {
+            let result = define_word(&word).await;
+            let _ = wk.upgrade_in_event_loop(move |w| {
+                w.set_book_define_result(result.into());
+            });
+        });
     });
     let w = window.as_weak();
     window.on_book_find_text(move |query| {
         if let Some(w) = w.upgrade() {
             let q = query.to_string().to_lowercase();
+            if q.trim().is_empty() { return; }
             READER.with(|r| {
                 let mut g = r.borrow_mut();
                 if let Some(s) = g.as_mut() {
-                    if s.format == "epub" {
-                        // Jump to first chapter containing the query string
-                        if let Some(idx) = s.chapters.iter().position(|c| c.to_lowercase().contains(&q)) {
-                            s.chapter = idx;
+                    if fmt_is_text(&s.format) {
+                        // Same query again = find-NEXT: scan after the current
+                        // page and wrap; a new query starts from the top.
+                        let total = s.pages.len();
+                        let start = if s.last_query == q { s.page + 1 } else { 0 };
+                        let hit = (0..total)
+                            .map(|off| (start + off) % total.max(1))
+                            .find(|&i| s.pages[i].to_lowercase().contains(&q));
+                        if let Some(idx) = hit {
+                            s.page = idx;
+                            s.chapter = chapter_of_page(s, s.page);
                         }
+                        s.last_query = q.clone();
                     }
                 }
             });
@@ -642,31 +727,115 @@ fn main() -> Result<()> {
         });
     });
     let w = window.as_weak();
-    window.on_book_fetch_meta(move |_idx| {
-        // Stub: metadata fetch via Google Books API requires reqwest in this crate.
-        // The URL builder and parser live in tulipix_books::metadata; wire network
-        // call here once reqwest is added to tulipix-app's Cargo.toml.
-        let _ = w.upgrade();
+    window.on_book_collection_open(move |col_id| {
+        if let Some(w) = w.upgrade() {
+            w.set_book_view(format!("col:{col_id}").into());
+            refresh_books(&w);
+        }
     });
-    let _w = window.as_weak();
+    let w = window.as_weak();
+    window.on_book_add_to_collection(move |idx, name| {
+        let item_id = book_ids().lock().ok().and_then(|g| g.get(idx as usize).copied()).unwrap_or(-1);
+        let name = name.to_string().trim().to_string();
+        if item_id < 0 || name.is_empty() { return; }
+        let wk = w.clone();
+        let handle = tokio::runtime::Handle::current();
+        handle.spawn(async move {
+            let Ok(pool) = pool_for("books").await else { return; };
+            let _ = tulipix_books::library::add_to_collection(&pool, &name, item_id).await;
+            let _ = wk.upgrade_in_event_loop(move |w| refresh_books(&w));
+        });
+    });
+    let w = window.as_weak();
+    window.on_book_fetch_meta(move |idx| {
+        // np.p4.books.metadata — Google Books title lookup; fills only empty
+        // book_meta fields (metadata::apply COALESCEs), then refreshes the grid.
+        let item_id = book_ids().lock().ok().and_then(|g| g.get(idx as usize).copied()).unwrap_or(-1);
+        let stem = book_paths().lock().ok()
+            .and_then(|g| g.get(idx as usize).cloned())
+            .and_then(|p| p.file_stem().and_then(|s| s.to_str().map(|s| s.to_string())))
+            .unwrap_or_default();
+        if item_id < 0 { return; }
+        let wk = w.clone();
+        let handle = tokio::runtime::Handle::current();
+        handle.spawn(async move {
+            let Ok(pool) = pool_for("books").await else { return; };
+            // Prefer the stored title; fall back to the file stem.
+            let title: String = sqlx::query_scalar::<_, Option<String>>(
+                "SELECT title FROM book_meta WHERE item_id = ?1")
+                .bind(item_id).fetch_optional(&pool).await.ok().flatten().flatten()
+                .filter(|t| !t.trim().is_empty())
+                .unwrap_or(stem);
+            if title.trim().is_empty() { return; }
+            let url = tulipix_books::metadata::google_books_url(&title);
+            let Ok(resp) = reqwest::get(&url).await else { return; };
+            let Ok(body) = resp.text().await else { return; };
+            let Some(meta) = tulipix_books::metadata::parse_google_books(&body) else { return; };
+            let _ = tulipix_books::metadata::apply(&pool, item_id, &meta).await;
+            let _ = wk.upgrade_in_event_loop(move |w| refresh_books(&w));
+        });
+    });
+    let w = window.as_weak();
     window.on_book_export_notes(move |idx| {
+        // np.p5.books.export-notes — Markdown + CSV into ~/Documents/Tulipix
+        // Notes/, with a visible confirmation in the books stats bar.
+        let Some(_w0) = w.upgrade() else { return; };
         let item_id = book_ids().lock().ok().and_then(|g| g.get(idx as usize).copied()).unwrap_or(-1);
         let title = book_paths().lock().ok()
             .and_then(|g| g.get(idx as usize).cloned())
             .and_then(|p| p.file_stem().and_then(|s| s.to_str().map(|s| s.to_string())))
             .unwrap_or_default();
         if item_id < 0 { return; }
+        let wk = w.clone();
+        let handle = tokio::runtime::Handle::current();
+        handle.spawn(async move {
+            let status = async {
+                let pool = pool_for("books").await.ok()?;
+                let bms = tulipix_books::progress::bookmarks(&pool, item_id).await.ok()?;
+                if bms.is_empty() {
+                    return Some("No bookmarks to export for this book".to_string());
+                }
+                let dir = dirs_default_documents().join("Tulipix Notes");
+                std::fs::create_dir_all(&dir).ok()?;
+                let safe: String = title.chars()
+                    .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' { c } else { '_' })
+                    .collect();
+                let mut md = format!("# Bookmarks: {title}\n\n");
+                let mut csv = String::from("page,color,note\n");
+                for (_id, page, note, color) in &bms {
+                    let n = note.as_deref().unwrap_or("");
+                    let c = color.as_deref().unwrap_or("");
+                    md.push_str(&format!("- **Page {}**{}{}\n", page + 1,
+                        if c.is_empty() { String::new() } else { format!(" `{c}`") },
+                        if n.is_empty() { String::new() } else { format!(" — {n}") }));
+                    csv.push_str(&format!("{},{},\"{}\"\n", page + 1, c, n.replace('"', "\"\"")));
+                }
+                std::fs::write(dir.join(format!("{safe}.md")), &md).ok()?;
+                std::fs::write(dir.join(format!("{safe}.csv")), &csv).ok()?;
+                Some(format!("{} notes exported → {}", bms.len(), dir.display()))
+            }.await.unwrap_or_else(|| "Export failed — see logs".to_string());
+            let _ = wk.upgrade_in_event_loop(move |w| {
+                w.set_book_export_status(status.into());
+                // Auto-clear after 6s without holding the window alive.
+                let weak = w.as_weak();
+                slint::Timer::single_shot(std::time::Duration::from_secs(6), move || {
+                    if let Some(w) = weak.upgrade() { w.set_book_export_status("".into()); }
+                });
+            });
+        });
+    });
+    let w = window.as_weak();
+    window.on_book_goal_adjust(move |delta| {
+        // ± yearly reading goal (np.p5.books.stats); persisted in book_prefs.
+        let wk = w.clone();
         let handle = tokio::runtime::Handle::current();
         handle.spawn(async move {
             let Ok(pool) = pool_for("books").await else { return; };
-            let Ok(bms) = tulipix_books::progress::bookmarks(&pool, item_id).await else { return; };
-            let mut md = format!("# Bookmarks: {title}\n\n");
-            for (id, page, note) in &bms {
-                md.push_str(&format!("- Page {} (id {}){}\n", page + 1, id,
-                    note.as_deref().map(|n| format!(": {n}")).unwrap_or_default()));
-            }
-            let out = std::env::temp_dir().join(format!("{title}-notes.md"));
-            let _ = std::fs::write(&out, &md);
+            let cur = tulipix_books::progress::get_pref(&pool, "year_goal").await
+                .ok().flatten().and_then(|v| v.parse::<i64>().ok()).unwrap_or(12);
+            let next = (cur + delta as i64).clamp(1, 999);
+            let _ = tulipix_books::progress::set_pref(&pool, "year_goal", &next.to_string()).await;
+            let _ = wk.upgrade_in_event_loop(move |w| { refresh_books(&w); });
         });
     });
 
@@ -1113,7 +1282,7 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_music_set_eq_band(move |i, v| {
         let Some(w) = w.upgrade() else { return; };
-        if i < 0 || i >= 10 { return; }
+        if !(0..10).contains(&i) { return; }
         if let Ok(mut g) = music_eq().lock() { g[i as usize] = v.clamp(-12.0, 12.0) as f64; }
         w.set_music_eq_preset("custom".into());
         apply_music_eq(&w);
@@ -1807,7 +1976,7 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_music_set_thumb_size(move |v| {
         let Some(w) = w.upgrade() else { return; };
-        let px = (v as f32).clamp(100.0, 300.0);
+        let px = v.clamp(100.0, 300.0);
         w.set_music_thumb_size(px);
         save_music_pref("music.thumb_size", &format!("{px:.0}"));
     });
@@ -2271,9 +2440,9 @@ fn main() -> Result<()> {
         DETAIL_ROWS.with(|r| {
             let mut v = r.borrow_mut();
             match s.as_str() {
-                "title"    => v.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
-                "artist"   => v.sort_by(|a, b| a.artist.to_lowercase().cmp(&b.artist.to_lowercase())),
-                "duration" => v.sort_by(|a, b| dur_secs(a.duration.as_str()).cmp(&dur_secs(b.duration.as_str()))),
+                "title"    => v.sort_by_key(|a| a.title.to_lowercase()),
+                "artist"   => v.sort_by_key(|a| a.artist.to_lowercase()),
+                "duration" => v.sort_by_key(|a| dur_secs(a.duration.as_str())),
                 "album"    => {
                     let alb_of: std::collections::HashMap<i32, String> = music_songs().lock()
                         .map(|g| g.iter().map(|s| (s.pos, s.album.to_lowercase())).collect()).unwrap_or_default();
@@ -3171,12 +3340,19 @@ fn main() -> Result<()> {
         // Trends is the one exception: it fetches the baked feed list (cached for
         // the session) the first time it's opened.
         let is_trends = t == "trends";
+        let is_downloads = t == "downloads";
         w0.set_music_podcast_tab(t);
         // Trends: build only the first time (or after a reset emptied it). The
         // grid model + sort flags persist, so re-entering is an instant UI swap
         // instead of re-decoding 21 cover images on every tab change.
         if is_trends && w0.get_music_podcast_trends().row_count() == 0 {
             populate_podcast_trends(&w0);
+        }
+        // Downloads: episodes finish downloading while the user is on other
+        // tabs, so this list re-queries on entry (cheap now that art decodes
+        // off-thread + caches — the old "no re-query" rule predates that).
+        if is_downloads {
+            populate_podcast_downloads(&w0);
         }
     });
     // Filter the Subscribed grid by category (reset to page 1).
@@ -3407,6 +3583,7 @@ fn main() -> Result<()> {
     window.on_music_audiobook_open(move |folder| {
         let Some(_w0) = w.upgrade() else { return; };
         let folder = folder.to_string();
+        if let Ok(mut g) = cur_book_folder().lock() { *g = folder.clone(); }
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("music").await else { return; };
@@ -3417,6 +3594,31 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_music_audiobook_back(move || {
         if let Some(w0) = w.upgrade() { w0.set_music_audiobook_detail_open(false); }
+    });
+    // Audiobooks sub-tab (All / In progress / Finished / Folders) — closes any
+    // open book detail and re-filters the card grid.
+    let w = window.as_weak();
+    window.on_music_ab_set_tab(move |t| {
+        let Some(w0) = w.upgrade() else { return; };
+        if let Ok(mut g) = ab_tab().lock() { *g = t.to_string(); }
+        w0.set_music_ab_tab(t);
+        w0.set_music_audiobook_detail_open(false);
+        populate_audiobooks(&w0);
+    });
+    // Custom cover (np.p5.music.audiobook-chapters — own art): file picker →
+    // persisted in audiobook_covers; the detail hero + cards refresh at once.
+    let w = window.as_weak();
+    window.on_music_audiobook_set_cover(move || {
+        let folder = cur_book_folder().lock().map(|g| g.clone()).unwrap_or_default();
+        audiobook_pick_cover(w.clone(), folder);
+    });
+    let w = window.as_weak();
+    window.on_music_audiobook_set_cover_for(move |folder| {
+        audiobook_pick_cover(w.clone(), folder.to_string());
+    });
+    // Reveal an audiobook folder in the system file manager (Folders tab menu).
+    window.on_music_ab_folder_find(move |folder| {
+        open_in_default_app(std::path::Path::new(folder.as_str()));
     });
     // Re-fetch every subscribed podcast feed (np.p5.music.podcast-feeds auto-refresh).
     let w = window.as_weak();
@@ -4202,14 +4404,16 @@ fn main() -> Result<()> {
         }
     });
 
-    // User-card menu actions
+    // User-card menu actions — local-only app: the only modes are Local and
+    // Locked (lockscreen). No account, no sign-in, no upgrade nudges.
     let w = window.as_weak();
     window.on_user_action(move |action| {
         tracing::info!(?action, "user action");
-        // Non-mode actions handled inline.
-        if action.as_str() == "upgrade-sync" {
+        if action.as_str() == "settings-account" {
+            // User-card "Settings → Profile" shortcut.
             if let Some(w) = w.upgrade() {
-                w.set_caps_nudge("Account Plus unlocks sync & shared albums.".into());
+                w.set_active_section("settings".into());
+                w.set_active_settings_tab("profile".into());
             }
             return;
         }
@@ -4219,15 +4423,13 @@ fn main() -> Result<()> {
                 tulipix_core::account::set(tulipix_core::account::AppMode::Local);
                 tulipix_core::account::AppMode::Local
             }
-            "switch-to-account" => {
-                tulipix_core::account::set(tulipix_core::account::AppMode::Account);
-                tulipix_core::account::AppMode::Account
-            }
+            // Lock toggle: locked → unlock, otherwise lock.
             "switch-mode" => {
                 if tulipix_core::account::current() == tulipix_core::account::AppMode::Locked {
                     tulipix_core::account::unlock()
                 } else {
-                    tulipix_core::account::toggle_local_account()
+                    tulipix_core::account::lock();
+                    tulipix_core::account::AppMode::Locked
                 }
             }
             _ => return,
@@ -4235,13 +4437,11 @@ fn main() -> Result<()> {
         if let Some(w) = w.upgrade() {
             let mut user = w.get_user();
             user.mode = match next {
-                tulipix_core::account::AppMode::Local => Mode::Local,
-                tulipix_core::account::AppMode::Account => Mode::Account,
                 tulipix_core::account::AppMode::Locked => Mode::Locked,
+                _ => Mode::Local,
             };
             w.set_user(user);
-            // Mode change can change tier → refresh the account-feature gate.
-            w.set_account_sync_allowed(true); // local-model: full access, every capability unlocked
+            w.set_account_sync_allowed(true); // local app: full access, every capability unlocked
             // Locking shows the screensaver as a lock screen.
             if action.as_str() == "lock" {
                 w.set_ambient_clock(clock_now().into());
@@ -5732,10 +5932,10 @@ fn kick_category_refresh(weak: slint::Weak<MainWindow>, category: String, query:
                                         let is_live = item_id.map(|id| live_ids().lock().ok()
                                             .map(|g| g.contains(&id)).unwrap_or(false)).unwrap_or(false);
                                         let (stack_count, _hidden) = {
-                                            let si = stack_info().lock().ok()
+                                            
+                                            stack_info().lock().ok()
                                                 .map(|g| (g.0.get(p).copied().unwrap_or(0), g.1.contains(p)))
-                                                .unwrap_or_default();
-                                            si
+                                                .unwrap_or_default()
                                         };
                                         PhotoTile {
                                             thumb: slint::Image::load_from_path(thumb).unwrap_or_default(),
@@ -5975,19 +6175,19 @@ async fn folder_order(folder: &str, sort: &str, dir: &str) -> Vec<(String, Strin
     let arrow = if asc { "▲" } else { "▼" };
     match sort {
         "name" => {
-            m.sort_by(|a, b| fname(&a.0).cmp(&fname(&b.0)));
+            m.sort_by_key(|a| fname(&a.0));
             if !asc { m.reverse(); }
             let label = format!("By name {arrow}");
             m.into_iter().map(|(p, _, _)| (p, label.clone())).collect()
         }
         "size" => {
-            m.sort_by(|a, b| a.2.cmp(&b.2));
+            m.sort_by_key(|a| a.2);
             if !asc { m.reverse(); }
             let label = format!("By size {arrow}");
             m.into_iter().map(|(p, _, _)| (p, label.clone())).collect()
         }
         _ => {
-            m.sort_by(|a, b| a.1.cmp(&b.1));
+            m.sort_by_key(|a| a.1);
             if !asc { m.reverse(); }
             m.into_iter().map(|(p, dt, _)| (p, month_label(dt))).collect()
         }
@@ -6095,9 +6295,9 @@ fn populate_library(w: &MainWindow, query: &str) {
     // Sort by name or photo count, per the library sort selector.
     let (mode, dir) = lib_sort().lock().map(|g| g.clone()).unwrap_or_else(|_| ("name".into(), "asc".into()));
     if mode == "count" {
-        rows.sort_by(|a, b| a.count.cmp(&b.count));
+        rows.sort_by_key(|a| a.count);
     } else {
-        rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase()));
+        rows.sort_by_key(|a| a.name.to_lowercase());
     }
     if dir == "desc" { rows.reverse(); }
     w.set_photo_folders(ModelRc::new(VecModel::from(rows)));
@@ -7692,11 +7892,16 @@ struct BookRow {
 /// Query book_meta + reading_progress for the present library, filtered by the
 /// active view tab (all / reading / unread / comics).
 async fn book_rows_for(pool: &sqlx::SqlitePool, view: &str, query: &str, sort: &str, dir: &str) -> Vec<BookRow> {
+    // A drilled-in shelf is "col:<id>" — the id is parsed (never interpolated raw).
+    let col_id = view.strip_prefix("col:").and_then(|v| v.parse::<i64>().ok());
+    let col_filter = col_id.map(|id| {
+        format!("AND bm.item_id IN (SELECT item_id FROM collection_items WHERE collection_id = {id})")
+    });
     let filter = match view {
         "reading" => "AND COALESCE(rp.page,0) > 0 AND COALESCE(rp.finished,0) = 0",
         "unread"  => "AND (rp.item_id IS NULL OR (COALESCE(rp.page,0) = 0 AND COALESCE(rp.finished,0) = 0))",
         "comics"  => "AND bm.is_comic = 1",
-        _          => "",
+        _          => col_filter.as_deref().unwrap_or(""),
     };
     let dir_sql = if dir.eq_ignore_ascii_case("desc") { "DESC" } else { "ASC" };
     let order = match sort {
@@ -7739,9 +7944,11 @@ fn refresh_books(w: &MainWindow) {
 fn kick_books_refresh(weak: slint::Weak<MainWindow>, view: String, query: String, sort: String, dir: String) {
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
-        let (rows, series_data) = match pool_for("books").await {
+        let (rows, series_data, author_data, col_data, read_stats) = match pool_for("books").await {
             Ok(pool) => {
                 let r = book_rows_for(&pool, &view, &query, &sort, &dir).await;
+                // Reading time / streak / yearly goal (np.p5.books.stats).
+                let rs = tulipix_books::progress::reading_stats(&pool).await.unwrap_or_default();
                 // Load series: id, name, count, cover_path
                 let s: Vec<(i64, String, i64, Option<String>)> = sqlx::query_as(
                     "SELECT s.id, s.name, COUNT(bm.item_id), MIN(bm.cover_path)
@@ -7750,9 +7957,22 @@ fn kick_books_refresh(weak: slint::Weak<MainWindow>, view: String, query: String
                      WHERE i.missing_since IS NULL
                      GROUP BY s.id ORDER BY s.name COLLATE NOCASE"
                 ).fetch_all(&pool).await.unwrap_or_default();
-                (r, s)
+                // Author pages: name + book count (np.p4.books.library).
+                let a = tulipix_books::library::authors(&pool).await.unwrap_or_default();
+                // Shelves (collections): id, name, count, a member cover.
+                let c: Vec<(i64, String, i64, Option<String>)> = sqlx::query_as(
+                    "SELECT c.id, c.name, COUNT(ci.item_id),
+                            (SELECT bm.cover_path FROM collection_items ci2
+                             JOIN book_meta bm ON bm.item_id = ci2.item_id
+                             WHERE ci2.collection_id = c.id AND bm.cover_path IS NOT NULL
+                             LIMIT 1)
+                     FROM collections c LEFT JOIN collection_items ci ON ci.collection_id = c.id
+                     GROUP BY c.id ORDER BY c.name COLLATE NOCASE"
+                ).fetch_all(&pool).await.unwrap_or_default();
+                (r, s, a, c, rs)
             },
-            Err(_) => (Vec::new(), Vec::new()),
+            Err(_) => (Vec::new(), Vec::new(), Vec::new(), Vec::new(),
+                       tulipix_books::progress::ReadingStats::default()),
         };
         let _ = weak.upgrade_in_event_loop(move |w| {
             let mut tiles: Vec<BookTile> = Vec::with_capacity(rows.len());
@@ -7790,12 +8010,37 @@ fn kick_books_refresh(weak: slint::Weak<MainWindow>, view: String, query: String
                 SeriesRow { id: id as i32, name: name.into(), book_count: count as i32, cover: img }
             }).collect();
             w.set_book_series(slint::ModelRc::new(slint::VecModel::from(series_tiles)));
-            // Reading stats string
+            // Author cards (np.p4.books.library — author pages)
+            let author_rows: Vec<AuthorRow> = author_data.into_iter().map(|(name, count)| AuthorRow {
+                name: name.into(), book_count: count as i32,
+            }).collect();
+            w.set_book_authors(slint::ModelRc::new(slint::VecModel::from(author_rows)));
+            // Shelf cards (collections)
+            let col_rows: Vec<CollectionRow> = col_data.into_iter().map(|(id, name, count, cover)| {
+                let img = cover.as_deref()
+                    .and_then(|p| slint::Image::load_from_path(std::path::Path::new(p)).ok())
+                    .unwrap_or_default();
+                CollectionRow { id: id as i32, name: name.into(), book_count: count as i32, cover: img }
+            }).collect();
+            w.set_book_collections(slint::ModelRc::new(slint::VecModel::from(col_rows)));
+            // Reading stats string (np.p5.books.stats): counts + time read +
+            // streak + yearly goal progress.
             let total = rows.len();
             let finished = rows.iter().filter(|r| r.finished).count();
             let reading = rows.iter().filter(|r| !r.finished && r.page > 0).count();
             let stats = if total > 0 {
-                format!("{total} books · {finished} finished · {reading} in progress")
+                let mut s = format!("{total} books · {finished} finished · {reading} in progress");
+                let (h, m) = (read_stats.total_seconds / 3600, (read_stats.total_seconds % 3600) / 60);
+                if read_stats.total_seconds >= 60 {
+                    if h > 0 { s.push_str(&format!(" · {h}h {m}m read")); }
+                    else { s.push_str(&format!(" · {m}m read")); }
+                }
+                if read_stats.streak_days > 1 {
+                    s.push_str(&format!(" · {}-day streak", read_stats.streak_days));
+                }
+                s.push_str(&format!(" · {}/{} this year",
+                    read_stats.finished_this_year, read_stats.year_goal));
+                s
             } else {
                 String::new()
             };
@@ -7817,11 +8062,155 @@ struct ReaderSession {
     chapters: Vec<String>,                     // EPUB plain-text per spine entry
     chapter: usize,
     typo: tulipix_books::typography::Typography,
+    // EPUB pagination: `chapters` flattened into screen-pages for the given
+    // geometry + typography. `chapter_starts[c]` is the flat page index where
+    // chapter `c` begins (TOC jump + chapter label).
+    pages: Vec<String>,
+    chapter_starts: Vec<usize>,
+    page: usize,    // current flat screen-page (text mode)
+    page_w: f32,    // text-column px (for re-pagination)
+    page_h: f32,
+    turn: i32,      // bumped on each page turn → drives the fold animation
+    // Comic guided view (np.p5.books.comic-guided): panel-by-panel stepping.
+    guided: bool,
+    panel: usize,                        // current panel on the current page
+    panels: Vec<(u32, u32, u32, u32)>,   // detected rects for `panels_page`
+    panels_page: usize,                  // page the cache belongs to
+    // Find-in-book (np.p5.books.fulltext): repeating the query finds the NEXT
+    // match after the current page (wraps).
+    last_query: String,
+    // Last rendered page faces — become the flip overlay's outgoing pages.
+    last_left: String,
+    last_right: String,
+    // Reading-time tracking (np.p5.books.stats): start of the unflushed slice;
+    // save_reader_progress flushes elapsed into reading_sessions and resets.
+    read_since: std::time::Instant,
 }
 thread_local! {
     static READER: std::cell::RefCell<Option<ReaderSession>> = const { std::cell::RefCell::new(None) };
 }
 fn reader_clear() { READER.with(|r| *r.borrow_mut() = None); }
+
+/// Reader-side format families (np.p5.books.formats): comics + raster
+/// documents (scanned PDF via poppler, DjVu via djvulibre) page through
+/// images, everything else reflows as paginated text.
+fn fmt_is_comic(f: &str) -> bool { matches!(f, "cbz" | "cbr" | "pdf-raster" | "djvu") }
+fn fmt_is_text(f: &str) -> bool { matches!(f, "epub" | "mobi" | "azw3" | "fb2" | "pdf") }
+
+/// Read-aloud run counter: bumping it cancels the active sentence loop
+/// (np.p5.books.tts). Monotonic; each start claims the new value.
+static TTS_GENERATION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Speak one sentence, blocking until audio finishes: Piper first, then the
+/// platform voice. Sentence-sized calls keep the stop button responsive.
+fn tts_speak_sentence(text: &str) {
+    if tts_speak_piper(text) { return; }
+    #[cfg(target_os = "linux")]
+    let _ = std::process::Command::new("spd-say").arg("--wait").arg(text).status()
+        .or_else(|_| std::process::Command::new("espeak").arg(text).status());
+    #[cfg(target_os = "macos")]
+    let _ = std::process::Command::new("say").arg(text).status();
+    #[cfg(target_os = "windows")]
+    let _ = {
+        let ps = format!("Add-Type -AssemblyName System.Speech; \
+            (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak(@'\n{}\n'@)",
+            text.replace('\'', "''"));
+        std::process::Command::new("powershell").args(["-NoProfile","-Command",&ps]).status()
+    };
+}
+
+/// np.p4.books.tts — synthesize `text` with Piper (bundled or PATH binary +
+/// the first .onnx voice in <data>/models/piper/) and play the wav. False when
+/// any piece is missing so the caller can fall back to the platform voice.
+fn tts_speak_piper(text: &str) -> bool {
+    let attempt = || -> Option<()> {
+        let piper = tulipix_core::thumbs::tool_bin("piper");
+        let voices = dirs_default()?.join("models").join("piper");
+        let voice = std::fs::read_dir(&voices).ok()?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .find(|p| p.extension().map(|e| e == "onnx").unwrap_or(false))?;
+        let wav = std::env::temp_dir().join("tulipix-tts.wav");
+        let mut child = std::process::Command::new(&piper)
+            .arg("--model").arg(&voice)
+            .arg("--output_file").arg(&wav)
+            .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn().ok()?;
+        {
+            use std::io::Write;
+            child.stdin.take()?.write_all(text.as_bytes()).ok()?;
+        }
+        if !child.wait().ok()?.success() { return None; }
+        // Play the wav with whatever audio CLI is around (bundled ffplay first).
+        let ffplay = tulipix_core::thumbs::tool_bin("ffplay");
+        let players: [(String, Vec<&str>); 4] = [
+            (ffplay.display().to_string(), vec!["-nodisp", "-autoexit", "-loglevel", "quiet"]),
+            ("mpv".into(), vec!["--no-video", "--really-quiet"]),
+            ("paplay".into(), vec![]),
+            ("aplay".into(), vec!["-q"]),
+        ];
+        players.iter().any(|(bin, args)| {
+            std::process::Command::new(bin).args(args).arg(&wav)
+                .status().map(|s| s.success()).unwrap_or(false)
+        }).then_some(())
+    };
+    attempt().is_some()
+}
+
+/// np.p5.books.dictionary — look a word up: dictionaryapi.dev definition,
+/// MyMemory translation into the system locale, Wikipedia summary. Each source
+/// is best-effort; whatever answered is concatenated.
+async fn define_word(word: &str) -> String {
+    let q: String = word.chars()
+        .map(|c| if c.is_alphanumeric() || c == '-' || c == '\'' { c.to_string() }
+             else { format!("%{:02X}", c as u32) })
+        .collect();
+    let mut out = String::new();
+    // Dictionary definitions.
+    if let Ok(r) = reqwest::get(format!("https://api.dictionaryapi.dev/api/v2/entries/en/{q}")).await {
+        if let Ok(j) = r.json::<serde_json::Value>().await {
+            if let Some(meanings) = j.get(0).and_then(|e| e.get("meanings")).and_then(|m| m.as_array()) {
+                for m in meanings.iter().take(3) {
+                    let pos = m.get("partOfSpeech").and_then(|p| p.as_str()).unwrap_or("");
+                    if let Some(def) = m.pointer("/definitions/0/definition").and_then(|d| d.as_str()) {
+                        out.push_str(&format!("• ({pos}) {def}\n"));
+                    }
+                }
+            }
+        }
+    }
+    // Translation into the system locale (skipped when the locale is English).
+    let lang = std::env::var("LANG").unwrap_or_default()
+        .get(0..2).unwrap_or("en").to_string();
+    if lang != "en" && !lang.is_empty() {
+        if let Ok(r) = reqwest::get(format!(
+            "https://api.mymemory.translated.net/get?q={q}&langpair=en|{lang}")).await {
+            if let Ok(j) = r.json::<serde_json::Value>().await {
+                if let Some(t) = j.pointer("/responseData/translatedText").and_then(|t| t.as_str()) {
+                    if !t.trim().is_empty() {
+                        out.push_str(&format!("\n🌐 {lang}: {t}\n"));
+                    }
+                }
+            }
+        }
+    }
+    // Wikipedia summary.
+    if let Ok(r) = reqwest::get(format!("https://en.wikipedia.org/api/rest_v1/page/summary/{q}")).await {
+        if let Ok(j) = r.json::<serde_json::Value>().await {
+            if let Some(extract) = j.get("extract").and_then(|e| e.as_str()) {
+                if !extract.trim().is_empty() {
+                    out.push_str(&format!("\n📖 Wikipedia: {extract}\n"));
+                }
+            }
+        }
+    }
+    if out.trim().is_empty() {
+        format!("No results for “{word}”. Check the spelling or try a simpler form.")
+    } else {
+        out
+    }
+}
 
 fn family_to_int(f: tulipix_books::typography::FontFamily) -> i32 {
     use tulipix_books::typography::FontFamily::*;
@@ -7830,6 +8219,40 @@ fn family_to_int(f: tulipix_books::typography::FontFamily) -> i32 {
 fn int_to_family(i: i32) -> tulipix_books::typography::FontFamily {
     use tulipix_books::typography::FontFamily::*;
     match i { 1 => SansSerif, 2 => OpenDyslexic, _ => Serif }
+}
+
+/// Re-paginate the EPUB chapters into screen-pages for the session's current
+/// geometry + typography. `preserve` keeps the reader near the same spot (by
+/// fraction) across a reflow (font/margin/resize change).
+fn reader_repaginate(s: &mut ReaderSession, preserve: bool) {
+    use tulipix_books::paginate;
+    let cap = paginate::chars_per_page(
+        s.page_w, s.page_h, s.typo.font_px as f32, s.typo.line_height as f32, s.typo.family);
+    let old_page = s.page;
+    let old_total = s.pages.len();
+    let mut pages: Vec<String> = Vec::new();
+    let mut starts: Vec<usize> = Vec::with_capacity(s.chapters.len());
+    for ch in &s.chapters {
+        starts.push(pages.len());
+        pages.extend(paginate::paginate(ch, cap));
+    }
+    if pages.is_empty() { pages.push(String::new()); starts = vec![0]; }
+    s.chapter_starts = starts;
+    s.pages = pages;
+    s.page = if preserve {
+        paginate::reflow_anchor(old_page, old_total, s.pages.len())
+    } else {
+        s.page.min(s.pages.len() - 1)
+    };
+    s.chapter = chapter_of_page(s, s.page);
+}
+
+/// Which chapter a flat screen-page belongs to.
+fn chapter_of_page(s: &ReaderSession, page: usize) -> usize {
+    match s.chapter_starts.binary_search(&page) {
+        Ok(i) => i,
+        Err(i) => i.saturating_sub(1),
+    }
 }
 
 fn open_book(weak: slint::Weak<MainWindow>, idx: i32) {
@@ -7846,41 +8269,95 @@ fn open_book(weak: slint::Weak<MainWindow>, idx: i32) {
         let pb = path.clone();
         // Heavy extraction off the UI thread.
         let prep = tokio::task::spawn_blocking(move || {
-            let fmt = books::ingest_file(&pb).map(|i| i.format).unwrap_or("");
+            let ingest = books::ingest_file(&pb);
+            let fmt = ingest.as_ref().map(|i| i.format).unwrap_or("");
+            let rtl = ingest.as_ref().map(|i| i.rtl).unwrap_or(false);
             match fmt {
-                "cbz" => {
+                "cbz" | "cbr" | "djvu" => {
                     let total = books::comic_page_count(&pb);
-                    (fmt.to_string(), total, Vec::<String>::new(), false)
+                    // 0 pages = missing system tool (unrar/ddjvu) or bad file.
+                    if total == 0 {
+                        (format!("{fmt}-empty"), 0, Vec::new(), false)
+                    } else {
+                        (fmt.to_string(), total, Vec::<String>::new(), rtl)
+                    }
                 }
-                "epub" => {
-                    let chapters = books::epub_chapters_text(&pb);
-                    let rtl = false;
-                    (fmt.to_string(), chapters.len(), chapters, rtl)
+                "epub" | "mobi" | "azw3" | "fb2" | "pdf" => {
+                    let chapters = match fmt {
+                        "epub" => books::epub_chapters_text(&pb),
+                        "mobi" | "azw3" => books::mobi_chapters_text(&pb),
+                        "fb2" => books::fb2_chapters_text(&pb),
+                        _ => books::pdf_chapters_text(&pb),
+                    };
+                    if chapters.is_empty() {
+                        // Scanned PDF (no text layer): fall back to rendering
+                        // pages via poppler and read it comic-style.
+                        if fmt == "pdf" {
+                            let total = books::comic_page_count(&pb);
+                            if total > 0 {
+                                return ("pdf-raster".to_string(), total, Vec::new(), false);
+                            }
+                        }
+                        // Still nothing (DRM / missing tool) → honest notice.
+                        (format!("{fmt}-empty"), 0, Vec::new(), false)
+                    } else {
+                        (fmt.to_string(), chapters.len(), chapters, false)
+                    }
                 }
                 other => (other.to_string(), 0, Vec::new(), false),
             }
         }).await.unwrap_or(("".into(), 0, Vec::new(), false));
-        let (format, total, chapters, _rtl) = prep;
+        let (format, total, chapters, rtl) = prep;
+        let fmt2 = format.clone();
+        let path2 = path.clone();
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let comic = format == "cbz";
-            let rtl = false;
+            let comic = fmt_is_comic(&format);
             let mut state = tulipix_books::reader::ReaderState::new(total.max(1), comic, rtl);
             let start = saved_page.min(total.saturating_sub(1));
             let chapter = if comic { 0 } else { start };
             if comic { state.page = start; }
-            let sess = ReaderSession {
+            let mut sess = ReaderSession {
                 item_id, path: path.clone(), format: format.clone(),
                 comic: state, chapters, chapter,
                 typo: tulipix_books::typography::Typography::default(),
+                pages: Vec::new(), chapter_starts: Vec::new(), page: 0,
+                page_w: 700.0, page_h: 900.0, turn: 0,
+                guided: false, panel: 0, panels: Vec::new(), panels_page: usize::MAX,
+                last_query: String::new(),
+                last_left: String::new(),
+                last_right: String::new(),
+                read_since: std::time::Instant::now(),
             };
+            // Text formats: build the initial pagination (a real reflow follows
+            // once the text stage reports its true size) and restore saved page.
+            if fmt_is_text(&sess.format) {
+                reader_repaginate(&mut sess, false);
+                sess.page = saved_page.min(sess.pages.len().saturating_sub(1));
+                sess.chapter = chapter_of_page(&sess, sess.page);
+            }
             READER.with(|r| *r.borrow_mut() = Some(sess));
             w.set_book_reader_title(
                 std::path::Path::new(&path).file_stem().and_then(|s| s.to_str()).unwrap_or("").into());
             w.set_book_toc_entries(slint::ModelRc::new(slint::VecModel::from(Vec::<TocEntryRow>::new())));
             w.set_book_bookmarks(slint::ModelRc::new(slint::VecModel::from(Vec::<BookmarkRow>::new())));
+            w.set_book_comic_thumbs(slint::ModelRc::new(slint::VecModel::from(Vec::<slint::Image>::new())));
             reader_render(&w);
             w.set_book_reader_open(true);
         });
+        // Comic timeline thumbs (np.p4.books.reader.navigation) — decoded off
+        // the UI thread (disk-cached per page), pushed as one model when done.
+        if fmt_is_comic(&fmt2) && total > 0 {
+            let wk = weak.clone();
+            tokio::task::spawn_blocking(move || {
+                let thumbs: Vec<PathBuf> =
+                    (0..total).filter_map(|i| books::comic_page_thumb(&path2, i)).collect();
+                let _ = wk.upgrade_in_event_loop(move |w| {
+                    let imgs: Vec<slint::Image> = thumbs.iter()
+                        .filter_map(|p| slint::Image::load_from_path(p).ok()).collect();
+                    w.set_book_comic_thumbs(slint::ModelRc::new(slint::VecModel::from(imgs)));
+                });
+            });
+        }
         // Load TOC and bookmarks async after opening
         if item_id >= 0 {
             let wk = weak.clone();
@@ -7895,10 +8372,11 @@ fn open_book(weak: slint::Weak<MainWindow>, idx: i32) {
                         title: e.title.into(),
                         page: e.page.unwrap_or(0) as i32,
                     }).collect();
-                    let bm_rows: Vec<BookmarkRow> = bm_data.into_iter().map(|(id, page, note)| BookmarkRow {
+                    let bm_rows: Vec<BookmarkRow> = bm_data.into_iter().map(|(id, page, note, color)| BookmarkRow {
                         id: id as i32,
                         page: page as i32,
                         note: note.unwrap_or_default().into(),
+                        color: color.unwrap_or_default().into(),
                     }).collect();
                     w.set_book_toc_entries(slint::ModelRc::new(slint::VecModel::from(toc_rows)));
                     w.set_book_bookmarks(slint::ModelRc::new(slint::VecModel::from(bm_rows)));
@@ -7908,42 +8386,116 @@ fn open_book(weak: slint::Weak<MainWindow>, idx: i32) {
     });
 }
 
-fn reader_render(w: &MainWindow) {
+/// Guided view (np.p5.books.comic-guided): make sure the panel rects for the
+/// current page are detected before rendering. Mutates the session, so it runs
+/// as a separate borrow ahead of `reader_render`'s shared borrow.
+fn reader_ensure_panels() {
     READER.with(|r| {
-        let g = r.borrow();
-        let Some(s) = g.as_ref() else { return; };
+        let mut g = r.borrow_mut();
+        let Some(s) = g.as_mut() else { return; };
+        if !(fmt_is_comic(&s.format) && s.guided) { return; }
+        if s.panels_page == s.comic.page && !s.panels.is_empty() { return; }
+        let rtl = s.comic.rtl;
+        s.panels = books::comic_page_image(&s.path, s.comic.page, false)
+            .map(|p| books::detect_panels(&p, rtl))
+            .unwrap_or_default();
+        s.panels_page = s.comic.page;
+        s.panel = s.panel.min(s.panels.len().saturating_sub(1));
+    });
+}
+
+fn reader_render(w: &MainWindow) {
+    reader_ensure_panels();
+    READER.with(|r| {
+        let mut g = r.borrow_mut();
+        let Some(s) = g.as_mut() else { return; };
         match s.format.as_str() {
-            "cbz" => {
+            f if fmt_is_comic(f) => {
                 w.set_book_reader_kind("comic".into());
-                let vis = s.comic.visible_pages();
                 let inv = s.comic.invert_images;
-                let left = vis.first().and_then(|&i| books::comic_page_image(&s.path, i, inv));
-                let right = if matches!(s.comic.spread, tulipix_books::reader::SpreadMode::Double) {
-                    vis.get(1).and_then(|&i| books::comic_page_image(&s.path, i, inv))
-                } else { None };
-                w.set_book_page_left(left.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default());
-                w.set_book_page_right(right.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default());
-                w.set_book_has_right(matches!(s.comic.spread, tulipix_books::reader::SpreadMode::Double) && vis.len() > 1);
+                if s.guided && !s.panels.is_empty() {
+                    // One panel fills the stage; spread is ignored while guided.
+                    let p = s.panel.min(s.panels.len() - 1);
+                    let img = books::comic_panel_image(&s.path, s.comic.page, p, s.panels[p], inv);
+                    w.set_book_page_left(img.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default());
+                    w.set_book_page_right(slint::Image::default());
+                    w.set_book_has_right(false);
+                    w.set_book_page_label(format!(
+                        "{} / {} · panel {} / {}",
+                        s.comic.page + 1, s.comic.total, p + 1, s.panels.len()).into());
+                } else {
+                    let vis = s.comic.visible_pages();
+                    let left = vis.first().and_then(|&i| books::comic_page_image(&s.path, i, inv));
+                    let right = if matches!(s.comic.spread, tulipix_books::reader::SpreadMode::Double) {
+                        vis.get(1).and_then(|&i| books::comic_page_image(&s.path, i, inv))
+                    } else { None };
+                    w.set_book_page_left(left.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default());
+                    w.set_book_page_right(right.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default());
+                    w.set_book_has_right(matches!(s.comic.spread, tulipix_books::reader::SpreadMode::Double) && vis.len() > 1);
+                    w.set_book_page_label(format!("{} / {}", s.comic.page + 1, s.comic.total).into());
+                }
                 w.set_book_spread_double(matches!(s.comic.spread, tulipix_books::reader::SpreadMode::Double));
                 w.set_book_rtl(s.comic.rtl);
                 w.set_book_invert(s.comic.invert_images);
-                w.set_book_page_label(format!("{} / {}", s.comic.page + 1, s.comic.total).into());
+                w.set_book_guided(s.guided);
                 w.set_book_progress(s.comic.fraction() as f32);
+                w.set_book_page_index(s.comic.page as i32); // timeline highlight
+                w.set_book_page_total(s.comic.total.max(1) as i32);
             }
-            "epub" => {
+            "epub" | "mobi" | "azw3" | "fb2" | "pdf" => {
                 w.set_book_reader_kind("text".into());
-                let text = s.chapters.get(s.chapter).cloned().unwrap_or_default();
-                w.set_book_text(text.into());
-                let total = s.chapters.len().max(1);
-                w.set_book_page_label(format!("Chapter {} / {}", s.chapter + 1, total).into());
-                w.set_book_progress((s.chapter as f32) / (total.saturating_sub(1).max(1) as f32));
+                let total = s.pages.len().max(1);
+                let page = s.page.min(total - 1);
+                if w.get_book_read_mode() == "scroll" {
+                    // Continuous mode (np.p4.books.continuous): whole chapter as
+                    // one column; the nav bar steps/scrubs chapters.
+                    let ctotal = s.chapters.len().max(1);
+                    w.set_book_text(s.chapters.get(s.chapter).cloned().unwrap_or_default().into());
+                    w.set_book_page_label(format!("Chapter {} / {}", s.chapter + 1, ctotal).into());
+                    w.set_book_progress(s.chapter as f32 / (ctotal.saturating_sub(1).max(1) as f32));
+                } else {
+                    // Two-page spread: left/right faces; outgoing faces feed
+                    // the flip overlay (np.p4.books.reader — real-book turn).
+                    let two_up = w.get_book_two_up_active();
+                    let left = s.pages.get(page).cloned().unwrap_or_default();
+                    let right = if two_up {
+                        s.pages.get(page + 1).cloned().unwrap_or_default()
+                    } else { String::new() };
+                    w.set_book_text_prev(std::mem::take(&mut s.last_left).into());
+                    w.set_book_text_prev_right(std::mem::take(&mut s.last_right).into());
+                    s.last_left = left.clone();
+                    s.last_right = right.clone();
+                    w.set_book_text(left.into());
+                    w.set_book_text_right(right.into());
+                    let label = if two_up && page + 1 < total {
+                        format!("Ch {} · pages {}–{} / {}", s.chapter + 1, page + 1, page + 2, total)
+                    } else {
+                        format!("Ch {} · page {} / {}", s.chapter + 1, page + 1, total)
+                    };
+                    w.set_book_page_label(label.into());
+                    w.set_book_progress(page as f32 / (total.saturating_sub(1).max(1) as f32));
+                }
+                w.set_book_page_index(page as i32);
+                w.set_book_page_total(total as i32);
                 w.set_book_font_px(s.typo.font_px as f32);
                 w.set_book_line_height(s.typo.line_height as f32);
+                w.set_book_line_height_val(s.typo.line_height as f32);
+                w.set_book_margin_pct(s.typo.margin_pct as f32);
                 w.set_book_font_family(family_to_int(s.typo.family));
+                w.set_book_turn(s.turn);
             }
             _ => {
                 w.set_book_reader_kind("unsupported".into());
-                w.set_book_page_label(format!("{} files need a dedicated engine", s.format.to_uppercase()).into());
+                let label = match s.format.as_str() {
+                    "cbr-empty" => "CBR needs unrar, bsdtar or 7z installed".to_string(),
+                    "pdf-empty" => "Scanned PDF — install poppler-utils (pdftoppm) to view its pages".to_string(),
+                    "djvu-empty" => "DjVu needs djvulibre (ddjvu) installed".to_string(),
+                    f if f.ends_with("-empty") =>
+                        format!("No readable text in this {} (DRM-protected?)",
+                            f.trim_end_matches("-empty").to_uppercase()),
+                    f => format!("{} files need a dedicated engine", f.to_uppercase()),
+                };
+                w.set_book_page_label(label.into());
             }
         }
     });
@@ -7952,36 +8504,73 @@ fn reader_render(w: &MainWindow) {
 /// Persist the current reading position (page for comics / chapter for EPUB).
 fn save_reader_progress() {
     let snap = READER.with(|r| {
-        r.borrow().as_ref().map(|s| {
-            let (page, total) = if s.comic.total > 0 && s.format == "cbz" {
+        let mut g = r.borrow_mut();
+        g.as_mut().map(|s| {
+            let (page, total) = if s.comic.total > 0 && fmt_is_comic(&s.format) {
                 (s.comic.page as i64, Some(s.comic.total as i64))
             } else {
-                (s.chapter as i64, Some(s.chapters.len().max(1) as i64))
+                (s.page as i64, Some(s.pages.len().max(1) as i64))
             };
-            (s.item_id, page, total)
+            // Flush the reading-time slice accumulated since the last save
+            // (np.p5.books.stats) and restart the clock.
+            let secs = s.read_since.elapsed().as_secs() as i64;
+            s.read_since = std::time::Instant::now();
+            (s.item_id, page, total, secs)
         })
     });
-    let Some((item_id, page, total)) = snap else { return; };
+    let Some((item_id, page, total, secs)) = snap else { return; };
     if item_id < 0 { return; }
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
         if let Ok(pool) = pool_for("books").await {
             let _ = tulipix_books::progress::save(&pool, item_id, &page.to_string(), page, total).await;
+            // Cap a slice at 30 min so an overnight idle reader doesn't count.
+            let _ = tulipix_books::progress::add_reading_time(&pool, item_id, secs.min(1800)).await;
         }
     });
 }
 
 fn reader_step(w: &MainWindow, dir: i32) {
+    let scroll = w.get_book_read_mode() == "scroll";
+    // Two-page spread turns two pages at once, like a real book.
+    let step = if w.get_book_two_up_active() { 2usize } else { 1 };
     READER.with(|r| {
         let mut g = r.borrow_mut();
         let Some(s) = g.as_mut() else { return; };
-        if s.format == "cbz" {
+        if fmt_is_comic(&s.format) && s.guided {
+            // Guided view: panel → panel, overflowing to the next/prev page
+            // (panels for the new page are detected by reader_ensure_panels;
+            // usize::MAX clamps to the LAST panel when stepping backwards).
+            if dir > 0 {
+                if s.panel + 1 < s.panels.len() { s.panel += 1; }
+                else if s.comic.page + 1 < s.comic.total {
+                    s.comic.page += 1; s.panel = 0; s.panels_page = usize::MAX;
+                }
+            } else if s.panel > 0 { s.panel -= 1; }
+            else if s.comic.page > 0 {
+                s.comic.page -= 1; s.panel = usize::MAX; s.panels_page = usize::MAX;
+            }
+        } else if fmt_is_comic(&s.format) {
             if dir > 0 { s.comic.next(); } else { s.comic.prev(); }
-        } else if s.format == "epub" {
-            if dir > 0 { if s.chapter + 1 < s.chapters.len() { s.chapter += 1; } }
-            else { s.chapter = s.chapter.saturating_sub(1); }
+        } else if fmt_is_text(&s.format) && scroll {
+            // Continuous mode steps whole chapters.
+            let c = if dir > 0 { (s.chapter + 1).min(s.chapters.len().saturating_sub(1)) }
+                    else { s.chapter.saturating_sub(1) };
+            s.chapter = c;
+            s.page = s.chapter_starts.get(c).copied().unwrap_or(0);
+        } else if fmt_is_text(&s.format) {
+            let total = s.pages.len();
+            if dir > 0 {
+                if s.page + step < total { s.page += step; s.turn += 1; }
+                else if s.page + 1 < total { s.page = total - 1; s.turn += 1; }
+            } else if s.page > 0 {
+                s.page = s.page.saturating_sub(step);
+                s.turn += 1;
+            }
+            s.chapter = chapter_of_page(s, s.page);
         }
     });
+    w.set_book_turn_dir(if dir > 0 { 1 } else { -1 });
     reader_render(w);
     save_reader_progress();
 }
@@ -7990,11 +8579,13 @@ fn reader_scrub(w: &MainWindow, frac: f32) {
     READER.with(|r| {
         let mut g = r.borrow_mut();
         let Some(s) = g.as_mut() else { return; };
-        if s.format == "cbz" {
+        if fmt_is_comic(&s.format) {
             s.comic.page = tulipix_books::navigation::scrub_to_page(frac as f64, s.comic.total);
-        } else if s.format == "epub" {
-            let total = s.chapters.len();
-            s.chapter = tulipix_books::navigation::scrub_to_page(frac as f64, total);
+            s.panel = 0;
+        } else if fmt_is_text(&s.format) {
+            let total = s.pages.len();
+            s.page = tulipix_books::navigation::scrub_to_page(frac as f64, total);
+            s.chapter = chapter_of_page(s, s.page);
         }
     });
     reader_render(w);
@@ -8019,17 +8610,40 @@ fn reader_toggle_invert(w: &MainWindow) {
     READER.with(|r| { if let Some(s) = r.borrow_mut().as_mut() { s.comic.toggle_invert(); } });
     reader_render(w);
 }
-fn reader_set_typo(w: &MainWindow, font: Option<f32>, line: Option<f32>, family: Option<i32>) {
+fn reader_set_typo(w: &MainWindow, font: Option<f32>, line: Option<f32>, family: Option<i32>, margin: Option<f32>) {
     READER.with(|r| {
         let mut g = r.borrow_mut();
         if let Some(s) = g.as_mut() {
             if let Some(f) = font { s.typo.font_px = f as f64; }
             if let Some(l) = line { s.typo.line_height = l as f64; }
             if let Some(fam) = family { s.typo.family = int_to_family(fam); }
+            if let Some(m) = margin { s.typo.margin_pct = m as f64; }
             s.typo = s.typo.clamped();
+            // Font/line/family changes alter how much text fits a page; reflow,
+            // keeping the reader near the same spot. (Margin reflows via the
+            // text-stage resize callback, but repaginate here too for keyboard.)
+            if fmt_is_text(&s.format) { reader_repaginate(s, true); }
         }
     });
     reader_render(w);
+}
+
+/// The text stage reported a new size — re-paginate EPUB to fill it exactly.
+fn reader_reflow(w: &MainWindow, width: f32, height: f32) {
+    let changed = READER.with(|r| {
+        let mut g = r.borrow_mut();
+        match g.as_mut() {
+            Some(s) if fmt_is_text(&s.format) && width > 8.0 && height > 8.0
+                && ((s.page_w - width).abs() > 1.0 || (s.page_h - height).abs() > 1.0) => {
+                s.page_w = width;
+                s.page_h = height;
+                reader_repaginate(s, true);
+                true
+            }
+            _ => false,
+        }
+    });
+    if changed { reader_render(w); }
 }
 
 // ── Cloud data layer (np.p4.cloud.remotes / .browse) ─────────────────────────
@@ -8475,20 +9089,37 @@ fn music_full() -> &'static std::sync::Mutex<Vec<(String, PathBuf, PathBuf)>> {
 }
 /// Rebuild the music tiles + playback-path list from the accumulated
 /// `music_full` set. Each tile's `index` is its playback position.
+///
+/// `music_tiles` stays position-aligned and COMPLETE (audiobook chapters
+/// included) because rails/albums/audiobook cards resolve thumbs by playback
+/// position. The My Music *Tracks grid* binds the separate `music_tracks_grid`
+/// model, which drops every track under a folder assigned to a non-"My Music"
+/// section — audiobooks live in their own tab, not in the song grid.
 fn rebuild_music_tiles(w: &MainWindow) {
     let full = music_full().lock().map(|g| g.clone()).unwrap_or_default();
+    let sections = load_folder_sections();
+    let excluded: Vec<PathBuf> = sections.iter()
+        .filter(|(_, key)| key.as_str() != "mymusic")
+        .map(|(folder, _)| PathBuf::from(folder))
+        .collect();
     let mut paths: Vec<PathBuf> = Vec::with_capacity(full.len());
     let mut tiles: Vec<PhotoTile> = Vec::with_capacity(full.len());
+    let mut grid: Vec<PhotoTile> = Vec::with_capacity(full.len());
     for (i, (label, orig, thumb_path)) in full.iter().enumerate() {
-        tiles.push(PhotoTile {
+        let tile = PhotoTile {
             thumb: slint::Image::load_from_path(thumb_path).unwrap_or_default(),
             label: label.clone().into(),
             index: i as i32,
             ..Default::default()
-        });
+        };
+        if !excluded.iter().any(|e| orig.starts_with(e)) {
+            grid.push(tile.clone());
+        }
+        tiles.push(tile);
         paths.push(orig.clone());
     }
     if let Ok(mut g) = music_paths().lock() { *g = paths; }
+    w.set_music_tracks_grid(slint::ModelRc::new(slint::VecModel::from(grid)));
     w.set_music_tiles(slint::ModelRc::new(slint::VecModel::from(tiles)));
 }
 /// Drop every accumulated music track whose abs path is under `dir` (used when
@@ -8534,11 +9165,11 @@ thread_local! {
     static MUSIC_BROWSE: std::cell::RefCell<std::collections::HashMap<&'static str, Vec<(PhotoTile, i64)>>> =
         std::cell::RefCell::new(std::collections::HashMap::new());
     // Full track list of the open album/artist/genre detail (display paginated 25/page).
-    static DETAIL_ROWS: std::cell::RefCell<Vec<MusicSongRow>> = std::cell::RefCell::new(Vec::new());
+    static DETAIL_ROWS: std::cell::RefCell<Vec<MusicSongRow>> = const { std::cell::RefCell::new(Vec::new()) };
     // Artist detail — the artist's albums column (2/row, 8/page, follows the track page).
-    static DETAIL_ARTIST_ALBUMS: std::cell::RefCell<Vec<PhotoTile>> = std::cell::RefCell::new(Vec::new());
+    static DETAIL_ARTIST_ALBUMS: std::cell::RefCell<Vec<PhotoTile>> = const { std::cell::RefCell::new(Vec::new()) };
     // Metadata manager — every song's row (display paginated 30/page).
-    static META_ROWS: std::cell::RefCell<Vec<MetaMgrRow>> = std::cell::RefCell::new(Vec::new());
+    static META_ROWS: std::cell::RefCell<Vec<MetaMgrRow>> = const { std::cell::RefCell::new(Vec::new()) };
 }
 
 /// Split a filename stem on " - " into (artist, title, album?) per the user's
@@ -8788,6 +9419,8 @@ fn build_music_queue(w: &MainWindow) {
 }
 
 /// The classic sequential "Up next" (tracks after the current position).
+/// Audiobook chapter playing → the queue is the BOOK's remaining chapters
+/// only, never the My Music library that happens to follow it positionally.
 fn build_sequential_queue(w: MainWindow) {
     let total = w.get_music_np_total();
     if total <= 0 { return; }
@@ -8796,8 +9429,22 @@ fn build_sequential_queue(w: MainWindow) {
         .map(|g| g.iter().map(|s| (s.pos, (s.title.clone(), s.artist.clone(), s.duration_s))).collect())
         .unwrap_or_default();
     let tiles = w.get_music_tiles();
-    let rows: Vec<MusicSongRow> = (1..=30.min(total - 1)).map(|off| {
-        let pos = (cur + off).rem_euclid(total);
+    let paths = music_paths().lock().map(|g| g.clone()).unwrap_or_default();
+    let cur_dir = paths.get(cur as usize).and_then(|p| p.parent().map(|d| d.to_path_buf()));
+    let is_book = cur_dir.as_ref()
+        .map(|d| ab_cover_cache().lock().ok().map(|g| g.contains_key(&d.display().to_string())).unwrap_or(false)
+            || load_folder_sections().get(&d.display().to_string()).map(|k| k == "audiobooks").unwrap_or(false))
+        .unwrap_or(false);
+    let next_positions: Vec<i32> = if is_book {
+        // Remaining chapters of this book, in order, no wrap.
+        ((cur + 1)..total)
+            .filter(|&pos| paths.get(pos as usize).and_then(|p| p.parent()) == cur_dir.as_deref())
+            .take(30)
+            .collect()
+    } else {
+        (1..=30.min(total - 1)).map(|off| (cur + off).rem_euclid(total)).collect()
+    };
+    let rows: Vec<MusicSongRow> = next_positions.into_iter().map(|pos| {
         let (title, artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
         MusicSongRow {
             thumb: if (pos as usize) < tiles.row_count() { tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default() } else { slint::Image::default() },
@@ -8886,14 +9533,24 @@ fn lyrics_search_store() -> &'static std::sync::Mutex<Vec<(String, bool)>> {
 /// Scanned-roots list with per-root music track counts (np.p5.atmusic.lib-folder-mgmt).
 fn populate_folder_roots(w: &MainWindow) {
     let roots = load_watched_folders();
+    // Folders assigned to other music sections (Audiobooks etc.) belong to
+    // their own section's UI — never to the My Music Folders tab.
+    let sections = load_folder_sections();
+    let excluded: Vec<PathBuf> = sections.iter()
+        .filter(|(_, key)| key.as_str() != "mymusic")
+        .map(|(folder, _)| PathBuf::from(folder))
+        .collect();
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("music").await else { return; };
         let mut labels: Vec<slint::SharedString> = Vec::new();
         for r in &roots {
+            if excluded.iter().any(|e| r.starts_with(e)) { continue; }
             let prefix = format!("{}%", r.to_string_lossy());
             let n: i64 = sqlx::query_scalar(
-                "SELECT COUNT(*) FROM items WHERE section = 'music' AND missing_since IS NULL AND abs_path LIKE ?")
+                "SELECT COUNT(*) FROM items i JOIN track_meta tm ON tm.item_id = i.id \
+                 WHERE i.section = 'music' AND i.missing_since IS NULL \
+                   AND COALESCE(tm.is_audiobook, 0) = 0 AND i.abs_path LIKE ?")
                 .bind(&prefix).fetch_optional(&pool).await.ok().flatten().unwrap_or(0);
             let name = r.file_name().and_then(|s| s.to_str()).unwrap_or(".").to_string();
             labels.push(format!("{name}   ·   {n} tracks   —   {}", r.display()).into());
@@ -8962,7 +9619,7 @@ fn rebuild_history_page(w: &MainWindow) {
     const MAX_PAGES: usize = 5;
     let all = history_ids().lock().map(|g| g.clone()).unwrap_or_default();
     let ids = filter_ids_by_query(&all);
-    let pages = ((ids.len() + PER - 1) / PER).clamp(1, MAX_PAGES);
+    let pages = ids.len().div_ceil(PER).clamp(1, MAX_PAGES);
     w.set_music_history_pages(pages as i32);
     let page = (w.get_music_history_page().max(1) as usize).min(pages);
     w.set_music_history_page(page as i32);
@@ -9297,8 +9954,8 @@ fn build_playlist_detail(w: &MainWindow, playlist_id: i64) {
             // Apply the playlist sort — Custom keeps the saved/manual order.
             let psort = w.get_music_playlist_sort().to_string();
             match psort.as_str() {
-                "title"  => rows.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
-                "artist" => rows.sort_by(|a, b| a.artist.to_lowercase().cmp(&b.artist.to_lowercase())),
+                "title"  => rows.sort_by_key(|a| a.title.to_lowercase()),
+                "artist" => rows.sort_by_key(|a| a.artist.to_lowercase()),
                 _ => {}
             }
             if psort != "custom" && w.get_music_playlist_sort_dir() == "desc" { rows.reverse(); }
@@ -9369,6 +10026,40 @@ async fn resolve_artwork(client: &reqwest::Client, key: &str, src: &str) -> Opti
     cache_artwork(client, key, src).await
 }
 
+// ── Off-UI-thread artwork decode ─────────────────────────────────────────────
+// `slint::Image::load_from_path` decodes on the event loop; podcast/show art
+// is routinely 1400×1400 JPEG, so a grid of covers froze input for seconds on
+// every section switch. Workers decode into SharedPixelBuffers (memoised by
+// path) and the event-loop closure only wraps them — wrapping is O(1).
+type ArtPx = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
+fn art_px_cache() -> &'static std::sync::Mutex<std::collections::HashMap<PathBuf, ArtPx>> {
+    static C: OnceLock<std::sync::Mutex<std::collections::HashMap<PathBuf, ArtPx>>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Decode `path` (downscaled to ≤512px — card size) off the UI thread.
+async fn decode_art_px(path: Option<PathBuf>) -> Option<ArtPx> {
+    let path = path?;
+    if let Some(hit) = art_px_cache().lock().ok().and_then(|g| g.get(&path).cloned()) {
+        return Some(hit);
+    }
+    let key = path.clone();
+    let px = tokio::task::spawn_blocking(move || {
+        let img = image::open(&path).ok()?;
+        let img = if img.width() > 512 || img.height() > 512 { img.thumbnail(512, 512) } else { img };
+        let rgba = img.to_rgba8();
+        let (w, h) = rgba.dimensions();
+        Some(ArtPx::clone_from_slice(rgba.as_raw(), w, h))
+    }).await.ok().flatten()?;
+    if let Ok(mut g) = art_px_cache().lock() { g.insert(key, px.clone()); }
+    Some(px)
+}
+
+/// Wrap a pre-decoded buffer for display. Cheap; safe on the UI thread.
+fn art_image(px: &Option<ArtPx>) -> slint::Image {
+    px.as_ref().map(|b| slint::Image::from_rgba8(b.clone())).unwrap_or_default()
+}
+
 /// Fill the Podcasts grid with subscribed feeds, filtered by the active
 /// category, plus the category-chip list (np.p5.music.podcast-feeds).
 // Send-safe subscription summary (no slint::Image).
@@ -9378,7 +10069,7 @@ struct PodAllData {
     title: String,
     author: String,
     category: String,
-    art: Option<std::path::PathBuf>,
+    art: Option<ArtPx>,
     unplayed: i64,
     episodes: i64,
     latest: i64,        // MAX(published) across this show's episodes (Home sort)
@@ -9474,18 +10165,24 @@ fn render_trends(w: &MainWindow) {
                 .then(a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase()))),
             "unsubscribed" => indexed.sort_by(|a, b| subset.contains(&a.1.feed_url).cmp(&subset.contains(&b.1.feed_url))
                 .then(a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase()))),
-            _ => indexed.sort_by(|a, b| a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase())),
+            _ => indexed.sort_by_key(|a| a.1.title.to_lowercase()),
         }
         let total = indexed.len();
-        let pages = ((total + PODCAST_TREND_PAGE - 1) / PODCAST_TREND_PAGE).max(1);
+        let pages = total.div_ceil(PODCAST_TREND_PAGE).max(1);
         let page = page.min(pages - 1);
         let slice: Vec<(usize, TrendMeta)> = indexed.into_iter().skip(page * PODCAST_TREND_PAGE).take(PODCAST_TREND_PAGE).collect();
+        // Decode the visible page's art off-thread before touching the UI.
+        let mut slice_px: Vec<(usize, TrendMeta, Option<ArtPx>)> = Vec::with_capacity(slice.len());
+        for (i, m) in slice {
+            let px = decode_art_px(m.art.clone()).await;
+            slice_px.push((i, m, px));
+        }
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let rows: Vec<PodcastTrendCard> = slice.iter().map(|(i, m)| PodcastTrendCard {
+            let rows: Vec<PodcastTrendCard> = slice_px.iter().map(|(i, m, px)| PodcastTrendCard {
                 title: m.title.clone().into(),
                 author: m.author.clone().into(),
                 category: m.category.clone().into(),
-                image: m.art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default(),
+                image: art_image(px),
                 feed_url: m.feed_url.clone().into(),
                 subscribed: subset.contains(&m.feed_url),
                 index: *i as i32,
@@ -9630,7 +10327,8 @@ fn populate_podcasts(w: &MainWindow) {
         let client = reqwest::Client::new();
         let mut all: Vec<PodAllData> = Vec::with_capacity(rows.len());
         for (id, title, author, img, category, unplayed, episodes, latest, pinned) in rows {
-            let art = resolve_artwork(&client, &format!("pod-{id}"), &img).await;
+            let art_path = resolve_artwork(&client, &format!("pod-{id}"), &img).await;
+            let art = decode_art_px(art_path).await;
             all.push(PodAllData { id, title, author, category, art, unplayed, episodes, latest, pinned: pinned != 0 });
         }
         let _ = weak.upgrade_in_event_loop(move |w| render_podcast_cards(&w, &all));
@@ -9645,7 +10343,7 @@ fn render_podcast_cards(w: &MainWindow, all: &[PodAllData]) {
         title: d.title.clone().into(),
         author: d.author.clone().into(),
         category: d.category.clone().into(),
-        image: d.art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default(),
+        image: art_image(&d.art),
         unplayed: d.unplayed as i32,
         episodes: d.episodes as i32,
         index: i as i32,
@@ -9654,14 +10352,14 @@ fn render_podcast_cards(w: &MainWindow, all: &[PodAllData]) {
     w.set_music_podcast_total(all.len() as i32);
     // Categories.
     let mut cats: Vec<String> = vec!["All".into()];
-    for d in all { if !d.category.is_empty() && !cats.iter().any(|x| *x == d.category) { cats.push(d.category.clone()); } }
+    for d in all { if !d.category.is_empty() && !cats.contains(&d.category) { cats.push(d.category.clone()); } }
     let cat_models: Vec<slint::SharedString> = cats.iter().map(|c| c.clone().into()).collect();
     w.set_music_podcast_categories(slint::ModelRc::new(slint::VecModel::from(cat_models)));
     // Subscribed — category filter + 21/page.
     let active = w.get_music_podcast_cat().to_string();
     let filtered: Vec<(usize, &PodAllData)> = all.iter().enumerate()
         .filter(|(_, d)| active == "All" || d.category == active).collect();
-    let sub_pages = ((filtered.len() + PODCAST_SUB_PAGE - 1) / PODCAST_SUB_PAGE).max(1);
+    let sub_pages = filtered.len().div_ceil(PODCAST_SUB_PAGE).max(1);
     let sub_page = (w.get_music_podcast_sub_page().max(0) as usize).min(sub_pages - 1);
     let sub_cards: Vec<PodcastCard> = filtered.iter().skip(sub_page * PODCAST_SUB_PAGE).take(PODCAST_SUB_PAGE)
         .map(|(i, d)| to_card(*i, d)).collect();
@@ -9677,10 +10375,10 @@ fn render_podcast_cards(w: &MainWindow, all: &[PodAllData]) {
             .then(a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase()))),
         "latest" => home_order.sort_by(|a, b| b.1.latest.cmp(&a.1.latest)
             .then(a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase()))),
-        _ => home_order.sort_by(|a, b| a.1.title.to_lowercase().cmp(&b.1.title.to_lowercase())),
+        _ => home_order.sort_by_key(|a| a.1.title.to_lowercase()),
     }
     let home_total = home_order.len().min(PODCAST_HOME_PAGE * PODCAST_HOME_MAX_PAGES);  // cap to 2 pages
-    let home_pages = ((home_total + PODCAST_HOME_PAGE - 1) / PODCAST_HOME_PAGE).max(1);
+    let home_pages = home_total.div_ceil(PODCAST_HOME_PAGE).max(1);
     let home_page = (w.get_music_podcast_home_page().max(0) as usize).min(home_pages - 1);
     let home_cards: Vec<PodcastCard> = home_order.iter().take(home_total)
         .skip(home_page * PODCAST_HOME_PAGE).take(PODCAST_HOME_PAGE)
@@ -9750,6 +10448,7 @@ fn load_podcast_detail(w: &MainWindow, pid: i64) {
         // 20 images serially was the main cause of the slow open; every row falls
         // back to the show art, which is what most podcast apps show anyway.
         let head_art = if let Some((_, _, _, _, img, _)) = &head { resolve_artwork(&client, &format!("pod-{pid}"), img).await } else { None };
+        let head_px = decode_art_px(head_art).await;
         let _ = weak.upgrade_in_event_loop(move |w| {
             if let Some((title, author, category, desc, _, pinned)) = &head {
                 w.set_music_podcast_d_title(title.clone().into());
@@ -9758,7 +10457,7 @@ fn load_podcast_detail(w: &MainWindow, pid: i64) {
                 w.set_music_podcast_d_desc(desc.clone().into());
                 w.set_music_podcast_d_pinned(*pinned != 0);
             }
-            w.set_music_podcast_d_image(head_art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default());
+            w.set_music_podcast_d_image(art_image(&head_px));
             w.set_music_podcast_d_total(total as i32);
             w.set_music_podcast_d_pages(pages as i32);
             w.set_music_podcast_d_page(page as i32);
@@ -9769,7 +10468,7 @@ fn load_podcast_detail(w: &MainWindow, pid: i64) {
                 date: pub_.map(fmt_date).unwrap_or_default().into(),
                 duration: dur.map(|d| fmt_clock(d).into()).unwrap_or_default(),
                 // Show artwork for every row (per-episode thumbs skipped for speed).
-                image: head_art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default(),
+                image: art_image(&head_px),
                 played: *played != 0,
                 downloaded: dl.is_some(),
                 index: i as i32,
@@ -9787,7 +10486,7 @@ struct EpRowData {
     show: String,
     date: String,
     duration: String,
-    art: Option<std::path::PathBuf>,
+    art: Option<ArtPx>,
     played: bool,
     downloaded: bool,
 }
@@ -9876,6 +10575,7 @@ async fn build_episode_data(eps: Vec<EpQueryRow>) -> Vec<EpRowData> {
             None if !show_img.is_empty() => resolve_artwork(&client, &format!("pod-{pid}"), &show_img).await,
             None => None,
         };
+        let art = decode_art_px(art).await;
         out.push(EpRowData {
             id: id as i32,
             title,
@@ -9898,7 +10598,7 @@ fn rows_from_data(data: &[EpRowData]) -> Vec<PodcastEpisodeRow> {
         show: d.show.clone().into(),
         date: d.date.clone().into(),
         duration: d.duration.clone().into(),
-        image: d.art.as_ref().and_then(|p| slint::Image::load_from_path(p).ok()).unwrap_or_default(),
+        image: art_image(&d.art),
         played: d.played,
         downloaded: d.downloaded,
         index: i as i32,
@@ -9945,34 +10645,61 @@ fn music_pos_maps() -> (std::collections::HashMap<i64, i32>, std::collections::H
     (pos_of, by_pos)
 }
 
-/// Build one audiobook card from a folder's ordered chapter ids.
-fn build_book_card(w: &MainWindow, folder: &str, ids: &[i64],
-                   pos_of: &std::collections::HashMap<i64, i32>,
-                   by_pos: &std::collections::HashMap<i32, (String, String, f64)>) -> BookCard {
-    let tiles = w.get_music_tiles();
-    let mut total = 0.0;
-    let mut cover = slint::Image::default();
-    let mut first = true;
-    for id in ids {
-        let Some(&pos) = pos_of.get(id) else { continue; };
-        let (_t, _a, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
-        total += dur;
-        if first {
-            first = false;
-            if pos >= 0 && (pos as usize) < tiles.row_count() {
-                cover = tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default();
+/// Per-book decoded cover, keyed by folder — filled by `populate_audiobooks`,
+/// read synchronously by the detail hero.
+fn ab_cover_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, ArtPx>> {
+    static C: OnceLock<std::sync::Mutex<std::collections::HashMap<String, ArtPx>>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Audiobook cover (np.p5.music.audiobook-chapters): a cover/folder image in
+/// the book's directory wins; otherwise the album art embedded in the first
+/// chapter's tags, extracted once via ffmpeg into the cache. Decoded
+/// off-thread; None keeps the 📚 monogram.
+async fn audiobook_cover_px(folder: &str, custom: Option<PathBuf>, first_chapter: Option<PathBuf>) -> Option<ArtPx> {
+    // A user-chosen cover (audiobook_covers table) outranks everything and
+    // bypasses the per-folder cache so a change shows immediately.
+    if let Some(c) = custom.filter(|p| p.is_file()) {
+        let px = decode_art_px(Some(c)).await?;
+        if let Ok(mut g) = ab_cover_cache().lock() { g.insert(folder.to_string(), px.clone()); }
+        return Some(px);
+    }
+    if let Some(hit) = ab_cover_cache().lock().ok().and_then(|g| g.get(folder).cloned()) {
+        return Some(hit);
+    }
+    let dir = PathBuf::from(folder);
+    let mut found: Option<PathBuf> = None;
+    for name in ["cover.jpg", "cover.jpeg", "cover.png", "folder.jpg", "folder.png",
+                 "Cover.jpg", "Cover.png", "Folder.jpg", "front.jpg"] {
+        let p = dir.join(name);
+        if p.is_file() { found = Some(p); break; }
+    }
+    // No loose art file → pull the embedded album art out of the first chapter.
+    if found.is_none() {
+        if let (Some(chapter), Some(base)) = (first_chapter, dirs_default()) {
+            let out_dir = base.join("cache").join("abcover");
+            let _ = std::fs::create_dir_all(&out_dir);
+            use sha2::{Digest, Sha256};
+            let mut h = Sha256::new();
+            h.update(folder.as_bytes());
+            let stem: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
+            let out = out_dir.join(format!("{stem}.png"));
+            if !out.exists() {
+                let ffmpeg = tulipix_core::thumbs::tool_bin("ffmpeg");
+                let outc = out.clone();
+                let _ = tokio::task::spawn_blocking(move || {
+                    std::process::Command::new(&ffmpeg)
+                        .args(["-y", "-loglevel", "quiet", "-i"]).arg(&chapter)
+                        .args(["-map", "0:v:0", "-frames:v", "1"]).arg(&outc)
+                        .status()
+                }).await;
             }
+            if out.exists() { found = Some(out); }
         }
     }
-    BookCard {
-        id: folder.into(),
-        title: book_title(folder).into(),
-        author: "".into(),
-        cover,
-        chapters: ids.len() as i32,
-        total_time: fmt_hm(total).into(),
-        resume_frac: 0.0,
-    }
+    let px = decode_art_px(found).await?;
+    if let Ok(mut g) = ab_cover_cache().lock() { g.insert(folder.to_string(), px.clone()); }
+    Some(px)
 }
 
 /// Fill the audiobook detail hero + chapter list for one folder.
@@ -9995,9 +10722,17 @@ fn fill_book_detail(w: &MainWindow, folder: &str, ids: &[i64]) {
             played: false,
         });
     }
-    let cover = if first_pos >= 0 && (first_pos as usize) < tiles.row_count() {
-        tiles.row_data(first_pos as usize).map(|t| t.thumb).unwrap_or_default()
-    } else { slint::Image::default() };
+    // Real book cover (folder image / embedded art) decoded by the cards
+    // populate; tile thumb only as the last resort.
+    let cover = ab_cover_cache().lock().ok()
+        .and_then(|g| g.get(folder).cloned())
+        .map(slint::Image::from_rgba8)
+        .or_else(|| {
+            if first_pos >= 0 && (first_pos as usize) < tiles.row_count() {
+                tiles.row_data(first_pos as usize).map(|t| t.thumb)
+            } else { None }
+        })
+        .unwrap_or_default();
     w.set_music_ab_d_title(book_title(folder).into());
     w.set_music_ab_d_author("".into());
     w.set_music_ab_d_cover(cover);
@@ -10023,15 +10758,56 @@ fn populate_audiobooks(w: &MainWindow) {
         let ids: Vec<i64> = sqlx::query_scalar(
             "SELECT item_id FROM track_meta WHERE is_audiobook = 1")
             .fetch_all(&pool).await.unwrap_or_default();
-        // One (folder, ordered chapter ids) entry per book card.
+        // User-chosen covers (np.p5.music.audiobook-chapters — custom art).
+        let _ = sqlx::query("CREATE TABLE IF NOT EXISTS audiobook_covers (folder TEXT PRIMARY KEY, path TEXT NOT NULL)")
+            .execute(&pool).await;
+        let custom_covers: std::collections::HashMap<String, String> =
+            sqlx::query_as("SELECT folder, path FROM audiobook_covers")
+                .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
+        // Per-chapter resume positions → book status (in-progress / finished).
+        let progress: std::collections::HashMap<i64, f64> = sqlx::query_as(
+            "SELECT item_id, position_s FROM audiobook_progress")
+            .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
+        // One (folder, ordered chapter ids) entry per book card. Covers come
+        // from custom art / a folder image / embedded album art, decoded off
+        // the UI thread.
         let books = tulipix_music::audiobooks::book_folders(&pool).await.unwrap_or_default();
-        let mut book_ids: Vec<(String, Vec<i64>)> = Vec::with_capacity(books.len());
+        let (pos_of, by_pos) = music_pos_maps();
+        let paths = music_paths().lock().map(|g| g.clone()).unwrap_or_default();
+        // (folder, chapter ids, total seconds, cover, resume 0..1, finished)
+        let mut book_data: Vec<(String, Vec<i64>, f64, Option<ArtPx>, f32, bool)> =
+            Vec::with_capacity(books.len());
         for (folder, _n) in &books {
             let cids = tulipix_music::audiobooks::book_chapters(&pool, folder).await.unwrap_or_default();
-            book_ids.push((folder.clone(), cids));
+            let total: f64 = cids.iter()
+                .filter_map(|id| pos_of.get(id))
+                .filter_map(|pos| by_pos.get(pos).map(|(_, _, d)| *d))
+                .sum();
+            let first_path = cids.first()
+                .and_then(|id| pos_of.get(id))
+                .and_then(|&pos| paths.get(pos as usize).cloned());
+            let custom = custom_covers.get(folder).map(PathBuf::from);
+            let cover = audiobook_cover_px(folder, custom, first_path).await;
+            // Furthest chapter with a saved position drives the resume bar;
+            // "finished" = saved position ≥90% through the LAST chapter.
+            let n = cids.len().max(1);
+            let mut resume = 0.0f32;
+            let mut finished = false;
+            for (i, id) in cids.iter().enumerate() {
+                let Some(&pos_s) = progress.get(id) else { continue; };
+                let dur = pos_of.get(id).and_then(|p| by_pos.get(p)).map(|(_, _, d)| *d).unwrap_or(0.0);
+                let frac_in = if dur > 1.0 { (pos_s / dur).clamp(0.0, 1.0) } else { 0.0 };
+                resume = resume.max((i as f64 + frac_in) as f32 / n as f32);
+                if i == n - 1 && frac_in >= 0.9 { finished = true; }
+            }
+            book_data.push((folder.clone(), cids, total, cover, resume, finished));
         }
+        let tab = ab_tab().lock().map(|g| g.clone()).unwrap_or_default();
+        // Folders view rows: "name · N chapters — /path".
+        let folder_rows: Vec<String> = book_data.iter()
+            .map(|(f, c, ..)| format!("{}   ·   {} chapters   —   {}", book_title(f), c.len(), f))
+            .collect();
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let (pos_of, by_pos) = music_pos_maps();
             let tiles = w.get_music_tiles();
             let rows: Vec<MusicSongRow> = ids.iter().filter_map(|id| pos_of.get(id).copied()).map(|pos| {
                 let (title, artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
@@ -10044,10 +10820,74 @@ fn populate_audiobooks(w: &MainWindow) {
                 }
             }).collect();
             w.set_music_audiobooks(slint::ModelRc::new(slint::VecModel::from(rows)));
-            let cards: Vec<BookCard> = book_ids.iter()
-                .map(|(folder, cids)| build_book_card(&w, folder, cids, &pos_of, &by_pos))
-                .collect();
+            let cards: Vec<BookCard> = book_data.iter()
+                .filter(|(.., resume, finished)| match tab.as_str() {
+                    "progress" => *resume > 0.0 && !finished,
+                    "finished" => *finished,
+                    _ => true,
+                })
+                .map(|(folder, cids, total, cover, resume, _)| BookCard {
+                    id: folder.clone().into(),
+                    title: book_title(folder).into(),
+                    author: "".into(),
+                    cover: art_image(cover),
+                    chapters: cids.len() as i32,
+                    total_time: fmt_hm(*total).into(),
+                    resume_frac: *resume,
+                }).collect();
             w.set_music_audiobook_cards(slint::ModelRc::new(slint::VecModel::from(cards)));
+            let frows: Vec<slint::SharedString> = folder_rows.into_iter().map(Into::into).collect();
+            w.set_music_ab_folders(slint::ModelRc::new(slint::VecModel::from(frows)));
+        });
+    });
+}
+
+/// Active Audiobooks sub-tab: all | progress | finished | folders.
+fn ab_tab() -> &'static std::sync::Mutex<String> {
+    static C: OnceLock<std::sync::Mutex<String>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new("all".to_string()))
+}
+
+/// Folder of the audiobook whose detail page is open (custom-cover target).
+fn cur_book_folder() -> &'static std::sync::Mutex<String> {
+    static C: OnceLock<std::sync::Mutex<String>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(String::new()))
+}
+
+/// File-picker → persist a custom cover for `folder` in audiobook_covers, then
+/// refresh the cards, the open detail hero, and the now-playing art if a
+/// chapter of this book is on the vinyl right now.
+fn audiobook_pick_cover(weak: slint::Weak<MainWindow>, folder: String) {
+    if folder.is_empty() { return; }
+    tokio::runtime::Handle::current().spawn(async move {
+        let Some(file) = rfd::AsyncFileDialog::new()
+            .add_filter("Images", &["png", "jpg", "jpeg", "webp", "bmp"])
+            .set_title("Choose audiobook cover")
+            .pick_file().await else { return; };
+        let path = file.path().to_path_buf();
+        let Ok(pool) = pool_for("music").await else { return; };
+        let _ = sqlx::query("CREATE TABLE IF NOT EXISTS audiobook_covers (folder TEXT PRIMARY KEY, path TEXT NOT NULL)")
+            .execute(&pool).await;
+        let _ = sqlx::query(
+            "INSERT INTO audiobook_covers (folder, path) VALUES (?,?)
+             ON CONFLICT(folder) DO UPDATE SET path = excluded.path")
+            .bind(&folder).bind(path.to_string_lossy().as_ref()).execute(&pool).await;
+        // Drop the stale decode and rebuild cards + the open detail hero.
+        if let Ok(mut g) = ab_cover_cache().lock() { g.remove(&folder); }
+        let ids = tulipix_music::audiobooks::book_chapters(&pool, &folder).await.unwrap_or_default();
+        let px = audiobook_cover_px(&folder, Some(path), None).await;
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            populate_audiobooks(&w);
+            if w.get_music_audiobook_detail_open() {
+                fill_book_detail(&w, &folder, &ids);
+            }
+            // Live vinyl art swap if this book is currently playing.
+            let np = w.get_music_np_index();
+            let np_folder = music_paths().lock().ok()
+                .and_then(|g| g.get(np as usize).and_then(|p| p.parent().map(|d| d.display().to_string())));
+            if np_folder.as_deref() == Some(folder.as_str()) {
+                if let Some(px) = px { w.set_music_np_art(slint::Image::from_rgba8(px)); }
+            }
         });
     });
 }
@@ -11231,8 +12071,15 @@ fn play_music_at(w: &MainWindow, idx: i32) {
         &path, tulipix_core::thumbs::ThumbSpec {
             kind: tulipix_core::thumbs::ThumbKind::Audio, width: 320, height: 320 })
         .ok().flatten().map(|t| t.path);
-    let art = thumb.as_ref()
-        .map(|p| slint::Image::load_from_path(p).unwrap_or_default()).unwrap_or_default();
+    // Audiobook chapter → the book's (possibly custom) cover is the vinyl art.
+    let book_px = path.parent()
+        .map(|d| d.display().to_string())
+        .and_then(|f| ab_cover_cache().lock().ok().and_then(|g| g.get(&f).cloned()));
+    let art = match &book_px {
+        Some(px) => slint::Image::from_rgba8(px.clone()),
+        None => thumb.as_ref()
+            .map(|p| slint::Image::load_from_path(p).unwrap_or_default()).unwrap_or_default(),
+    };
     // Dynamic accent from the cover (np.p5.atmusic.art-gradient).
     let accent = thumb.as_deref().and_then(dominant_color).unwrap_or(slint::Color::from_rgb_u8(0xec, 0x48, 0x99));
     w.set_music_np_accent(accent);
@@ -11254,6 +12101,10 @@ fn play_music_at(w: &MainWindow, idx: i32) {
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("music").await else { return; };
             let _ = tulipix_music::queue::record_play(&pool, id, 0).await;
+            // Refresh the Home rails so "Recently played" reflects this play
+            // immediately (it used to stay stale until app restart).
+            let wk2 = weak.clone();
+            let _ = wk2.upgrade_in_event_loop(move |w| populate_music_views(w.as_weak()));
             // Scrobble now-playing (np.p5.music.scrobble) — opt-in; the submitter
             // drains the pending queue to Last.fm / ListenBrainz.
             if scrobble {
@@ -11588,7 +12439,7 @@ fn build_palette_rows(query: &str) -> Vec<PaletteRow> {
         ("go:settings:libraries",  "Libraries",  "Settings → Libraries",  "Settings"),
         ("go:settings:schedule",   "Schedule",   "Settings → Schedule",   "Settings"),
         ("go:settings:api-keys",   "API Keys",   "Settings → API Keys",   "Settings"),
-        ("go:settings:account",    "Account",    "Settings → Account",    "Settings"),
+        ("go:settings:profile",    "Profile",    "Settings → Profile",    "Settings"),
         ("rescan",    "Rescan libraries", "Re-scan every watched folder", "Command"),
         ("lock",      "Lock now",         "Lock the app + show screensaver", "Command"),
         ("shortcuts", "Keyboard shortcuts", "Show the shortcut help", "Command"),
@@ -11819,7 +12670,6 @@ fn seed_settings_panels(w: &MainWindow) {
     // Endpoints & providers — np.p1.api.*.
     let ep = vec![
         hdr("CUSTOM ENDPOINTS"),
-        txt(&s, "api.sync-url", "Sync backend URL", "Account-mode endpoint override"),
         txt(&s, "api.update-channel", "Update / appcast URL", "Air-gapped or mirror manifest"),
         txt(&s, "api.sentry", "Sentry DSN", "Use your own crash service"),
         txt(&s, "api.nominatim", "Nominatim URL", "Self-hosted reverse-geocoding"),
@@ -11906,7 +12756,6 @@ fn seed_settings_panels(w: &MainWindow) {
         stat("AppIntents / Shortcuts", "Not available on Linux", "muted"),
         stat("Desktop widgets", "Not available on Linux", "muted"),
         stat("Live Activities", "Not available on Linux", "muted"),
-        stat("Cross-device handoff", "Account mode only", "muted"),
         stat("System tray", "Active", "ok"),
         hdr("BUILD & LOCALE"),
         stat("Installer size budget", "< 400 MB (Linux)", "ok"),
@@ -12098,6 +12947,10 @@ async fn migrate_split_from_music(dest: &sqlx::SqlitePool, tables: &[(&str, &str
 
 fn section_for_ext(ext: &str) -> Option<&'static str> {
     use tulipix_core::thumbs::{kind_for, ThumbKind};
+    // PDFs thumb as Doc but read in the Books section (np.p5.books.pdf).
+    if ext.eq_ignore_ascii_case("pdf") {
+        return Some("books");
+    }
     match kind_for(ext) {
         ThumbKind::Photo => Some("photos"),
         ThumbKind::Video => Some("videos"),
@@ -12448,7 +13301,7 @@ fn kick_section_scan(
             let id = match upsert_one(&pool, section, p).await {
                 Ok(id) => id,
                 Err(e) => {
-                    let msg = friendly_err("DB insert", &p, &e);
+                    let msg = friendly_err("DB insert", p, &e);
                     tracing::warn!(section, path = %p.display(), "{msg}");
                     counters.failed.fetch_add(1, Relaxed);
                     if let Ok(mut g) = counters.last_error.lock() { *g = msg; }
@@ -12638,4 +13491,15 @@ pub(crate) fn dirs_default() -> Option<std::path::PathBuf> {
         std::env::var_os("APPDATA").map(std::path::PathBuf::from)
     };
     base.map(|b| b.join("Tulipix"))
+}
+
+/// The user's Documents folder (best effort), home as the fallback — used by
+/// note export so output lands somewhere visible, not in /tmp.
+pub(crate) fn dirs_default_documents() -> std::path::PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let docs = home.join("Documents");
+    if docs.is_dir() { docs } else { home }
 }

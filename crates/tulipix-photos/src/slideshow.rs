@@ -79,7 +79,7 @@ pub fn plan(spec: &SlideshowSpec) -> Result<FfmpegInvocation> {
     args.push("-filter_complex".into());
     args.push(graph.trim_end_matches(';').to_string());
     args.extend(["-map".into(), "[vout]".into()]);
-    if let Some(_) = &spec.music {
+    if spec.music.is_some() {
         args.extend(["-map".into(), format!("{}:a", spec.photos.len()), "-shortest".into(), "-af".into(), "volume=0.5".into()]);
     }
     args.extend(["-c:v".into(), "libx264".into(), "-pix_fmt".into(), "yuv420p".into(), "-r".into(), spec.fps.to_string()]);

@@ -32,7 +32,7 @@ pub fn read_system_accent() -> Option<Rgb> {
     #[cfg(target_os = "windows")]
     { return read_windows(); }
     #[cfg(target_os = "linux")]
-    { return read_linux(); }
+    { read_linux()}
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     { None }
 }

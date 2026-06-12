@@ -57,7 +57,7 @@ pub struct VerifyResult { pub file: String, pub ok: bool }
 /// `None` if missing). Comparison is case-insensitive.
 pub fn verify(entries: &[(String, String)], mut compute: impl FnMut(&str) -> Option<String>) -> Vec<VerifyResult> {
     entries.iter().map(|(file, expected)| {
-        let ok = compute(file).map_or(false, |got| got.eq_ignore_ascii_case(expected));
+        let ok = compute(file).is_some_and(|got| got.eq_ignore_ascii_case(expected));
         VerifyResult { file: file.clone(), ok }
     }).collect()
 }

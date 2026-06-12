@@ -9,7 +9,7 @@
 //!  - the URL the renderer fetches bytes from (we proxy through the local
 //!    HTTP server so transcode-on-the-fly works).
 //!
-//! Cap-gated `sync.shared-albums` (closest existing cap covering LAN sharing);
+//! Local LAN feature — no account, no cap gate beyond local full access;
 //! a dedicated `dlna.server` cap will be added in the np.p4 caps sweep.
 
 use serde::{Deserialize, Serialize};
@@ -102,9 +102,7 @@ pub fn didl_item(item: &DlnaItem) -> String {
             .duration_s
             .map(|s| format!(r#" duration="{}""#, format_duration(s)))
             .unwrap_or_default(),
-        size = (item.size_bytes > 0)
-            .then(|| format!(r#" size="{}""#, item.size_bytes))
-            .unwrap_or_default(),
+        size = if item.size_bytes > 0 { format!(r#" size="{}""#, item.size_bytes) } else { Default::default() },
         url = xml_escape(&item.stream_url),
     )
 }

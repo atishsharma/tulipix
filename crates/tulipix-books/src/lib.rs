@@ -15,6 +15,7 @@ pub mod continuous;
 pub mod library;
 pub mod metadata;
 pub mod navigation;
+pub mod paginate;
 pub mod progress;
 pub mod reader;
 pub mod scan;

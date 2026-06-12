@@ -13,7 +13,7 @@ pub const COVER_NAMES: &[&str] = &["cover.jpg", "cover.png", "folder.jpg", "fold
 
 /// Pick the best sidecar cover from a directory listing, honoring precedence.
 /// Case-insensitive. Returns `None` → caller falls back to embedded art.
-pub fn pick_cover<'a>(files_in_dir: &'a [String]) -> Option<&'a String> {
+pub fn pick_cover(files_in_dir: &[String]) -> Option<&String> {
     for want in COVER_NAMES {
         if let Some(f) = files_in_dir.iter().find(|f| {
             std::path::Path::new(f).file_name().and_then(|n| n.to_str())

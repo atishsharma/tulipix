@@ -38,7 +38,7 @@ pub async fn effective_mode(pool: &SqlitePool, remote_id: i64, path: &str) -> Re
     for (folder, mode) in rows {
         if path == folder || path.starts_with(&format!("{}/", folder.trim_end_matches('/'))) {
             let depth = folder.len();
-            if best.map_or(true, |(d, _)| depth > d) {
+            if best.is_none_or(|(d, _)| depth > d) {
                 if let Some(m) = Mode::parse(&mode) { best = Some((depth, m)); }
             }
         }

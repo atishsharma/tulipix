@@ -48,7 +48,7 @@ component ChoiceCard inherits Rectangle {
 export component OnboardingWizard inherits Rectangle {
     in-out property <int> step: 0;          // 0=welcome 1=theme 2=mode 3=library 4=done
     in-out property <ThemeChoice> theme-choice;
-    in property <string> mode: "local";     // "local" | "account"
+    in property <string> mode: "local";     // always "local" — local-only app
     in property <bool> library-added: false;
     callback theme-changed(ThemeChoice);
     callback choose-mode(string);
@@ -101,18 +101,15 @@ export component OnboardingWizard inherits Rectangle {
 
                 if root.step == 2: VerticalLayout {
                     alignment: center; spacing: 14px;
-                    Text { text: "How do you want to use Tulipix?"; color: Theme.text; font-size: 20px; font-weight: 700; horizontal-alignment: center; }
+                    Text { text: "Local at heart"; color: Theme.text; font-size: 20px; font-weight: 700; horizontal-alignment: center; }
+                    Text { text: "Everything stays on this device — no accounts, no servers, full access.";
+                        color: Theme.text-dim; font-size: 12px; horizontal-alignment: center; }
                     HorizontalLayout {
                         alignment: center; spacing: 14px;
                         ChoiceCard {
-                            active: root.mode == "local"; title: "🏠  Local";
-                            sub: "Everything stays on this device."; grad-a: #4f46e5; grad-b: #7c3aed;
+                            active: true; title: "🏠  Local";
+                            sub: "Your library, your machine."; grad-a: #4f46e5; grad-b: #7c3aed;
                             clicked => { root.choose-mode("local"); }
-                        }
-                        ChoiceCard {
-                            active: root.mode == "account"; title: "☁  Account";
-                            sub: "Sync + shared albums across devices."; grad-a: #14b8a6; grad-b: #06b6d4;
-                            clicked => { root.choose-mode("account"); }
                         }
                     }
                 }

@@ -48,7 +48,7 @@ pub fn share(req: &ShareRequest) -> Result<ShareOutcome> {
     #[cfg(target_os = "windows")]
     { return share_windows(req); }
     #[cfg(target_os = "linux")]
-    { return share_linux(req); }
+    { share_linux(req)}
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     { let _ = req; Ok(ShareOutcome::NotAvailable) }
 }

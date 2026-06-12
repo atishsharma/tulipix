@@ -14,16 +14,15 @@ pub enum Section {
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+#[derive(Default)]
 pub enum ScanCadence {
     Manual,
     Hourly,
+    #[default]
     Daily,
     Weekly,
 }
 
-impl Default for ScanCadence {
-    fn default() -> Self { Self::Daily }
-}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Library {
