@@ -65,6 +65,8 @@ pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     // `home_pinned` marks shows the user added to Home "Your shows". Ignore error
     // when the column already exists.
     let _ = sqlx::query("ALTER TABLE podcasts ADD COLUMN home_pinned INTEGER NOT NULL DEFAULT 0").execute(pool).await;
+    // When the offline copy was stored — drives the Downloads "Downloaded" sort.
+    let _ = sqlx::query("ALTER TABLE podcast_episodes ADD COLUMN downloaded_at INTEGER").execute(pool).await;
     Ok(())
 }
 
@@ -319,7 +321,8 @@ pub async fn prune_feed(pool: &SqlitePool, podcast_id: i64, keep: i64) -> Result
 }
 
 pub async fn mark_downloaded(pool: &SqlitePool, episode_id: i64, path: &str) -> Result<()> {
-    sqlx::query("UPDATE podcast_episodes SET downloaded_path = ? WHERE id = ?").bind(path).bind(episode_id).execute(pool).await?;
+    sqlx::query("UPDATE podcast_episodes SET downloaded_path = ?, downloaded_at = strftime('%s','now') WHERE id = ?")
+        .bind(path).bind(episode_id).execute(pool).await?;
     Ok(())
 }
 

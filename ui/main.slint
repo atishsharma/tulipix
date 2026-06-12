@@ -10,7 +10,7 @@ import { MilestoneConfetti } from "empty_state.slint";
 import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
 import { MusicPage, MusicFullscreen, MusicMini, PodcastMini } from "page_music.slint";
-import { MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow } from "music_common.slint";
+import { MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation } from "music_common.slint";
 import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow, AuthorRow, CollectionRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry } from "page_cloud.slint";
@@ -988,6 +988,7 @@ export component MainWindow inherits Window {
     callback music-playlist-remove-track(int);
     callback music-playlist-import();
     callback music-playlist-export();
+    callback music-playlist-delete(int);
     in-out property <bool> music-add-pick-open: false;
     in-out property <[string]> music-playlist-picker: [];
     callback music-add-pick(int);
@@ -1051,7 +1052,7 @@ export component MainWindow inherits Window {
     in-out property <string> music-podcast-subscribe-status: "";
     in-out property <[PodcastEpisodeRow]> music-podcast-latest: [];
     in-out property <[PodcastEpisodeRow]> music-podcast-downloads: [];
-    in-out property <string> music-podcast-dl-sort: "new";
+    in-out property <string> music-podcast-dl-sort: "dl";
     in-out property <int> music-podcast-dl-page: 0;
     in-out property <int> music-podcast-dl-pages: 1;
     callback music-podcast-dl-set-sort(string);
@@ -1068,12 +1069,47 @@ export component MainWindow inherits Window {
     callback music-podcast-reset-all();   // clear every subscription + cached files
     callback music-podcast-set-thumb();   // pick a custom artwork for the open podcast
     callback music-podcast-search(string); // search across subscribed podcasts
+    // Internet radio (np.p4.music.radio).
+    in-out property <string> music-radio-tab: "home";
+    in-out property <[RadioStation]> music-radio-stations: [];
+    in-out property <[string]> music-radio-genres: [];
+    in-out property <[string]> music-radio-genre-icons: [];
+    in-out property <[int]> music-radio-genre-counts: [];
+    in-out property <int> music-radio-total: 0;
+    in-out property <int> music-radio-genre: 0;
+    in-out property <bool> music-radio-cat-open: false;
+    in-out property <string> music-radio-cat-title: "";
+    in-out property <bool> music-radio-busy: false;
+    in-out property <string> music-radio-status: "";
+    in-out property <string> music-radio-np-uuid: "";
+    in-out property <string> music-radio-np-initial: "";  // letter tile on the playing vinyl
+    in-out property <bool> music-radio-refresh-busy: false;
+    in-out property <float> music-radio-refresh-frac: 0;
+    in-out property <string> music-radio-sort: "default";
+    in-out property <string> music-radio-sort-dir: "desc";
+    in-out property <int> music-radio-fav-page: 0;
+    in-out property <int> music-radio-fav-pages: 1;
+    callback music-radio-set-sort(string);
+    callback music-radio-fav-set-page(int);
+    callback music-radio-clear-recent();
+    callback music-radio-set-tab(string);
+    callback music-radio-set-genre(int);
+    callback music-radio-back();
+    callback music-radio-refresh();
+    callback music-radio-play(int);
+    callback music-radio-fav(int);
+    callback music-radio-search(string);
+    in-out property <bool> music-radio-add-open: false;
+    in-out property <string> music-radio-add-name: "";
+    in-out property <string> music-radio-add-url: "";
+    callback music-radio-add-save();
     // Single-podcast detail page + transcript panel.
     in-out property <bool> music-podcast-detail-open: false;
     in-out property <string> music-podcast-d-title: "";
     in-out property <string> music-podcast-d-author: "";
     in-out property <string> music-podcast-d-category: "";
     in-out property <string> music-podcast-d-desc: "";
+    in-out property <string> music-podcast-d-desc-short: "";
     in-out property <image> music-podcast-d-image;
     in-out property <[PodcastEpisodeRow]> music-podcast-d-episodes: [];
     in-out property <string> music-podcast-d-sort: "new";
@@ -1087,6 +1123,8 @@ export component MainWindow inherits Window {
     callback music-podcast-transcript(int);
     in-out property <int> music-podcast-dl-id: -1;
     in-out property <float> music-podcast-dl-frac: 0;
+    in-out property <string> music-podcast-dl-title: "";
+    in-out property <int> music-podcast-dl-queue: 0;
     in-out property <bool> music-podcast-transcript-open: false;
     in-out property <string> music-podcast-transcript-title: "";
     in-out property <string> music-podcast-transcript-text: "";
@@ -1611,6 +1649,7 @@ export component MainWindow inherits Window {
                 refresh-discover => { root.video-refresh-discover(); } }
             if active-section == "music":    MusicPage  { width: parent.width; height: parent.height; item-count: root.music-song-total; tiles: root.music-tracks-grid;
                 np-title: root.music-np-title; np-sub: root.music-np-sub; np-art: root.music-np-art; playing: root.music-playing;
+                player-mode: root.music-player-mode;
                 view <=> root.music-view; sleep-min: root.music-sleep-min;
                 lib-tab <=> root.music-lib-tab;
                 recent: root.music-recent; most: root.music-most; loved-tiles: root.music-loved;
@@ -1708,6 +1747,7 @@ export component MainWindow inherits Window {
                 playlist-cover: root.music-playlist-cover; playlist-set-art => { root.music-playlist-set-art(); }
                 playlist-new-open <=> root.music-playlist-new-open; playlist-new-name <=> root.music-playlist-new-name;
                 playlist-open(i) => { root.music-playlist-open(i); } playlist-back => { root.music-playlist-back(); }
+                playlist-delete(i) => { root.music-playlist-delete(i); }
                 playlist-create => { root.music-playlist-create(); } playlist-create-smart(k) => { root.music-playlist-create-smart(k); }
                 playlist-play-track(i) => { root.music-playlist-play-track(i); } playlist-remove-track(i) => { root.music-playlist-remove-track(i); }
                 playlist-import => { root.music-playlist-import(); } playlist-export => { root.music-playlist-export(); }
@@ -1773,11 +1813,13 @@ export component MainWindow inherits Window {
                 podcast-detail-open <=> root.music-podcast-detail-open;
                 podcast-d-title: root.music-podcast-d-title; podcast-d-author: root.music-podcast-d-author;
                 podcast-d-category: root.music-podcast-d-category; podcast-d-desc: root.music-podcast-d-desc;
+                podcast-d-desc-short: root.music-podcast-d-desc-short;
                 podcast-d-image: root.music-podcast-d-image; podcast-d-episodes: root.music-podcast-d-episodes;
                 podcast-d-sort <=> root.music-podcast-d-sort; podcast-d-page: root.music-podcast-d-page;
                 podcast-d-pages: root.music-podcast-d-pages; podcast-d-total: root.music-podcast-d-total;
                 podcast-d-set-sort(s) => { root.music-podcast-d-set-sort(s); } podcast-d-set-page(d) => { root.music-podcast-d-set-page(d); }
                 podcast-dl-id: root.music-podcast-dl-id; podcast-dl-frac: root.music-podcast-dl-frac;
+                podcast-dl-title: root.music-podcast-dl-title; podcast-dl-queue: root.music-podcast-dl-queue;
                 podcast-back => { root.music-podcast-back(); } podcast-download(i) => { root.music-podcast-download(i); }
                 podcast-transcript(i) => { root.music-podcast-transcript(i); }
                 podcast-transcript-open <=> root.music-podcast-transcript-open;
@@ -1797,6 +1839,32 @@ export component MainWindow inherits Window {
                 book-skip-silence-on <=> root.music-book-skip-silence-on; book-bookmarks: root.music-book-bookmarks;
                 audiobook-play(i) => { root.music-audiobook-play(i); } set-book-speed(s) => { root.music-set-book-speed(s); } book-chapter(d) => { root.music-book-chapter(d); }
                 book-skip-silence => { root.music-book-skip-silence(); } book-bookmark => { root.music-book-bookmark(); } book-bookmark-jump(i) => { root.music-book-bookmark-jump(i); }
+                radio-tab <=> root.music-radio-tab; radio-stations: root.music-radio-stations;
+                radio-genres: root.music-radio-genres; radio-genre <=> root.music-radio-genre;
+                radio-genre-icons: root.music-radio-genre-icons;
+                radio-genre-counts: root.music-radio-genre-counts;
+                radio-total: root.music-radio-total;
+                radio-cat-open <=> root.music-radio-cat-open; radio-cat-title: root.music-radio-cat-title;
+                radio-busy: root.music-radio-busy; radio-status: root.music-radio-status;
+                radio-np-uuid: root.music-radio-np-uuid;
+                radio-refresh-busy: root.music-radio-refresh-busy; radio-refresh-frac: root.music-radio-refresh-frac;
+                radio-sort <=> root.music-radio-sort;
+                radio-sort-dir: root.music-radio-sort-dir;
+                radio-fav-page: root.music-radio-fav-page; radio-fav-pages: root.music-radio-fav-pages;
+                radio-loaded: root.music-player-mode == "radio" && root.music-np-title != "";
+                radio-set-sort(s) => { root.music-radio-set-sort(s); }
+                radio-fav-set-page(d) => { root.music-radio-fav-set-page(d); }
+                radio-clear-recent => { root.music-radio-clear-recent(); }
+                radio-set-tab(t) => { root.music-radio-set-tab(t); }
+                radio-set-genre(i) => { root.music-radio-set-genre(i); }
+                radio-back => { root.music-radio-back(); }
+                radio-refresh => { root.music-radio-refresh(); }
+                radio-play(i) => { root.music-radio-play(i); }
+                radio-fav(i) => { root.music-radio-fav(i); }
+                radio-search(q) => { root.music-radio-search(q); }
+                radio-add-open <=> root.music-radio-add-open;
+                radio-add-name <=> root.music-radio-add-name; radio-add-url <=> root.music-radio-add-url;
+                radio-add-save => { root.music-radio-add-save(); }
                 artist-bio <=> root.music-artist-bio; fetch-art-bio => { root.music-fetch-art-bio(); }
                 np-accent: root.music-np-accent; thumb-size <=> root.music-thumb-size; set-thumb-size(v) => { root.music-set-thumb-size(v); }
                 play-all => { root.music-play-all(); } shuffle-all => { root.music-shuffle-all(); }
@@ -1995,8 +2063,12 @@ export component MainWindow inherits Window {
         queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
         podcast-mode: root.music-player-mode == "podcast"; speed: root.music-podcast-speed; set-speed(v) => { root.music-podcast-set-speed(v); }
         tab <=> root.music-fs-tab;
-        close => { root.music-fullscreen = false; root.music-exit-zen(); }
-        init => { root.music-enter-zen(); self.zen-lyrics = true; }
+        // Long-form modes (radio / podcast / audiobook) reopen their mini on
+        // close — it's the only player those sections have.
+        close => { root.music-fullscreen = false; root.music-exit-zen();
+            if (root.music-player-mode != "music") { root.music-center-mini(); } }
+        // Lyrics auto-open only makes sense for library tracks.
+        init => { root.music-enter-zen(); self.zen-lyrics = root.music-player-mode == "music"; }
         playpause => { root.music-toggle-pause(); }
         next => { root.music-next(); } prev => { root.music-prev(); }
         seek(s) => { root.music-seek(s); } set-volume(v) => { root.music-set-volume(v); }
@@ -2027,6 +2099,9 @@ export component MainWindow inherits Window {
             pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
             shuffle: root.music-shuffle; volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat;
             queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
+            radio-mode: root.music-player-mode == "radio"; radio-initial: root.music-radio-np-initial;
+            book-mode: root.music-player-mode == "book";
+            open-zen => { root.music-mini-open = false; root.music-fullscreen = true; }
             cycle-repeat => { root.music-cycle-repeat(); }
             close => { root.music-mini-open = false; }
             minimise => { root.music-mini-bubble = true; }
@@ -2043,6 +2118,7 @@ export component MainWindow inherits Window {
             pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
             speed: root.music-podcast-speed; episodes: root.music-podcast-d-episodes; summary: root.music-podcast-d-desc;
             volume: root.music-volume; muted: root.music-muted;
+            open-zen => { root.music-mini-open = false; root.music-fullscreen = true; }
             close => { root.music-mini-open = false; }
             minimise => { root.music-mini-bubble = true; }
             playpause => { root.music-toggle-pause(); }
@@ -2078,6 +2154,11 @@ export component MainWindow inherits Window {
         // Clipped circular art — spins like a record while playing.
         Rectangle { width: 56px; height: 56px; border-radius: 28px; clip: true; x: 2px; y: 2px;
             background: #14141b; drop-shadow-blur: 26px; drop-shadow-color: root.music-np-accent;
+            // Radio with no favicon — letter tile in the bubble too.
+            if root.music-player-mode == "radio" && root.music-np-art.width == 0: Rectangle {
+                background: @linear-gradient(135deg, #14b8a6, #0ea5e9);
+                Text { text: root.music-radio-np-initial; color: #ffffffd0; font-size: 22px; font-weight: 800;
+                    horizontal-alignment: center; vertical-alignment: center; } }
             Image { source: root.music-np-art; image-fit: cover; width: 100%; height: 100%; opacity: 0.9;
                 transform-rotation: root.music-playing ? Math.mod(animation-tick() / 1ms / 14, 360) * 1deg : 0deg; }
             if root.music-np-title == "": Text { text: "♪"; color: #ec4899; font-size: 24px; horizontal-alignment: center; vertical-alignment: center; } }
