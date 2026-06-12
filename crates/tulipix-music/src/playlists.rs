@@ -44,10 +44,12 @@ pub struct SmartRule {
     pub limit: Option<i64>,
 }
 
-/// Resolve a smart rule to matching item ids, newest first.
+/// Resolve a smart rule to matching item ids, newest first. Audiobook chapters
+/// never qualify — smart playlists are a music feature (np.p5.music.audiobook-chapters).
 pub async fn evaluate(pool: &SqlitePool, rule: &SmartRule) -> Result<Vec<i64>> {
     let mut qb: QueryBuilder<Sqlite> = QueryBuilder::new(
-        "SELECT track_meta.item_id FROM track_meta JOIN items ON items.id = track_meta.item_id WHERE items.missing_since IS NULL",
+        "SELECT track_meta.item_id FROM track_meta JOIN items ON items.id = track_meta.item_id \
+         WHERE items.missing_since IS NULL AND COALESCE(track_meta.is_audiobook, 0) = 0",
     );
     if !rule.conditions.is_empty() {
         let joiner = match rule.combine { Combine::All => " AND ", Combine::Any => " OR " };
@@ -82,6 +84,20 @@ pub async fn create(pool: &SqlitePool, name: &str, rule: Option<&SmartRule>) -> 
     Ok(sqlx::query_scalar(
         "INSERT INTO playlists (name, is_smart, rule_json, created, updated) VALUES (?,?,?,?,?) RETURNING id",
     ).bind(name).bind(is_smart).bind(rule_json).bind(t).bind(t).fetch_one(pool).await?)
+}
+
+/// Playlist id by exact name — lets one-click smart playlists dedupe instead
+/// of stacking copies.
+pub async fn find_by_name(pool: &SqlitePool, name: &str) -> Result<Option<i64>> {
+    Ok(sqlx::query_scalar("SELECT id FROM playlists WHERE name = ? LIMIT 1")
+        .bind(name).fetch_optional(pool).await?)
+}
+
+/// Delete a playlist and its track list. Library items are untouched.
+pub async fn delete(pool: &SqlitePool, playlist_id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM playlist_items WHERE playlist_id = ?").bind(playlist_id).execute(pool).await?;
+    sqlx::query("DELETE FROM playlists WHERE id = ?").bind(playlist_id).execute(pool).await?;
+    Ok(())
 }
 
 /// Append a track to a manual playlist at the next position.
@@ -227,5 +243,29 @@ mod tests {
         let json = serde_json::to_string(&rule).unwrap();
         let back: SmartRule = serde_json::from_str(&json).unwrap();
         assert_eq!(back, rule);
+    }
+
+    #[tokio::test]
+    async fn smart_rules_skip_audiobooks() {
+        let (_t, pool) = open_pool().await;
+        let song = add_track(&pool, "/m/song.flac").await;
+        let chap = add_track(&pool, "/books/ch1.m4b").await;
+        sqlx::query("UPDATE track_meta SET is_audiobook = 1 WHERE item_id = ?").bind(chap).execute(&pool).await.unwrap();
+        // The match-everything "Recently Added" rule must still skip chapters.
+        let rule = SmartRule { combine: Combine::All, conditions: vec![], limit: Some(100) };
+        assert_eq!(evaluate(&pool, &rule).await.unwrap(), vec![song]);
+    }
+
+    #[tokio::test]
+    async fn delete_and_find_by_name() {
+        let (_t, pool) = open_pool().await;
+        let a = add_track(&pool, "/m/a.flac").await;
+        let pl = create(&pool, "Road Trip", None).await.unwrap();
+        append(&pool, pl, a).await.unwrap();
+        assert_eq!(find_by_name(&pool, "Road Trip").await.unwrap(), Some(pl));
+        assert_eq!(find_by_name(&pool, "Nope").await.unwrap(), None);
+        delete(&pool, pl).await.unwrap();
+        assert_eq!(find_by_name(&pool, "Road Trip").await.unwrap(), None);
+        assert!(items(&pool, pl).await.unwrap().is_empty());
     }
 }

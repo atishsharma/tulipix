@@ -48,6 +48,8 @@ export struct PodcastEpisodeRow {
     image: image,
     played: bool,
     downloaded: bool,
+    queued: bool,      // waiting in the sequential download queue
+    dlinfo: string,    // short "when downloaded" stamp (Downloads list)
     index: int,        // position into the list's parallel episode-state vec
 }
 
@@ -83,6 +85,22 @@ export struct LyricsMgrRow {
     artist: string,
     status: string,    // "Synced" | "Normal" | "Missing"
     index: int,        // playback position → find/store target
+}
+
+// One internet-radio station tile (np.p4.music.radio). `initial` is the
+// pre-computed first letter for the no-favicon gradient tile (Slint has no
+// substring), `quality` a pre-formatted "MP3 · 128k" badge ("" = unknown).
+export struct RadioStation {
+    uuid: string,        // radio-browser stationuuid / "custom:<url>"
+    name: string,
+    initial: string,
+    tags: string,        // " · "-joined, pre-trimmed
+    country: string,
+    quality: string,
+    icon: image,
+    has-icon: bool,
+    fav: bool,
+    index: int,          // position into the current stations list
 }
 
 // One audiobook card in the Audiobooks grid — one per source folder
