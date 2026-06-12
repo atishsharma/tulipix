@@ -108,7 +108,12 @@ fn main() -> Result<()> {
     let window = MainWindow::new()?;
     register_bundled_fonts();
     tulipix_platform::install_menubar(&tulipix_platform::default_menubar());
-    let _tray_ok = tulipix_platform::init_tray();
+    // Tray icon — the compiled-in tulip mark (64px, RGBA-decoded here so the
+    // platform crate needs no image dependency).
+    let tray_icon_rgba = image::load_from_memory(include_bytes!("../../../resources/icons/tulipix-64.png"))
+        .ok().map(|img| { let rgba = img.to_rgba8(); let (w, h) = rgba.dimensions(); (rgba.into_raw(), w, h) });
+    let tray_ok = tulipix_platform::init_tray(tray_icon_rgba);
+    TRAY_ACTIVE.store(tray_ok, std::sync::atomic::Ordering::Relaxed);
 
     // ── Embedded player (np.p3.player.*) ── libmpv renders into a GL texture
     // presented by Slint. The rendering notifier is the only place the GL
@@ -1928,6 +1933,15 @@ fn main() -> Result<()> {
     window.on_music_set_songs_view(move |v| {
         if let Some(w) = w.upgrade() { w.set_music_songs_view(v); }
     });
+    // Songs grid density slider (np.p4.music.grid-density) — clamp 100..300,
+    // live re-flow via the bound property, persisted across relaunch.
+    let w = window.as_weak();
+    window.on_music_set_grid_density(move |px| {
+        let Some(w) = w.upgrade() else { return; };
+        let px = tulipix_music::grid_density::clamp_target(px as f64);
+        w.set_music_grid_density(px as f32);
+        save_music_pref("music.grid_density", &format!("{px:.0}"));
+    });
     // Home "Recently played" pager.
     let w = window.as_weak();
     window.on_music_set_recent_page(move |delta| {
@@ -2636,6 +2650,45 @@ fn main() -> Result<()> {
     window.on_music_set_vis_style(move |s| {
         save_music_pref("music.vis_style", &s.to_string());
     });
+    // ReplayGain loudness scan (np.p5.music.replaygain) — compute gains for
+    // untagged files: ffmpeg ebur128 per track → RG2 gain → track_meta, then
+    // album gains. Progress-fill button mirrors the lyrics-sync pattern.
+    let w = window.as_weak();
+    window.on_music_rg_scan(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        if w0.get_music_rg_scan_status().starts_with("Scanning") { return; } // already running
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let todo = tulipix_music::replaygain::untagged(&pool).await.unwrap_or_default();
+            if todo.is_empty() {
+                let _ = weak.upgrade_in_event_loop(|w| { w.set_music_rg_scan_status("All tagged".into()); });
+                return;
+            }
+            let total = todo.len();
+            let ffmpeg = tulipix_core::thumbs::tool_bin("ffmpeg");
+            for (done, (id, path)) in todo.into_iter().enumerate() {
+                let out = tokio::process::Command::new(&ffmpeg)
+                    .args(["-hide_banner", "-nostats", "-i"]).arg(&path)
+                    .args(["-map", "a:0", "-af", "ebur128", "-f", "null", "-"])
+                    .output().await;
+                if let Ok(out) = out {
+                    let err = String::from_utf8_lossy(&out.stderr);
+                    if let Some(lufs) = tulipix_music::replaygain::parse_ebur128_integrated(&err) {
+                        let gain = tulipix_music::replaygain::gain_from_lufs(lufs);
+                        let _ = tulipix_music::replaygain::store_track_gain(&pool, id, gain).await;
+                    }
+                }
+                let frac = (done + 1) as f32 / total as f32;
+                let _ = weak.upgrade_in_event_loop(move |w| {
+                    w.set_music_rg_scan_progress(frac);
+                    w.set_music_rg_scan_status(format!("Scanning {}/{total}", done + 1).into());
+                });
+            }
+            let _ = tulipix_music::replaygain::recompute_album_gains(&pool).await;
+            let _ = weak.upgrade_in_event_loop(|w| { w.set_music_rg_scan_status("Done".into()); });
+        });
+    });
     // Scrobble opt-in (np.p5.music.scrobble) — toggle + persist.
     let w = window.as_weak();
     window.on_music_toggle_scrobble(move || {
@@ -2643,6 +2696,73 @@ fn main() -> Result<()> {
         let on = !w.get_music_scrobble_on();
         w.set_music_scrobble_on(on);
         save_music_pref("music.scrobble", if on { "1" } else { "0" });
+    });
+    // Last.fm signed session-key auth (np.p5.music.scrobble). Two-stage flow:
+    // 1st click — auth.getToken + open the authorize page in the browser;
+    // 2nd click — auth.getSession trades the approved token for a session key,
+    // stored in the OS keychain as service "lastfm.session". The API key +
+    // shared secret come from Settings → API Keys as "API_KEY:SHARED_SECRET".
+    let w = window.as_weak();
+    window.on_music_lastfm_connect(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let creds = tulipix_core::api_keys::fetch("lastfm").ok().flatten()
+            .and_then(|v| tulipix_music::scrobble::parse_key_secret(&v));
+        let Some((api_key, secret)) = creds else {
+            w0.set_music_lastfm_status("Add your Last.fm credentials in Settings → API Keys as API_KEY:SHARED_SECRET first.".into());
+            return;
+        };
+        let stage = w0.get_music_lastfm_stage().to_string();
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let client = reqwest::Client::new();
+            if stage != "pending" {
+                // Stage 1: request token + browser authorize.
+                let params = tulipix_music::scrobble::signed_params(
+                    &[("method", "auth.getToken"), ("api_key", &api_key)], &secret);
+                let resp = client.get(tulipix_music::scrobble::API_ROOT).query(&params).send().await;
+                let token = match resp {
+                    Ok(r) => r.json::<serde_json::Value>().await.ok()
+                        .and_then(|v| v["token"].as_str().map(str::to_string)),
+                    Err(_) => None,
+                };
+                let Some(token) = token else {
+                    let _ = weak.upgrade_in_event_loop(|w| w.set_music_lastfm_status("Token request failed — check credentials / network.".into()));
+                    return;
+                };
+                let url = tulipix_music::scrobble::authorize_url(&api_key, &token);
+                let _ = std::process::Command::new(if cfg!(target_os = "macos") { "open" } else { "xdg-open" }).arg(&url).spawn();
+                if let Ok(mut g) = lastfm_pending_token().lock() { *g = Some(token); }
+                let _ = weak.upgrade_in_event_loop(|w| {
+                    w.set_music_lastfm_stage("pending".into());
+                    w.set_music_lastfm_status("Approve Tulipix in the browser tab, then click \"Finish Last.fm connect\".".into());
+                });
+            } else {
+                // Stage 2: trade the approved token for a session key.
+                let Some(token) = lastfm_pending_token().lock().ok().and_then(|g| g.clone()) else { return; };
+                let params = tulipix_music::scrobble::signed_params(
+                    &[("method", "auth.getSession"), ("api_key", &api_key), ("token", &token)], &secret);
+                let resp = client.get(tulipix_music::scrobble::API_ROOT).query(&params).send().await;
+                let session = match resp {
+                    Ok(r) => r.json::<serde_json::Value>().await.ok(),
+                    Err(_) => None,
+                };
+                let (key, user) = match &session {
+                    Some(v) => (v["session"]["key"].as_str().map(str::to_string),
+                                v["session"]["name"].as_str().unwrap_or("?").to_string()),
+                    None => (None, String::new()),
+                };
+                let Some(sk) = key else {
+                    let _ = weak.upgrade_in_event_loop(|w| w.set_music_lastfm_status("Session exchange failed — did you approve in the browser?".into()));
+                    return;
+                };
+                let _ = tulipix_core::api_keys::store("lastfm.session", &sk);
+                if let Ok(mut g) = lastfm_pending_token().lock() { *g = None; }
+                let _ = weak.upgrade_in_event_loop(move |w| {
+                    w.set_music_lastfm_stage("connected".into());
+                    w.set_music_lastfm_status(format!("Connected as {user} — scrobbles now submit to Last.fm.").into());
+                });
+            }
+        });
     });
     // Cast discovery (np.p5.music.cast) — SSDP scan for DLNA renderers.
     let w = window.as_weak();
@@ -2657,9 +2777,13 @@ fn main() -> Result<()> {
             });
         });
     });
+    // Picking a renderer hands the current track off to it (np.p5.music.cast):
+    // serve the file over HTTP + SOAP SetAVTransportURI/Play at the renderer.
     let w = window.as_weak();
     window.on_music_set_cast(move |c| {
-        if let Some(w) = w.upgrade() { w.set_music_cast_target(c); }
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_cast_target(c.clone());
+        if !c.is_empty() { cast_current_track(&w0, c.as_str()); }
     });
     // Instant mix / auto-DJ (np.p5.music.instant-mix) — build an "Up next" from
     // tracks sharing the current track's artist or genre (tag similarity).
@@ -3481,6 +3605,25 @@ fn main() -> Result<()> {
             let _ = weak.upgrade_in_event_loop(|w| refresh_podcast_views(&w));
         });
     });
+    // Clear ALL offline downloads (user request 2026-06-12): delete every
+    // cached file + null the paths in one pass.
+    let w = window.as_weak();
+    window.on_music_podcast_clear_downloads(move || {
+        let Some(_w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let paths: Vec<String> = sqlx::query_scalar(
+                "SELECT downloaded_path FROM podcast_episodes WHERE downloaded_path IS NOT NULL")
+                .fetch_all(&pool).await.unwrap_or_default();
+            let n = paths.len();
+            for p in paths { let _ = std::fs::remove_file(&p); }
+            let _ = sqlx::query("UPDATE podcast_episodes SET downloaded_path = NULL WHERE downloaded_path IS NOT NULL")
+                .execute(&pool).await;
+            tracing::info!(removed = n, "podcast downloads cleared");
+            let _ = weak.upgrade_in_event_loop(|w| refresh_podcast_views(&w));
+        });
+    });
     // Detail page — sort (newest/oldest) + pagination.
     let w = window.as_weak();
     window.on_music_podcast_d_set_sort(move |s| {
@@ -3517,11 +3660,15 @@ fn main() -> Result<()> {
         music_ipc(&["set_property", "speed", &speed.to_string()]);
         if let Some(id) = current_music_id(&w0) { load_book_bookmarks(&w0, id); }
         if let Some(id) = current_music_id(&w0) {
+            let speed = speed as f64;
             tokio::runtime::Handle::current().spawn(async move {
                 if let Ok(pool) = pool_for("music").await {
                     let _ = tulipix_music::audiobooks::mark_audiobook(&pool, id).await;
                     let (pos_s, _) = tulipix_music::audiobooks::resume(&pool, id).await.unwrap_or((0.0, 1.0));
                     if pos_s > 1.0 { music_ipc(&["seek", &pos_s.to_string(), "absolute"]); }
+                    // Register the book as in-progress IMMEDIATELY — the card
+                    // bar + "In progress" tab key off audiobook_progress rows.
+                    let _ = tulipix_music::audiobooks::save_progress(&pool, id, pos_s.max(1.0), speed).await;
                 }
             });
         }
@@ -3967,6 +4114,52 @@ fn main() -> Result<()> {
         let _ = w0;
     });
 
+    // Audiobook progress writeback (user report 2026-06-12: card bars stuck at
+    // 0%, books never reached In-progress): every 15 s of playback, persist the
+    // live position for the playing chapter. The card bars + In-progress /
+    // Finished tabs all read audiobook_progress.
+    {
+        let weak = window.as_weak();
+        let saver: &'static slint::Timer = Box::leak(Box::new(slint::Timer::default()));
+        saver.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(15), move || {
+            let Some(w) = weak.upgrade() else { return; };
+            if !w.get_music_playing() { return; }
+            let Some(id) = current_music_id(&w) else { return; };
+            let idx = w.get_music_np_index();
+            let is_book = music_songs().lock().ok()
+                .map(|g| g.iter().any(|s| s.pos == idx && s.is_audiobook)).unwrap_or(false);
+            if !is_book { return; }
+            let pos = w.get_music_pos() as f64;
+            let speed = w.get_music_book_speed() as f64;
+            let refresh_cards = w.get_music_view() == "audiobooks";
+            let wk = weak.clone();
+            tokio::runtime::Handle::current().spawn(async move {
+                if let Ok(pool) = pool_for("music").await {
+                    let _ = tulipix_music::audiobooks::save_progress(&pool, id, pos.max(1.0), speed).await;
+                }
+                // Live-refresh the card bars while the Audiobooks view is open.
+                if refresh_cards {
+                    let _ = wk.upgrade_in_event_loop(|w| populate_audiobooks(&w));
+                }
+            });
+        });
+    }
+    // UI-thread jank watchdog (np.p1.perf.jank): a 100 ms repeating timer
+    // measures its own drift — the timer only fires late when the event loop
+    // was blocked, so drift > 16 ms ≈ at least one dropped frame.
+    {
+        let last = std::cell::Cell::new(std::time::Instant::now());
+        let jank_timer: &'static slint::Timer = Box::leak(Box::new(slint::Timer::default()));
+        jank_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(100), move || {
+            let now = std::time::Instant::now();
+            let drift = now.duration_since(last.get()).as_millis() as i64 - 100;
+            last.set(now);
+            if drift > 16 {
+                let n = SLOW_FRAMES.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                if n % 100 == 0 { tracing::warn!(slow_frames = n, last_block_ms = drift, "UI jank watchdog"); }
+            }
+        });
+    }
     // Audio visualizer animation (np.p5.music.visualizer) — a synthetic spectrum
     // while a track plays; ~11 fps keeps it lively without burning CPU.
     {
@@ -3998,9 +4191,17 @@ fn main() -> Result<()> {
         window.set_music_home_connect(s.advanced.get("music.home_connect").map(|v| v == "1").unwrap_or(false));
         window.set_music_crossfade(s.advanced.get("music.crossfade").and_then(|v| v.parse().ok()).unwrap_or(0.0));
         window.set_music_replaygain(s.advanced.get("music.replaygain").cloned().unwrap_or_else(|| "off".into()).into());
+        window.set_music_grid_density(s.advanced.get("music.grid_density")
+            .and_then(|v| v.parse::<f64>().ok())
+            .map(tulipix_music::grid_density::clamp_target).unwrap_or(200.0) as f32);
         window.set_music_device(s.advanced.get("music.device").cloned().unwrap_or_else(|| "auto".into()).into());
         window.set_music_exclusive(s.advanced.get("music.exclusive").map(|v| v == "1").unwrap_or(false));
         window.set_music_scrobble_on(s.advanced.get("music.scrobble").map(|v| v == "1").unwrap_or(false));
+        // Last.fm session key already in the keychain → show connected state.
+        if tulipix_core::api_keys::fetch("lastfm.session").ok().flatten().is_some() {
+            window.set_music_lastfm_stage("connected".into());
+            window.set_music_lastfm_status("Last.fm connected.".into());
+        }
         let tsz = s.advanced.get("music.thumb_size").and_then(|v| v.parse::<f32>().ok()).unwrap_or(168.0).clamp(100.0, 300.0);
         window.set_music_thumb_size(tsz);
         // Last-used visualizer style (0..4), default Line (4).
@@ -4997,10 +5198,18 @@ fn main() -> Result<()> {
             editor_colorize(w.clone());
             return;
         }
-        // heal/sky still need the brush-mask overlay — honest note until then.
-        let msg = match op.as_str() {
-            "heal" => "Magic Eraser needs the LaMa model + brush mask (coming next).",
-            "sky"  => "Sky replace needs the SAM model + brush mask (coming next).",
+        // heal/sky (np.p2.edit.heal/.sky) — model-state-aware guidance: the
+        // download flow lives in Settings → AI Models; inference needs ai-onnx.
+        let model = match op.as_str() { "heal" => "lama-inpaint", "sky" => "mobile-sam", _ => "" };
+        let installed = ai_manifest().find(model)
+            .map(tulipix_photos::ai::models::is_installed).unwrap_or(false);
+        let msg = match (op.as_str(), installed, cfg!(feature = "ai-onnx")) {
+            ("heal", false, _) => "Magic Eraser: download the lama-inpaint model in Settings → AI Models first.",
+            ("sky",  false, _) => "Sky replace: download the mobile-sam model in Settings → AI Models first.",
+            ("heal", true, false) | ("sky", true, false) =>
+                "Model installed — rebuild with --features ai-onnx to enable on-device inference.",
+            ("heal", true, true) => "LaMa ready — brush a mask over the object to erase (coming next).",
+            ("sky",  true, true) => "SAM ready — brush the sky region to replace (coming next).",
             _ => "This AI tool needs a model installed in Settings → AI Models.",
         };
         w0.set_editor_status(msg.into());
@@ -5150,6 +5359,62 @@ fn main() -> Result<()> {
     });
     seed_api_rows(&window);
     seed_settings_panels(&window);
+    // Viewport hint for the lazy thumb queue (np.p1.thumbs.lazy).
+    window.on_photos_visible_hint(move |f| {
+        SCAN_HINT.store(f.clamp(0.0, 1.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
+    });
+    // Live FS watcher (np.p1.lib.watch): notify across every watched folder.
+    // Renames update items rows in place; deletes flip missing_since. The
+    // event is applied to every section pool — UPDATE is a no-op where the
+    // path isn't indexed, so no per-section routing is needed.
+    {
+        let folders = load_watched_folders();
+        if !folders.is_empty() {
+            let mut cfg = tulipix_core::libraries::LibrariesConfig::default();
+            for (i, path) in folders.iter().enumerate() {
+                cfg.add(tulipix_core::libraries::Library {
+                    id: format!("watch-{i}"), path: path.clone(),
+                    section: tulipix_core::libraries::Section::Photos, // unused by the watcher
+                    last_scan: None, item_count: 0, size_bytes: 0,
+                    exclude_globs: Vec::new(), cadence_override: None, realtime_notify: true,
+                });
+            }
+            let (tx, rx) = std::sync::mpsc::channel();
+            match tulipix_core::watcher::spawn(&cfg, tx) {
+                Ok(watcher) => {
+                    // Keep the watcher alive for the app's lifetime.
+                    Box::leak(Box::new(watcher));
+                    let rt = tokio::runtime::Handle::current();
+                    std::thread::Builder::new().name("tulipix-fsapply".into()).spawn(move || {
+                        while let Ok(evt) = rx.recv() {
+                            let evt2 = evt.clone();
+                            rt.spawn(async move {
+                                for section in ["photos", "videos", "music", "books", "cloud"] {
+                                    if let Ok(pool) = pool_for(section).await {
+                                        let _ = tulipix_core::watcher::apply_event(&pool, &evt2).await;
+                                    }
+                                }
+                            });
+                        }
+                    }).ok();
+                    tracing::info!(folders = folders.len(), "fs watcher live (np.p1.lib.watch)");
+                }
+                Err(e) => tracing::warn!(error = %e, "fs watcher spawn failed"),
+            }
+        }
+    }
+    // First-open model-update prompt (np.p1.ai.update-prompt): a few seconds
+    // after launch, nudge once if a manifest entry outruns an installed model.
+    {
+        let weak = window.as_weak();
+        tokio::runtime::Handle::current().spawn(async move {
+            tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+            let msg = ai_update_summary();
+            if msg.starts_with("Updates available") {
+                let _ = weak.upgrade_in_event_loop(move |w| w.set_caps_nudge(msg.into()));
+            }
+        });
+    }
     seed_shortcut_groups(&window);
     window.set_palette_rows(slint::ModelRc::new(slint::VecModel::from(build_palette_rows(""))));
 
@@ -5189,7 +5454,41 @@ fn main() -> Result<()> {
         match key.as_str() {
             "backup" => { let r = run_backup(); tracing::info!(ok = r.is_ok(), "backup"); }
             "export" => { let r = run_export(); tracing::info!(ok = r.is_ok(), "export json"); }
-            "migration" => tracing::info!("migration wizard requested (Plex/Picasa import)"),
+            // Migration import wizard (np.p1.migration): pick the source file,
+            // auto-detect its kind, dry-run a plan, surface counts; Picasa
+            // stars apply to the photo library (favorite flag) right away.
+            "migration" => {
+                let weak = w.as_weak();
+                let rt = tokio::runtime::Handle::current();
+                std::thread::spawn(move || {
+                    let Some(path) = rfd::FileDialog::new()
+                        .set_title("Pick a library to import — Plex .db / .picasa.ini / iTunes .xml / Lightroom .lrcat / foobar2000 .fpl")
+                        .pick_file() else { return; };
+                    let Some(kind) = tulipix_core::migration::SourceKind::detect(&path) else {
+                        let _ = weak.upgrade_in_event_loop(|w| w.set_caps_nudge(
+                            "Couldn't recognise that file — expected Plex library.db, .picasa.ini, iTunes Library.xml, .lrcat or .fpl.".into()));
+                        return;
+                    };
+                    let plan = match tulipix_core::migration::dry_run(kind, &path) {
+                        Ok(p) => p,
+                        Err(e) => {
+                            let msg = format!("Import scan failed: {e}");
+                            let _ = weak.upgrade_in_event_loop(move |w| w.set_caps_nudge(msg.into()));
+                            return;
+                        }
+                    };
+                    let applied = if matches!(kind, tulipix_core::migration::SourceKind::Picasa) {
+                        apply_picasa_stars(&path, &rt)
+                    } else { 0 };
+                    let msg = format!(
+                        "{kind:?} import — {} photos · {} tracks · {} playlists · {} ratings{}{}",
+                        plan.photos, plan.music_tracks, plan.playlists, plan.ratings,
+                        if applied > 0 { format!(" · {applied} stars applied") } else { String::new() },
+                        if plan.warnings.is_empty() { String::new() } else { format!(" · {} warning(s) in logs", plan.warnings.len()) });
+                    for warn in &plan.warnings { tracing::warn!(%warn, "migration"); }
+                    let _ = weak.upgrade_in_event_loop(move |w| w.set_caps_nudge(msg.into()));
+                });
+            }
             "bug-report" => {
                 if let Some(dir) = tulipix_core::paths::data_dir().map(|d| d.join("logs")) {
                     let _ = tulipix_platform::fm::reveal_in_file_manager(&dir);
@@ -5200,8 +5499,34 @@ fn main() -> Result<()> {
                     let _ = tulipix_platform::fm::reveal_in_file_manager(&dir);
                 }
             }
-            "ai-update-check" => tracing::info!("AI model update check requested"),
+            // Real update check (np.p1.ai.update-prompt): manifest vs installed
+            // versions on disk; older-versioned installs surface as updates.
+            "ai-update-check" => {
+                let weak = w.as_weak();
+                tokio::runtime::Handle::current().spawn(async move {
+                    let msg = ai_update_summary();
+                    let _ = weak.upgrade_in_event_loop(move |w| w.set_caps_nudge(msg.into()));
+                });
+            }
             "clear-thumb-cache" => { let _ = tulipix_core::thumbs::clear_cache(); }
+            // Model download/verify flow (np.p1.onboarding.ai-models).
+            k if k.starts_with("ai-dl-") => {
+                let name = k.trim_start_matches("ai-dl-").to_string();
+                let Some(entry) = ai_manifest().find(&name).cloned() else { return; };
+                let weak = w.as_weak();
+                let mb = entry.size_bytes / 1_000_000;
+                w.set_caps_nudge(format!("Downloading {name} (~{mb} MB)…").into());
+                tokio::runtime::Handle::current().spawn(async move {
+                    let msg = match tulipix_photos::ai::models::download(&entry).await {
+                        Ok(p) => format!("{name} ready · {}", p.display()),
+                        Err(e) => format!("{name} download failed: {e}"),
+                    };
+                    let _ = weak.upgrade_in_event_loop(move |w| {
+                        w.set_caps_nudge(msg.into());
+                        seed_settings_panels(&w); // refresh install states
+                    });
+                });
+            }
             _ => tracing::info!(%key, "settings action (no-op)"),
         }
         seed_settings_panels(&w);
@@ -7202,6 +7527,8 @@ fn player_path() -> &'static std::sync::Mutex<Option<PathBuf>> {
     PLAYER_PATH.get_or_init(|| std::sync::Mutex::new(None))
 }
 static PLAYER_FS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// PiP state (np.p3.player.pip) — floating always-on-top mini mpv window.
+static PLAYER_PIP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Apply per-playback mpv preferences once a file is loaded: subtitle styling
 /// (np.p3.sub.styling), HDR routing (np.p3.player.hdr), exclusive audio output
@@ -7400,6 +7727,22 @@ fn play_video_at(weak: slint::Weak<MainWindow>, idx: i32) {
     });
 }
 
+/// Anime4K-style GLSL shader chain (np.p3.player.upscale): all `.glsl` files in
+/// `<config>/shaders`, sorted, joined for mpv's `--glsl-shaders` list option.
+/// Returns `(dir, count)` for status display; the chain itself via `.0`.
+fn anime4k_shader_args() -> Option<(String, usize)> {
+    let dir = crate::dirs_default()?.join("shaders");
+    let mut files: Vec<String> = std::fs::read_dir(&dir).ok()?
+        .flatten()
+        .map(|e| e.path())
+        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("glsl"))
+        .filter_map(|p| p.to_str().map(str::to_string))
+        .collect();
+    if files.is_empty() { return None; }
+    files.sort();
+    Some((files.join(":"), files.len()))
+}
+
 /// Launch a video in an external mpv window with resume + watch-progress
 /// writeback over the JSON IPC socket. Runs entirely off the UI thread so the
 /// app never blocks on playback (np.p3.player — windowed path).
@@ -7419,6 +7762,13 @@ fn spawn_mpv_windowed(path: PathBuf, resume: Option<f64>, item_id: Option<i64>) 
             .arg("--keep-open=no")
             .arg(format!("--input-ipc-server={}", sock.display()));
         if let Some(r) = resume { if r > 1.0 { cmd.arg(format!("--start={r}")); } }
+        // GLSL upscale chain (np.p3.player.upscale) — opt-in + shaders present.
+        let s = tulipix_core::settings::Settings::load().unwrap_or_default();
+        if s.flag("playback.upscale", false) {
+            if let Some((chain, _)) = anime4k_shader_args() {
+                cmd.arg(format!("--glsl-shaders={chain}"));
+            }
+        }
         mpv_die_with_parent(&mut cmd);
         let mut child = match cmd.spawn() {
             Ok(c) => c,
@@ -7529,7 +7879,17 @@ fn register_player_controls(window: &MainWindow) {
                 PLAYER_FS.store(on, Ordering::Release);
                 w.window().set_fullscreen(on);
             }
-            Pip => {} // embedded surface — no separate PiP window
+            // PiP (np.p3.player.pip): float the external mpv window — always-
+            // on-top mini player at 1/3 scale, toggling back to normal. Talks
+            // to the windowed instance over its IPC socket.
+            Pip => {
+                let on = !PLAYER_PIP.load(Ordering::Acquire);
+                PLAYER_PIP.store(on, Ordering::Release);
+                video_ipc(&["set_property", "ontop", if on { "true" } else { "false" }]);
+                video_ipc(&["set_property", "border", if on { "false" } else { "true" }]);
+                video_ipc(&["set_property", "window-scale", if on { "0.33" } else { "1.0" }]);
+                video_ipc(&["set_property", "window-maximized", if on { "false" } else { "true" }]);
+            }
             ToggleSubs => mpv::command(&["cycle", "sub"]),
         }
     });
@@ -7758,9 +8118,12 @@ fn kick_video_refresh(weak: slint::Weak<MainWindow>, category: String) {
     let tv_cards = kind == "tv" && !drilled && category == "library";
     if tv_cards {
         handle.spawn(async move {
-            let cards = match pool_for("videos").await {
-                Ok(pool) => video_show_cards(&pool).await,
-                Err(_) => Vec::new(),
+            let (cards, next_up) = match pool_for("videos").await {
+                Ok(pool) => (
+                    video_show_cards(&pool).await,
+                    tulipix_videos::episodes::next_up(&pool, 12).await.unwrap_or_default(),
+                ),
+                Err(_) => (Vec::new(), Vec::new()),
             };
             let _ = weak.upgrade_in_event_loop(move |w| {
                 let by_path: std::collections::HashMap<String, PathBuf> = video_full()
@@ -7784,6 +8147,39 @@ fn kick_video_refresh(weak: slint::Weak<MainWindow>, category: String) {
                     }
                 }).collect();
                 w.set_video_shows(slint::ModelRc::new(slint::VecModel::from(shows)));
+                // "Next Up" rail (np.p3.episodes): one continue-watching tile
+                // per show. tile.index maps into video_paths via video_ids so
+                // the normal click→play path works unchanged.
+                let id_pos: std::collections::HashMap<i64, i32> = video_ids().lock()
+                    .map(|g| g.iter().enumerate().map(|(i, id)| (*id, i as i32)).collect())
+                    .unwrap_or_default();
+                let path_by_pos: Vec<String> = video_paths().lock()
+                    .map(|g| g.iter().map(|p| p.to_string_lossy().into_owned()).collect())
+                    .unwrap_or_default();
+                let nu_tiles: Vec<VideoTile> = next_up.iter().filter_map(|n| {
+                    let pos = *id_pos.get(&n.episode.item_id)?;
+                    let abs = path_by_pos.get(pos as usize).cloned().unwrap_or_default();
+                    let thumb = n.episode.still_path.as_deref()
+                        .map(PathBuf::from).filter(|p| p.exists())
+                        .or_else(|| by_path.get(&abs).cloned());
+                    let dur_s = n.episode.runtime_min.unwrap_or(0) as f64 * 60.0;
+                    let progress = match (n.resume_position_s, dur_s > 0.0) {
+                        (Some(p), true) => (p / dur_s).clamp(0.0, 1.0) as f32,
+                        _ => 0.0,
+                    };
+                    Some(VideoTile {
+                        thumb: thumb.and_then(|t| slint::Image::load_from_path(&t).ok()).unwrap_or_default(),
+                        label: format!("{} · S{:02}E{:02}{}", n.show_title, n.episode.season, n.episode.episode,
+                            n.episode.title.as_deref().map(|t| format!(" — {t}")).unwrap_or_default()).into(),
+                        index: pos,
+                        starred: false, watched: false,
+                        progress,
+                        duration: n.episode.runtime_min.map(|m| format!("{m} min")).unwrap_or_default().into(),
+                        season: n.episode.season as i32,
+                        episode: n.episode.episode as i32,
+                    })
+                }).collect();
+                w.set_video_next_up(slint::ModelRc::new(slint::VecModel::from(nu_tiles)));
                 w.set_video_show_open(false);
                 w.set_video_tiles(slint::ModelRc::new(slint::VecModel::from(Vec::<VideoTile>::new())));
                 w.set_video_seasons(slint::ModelRc::new(slint::VecModel::from(Vec::<VideoSeason>::new())));
@@ -9227,7 +9623,9 @@ async fn fetch_and_store_meta(
 fn build_meta_rows(w: &MainWindow) {
     let songs = music_songs().lock().map(|g| g.clone()).unwrap_or_default();
     let paths = music_paths().lock().map(|g| g.clone()).unwrap_or_default();
-    let rows: Vec<MetaMgrRow> = songs.iter().map(|s| {
+    // My Music only — audiobook chapters have their own section and would
+    // flood the manager with untagged rows.
+    let rows: Vec<MetaMgrRow> = songs.iter().filter(|s| !s.is_audiobook).map(|s| {
         let file = paths.get(s.pos as usize)
             .and_then(|p| p.file_stem()).and_then(|x| x.to_str()).unwrap_or("").to_string();
         // A song counts as "Tagged" when it already carries both artist + album.
@@ -9444,10 +9842,22 @@ fn build_sequential_queue(w: MainWindow) {
     } else {
         (1..=30.min(total - 1)).map(|off| (cur + off).rem_euclid(total)).collect()
     };
+    // Audiobook chapters have no per-track art — use the book cover as each
+    // queue row's thumb so rows read like a normal queue (▶ overlay on art).
+    let book_thumb: Option<slint::Image> = if is_book {
+        cur_dir.as_ref().and_then(|d| ab_cover_cache().lock().ok()
+            .and_then(|g| g.get(&d.display().to_string()).cloned()))
+            .map(|px| art_image(&Some(px)))
+    } else { None };
     let rows: Vec<MusicSongRow> = next_positions.into_iter().map(|pos| {
         let (title, artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
         MusicSongRow {
-            thumb: if (pos as usize) < tiles.row_count() { tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default() } else { slint::Image::default() },
+            // Chapters always show the book cover (incl. user-picked custom
+            // art) — their scan thumbs are generic waveform placeholders.
+            thumb: match &book_thumb {
+                Some(cover) => cover.clone(),
+                None => if (pos as usize) < tiles.row_count() { tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default() } else { slint::Image::default() },
+            },
             title: if title.is_empty() { "Track".into() } else { title.into() },
             artist: artist.into(),
             duration: if dur > 0.0 { fmt_clock(dur).into() } else { "".into() },
@@ -11062,6 +11472,111 @@ fn enumerate_audio_devices() -> Vec<tulipix_music::output_device::AudioDevice> {
 
 /// SSDP M-SEARCH for UPnP MediaRenderers; collects responses for ~2 s
 /// (np.p5.music.cast). Runs on a worker thread (blocking socket).
+/// One-track HTTP server for the cast handoff: serves exactly `path` on an
+/// ephemeral port so the renderer can pull the bytes. Each cast replaces the
+/// served file; the listener thread lives for the app's lifetime. Returns the
+/// URL the renderer should fetch. No Range support — fine for play/stop v1.
+static CAST_SERVE: std::sync::OnceLock<std::sync::Mutex<Option<(u16, std::path::PathBuf)>>> = std::sync::OnceLock::new();
+fn cast_serve_url(path: &std::path::Path) -> Option<String> {
+    let state = CAST_SERVE.get_or_init(|| std::sync::Mutex::new(None));
+    let mut g = state.lock().ok()?;
+    let port = match &*g {
+        Some((port, _)) => *port,
+        None => {
+            let listener = std::net::TcpListener::bind("0.0.0.0:0").ok()?;
+            let port = listener.local_addr().ok()?.port();
+            std::thread::Builder::new().name("tulipix-cast-http".into()).spawn(move || {
+                for stream in listener.incoming().flatten() {
+                    let served = CAST_SERVE.get().and_then(|s| s.lock().ok().and_then(|g| g.clone()));
+                    let Some((_, path)) = served else { continue };
+                    let mut stream = stream;
+                    std::thread::spawn(move || {
+                        use std::io::{Read, Write};
+                        let mut req = [0u8; 1024];
+                        let _ = stream.read(&mut req);
+                        let head_only = req.starts_with(b"HEAD");
+                        let Ok(bytes) = std::fs::read(&path) else {
+                            let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
+                            return;
+                        };
+                        let mime = match path.extension().and_then(|e| e.to_str()).unwrap_or("") {
+                            "mp3" => "audio/mpeg", "flac" => "audio/flac", "ogg" | "oga" => "audio/ogg",
+                            "m4a" | "aac" => "audio/mp4", "wav" => "audio/wav", "opus" => "audio/opus",
+                            _ => "application/octet-stream",
+                        };
+                        let hdr = format!(
+                            "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+                            bytes.len());
+                        let _ = stream.write_all(hdr.as_bytes());
+                        if !head_only { let _ = stream.write_all(&bytes); }
+                    });
+                }
+            }).ok()?;
+            port
+        }
+    };
+    *g = Some((port, path.to_path_buf()));
+    // LAN-reachable local address: route-probe via UDP connect (no packets sent).
+    let ip = std::net::UdpSocket::bind("0.0.0.0:0").ok()
+        .and_then(|s| s.connect("8.8.8.8:80").ok().and_then(|_| s.local_addr().ok()))
+        .map(|a| a.ip().to_string())?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("track");
+    let enc: String = name.bytes().map(|b| match b {
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' => (b as char).to_string(),
+        _ => format!("%{b:02X}"),
+    }).collect();
+    Some(format!("http://{ip}:{port}/{enc}"))
+}
+
+/// The actual cast handoff (np.p5.music.cast): serve the current track over
+/// HTTP, then SOAP SetAVTransportURI + Play at the renderer's AVTransport
+/// control URL. Local mpv stops — the renderer owns playback.
+fn cast_current_track(w: &MainWindow, device_name: &str) {
+    let idx = w.get_music_np_index();
+    let Some(path) = music_paths().lock().ok().and_then(|g| g.get(idx as usize).cloned()) else {
+        w.set_music_cast_status("Play a track first, then pick a renderer.".into());
+        return;
+    };
+    let Some(dev) = cast_targets().lock().ok()
+        .and_then(|g| g.iter().find(|d| d.name == device_name).cloned()) else { return; };
+    let Some(media_url) = cast_serve_url(std::path::Path::new(&path)) else {
+        w.set_music_cast_status("Could not start the local stream server.".into());
+        return;
+    };
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let client = reqwest::Client::new();
+        let desc = match client.get(&dev.location).send().await {
+            Ok(r) => r.text().await.unwrap_or_default(),
+            Err(e) => { tracing::warn!(error = %e, "cast: description fetch failed"); String::new() }
+        };
+        let Some(ctl) = tulipix_music::cast::parse_control_url(&desc) else {
+            let _ = weak.upgrade_in_event_loop(|w| w.set_music_cast_status("Renderer has no AVTransport service.".into()));
+            return;
+        };
+        let ctl = tulipix_music::cast::resolve_url(&dev.location, &ctl);
+        for (action, body) in [
+            ("SetAVTransportURI", tulipix_music::cast::soap_set_uri(0, &media_url)),
+            ("Play", tulipix_music::cast::soap_play(0)),
+        ] {
+            let ok = client.post(&ctl)
+                .header("SOAPACTION", tulipix_music::cast::soap_action_header(action))
+                .header(reqwest::header::CONTENT_TYPE, "text/xml; charset=\"utf-8\"")
+                .body(body).send().await
+                .map(|r| r.status().is_success()).unwrap_or(false);
+            if !ok {
+                let _ = weak.upgrade_in_event_loop(move |w| w.set_music_cast_status(format!("Renderer refused {action}.").into()));
+                return;
+            }
+        }
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            // Renderer owns playback now — stop the local pipeline.
+            stop_music(&w);
+            w.set_music_cast_status(format!("Casting to {}.", dev.name).into());
+        });
+    });
+}
+
 fn discover_cast_devices() -> Vec<tulipix_music::cast::CastDevice> {
     use std::net::UdpSocket;
     let mut out: Vec<tulipix_music::cast::CastDevice> = Vec::new();
@@ -11085,9 +11600,8 @@ fn discover_cast_devices() -> Vec<tulipix_music::cast::CastDevice> {
     out
 }
 
-/// Stop playback immediately (kill mpv, suppress auto-advance). Used when the
-/// user only wants to *check* lyrics, not play (np.p5.music.lyrics).
-#[allow(dead_code)] // kept for the lyrics-only "check, don't play" path
+/// Stop playback immediately (kill mpv, suppress auto-advance). Used by the
+/// cast handoff (renderer owns playback) and the lyrics-only "check" path.
 fn stop_music(w: &MainWindow) {
     MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     if let Ok(mut g) = music_proc().lock() {
@@ -11111,6 +11625,11 @@ fn tag_edit_target() -> &'static std::sync::Mutex<Option<i64>> {
 static PENDING_VIEW_LYRICS: std::sync::OnceLock<std::sync::Mutex<Option<(bool, String)>>> = std::sync::OnceLock::new();
 fn pending_view_lyrics() -> &'static std::sync::Mutex<Option<(bool, String)>> {
     PENDING_VIEW_LYRICS.get_or_init(|| std::sync::Mutex::new(None))
+}
+/// Last.fm request token awaiting browser approval (np.p5.music.scrobble).
+static LASTFM_PENDING_TOKEN: std::sync::OnceLock<std::sync::Mutex<Option<String>>> = std::sync::OnceLock::new();
+fn lastfm_pending_token() -> &'static std::sync::Mutex<Option<String>> {
+    LASTFM_PENDING_TOKEN.get_or_init(|| std::sync::Mutex::new(None))
 }
 
 /// Populate the lyrics-view popup for a specific track without touching playback.
@@ -11215,9 +11734,12 @@ fn publish_lyrics_mgr_page(w: &MainWindow) {
 }
 
 /// Rebuild the lyrics-manager list from the song library + the lyrics table.
+/// My Music only — audiobook chapters never have lyrics and would drown the
+/// "Missing" stats (np.p4.music.lyrics).
 fn rebuild_lyrics_manager(w: &MainWindow) {
     let songs: Vec<(i32, i64, String, String)> = match music_songs().lock() {
-        Ok(g) => g.iter().map(|s| (s.pos, s.item_id, s.title.clone(), s.artist.clone())).collect(),
+        Ok(g) => g.iter().filter(|s| !s.is_audiobook)
+            .map(|s| (s.pos, s.item_id, s.title.clone(), s.artist.clone())).collect(),
         Err(_) => return,
     };
     let weak = w.as_weak();
@@ -11308,11 +11830,11 @@ fn load_music_lyrics(w: &MainWindow) {
     });
 }
 
-/// Submit pending scrobbles to ListenBrainz (np.p5.music.scrobble). Token comes
-/// from the keychain (`listenbrainz` service); no token → no-op. Last.fm rows
-/// stay queued because Last.fm needs a signed session-key auth flow that isn't
-/// built yet. Drains in oldest-first batches, marking rows submitted on HTTP 2xx.
+/// Submit pending scrobbles (np.p5.music.scrobble) — ListenBrainz (token from
+/// the keychain) and Last.fm (signed calls with the session key from the
+/// connect flow). Drains oldest-first batches, marking rows submitted on 2xx.
 fn submit_scrobbles() {
+    submit_scrobbles_lastfm();
     let Some(token) = tulipix_core::api_keys::fetch("listenbrainz").ok().flatten() else { return; };
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("music").await else { return; };
@@ -11343,6 +11865,48 @@ fn submit_scrobbles() {
                 let _ = sqlx::query("UPDATE scrobble_queue SET submitted = 1 WHERE id = ?")
                     .bind(row_id).execute(&pool).await;
             } else { break; } // network/auth issue — retry the rest next time
+        }
+    });
+}
+
+/// Drain the Last.fm half of the scrobble queue with signed `track.scrobble`
+/// calls. Needs both the API creds (Settings → API Keys, "KEY:SECRET") and the
+/// session key minted by the connect flow; otherwise rows stay queued.
+fn submit_scrobbles_lastfm() {
+    let creds = tulipix_core::api_keys::fetch("lastfm").ok().flatten()
+        .and_then(|v| tulipix_music::scrobble::parse_key_secret(&v));
+    let Some((api_key, secret)) = creds else { return; };
+    let Some(sk) = tulipix_core::api_keys::fetch("lastfm.session").ok().flatten() else { return; };
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("music").await else { return; };
+        let pending = tulipix_music::scrobble::pending(&pool, 50).await.unwrap_or_default();
+        if pending.is_empty() { return; }
+        let client = reqwest::Client::new();
+        for (row_id, item_id, played_at) in pending {
+            let meta: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
+                "SELECT tm.title, ar.name, al.title
+                 FROM track_meta tm
+                 LEFT JOIN artists ar ON ar.id = tm.artist_id
+                 LEFT JOIN albums  al ON al.id = tm.album_id
+                 WHERE tm.item_id = ?")
+                .bind(item_id).fetch_optional(&pool).await.ok().flatten();
+            let Some((Some(title), artist, album)) = meta else { continue; };
+            let artist = artist.unwrap_or_default();
+            if artist.is_empty() { continue; }
+            let ts = played_at.to_string();
+            let mut params: Vec<(&str, &str)> = vec![
+                ("method", "track.scrobble"), ("api_key", &api_key), ("sk", &sk),
+                ("artist", &artist), ("track", &title), ("timestamp", &ts),
+            ];
+            let album = album.unwrap_or_default();
+            if !album.is_empty() { params.push(("album", &album)); }
+            let form = tulipix_music::scrobble::signed_params(&params, &secret);
+            let ok = client.post(tulipix_music::scrobble::API_ROOT)
+                .form(&form).send().await
+                .map(|r| r.status().is_success()).unwrap_or(false);
+            if ok {
+                let _ = tulipix_music::scrobble::mark_submitted(&pool, &[row_id]).await;
+            } else { break; } // auth/network issue — retry next drain
         }
     });
 }
@@ -11921,6 +12485,21 @@ fn music_ipc(args: &[&str]) {
     }
 }
 
+/// Same JSON-IPC push for the windowed VIDEO mpv ("tulipix-mpv" socket) —
+/// drives PiP float / shader toggles on the external player window.
+fn video_ipc(args: &[&str]) {
+    use std::io::Write;
+    let sock = mpv_ipc::endpoint("tulipix-mpv");
+    let payload = format!("{{\"command\":[{}]}}\n",
+        args.iter().map(|a| {
+            if a.parse::<f64>().is_ok() || **a == *"true" || **a == *"false" { a.to_string() }
+            else { format!("\"{a}\"") }
+        }).collect::<Vec<_>>().join(","));
+    if let Ok(mut s) = mpv_ipc::connect(&sock) {
+        let _ = s.write_all(payload.as_bytes());
+    }
+}
+
 /// Advance to the next track honoring shuffle + repeat (off/all/one). Called on
 /// natural end-of-file and by the Next button.
 /// Advance to the next track. If a play_queue has upcoming tracks (Instant Mix
@@ -12013,6 +12592,25 @@ fn play_music_at(w: &MainWindow, idx: i32) {
         Err(e) => { tracing::error!(error = %e, "mpv audio launch failed"); return; }
     }
     if let Ok(mut g) = music_sock().lock() { *g = Some(sock.clone()); }
+
+    // Untagged-file ReplayGain (np.p5.music.replaygain): mpv only honours RG
+    // tags inside the file; feed the DB-computed gain through
+    // `replaygain-fallback` so scanned-but-tagless tracks normalize too.
+    {
+        let mode = w.get_music_replaygain().to_string();
+        let item_id = music_songs().lock().ok()
+            .and_then(|g| g.iter().find(|s| s.pos == idx).map(|s| s.item_id));
+        if let (Some(id), false) = (item_id, mode == "off") {
+            tokio::runtime::Handle::current().spawn(async move {
+                let Ok(pool) = pool_for("music").await else { return; };
+                let Ok((track, album)) = tulipix_music::replaygain::gains_for(&pool, id).await else { return; };
+                let gain = if mode == "album" { album.or(track) } else { track.or(album) };
+                if let Some(g) = gain {
+                    music_ipc(&["set_property", "replaygain-fallback", &format!("{g:.2}")]);
+                }
+            });
+        }
+    }
 
     // Reader thread: observe properties → UI; on socket close (mpv exited),
     // auto-advance if this track is still current.
@@ -12615,6 +13213,42 @@ fn setup_media_controls(window: &MainWindow) {
     MEDIA_CONTROLS.with(|c| *c.borrow_mut() = Some(controls));
 }
 
+/// Apply Picasa `star=yes` marks to the photo library (np.p1.migration):
+/// each starred section header is a bare file name; match photos by file name
+/// (same dir as the .ini first, then any path suffix) and set `starred`.
+/// Returns how many stars landed.
+fn apply_picasa_stars(ini: &std::path::Path, rt: &tokio::runtime::Handle) -> u32 {
+    let Ok(text) = std::fs::read_to_string(ini) else { return 0; };
+    let dir = ini.parent().map(|d| d.to_path_buf()).unwrap_or_default();
+    // Collect file names whose section contains star=yes.
+    let mut starred: Vec<String> = Vec::new();
+    let mut current: Option<String> = None;
+    for line in text.lines() {
+        let t = line.trim();
+        if let Some(inner) = t.strip_prefix('[').and_then(|s| s.strip_suffix(']')) {
+            current = Some(inner.to_string());
+            continue;
+        }
+        if t.starts_with("star=yes") {
+            if let Some(name) = &current { starred.push(name.clone()); }
+        }
+    }
+    if starred.is_empty() { return 0; }
+    rt.block_on(async move {
+        let Ok(pool) = pool_for("photos").await else { return 0u32; };
+        let mut n = 0u32;
+        for name in starred {
+            let exact = dir.join(&name).to_string_lossy().into_owned();
+            let res = sqlx::query(
+                "UPDATE photo_meta SET starred = 1 WHERE item_id IN
+                   (SELECT id FROM items WHERE path = ?1 OR path LIKE '%/' || ?2)")
+                .bind(&exact).bind(&name).execute(&pool).await;
+            if let Ok(r) = res { if r.rows_affected() > 0 { n += 1; } }
+        }
+        n
+    })
+}
+
 /// Open a file in the OS default application (Play in default player).
 fn open_in_default_app(path: &std::path::Path) {
     #[cfg(target_os = "linux")]
@@ -12630,6 +13264,35 @@ fn open_in_default_app(path: &std::path::Path) {
 }
 
 // ── Data-driven Settings panels (AI · Endpoints · Security · Data · System) ──
+
+/// Update summary for the AI models (np.p1.ai.update-prompt): per manifest
+/// entry — up-to-date, an older install awaiting update, or not installed.
+fn ai_update_summary() -> String {
+    let mut current = 0; let mut missing = 0; let mut stale: Vec<String> = Vec::new();
+    let root = tulipix_photos::ai::models::models_root();
+    for m in &ai_manifest().models {
+        if tulipix_photos::ai::models::is_installed(m) { current += 1; continue; }
+        // Any older "<name>-<version>" install dir → counts as update pending.
+        let older = root.as_deref().and_then(|r| std::fs::read_dir(r).ok()).into_iter().flatten().flatten()
+            .any(|e| e.file_name().to_string_lossy().starts_with(&format!("{}-", m.name)));
+        if older { stale.push(format!("{} → v{}", m.name, m.version)); } else { missing += 1; }
+    }
+    if stale.is_empty() {
+        format!("Models: {current} up-to-date · {missing} not installed — nothing to update.")
+    } else {
+        format!("Updates available: {} · {current} current · {missing} not installed.", stale.join(", "))
+    }
+}
+
+/// Compiled-in AI model manifest (resources/ai-models.toml) — parsed once.
+/// Source of truth for the Settings → AI Models rows and the update checker.
+fn ai_manifest() -> &'static tulipix_core::ai_models::Manifest {
+    static M: std::sync::OnceLock<tulipix_core::ai_models::Manifest> = std::sync::OnceLock::new();
+    M.get_or_init(|| {
+        tulipix_core::ai_models::Manifest::from_toml(include_str!("../../../resources/ai-models.toml"))
+            .unwrap_or_else(|e| { tracing::error!(error = %e, "ai-models.toml parse"); Default::default() })
+    })
+}
 
 fn si(key: &str, kind: &str, label: &str, desc: &str, value: &str, on: bool, state: &str) -> SettingItem {
     SettingItem {
@@ -12654,17 +13317,31 @@ fn seed_settings_panels(w: &MainWindow) {
     let s = tulipix_core::settings::Settings::load().unwrap_or_default();
 
     // AI Models — np.p1.llm.*, np.p1.ai.update-*, np.p1.onboarding.ai-models.
-    let ai = vec![
-        hdr("ON-DEVICE MODELS"),
+    // Manifest-driven: one status row + Download/Update action per model.
+    let mut ai = vec![hdr("ON-DEVICE MODELS")];
+    for m in &ai_manifest().models {
+        let installed = tulipix_photos::ai::models::is_installed(m);
+        let mb = m.size_bytes / 1_000_000;
+        ai.push(stat(&format!("{} v{} ({})", m.name, m.version, m.quant),
+            &if installed { format!("Installed · {mb} MB") } else { format!("Not downloaded · {mb} MB") },
+            if installed { "ok" } else { "muted" }));
+        ai.push(act(&format!("ai-dl-{}", m.name),
+            &format!("{} {}", if installed { "Re-verify / update" } else { "Download" }, m.name),
+            &format!("Fetch + SHA-256 pin from {}", m.url.split('/').take(3).collect::<Vec<_>>().join("/")),
+            if installed { "Verify" } else { "Download" }));
+    }
+    ai.extend([
         stat("Local LLM (Phi-3-mini-Q4)", "Not downloaded", "muted"),
         stat("CLIP ViT-B/32 (captions)", "Not downloaded", "muted"),
         act("ai-update-check", "Check for model updates", "Compare installed versions against the latest manifest", "Check"),
+    ]);
+    ai.extend([
         tog(&s, "ai.captions", false, "Auto-captioning & alt-text", "CLIP + LLM fill captions on import"),
         tog(&s, "ai.voice", false, "Voice search / dictation", "Whisper streaming mic capture → query"),
         tog(&s, "ai.chat", false, "Chat assistant overlay (Cmd/Ctrl+J)", "Grounded, tool-calling library assistant"),
         hdr("CLOUD"),
         tog(&s, "ai.cloud-offload", false, "Allow cloud-LLM offload", "Send selected queries to Anthropic / OpenAI / Gemini"),
-    ];
+    ]);
     w.set_ai_rows(ModelRc::new(VecModel::from(ai)));
 
     // Endpoints & providers — np.p1.api.*.
@@ -12736,6 +13413,16 @@ fn seed_settings_panels(w: &MainWindow) {
         txt(&s, "playback.sub-color", "Subtitle colour", "#RRGGBB · default white · applies on next play"),
         tog(&s, "playback.audio-exclusive", false, "Exclusive audio output", "Bit-perfect device-exclusive output (ALSA hw / WASAPI / CoreAudio)"),
         tog(&s, "playback.interpolation", false, "Motion interpolation", "Smooth-motion frame interpolation — heavy on integrated GPUs"),
+        tog(&s, "playback.upscale", false, "GLSL upscale shaders (Anime4K)", "Applies .glsl shaders on the next play — drop shader files in the folder below"),
+        stat("Upscale shader folder", &{
+                 let dir = crate::dirs_default().map(|d| d.join("shaders").display().to_string())
+                     .unwrap_or_else(|| "<config>/shaders".into());
+                 match anime4k_shader_args() {
+                     Some((_, n)) => format!("{n} shader(s) in {dir}"),
+                     None => format!("Empty — put Anime4K .glsl files in {dir}"),
+                 }
+             },
+             if anime4k_shader_args().is_some() { "ok" } else { "muted" }),
         stat("Keep display awake", "While a video plays", "ok"),
         stat("Sibling subtitle auto-load", "On (.srt/.vtt/.ass next to video)", "ok"),
         txt(&s, "music.eq-preset", "Music equalizer", "flat · rock · pop · jazz · bass · treble · applies on next track"),
@@ -12751,26 +13438,63 @@ fn seed_settings_panels(w: &MainWindow) {
         tog(&s, "crash-upload", false, "Opt-in crash uploader", "Send minidumps to the configured Sentry DSN"),
         tog(&s, "follow-system-accent", false, "Follow system accent", "Material You / OS accent colour"),
         tog(&s, "follow-os-font-scale", false, "Honour OS font scale", "Dynamic Type / accessibility text size"),
-        stat("Window chrome", "winit default (Linux)", "muted"),
-        stat("Share sheet", "Not available on Linux", "muted"),
-        stat("AppIntents / Shortcuts", "Not available on Linux", "muted"),
-        stat("Desktop widgets", "Not available on Linux", "muted"),
-        stat("Live Activities", "Not available on Linux", "muted"),
-        stat("System tray", "Active", "ok"),
+        // Live platform posture (np.p1.window-chrome / .share-sheet /
+        // .appintents / .widgets / .live-activities / .sec.sandbox / .tray) —
+        // real probes, not hardcoded strings.
+        stat("Window chrome", window_chrome_label(), "ok"),
+        stat("Share sheet", if cfg!(target_os = "linux") { "Not available on Linux (xdg-portal share is file-manager only)" } else { "Native" }, "muted"),
+        stat("AppIntents / Shortcuts", if cfg!(target_os = "macos") { "Available" } else { "Not available on this OS" }, "muted"),
+        stat("Desktop widgets", if cfg!(target_os = "linux") { "Not available on Linux" } else { "Available" }, "muted"),
+        stat("Live Activities", if cfg!(target_os = "macos") { "Available" } else { "Not available on this OS" }, "muted"),
+        stat("OS sandbox", if cfg!(target_os = "linux") { "Flatpak portals when packaged; unsandboxed dev build" } else { "Platform sandbox" }, "muted"),
+        stat("System tray",
+             if TRAY_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) { "Active" } else { "Init failed / feature off" },
+             if TRAY_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) { "ok" } else { "warn" }),
+        // Live frame telemetry (np.p1.perf.jank) — slow-frame counter from the
+        // render-loop watchdog; dev builds log call-trees, release counts only.
+        stat("Frames > 16 ms (session)", &SLOW_FRAMES.load(std::sync::atomic::Ordering::Relaxed).to_string(),
+             if SLOW_FRAMES.load(std::sync::atomic::Ordering::Relaxed) < 60 { "ok" } else { "warn" }),
         hdr("BUILD & LOCALE"),
         stat("Installer size budget", "< 400 MB (Linux)", "ok"),
         stat("cargo-bloat CI gate", "Per-crate tracked", "ok"),
-        stat("Lazy crate loading", "whisper · ai-ep · plugins · sync", "ok"),
+        // Per-crate lazy-load state (np.p1.perf.lazy-crate): compiled-in or
+        // excluded from this binary, per feature flag.
+        stat("whisper (lazy-whisper)", if cfg!(feature = "lazy-whisper") { "Compiled — loads on first use" } else { "Not in this binary" },
+             if cfg!(feature = "lazy-whisper") { "ok" } else { "muted" }),
+        stat("AI exec providers (lazy-ai-ep)", if cfg!(feature = "lazy-ai-ep") { "Compiled — loads on first use" } else { "Not in this binary" },
+             if cfg!(feature = "lazy-ai-ep") { "ok" } else { "muted" }),
+        stat("Plugin sandboxes (lazy-plugins)", if cfg!(feature = "lazy-plugins") { "Compiled — loads on first use" } else { "Not in this binary" },
+             if cfg!(feature = "lazy-plugins") { "ok" } else { "muted" }),
+        stat("ONNX editor ops (ai-onnx)", if cfg!(feature = "ai-onnx") { "Compiled" } else { "Not in this binary" },
+             if cfg!(feature = "ai-onnx") { "ok" } else { "muted" }),
         stat("Localisation", "Fluent .ftl · en", "ok"),
         stat("RTL layout", "Auto-mirror per locale", "ok"),
         stat("Adaptive layout", "Desktop breakpoints", "ok"),
-        stat("Player embedding", "Out-of-process mpv (POC parked)", "muted"),
+        stat("Player embedding", "Out-of-process mpv — isolation by design (embedded GL parked: froze Intel iGPUs)", "ok"),
         hdr("PLUGINS"),
-        stat("Plugin engine (WASM / Lua)", "ABI v0 ready — load via lazy-plugins", "ok"),
+        stat("Plugin engine (WASM / Lua)",
+             if cfg!(feature = "lazy-plugins") { "ABI v0 — runtimes compiled, load on first use" } else { "ABI v0 ready — rebuild with --features lazy-plugins to load" },
+             if cfg!(feature = "lazy-plugins") { "ok" } else { "muted" }),
         act("open-logs", "Open log folder", "tracing JSON logs with daily rotation", "Open"),
     ];
     sys.shrink_to_fit();
     w.set_system_rows(ModelRc::new(VecModel::from(sys)));
+}
+
+/// Tray init result (np.p1.tray) — System row shows the real outcome.
+static TRAY_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Slow-frame counter (np.p1.perf.jank) — frames over the 16 ms budget.
+static SLOW_FRAMES: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
+/// Actual window-chrome mode (np.p1.window-chrome), mirroring
+/// `tulipix_platform::init_window_chrome`'s probe.
+fn window_chrome_label() -> &'static str {
+    #[cfg(target_os = "linux")]
+    { if std::env::var_os("WAYLAND_DISPLAY").is_some() { "Wayland CSD" } else { "X11 SSD" } }
+    #[cfg(target_os = "windows")]
+    { "DWM Mica" }
+    #[cfg(target_os = "macos")]
+    { "NSVisualEffect vibrancy" }
 }
 
 fn allocator_name() -> &'static str {
@@ -13259,6 +13983,10 @@ async fn upsert_one(
     }
 }
 
+/// Scroll-position hint for the scan thumb queue (np.p1.thumbs.lazy):
+/// f32 fraction 0..1 of the grid the viewport currently shows, as bits.
+static SCAN_HINT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+
 fn kick_section_scan(
     window: &MainWindow,
     root: PathBuf,
@@ -13295,8 +14023,23 @@ fn kick_section_scan(
         counters.total.store(actual, Relaxed);
 
         let kind = thumb_kind_for_section(section);
-        let mut tiles: Vec<(PathBuf, String, PathBuf)> = Vec::new();
-        for p in &files {
+        // Viewport-intersection lazy thumbs (np.p1.thumbs.lazy): the scroll
+        // position publishes a 0..1 hint (SCAN_HINT); each iteration processes
+        // the pending file nearest the viewport, so on-screen tiles get their
+        // thumbs first. Grid order stays stable — slots are indexed.
+        let total_files = files.len();
+        let mut pending: std::collections::BTreeMap<usize, PathBuf> =
+            files.iter().cloned().enumerate().collect();
+        let mut slots: Vec<Option<(PathBuf, String, PathBuf)>> = vec![None; total_files];
+        while !pending.is_empty() {
+            let frac = f32::from_bits(SCAN_HINT.load(Relaxed)).clamp(0.0, 1.0);
+            let want = ((frac as f64) * total_files.saturating_sub(1) as f64) as usize;
+            let key = pending.range(want..).next().map(|(k, _)| *k)
+                .or_else(|| pending.range(..want).next_back().map(|(k, _)| *k))
+                .unwrap_or(0);
+            let slot_idx = key;
+            let p = &pending.remove(&key).unwrap();
+        {
             // 2a) DB insert. Bubble specific reason into the progress card.
             let id = match upsert_one(&pool, section, p).await {
                 Ok(id) => id,
@@ -13363,7 +14106,7 @@ fn kick_section_scan(
                     Err(e) => (p.clone(), false, Some(friendly_err("Thumb", p, &e))),
                 }
             };
-            tiles.push((thumb, label, p.clone()));
+            slots[slot_idx] = Some((thumb, label, p.clone()));
             if ok {
                 counters.added.fetch_add(1, Relaxed);
             } else {
@@ -13373,6 +14116,9 @@ fn kick_section_scan(
                 }
             }
         }
+        }
+        // Re-assemble in original walk order — grid placement stays stable.
+        let tiles: Vec<(PathBuf, String, PathBuf)> = slots.into_iter().flatten().collect();
         counters.active.store(false, Relaxed);
         flush_progress(&weak);
 
@@ -13476,6 +14222,21 @@ fn kick_section_scan(
                 }
             }
             w.set_library_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+            // Milestone confetti (np.p1.ds.empty-state): celebrate crossing
+            // 1k photos / 1k tracks / 500 videos — once per section per session.
+            let milestone = match (section, n) {
+                ("photos", n) if n >= 1000 => Some(format!("{n} photos — library milestone! 🎉")),
+                ("music", n) if n >= 1000 => Some(format!("{n} tracks — library milestone! 🎉")),
+                ("videos", n) if n >= 500 => Some(format!("{n} videos — library milestone! 🎉")),
+                _ => None,
+            };
+            if let Some(m) = milestone {
+                static FIRED: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
+                let fired = FIRED.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+                if fired.lock().map(|mut g| g.insert(section.to_string())).unwrap_or(false) {
+                    w.set_milestone(m.into());
+                }
+            }
             tracing::info!(section, count = n, "grid populated");
         });
     });

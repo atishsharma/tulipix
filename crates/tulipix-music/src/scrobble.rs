@@ -34,6 +34,37 @@ pub fn signature_base(params: &[(&str, &str)], secret: &str) -> String {
     s
 }
 
+/// Hex MD5 API signature for a signed Last.fm call.
+pub fn api_sig(params: &[(&str, &str)], secret: &str) -> String {
+    use md5::Digest;
+    let digest = md5::Md5::digest(signature_base(params, secret).as_bytes());
+    digest.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// Signed request params ready to send: input params + `api_sig` + JSON format.
+/// (`format` is excluded from the signature per the Last.fm spec.)
+pub fn signed_params(params: &[(&str, &str)], secret: &str) -> Vec<(String, String)> {
+    let sig = api_sig(params, secret);
+    let mut out: Vec<(String, String)> =
+        params.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect();
+    out.push(("api_sig".into(), sig));
+    out.push(("format".into(), "json".into()));
+    out
+}
+
+/// Browser page where the user approves a request token.
+pub fn authorize_url(api_key: &str, token: &str) -> String {
+    format!("https://www.last.fm/api/auth/?api_key={api_key}&token={token}")
+}
+
+/// The "API_KEY:SHARED_SECRET" value the user pastes into Settings → API Keys.
+pub fn parse_key_secret(stored: &str) -> Option<(String, String)> {
+    let (k, s) = stored.split_once(':')?;
+    let (k, s) = (k.trim(), s.trim());
+    if k.is_empty() || s.is_empty() { return None; }
+    Some((k.to_string(), s.to_string()))
+}
+
 /// Enqueue a play for later submission.
 pub async fn enqueue(pool: &SqlitePool, item_id: i64, played_at: i64) -> Result<()> {
     sqlx::query("INSERT INTO scrobble_queue (item_id, service, played_at, submitted) VALUES (?,?,?,0)")
@@ -69,6 +100,26 @@ mod tests {
         // 'method' before 'track' alphabetically, regardless of input order.
         let base = signature_base(&[("track", "Song"), ("method", "track.scrobble")], "secret");
         assert_eq!(base, "methodtrack.scrobbletrackSongsecret");
+    }
+
+    #[test]
+    fn api_sig_is_md5_hex() {
+        // MD5("methodtrack.scrobbletrackSongsecret") — stable reference value.
+        let sig = api_sig(&[("track", "Song"), ("method", "track.scrobble")], "secret");
+        assert_eq!(sig.len(), 32);
+        assert!(sig.chars().all(|c| c.is_ascii_hexdigit()));
+        // signed_params appends api_sig + format=json, signature excludes format.
+        let sp = signed_params(&[("method", "auth.getToken"), ("api_key", "k")], "s");
+        assert_eq!(sp.last().unwrap(), &("format".to_string(), "json".to_string()));
+        assert!(sp.iter().any(|(k, _)| k == "api_sig"));
+    }
+
+    #[test]
+    fn key_secret_parsing() {
+        assert_eq!(parse_key_secret("abc:def"), Some(("abc".into(), "def".into())));
+        assert_eq!(parse_key_secret(" abc : def "), Some(("abc".into(), "def".into())));
+        assert_eq!(parse_key_secret("nocolon"), None);
+        assert_eq!(parse_key_secret("a:"), None);
     }
 
     #[test]

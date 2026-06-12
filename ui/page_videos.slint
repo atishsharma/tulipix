@@ -6,6 +6,8 @@
 // Discover tab: TMDB trending / upcoming / on-the-air horizontal rails (np.p3.discover).
 import { ScrollView } from "std-widgets.slint";
 import { HdrChip } from "section_header.slint";
+import { EmptyState } from "empty_state.slint";
+import { Section } from "tokens.slint";
 
 // Richer than PhotoTile — carries playback state so a poster can paint a
 // resume bar, a watched check, and the star badge.
@@ -283,6 +285,7 @@ export component VideosPage inherits Rectangle {
     in-out property <string> kind: "local";          // tv|movies|local|discover
     in-out property <string> query: "";
     in property <[ShowCard]> shows: [];               // TV show cards
+    in property <[VideoTile]> next-up: [];            // continue-watching rail (np.p3.episodes)
     in property <[VideoSeason]> seasons: [];          // drilled-in episodes, grouped by season
     in property <bool> show-open: false;              // drilled into a show's episodes
     in property <string> show-title: "";
@@ -430,6 +433,24 @@ export component VideosPage inherits Rectangle {
             vertical-stretch: 1; horizontal-stretch: 1;
             VerticalLayout {
                 padding-left: 44px; padding-right: 44px; padding-top: 28px; padding-bottom: 36px; spacing: 14px;
+                // "Next Up" rail (np.p3.episodes) — the episode to continue per
+                // show: mid-watch first, else the one after the last finished.
+                if root.next-up.length > 0: VerticalLayout {
+                    spacing: 14px;
+                    HorizontalLayout { alignment: start; spacing: 8px;
+                        Rectangle { width: 4px; height: 20px; border-radius: 2px; background: #e5a00d;
+                            horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
+                        Text { text: "Next Up"; color: #ffffff; font-size: 18px; font-weight: 700; } }
+                    Flickable {
+                        height: cell-h; viewport-width: root.next-up.length * cell-w;
+                        for tile[idx] in root.next-up: Poster {
+                            x: idx * cell-w; y: 0;
+                            tile: tile;
+                            clicked => { root.tile-clicked(tile.index); }
+                            context(i, mx, my) => { root.tile-context(i, mx, my); }
+                        }
+                    }
+                }
                 HorizontalLayout { alignment: start; spacing: 8px;
                     Rectangle { width: 4px; height: 20px; border-radius: 2px; background: #e5a00d;
                         horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
@@ -550,16 +571,29 @@ export component VideosPage inherits Rectangle {
             }
         }
 
-        if !root.cards-mode && !root.drilled && tiles.length == 0 && root.kind != "discover": VerticalLayout {
+        // Empty states (np.p1.ds.empty-state): the library tab gets the frosted
+        // EmptyState card (accent halo + CTA); other tabs keep the plain note.
+        if !root.cards-mode && !root.drilled && tiles.length == 0 && root.kind != "discover" && root.category == "library": VerticalLayout {
+            alignment: center;
+            HorizontalLayout { alignment: center;
+                EmptyState {
+                    width: 420px; height: 240px;
+                    section: Section.videos;
+                    title: "No media yet";
+                    subtitle: root.empty-msg(root.category);
+                    cta-label: "+ Add media";
+                    cta-clicked => { root.add-folder(); }
+                } }
+        }
+        if !root.cards-mode && !root.drilled && tiles.length == 0 && root.kind != "discover" && root.category != "library": VerticalLayout {
             alignment: center; spacing: 14px;
             HorizontalLayout {
                 alignment: center;
                 Rectangle { width: 96px; height: 96px; border-radius: 20px; background: #e5a00d22;
                     Text { text: "🎬"; font-size: 42px; horizontal-alignment: center; vertical-alignment: center; } }
             }
-            Text { text: root.category == "library" ? "No media yet" : "Nothing here"; color: #ffffff; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+            Text { text: "Nothing here"; color: #ffffff; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
             Text { text: root.empty-msg(root.category); color: #a0a0a6; font-size: 13px; horizontal-alignment: center; }
-            if root.category == "library": HorizontalLayout { alignment: center; PlexButton { label: "+ Add media"; filled: true; clicked => { root.add-folder(); } } }
         }
 
         // ── Discover feed (np.p3.discover) — four TMDB rails ──────────────

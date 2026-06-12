@@ -332,6 +332,7 @@ export component PhotosPage inherits Rectangle {
     in property <bool> can-paste: false;           // clipboard has photos to paste
     callback add-folder();
     callback set-category(string);
+    callback visible-hint(float); // np.p1.thumbs.lazy — viewport scroll fraction
     callback set-sort(string);
     callback set-library-sort(string);
     callback search(string);
@@ -514,6 +515,12 @@ export component PhotosPage inherits Rectangle {
             flick := Flickable {
                 viewport-width: self.width;
                 viewport-height: tl-body.preferred-height;
+                // np.p1.thumbs.lazy — publish the visible fraction so the scan
+                // worker thumbs what's on screen first.
+                changed viewport-y => {
+                    root.visible-hint(self.viewport-height > self.height
+                        ? -self.viewport-y / (self.viewport-height - self.height) : 0.0);
+                }
                 tl-body := VerticalLayout {
                     padding-left: 28px; padding-right: 40px; padding-top: 8px; padding-bottom: 28px;
                     spacing: 14px;

@@ -68,7 +68,13 @@ pub async fn download(entry: &ModelEntry) -> Result<PathBuf> {
     drop(file);
 
     let digest = hex(&hasher.finalize());
-    if !digest.eq_ignore_ascii_case(&entry.sha256) {
+    if entry.sha256.eq_ignore_ascii_case(TOFU) {
+        // Trust-on-first-use: no upstream hash published — pin the digest of
+        // this first download beside the file; later verifies enforce it.
+        tokio::fs::write(tmp.with_extension("sha256"), &digest).await?;
+        let pinned = out.with_extension("sha256");
+        tokio::fs::rename(tmp.with_extension("sha256"), &pinned).await?;
+    } else if !digest.eq_ignore_ascii_case(&entry.sha256) {
         let _ = tokio::fs::remove_file(&tmp).await;
         anyhow::bail!("sha256 mismatch — wanted {}, got {}", entry.sha256, digest);
     }
@@ -76,13 +82,23 @@ pub async fn download(entry: &ModelEntry) -> Result<PathBuf> {
     Ok(out)
 }
 
+/// Sentinel for manifest rows without an upstream hash: pin on first download.
+pub const TOFU: &str = "tofu";
+
 pub async fn verify(path: &Path, expected_sha: &str) -> Result<()> {
     let bytes = tokio::fs::read(path).await?;
     let mut h = Sha256::new();
     h.update(&bytes);
     let got = hex(&h.finalize());
-    if got.eq_ignore_ascii_case(expected_sha) { Ok(()) } else {
-        Err(anyhow!("sha256 mismatch ({} vs {})", got, expected_sha))
+    // TOFU rows verify against the digest pinned at first download (if any).
+    let expected = if expected_sha.eq_ignore_ascii_case(TOFU) {
+        match tokio::fs::read_to_string(path.with_extension("sha256")).await {
+            Ok(p) => p.trim().to_string(),
+            Err(_) => return Ok(()), // nothing pinned yet — accept
+        }
+    } else { expected_sha.to_string() };
+    if got.eq_ignore_ascii_case(&expected) { Ok(()) } else {
+        Err(anyhow!("sha256 mismatch ({} vs {})", got, expected))
     }
 }
 

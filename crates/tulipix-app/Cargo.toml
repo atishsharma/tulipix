@@ -53,7 +53,9 @@ rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "t
 dark-light = "2"
 notify = { version = "6", optional = true }
 tulipix-core = { path = "../tulipix-core" }
-tulipix-platform = { path = "../tulipix-platform" }
+# `tray` on by default — np.p1.tray needs the real tray-icon backend, the
+# stub returned false and System claimed "Active" wrongly.
+tulipix-platform = { path = "../tulipix-platform", features = ["tray"] }
 tulipix-photos = { path = "../tulipix-photos" }
 tulipix-videos = { path = "../tulipix-videos" }
 tulipix-player = { path = "../tulipix-player" }

@@ -232,19 +232,58 @@ thread_local! {
 /// Install a tray icon with Open / Quit items. Returns false if the platform
 /// rejected creation (some Wayland compositors have no StatusNotifier host) or
 /// if the `tray` feature is off.
-#[cfg(feature = "tray")]
-pub fn init_tray() -> bool {
+///
+/// Linux: tray-icon's backend is GTK (libappindicator/SNI) and panics unless
+/// `gtk::init` ran on the calling thread — and it needs a GTK main loop to
+/// service DBus. Slint/winit owns the real main thread, so the tray lives on
+/// its own dedicated GTK thread; menu events still arrive via the global
+/// MenuEvent channel that `drain_tray_events` polls.
+#[cfg(all(feature = "tray", target_os = "linux"))]
+pub fn init_tray(icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) { return true; }
+    let ok = std::thread::Builder::new().name("tulipix-tray".into()).spawn(move || {
+        if gtk::init().is_err() {
+            tracing::warn!("tray: gtk::init failed — no tray on this session");
+            return;
+        }
+        let menu = TrayMenu::new();
+        let open = tray_icon::menu::MenuItem::with_id("tray.open", "Open Tulipix", true, None);
+        let quit = tray_icon::menu::MenuItem::with_id("tray.quit", "Quit", true, None);
+        if menu.append(&open).is_err() || menu.append(&quit).is_err() { return; }
+        let mut b = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("Tulipix");
+        if let Some((rgba, w, h)) = icon_rgba {
+            match tray_icon::Icon::from_rgba(rgba, w, h) {
+                Ok(i) => b = b.with_icon(i),
+                Err(e) => tracing::warn!(error = %e, "tray icon decode"),
+            }
+        }
+        match b.build() {
+            Ok(t) => {
+                TRAY.with(|cell| *cell.borrow_mut() = Some(t));
+                gtk::main(); // park forever servicing the SNI DBus connection
+            }
+            Err(e) => tracing::warn!(error = %e, "tray init failed"),
+        }
+    }).is_ok();
+    ok
+}
+
+#[cfg(all(feature = "tray", not(target_os = "linux")))]
+pub fn init_tray(icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
     TRAY.with(|cell| {
         if cell.borrow().is_some() { return true; }
         let menu = TrayMenu::new();
         let open = tray_icon::menu::MenuItem::with_id("tray.open", "Open Tulipix", true, None);
         let quit = tray_icon::menu::MenuItem::with_id("tray.quit", "Quit", true, None);
         if menu.append(&open).is_err() || menu.append(&quit).is_err() { return false; }
-        let icon = TrayIconBuilder::new()
+        let mut b = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip("Tulipix")
-            .build();
-        match icon {
+            .with_tooltip("Tulipix");
+        if let Some((rgba, w, h)) = icon_rgba {
+            if let Ok(i) = tray_icon::Icon::from_rgba(rgba, w, h) { b = b.with_icon(i); }
+        }
+        match b.build() {
             Ok(t) => { *cell.borrow_mut() = Some(t); true }
             Err(e) => {
                 tracing::warn!(error = %e, "tray init failed");
@@ -255,7 +294,7 @@ pub fn init_tray() -> bool {
 }
 
 #[cfg(not(feature = "tray"))]
-pub fn init_tray() -> bool {
+pub fn init_tray(_icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
     tracing::info!("tray feature off — skip init");
     false
 }

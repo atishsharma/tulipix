@@ -9,7 +9,7 @@ license.workspace = true
 default = []
 # Tray + global accelerator requires libxdo on Linux; default off to keep
 # headless CI green. Packaging targets enable it explicitly.
-tray = ["dep:tray-icon"]
+tray = ["dep:tray-icon", "dep:gtk"]
 
 [dependencies]
 anyhow.workspace = true
@@ -17,7 +17,14 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 keyring.workspace = true
-tray-icon = { version = "0.19", optional = true }
+# default-features off drops the libxdo (xdotool) link dep — absent on this
+# box and unneeded on Wayland; only bare-X11 menu positioning degrades.
+tray-icon = { version = "0.19", optional = true, default-features = false }
+
+# The tray's Linux backend is GTK; the dedicated tray thread calls gtk::init
+# + gtk::main itself (Slint owns the real main thread).
+[target.'cfg(target_os = "linux")'.dependencies]
+gtk = { version = "0.18", optional = true }
 tulipix-core = { path = "../tulipix-core" }
 
 # muda's Linux backend needs a GTK window to attach to; Slint's winit backend

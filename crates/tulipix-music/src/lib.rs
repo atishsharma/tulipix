@@ -43,6 +43,7 @@ pub mod podcasts;
 pub mod queue;
 pub mod radio;
 pub mod rating;
+pub mod replaygain;
 pub mod scan;
 pub mod scrobble;
 pub mod sleep_timer;

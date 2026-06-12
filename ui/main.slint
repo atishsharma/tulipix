@@ -6,6 +6,7 @@ import { SectionPage, PhotoTile } from "section_page.slint";
 import { PhotosPage, PhotoGroup, FolderRow, PersonCard, ThingChip, AlbumCard, MemoryRail, MapCluster, DedupeGroup } from "page_photos.slint";
 import { PhotoEditor } from "photo_editor.slint";
 import { SharedHero, HeroRect } from "shared_element.slint";
+import { MilestoneConfetti } from "empty_state.slint";
 import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
 import { MusicPage, MusicFullscreen, MusicMini, PodcastMini } from "page_music.slint";
@@ -458,6 +459,7 @@ component SettingsPage inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: root.music-fullscreen ? "Tulipix Music - Zen" : "Tulipix";
+    icon: @image-url("icons/tulipix.png"); // app icon — window + taskbar
     min-width: 1100px;
     min-height: 720px;
     preferred-width: 1320px;
@@ -495,6 +497,7 @@ export component MainWindow inherits Window {
     in-out property <string> video-kind: "local";
     in-out property <string> video-query: "";
     in-out property <[ShowCard]> video-shows: [];
+    in-out property <[VideoTile]> video-next-up: []; // np.p3.episodes Next Up rail
     in-out property <[VideoSeason]> video-seasons: [];
     in-out property <bool> video-show-open: false;
     in-out property <string> video-show-title: "";
@@ -786,6 +789,7 @@ export component MainWindow inherits Window {
     in-out property <int> music-recent-page: 0;
     in-out property <int> music-recent-pages: 1;
     in-out property <string> music-songs-view: "grid";
+    in-out property <float> music-grid-density: 200; // np.p4.music.grid-density (default = slider midpoint)
     in-out property <string> music-browse-sort: "name";
     in-out property <string> music-browse-dir: "asc";
     in-out property <int> music-browse-page: 0;
@@ -912,6 +916,7 @@ export component MainWindow inherits Window {
     callback music-set-song-page(int);
     callback music-search(string);
     callback music-set-songs-view(string);
+    callback music-set-grid-density(float); // np.p4.music.grid-density
     callback music-set-recent-page(int);
     callback music-set-browse-sort(string);
     callback music-set-browse-page(int);
@@ -935,14 +940,21 @@ export component MainWindow inherits Window {
     callback music-toggle-home-connect();
     callback music-set-crossfade(float);
     callback music-set-replaygain(string);
+    callback music-rg-scan(); // np.p5.music.replaygain loudness scan
+    in-out property <float> music-rg-scan-progress: 0;
+    in-out property <string> music-rg-scan-status: "";
     in-out property <[string]> music-cast-devices: [];
     in-out property <string> music-cast-target: "";
+    in-out property <string> music-cast-status: ""; // np.p5.music.cast handoff feedback
     callback music-scan-cast();
     callback music-set-cast(string);
     in-out property <[float]> music-vis-bars: [];
     callback music-instant-mix();
     in-out property <bool> music-scrobble-on: false;
     callback music-toggle-scrobble();
+    in-out property <string> music-lastfm-stage: "";  // "" | pending | connected
+    in-out property <string> music-lastfm-status: "";
+    callback music-lastfm-connect();
     in-out property <bool> music-tag-open: false;
     in-out property <string> music-tag-title: "";
     in-out property <string> music-tag-artist: "";
@@ -1050,6 +1062,7 @@ export component MainWindow inherits Window {
     callback music-podcast-fetch(int);
     callback music-podcast-unsubscribe(int);
     callback music-podcast-remove-download(int);
+    callback music-podcast-clear-downloads();
     callback music-podcast-play(int);     // by episode DB id
     callback music-podcast-refresh();
     callback music-podcast-reset-all();   // clear every subscription + cached files
@@ -1298,6 +1311,7 @@ export component MainWindow inherits Window {
     in-out property <int> photo-smart-rule-match-count: -1;
     callback set-photos-view-mode(string);
     callback set-photos-category(string);
+    callback photos-visible-hint(float); // np.p1.thumbs.lazy scroll fraction
     callback set-photos-sort(string);
     callback set-photos-library-sort(string);
     callback photo-search(string);
@@ -1499,6 +1513,7 @@ export component MainWindow inherits Window {
             vertical-stretch: 1;
 
             if active-section == "photos":   PhotosPage { width: parent.width; height: parent.height; item-count: root.photos-total; tiles: root.photo-tiles;
+                visible-hint(f) => { root.photos-visible-hint(f); }
                 groups: root.photo-groups;
                 folders: root.photo-folders;
                 people: root.photo-people;
@@ -1576,6 +1591,7 @@ export component MainWindow inherits Window {
                 kind <=> root.video-kind;
                 query <=> root.video-query;
                 shows: root.video-shows;
+                next-up: root.video-next-up;
                 seasons: root.video-seasons;
                 show-open: root.video-show-open;
                 show-title: root.video-show-title;
@@ -1607,6 +1623,7 @@ export component MainWindow inherits Window {
                 set-recent-page(d) => { root.music-set-recent-page(d); } set-browse-sort(s) => { root.music-set-browse-sort(s); }
                 toggle-shuffle => { root.music-toggle-shuffle(); }
                 songs-view <=> root.music-songs-view; set-songs-view(v) => { root.music-set-songs-view(v); }
+                grid-density <=> root.music-grid-density; set-grid-density(v) => { root.music-set-grid-density(v); }
                 np-loved: root.music-np-loved; np-stars: root.music-np-stars;
                 pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
                 volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat;
@@ -1672,10 +1689,15 @@ export component MainWindow inherits Window {
                 set-device(d) => { root.music-set-device(d); } toggle-exclusive => { root.music-toggle-exclusive(); }
                 toggle-gapless => { root.music-toggle-gapless(); } set-crossfade(v) => { root.music-set-crossfade(v); }
                 set-replaygain(r) => { root.music-set-replaygain(r); }
+                rg-scan-progress: root.music-rg-scan-progress; rg-scan-status: root.music-rg-scan-status;
+                rg-scan => { root.music-rg-scan(); }
                 cast-devices: root.music-cast-devices; cast-target <=> root.music-cast-target;
+                cast-status: root.music-cast-status;
                 scan-cast => { root.music-scan-cast(); } set-cast(c) => { root.music-set-cast(c); }
                 vis-bars: root.music-vis-bars; vis-style <=> root.music-vis-style; vis-style-changed(s) => { root.music-set-vis-style(s); } instant-mix => { root.music-instant-mix(); }
                 scrobble-on <=> root.music-scrobble-on; toggle-scrobble => { root.music-toggle-scrobble(); }
+                lastfm-stage: root.music-lastfm-stage; lastfm-status: root.music-lastfm-status;
+                lastfm-connect => { root.music-lastfm-connect(); }
                 tag-open <=> root.music-tag-open; tag-title <=> root.music-tag-title; tag-artist <=> root.music-tag-artist; tag-album <=> root.music-tag-album; tag-date <=> root.music-tag-date;
                 tag-genre <=> root.music-tag-genre; genre-options: root.music-genre-options;
                 tag-album-artist <=> root.music-tag-album-artist; tag-credits <=> root.music-tag-credits;
@@ -1742,6 +1764,7 @@ export component MainWindow inherits Window {
                 podcast-skip(s) => { root.music-podcast-skip(s); }
                 podcast-fetch(id) => { root.music-podcast-fetch(id); } podcast-unsubscribe(id) => { root.music-podcast-unsubscribe(id); }
                 podcast-remove-download(id) => { root.music-podcast-remove-download(id); }
+                podcast-clear-downloads => { root.music-podcast-clear-downloads(); }
                 podcast-refresh => { root.music-podcast-refresh(); }
                 podcast-reset-all => { root.music-podcast-reset-all(); }
                 podcast-set-thumb => { root.music-podcast-set-thumb(); }
@@ -2658,6 +2681,21 @@ export component MainWindow inherits Window {
                             horizontal-alignment: center; vertical-alignment: center; } } }
             }
         }
+    }
+
+    // Milestone confetti (np.p1.ds.empty-state) — celebratory pop on library
+    // milestones (1k photos / 100h watched / first sync). Auto-clears.
+    in-out property <string> milestone: "";
+    if root.milestone != "": Rectangle {
+        x: (root.width - self.width) / 2;
+        y: 120px;
+        width: 360px; height: 64px;
+        border-radius: Theme.radius-lg;
+        background: Theme.modal;
+        border-color: Accent.color.with-alpha(0.8); border-width: 1px;
+        drop-shadow-blur: 30px; drop-shadow-color: Accent.color.with-alpha(0.35);
+        MilestoneConfetti { label: root.milestone; playing: true; }
+        Timer { interval: 5s; running: root.milestone != ""; triggered => { root.milestone = ""; } }
     }
 
     // Capability-denied nudge toast (np.p1.caps.events). Auto-clears.

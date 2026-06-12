@@ -911,6 +911,9 @@ export component MusicPage inherits Rectangle {
     in property <int> recent-page: 0;
     in property <int> recent-pages: 1;
     in-out property <string> songs-view: "grid"; // list | grid (thumb styling)
+    // np.p4.music.grid-density — live 100→300px target cell size for the songs
+    // grid. Default 200 = the slider's midpoint.
+    in-out property <float> grid-density: 200;
     in-out property <string> browse-sort: "name"; // name | count (albums/artists/genres/folders/playlists)
     in-out property <string> browse-dir: "asc";
     in property <int> browse-page: 0;             // albums/artists pagination (21/page)
@@ -992,6 +995,7 @@ export component MusicPage inherits Rectangle {
     property <bool> dlrm-confirm-open: false;
     property <int> dlrm-confirm-id: -1;
     property <string> dlrm-confirm-title: "";
+    property <bool> dlclear-confirm-open: false; // clear-ALL-downloads confirm
     callback sync-all-lyrics();                  // batch-fetch lyrics for the whole library
     in property <string> lyrics-sync-status: ""; // progress label on the Sync button
     in property <float> lyrics-sync-progress: 0; // 0..1 fill on the Sync button
@@ -1067,6 +1071,7 @@ export component MusicPage inherits Rectangle {
     callback search(string);                     // filter the Songs list
     callback podcast-search(string);             // search across subscribed podcasts (+ episodes)
     callback set-songs-view(string);             // list | grid
+    callback set-grid-density(float);            // np.p4.music.grid-density (100..300 px)
     callback set-recent-page(int);               // Home recent pager delta
     callback set-browse-sort(string);            // name | count (toggles dir)
     callback set-browse-page(int);               // albums/artists page delta
@@ -1086,15 +1091,19 @@ export component MusicPage inherits Rectangle {
     in-out property <bool> gapless: true;
     in-out property <float> crossfade: 0;         // seconds, 0..12
     in-out property <string> replaygain: "off";   // off | track | album
+    in property <float> rg-scan-progress: 0;      // np.p5.music.replaygain loudness scan
+    in property <string> rg-scan-status: "";
     callback set-device(string);
     callback toggle-exclusive();
     callback toggle-gapless();
     callback toggle-home-connect();
     callback set-crossfade(float);
     callback set-replaygain(string);
+    callback rg-scan();                           // compute gains for untagged files
     // Cast targets (np.p5.music.cast) — DLNA/UPnP renderers on the LAN.
     in property <[string]> cast-devices: [];
     in-out property <string> cast-target: "";
+    in property <string> cast-status: "";   // handoff feedback (np.p5.music.cast)
     callback scan-cast();
     callback set-cast(string);
     // Audio visualizer (np.p5.music.visualizer) — 0..1 bar heights.
@@ -1108,6 +1117,10 @@ export component MusicPage inherits Rectangle {
     // Scrobbling (np.p5.music.scrobble) — Last.fm / ListenBrainz now-playing push.
     in-out property <bool> scrobble-on: false;
     callback toggle-scrobble();
+    // Last.fm session auth (np.p5.music.scrobble) — "" | pending | connected.
+    in property <string> lastfm-stage: "";
+    in property <string> lastfm-status: "";
+    callback lastfm-connect();
     // Tag editor (np.p5.music.tag-editor) — edit current track metadata.
     in-out property <bool> tag-open: false;
     in-out property <string> tag-title: "";
@@ -1216,6 +1229,7 @@ export component MusicPage inherits Rectangle {
     callback podcast-fetch(int);           // re-fetch one feed (by id)
     callback podcast-unsubscribe(int);     // remove a subscription (by id)
     callback podcast-remove-download(int); // delete an episode's cached file (by id)
+    callback podcast-clear-downloads();    // delete every cached episode file
     callback podcast-play(int);            // play an episode by its DB id (any list)
     callback podcast-skip(int);            // ± seconds on the playing episode (header transport)
     callback podcast-set-thumb();          // pick a custom artwork for the open podcast
@@ -1519,8 +1533,12 @@ export component MusicPage inherits Rectangle {
                     MusicTab { label: "❤ Subscribed"; has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #6366f1, #8b5cf6); active: root.podcast-tab == "subscribed"; clicked => { root.podcast-set-tab("subscribed"); } }
                     MusicTab { label: "⤓ Downloads"; has-grad: true; tint: #22c55e; grad: @linear-gradient(120deg, #22c55e, #16a34a); active: root.podcast-tab == "downloads";  clicked => { root.podcast-set-tab("downloads"); } } } }
                 // Single-podcast detail — Back replaces the sub-tabs on row 2 (keeps the row populated).
-                if root.view == "podcasts" && root.podcast-detail-open: VerticalLayout { alignment: center;
-                    MusicTab { label: "‹ Back to podcasts"; has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: true; clicked => { root.podcast-back(); } } }
+                if root.view == "podcasts" && root.podcast-detail-open: VerticalLayout { alignment: center; HorizontalLayout { spacing: 8px;
+                    MusicTab { label: "‹ Back to podcasts"; has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: true; clicked => { root.podcast-back(); } }
+                    // Same Downloads button as the main podcast page — jumps
+                    // back out and opens the Downloads tab.
+                    MusicTab { label: "⤓ Downloads"; has-grad: true; tint: #22c55e; grad: @linear-gradient(120deg, #22c55e, #16a34a);
+                        clicked => { root.podcast-back(); root.podcast-set-tab("downloads"); } } } }
                 if root.view == "audiobooks": VerticalLayout { alignment: center; HorizontalLayout { spacing: 8px;
                     MusicTab { label: "All";          active: root.ab-tab == "all";      clicked => { root.ab-set-tab("all"); } }
                     MusicTab { label: "In progress";  active: root.ab-tab == "progress"; clicked => { root.ab-set-tab("progress"); } }
@@ -1659,6 +1677,17 @@ export component MusicPage inherits Rectangle {
                     VerticalLayout { alignment: center; SortChip {
                         label: "★ Stars" + (root.song-sort == "rating" ? (root.song-dir == "asc" ? "  ▲" : "  ▼") : "");
                         active: root.song-sort == "rating"; clicked => { root.set-song-sort("rating"); } } }
+                    // Grid density slider (np.p4.music.grid-density) — 100→300px live re-flow.
+                    VerticalLayout { alignment: center; Rectangle { width: 1px; height: 18px; background: MusicTheme.line; } }
+                    VerticalLayout { alignment: center; Text { text: "▦"; color: MusicTheme.fg-mute; font-size: 11px; vertical-alignment: center; } }
+                    VerticalLayout { alignment: center; Scrubber {
+                        width: 90px; fill-color: #8b5cf6;
+                        value: Math.clamp(root.grid-density, 100, 300) - 100; maximum: 200;
+                        changed(v) => { root.grid-density = v + 100; root.set-grid-density(v + 100); } } }
+                    VerticalLayout { alignment: center; Text { text: "▦"; color: MusicTheme.fg-mute; font-size: 15px; vertical-alignment: center; } }
+                    // Reset to the default cell size (200px — the slider midpoint).
+                    VerticalLayout { alignment: center; GlyphBtn { glyph: "↺"; size: 26px;
+                        clicked => { root.grid-density = 200; root.set-grid-density(200); } } }
                     // Sync lyrics for the whole library (LRCLIB) — progress-fill button.
                     VerticalLayout { alignment: center; Rectangle { width: 1px; height: 18px; background: MusicTheme.line; } }
                     VerticalLayout { alignment: center; Rectangle { width: 80px; height: 30px; border-radius: 15px; clip: true;
@@ -1815,6 +1844,10 @@ export component MusicPage inherits Rectangle {
                         VerticalLayout { alignment: center; SortChip {
                             label: root.podcast-dl-sort == "new" ? "↓ Newest" : "↑ Oldest";
                             clicked => { root.podcast-dl-set-sort(root.podcast-dl-sort == "new" ? "old" : "new"); } } }
+                        // Wipe every offline episode (confirmed in a popup).
+                        if root.podcast-downloads.length > 0: VerticalLayout { alignment: center; SortChip {
+                            label: "🗑 Clear downloads";
+                            clicked => { root.dlclear-confirm-open = true; } } }
                         if root.podcast-dl-pages > 1: VerticalLayout { alignment: center;
                             PageNav { page: root.podcast-dl-page; pages: root.podcast-dl-pages; go(d) => { root.podcast-dl-set-page(d); } } } }
                     if root.podcast-downloads.length == 0: Text { text: "No downloads yet — tap ⤓ on any episode to save it for offline listening."; color: MusicTheme.fg-dim2; font-size: 13px; }
@@ -1857,7 +1890,10 @@ export component MusicPage inherits Rectangle {
                             background: MusicTheme.surf00; border-width: 1px; border-color: MusicTheme.line;
                             VerticalLayout { padding: 18px; spacing: 7px; alignment: start;
                                 Text { text: "PODCAST"; color: MusicTheme.fg-dim; font-size: 11px; font-weight: 700; letter-spacing: 2px; }
-                                Text { text: root.podcast-d-title; color: MusicTheme.fg; font-size: 28px; font-weight: 800; overflow: elide; }
+                                // Big name — wraps to two lines and scales the card's
+                                // blank space away (user request 2026-06-12).
+                                Text { text: root.podcast-d-title; color: MusicTheme.fg; font-size: 36px; font-weight: 800;
+                                    wrap: word-wrap; overflow: elide; max-height: 96px; }
                                 if root.podcast-d-author != "": Text { text: root.podcast-d-author; color: MusicTheme.fg3; font-size: 14px; overflow: elide; }
                                 // One line: category · episode count · Home pin · Info.
                                 HorizontalLayout { spacing: 8px; alignment: start;
@@ -1878,11 +1914,12 @@ export component MusicPage inherits Rectangle {
                                         ifb := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-info-open-id(root.podcast-d-id); } }
                                         HorizontalLayout { padding-left: 12px; padding-right: 12px;
                                             Text { text: "ⓘ Info"; color: MusicTheme.fg; font-size: 12px; font-weight: 700; vertical-alignment: center; } } } }
-                                // About — INSIDE the info box, hard-capped to 3 lines so long
-                                // descriptions never spill out of the card.
+                                // About — fills whatever vertical space the title left
+                                // (wraps + elides at the card edge), so the card carries
+                                // no dead air regardless of description length.
                                 if root.podcast-d-desc != "": Text { text: root.podcast-d-desc; color: MusicTheme.fg2; font-size: 13px;
-                                    wrap: word-wrap; overflow: elide; height: 54px; }
-                                Rectangle { vertical-stretch: 1; }
+                                    wrap: word-wrap; overflow: elide; vertical-stretch: 1; }
+                                if root.podcast-d-desc == "": Rectangle { vertical-stretch: 1; }
                                 // (Sort + pagination both live under the Back button now.)
                             } }
                         // Back + Sort column — Back shortened so the outlined
@@ -1910,6 +1947,8 @@ export component MusicPage inherits Rectangle {
                                             label: root.podcast-d-sort == "new" ? "↓ Newest" : "↑ Oldest";
                                             clicked => { root.podcast-d-set-sort(root.podcast-d-sort == "new" ? "old" : "new"); } } }
                                         Rectangle { horizontal-stretch: 1; }
+                                        if root.podcast-d-pages > 1: VerticalLayout { alignment: center;
+                                            Text { text: "Pages"; color: MusicTheme.fg-dim; font-size: 11px; font-weight: 700; vertical-alignment: center; } }
                                         if root.podcast-d-pages > 1: VerticalLayout { alignment: center; Rectangle { width: 26px; height: 26px; border-radius: 13px; background: dppp.has-hover ? #8b5cf6 : #8b5cf666;
                                             dppp := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-d-set-page(-1); } }
                                             Text { text: "◀"; color: #ffffff; font-size: 11px; horizontal-alignment: center; vertical-alignment: center; } } }
@@ -2158,8 +2197,10 @@ export component MusicPage inherits Rectangle {
                     padding-left: 36px; padding-right: 36px; spacing: 12px;
                     Rectangle {
                         horizontal-stretch: 1;
-                        // Edge-to-edge flexible grid: up to 7 columns, cells fill the width.
-                        property <int> gcols: Math.max(1, Math.min(7, Math.floor(self.width / 150px)));
+                        // Edge-to-edge flexible grid: cells fill the width; the
+                        // density slider (np.p4.music.grid-density) drives the
+                        // 100→300px target cell size live.
+                        property <int> gcols: Math.max(1, Math.floor(self.width / (Math.clamp(root.grid-density, 100, 300) * 1px)));
                         property <length> cell: self.width / gcols;
                         property <length> rowh: cell + 30px;
                         height: Math.ceil(root.songs-ex.length / gcols) * rowh;
@@ -3111,7 +3152,17 @@ export component MusicPage inherits Rectangle {
                                 Scrubber { y: (parent.height - self.height)/2; width: 240px; value: root.crossfade; maximum: 12.0; fill-color: #ec4899; changed(v) => { root.set-crossfade(v); } } } } }
                         Text { text: "ReplayGain (volume normalization)"; color: MusicTheme.fg-dim; font-size: 12px; }
                         HorizontalLayout { spacing: 8px; alignment: start;
-                            for p[i] in ["off", "track", "album"]: BrowseChip { label: p == root.replaygain ? "● " + p : p; clicked => { root.set-replaygain(p); } } }
+                            for p[i] in ["off", "track", "album"]: BrowseChip { label: p == root.replaygain ? "● " + p : p; clicked => { root.set-replaygain(p); } }
+                            // np.p5.music.replaygain — compute gains for untagged files
+                            // (ffmpeg ebur128 loudness scan, progress-fill like Lyrics).
+                            Rectangle { width: 130px; height: 30px; border-radius: 15px; clip: true;
+                                background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                                Rectangle { x: 0; width: parent.width * Math.clamp(root.rg-scan-progress, 0, 1); height: 100%;
+                                    background: @linear-gradient(90deg, #ec4899, #8b5cf6); animate width { duration: 200ms; } }
+                                TouchArea { mouse-cursor: pointer; clicked => { root.rg-scan(); } }
+                                Text { text: root.rg-scan-status != "" ? root.rg-scan-status : "Scan gains";
+                                    color: root.rg-scan-progress > 0.5 ? #ffffff : MusicTheme.fg; font-size: 11px; font-weight: 600;
+                                    horizontal-alignment: center; vertical-alignment: center; } } }
                     }
                     Rectangle { height: 1px; background: MusicTheme.surf1; }
                     // Sleep timer default.
@@ -3141,10 +3192,18 @@ export component MusicPage inherits Rectangle {
                     VerticalLayout { spacing: 12px;
                         Text { text: "CONNECT"; color: #ec4899; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
                         BrowseChip { label: root.scrobble-on ? "☑ Scrobble (Last.fm / ListenBrainz)" : "☐ Scrobble (Last.fm / ListenBrainz)"; clicked => { root.toggle-scrobble(); } }
+                        // np.p5.music.scrobble — Last.fm signed session-key auth flow.
+                        // Step 1 fetches a token + opens the authorize page; step 2
+                        // trades the approved token for a session key (keychain).
+                        HorizontalLayout { spacing: 8px; alignment: start;
+                            BrowseChip { label: root.lastfm-stage == "pending" ? "✓ Finish Last.fm connect" : "Connect Last.fm…";
+                                clicked => { root.lastfm-connect(); } } }
+                        if root.lastfm-status != "": Text { text: root.lastfm-status; color: MusicTheme.fg-mute; font-size: 12px; }
                         HorizontalLayout { spacing: 8px; alignment: start;
                             BrowseChip { label: "⟳ Scan for cast devices"; clicked => { root.scan-cast(); } }
                             for c[i] in root.cast-devices: BrowseChip { label: c == root.cast-target ? "📡 " + c : c; clicked => { root.set-cast(c); } } }
                         if root.cast-devices.length == 0: Text { text: "No DLNA renderers found yet — scan looks for LAN MediaRenderers."; color: MusicTheme.fg-mute; font-size: 12px; }
+                        if root.cast-status != "": Text { text: root.cast-status; color: MusicTheme.fg-mute; font-size: 12px; }
                     }
                 }
             }
@@ -3639,6 +3698,30 @@ export component MusicPage inherits Rectangle {
         }
     }
 
+    // Clear-ALL-downloads confirm (mirrors the single-remove popup).
+    if root.dlclear-confirm-open: Rectangle {
+        width: 100%; height: 100%; background: #000000aa;
+        TouchArea { clicked => { root.dlclear-confirm-open = false; } }
+        Rectangle { width: 420px; height: 210px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
+            drop-shadow-blur: 48px; drop-shadow-color: #000000ee; clip: true;
+            TouchArea {}
+            VerticalLayout { padding: 24px; spacing: 12px; alignment: start;
+                Text { text: "Clear all downloads?"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; }
+                Text { text: "Delete every downloaded episode (" + root.podcast-downloads.length + " on this page view) from the offline cache? Episodes stay in their feeds and can be re-downloaded.";
+                    color: MusicTheme.fg-dim; font-size: 13px; wrap: word-wrap; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    Rectangle { width: 100px; height: 38px; border-radius: 19px; background: dccn.has-hover ? MusicTheme.hov2 : MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                        dccn := TouchArea { mouse-cursor: pointer; clicked => { root.dlclear-confirm-open = false; } }
+                        Text { text: "Cancel"; color: MusicTheme.fg; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                    Rectangle { width: 120px; height: 38px; border-radius: 19px; background: dccy.has-hover ? #dc2626 : #ef4444;
+                        dccy := TouchArea { mouse-cursor: pointer; clicked => { root.dlclear-confirm-open = false; root.podcast-clear-downloads(); } }
+                        Text { text: "Clear all"; color: #ffffff; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+            }
+        }
+    }
+
     // Transcript / show-notes panel (np.p5.music.podcast-feeds) — reuses the
     // lyrics-panel reading layout for episode notes.
     if root.podcast-transcript-open: Rectangle {
@@ -3672,7 +3755,13 @@ export component MusicPage inherits Rectangle {
     if root.podcast-info-open: Rectangle {
         width: 100%; height: 100%; background: #000000aa;
         TouchArea { clicked => { root.podcast-info-open = false; } }
-        FocusScope { width: 560px; height: 420px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+        FocusScope { width: 560px;
+            // Dynamic height (user request 2026-06-12): size to the summary —
+            // ~70 chars/line at 13px in a 510px column — so short summaries get
+            // a tight card and long ones grow to a 640px cap (then scroll).
+            property <int> desc-lines: Math.ceil(root.podcast-info-desc.character-count / 70);
+            height: Math.clamp(300px + self.desc-lines * 18px, 360px, 640px);
+            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
             init => { self.focus(); }
             key-pressed(e) => { if (e.text == Key.Escape) { root.podcast-info-open = false; return accept; } return reject; }
             Rectangle { width: 100%; height: 100%; border-radius: 16px; background: MusicTheme.surf-pop;
@@ -3835,7 +3924,14 @@ export component MusicFullscreen inherits Rectangle {
         VerticalLayout { spacing: 6px;
             Rectangle { height: 50px;
                 tta := TouchArea { mouse-cursor: pointer; clicked => { root.open-now-album(); } }
-                Text { text: title == "" ? "Nothing playing" : title; color: tta.has-hover ? #ec4899 : MusicTheme.fg; font-size: 40px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; overflow: elide; } }
+                // Song art beside the title (user request 2026-06-12).
+                HorizontalLayout { alignment: center; spacing: 14px;
+                    if root.art.width > 0: VerticalLayout { alignment: center;
+                        Rectangle { width: 46px; height: 46px; border-radius: 10px; clip: true;
+                            horizontal-stretch: 0; vertical-stretch: 0;
+                            Image { source: root.art; image-fit: cover; width: 100%; height: 100%; } } }
+                    VerticalLayout { alignment: center;
+                        Text { text: title == "" ? "Nothing playing" : title; color: tta.has-hover ? #ec4899 : MusicTheme.fg; font-size: 40px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; overflow: elide; } } } }
             Rectangle { height: 22px;
                 sta := TouchArea { mouse-cursor: pointer; clicked => { root.open-now-artist(); } }
                 Text { text: album == "" ? sub : sub + "   ·   " + album; color: sta.has-hover ? #ec4899 : MusicTheme.fg-dim; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; overflow: elide; } } }
@@ -4037,7 +4133,9 @@ export component MusicMini inherits Rectangle {
                     y: vinyl.offy + vinyl.ny * root.uiscale * 1px - self.height / 2;
                     animate x, y { duration: 400ms; easing: ease-out; } }
                 animate opacity { duration: 160ms; } }
-            // back — queue
+            // back — queue (rows show their own thumb under the ▶ overlay;
+            // audiobook chapters get the book cover filled in by the queue
+            // builder on the Rust side).
             if root.face == "queue": ScrollView { width: 100%; height: 100%;
                 VerticalLayout { spacing: 2px; padding: 6px;
                     if queue-rows.length == 0: Text { text: "Queue empty."; color: MusicTheme.fg-dim; font-size: 12px; }

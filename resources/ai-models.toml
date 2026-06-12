@@ -1,0 +1,49 @@
+# On-device AI model manifest (np.p1.onboarding.ai-models / np.p2.ai.*).
+#
+# Parsed by tulipix_core::ai_models::Manifest. Each row drives a Settings →
+# AI Models entry with install state + a Download/Update action; blobs land in
+# <data_dir>/models/<name>-<version>/<name>.onnx via tulipix_photos::ai::models.
+#
+# sha256 = "tofu" → no upstream-published hash: the digest of the first
+# download is pinned beside the file and enforced from then on. Replace with
+# the real hash when one is published/audited.
+
+[[models]]
+name = "scrfd-2.5g"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/yakhyo/scrfd-onnx/resolve/main/scrfd_2.5g.onnx"
+size_bytes = 3300000
+quant = "fp32"
+min_vram_mb = 512
+cap = "photos.ai.faces"
+
+[[models]]
+name = "lama-inpaint"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/Carve/LaMa-ONNX/resolve/main/lama_fp32.onnx"
+size_bytes = 205000000
+quant = "fp32"
+min_vram_mb = 1024
+cap = "photos.ai.heal"
+
+[[models]]
+name = "mobile-sam"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/vietanhdev/segment-anything-onnx-models/resolve/main/mobile_sam.encoder.onnx"
+size_bytes = 28000000
+quant = "fp32"
+min_vram_mb = 512
+cap = "photos.ai.sky"
+
+[[models]]
+name = "realesrgan-x4"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/qualcomm/Real-ESRGAN-x4plus/resolve/main/Real-ESRGAN-x4plus.onnx"
+size_bytes = 67000000
+quant = "fp32"
+min_vram_mb = 1024
+cap = "photos.ai.upscale"
