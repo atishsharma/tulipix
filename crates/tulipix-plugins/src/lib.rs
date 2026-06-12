@@ -50,6 +50,8 @@ pub trait Plugin: Send {
     fn scrape(&mut self, req: &ScrapeRequest) -> Result<ScrapeResult>;
 }
 
+// `bytes` is only consumed by the feature-gated runtimes below.
+#[cfg_attr(not(any(feature = "wasm", feature = "lua")), allow(unused_variables))]
 pub fn load(manifest: PluginManifest, bytes: &[u8]) -> Result<Box<dyn Plugin>> {
     match manifest.kind {
         #[cfg(feature = "wasm")]

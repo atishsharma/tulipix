@@ -16,7 +16,6 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 async-trait = "0.1"
-tulipix-core = { path = "../tulipix-core" }
 
 [dev-dependencies]
 tempfile = "3"

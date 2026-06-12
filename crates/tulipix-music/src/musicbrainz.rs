@@ -191,7 +191,7 @@ pub fn artist_blurb(a: &Artist) -> String {
     if let Some(ls) = &a.life_span { if let Some(b) = &ls.begin { if !b.is_empty() {
         parts.push(if ls.ended == Some(true) { format!("active from {b}") } else { format!("since {b}") });
     } } }
-    let mut blurb = format!("{}", a.name);
+    let mut blurb = a.name.to_string();
     if let Some(d) = &a.disambiguation { if !d.is_empty() { blurb.push_str(&format!(" — {d}")); } }
     if !parts.is_empty() { blurb.push_str(&format!("\n{}", parts.join(" · "))); }
     blurb

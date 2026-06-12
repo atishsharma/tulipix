@@ -1,25 +1,25 @@
 import { Theme } from "tokens.slint";
 
-export enum Mode { local, account, locked }
+// Local-only app: no account mode. The pill is 🏠 Local or 🔒 Locked.
+export enum Mode { local, locked }
 
 export component ModePill inherits Rectangle {
     in property <Mode> mode: Mode.local;
     height: 20px;
     border-radius: 10px;
     background:
-        mode == Mode.local   ? @linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%) :
-        mode == Mode.account ? @linear-gradient(135deg, #14b8a6 0%, #06b6d4 100%) :
-                               @linear-gradient(135deg, #475569 0%, #1f2937 100%);
+        mode == Mode.local ? @linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)
+                           : @linear-gradient(135deg, #475569 0%, #1f2937 100%);
     HorizontalLayout {
         padding-left: 8px; padding-right: 10px; spacing: 5px;
         alignment: center;
         Text {
-            text: mode == Mode.local ? "🏠" : mode == Mode.account ? "☁" : "🔒";
+            text: mode == Mode.local ? "🏠" : "🔒";
             font-size: 10px;
             vertical-alignment: center;
         }
         Text {
-            text: mode == Mode.local ? "Local" : mode == Mode.account ? "Account" : "Locked";
+            text: mode == Mode.local ? "Local" : "Locked";
             font-size: 10px; font-weight: 600;
             color: #ffffff;
             vertical-alignment: center;

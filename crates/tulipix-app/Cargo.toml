@@ -16,7 +16,11 @@ path = "src/main.rs"
 # loads them lazily on first use.
 default = []
 
-dev-reload = ["dep:notify"]
+# Dev UI live-reload. `slint/live-preview` swaps the generated UI for an
+# interpreter-backed LiveReloadingComponent that re-reads .slint at runtime —
+# the build must ALSO run with SLINT_LIVE_PREVIEW=1 so the slint compiler
+# emits the live-preview glue (see vendor/i-slint-compiler/generator/rust.rs).
+dev-reload = ["dep:notify", "slint/live-preview"]
 
 # Real ONNX editor AI ops (upscale/colorize/heal/sky). Pulls ORT into
 # tulipix-photos (downloads the native runtime at build time).
@@ -33,10 +37,9 @@ alloc-jemalloc = ["dep:tikv-jemallocator"]
 lazy-whisper = ["dep:tulipix-whisper"]
 lazy-ai-ep   = ["dep:tulipix-ai"]
 lazy-plugins = ["dep:tulipix-plugins"]
-lazy-sync    = ["dep:tulipix-sync"]
 
 # Convenience: turn everything on (used for the official packaging build).
-full = ["lazy-whisper", "lazy-ai-ep", "lazy-plugins", "lazy-sync"]
+full = ["lazy-whisper", "lazy-ai-ep", "lazy-plugins"]
 
 [dependencies]
 slint.workspace = true
@@ -45,10 +48,14 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
-dark-light = "1"
+# v2 detects via XDG settings portal (ashpd/zbus5, already in-tree through
+# rfd) — v1 dragged a second, duplicate zbus4 + dbus stack (~15 crates).
+dark-light = "2"
 notify = { version = "6", optional = true }
 tulipix-core = { path = "../tulipix-core" }
-tulipix-platform = { path = "../tulipix-platform" }
+# `tray` on by default — np.p1.tray needs the real tray-icon backend, the
+# stub returned false and System claimed "Active" wrongly.
+tulipix-platform = { path = "../tulipix-platform", features = ["tray"] }
 tulipix-photos = { path = "../tulipix-photos" }
 tulipix-videos = { path = "../tulipix-videos" }
 tulipix-player = { path = "../tulipix-player" }
@@ -63,13 +70,16 @@ walkdir = "2"
 # OS media-key / now-playing integration (Linux MPRIS · Windows SMTC · macOS).
 souvlaki = "0.7"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+# Books: PDF text reflow (np.p5.books.pdf) + MOBI/AZW3 (np.p5.books.formats).
+# Both pure Rust; CBR/FB2 need no dep (system unrar/bsdtar + plain XML).
+pdf-extract = "0.7"
+mobi = "0.8"
 sha2 = "0.10"
 kamadak-exif = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tulipix-whisper = { path = "../tulipix-whisper", optional = true }
 tulipix-ai = { path = "../tulipix-ai", optional = true }
 tulipix-plugins = { path = "../tulipix-plugins", optional = true }
-tulipix-sync = { path = "../tulipix-sync", optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 mimalloc = { version = "0.1", default-features = false, optional = true }

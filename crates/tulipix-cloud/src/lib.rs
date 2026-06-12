@@ -24,7 +24,6 @@ pub mod remotes;
 pub mod restore_snapshot;
 pub mod selective;
 pub mod share;
-pub mod shared_inbox;
 pub mod stream;
 pub mod sync;
 pub mod union;

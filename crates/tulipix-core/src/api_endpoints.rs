@@ -1,8 +1,7 @@
 //! Configurable backend endpoints.
 //!
-//! Three switches live here, all opt-in:
-//!   * `sync_url`        — Account mode endpoint override (self-host vs hosted).
-//!     Validation = HTTPS scheme + /health ping returning 200.
+//! Two switches live here, all opt-in (the account-mode `sync_url` was
+//! removed 2026-06-10 — the app is local-only, no sync backend):
 //!   * `update_channel`  — Appcast / model-manifest URL. Air-gap + mirror
 //!     support. Updates must carry an Ed25519 detached signature pinned to
 //!     the public key shipped in the binary; verification is performed
@@ -18,14 +17,11 @@
 use anyhow::{anyhow, Result};
 use serde::{Deserialize, Serialize};
 
-pub const DEFAULT_SYNC_URL:        &str = "https://sync.tulipix.app";
 pub const DEFAULT_UPDATE_CHANNEL:  &str = "https://updates.tulipix.app/appcast.json";
 pub const DEFAULT_SENTRY_DSN:      &str = ""; // empty = disabled until user opts in
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct EndpointConfig {
-    #[serde(default = "default_sync_url")]
-    pub sync_url: String,
     #[serde(default = "default_update_channel")]
     pub update_channel: String,
     #[serde(default = "default_sentry_dsn")]
@@ -37,14 +33,12 @@ pub struct EndpointConfig {
     pub update_signing_pubkey_hex: String,
 }
 
-fn default_sync_url()       -> String { DEFAULT_SYNC_URL.into() }
 fn default_update_channel() -> String { DEFAULT_UPDATE_CHANNEL.into() }
 fn default_sentry_dsn()     -> String { DEFAULT_SENTRY_DSN.into() }
 
 impl Default for EndpointConfig {
     fn default() -> Self {
         Self {
-            sync_url: default_sync_url(),
             update_channel: default_update_channel(),
             sentry_dsn: default_sentry_dsn(),
             update_signing_pubkey_hex: String::new(),
@@ -53,7 +47,7 @@ impl Default for EndpointConfig {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum EndpointKind { Sync, Update, Sentry }
+pub enum EndpointKind { Update, Sentry }
 
 /// Cheap structural validation. Network probe lives in `health_check`.
 pub fn validate_url(kind: EndpointKind, url: &str) -> Result<()> {
@@ -77,7 +71,6 @@ pub fn validate_url(kind: EndpointKind, url: &str) -> Result<()> {
 
 pub fn validate(cfg: &EndpointConfig) -> Vec<String> {
     let mut warns = Vec::new();
-    if let Err(e) = validate_url(EndpointKind::Sync, &cfg.sync_url) { warns.push(format!("sync_url: {e}")); }
     if let Err(e) = validate_url(EndpointKind::Update, &cfg.update_channel) { warns.push(format!("update_channel: {e}")); }
     if let Err(e) = validate_url(EndpointKind::Sentry, &cfg.sentry_dsn) { warns.push(format!("sentry_dsn: {e}")); }
     if cfg.update_channel != DEFAULT_UPDATE_CHANNEL && cfg.update_signing_pubkey_hex.is_empty() {
@@ -136,11 +129,11 @@ mod tests {
         assert!(validate_url(EndpointKind::Sentry, "http://abc@sentry.io/123").is_err());
         assert!(validate_url(EndpointKind::Sentry, "https://sentry.io/123").is_err());
     }
-    #[test] fn requires_https_for_sync_and_update() {
-        assert!(validate_url(EndpointKind::Sync, "http://example.com").is_err());
-        validate_url(EndpointKind::Sync, "https://example.com").unwrap();
-        validate_url(EndpointKind::Sync, "http://localhost:8080").unwrap();
-        validate_url(EndpointKind::Sync, "http://127.0.0.1:8080").unwrap();
+    #[test] fn requires_https_for_update() {
+        assert!(validate_url(EndpointKind::Update, "http://example.com").is_err());
+        validate_url(EndpointKind::Update, "https://example.com").unwrap();
+        validate_url(EndpointKind::Update, "http://localhost:8080").unwrap();
+        validate_url(EndpointKind::Update, "http://127.0.0.1:8080").unwrap();
     }
     #[test] fn custom_mirror_requires_pubkey() {
         let cfg = EndpointConfig { update_channel: "https://mirror.example/cast.json".into(), ..Default::default() };

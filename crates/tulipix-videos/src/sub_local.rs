@@ -72,7 +72,7 @@ fn extract_lang(name_lc: &str, stem_lc: &str) -> Option<String> {
     let rest = name_lc.strip_prefix(stem_lc)?;
     let rest = rest.trim_start_matches(['.', '_', '-', ' ']);
     if rest.is_empty() { return None; }
-    let tag = rest.split(|c: char| matches!(c, '.' | '_' | '-' | ' ')).next()?;
+    let tag = rest.split(['.', '_', '-', ' ']).next()?;
     if (2..=5).contains(&tag.len()) && tag.chars().all(|c| c.is_ascii_lowercase()) {
         Some(tag.to_string())
     } else { None }

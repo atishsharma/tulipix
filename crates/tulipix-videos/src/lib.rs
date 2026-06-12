@@ -34,6 +34,5 @@ pub mod tmdb;
 pub mod trailer_preview;
 pub mod tv_themes;
 pub mod video_360;
-pub mod watch_parties;
 pub mod watch_progress;
 pub mod watchlist;

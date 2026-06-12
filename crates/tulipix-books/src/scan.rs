@@ -1,4 +1,5 @@
-//! `np.p4.books.scan` — EPUB / CBZ / CBR / PDF scan + metadata extraction.
+//! `np.p4.books.scan` — EPUB / CBZ / CBR / PDF / MOBI / AZW3 / FB2 scan +
+//! metadata extraction.
 //!
 //! Detects the format from the extension, pulls baseline metadata (EPUB OPF
 //! parse for title/author/language; comics get series/issue from the filename)
@@ -9,22 +10,39 @@ use anyhow::Result;
 use sqlx::SqlitePool;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Format { Epub, Cbz, Cbr, Pdf }
+pub enum Format { Epub, Cbz, Cbr, Pdf, Mobi, Azw3, Fb2, Djvu }
 
 impl Format {
     pub fn as_str(self) -> &'static str {
-        match self { Format::Epub => "epub", Format::Cbz => "cbz", Format::Cbr => "cbr", Format::Pdf => "pdf" }
+        match self {
+            Format::Epub => "epub", Format::Cbz => "cbz", Format::Cbr => "cbr",
+            Format::Pdf => "pdf", Format::Mobi => "mobi", Format::Azw3 => "azw3",
+            Format::Fb2 => "fb2", Format::Djvu => "djvu",
+        }
     }
     pub fn is_comic(self) -> bool { matches!(self, Format::Cbz | Format::Cbr) }
+    /// Formats the reader shows as reflowable text (np.p5.books.formats/.pdf).
+    /// DjVu is raster-only — it pages like a comic, never reflows.
+    pub fn is_text(self) -> bool {
+        matches!(self, Format::Epub | Format::Pdf | Format::Mobi | Format::Azw3 | Format::Fb2)
+    }
 }
 
 pub fn format_from_ext(path: &str) -> Option<Format> {
+    // `.fb2.zip` is the common FB2 distribution wrapper.
+    if path.to_ascii_lowercase().ends_with(".fb2.zip") {
+        return Some(Format::Fb2);
+    }
     let ext = path.rsplit('.').next()?.to_ascii_lowercase();
     Some(match ext.as_str() {
         "epub" => Format::Epub,
         "cbz"  => Format::Cbz,
         "cbr"  => Format::Cbr,
         "pdf"  => Format::Pdf,
+        "mobi" => Format::Mobi,
+        "azw3" | "azw" => Format::Azw3,
+        "fb2"  => Format::Fb2,
+        "djvu" | "djv" => Format::Djvu,
         _ => return None,
     })
 }

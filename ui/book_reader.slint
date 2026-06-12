@@ -1,20 +1,26 @@
 // Native book reader overlay (np.p4.books.reader). Three modes driven by
 // `kind`: "comic" (1–2 page images, spread / RTL / invert), "text" (EPUB
 // chapter text with typography), "unsupported" (honest PDF/CBR notice).
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, LineEdit } from "std-widgets.slint";
 import { TocEntryRow, BookmarkRow } from "page_books.slint";
 
 component RBtn inherits Rectangle {
     in property <string> label;
     in property <bool> on: false;
+    // Light chrome (sepia/light reading themes) needs dark glyphs — the
+    // default white-on-translucent-white is invisible there.
+    in property <bool> light: false;
     callback clicked();
     height: 34px;
     width: t.preferred-width + 24px;
     border-radius: 8px;
-    background: on ? #1a73e8 : ta.has-hover ? #ffffff22 : #ffffff14;
-    border-width: 1px; border-color: #ffffff2e;
+    background: on ? #1a73e8
+              : ta.has-hover ? (light ? #00000016 : #ffffff22)
+              : (light ? #0000000a : #ffffff14);
+    border-width: 1px; border-color: light ? #00000030 : #ffffff2e;
     animate background { duration: 110ms; }
-    t := Text { text: label; color: #fff; font-size: 13px; font-weight: 600;
+    t := Text { text: label; color: on ? #ffffff : light ? #20201c : #ffffff;
+        font-size: 13px; font-weight: 600;
         horizontal-alignment: center; vertical-alignment: center; }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
 }
@@ -34,6 +40,16 @@ export component BookReader inherits Rectangle {
     in property <bool> invert: false;
     // text
     in property <string> text;
+    // Two-page spread (np.p4.books.reader — real-book layout): right page +
+    // the outgoing page faces shown during the flip animation.
+    in property <string> text-right;
+    in property <string> text-prev;
+    in property <string> text-prev-right;
+    in-out property <bool> two-page: true;
+    // True when the spread actually renders two-up (toggle on + window wide
+    // enough). Rust reads this to step pages by 2.
+    in-out property <bool> two-up-active: root.two-page && root.kind == "text"
+        && root.read-mode == "paginated" && root.width >= 900px;
     in property <float> font-px: 18;
     in property <int> font-family: 0;
     in property <bool> text-dark: false;
@@ -42,10 +58,30 @@ export component BookReader inherits Rectangle {
     in property <[BookmarkRow]> reader-bookmarks: [];
     in-out property <bool> toc-open: false;
     in-out property <bool> bookmarks-open: false;
+    in-out property <bool> find-open: false;
+    in-out property <bool> settings-open: false;
+    in-out property <bool> timeline-open: false;
+    in-out property <bool> define-open: false;
+    // Comic thumbnail timeline (np.p4.books.reader.navigation).
+    in property <[image]> comic-thumbs: [];
+    // Comic guided view (np.p5.books.comic-guided).
+    in property <bool> guided: false;
+    // Dictionary popover (np.p5.books.dictionary).
+    in property <string> define-result: "";
+    // Colour-coded bookmarks (np.p5.books.annotations): the active colour new
+    // bookmarks get; the palette lives in the bookmarks sidebar.
+    in-out property <string> bm-color: "#ffd54f";
+    // TTS read-aloud (np.p5.books.tts): currently spoken sentence, "" = idle.
+    in property <string> tts-sentence: "";
     in property <string> read-mode: "paginated";
     in property <string> theme: "sepia";
     in property <float> line-height-val: 1.5;
     in property <float> margin-pct: 8.0;
+    // EPUB pagination + page-turn fold animation.
+    in property <int> page-index;
+    in property <int> page-total: 1;
+    in property <int> turn;        // bumped by Rust on each page turn
+    in property <int> turn-dir;    // +1 forward · -1 back
 
     callback close();
     callback next();
@@ -56,8 +92,13 @@ export component BookReader inherits Rectangle {
     callback toggle-invert();
     callback set-font(float);
     callback set-family(int);
+    callback set-line(float);
+    callback set-margin(float);
+    callback reflow(length, length); // text-stage size → re-paginate in Rust
     callback toggle-text-dark();
     // Phase 5 callbacks
+    callback toggle-guided();
+    callback define(string);
     callback toggle-toc();
     callback jump-to-chapter(int);
     callback toggle-bookmarks();
@@ -66,9 +107,14 @@ export component BookReader inherits Rectangle {
     callback toggle-read-mode();
     callback set-theme(string);
     callback tts-start();
+    callback tts-stop();
     callback find-text(string);
 
     property <string> family-name: font-family == 1 ? "Arial" : font-family == 2 ? "OpenDyslexic" : "Georgia";
+
+    // True when the top/bottom chrome is light (sepia/light reading themes) —
+    // buttons and the scrub track flip to dark glyphs there.
+    property <bool> bars-light: kind == "text" && (theme == "sepia" || theme == "light");
 
     // Theme-aware text area colors
     property <color> text-bg:
@@ -101,30 +147,33 @@ export component BookReader inherits Rectangle {
                               : kind == "text" && theme == "light" ? #f5f5f5
                               : #00000066;
                 HorizontalLayout {
-                    padding-left: 18px; padding-right: 14px; spacing: 8px; alignment: start;
+                    padding-left: 18px; padding-right: 14px; spacing: 8px;
                     Text { text: title; font-size: 15px; font-weight: 700; vertical-alignment: center;
-                        color: kind == "text" && (theme == "sepia" || theme == "light") ? #20201c : #ffffff;
+                        color: root.bars-light ? #20201c : #ffffff;
                         overflow: elide; }
                     Rectangle { horizontal-stretch: 1; }
 
                     // ── Shared controls (all modes) ──────────────────────────
-                    RBtn { label: "☰"; on: root.toc-open; clicked => { root.toggle-toc(); } }
-                    RBtn { label: "🔖+"; clicked => { root.add-bookmark(); } }
-                    RBtn { label: "📋"; on: root.bookmarks-open; clicked => { root.toggle-bookmarks(); } }
-                    RBtn { label: root.read-mode == "paginated" ? "↕ Scroll" : "📄 Pages"; clicked => { root.toggle-read-mode(); } }
+                    RBtn { label: "☰"; light: root.bars-light; on: root.toc-open; clicked => { root.toggle-toc(); } }
+                    RBtn { label: "🔖+"; light: root.bars-light; clicked => { root.add-bookmark(); } }
+                    RBtn { label: "📋"; light: root.bars-light; on: root.bookmarks-open; clicked => { root.toggle-bookmarks(); } }
+                    RBtn { label: root.read-mode == "paginated" ? "↕ Scroll" : "📄 Pages"; light: root.bars-light; clicked => { root.toggle-read-mode(); } }
 
                     // ── Text mode controls ───────────────────────────────────
                     if kind == "text": HorizontalLayout {
                         spacing: 8px;
-                        RBtn { label: "A-"; clicked => { root.set-font(max(12, font-px - 1)); } }
-                        RBtn { label: "A+"; clicked => { root.set-font(min(32, font-px + 1)); } }
-                        RBtn { label: family-name; clicked => { root.set-family(mod(font-family + 1, 3)); } }
-                        RBtn { label: "Night"; on: text-dark; clicked => { root.toggle-text-dark(); } }
+                        RBtn { label: "📖 Spread"; light: root.bars-light; on: root.two-page;
+                            clicked => { root.two-page = !root.two-page; } }
+                        RBtn { label: "Aa"; light: root.bars-light; on: root.settings-open; clicked => { root.settings-open = !root.settings-open; } }
+                        RBtn { label: "🔍"; light: root.bars-light; on: root.find-open; clicked => { root.find-open = !root.find-open; } }
+                        RBtn { label: "📖"; light: root.bars-light; on: root.define-open; clicked => { root.define-open = !root.define-open; } }
+                        RBtn { label: "🔊"; light: root.bars-light; clicked => { root.tts-start(); } }
                         RBtn {
-                            label: root.theme == "sepia"  ? "☀ Sepia"
-                                 : root.theme == "light"  ? "☀ Light"
-                                 : root.theme == "dark"   ? "☾ Dark"
-                                 : "⬛ Black";
+                            light: root.bars-light;
+                            label: root.theme == "sepia"  ? "☀"
+                                 : root.theme == "light"  ? "☀"
+                                 : root.theme == "dark"   ? "☾"
+                                 : "⬛";
                             clicked => {
                                 root.set-theme(
                                     root.theme == "sepia"  ? "light"
@@ -142,9 +191,11 @@ export component BookReader inherits Rectangle {
                         RBtn { label: spread-double ? "Two-page" : "Single"; on: spread-double; clicked => { root.toggle-spread(); } }
                         RBtn { label: "RTL"; on: rtl; clicked => { root.toggle-rtl(); } }
                         RBtn { label: "Invert"; on: invert; clicked => { root.toggle-invert(); } }
+                        RBtn { label: "Guided"; on: root.guided; clicked => { root.toggle-guided(); } }
+                        RBtn { label: "🎞"; on: root.timeline-open; clicked => { root.timeline-open = !root.timeline-open; } }
                     }
 
-                    RBtn { label: "✕ Close"; clicked => { root.close(); } }
+                    RBtn { label: "✕ Close"; light: root.bars-light; clicked => { root.close(); } }
                 }
             }
 
@@ -170,20 +221,168 @@ export component BookReader inherits Rectangle {
                     clicked => { rtl ? root.prev() : root.next(); }
                 }
 
-                // TEXT (column centred via root-derived padding to avoid a
-                // ScrollView width binding loop)
-                if kind == "text": ScrollView {
+                // TEXT · scroll mode (np.p4.books.continuous) — the whole current
+                // chapter as one continuous column; next/prev step chapters.
+                if kind == "text" && root.read-mode == "scroll": ScrollView {
                     width: 100%; height: 100%;
                     VerticalLayout {
                         padding-top: 30px; padding-bottom: 60px;
                         padding-left: max(48px, (root.width - 760px) / 2);
                         padding-right: max(48px, (root.width - 760px) / 2);
                         Text {
-                            text: text;
+                            text: root.text;
                             wrap: word-wrap;
-                            font-size: font-px * 1px;
-                            font-family: family-name;
+                            font-size: root.font-px * 1px;
+                            font-family: root.family-name;
                             color: root.text-fg;
+                        }
+                    }
+                }
+
+                // TEXT · paginated — real-book spread. Wide windows show two
+                // pages around a spine; the page-turn pivots the outgoing page
+                // at the spine (width collapse → paper back sweeps the other
+                // column and fades into the new page). Single-page mode slides
+                // the outgoing page out under a soft edge shadow.
+                // `m` flips 0↔1 each turn; `p` normalises it to 0→1 progress
+                // per turn; `fold-depth` peaks mid-turn (gates the overlay).
+                if kind == "text" && root.read-mode == "paginated": txt := Rectangle {
+                    property <bool> two-up: root.two-up-active;
+                    property <float> m: mod(root.turn, 2) == 1 ? 1.0 : 0.0;
+                    animate m { duration: 420ms; easing: ease-in-out; }
+                    property <float> p: mod(root.turn, 2) == 1 ? m : 1.0 - m;
+                    property <float> fold-depth: 1.0 - abs(2.0 * m - 1.0);
+                    property <length> col-margin: max(40px, root.margin-pct / 100.0 * self.width);
+                    property <length> gutter: two-up ? 56px : 0px;
+                    property <length> col-w: two-up
+                        ? (self.width - 2 * self.col-margin - self.gutter) / 2
+                        : self.width - 2 * self.col-margin;
+                    property <length> spine-x: self.col-margin + self.col-w + self.gutter / 2;
+
+                    // Left (or only) column — its size is reported to Rust so
+                    // the paginator fills exactly one column of text.
+                    Rectangle {
+                        x: parent.col-margin; y: 30px;
+                        width: parent.col-w;
+                        height: parent.height - 60px;
+                        clip: true;
+                        changed width => { root.reflow(self.width, self.height); }
+                        changed height => { root.reflow(self.width, self.height); }
+                        Text {
+                            width: parent.width;
+                            text: root.text;
+                            wrap: word-wrap;
+                            font-size: root.font-px * 1px;
+                            font-family: root.family-name;
+                            color: root.text-fg;
+                            vertical-alignment: top;
+                        }
+                    }
+                    // Right column + spine shadow (two-up only).
+                    if txt.two-up: Rectangle {
+                        x: txt.col-margin + txt.col-w + txt.gutter; y: 30px;
+                        width: txt.col-w; height: parent.height - 60px;
+                        clip: true;
+                        Text {
+                            width: parent.width;
+                            text: root.text-right;
+                            wrap: word-wrap;
+                            font-size: root.font-px * 1px;
+                            font-family: root.family-name;
+                            color: root.text-fg;
+                            vertical-alignment: top;
+                        }
+                    }
+                    if txt.two-up: Rectangle {
+                        x: txt.spine-x - 16px; y: 20px; width: 32px;
+                        height: parent.height - 40px;
+                        background: @linear-gradient(90deg, #00000000 0%, #00000026 50%, #00000000 100%);
+                    }
+
+                    // ── Flip overlay · two-up: the outgoing page pivots at the
+                    // spine. First half: it narrows toward the spine showing
+                    // its text; second half: its paper back grows over the
+                    // opposite column and fades into the freshly-set page.
+                    if txt.two-up && txt.fold-depth > 0.02 && txt.p <= 0.5: Rectangle {
+                        // forward: right page collapses leftward into the spine;
+                        // backward: left page collapses rightward into it.
+                        x: root.turn-dir >= 0 ? txt.spine-x + txt.gutter / 2
+                                              : txt.spine-x - txt.gutter / 2 - self.width;
+                        y: 30px; height: parent.height - 60px;
+                        width: txt.col-w * (1.0 - 2.0 * txt.p);
+                        clip: true;
+                        background: root.text-bg;
+                        drop-shadow-blur: 18px; drop-shadow-color: #00000055;
+                        Text {
+                            x: 0; width: txt.col-w;
+                            text: root.turn-dir >= 0 ? root.text-prev-right : root.text-prev;
+                            wrap: word-wrap;
+                            font-size: root.font-px * 1px;
+                            font-family: root.family-name;
+                            color: root.text-fg;
+                            vertical-alignment: top;
+                        }
+                    }
+                    if txt.two-up && txt.fold-depth > 0.02 && txt.p > 0.5: Rectangle {
+                        // Paper back sweeping across the landing column.
+                        x: root.turn-dir >= 0 ? txt.spine-x - txt.gutter / 2 - self.width
+                                              : txt.spine-x + txt.gutter / 2;
+                        y: 30px; height: parent.height - 60px;
+                        width: txt.col-w * (2.0 * txt.p - 1.0);
+                        background: root.text-bg.brighter(0.03);
+                        opacity: txt.p < 0.9 ? 1.0 : (1.0 - txt.p) / 0.1;
+                        drop-shadow-blur: 18px; drop-shadow-color: #00000055;
+                    }
+                    // ── Flip overlay · single page: outgoing page slides out
+                    // under a soft page-edge shadow and fades at the end.
+                    if !txt.two-up && txt.fold-depth > 0.02: Rectangle {
+                        x: txt.col-margin - root.turn-dir * txt.p * (self.width + 80px);
+                        y: 30px; width: txt.col-w; height: parent.height - 60px;
+                        clip: true;
+                        background: root.text-bg;
+                        opacity: txt.p < 0.85 ? 1.0 : (1.0 - txt.p) / 0.15;
+                        drop-shadow-blur: 24px; drop-shadow-color: #00000060;
+                        Text {
+                            width: parent.width;
+                            text: root.text-prev;
+                            wrap: word-wrap;
+                            font-size: root.font-px * 1px;
+                            font-family: root.family-name;
+                            color: root.text-fg;
+                            vertical-alignment: top;
+                        }
+                    }
+
+                    // Tap zones: left third = prev, right third = next.
+                    TouchArea { width: parent.width / 3; x: 0; mouse-cursor: pointer;
+                        clicked => { root.prev(); } }
+                    TouchArea { width: parent.width / 3; x: parent.width * 2 / 3; mouse-cursor: pointer;
+                        clicked => { root.next(); } }
+                }
+
+                // Comic thumbnail timeline (np.p4.books.reader.navigation) —
+                // bottom strip of page thumbs; click jumps to that page.
+                if kind == "comic" && root.timeline-open: Rectangle {
+                    y: parent.height - 132px; height: 132px; width: parent.width;
+                    background: #000000c0;
+                    ScrollView {
+                        width: 100%; height: 100%;
+                        HorizontalLayout {
+                            padding: 10px; spacing: 8px; alignment: start;
+                            for t[i] in root.comic-thumbs: Rectangle {
+                                width: 78px; height: 108px; border-radius: 6px; clip: true;
+                                border-width: 2px;
+                                border-color: i == root.page-index ? #1a73e8 : #ffffff22;
+                                background: #1b1b1b;
+                                Image { source: t; image-fit: cover; width: 100%; height: 100%; }
+                                Rectangle {
+                                    y: parent.height - 18px; height: 18px; width: parent.width;
+                                    background: #000000a0;
+                                    Text { text: (i + 1) + ""; color: #ffffff; font-size: 10px;
+                                        horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                                TouchArea { mouse-cursor: pointer; clicked => { root.jump-to-chapter(i); } }
+                            }
                         }
                     }
                 }
@@ -193,23 +392,23 @@ export component BookReader inherits Rectangle {
                     alignment: center; spacing: 12px;
                     Text { text: "📄"; font-size: 52px; horizontal-alignment: center; }
                     Text { text: page-label; color: #cfcfe0; font-size: 16px; font-weight: 600; horizontal-alignment: center; }
-                    Text { text: "EPUB and CBZ open natively. PDF and CBR need a dedicated engine — coming soon.";
+                    Text { text: "EPUB · CBZ · CBR · PDF · MOBI · AZW3 · FB2 · DjVu open natively. Scanned PDFs need poppler-utils, DjVu needs djvulibre. DRM'd files aren't supported.";
                         color: #8a8aa0; font-size: 12px; horizontal-alignment: center; }
                 }
             }
 
             // Bottom nav bar
             Rectangle {
-                height: 56px; background: kind == "text" && (theme == "sepia" || theme == "light") ? #fbf9f3 : #00000066;
+                height: 56px; background: root.bars-light ? #fbf9f3 : #00000066;
                 HorizontalLayout {
                     padding-left: 18px; padding-right: 18px; spacing: 14px;
-                    RBtn { label: "‹ Prev"; clicked => { root.prev(); } }
+                    RBtn { label: "‹ Prev"; light: root.bars-light; clicked => { root.prev(); } }
                     // scrub track
                     Rectangle {
                         vertical-stretch: 1; horizontal-stretch: 1; y: 0;
                         track := Rectangle {
                             width: parent.width; height: 6px; y: (parent.height - self.height)/2;
-                            border-radius: 3px; background: #ffffff2e;
+                            border-radius: 3px; background: root.bars-light ? #00000022 : #ffffff2e;
                             Rectangle { x: 0; y: 0; height: parent.height; width: parent.width * progress;
                                 border-radius: 3px; background: #1a73e8; }
                         }
@@ -219,9 +418,119 @@ export component BookReader inherits Rectangle {
                             moved => { if (self.pressed) { root.scrub((self.mouse-x / self.width).clamp(0, 1)); } }
                         }
                     }
-                    Text { text: page-label; color: kind == "text" && (theme == "sepia" || theme == "light") ? #6b6456 : #cfcfe0;
+                    Text { text: page-label; color: root.bars-light ? #6b6456 : #cfcfe0;
                         font-size: 12px; vertical-alignment: center; }
-                    RBtn { label: "Next ›"; clicked => { root.next(); } }
+                    RBtn { label: "Next ›"; light: root.bars-light; clicked => { root.next(); } }
+                }
+            }
+        }
+
+        // ── TTS read-aloud overlay (np.p5.books.tts) — the sentence being
+        // spoken, highlighted above the bottom bar; ⏹ stops playback.
+        if root.tts-sentence != "": Rectangle {
+            x: (root.width - min(root.width - 40px, 680px)) / 2;
+            width: min(root.width - 40px, 680px);
+            y: root.height - 56px - self.height - 12px;
+            height: ttst.preferred-height + 24px;
+            background: #1b1b1bf0; border-radius: 12px;
+            border-width: 1px; border-color: #ffd54f88;
+            HorizontalLayout {
+                padding: 12px; spacing: 10px;
+                Text { text: "🔊"; font-size: 14px; vertical-alignment: center; }
+                ttst := Text {
+                    text: root.tts-sentence; color: #ffd54f; font-size: 13px;
+                    wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center;
+                }
+                RBtn { label: "⏹"; clicked => { root.tts-stop(); } }
+            }
+        }
+
+        // ── Find-in-book bar (top-centre overlay) ─────────────────────────────
+        if root.find-open: Rectangle {
+            x: (root.width - 440px) / 2; y: 62px; width: 440px; height: 48px;
+            background: #1b1b1be6; border-radius: 12px;
+            border-width: 1px; border-color: #ffffff33;
+            HorizontalLayout {
+                padding: 7px; spacing: 8px;
+                fe := LineEdit {
+                    placeholder-text: "Find in book…"; horizontal-stretch: 1;
+                    accepted(t) => { root.find-text(t); }
+                }
+                // Repeating the same query steps to the next match (wraps).
+                RBtn { label: "Next ↓"; clicked => { root.find-text(fe.text); } }
+                RBtn { label: "✕"; clicked => { root.find-open = false; } }
+            }
+        }
+
+        // ── Dictionary popover (np.p5.books.dictionary) ──────────────────────
+        if root.define-open && kind == "text": Rectangle {
+            x: (root.width - 460px) / 2; y: 120px; width: 460px; height: 340px;
+            background: #1d1d1df2; border-radius: 14px;
+            border-width: 1px; border-color: #ffffff2e;
+            VerticalLayout {
+                padding: 14px; spacing: 10px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    de := LineEdit {
+                        placeholder-text: "Define a word…"; horizontal-stretch: 1;
+                        accepted(t) => { root.define(t); }
+                    }
+                    RBtn { label: "Look up"; clicked => { root.define(de.text); } }
+                    RBtn { label: "✕"; clicked => { root.define-open = false; } }
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        Text {
+                            text: root.define-result == "" ? "Type a word — definition, translation and Wikipedia summary." : root.define-result;
+                            wrap: word-wrap; color: #e8e8f0; font-size: 13px;
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Aa typography popover (top-right) ─────────────────────────────────
+        if root.settings-open && kind == "text": Rectangle {
+            x: root.width - 334px; y: 60px; width: 320px; height: 252px;
+            background: #1d1d1df2; border-radius: 14px;
+            border-width: 1px; border-color: #ffffff2e;
+            VerticalLayout {
+                padding: 14px; spacing: 11px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Size"; color: #bbb; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                    RBtn { label: "A-"; clicked => { root.set-font(max(12, root.font-px - 1)); } }
+                    Text { text: round(root.font-px) + "px"; color: #fff; font-size: 12px;
+                        width: 46px; horizontal-alignment: center; vertical-alignment: center; }
+                    RBtn { label: "A+"; clicked => { root.set-font(min(32, root.font-px + 1)); } }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Font"; color: #bbb; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                    RBtn { label: root.family-name; clicked => { root.set-family(mod(root.font-family + 1, 3)); } }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Spacing"; color: #bbb; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                    RBtn { label: "−"; clicked => { root.set-line(max(1.0, root.line-height-val - 0.1)); } }
+                    Text { text: (round(root.line-height-val * 10) / 10) + "×"; color: #fff; font-size: 12px;
+                        width: 46px; horizontal-alignment: center; vertical-alignment: center; }
+                    RBtn { label: "+"; clicked => { root.set-line(min(2.5, root.line-height-val + 0.1)); } }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: "Margin"; color: #bbb; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
+                    RBtn { label: "−"; clicked => { root.set-margin(max(0, root.margin-pct - 2)); } }
+                    Text { text: round(root.margin-pct) + "%"; color: #fff; font-size: 12px;
+                        width: 46px; horizontal-alignment: center; vertical-alignment: center; }
+                    RBtn { label: "+"; clicked => { root.set-margin(min(24, root.margin-pct + 2)); } }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    RBtn { label: "Night mode"; on: root.text-dark; horizontal-stretch: 1;
+                        clicked => { root.toggle-text-dark(); } }
+                    RBtn { label: "✕"; clicked => { root.settings-open = false; } }
                 }
             }
         }
@@ -284,6 +593,24 @@ export component BookReader inherits Rectangle {
                         Text { text: "✕"; color: #ffffff; font-size: 13px;
                             horizontal-alignment: center; vertical-alignment: center; } }
                 }
+                // Colour palette — the active colour tags the next ＋ bookmark
+                // (np.p5.books.annotations: colour-coded jump list).
+                HorizontalLayout {
+                    spacing: 6px;
+                    Text { text: "Colour"; color: #9a9a9a; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; }
+                    for p in [
+                        { hex: "#ffd54f", col: #ffd54f },
+                        { hex: "#81c784", col: #81c784 },
+                        { hex: "#64b5f6", col: #64b5f6 },
+                        { hex: "#f48fb1", col: #f48fb1 },
+                    ]: Rectangle {
+                        width: 22px; height: 22px; border-radius: 11px;
+                        background: p.col;
+                        border-width: root.bm-color == p.hex ? 3px : 1px;
+                        border-color: root.bm-color == p.hex ? #ffffff : #00000055;
+                        TouchArea { mouse-cursor: pointer; clicked => { root.bm-color = p.hex; } }
+                    }
+                }
                 if root.reader-bookmarks.length == 0: Text {
                     text: "No bookmarks yet.\nTap ＋ to add one.";
                     color: #7a7a7a; font-size: 12px; wrap: word-wrap; }
@@ -295,6 +622,14 @@ export component BookReader inherits Rectangle {
                             border-radius: 6px;
                             bmr := TouchArea { clicked => { root.jump-to-bookmark(bm.page); } }
                             HorizontalLayout { padding-left: 10px; padding-right: 10px; spacing: 8px;
+                                VerticalLayout { alignment: center;
+                                    Rectangle { width: 10px; height: 10px; border-radius: 5px;
+                                        background: bm.color == "#81c784" ? #81c784
+                                                  : bm.color == "#64b5f6" ? #64b5f6
+                                                  : bm.color == "#f48fb1" ? #f48fb1
+                                                  : bm.color == "#ffd54f" ? #ffd54f
+                                                  : #707070; }
+                                }
                                 VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
                                     Text { text: "Page " + (bm.page + 1); color: #d0d0d0; font-size: 13px; font-weight: 600; }
                                     if bm.note != "": Text { text: bm.note; color: #909090; font-size: 11px; overflow: elide; }

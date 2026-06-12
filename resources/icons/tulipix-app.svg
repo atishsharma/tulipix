@@ -1,0 +1,22 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256">
+  <!-- Tulipix app icon — tulip mark on the brand indigo→violet gradient. -->
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#6366f1"/>
+      <stop offset="1" stop-color="#8b5cf6"/>
+    </linearGradient>
+    <linearGradient id="petal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#fdf2f8"/>
+      <stop offset="1" stop-color="#fbcfe8"/>
+    </linearGradient>
+  </defs>
+  <rect x="8" y="8" width="240" height="240" rx="56" fill="url(#bg)"/>
+  <!-- stem -->
+  <path d="M128 148 v62" stroke="#bbf7d0" stroke-width="12" stroke-linecap="round" fill="none"/>
+  <!-- leaf -->
+  <path d="M128 192 q-34 -10 -44 -42 q30 4 44 28 z" fill="#86efac"/>
+  <!-- tulip head: three petals -->
+  <path d="M84 92 q0 -34 22 -46 q6 28 0 58 q22 18 22 44 q-44 -4 -44 -56 z" fill="url(#petal)"/>
+  <path d="M172 92 q0 -34 -22 -46 q-6 28 0 58 q-22 18 -22 44 q44 -4 44 -56 z" fill="#fce7f3"/>
+  <path d="M128 38 q20 16 20 52 q0 36 -20 58 q-20 -22 -20 -58 q0 -36 20 -52 z" fill="#fff1f2"/>
+</svg>

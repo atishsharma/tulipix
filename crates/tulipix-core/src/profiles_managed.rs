@@ -1,9 +1,8 @@
-//! Managed profiles within a single account — Netflix-style sub-profiles
-//! (Kid, Family, Mum) that share storage but expose a filtered library and
-//! optional per-profile lock. Distinct from `crate::multi_user`, which gives
-//! each profile its own directory tree for offline / local-mode households.
-//!
-//! Cap-gated `sync.profiles` — only available in Account mode tiers.
+//! Managed LOCAL profiles — Netflix-style sub-profiles (Kid, Family, Mum)
+//! that share storage but expose a filtered library and optional per-profile
+//! lock. Distinct from `crate::multi_user`, which gives each profile its own
+//! directory tree for household machines. Local-only: profiles never leave
+//! this device.
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};

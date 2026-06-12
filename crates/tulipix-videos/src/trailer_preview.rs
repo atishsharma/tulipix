@@ -23,7 +23,9 @@ pub enum PreviewAction {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Default)]
 enum Phase {
+    #[default]
     Idle,
     Hovering { since_ms: i64 },
     Playing,
@@ -40,11 +42,6 @@ pub struct PreviewState {
     phase: Phase,
 }
 
-impl Default for Phase {
-    fn default() -> Self {
-        Phase::Idle
-    }
-}
 
 impl PreviewState {
     pub fn new() -> Self {

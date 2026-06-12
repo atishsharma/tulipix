@@ -36,7 +36,7 @@ pub fn chunk_sentences(text: &str, max_chars: usize) -> Vec<String> {
     let bytes: Vec<char> = text.chars().collect();
     for (i, &c) in bytes.iter().enumerate() {
         cur.push(c);
-        let is_end = matches!(c, '.' | '!' | '?') && bytes.get(i + 1).map_or(true, |n| n.is_whitespace());
+        let is_end = matches!(c, '.' | '!' | '?') && bytes.get(i + 1).is_none_or(|n| n.is_whitespace());
         if is_end || cur.chars().count() >= max {
             flush(&mut cur, &mut out);
         }

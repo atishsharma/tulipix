@@ -12,8 +12,11 @@ pub mod widgets;
 
 use anyhow::Result;
 use keyring::Entry;
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use muda::{accelerator::{Accelerator, Code, Modifiers}, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::str::FromStr;
+#[cfg(any(target_os = "windows", target_os = "macos", feature = "tray"))]
 use std::cell::RefCell;
 #[cfg(feature = "tray")]
 use tray_icon::{menu::Menu as TrayMenu, TrayIcon, TrayIconBuilder};
@@ -151,6 +154,7 @@ pub fn default_menubar() -> MenuSpec {
     ]}
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 fn parse_accel(s: &str) -> Option<Accelerator> {
     let mut mods = Modifiers::empty();
     let mut key: Option<Code> = None;
@@ -170,15 +174,17 @@ fn parse_accel(s: &str) -> Option<Accelerator> {
     key.map(|k| Accelerator::new(Some(mods), k))
 }
 
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 thread_local! {
     static INSTALLED_MENU: RefCell<Option<Menu>> = const { RefCell::new(None) };
 }
 
 /// Install the native menu bar. Per-OS: macOS attaches via `Menu::init_for_nsapp`,
-/// Windows attaches via `Menu::init_for_hwnd`, Linux via `Menu::init_for_gtk_window`
-/// (returned by Slint's winit backend — caller wires it in app init).
+/// Windows attaches via `Menu::init_for_hwnd`. Linux has no native menubar —
+/// muda would need a GTK window, which the Slint winit backend never provides.
 /// Returns a clone of the underlying Menu (cheap — internally Rc-counted) so
 /// callers can hand it to the platform attach call.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub fn install_menubar(spec: &MenuSpec) -> Menu {
     INSTALLED_MENU.with(|cell| {
         if let Some(m) = cell.borrow().as_ref() { return m.clone(); }
@@ -201,12 +207,20 @@ pub fn install_menubar(spec: &MenuSpec) -> Menu {
     })
 }
 
+/// No-op on Linux: no GTK window to attach a muda menubar to.
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+pub fn install_menubar(_spec: &MenuSpec) {}
+
 /// Drain pending muda menu events. Caller polls in the UI tick.
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 pub fn drain_menu_events<F: FnMut(&str)>(mut handler: F) {
     while let Ok(ev) = MenuEvent::receiver().try_recv() {
         handler(ev.id.0.as_str());
     }
 }
+
+#[cfg(not(any(target_os = "windows", target_os = "macos")))]
+pub fn drain_menu_events<F: FnMut(&str)>(_handler: F) {}
 
 // ── Tray icon ──────────────────────────────────────────────────────────
 
@@ -218,19 +232,58 @@ thread_local! {
 /// Install a tray icon with Open / Quit items. Returns false if the platform
 /// rejected creation (some Wayland compositors have no StatusNotifier host) or
 /// if the `tray` feature is off.
-#[cfg(feature = "tray")]
-pub fn init_tray() -> bool {
+///
+/// Linux: tray-icon's backend is GTK (libappindicator/SNI) and panics unless
+/// `gtk::init` ran on the calling thread — and it needs a GTK main loop to
+/// service DBus. Slint/winit owns the real main thread, so the tray lives on
+/// its own dedicated GTK thread; menu events still arrive via the global
+/// MenuEvent channel that `drain_tray_events` polls.
+#[cfg(all(feature = "tray", target_os = "linux"))]
+pub fn init_tray(icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
+    static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) { return true; }
+    let ok = std::thread::Builder::new().name("tulipix-tray".into()).spawn(move || {
+        if gtk::init().is_err() {
+            tracing::warn!("tray: gtk::init failed — no tray on this session");
+            return;
+        }
+        let menu = TrayMenu::new();
+        let open = tray_icon::menu::MenuItem::with_id("tray.open", "Open Tulipix", true, None);
+        let quit = tray_icon::menu::MenuItem::with_id("tray.quit", "Quit", true, None);
+        if menu.append(&open).is_err() || menu.append(&quit).is_err() { return; }
+        let mut b = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("Tulipix");
+        if let Some((rgba, w, h)) = icon_rgba {
+            match tray_icon::Icon::from_rgba(rgba, w, h) {
+                Ok(i) => b = b.with_icon(i),
+                Err(e) => tracing::warn!(error = %e, "tray icon decode"),
+            }
+        }
+        match b.build() {
+            Ok(t) => {
+                TRAY.with(|cell| *cell.borrow_mut() = Some(t));
+                gtk::main(); // park forever servicing the SNI DBus connection
+            }
+            Err(e) => tracing::warn!(error = %e, "tray init failed"),
+        }
+    }).is_ok();
+    ok
+}
+
+#[cfg(all(feature = "tray", not(target_os = "linux")))]
+pub fn init_tray(icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
     TRAY.with(|cell| {
         if cell.borrow().is_some() { return true; }
         let menu = TrayMenu::new();
         let open = tray_icon::menu::MenuItem::with_id("tray.open", "Open Tulipix", true, None);
         let quit = tray_icon::menu::MenuItem::with_id("tray.quit", "Quit", true, None);
         if menu.append(&open).is_err() || menu.append(&quit).is_err() { return false; }
-        let icon = TrayIconBuilder::new()
+        let mut b = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
-            .with_tooltip("Tulipix")
-            .build();
-        match icon {
+            .with_tooltip("Tulipix");
+        if let Some((rgba, w, h)) = icon_rgba {
+            if let Ok(i) = tray_icon::Icon::from_rgba(rgba, w, h) { b = b.with_icon(i); }
+        }
+        match b.build() {
             Ok(t) => { *cell.borrow_mut() = Some(t); true }
             Err(e) => {
                 tracing::warn!(error = %e, "tray init failed");
@@ -241,7 +294,7 @@ pub fn init_tray() -> bool {
 }
 
 #[cfg(not(feature = "tray"))]
-pub fn init_tray() -> bool {
+pub fn init_tray(_icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
     tracing::info!("tray feature off — skip init");
     false
 }
@@ -282,6 +335,7 @@ mod tests {
         assert_eq!(labels, vec!["Tulipix", "File", "Edit", "View", "Library", "Window", "Help"]);
     }
 
+    #[cfg(any(target_os = "windows", target_os = "macos"))]
     #[test]
     fn parse_accel_basic() {
         assert!(parse_accel("Ctrl+L").is_some());

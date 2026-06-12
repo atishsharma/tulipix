@@ -26,7 +26,7 @@ fn read_raw() -> Option<f32> {
     #[cfg(target_os = "windows")]
     { return win_scale(); }
     #[cfg(target_os = "linux")]
-    { return linux_scale(); }
+    { linux_scale()}
     #[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "linux")))]
     { None }
 }

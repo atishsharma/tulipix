@@ -33,7 +33,7 @@ pub enum SecurityChoice { None, Pin, Biometric, Passkey }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
-pub enum ModeChoice { Local, Account }
+pub enum ModeChoice { Local } // local-only app — account mode removed
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct WizardState {

@@ -26,6 +26,7 @@ pub struct PowerSnapshot {
 }
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
+#[derive(Default)]
 pub struct PowerOverrides {
     /// Force background workers to keep running even on low battery.
     pub always_index: bool,
@@ -33,9 +34,6 @@ pub struct PowerOverrides {
     pub allow_metered_downloads: bool,
 }
 
-impl Default for PowerOverrides {
-    fn default() -> Self { Self { always_index: false, allow_metered_downloads: false } }
-}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerClass { Indexer, Transcoder, ToolsBackground, Download, RealtimeNotify }

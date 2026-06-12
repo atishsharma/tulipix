@@ -16,7 +16,6 @@ members = [
     "crates/tulipix-player",
     "crates/tulipix-ai",
     "crates/tulipix-whisper",
-    "crates/tulipix-sync",
     "crates/tulipix-platform",
     "crates/tulipix-plugins",
     "crates/tulipix-tools",
@@ -34,7 +33,9 @@ repository = "https://github.com/atishsharma/tulipix"
 [workspace.dependencies]
 slint = { version = "1.8", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-skia", "renderer-skia-opengl", "unstable-fontique-08"] }
 slint-build = "1.8"
-tokio = { version = "1.40", features = ["full"] }
+# Trimmed from "full": no crate uses tokio::net / signal / io-std (reqwest and
+# sqlx enable their own net stack). Member crates may add features on top.
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "io-util"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 toml = "0.8"
@@ -71,3 +72,11 @@ lto = "thin"
 codegen-units = 1
 strip = "symbols"
 panic = "abort"
+
+# Upstream i-slint-compiler 1.16.1 requests image with the "default" feature,
+# which drags the AVIF encoder (rav1e — one of the slowest crates on crates.io),
+# exr, and ~20 other crates into every fresh build. Our .slint files only embed
+# SVG (handled by resvg) and png/jpeg, so the vendored copy trims image to
+# png+jpeg only. Re-vendor when bumping Slint past 1.16.1.
+[patch.crates-io]
+i-slint-compiler = { path = "vendor/i-slint-compiler" }

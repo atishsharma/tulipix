@@ -79,10 +79,29 @@ CREATE TABLE IF NOT EXISTS bookmarks (
     created  INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS bookmarks_item_idx ON bookmarks(item_id);
+
+-- np.p5.books.stats — per-day reading time. `day` is unix epoch days (UTC) so
+-- streak math is plain integer adjacency, no date parsing.
+CREATE TABLE IF NOT EXISTS reading_sessions (
+    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    day     INTEGER NOT NULL,
+    seconds INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (item_id, day)
+);
+CREATE INDEX IF NOT EXISTS reading_sessions_day_idx ON reading_sessions(day DESC);
+
+-- Small typed prefs for the books section (yearly goal, …).
+CREATE TABLE IF NOT EXISTS book_prefs (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
 "#;
 
 pub async fn apply(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(BOOKS_SCHEMA).execute(pool).await?;
+    // Migration for DBs created before colour-coded bookmarks. SQLite has no
+    // ADD COLUMN IF NOT EXISTS; a duplicate-column error means it's done.
+    let _ = sqlx::raw_sql("ALTER TABLE bookmarks ADD COLUMN color TEXT").execute(pool).await;
     Ok(())
 }
 

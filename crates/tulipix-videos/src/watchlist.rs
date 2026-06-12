@@ -1,11 +1,8 @@
 //! Watchlist — per-user queue of TMDB movies/shows ("want to watch later").
 //!
 //! Rows live in their own `watchlist` table so they survive even when the
-//! underlying movie hasn't been ripped to disk yet. Each row carries a
-//! `device_uuid` + `updated_at` so the sync engine can run last-write-wins
-//! merges in Account mode (np.p4 owns the actual upload). Local mode users
-//! see exactly the same UI — `device_uuid` is just stamped from the local
-//! machine id.
+//! underlying movie hasn't been ripped to disk yet. Local-only: `device_uuid`
+//! is stamped from the local machine id and rows never leave this device.
 
 use anyhow::Result;
 use serde::{Deserialize, Serialize};

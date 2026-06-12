@@ -14,6 +14,8 @@ tokio = { workspace = true }
 sqlx.workspace = true
 reqwest = { workspace = true, features = ["json"] }
 sha2.workspace = true
+# Last.fm API signatures are MD5 by spec (np.p5.music.scrobble).
+md-5 = "0.10"
 tulipix-core = { path = "../tulipix-core" }
 
 [dev-dependencies]

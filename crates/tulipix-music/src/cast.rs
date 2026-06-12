@@ -97,6 +97,34 @@ pub fn soap_action_header(action: &str) -> String {
     format!("\"urn:schemas-upnp-org:service:AVTransport:1#{action}\"")
 }
 
+/// Extract the AVTransport `controlURL` from a device-description document
+/// (the XML at the SSDP `LOCATION`). Tag-soup scan, no XML dep: find the
+/// service block whose serviceType mentions AVTransport, then its controlURL.
+pub fn parse_control_url(desc_xml: &str) -> Option<String> {
+    let at = desc_xml.find("urn:schemas-upnp-org:service:AVTransport")?;
+    let rest = &desc_xml[at..];
+    let start = rest.find("<controlURL>")? + "<controlURL>".len();
+    let end = rest[start..].find("</controlURL>")? + start;
+    let url = rest[start..end].trim();
+    if url.is_empty() { None } else { Some(url.to_string()) }
+}
+
+/// Join a (possibly relative) controlURL against the description URL's origin.
+pub fn resolve_url(location: &str, control: &str) -> String {
+    if control.starts_with("http://") || control.starts_with("https://") {
+        return control.to_string();
+    }
+    // origin = scheme://host:port of the LOCATION
+    let origin = location.find("://")
+        .and_then(|i| location[i + 3..].find('/').map(|j| &location[..i + 3 + j]))
+        .unwrap_or(location);
+    if control.starts_with('/') {
+        format!("{origin}{control}")
+    } else {
+        format!("{origin}/{control}")
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -140,5 +168,27 @@ mod tests {
             soap_action_header("Play"),
             "\"urn:schemas-upnp-org:service:AVTransport:1#Play\""
         );
+    }
+
+    #[test]
+    fn control_url_from_description() {
+        let xml = "<root><serviceList>\
+            <service><serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType>\
+            <controlURL>/RC/control</controlURL></service>\
+            <service><serviceType>urn:schemas-upnp-org:service:AVTransport:1</serviceType>\
+            <controlURL>/AVT/control</controlURL></service>\
+            </serviceList></root>";
+        assert_eq!(parse_control_url(xml), Some("/AVT/control".to_string()));
+        assert_eq!(parse_control_url("<root/>"), None);
+    }
+
+    #[test]
+    fn url_resolution() {
+        assert_eq!(resolve_url("http://10.0.0.5:8200/rootDesc.xml", "/AVT/ctl"),
+                   "http://10.0.0.5:8200/AVT/ctl");
+        assert_eq!(resolve_url("http://10.0.0.5:8200/rootDesc.xml", "AVT/ctl"),
+                   "http://10.0.0.5:8200/AVT/ctl");
+        assert_eq!(resolve_url("http://10.0.0.5:8200/d.xml", "http://10.0.0.5:9000/c"),
+                   "http://10.0.0.5:9000/c");
     }
 }

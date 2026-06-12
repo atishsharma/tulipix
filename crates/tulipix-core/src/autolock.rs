@@ -10,10 +10,12 @@ use std::sync::{OnceLock, RwLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
+#[derive(Default)]
 pub enum AutoLockTimeout {
     Never,
     OneMinute,
     FiveMinutes,
+    #[default]
     FifteenMinutes,
     ThirtyMinutes,
     OneHour,
@@ -42,9 +44,6 @@ impl AutoLockTimeout {
     }
 }
 
-impl Default for AutoLockTimeout {
-    fn default() -> Self { Self::FifteenMinutes }
-}
 
 type LockCallback = Box<dyn Fn() + Send + Sync>;
 static LOCK_CB: OnceLock<RwLock<Option<LockCallback>>> = OnceLock::new();

@@ -18,4 +18,3 @@ serde.workspace = true
 serde_json.workspace = true
 wasmtime = { workspace = true, optional = true }
 mlua = { workspace = true, optional = true }
-tulipix-core = { path = "../tulipix-core" }

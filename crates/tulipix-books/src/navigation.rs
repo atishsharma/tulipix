@@ -35,7 +35,7 @@ pub async fn toc(pool: &SqlitePool, item_id: i64) -> Result<Vec<TocEntry>> {
 
 /// The TOC entry covering `page` — the last entry whose start page ≤ page.
 pub fn chapter_for_page(entries: &[TocEntry], page: i64) -> Option<&TocEntry> {
-    entries.iter().filter(|e| e.page.map_or(false, |p| p <= page)).last()
+    entries.iter().filter(|e| e.page.is_some_and(|p| p <= page)).next_back()
 }
 
 /// Map a 0..1 scrub position to a page index for `total` pages.

@@ -48,7 +48,7 @@ pub fn match_device<'a>(device_name: &str, preset_keys: &'a [String]) -> Option<
     for key in preset_keys {
         let kt = tokens(key);
         let overlap = kt.iter().filter(|t| dev.contains(t)).count();
-        if overlap > 0 && best.map_or(true, |(_, n)| overlap > n) {
+        if overlap > 0 && best.is_none_or(|(_, n)| overlap > n) {
             best = Some((key, overlap));
         }
     }

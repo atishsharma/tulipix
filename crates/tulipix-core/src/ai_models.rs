@@ -175,9 +175,10 @@ pub struct AutoUpdatePolicy {
 }
 
 impl AutoUpdatePolicy {
-    /// Tier default: account.free+ gets `Auto`, anything else gets `AskFirst`.
+    /// Tier default: full-access local tiers get `Auto`, restricted tiers
+    /// (basic/guest/kid) get `AskFirst`.
     pub fn default_for_tier(tier: &str) -> Self {
-        let auto = matches!(tier, "account.free" | "account.plus" | "account.pro" | "admin");
+        let auto = matches!(tier, "local.pro" | "local_pro" | "admin");
         Self { mode: if auto { AutoUpdateMode::Auto } else { AutoUpdateMode::AskFirst }, bandwidth_kbps: 0 }
     }
     pub fn should_download_now(&self) -> bool { matches!(self.mode, AutoUpdateMode::Auto) }
@@ -255,7 +256,7 @@ mod tests {
     #[test] fn auto_update_default_per_tier() {
         let basic = AutoUpdatePolicy::default_for_tier("local.basic");
         assert_eq!(basic.mode, AutoUpdateMode::AskFirst);
-        let pro = AutoUpdatePolicy::default_for_tier("account.pro");
+        let pro = AutoUpdatePolicy::default_for_tier("local.pro");
         assert_eq!(pro.mode, AutoUpdateMode::Auto);
         assert!(pro.should_download_now());
         assert!(!basic.should_download_now());

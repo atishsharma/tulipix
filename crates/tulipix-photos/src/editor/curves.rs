@@ -13,7 +13,7 @@ use serde::{Deserialize, Serialize};
 pub enum Channel { All, R, G, B }
 
 pub fn lut_from_points(points: &[(f32, f32)]) -> [u8; 256] {
-    let mut sorted: Vec<(f32, f32)> = points.iter().copied().collect();
+    let mut sorted: Vec<(f32, f32)> = points.to_vec();
     sorted.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
     if sorted.is_empty() {
         return identity_lut();

@@ -1,8 +1,8 @@
-//! `np.p4.cloud.share` — share-link issuance via the sync backend.
+//! `np.p4.cloud.share` — share-link issuance via `rclone link`.
 //!
-//! Share links are minted by the optional sync backend (Go service), not
-//! rclone, so issuance is greyed out when offline. This owns the issue/revoke
-//! bookkeeping and the offline gate.
+//! Local-only app: links are provider-native public URLs minted by
+//! `rclone link <remote>:<path>` (no account, no backend). This owns the
+//! issue/revoke bookkeeping and the online gate.
 
 use anyhow::Result;
 use sqlx::SqlitePool;
@@ -11,12 +11,13 @@ fn now() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
-/// Can the share button be used? Requires Account mode + an online backend.
-pub fn can_share(account_mode: bool, backend_online: bool) -> bool {
-    account_mode && backend_online
+/// Can the share button be used? Only needs the provider to be reachable —
+/// `rclone link` talks straight to the cloud provider.
+pub fn can_share(provider_online: bool) -> bool {
+    provider_online
 }
 
-/// Persist an issued share link (URL comes back from the backend).
+/// Persist an issued share link (URL comes back from `rclone link`).
 pub async fn issue(pool: &SqlitePool, remote_id: i64, path: &str, url: &str) -> Result<i64> {
     Ok(sqlx::query_scalar(
         "INSERT INTO shares (remote_id, remote_path, url, created, revoked) VALUES (?,?,?,?,0) RETURNING id",
@@ -43,9 +44,8 @@ mod tests {
 
     #[test]
     fn offline_disables_share() {
-        assert!(can_share(true, true));
-        assert!(!can_share(true, false));
-        assert!(!can_share(false, true));
+        assert!(can_share(true));
+        assert!(!can_share(false));
     }
 
     #[tokio::test]

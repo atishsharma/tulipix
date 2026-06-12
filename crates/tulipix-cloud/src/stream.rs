@@ -19,7 +19,7 @@ pub fn serve_args(remote: &str, port: u16) -> Vec<String> {
 /// mpv options to play a streamed URL with seek over HTTP ranges.
 pub fn mpv_options(url: &str) -> Vec<String> {
     vec![
-        format!("--stream-lavf-o=seekable=1"),
+        "--stream-lavf-o=seekable=1".to_string(),
         "--cache=yes".into(),
         "--demuxer-seekable-cache=yes".into(),
         url.to_string(),

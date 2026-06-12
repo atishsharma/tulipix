@@ -13,7 +13,6 @@ pub mod db;
 pub mod dnd;
 pub mod export;
 pub mod fs;
-pub mod handoff;
 pub mod i18n;
 pub mod idle;
 pub mod ipc;

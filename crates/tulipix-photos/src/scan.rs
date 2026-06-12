@@ -64,8 +64,8 @@ pub async fn scan_library(pool: &SqlitePool, lib: &Library) -> Result<PopulateSt
 pub async fn apply_fs_event(pool: &SqlitePool, event: &FsEvent) -> Result<()> {
     apply_event(pool, event).await?;
     match event {
-        FsEvent::Created(p) | FsEvent::Modified(p) => {
-            if is_photo(p) {
+        FsEvent::Created(p) | FsEvent::Modified(p)
+            if is_photo(p) => {
                 let abs = p.to_string_lossy().into_owned();
                 let id: Option<i64> = sqlx::query_scalar("SELECT id FROM items WHERE abs_path = ?")
                     .bind(&abs)
@@ -76,7 +76,6 @@ pub async fn apply_fs_event(pool: &SqlitePool, event: &FsEvent) -> Result<()> {
                         .bind(id).execute(pool).await?;
                 }
             }
-        }
         _ => {}
     }
     Ok(())

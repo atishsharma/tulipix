@@ -61,16 +61,6 @@ CREATE TABLE IF NOT EXISTS shares (
     revoked     INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS shared_inbox (
-    id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    from_account TEXT   NOT NULL,
-    remote_path TEXT    NOT NULL,
-    kind        TEXT    NOT NULL,          -- 'album' | 'file' | 'folder'
-    state       TEXT    NOT NULL DEFAULT 'pending',  -- 'pending' | 'accepted' | 'declined'
-    received    INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS shared_inbox_state_idx ON shared_inbox(state);
-
 CREATE TABLE IF NOT EXISTS snapshots (
     id        INTEGER PRIMARY KEY AUTOINCREMENT,
     remote_id INTEGER NOT NULL REFERENCES remotes(id) ON DELETE CASCADE,

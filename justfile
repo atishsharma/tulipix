@@ -8,22 +8,33 @@ fetch:
 # committed to Cargo.toml/.cargo/config.toml so the checked-in build stays
 # stable + cross-platform (Windows/macOS). Needs nightly + the cranelift
 # component + sccache installed; harmless to drop if you only have stable.
-fast := '--config unstable.codegen-backend=true --config profile.dev.codegen-backend="cranelift" --config profile.dev.package."*".codegen-backend="llvm"'
+fast := "--config 'unstable.codegen-backend=true' --config 'profile.dev.codegen-backend=\"cranelift\"' --config 'profile.dev.package.\"*\".codegen-backend=\"llvm\"'"
 
-# Dev run — capped at 5GB RAM, zero swap. An overshoot OOM-kills the build,
-# never the host (zram swap is physical RAM, so swap stays off-limits).
-# Drops debuginfo + single rustc to fit the ~10k-line app crate in 5GB.
+# Dev run — build scope capped so total system RAM stays under 90% of the
+# 7.2GB budget (≈6.5GB incl. ~1-2GB host baseline). MemoryHigh=5800M clears the
+# app crate's ~5GB Cranelift codegen peak without throttling; overshoot spills
+# to zram swap (compressed, so 3GB swap ≈ ~1GB physical) before the 6400M kill.
 run:
     systemd-run --user --scope --unit=tulipix-run \
-      -p MemoryHigh=4600M -p MemoryMax=5000M -p MemorySwapMax=0 \
+      -p MemoryHigh=5800M -p MemoryMax=6400M -p MemorySwapMax=3000M \
       --setenv=CARGO_PROFILE_DEV_DEBUG=0 \
       --setenv=RUSTC_WRAPPER=sccache \
       nice -n 15 ionice -c3 \
       cargo +nightly {{fast}} run -j 1 -p tulipix-app
 
-# Dev with hot Slint reload
+# Dev with hot Slint reload: full app, interpreter-backed UI that re-reads
+# .slint files at runtime (Slint live-preview). Separate target dir so the
+# dev-reload feature set never invalidates the default build's cache.
+# Memory-capped like `run` — the cold target-dev build has the same RAM peak.
 run-dev:
-    RUSTC_WRAPPER=sccache cargo +nightly {{fast}} run -p tulipix-app --features dev-reload
+    systemd-run --user --scope --unit=tulipix-run-dev \
+      -p MemoryHigh=5800M -p MemoryMax=6400M -p MemorySwapMax=infinity \
+      --setenv=CARGO_PROFILE_DEV_DEBUG=0 \
+      --setenv=RUSTC_WRAPPER=sccache \
+      --setenv=SLINT_LIVE_PREVIEW=1 \
+      --setenv=CARGO_TARGET_DIR=target-dev \
+      nice -n 15 ionice -c3 \
+      cargo +nightly {{fast}} run -j 4 -p tulipix-app --features dev-reload
 
 # Caps tracing
 trace:

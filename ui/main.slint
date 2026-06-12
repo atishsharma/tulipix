@@ -6,11 +6,12 @@ import { SectionPage, PhotoTile } from "section_page.slint";
 import { PhotosPage, PhotoGroup, FolderRow, PersonCard, ThingChip, AlbumCard, MemoryRail, MapCluster, DedupeGroup } from "page_photos.slint";
 import { PhotoEditor } from "photo_editor.slint";
 import { SharedHero, HeroRect } from "shared_element.slint";
+import { MilestoneConfetti } from "empty_state.slint";
 import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
 import { MusicPage, MusicFullscreen, MusicMini, PodcastMini } from "page_music.slint";
 import { MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow } from "music_common.slint";
-import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow } from "page_books.slint";
+import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow, AuthorRow, CollectionRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry } from "page_cloud.slint";
 import { ToolsPage, ToolOpRow } from "page_tools.slint";
@@ -75,7 +76,7 @@ component SettingsTab inherits Rectangle {
     }
 }
 
-// Small pill button used in the Account scaffold panel.
+// Small pill button used in the Settings → Profile panel.
 component AcctBtn inherits Rectangle {
     in property <string> label;
     callback clicked();
@@ -89,29 +90,6 @@ component AcctBtn inherits Rectangle {
         padding-left: 12px; padding-right: 12px;
         Text { text: label; color: Theme.text; font-size: 11px; font-weight: 600;
             vertical-alignment: center; horizontal-alignment: center; }
-    }
-}
-
-component ModeCard inherits Rectangle {
-    in property <bool> active;
-    in property <string> title;
-    in property <string> subtitle;
-    in property <color> grad-a;
-    in property <color> grad-b;
-    callback clicked();
-    width: 260px; height: 108px;
-    horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: Theme.radius-md;
-    background: active ? @linear-gradient(135deg, grad-a, grad-b) : Theme.panel-2;
-    border-width: 1px;
-    border-color: active ? grad-a.with-alpha(0.6) : Theme.outline;
-    drop-shadow-blur: active ? 20px : 0;
-    drop-shadow-color: active ? grad-a.with-alpha(0.35) : transparent;
-    TouchArea { clicked => { root.clicked(); } }
-    VerticalLayout {
-        padding: 16px; spacing: 6px;
-        Text { text: title; color: active ? #ffffff : Theme.text; font-size: 15px; font-weight: 700; }
-        Text { text: subtitle; color: active ? #ffffffd0 : Theme.text-dim; font-size: 11px; wrap: word-wrap; }
     }
 }
 
@@ -235,7 +213,7 @@ component SettingsPage inherits Rectangle {
             VerticalLayout {
                 spacing: 2px;
                 Text { text: "Settings"; color: Theme.text; font-size: 26px; font-weight: 700; }
-                Text { text: "Appearance · Libraries · Schedule · API Keys · Account"; color: Theme.text-dim; font-size: 12px; }
+                Text { text: "Appearance · Libraries · Schedule · API Keys · Profile"; color: Theme.text-dim; font-size: 12px; }
             }
             Rectangle { horizontal-stretch: 1; }
         }
@@ -252,7 +230,7 @@ component SettingsPage inherits Rectangle {
             SettingsTab { label: "Security";   active: root.active-tab == "security";    clicked => { root.active-tab = "security"; } }
             SettingsTab { label: "Data";       active: root.active-tab == "data";        clicked => { root.active-tab = "data"; } }
             SettingsTab { label: "System";     active: root.active-tab == "system";      clicked => { root.active-tab = "system"; } }
-            SettingsTab { label: "Account";    active: root.active-tab == "account";     clicked => { root.active-tab = "account"; } }
+            SettingsTab { label: "Profile";    active: root.active-tab == "profile";     clicked => { root.active-tab = "profile"; } }
             Rectangle { horizontal-stretch: 1; }
         }
 
@@ -411,7 +389,7 @@ component SettingsPage inherits Rectangle {
                 }
             }
 
-            if active-tab == "account": Rectangle {
+            if active-tab == "profile": Rectangle {
                 width: parent.width; height: parent.height;
                 background: transparent;
                 ScrollView {
@@ -440,32 +418,21 @@ component SettingsPage inherits Rectangle {
                             }
                             VerticalLayout { alignment: center; horizontal-stretch: 0; spacing: 6px;
                                 AcctBtn { label: "Edit Profile"; clicked => { root.user-action("edit-profile"); } }
-                                AcctBtn { label: "Sign In / Out"; clicked => { root.user-action("sign-in"); } }
                             }
                         }
                     }
 
-                    // ── Mode ───────────────────────────────────────────────
-                    Text { text: "Mode"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
-                    HorizontalLayout {
-                        spacing: 14px; alignment: start;
-                        ModeCard {
-                            active: user.mode == Mode.local;
-                            title: "🏠  Local Mode";
-                            subtitle: "Everything stays on this device.\nFull access, no accounts.";
-                            grad-a: #4f46e5; grad-b: #7c3aed;
-                            clicked => { root.user-action("switch-to-local"); }
-                        }
-                        ModeCard {
-                            active: user.mode == Mode.account;
-                            title: "☁  Account Mode";
-                            subtitle: "Sync, shared albums,\nmulti-device profiles.";
-                            grad-a: #14b8a6; grad-b: #06b6d4;
-                            clicked => { root.user-action("switch-to-account"); }
-                        }
-                        VerticalLayout {
-                            alignment: center; horizontal-stretch: 0;
-                            ModePill { mode: user.mode; }
+                    // ── Local-only — no account mode, no sign-in ───────────
+                    Text { text: "Privacy"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
+                    Rectangle {
+                        height: 64px; border-radius: Theme.radius-md;
+                        background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
+                        HorizontalLayout {
+                            padding: 14px; spacing: 12px;
+                            Text { text: "🏠  This app is local at heart — everything stays on this device. No accounts, no servers, full access.";
+                                color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; wrap: word-wrap; }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                ModePill { mode: user.mode; } }
                         }
                     }
 
@@ -482,30 +449,6 @@ component SettingsPage inherits Rectangle {
                         }
                     }
 
-                    // ── Subscription / plan (scaffold) ─────────────────────
-                    Text { text: "Plan"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
-                    Rectangle {
-                        height: 56px; border-radius: Theme.radius-md;
-                        background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
-                        HorizontalLayout {
-                            padding: 14px; spacing: 10px;
-                            Text { text: "Local · Full access — every feature is unlocked on this device.";
-                                color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
-                            VerticalLayout { alignment: center; AcctBtn { label: "Manage"; clicked => { root.user-action("manage-plan"); } } }
-                        }
-                    }
-
-                    // ── Sync & sharing ─────────────────────────────────────
-                    Text { text: "Sync & sharing"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
-                    Rectangle {
-                        height: 64px; border-radius: Theme.radius-md;
-                        background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
-                        HorizontalLayout {
-                            padding: 14px;
-                            Text { text: "Sync, shared albums & multi-device profiles are available.";
-                                color: Theme.text; font-size: 13px; vertical-alignment: center; }
-                        }
-                    }
                     Rectangle { vertical-stretch: 1; min-height: 12px; }
                   }
                 }
@@ -516,6 +459,7 @@ component SettingsPage inherits Rectangle {
 
 export component MainWindow inherits Window {
     title: root.music-fullscreen ? "Tulipix Music - Zen" : "Tulipix";
+    icon: @image-url("icons/tulipix.png"); // app icon — window + taskbar
     min-width: 1100px;
     min-height: 720px;
     preferred-width: 1320px;
@@ -553,6 +497,7 @@ export component MainWindow inherits Window {
     in-out property <string> video-kind: "local";
     in-out property <string> video-query: "";
     in-out property <[ShowCard]> video-shows: [];
+    in-out property <[VideoTile]> video-next-up: []; // np.p3.episodes Next Up rail
     in-out property <[VideoSeason]> video-seasons: [];
     in-out property <bool> video-show-open: false;
     in-out property <string> video-show-title: "";
@@ -609,6 +554,9 @@ export component MainWindow inherits Window {
     callback player-key(string, bool);
     callback player-toggle-fullscreen();
     in-out property <[PhotoTile]> music-tiles: [];
+    // Tracks grid only: music-tiles minus folders assigned to other music
+    // sections (audiobooks etc.) — tile.index stays the playback position.
+    in-out property <[PhotoTile]> music-tracks-grid: [];
     in-out property <[BookTile]> book-tiles: [];
     in-out property <int> book-count: 0;
     in-out property <string> book-view: "all";
@@ -628,10 +576,21 @@ export component MainWindow inherits Window {
     in property <bool> book-rtl: false;
     in property <bool> book-invert: false;
     in property <string> book-text;
+    // Two-page spread + flip animation faces (np.p4.books.reader).
+    in property <string> book-text-right;
+    in property <string> book-text-prev;
+    in property <string> book-text-prev-right;
+    in-out property <bool> book-two-page: true;
+    in-out property <bool> book-two-up-active: false;
     in property <float> book-font-px: 18;
     in property <float> book-line-height: 1.5;
     in property <int> book-font-family: 0;
     in-out property <bool> book-text-dark: false;
+    // EPUB pagination + page-turn animation.
+    in property <int> book-page-index;     // current screen page (0-based)
+    in property <int> book-page-total: 1;  // total screen pages in the book
+    in property <int> book-turn;           // bumped on each turn → triggers fold
+    in property <int> book-turn-dir;       // +1 forward · -1 back
     callback book-set-view(string);
     callback book-search(string);
     callback book-set-sort(string);
@@ -646,6 +605,8 @@ export component MainWindow inherits Window {
     callback book-set-font(float);
     callback book-set-line(float);
     callback book-set-family(int);
+    callback book-set-margin(float);
+    callback book-reflow(length, length); // text-stage size → re-paginate
     callback book-toggle-text-dark();
     // Books Phase 5 — TOC / bookmarks / themes / series / stats
     in property <[TocEntryRow]> book-toc-entries: [];
@@ -654,9 +615,20 @@ export component MainWindow inherits Window {
     in-out property <bool> book-bookmarks-open: false;
     in property <string> book-read-mode: "paginated";
     in property <string> book-theme: "sepia";
+    // Colour-coded bookmarks + TTS overlay + export feedback + yearly goal.
+    in-out property <string> book-bm-color: "#ffd54f";
+    in-out property <string> book-tts-sentence: "";
+    in-out property <string> book-export-status: "";
+    callback book-tts-stop();
+    callback book-goal-adjust(int);
     in property <float> book-line-height-val: 1.5;
     in property <float> book-margin-pct: 8.0;
+    in property <bool> book-guided: false;          // comic guided view active
+    in property <string> book-define-result: "";    // dictionary popover text
     in property <[SeriesRow]> book-series: [];
+    in property <[AuthorRow]> book-authors: [];
+    in property <[CollectionRow]> book-collections: [];
+    in property <[image]> book-comic-thumbs: [];
     in property <string> book-stats: "";
     callback book-toggle-toc();
     callback book-jump-chapter(int);
@@ -667,7 +639,11 @@ export component MainWindow inherits Window {
     callback book-set-theme(string);
     callback book-tts-start();
     callback book-find-text(string);
+    callback book-toggle-guided();
+    callback book-define(string);
     callback book-series-open(int);
+    callback book-collection-open(int);
+    callback book-add-to-collection(int, string);
     callback book-fetch-meta(int);
     callback book-export-notes(int);
     // Cloud (rclone) state.
@@ -813,6 +789,7 @@ export component MainWindow inherits Window {
     in-out property <int> music-recent-page: 0;
     in-out property <int> music-recent-pages: 1;
     in-out property <string> music-songs-view: "grid";
+    in-out property <float> music-grid-density: 200; // np.p4.music.grid-density (default = slider midpoint)
     in-out property <string> music-browse-sort: "name";
     in-out property <string> music-browse-dir: "asc";
     in-out property <int> music-browse-page: 0;
@@ -939,6 +916,7 @@ export component MainWindow inherits Window {
     callback music-set-song-page(int);
     callback music-search(string);
     callback music-set-songs-view(string);
+    callback music-set-grid-density(float); // np.p4.music.grid-density
     callback music-set-recent-page(int);
     callback music-set-browse-sort(string);
     callback music-set-browse-page(int);
@@ -962,14 +940,21 @@ export component MainWindow inherits Window {
     callback music-toggle-home-connect();
     callback music-set-crossfade(float);
     callback music-set-replaygain(string);
+    callback music-rg-scan(); // np.p5.music.replaygain loudness scan
+    in-out property <float> music-rg-scan-progress: 0;
+    in-out property <string> music-rg-scan-status: "";
     in-out property <[string]> music-cast-devices: [];
     in-out property <string> music-cast-target: "";
+    in-out property <string> music-cast-status: ""; // np.p5.music.cast handoff feedback
     callback music-scan-cast();
     callback music-set-cast(string);
     in-out property <[float]> music-vis-bars: [];
     callback music-instant-mix();
     in-out property <bool> music-scrobble-on: false;
     callback music-toggle-scrobble();
+    in-out property <string> music-lastfm-stage: "";  // "" | pending | connected
+    in-out property <string> music-lastfm-status: "";
+    callback music-lastfm-connect();
     in-out property <bool> music-tag-open: false;
     in-out property <string> music-tag-title: "";
     in-out property <string> music-tag-artist: "";
@@ -1077,6 +1062,7 @@ export component MainWindow inherits Window {
     callback music-podcast-fetch(int);
     callback music-podcast-unsubscribe(int);
     callback music-podcast-remove-download(int);
+    callback music-podcast-clear-downloads();
     callback music-podcast-play(int);     // by episode DB id
     callback music-podcast-refresh();
     callback music-podcast-reset-all();   // clear every subscription + cached files
@@ -1125,6 +1111,13 @@ export component MainWindow inherits Window {
     in-out property <int> music-ab-d-resume-index: -1;
     callback music-audiobook-open(string);
     callback music-audiobook-back();
+    // Audiobooks sub-tab + folder list + custom cover picker.
+    in-out property <string> music-ab-tab: "all";
+    in property <[string]> music-ab-folders: [];
+    callback music-ab-set-tab(string);
+    callback music-audiobook-set-cover();
+    callback music-audiobook-set-cover-for(string);
+    callback music-ab-folder-find(string);
     // + Add → pick folder → assign music sub-section popup.
     in-out property <string> music-pending-add-path: "";
     in-out property <bool> music-add-section-open: false;
@@ -1274,7 +1267,7 @@ export component MainWindow inherits Window {
     in-out property <string> chat-draft: "";
     callback chat-submit(string);
 
-    // Capability gating — account-tier feature gate + denial nudge toast.
+    // Capability gating — local app: always true (kept for kid/guest profiles).
     in-out property <bool> account-sync-allowed: false;
     in-out property <string> caps-nudge: "";
 
@@ -1318,6 +1311,7 @@ export component MainWindow inherits Window {
     in-out property <int> photo-smart-rule-match-count: -1;
     callback set-photos-view-mode(string);
     callback set-photos-category(string);
+    callback photos-visible-hint(float); // np.p1.thumbs.lazy scroll fraction
     callback set-photos-sort(string);
     callback set-photos-library-sort(string);
     callback photo-search(string);
@@ -1519,6 +1513,7 @@ export component MainWindow inherits Window {
             vertical-stretch: 1;
 
             if active-section == "photos":   PhotosPage { width: parent.width; height: parent.height; item-count: root.photos-total; tiles: root.photo-tiles;
+                visible-hint(f) => { root.photos-visible-hint(f); }
                 groups: root.photo-groups;
                 folders: root.photo-folders;
                 people: root.photo-people;
@@ -1596,6 +1591,7 @@ export component MainWindow inherits Window {
                 kind <=> root.video-kind;
                 query <=> root.video-query;
                 shows: root.video-shows;
+                next-up: root.video-next-up;
                 seasons: root.video-seasons;
                 show-open: root.video-show-open;
                 show-title: root.video-show-title;
@@ -1613,7 +1609,7 @@ export component MainWindow inherits Window {
                 discover-upcoming: root.video-discover-upcoming;
                 discover-on-air: root.video-discover-on-air;
                 refresh-discover => { root.video-refresh-discover(); } }
-            if active-section == "music":    MusicPage  { width: parent.width; height: parent.height; item-count: root.music-song-total; tiles: root.music-tiles;
+            if active-section == "music":    MusicPage  { width: parent.width; height: parent.height; item-count: root.music-song-total; tiles: root.music-tracks-grid;
                 np-title: root.music-np-title; np-sub: root.music-np-sub; np-art: root.music-np-art; playing: root.music-playing;
                 view <=> root.music-view; sleep-min: root.music-sleep-min;
                 lib-tab <=> root.music-lib-tab;
@@ -1627,6 +1623,7 @@ export component MainWindow inherits Window {
                 set-recent-page(d) => { root.music-set-recent-page(d); } set-browse-sort(s) => { root.music-set-browse-sort(s); }
                 toggle-shuffle => { root.music-toggle-shuffle(); }
                 songs-view <=> root.music-songs-view; set-songs-view(v) => { root.music-set-songs-view(v); }
+                grid-density <=> root.music-grid-density; set-grid-density(v) => { root.music-set-grid-density(v); }
                 np-loved: root.music-np-loved; np-stars: root.music-np-stars;
                 pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
                 volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat;
@@ -1692,10 +1689,15 @@ export component MainWindow inherits Window {
                 set-device(d) => { root.music-set-device(d); } toggle-exclusive => { root.music-toggle-exclusive(); }
                 toggle-gapless => { root.music-toggle-gapless(); } set-crossfade(v) => { root.music-set-crossfade(v); }
                 set-replaygain(r) => { root.music-set-replaygain(r); }
+                rg-scan-progress: root.music-rg-scan-progress; rg-scan-status: root.music-rg-scan-status;
+                rg-scan => { root.music-rg-scan(); }
                 cast-devices: root.music-cast-devices; cast-target <=> root.music-cast-target;
+                cast-status: root.music-cast-status;
                 scan-cast => { root.music-scan-cast(); } set-cast(c) => { root.music-set-cast(c); }
                 vis-bars: root.music-vis-bars; vis-style <=> root.music-vis-style; vis-style-changed(s) => { root.music-set-vis-style(s); } instant-mix => { root.music-instant-mix(); }
                 scrobble-on <=> root.music-scrobble-on; toggle-scrobble => { root.music-toggle-scrobble(); }
+                lastfm-stage: root.music-lastfm-stage; lastfm-status: root.music-lastfm-status;
+                lastfm-connect => { root.music-lastfm-connect(); }
                 tag-open <=> root.music-tag-open; tag-title <=> root.music-tag-title; tag-artist <=> root.music-tag-artist; tag-album <=> root.music-tag-album; tag-date <=> root.music-tag-date;
                 tag-genre <=> root.music-tag-genre; genre-options: root.music-genre-options;
                 tag-album-artist <=> root.music-tag-album-artist; tag-credits <=> root.music-tag-credits;
@@ -1762,6 +1764,7 @@ export component MainWindow inherits Window {
                 podcast-skip(s) => { root.music-podcast-skip(s); }
                 podcast-fetch(id) => { root.music-podcast-fetch(id); } podcast-unsubscribe(id) => { root.music-podcast-unsubscribe(id); }
                 podcast-remove-download(id) => { root.music-podcast-remove-download(id); }
+                podcast-clear-downloads => { root.music-podcast-clear-downloads(); }
                 podcast-refresh => { root.music-podcast-refresh(); }
                 podcast-reset-all => { root.music-podcast-reset-all(); }
                 podcast-set-thumb => { root.music-podcast-set-thumb(); }
@@ -1786,6 +1789,11 @@ export component MainWindow inherits Window {
                 ab-d-cover: root.music-ab-d-cover; ab-d-total <=> root.music-ab-d-total;
                 ab-d-chapters: root.music-ab-d-chapters; ab-d-resume-index <=> root.music-ab-d-resume-index;
                 audiobook-open(f) => { root.music-audiobook-open(f); } audiobook-back => { root.music-audiobook-back(); }
+                ab-tab <=> root.music-ab-tab; ab-folders: root.music-ab-folders;
+                ab-set-tab(t) => { root.music-ab-set-tab(t); }
+                audiobook-set-cover => { root.music-audiobook-set-cover(); }
+                audiobook-set-cover-for(f) => { root.music-audiobook-set-cover-for(f); }
+                ab-folder-find(f) => { root.music-ab-folder-find(f); }
                 book-skip-silence-on <=> root.music-book-skip-silence-on; book-bookmarks: root.music-book-bookmarks;
                 audiobook-play(i) => { root.music-audiobook-play(i); } set-book-speed(s) => { root.music-set-book-speed(s); } book-chapter(d) => { root.music-book-chapter(d); }
                 book-skip-silence => { root.music-book-skip-silence(); } book-bookmark => { root.music-book-bookmark(); } book-bookmark-jump(i) => { root.music-book-bookmark-jump(i); }
@@ -1832,7 +1840,7 @@ export component MainWindow inherits Window {
                 }
                 open-fullscreen => { root.music-open-fullscreen(); }
                 np-next => { root.music-next(); } np-prev => { root.music-prev(); } np-playpause => { root.music-toggle-pause(); } }
-            if active-section == "books":    BooksPage  { width: parent.width; height: parent.height; item-count: root.book-count; tiles: root.book-tiles; series: root.book-series; book-stats: root.book-stats; view <=> root.book-view; query <=> root.book-query; sort-mode <=> root.book-sort; sort-dir <=> root.book-sort-dir; add-folder => { root.pick-folder(); } open-book(i) => { root.book-open(i); } set-view(v) => { root.book-set-view(v); } search(q) => { root.book-search(q); } set-sort(s) => { root.book-set-sort(s); } series-open(i) => { root.book-series-open(i); } fetch-meta(i) => { root.book-fetch-meta(i); } export-notes(i) => { root.book-export-notes(i); } }
+            if active-section == "books":    BooksPage  { width: parent.width; height: parent.height; item-count: root.book-count; tiles: root.book-tiles; series: root.book-series; authors: root.book-authors; collections: root.book-collections; book-stats: root.book-stats; view <=> root.book-view; query <=> root.book-query; sort-mode <=> root.book-sort; sort-dir <=> root.book-sort-dir; add-folder => { root.pick-folder(); } open-book(i) => { root.book-open(i); } set-view(v) => { root.book-set-view(v); } search(q) => { root.book-search(q); } set-sort(s) => { root.book-set-sort(s); } series-open(i) => { root.book-series-open(i); } collection-open(i) => { root.book-collection-open(i); } add-to-collection(i, n) => { root.book-add-to-collection(i, n); } fetch-meta(i) => { root.book-fetch-meta(i); } export-notes(i) => { root.book-export-notes(i); } export-status: root.book-export-status; goal-adjust(d) => { root.book-goal-adjust(d); } }
             if active-section == "cloud":    CloudPage  {
                 width: parent.width; height: parent.height;
                 remotes: root.cloud-remotes;
@@ -2106,9 +2114,22 @@ export component MainWindow inherits Window {
         rtl: root.book-rtl;
         invert: root.book-invert;
         text: root.book-text;
+        text-right: root.book-text-right;
+        text-prev: root.book-text-prev;
+        text-prev-right: root.book-text-prev-right;
+        two-page <=> root.book-two-page;
+        two-up-active <=> root.book-two-up-active;
         font-px: root.book-font-px;
         font-family: root.book-font-family;
+        page-index: root.book-page-index;
+        page-total: root.book-page-total;
+        turn: root.book-turn;
+        turn-dir: root.book-turn-dir;
+        comic-thumbs: root.book-comic-thumbs;
         text-dark <=> root.book-text-dark;
+        set-line(l) => { root.book-set-line(l); }
+        set-margin(m) => { root.book-set-margin(m); }
+        reflow(w, h) => { root.book-reflow(w, h); }
         close => { root.book-reader-close(); }
         next => { root.book-next(); }
         prev => { root.book-prev(); }
@@ -2135,7 +2156,14 @@ export component MainWindow inherits Window {
         toggle-read-mode => { root.book-toggle-read-mode(); }
         set-theme(t) => { root.book-set-theme(t); }
         tts-start => { root.book-tts-start(); }
+        tts-stop => { root.book-tts-stop(); }
+        tts-sentence: root.book-tts-sentence;
+        bm-color <=> root.book-bm-color;
         find-text(s) => { root.book-find-text(s); }
+        guided: root.book-guided;
+        define-result: root.book-define-result;
+        toggle-guided => { root.book-toggle-guided(); }
+        define(s) => { root.book-define(s); }
     }
 
     // Scan progress floating card — bottom-right corner, visible while a
@@ -2655,6 +2683,21 @@ export component MainWindow inherits Window {
         }
     }
 
+    // Milestone confetti (np.p1.ds.empty-state) — celebratory pop on library
+    // milestones (1k photos / 100h watched / first sync). Auto-clears.
+    in-out property <string> milestone: "";
+    if root.milestone != "": Rectangle {
+        x: (root.width - self.width) / 2;
+        y: 120px;
+        width: 360px; height: 64px;
+        border-radius: Theme.radius-lg;
+        background: Theme.modal;
+        border-color: Accent.color.with-alpha(0.8); border-width: 1px;
+        drop-shadow-blur: 30px; drop-shadow-color: Accent.color.with-alpha(0.35);
+        MilestoneConfetti { label: root.milestone; playing: true; }
+        Timer { interval: 5s; running: root.milestone != ""; triggered => { root.milestone = ""; } }
+    }
+
     // Capability-denied nudge toast (np.p1.caps.events). Auto-clears.
     if root.caps-nudge != "": Rectangle {
         x: (root.width - self.width) / 2;
@@ -2676,8 +2719,8 @@ export component MainWindow inherits Window {
                 width: 78px; height: 30px; border-radius: 8px;
                 background: @linear-gradient(135deg, Theme.brand, Theme.brand-2);
                 y: (parent.height - self.height) / 2; horizontal-stretch: 0;
-                TouchArea { clicked => { root.caps-nudge = ""; root.active-section = "settings"; root.active-settings-tab = "account"; } }
-                Text { text: "Upgrade"; color: #ffffff; font-size: 11px; font-weight: 600;
+                TouchArea { clicked => { root.caps-nudge = ""; root.active-section = "settings"; root.active-settings-tab = "profile"; } }
+                Text { text: "Open"; color: #ffffff; font-size: 11px; font-weight: 600;
                     horizontal-alignment: center; vertical-alignment: center; }
             }
         }
@@ -2687,11 +2730,12 @@ export component MainWindow inherits Window {
     if root.onboarding-open: OnboardingWizard {
         x: 0; y: 0; width: root.width; height: root.height;
         theme-choice <=> root.theme-choice;
-        mode: root.user.mode == Mode.account ? "account" : "local";
+        mode: "local";
         library-added: root.onboarding-lib-added;
         theme-changed(c) => { root.theme-changed(c); }
-        choose-mode(m) => { root.user-action(m == "account" ? "switch-to-account" : "switch-to-local"); }
+        choose-mode(m) => { root.user-action("switch-to-local"); }
         add-library => { root.pick-folder(); }
         finished => { root.onboarding-finished(); }
     }
 }
+
