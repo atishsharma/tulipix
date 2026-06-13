@@ -16,6 +16,8 @@ reqwest = { workspace = true, features = ["json"] }
 sha2.workspace = true
 # Last.fm API signatures are MD5 by spec (np.p5.music.scrobble).
 md-5 = "0.10"
+# YouTube thumbnail/avatar fetch decodes remote jpg/webp/png and re-encodes PNG.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp"] }
 tulipix-core = { path = "../tulipix-core" }
 
 [dev-dependencies]

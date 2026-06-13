@@ -52,3 +52,4 @@ pub mod tags;
 pub mod video_link;
 pub mod visualizer;
 pub mod yt_search;
+pub mod youtube;
