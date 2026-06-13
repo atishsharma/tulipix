@@ -14,14 +14,19 @@ fn main() {
     // `MPV_LIB_DIR` is accepted as a fallback alias.
     println!("cargo:rerun-if-env-changed=TULIPIX_MPV_LIB_DIR");
     println!("cargo:rerun-if-env-changed=MPV_LIB_DIR");
-    if let Some(dir) = std::env::var_os("TULIPIX_MPV_LIB_DIR")
-        .or_else(|| std::env::var_os("MPV_LIB_DIR"))
-    {
-        println!("cargo:rustc-link-search=native={}", dir.to_string_lossy());
-    }
 
-    // Link libmpv. Basename is `mpv` on every OS:
-    //   Linux/macOS -> libmpv.so / libmpv.dylib
-    //   Windows     -> mpv.lib (import lib for mpv-2.dll)
-    println!("cargo:rustc-link-lib=mpv");
+    // Only link libmpv when the embedded Videos player is compiled in. A build
+    // with `--no-default-features` (no `embedded-mpv`) skips the link entirely,
+    // so Windows needs no mpv.lib / mpv-2.dll / TULIPIX_MPV_LIB_DIR.
+    if std::env::var_os("CARGO_FEATURE_EMBEDDED_MPV").is_some() {
+        if let Some(dir) = std::env::var_os("TULIPIX_MPV_LIB_DIR")
+            .or_else(|| std::env::var_os("MPV_LIB_DIR"))
+        {
+            println!("cargo:rustc-link-search=native={}", dir.to_string_lossy());
+        }
+        // Link libmpv. Basename is `mpv` on every OS:
+        //   Linux/macOS -> libmpv.so / libmpv.dylib
+        //   Windows     -> mpv.lib (import lib for mpv-2.dll)
+        println!("cargo:rustc-link-lib=mpv");
+    }
 }

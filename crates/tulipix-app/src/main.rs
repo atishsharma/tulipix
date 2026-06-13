@@ -17,6 +17,11 @@ slint::include_modules!();
 
 #[cfg(feature = "dev-reload")]
 mod dev_reload;
+#[cfg(feature = "embedded-mpv")]
+mod mpv;
+// No-op stand-in when libmpv isn't linked (e.g. Windows --no-default-features).
+#[cfg(not(feature = "embedded-mpv"))]
+#[path = "mpv_stub.rs"]
 mod mpv;
 mod mpv_ipc;
 mod books;

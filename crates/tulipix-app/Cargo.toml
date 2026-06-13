@@ -14,7 +14,13 @@ path = "src/main.rs"
 # (whisper, AI execution providers, large models, plugin sandboxes) are
 # behind their own feature flag so the base binary stays ~40% smaller and
 # loads them lazily on first use.
-default = []
+# `embedded-mpv` on by default: links libmpv for the in-app Videos player
+# (render API → Slint texture). Build with `--no-default-features` to drop the
+# libmpv link entirely (e.g. Windows without mpv.lib); the Videos embedded
+# player goes inert, while music/podcast/radio/YouTube keep using out-of-process
+# mpv.exe. See build.rs + src/mpv_stub.rs.
+default = ["embedded-mpv"]
+embedded-mpv = []
 
 # Dev UI live-reload. `slint/live-preview` swaps the generated UI for an
 # interpreter-backed LiveReloadingComponent that re-reads .slint at runtime —
