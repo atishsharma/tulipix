@@ -1023,6 +1023,7 @@ export component MainWindow inherits Window {
     // ── YouTube section (np.p4.music.youtube) ──────────────────────────────
     in-out property <string> music-yt-tab: "home";
     in-out property <[YtVideo]> music-yt-results: [];
+    in-out property <[YtVideo]> music-yt-recommended: [];
     in-out property <bool> music-yt-results-more: false;
     in-out property <bool> music-yt-busy: false;
     in-out property <string> music-yt-status: "";
@@ -1047,7 +1048,21 @@ export component MainWindow inherits Window {
     in-out property <string> music-yt-channel-id: "";
     in-out property <bool> music-yt-playlist-open: false;
     in-out property <string> music-yt-playlist-title: "";
+    in-out property <string> music-yt-playlist-sub: "";
     in-out property <[YtVideo]> music-yt-playlist-videos: [];
+    in-out property <int> music-yt-playlist-page: 1;
+    in-out property <bool> music-yt-playlist-has-next: false;
+    in-out property <string> music-yt-playlist-query: "";
+    in-out property <string> music-yt-playlist-sort: "default";
+    in-out property <bool> music-yt-pl-import-open: false;
+    in-out property <string> music-yt-pl-import-url: "";
+    in-out property <bool> music-yt-pl-import-busy: false;
+    in-out property <string> music-yt-pl-import-status: "";
+    callback music-yt-playlist-page-go(int);
+    callback music-yt-playlist-search(string);
+    callback music-yt-playlist-set-sort(string);
+    callback music-yt-import-url(string);
+    callback music-yt-import-playlist-file();
     in-out property <bool> music-yt-add-open: false;
     in-out property <bool> music-yt-fetch-busy: false;
     in-out property <float> music-yt-fetch-frac: 0;
@@ -1828,7 +1843,7 @@ export component MainWindow inherits Window {
                 playlist-sort <=> root.music-playlist-sort; playlist-sort-dir <=> root.music-playlist-sort-dir;
                 playlist-sort-set(s) => { root.music-playlist-sort-set(s); }
                 yt-tab <=> root.music-yt-tab; yt-set-tab(t) => { root.music-yt-set-tab(t); }
-                yt-results: root.music-yt-results; yt-results-more: root.music-yt-results-more;
+                yt-results: root.music-yt-results; yt-recommended: root.music-yt-recommended; yt-results-more: root.music-yt-results-more;
                 yt-busy: root.music-yt-busy; yt-status: root.music-yt-status;
                 yt-query <=> root.music-yt-query; yt-recent: root.music-yt-recent;
                 yt-cached: root.music-yt-cached; yt-downloads: root.music-yt-downloads;
@@ -1842,7 +1857,17 @@ export component MainWindow inherits Window {
                 yt-channel-has-next: root.music-yt-channel-has-next; yt-channel-subscribed: root.music-yt-channel-subscribed;
                 yt-channel-id: root.music-yt-channel-id;
                 yt-playlist-open <=> root.music-yt-playlist-open; yt-playlist-title: root.music-yt-playlist-title;
+                yt-playlist-sub: root.music-yt-playlist-sub;
                 yt-playlist-videos: root.music-yt-playlist-videos;
+                yt-playlist-page: root.music-yt-playlist-page; yt-playlist-has-next: root.music-yt-playlist-has-next;
+                yt-playlist-query <=> root.music-yt-playlist-query; yt-playlist-sort <=> root.music-yt-playlist-sort;
+                yt-pl-import-open <=> root.music-yt-pl-import-open; yt-pl-import-url <=> root.music-yt-pl-import-url;
+                yt-pl-import-busy: root.music-yt-pl-import-busy; yt-pl-import-status: root.music-yt-pl-import-status;
+                yt-playlist-page-go(d) => { root.music-yt-playlist-page-go(d); }
+                yt-playlist-search(q) => { root.music-yt-playlist-search(q); }
+                yt-playlist-set-sort(s) => { root.music-yt-playlist-set-sort(s); }
+                yt-import-url(u) => { root.music-yt-import-url(u); }
+                yt-import-playlist-file() => { root.music-yt-import-playlist-file(); }
                 yt-add-open <=> root.music-yt-add-open;
                 yt-fetch-busy: root.music-yt-fetch-busy; yt-fetch-frac: root.music-yt-fetch-frac;
                 yt-fetch-msg: root.music-yt-fetch-msg; yt-sub-count: root.music-yt-sub-count;

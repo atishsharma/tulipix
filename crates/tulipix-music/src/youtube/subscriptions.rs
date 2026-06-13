@@ -102,9 +102,37 @@ pub fn parse(text: &str) -> Result<Vec<ImportedSub>> {
         .collect())
 }
 
+/// Parse a Takeout playlist CSV (first column = Video ID) into a video-id list.
+/// Header row is skipped; blank lines and obviously-non-id rows are ignored.
+pub fn parse_playlist_ids(text: &str) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut seen = std::collections::HashSet::new();
+    for (i, line) in text.lines().enumerate() {
+        let first = line.split(',').next().unwrap_or("").trim();
+        if i == 0 && first.to_lowercase().contains("video id") { continue; }
+        if first.is_empty() { continue; }
+        // YouTube ids are 11 url-safe chars.
+        if first.len() == 11 && first.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_') {
+            if seen.insert(first.to_string()) { out.push(first.to_string()); }
+        }
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_playlist_ids() {
+        let csv = "Video ID,Playlist video creation timestamp\n\
+                   dQw4w9WgXcQ,2020-01-01\n\
+                   abc123ABC_-,2020-01-02\n\
+                   ,bad\n";
+        let ids = parse_playlist_ids(csv);
+        assert_eq!(ids, vec!["dQw4w9WgXcQ".to_string(), "abc123ABC_-".to_string()]);
+    }
+
 
     #[test]
     fn parses_csv() {

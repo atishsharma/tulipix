@@ -1355,6 +1355,7 @@ fn main() -> Result<()> {
                     populate_yt_cached(&w);
                     populate_yt_downloads(&w);
                     populate_yt_recent(&w);
+                    populate_yt_recommended(&w);
                     populate_yt_playlists(&w);
                 }
                 _ => {}
@@ -3449,7 +3450,7 @@ fn main() -> Result<()> {
             "cached"        => populate_yt_cached(&w0),
             "downloads"     => populate_yt_downloads(&w0),
             "playlists"     => populate_yt_playlists(&w0),
-            "home" => { populate_yt_subs(&w0); populate_yt_cached(&w0); populate_yt_downloads(&w0); populate_yt_recent(&w0); }
+            "home" => { populate_yt_subs(&w0); populate_yt_cached(&w0); populate_yt_downloads(&w0); populate_yt_recent(&w0); populate_yt_recommended(&w0); }
             _ => {}
         }
     });
@@ -3837,24 +3838,98 @@ fn main() -> Result<()> {
     });
     let w = window.as_weak();
     window.on_music_yt_open_playlist(move |pid| {
-        let Some(_w0) = w.upgrade() else { return; };
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_yt_busy(true);
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("youtube").await else { return; };
-            let items = tulipix_music::youtube::store::playlist_items(&pool, pid as i64).await.unwrap_or_default();
-            let name: String = tulipix_music::youtube::store::list_playlists(&pool).await.unwrap_or_default()
-                .into_iter().find(|p| p.id == pid as i64).map(|p| p.name).unwrap_or_default();
-            let rows: Vec<YtVidData> = items.iter().map(|it| YtVidData {
-                id: it.video_id.clone(), title: it.title.clone(), channel: it.channel.clone(),
-                meta: String::new(), info: String::new(), duration: yt_fmt_dur(it.duration),
-                dur_s: it.duration, thumb: it.thumb_path.clone(),
-            }).collect();
-            yt_remember(&rows);
+            let (name, source_url, video_count) = tulipix_music::youtube::store::get_playlist(&pool, pid as i64)
+                .await.ok().flatten().unwrap_or_default();
+            let total = match video_count.filter(|n| *n > 0) {
+                Some(n) => n,
+                None => tulipix_music::youtube::store::playlist_item_count(&pool, pid as i64).await.unwrap_or(0),
+            };
+            { let mut g = yt_pl_open().lock().unwrap(); g.id = pid as i64; g.source_url = source_url; g.total = total; }
             let _ = weak.upgrade_in_event_loop(move |w| {
                 w.set_music_yt_playlist_title(name.into());
-                w.set_music_yt_playlist_videos(yt_video_model(&rows));
+                w.set_music_yt_playlist_query(slint::SharedString::new());
+                w.set_music_yt_playlist_sort("default".into());
                 w.set_music_yt_playlist_open(true);
+                w.set_music_yt_busy(false);
+                yt_playlist_load(w.as_weak(), 0, "default".to_string(), String::new());
             });
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_yt_playlist_page_go(move |d| {
+        let Some(w0) = w.upgrade() else { return; };
+        let next = (w0.get_music_yt_playlist_page() - 1 + d).max(0);
+        w0.set_music_yt_busy(true);
+        yt_playlist_load(w.clone(), next as i64, w0.get_music_yt_playlist_sort().to_string(), w0.get_music_yt_playlist_query().to_string());
+    });
+    let w = window.as_weak();
+    window.on_music_yt_playlist_search(move |q| {
+        let Some(w0) = w.upgrade() else { return; };
+        yt_playlist_load(w.clone(), 0, w0.get_music_yt_playlist_sort().to_string(), q.to_string());
+    });
+    let w = window.as_weak();
+    window.on_music_yt_playlist_set_sort(move |s| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_yt_playlist_sort(s.clone());
+        yt_playlist_load(w.clone(), 0, s.to_string(), w0.get_music_yt_playlist_query().to_string());
+    });
+    // Import a YouTube playlist by URL (metadata + count only; videos lazy).
+    let w = window.as_weak();
+    window.on_music_yt_import_url(move |url| {
+        let Some(w0) = w.upgrade() else { return; };
+        let url = url.trim().to_string();
+        if url.is_empty() { return; }
+        w0.set_music_yt_pl_import_busy(true);
+        w0.set_music_yt_pl_import_status("Reading playlist…".into());
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let meta = ytdlp_playlist_meta(&url).await;
+            match meta {
+                Some((title, count)) => {
+                    if let Ok(pool) = pool_for("youtube").await {
+                        let _ = tulipix_music::youtube::store::create_remote_playlist(&pool, &title, &url, count).await;
+                    }
+                    let _ = weak.upgrade_in_event_loop(|w| {
+                        w.set_music_yt_pl_import_busy(false);
+                        w.set_music_yt_pl_import_status(slint::SharedString::new());
+                        w.set_music_yt_pl_import_url(slint::SharedString::new());
+                        w.set_music_yt_pl_import_open(false);
+                        populate_yt_playlists(&w);
+                    });
+                }
+                None => {
+                    let _ = weak.upgrade_in_event_loop(|w| {
+                        w.set_music_yt_pl_import_busy(false);
+                        w.set_music_yt_pl_import_status("Couldn't read that playlist URL.".into());
+                    });
+                }
+            }
+        });
+    });
+    // Import a Takeout playlist CSV (video ids → local playlist, count only).
+    let w = window.as_weak();
+    window.on_music_yt_import_playlist_file(move || {
+        let Some(_w0) = w.upgrade() else { return; };
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("Takeout playlist", &["csv"]).set_title("Import a YouTube playlist (Takeout CSV)")
+            .pick_file() else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let text = tokio::fs::read_to_string(&path).await.unwrap_or_default();
+            let ids = tulipix_music::youtube::subscriptions::parse_playlist_ids(&text);
+            if ids.is_empty() { return; }
+            let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Imported playlist").to_string();
+            if let Ok(pool) = pool_for("youtube").await {
+                if let Ok(pid) = tulipix_music::youtube::store::create_playlist(&pool, &name).await {
+                    let _ = tulipix_music::youtube::store::add_playlist_ids(&pool, pid, &ids).await;
+                }
+            }
+            let _ = weak.upgrade_in_event_loop(|w| { w.set_music_yt_pl_import_open(false); populate_yt_playlists(&w); });
         });
     });
     let w = window.as_weak();
@@ -14849,6 +14924,35 @@ fn yt_cached_to_data(c: &tulipix_music::youtube::store::CachedVideo) -> YtVidDat
     }
 }
 
+fn yt_reco() -> &'static std::sync::Mutex<Vec<YtVidData>> {
+    static S: OnceLock<std::sync::Mutex<Vec<YtVidData>>> = OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// Home "Recommended" — latest video from up to 10 subscribed channels. Cached
+/// in-memory for the session so it's built once.
+fn populate_yt_recommended(w: &MainWindow) {
+    let cached = yt_reco().lock().map(|g| g.clone()).unwrap_or_default();
+    if !cached.is_empty() { w.set_music_yt_recommended(yt_video_model(&cached)); return; }
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("youtube").await else { return; };
+        let subs = tulipix_music::youtube::store::list_subs(&pool).await.unwrap_or_default();
+        if subs.is_empty() { return; }
+        let client = reqwest::Client::new();
+        let dir = yt_thumb_dir();
+        let mut out: Vec<YtVidData> = Vec::new();
+        for s in subs.iter().take(10) {
+            let vids = ytdlp_channel_latest(&s.channel_id, 1).await;
+            if let Some(v) = vids.first() { out.push(yt_vid_data(&client, &dir, v).await); }
+            if out.len() >= 10 { break; }
+        }
+        yt_remember(&out);
+        if let Ok(mut g) = yt_reco().lock() { *g = out.clone(); }
+        let _ = weak.upgrade_in_event_loop(move |w| w.set_music_yt_recommended(yt_video_model(&out)));
+    });
+}
+
 fn populate_yt_recent(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
@@ -14891,6 +14995,80 @@ fn populate_yt_downloads(w: &MainWindow) {
     });
 }
 
+const YT_PL_PER_PAGE: i64 = 10;
+
+#[derive(Default)]
+struct YtPlOpen { id: i64, source_url: Option<String>, total: i64 }
+fn yt_pl_open() -> &'static std::sync::Mutex<YtPlOpen> {
+    static S: OnceLock<std::sync::Mutex<YtPlOpen>> = OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(YtPlOpen::default()))
+}
+
+fn yt_item_to_data(it: &tulipix_music::youtube::store::PlaylistItem) -> YtVidData {
+    YtVidData {
+        id: it.video_id.clone(), title: it.title.clone(), channel: it.channel.clone(),
+        meta: String::new(), info: String::new(), duration: yt_fmt_dur(it.duration),
+        dur_s: it.duration, thumb: it.thumb_path.clone(),
+    }
+}
+
+/// Load one page (10) of the open playlist into the detail view. Remote playlists
+/// fetch windows via yt-dlp (cached); local playlists page the DB and lazily fill
+/// missing metadata for just the shown items. Sort/search apply to the loaded page.
+fn yt_playlist_load(weak: slint::Weak<MainWindow>, page: i64, sort: String, query: String) {
+    tokio::runtime::Handle::current().spawn(async move {
+        let (id, source_url, total) = { let g = yt_pl_open().lock().unwrap(); (g.id, g.source_url.clone(), g.total) };
+        let Ok(pool) = pool_for("youtube").await else { return; };
+        let page = page.max(0);
+        let offset = page * YT_PL_PER_PAGE;
+        let client = reqwest::Client::new();
+        let dir = yt_thumb_dir();
+        let mut rows: Vec<YtVidData> = if let Some(url) = &source_url {
+            let cache = tulipix_music::youtube::store::get_playlist_cache(&pool, id).await.unwrap_or_default();
+            let have: Vec<_> = cache.iter().skip(offset as usize).take(YT_PL_PER_PAGE as usize).cloned().collect();
+            if !have.is_empty() {
+                have.iter().map(yt_channelvid_to_data).collect()
+            } else {
+                let vids = ytdlp_playlist_window(url, offset + 1, offset + YT_PL_PER_PAGE).await;
+                let mut cv = Vec::with_capacity(vids.len());
+                for v in &vids { cv.push(yt_data_to_channelvid(&yt_vid_data(&client, &dir, v).await)); }
+                let _ = tulipix_music::youtube::store::set_playlist_cache_window(&pool, id, offset, &cv).await;
+                cv.iter().map(yt_channelvid_to_data).collect()
+            }
+        } else {
+            let items = tulipix_music::youtube::store::playlist_items_page(&pool, id, offset, YT_PL_PER_PAGE).await.unwrap_or_default();
+            let mut out = Vec::with_capacity(items.len());
+            for it in &items {
+                if it.title == it.video_id || it.thumb_path.is_empty() {
+                    if let Some(v) = ytdlp_video_meta(&it.video_id).await {
+                        let d = yt_vid_data(&client, &dir, &v).await;
+                        let _ = tulipix_music::youtube::store::update_playlist_item_meta(&pool, id, &it.video_id, &d.title, &d.channel, &d.thumb, d.dur_s).await;
+                        out.push(d);
+                    } else { out.push(yt_item_to_data(it)); }
+                } else { out.push(yt_item_to_data(it)); }
+            }
+            out
+        };
+        // Page-local sort + filter.
+        let q = query.trim().to_lowercase();
+        if !q.is_empty() { rows.retain(|r| r.title.to_lowercase().contains(&q)); }
+        match sort.as_str() {
+            "title" => rows.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
+            "duration" => rows.sort_by(|a, b| b.dur_s.cmp(&a.dur_s)),
+            _ => {}
+        }
+        yt_remember(&rows);
+        let has_next = (offset + YT_PL_PER_PAGE) < total;
+        let sub = format!("{total} videos");
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_music_yt_playlist_videos(yt_video_model(&rows));
+            w.set_music_yt_playlist_page((page + 1) as i32);
+            w.set_music_yt_playlist_has_next(has_next);
+            w.set_music_yt_playlist_sub(sub.into());
+        });
+    });
+}
+
 fn populate_yt_playlists(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
@@ -14909,7 +15087,7 @@ fn populate_yt_playlists(w: &MainWindow) {
     });
 }
 
-const YT_SUBS_PER_PAGE: usize = 30;
+const YT_SUBS_PER_PAGE: usize = 15;
 
 fn yt_sub_to_model(s: &tulipix_music::youtube::store::Sub, i: usize) -> YtSub {
     let videos = match s.video_count { Some(n) if n > 0 => format!("{n} videos"), _ => "—".to_string() };
@@ -15219,6 +15397,31 @@ async fn ytdlp_channel_search(id: &str, query: &str, n: usize) -> Vec<tulipix_mu
     let vids = j.get("entries").and_then(|e| e.as_array())
         .map(|arr| arr.iter().map(yt_entry_to_video).collect::<Vec<_>>()).unwrap_or_default();
     tulipix_music::youtube::piped::without_shorts(vids)
+}
+
+/// Remote playlist metadata: (title, video_count).
+async fn ytdlp_playlist_meta(url: &str) -> Option<(String, i64)> {
+    let j = ytdlp_json(vec!["--flat-playlist".into(), "-J".into(), "--no-warnings".into(),
+        "--playlist-items".into(), "0".into(), url.to_string()]).await?;
+    let title = j.get("title").and_then(|x| x.as_str()).unwrap_or("Imported playlist").to_string();
+    let count = j.get("playlist_count").and_then(|x| x.as_i64()).unwrap_or(0);
+    Some((title, count))
+}
+
+/// One window [start..=end] (1-based) of a remote playlist's videos.
+async fn ytdlp_playlist_window(url: &str, start: i64, end: i64) -> Vec<tulipix_music::youtube::piped::Video> {
+    let Some(j) = ytdlp_json(vec!["--flat-playlist".into(), "-J".into(), "--no-warnings".into(),
+        "--playlist-start".into(), start.to_string(), "--playlist-end".into(), end.to_string(), url.to_string()]).await
+        else { return vec![]; };
+    j.get("entries").and_then(|e| e.as_array())
+        .map(|arr| arr.iter().map(yt_entry_to_video).collect::<Vec<_>>()).unwrap_or_default()
+}
+
+/// Flat metadata for a single video id.
+async fn ytdlp_video_meta(id: &str) -> Option<tulipix_music::youtube::piped::Video> {
+    let url = format!("https://www.youtube.com/watch?v={id}");
+    let j = ytdlp_json(vec!["--flat-playlist".into(), "-J".into(), "--no-warnings".into(), url]).await?;
+    Some(yt_entry_to_video(&j))
 }
 
 /// Channel metadata: (avatar_url, follower_count, video_count).

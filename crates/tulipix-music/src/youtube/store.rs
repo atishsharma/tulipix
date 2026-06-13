@@ -40,10 +40,27 @@ CREATE TABLE IF NOT EXISTS yt_recent_searches (
 );
 
 CREATE TABLE IF NOT EXISTS yt_playlists (
-    id         INTEGER PRIMARY KEY AUTOINCREMENT,
-    name       TEXT NOT NULL,
-    created_at INTEGER NOT NULL
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    name        TEXT NOT NULL,
+    source_url  TEXT,         -- set for imported YouTube playlists (remote)
+    video_count INTEGER,      -- total videos (remote, from import); NULL for local
+    created_at  INTEGER NOT NULL
 );
+
+-- Lazily-fetched windows of a remote playlist's videos (mirrors yt_channel_cache).
+CREATE TABLE IF NOT EXISTS yt_playlist_cache (
+    playlist_id INTEGER NOT NULL,
+    video_id    TEXT NOT NULL,
+    title       TEXT,
+    channel     TEXT,
+    meta        TEXT,
+    info        TEXT,
+    thumb_path  TEXT,
+    duration    INTEGER,
+    position    INTEGER NOT NULL,
+    PRIMARY KEY (playlist_id, video_id)
+);
+CREATE INDEX IF NOT EXISTS yt_playlist_cache_idx ON yt_playlist_cache(playlist_id, position);
 
 CREATE TABLE IF NOT EXISTS yt_channel_cache (
     channel_id TEXT NOT NULL,
@@ -78,6 +95,8 @@ pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(YOUTUBE_SCHEMA).execute(pool).await?;
     // Migrate pre-existing youtube.db files lacking sub_count. Ignore if present.
     let _ = sqlx::query("ALTER TABLE yt_subs ADD COLUMN sub_count INTEGER").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE yt_playlists ADD COLUMN source_url TEXT").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE yt_playlists ADD COLUMN video_count INTEGER").execute(pool).await;
     Ok(())
 }
 
@@ -115,8 +134,9 @@ pub struct CachedVideo {
 pub struct PlaylistRow {
     pub id: i64,
     pub name: String,
-    pub count: i64,
+    pub count: i64,          // total videos (remote video_count, else item count)
     pub cover: Option<String>,
+    pub source_url: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -401,27 +421,80 @@ pub async fn create_playlist(pool: &SqlitePool, name: &str) -> Result<i64> {
     Ok(r.last_insert_rowid())
 }
 
+pub async fn create_remote_playlist(pool: &SqlitePool, name: &str, source_url: &str, video_count: i64) -> Result<i64> {
+    let r = sqlx::query("INSERT INTO yt_playlists (name, source_url, video_count, created_at) VALUES (?, ?, ?, ?)")
+        .bind(name).bind(source_url).bind(video_count).bind(now()).execute(pool).await?;
+    Ok(r.last_insert_rowid())
+}
+
+/// (name, source_url, video_count) for one playlist.
+pub async fn get_playlist(pool: &SqlitePool, id: i64) -> Result<Option<(String, Option<String>, Option<i64>)>> {
+    Ok(sqlx::query_as("SELECT name, source_url, video_count FROM yt_playlists WHERE id = ?")
+        .bind(id).fetch_optional(pool).await?)
+}
+
 pub async fn list_playlists(pool: &SqlitePool) -> Result<Vec<PlaylistRow>> {
-    let rows: Vec<(i64, String)> =
-        sqlx::query_as("SELECT id, name FROM yt_playlists ORDER BY created_at DESC")
+    let rows: Vec<(i64, String, Option<String>, Option<i64>)> =
+        sqlx::query_as("SELECT id, name, source_url, video_count FROM yt_playlists ORDER BY created_at DESC")
             .fetch_all(pool)
             .await?;
     let mut out = Vec::new();
-    for (id, name) in rows {
-        let count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM yt_playlist_items WHERE playlist_id = ?")
-            .bind(id)
-            .fetch_one(pool)
-            .await?;
+    for (id, name, source_url, video_count) in rows {
+        let item_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM yt_playlist_items WHERE playlist_id = ?")
+            .bind(id).fetch_one(pool).await?;
+        let count = video_count.filter(|n| *n > 0).unwrap_or(item_count);
+        // Cover: first local item thumb, else first cached thumb.
         let cover: Option<String> = sqlx::query_scalar(
-            "SELECT thumb_path FROM yt_playlist_items WHERE playlist_id = ? ORDER BY position LIMIT 1",
-        )
-        .bind(id)
-        .fetch_optional(pool)
-        .await?
-        .flatten();
-        out.push(PlaylistRow { id, name, count, cover });
+            "SELECT thumb_path FROM yt_playlist_items WHERE playlist_id = ? ORDER BY position LIMIT 1")
+            .bind(id).fetch_optional(pool).await?.flatten()
+            .or(sqlx::query_scalar("SELECT thumb_path FROM yt_playlist_cache WHERE playlist_id = ? ORDER BY position LIMIT 1")
+                .bind(id).fetch_optional(pool).await?.flatten());
+        out.push(PlaylistRow { id, name, count, cover, source_url });
     }
     Ok(out)
+}
+
+/// Add bare video ids to a local playlist (file import — metadata filled lazily).
+pub async fn add_playlist_ids(pool: &SqlitePool, playlist_id: i64, ids: &[String]) -> Result<()> {
+    let mut pos: i64 = sqlx::query_scalar("SELECT COALESCE(MAX(position)+1, 0) FROM yt_playlist_items WHERE playlist_id = ?")
+        .bind(playlist_id).fetch_one(pool).await?;
+    for id in ids {
+        sqlx::query("INSERT OR IGNORE INTO yt_playlist_items (playlist_id,video_id,title,channel,thumb_path,duration,position,added_at) VALUES (?,?,?,?,?,?,?,?)")
+            .bind(playlist_id).bind(id).bind(id).bind("").bind("").bind(0i64).bind(pos).bind(now())
+            .execute(pool).await?;
+        pos += 1;
+    }
+    Ok(())
+}
+
+pub async fn update_playlist_item_meta(pool: &SqlitePool, playlist_id: i64, video_id: &str, title: &str, channel: &str, thumb: &str, duration: i64) -> Result<()> {
+    sqlx::query("UPDATE yt_playlist_items SET title=?, channel=?, thumb_path=?, duration=? WHERE playlist_id=? AND video_id=?")
+        .bind(title).bind(channel).bind(thumb).bind(duration).bind(playlist_id).bind(video_id)
+        .execute(pool).await?;
+    Ok(())
+}
+
+pub async fn get_playlist_cache(pool: &SqlitePool, playlist_id: i64) -> Result<Vec<ChannelVid>> {
+    let rows: Vec<(String, String, String, String, String, String, i64)> = sqlx::query_as(
+        "SELECT video_id,title,channel,meta,info,thumb_path,duration FROM yt_playlist_cache WHERE playlist_id = ? ORDER BY position",
+    ).bind(playlist_id).fetch_all(pool).await?;
+    Ok(rows.into_iter().map(|(video_id, title, channel, meta, info, thumb_path, duration)| ChannelVid {
+        video_id, title, channel, meta, info, thumb_path, duration,
+    }).collect())
+}
+
+/// Store a fetched window of a remote playlist (positions start at `start`).
+pub async fn set_playlist_cache_window(pool: &SqlitePool, playlist_id: i64, start: i64, vids: &[ChannelVid]) -> Result<()> {
+    for (i, v) in vids.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO yt_playlist_cache (playlist_id,video_id,title,channel,meta,info,thumb_path,duration,position) VALUES (?,?,?,?,?,?,?,?,?)
+             ON CONFLICT(playlist_id,video_id) DO UPDATE SET position=excluded.position, title=excluded.title, channel=excluded.channel, meta=excluded.meta, info=excluded.info, thumb_path=excluded.thumb_path, duration=excluded.duration",
+        )
+        .bind(playlist_id).bind(&v.video_id).bind(&v.title).bind(&v.channel).bind(&v.meta)
+        .bind(&v.info).bind(&v.thumb_path).bind(v.duration).bind(start + i as i64)
+        .execute(pool).await?;
+    }
+    Ok(())
 }
 
 pub async fn add_to_playlist(
@@ -473,6 +546,23 @@ pub async fn playlist_items(pool: &SqlitePool, playlist_id: i64) -> Result<Vec<P
             position,
         })
         .collect())
+}
+
+pub async fn playlist_items_page(pool: &SqlitePool, playlist_id: i64, offset: i64, limit: i64) -> Result<Vec<PlaylistItem>> {
+    let rows: Vec<(String, String, String, String, i64, i64)> = sqlx::query_as(
+        "SELECT video_id,title,channel,thumb_path,duration,position FROM yt_playlist_items WHERE playlist_id = ? ORDER BY position LIMIT ? OFFSET ?",
+    )
+    .bind(playlist_id).bind(limit).bind(offset)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(video_id, title, channel, thumb_path, duration, position)| PlaylistItem {
+        video_id, title, channel, thumb_path, duration, position,
+    }).collect())
+}
+
+pub async fn playlist_item_count(pool: &SqlitePool, playlist_id: i64) -> Result<i64> {
+    Ok(sqlx::query_scalar("SELECT COUNT(*) FROM yt_playlist_items WHERE playlist_id = ?")
+        .bind(playlist_id).fetch_one(pool).await?)
 }
 
 pub async fn remove_from_playlist(pool: &SqlitePool, playlist_id: i64, video_id: &str) -> Result<()> {
