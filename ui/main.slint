@@ -10,7 +10,7 @@ import { MilestoneConfetti } from "empty_state.slint";
 import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
 import { MusicPage, MusicFullscreen, MusicMini, PodcastMini } from "page_music.slint";
-import { MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist } from "music_common.slint";
+import { MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
 import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow, AuthorRow, CollectionRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry } from "page_cloud.slint";
@@ -1030,6 +1030,7 @@ export component MainWindow inherits Window {
     in-out property <[string]> music-yt-recent: [];
     in-out property <[YtVideo]> music-yt-cached: [];
     in-out property <[YtVideo]> music-yt-downloads: [];
+    in-out property <[YtDlJob]> music-yt-dl-jobs: [];
     in-out property <[YtSub]> music-yt-subs: [];
     in-out property <[YtVideo]> music-yt-home-cached: [];
     in-out property <[YtVideo]> music-yt-home-downloads: [];
@@ -1831,6 +1832,7 @@ export component MainWindow inherits Window {
                 yt-busy: root.music-yt-busy; yt-status: root.music-yt-status;
                 yt-query <=> root.music-yt-query; yt-recent: root.music-yt-recent;
                 yt-cached: root.music-yt-cached; yt-downloads: root.music-yt-downloads;
+                yt-dl-jobs: root.music-yt-dl-jobs;
                 yt-subs: root.music-yt-subs; yt-playlists: root.music-yt-playlists;
                 yt-home-cached: root.music-yt-home-cached; yt-home-downloads: root.music-yt-home-downloads;
                 yt-home-subs: root.music-yt-home-subs;

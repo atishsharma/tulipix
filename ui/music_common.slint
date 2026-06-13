@@ -147,6 +147,14 @@ export struct YtSub {
     index: int,
 }
 
+// One active/queued YouTube download (Downloads page progress list).
+export struct YtDlJob {
+    title: string,
+    thumb: image,
+    status: string,    // "Queued" | "Downloading 45%" | "Merging…"
+    frac: float,       // 0..1
+}
+
 // One local YouTube playlist card.
 export struct YtPlaylist {
     id: int,

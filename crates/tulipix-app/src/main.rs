@@ -3761,22 +3761,10 @@ fn main() -> Result<()> {
         let Some(w0) = w.upgrade() else { return; };
         w0.set_music_yt_dl_open(false);
         let id = id.to_string();
-        let weak = w.clone();
-        tokio::runtime::Handle::current().spawn(async move {
-            let dir = yt_dl_dir();
-            let meta = yt_lookup(&id).unwrap_or_default();
-            let (path, kind) = if height < 0 {
-                (yt_dlp_fetch_audio(&id, &dir).await, "audio")
-            } else {
-                (yt_dlp_fetch_video(&id, &dir, height as i64).await, "video")
-            };
-            if let Some(path) = path {
-                if let Ok(pool) = pool_for("youtube").await {
-                    let _ = tulipix_music::youtube::store::record_download(
-                        &pool, &id, &meta.title, &meta.channel, &meta.thumb, &path, meta.dur_s, kind).await;
-                }
-                let _ = weak.upgrade_in_event_loop(|w| populate_yt_downloads(&w));
-            }
+        let meta = yt_lookup(&id).unwrap_or_default();
+        yt_dl_enqueue(w.clone(), YtDlJobData {
+            id, title: meta.title, channel: meta.channel, thumb: meta.thumb,
+            height: height as i64, frac: 0.0, status: "Queued".to_string(),
         });
     });
     let w = window.as_weak();
@@ -15047,41 +15035,121 @@ fn yt_channelvid_to_data(c: &tulipix_music::youtube::store::ChannelVid) -> YtVid
     }
 }
 
-/// Download merged video (VP9 + best audio) at a max height, or best when height<=0.
-/// Returns the saved file path.
-async fn yt_dlp_fetch_video(id: &str, dir: &std::path::Path, height: i64) -> Option<String> {
-    let _ = std::fs::create_dir_all(dir);
-    let out = dir.join(format!("{id}.mkv"));
-    if out.exists() { return Some(out.to_string_lossy().into_owned()); }
-    let url = format!("https://www.youtube.com/watch?v={id}");
-    let tmpl = dir.join(format!("{id}.%(ext)s"));
-    let fmt = if height <= 0 {
-        "bestvideo+bestaudio/best".to_string()
-    } else {
-        format!("bestvideo[height<=?{height}][vcodec^=vp9]+bestaudio/bestvideo[height<=?{height}]+bestaudio/best[height<=?{height}]")
-    };
+fn yt_mpv_open(arg: &str, audio_only: bool) {
+    let mut c = std::process::Command::new("mpv");
+    if audio_only { c.arg("--no-video"); }
+    else { c.arg("--fullscreen").arg("--fs").arg("--force-window=immediate").arg("--ontop"); }
+    let _ = c.arg(arg).spawn();
+}
+
+// ── Download queue (sequential, with progress) ──────────────────────────────
+#[derive(Clone)]
+struct YtDlJobData {
+    id: String, title: String, channel: String, thumb: String,
+    height: i64, frac: f32, status: String,
+}
+fn yt_dl_jobs() -> &'static std::sync::Mutex<Vec<YtDlJobData>> {
+    static S: OnceLock<std::sync::Mutex<Vec<YtDlJobData>>> = OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+static YT_DL_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+fn yt_dl_refresh(weak: &slint::Weak<MainWindow>) {
+    let rows: Vec<YtDlJobData> = yt_dl_jobs().lock().map(|g| g.clone()).unwrap_or_default();
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        let m: Vec<YtDlJob> = rows.iter().map(|j| YtDlJob {
+            title: j.title.clone().into(), thumb: yt_img(&j.thumb),
+            status: j.status.clone().into(), frac: j.frac,
+        }).collect();
+        w.set_music_yt_dl_jobs(slint::ModelRc::new(slint::VecModel::from(m)));
+    });
+}
+
+fn parse_ytdlp_pct(line: &str) -> Option<f32> {
+    let l = line.trim();
+    if !l.starts_with("[download]") { return None; }
+    let p = l.find('%')?;
+    let start = l[..p].rfind(' ')?;
+    l[start..p].trim().parse::<f32>().ok().map(|v| (v / 100.0).clamp(0.0, 1.0))
+}
+
+fn yt_dl_set(id: &str, frac: f32, status: &str) {
+    if let Ok(mut g) = yt_dl_jobs().lock() {
+        if let Some(j) = g.iter_mut().find(|j| j.id == id) { j.frac = frac; j.status = status.to_string(); }
+    }
+}
+
+fn yt_dl_enqueue(weak: slint::Weak<MainWindow>, job: YtDlJobData) {
+    if let Ok(mut g) = yt_dl_jobs().lock() {
+        if g.iter().any(|j| j.id == job.id) { return; }
+        g.push(job);
+    }
+    yt_dl_refresh(&weak);
+    if YT_DL_ACTIVE.swap(true, std::sync::atomic::Ordering::AcqRel) { return; }
+    tokio::runtime::Handle::current().spawn(async move {
+        loop {
+            let job = { yt_dl_jobs().lock().ok().and_then(|g| g.first().cloned()) };
+            let Some(job) = job else { break; };
+            let dir = yt_dl_dir();
+            let _ = std::fs::create_dir_all(&dir);
+            yt_dl_set(&job.id, 0.0, "Starting…");
+            yt_dl_refresh(&weak);
+            let path = yt_dl_run(&job, &dir, &weak).await;
+            if let Some(path) = path {
+                if let Ok(pool) = pool_for("youtube").await {
+                    let kind = if job.height < 0 { "audio" } else { "video" };
+                    let _ = tulipix_music::youtube::store::record_download(
+                        &pool, &job.id, &job.title, &job.channel, &job.thumb, &path, 0, kind).await;
+                }
+            }
+            if let Ok(mut g) = yt_dl_jobs().lock() { g.retain(|j| j.id != job.id); }
+            yt_dl_refresh(&weak);
+            let _ = weak.upgrade_in_event_loop(|w| populate_yt_downloads(&w));
+        }
+        YT_DL_ACTIVE.store(false, std::sync::atomic::Ordering::Release);
+    });
+}
+
+async fn yt_dl_run(job: &YtDlJobData, dir: &std::path::Path, weak: &slint::Weak<MainWindow>) -> Option<String> {
+    use tokio::io::{AsyncBufReadExt, BufReader};
+    let url = format!("https://www.youtube.com/watch?v={}", job.id);
+    let tmpl = dir.join(format!("{}.%(ext)s", job.id));
     let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
-    let ff = tulipix_core::thumbs::tool_bin("ffmpeg");
-    let _ = tokio::process::Command::new(bin)
-        .arg("-f").arg(fmt)
-        .arg("--merge-output-format").arg("mkv")
-        .arg("--ffmpeg-location").arg(&ff)
-        .arg("--no-playlist").arg("-o").arg(&tmpl).arg(&url).status().await;
-    if out.exists() { return Some(out.to_string_lossy().into_owned()); }
-    // Fallback: find any {id}.* the merge produced.
+    let mut cmd = tokio::process::Command::new(bin);
+    let expected = if job.height < 0 {
+        cmd.arg("-f").arg("bestaudio").arg("-x").arg("--audio-format").arg("opus");
+        dir.join(format!("{}.opus", job.id))
+    } else {
+        let ff = tulipix_core::thumbs::tool_bin("ffmpeg");
+        let fmt = if job.height == 0 { "bestvideo+bestaudio/best".to_string() }
+            else { format!("bestvideo[height<=?{0}][vcodec^=vp9]+bestaudio/bestvideo[height<=?{0}]+bestaudio/best[height<=?{0}]", job.height) };
+        cmd.arg("-f").arg(fmt).arg("--merge-output-format").arg("mkv").arg("--ffmpeg-location").arg(&ff);
+        dir.join(format!("{}.mkv", job.id))
+    };
+    cmd.arg("--newline").arg("--no-playlist").arg("-o").arg(&tmpl).arg(&url)
+        .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
+    let mut child = cmd.spawn().ok()?;
+    if let Some(out) = child.stdout.take() {
+        let mut lines = BufReader::new(out).lines();
+        let mut last = -1i32;
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(frac) = parse_ytdlp_pct(&line) {
+                let pct = (frac * 100.0) as i32;
+                if pct != last { last = pct; yt_dl_set(&job.id, frac, &format!("Downloading {pct}%")); yt_dl_refresh(weak); }
+            } else if line.contains("[Merger]") || line.contains("Merging") {
+                yt_dl_set(&job.id, 0.99, "Merging…"); yt_dl_refresh(weak);
+            }
+        }
+    }
+    let _ = child.wait().await;
+    if expected.exists() { return Some(expected.to_string_lossy().into_owned()); }
     if let Ok(rd) = std::fs::read_dir(dir) {
         for e in rd.flatten() {
             let p = e.path();
-            if p.file_stem().and_then(|s| s.to_str()) == Some(id) { return Some(p.to_string_lossy().into_owned()); }
+            if p.file_stem().and_then(|s| s.to_str()) == Some(job.id.as_str()) { return Some(p.to_string_lossy().into_owned()); }
         }
     }
     None
-}
-
-fn yt_mpv_open(arg: &str, audio_only: bool) {
-    let mut c = std::process::Command::new("mpv");
-    if audio_only { c.arg("--no-video"); } else { c.arg("--fullscreen").arg("--force-window=yes"); }
-    let _ = c.arg(arg).spawn();
 }
 
 // ── yt-dlp browsing backend (reliable, replaces flaky Piped at runtime) ──────
