@@ -83,10 +83,52 @@ pub fn kind_for(ext: &str) -> ThumbKind {
     }
 }
 
-/// Resolve a tool binary: the bundled per-OS copy if present + native, else the
-/// bare name (found on PATH). Used by callers outside this module (e.g. music
-/// tag extraction via ffprobe).
+/// User-set universal tools directory (Settings → "Tools directory"). Cached so
+/// the hot thumbnail path doesn't re-read settings.json per render. Initialised
+/// lazily from `TULIPIX_TOOL_DIR` (env override) then the saved setting; the
+/// Settings panel calls `set_tool_dir` to apply a change without a restart.
+fn tool_dir_cell() -> &'static std::sync::RwLock<Option<Option<PathBuf>>> {
+    static C: std::sync::OnceLock<std::sync::RwLock<Option<Option<PathBuf>>>> = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+fn load_tool_dir() -> Option<PathBuf> {
+    if let Some(d) = std::env::var_os("TULIPIX_TOOL_DIR") {
+        let p = PathBuf::from(d);
+        if !p.as_os_str().is_empty() { return Some(p); }
+    }
+    let dir = crate::settings::Settings::load().ok()?.text("tools.bin-dir");
+    let dir = dir.trim();
+    if dir.is_empty() { None } else { Some(PathBuf::from(dir)) }
+}
+
+fn tool_dir() -> Option<PathBuf> {
+    if let Some(cached) = tool_dir_cell().read().ok().and_then(|g| g.clone()) {
+        return cached;
+    }
+    let v = load_tool_dir();
+    if let Ok(mut g) = tool_dir_cell().write() { *g = Some(v.clone()); }
+    v
+}
+
+/// Update the cached tools directory (called after the user edits the setting).
+/// `dir` empty/None clears it back to bundle + PATH resolution.
+pub fn set_tool_dir(dir: Option<&str>) {
+    let v = dir.map(str::trim).filter(|s| !s.is_empty()).map(PathBuf::from);
+    if let Ok(mut g) = tool_dir_cell().write() { *g = Some(v); }
+}
+
+/// Resolve a tool binary, in priority order:
+///   1. the user's universal tools directory (Settings) if it holds a native copy
+///   2. the bundled per-OS copy (`resources/bin/<os-arch>/`) if present + native
+///   3. the bare name (found on PATH).
+/// Used across the app (ffmpeg/ffprobe/yt-dlp/exiftool/mpv).
 pub fn tool_bin(name: &str) -> PathBuf {
+    let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
+    if let Some(dir) = tool_dir() {
+        let cand = dir.join(format!("{name}{ext}"));
+        if cand.exists() && is_native_executable(&cand) { return cand; }
+    }
     bundled_bin(name).unwrap_or_else(|| PathBuf::from(name))
 }
 

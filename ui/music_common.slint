@@ -123,6 +123,48 @@ export struct ChapterRow {
     played: bool,
 }
 
+// One YouTube video — search result, channel grid, cached, downloaded, playlist
+// item. `info` is the ≤100-char blurb; actions are handled by the card.
+export struct YtVideo {
+    id: string,
+    channel-id: string,  // owning channel (recommended cards link to it; "" = unknown)
+    title: string,
+    channel: string,
+    meta: string,        // pre-formatted "312K views · 8 yr ago"
+    info: string,        // ≤100-char blurb
+    duration: string,    // pre-formatted "4:12"
+    thumb: image,
+    index: int,          // position into the page's parallel video vec
+}
+
+// One subscribed channel — Home right rail + Subscriptions grid.
+export struct YtSub {
+    channel-id: string,
+    title: string,
+    avatar: image,
+    count: string,       // videos line, e.g. "142 videos" or "—"
+    subs: string,        // subscribers line, e.g. "4.2M subscribers"
+    subscribed: bool,    // my subscription status
+    index: int,
+}
+
+// One active/queued YouTube download (Downloads page progress list).
+export struct YtDlJob {
+    title: string,
+    thumb: image,
+    status: string,    // "Queued" | "Downloading 45%" | "Merging…"
+    frac: float,       // 0..1
+}
+
+// One local YouTube playlist card.
+export struct YtPlaylist {
+    id: int,
+    name: string,
+    cover: image,
+    sub: string,         // "24 videos · 1h 48m"
+    index: int,
+}
+
 // One row in the library-wide metadata manager (np.p5.atmusic.metadata-manager).
 export struct MetaMgrRow {
     file: string,      // filename stem (the parse source)

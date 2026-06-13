@@ -90,41 +90,80 @@ url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-tiny.bin"
 sha256 = "be07e048e1e599ad46341c8d2a135645097a538221678b7acdd1b1919c6e1b21"
 archive = "none"
 
-# yt-dlp — pinned release; in-app self-update channel implemented in tulipix-core::updater.
+# yt-dlp — always the rolling LATEST release (YouTube breaks often; a pinned
+# 2024 build goes stale). `latest = true` skips the sha pin + re-fetches every
+# run. In-app self-update channel also lives in tulipix-core::updater.
 # macOS asset is a universal binary (x86_64 + arm64).
 [[binary]]
 name = "yt-dlp"
-version = "2024.12.13"
+version = "latest"
 [[binary.sources]]
 os = "linux"
 arch = "x86_64"
-url = "https://github.com/yt-dlp/yt-dlp/releases/download/2024.12.13/yt-dlp_linux"
-sha256 = "e7788b8556c73e409d5713a4fdb71df12734b0853353f2da2352540dc9d22c95"
+url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux"
+sha256 = "latest"
 archive = "none"
+latest = true
 [[binary.sources]]
 os = "linux"
 arch = "aarch64"
-url = "https://github.com/yt-dlp/yt-dlp/releases/download/2024.12.13/yt-dlp_linux_aarch64"
-sha256 = "d55bb8356ce48facdd0d1c34a54fc947824210a2bf67c9e2569b1b59080df7c1"
+url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_linux_aarch64"
+sha256 = "latest"
 archive = "none"
+latest = true
 [[binary.sources]]
 os = "windows"
 arch = "x86_64"
-url = "https://github.com/yt-dlp/yt-dlp/releases/download/2024.12.13/yt-dlp.exe"
-sha256 = "a11ea8bbccf8bb7a570a07223b94a22ec3235ff00a9d9dedc44078eb1942bbcc"
+url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+sha256 = "latest"
 archive = "none"
+latest = true
 [[binary.sources]]
 os = "macos"
 arch = "x86_64"
-url = "https://github.com/yt-dlp/yt-dlp/releases/download/2024.12.13/yt-dlp_macos"
-sha256 = "d395afaa83eac63c6fc8a6b6854ff457a8559f7a2a7b60f68e0dbd96223d9e93"
+url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
+sha256 = "latest"
 archive = "none"
+latest = true
 [[binary.sources]]
 os = "macos"
 arch = "aarch64"
-url = "https://github.com/yt-dlp/yt-dlp/releases/download/2024.12.13/yt-dlp_macos"
-sha256 = "d395afaa83eac63c6fc8a6b6854ff457a8559f7a2a7b60f68e0dbd96223d9e93"
+url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos"
+sha256 = "latest"
 archive = "none"
+latest = true
+
+# ffmpeg + ffprobe — WINDOWS ONLY (Linux/macOS resolve from system PATH or the
+# Tools-directory setting). BtbN rolling "latest" GPL zip; both exes live under
+# `bin/` in the archive and are flattened to resources/bin/windows-x86_64/.
+[[binary]]
+name = "ffmpeg"
+version = "latest"
+[[binary.sources]]
+os = "windows"
+arch = "x86_64"
+url = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
+sha256 = "latest"
+archive = "zip"
+extract = ["bin/ffmpeg.exe", "bin/ffprobe.exe"]
+latest = true
+
+# mpv — WINDOWS ONLY (Linux/macOS use system mpv or the Tools-directory setting).
+# Bundles the standalone player `mpv.exe` (spawned for video playback). The
+# SourceForge "64bit/latest" link always redirects to the newest shinchiro .7z;
+# `mpv.com` (the console wrapper) comes along too. NOTE: this is the player, not
+# `libmpv` — the embedded audio path still needs mpv-2.dll (mpv-dev) at runtime.
+[[binary]]
+name = "mpv"
+version = "latest"
+[[binary.sources]]
+os = "windows"
+arch = "x86_64"
+url = "https://sourceforge.net/projects/mpv-player-windows/files/64bit/latest/download"
+sha256 = "latest"
+archive = "7z"
+extract = ["mpv.exe", "mpv.com"]
+latest = true
 
 # rclone — powers Cloud section
 [[binary]]

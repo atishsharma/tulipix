@@ -183,6 +183,7 @@ pub(crate) mod tests {
         // the same test pool so the podcasts/radio unit tests keep working.
         crate::podcasts::apply_schema(&pool).await.unwrap();
         crate::radio::apply_schema(&pool).await.unwrap();
+        crate::youtube::store::apply_schema(&pool).await.unwrap();
         (tmp, pool)
     }
 

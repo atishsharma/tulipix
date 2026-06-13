@@ -10,6 +10,8 @@
 
 use anyhow::Result;
 use std::path::{Path, PathBuf};
+// Only the macOS / Linux share backends shell out; Windows uses the WinRT path.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
 use std::process::Command;
 use tulipix_core::caps::{is_allowed, Cap};
 

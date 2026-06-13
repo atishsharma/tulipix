@@ -31,7 +31,10 @@ struct Source {
     #[serde(default)]
     extract: Vec<String>,    // paths inside archive to keep
     #[serde(default)]
+    #[allow(dead_code)] // manifest field reserved for build-from-source sources (whisper)
     build: Option<String>,   // "make" | "cmake" | ... — build from source after extract
+    #[serde(default)]
+    latest: bool,            // rolling "latest" asset — skip the sha pin, always re-fetch
 }
 
 fn host_os() -> &'static str {
@@ -79,20 +82,26 @@ fn main() -> Result<()> {
             tracing::warn!(name=%bin.name, "no source for {}-{}", host_os(), host_arch());
             continue;
         };
+        // "latest" assets roll, so never short-circuit on the marker and never
+        // pin a sha (the upstream hash changes with every release).
         let target_marker = out_dir.join(format!(".{}-{}.ok", bin.name, bin.version));
-        if target_marker.exists() && !dry_run {
+        if target_marker.exists() && !dry_run && !src.latest {
             tracing::info!(name=%bin.name, "already fetched");
             continue;
         }
-        tracing::info!(name=%bin.name, version=%bin.version, url=%src.url, "fetch");
+        tracing::info!(name=%bin.name, version=%bin.version, url=%src.url, latest=src.latest, "fetch");
         if dry_run { continue; }
 
         let bytes = reqwest::blocking::get(&src.url)?.error_for_status()?.bytes()?;
-        let mut h = Sha256::new();
-        h.update(&bytes);
-        let got = hex::encode_lower(h.finalize());
-        if got != src.sha256.to_lowercase() {
-            bail!("sha256 mismatch for {}: want {} got {}", bin.name, src.sha256, got);
+        if !src.latest {
+            let mut h = Sha256::new();
+            h.update(&bytes);
+            let got = hex::encode_lower(h.finalize());
+            if got != src.sha256.to_lowercase() {
+                bail!("sha256 mismatch for {}: want {} got {}", bin.name, src.sha256, got);
+            }
+        } else {
+            tracing::info!(name=%bin.name, "latest asset — sha pin skipped");
         }
         // Extract usable files per `archive` + `extract`, falling back to the
         // raw blob for unknown/none archive types (e.g. the macOS .pkg).
@@ -101,6 +110,8 @@ fn main() -> Result<()> {
                 tracing::info!(name=%bin.name, "extracted tar.gz"); }
             Some("zip") => { extract_zip(&bytes, &out_dir, &src.extract)?;
                 tracing::info!(name=%bin.name, "extracted zip"); }
+            Some("7z") => { extract_7z(&bytes, &out_dir, &src.extract)?;
+                tracing::info!(name=%bin.name, "extracted 7z"); }
             _ => {
                 let raw_path = out_dir.join(format!("{}-{}.bin", bin.name, bin.version));
                 fs::write(&raw_path, &bytes)?;
@@ -130,8 +141,15 @@ fn want(rel: &str, extract: &[String]) -> bool {
 /// `exiftool(-k).exe` to `exiftool.exe`.
 fn out_name(rel: &str) -> String {
     let base = rel.rsplit('/').next().unwrap_or(rel);
-    if base.to_lowercase().contains("exiftool") && base.to_lowercase().ends_with(".exe") {
+    let lower = base.to_lowercase();
+    if lower.contains("exiftool") && lower.ends_with(".exe") {
         return "exiftool.exe".into();
+    }
+    // Media tools live under `bin/` in their archives (BtbN ffmpeg, mpv) — flatten
+    // to the bare basename so tool_bin finds them at resources/bin/<os-arch>/<name>.
+    let stem = lower.trim_end_matches(".exe");
+    if matches!(stem, "ffmpeg" | "ffprobe" | "ffplay" | "mpv") {
+        return base.to_string();
     }
     rel.to_string()
 }
@@ -148,6 +166,36 @@ fn extract_targz(bytes: &[u8], out_dir: &std::path::Path, extract: &[String]) ->
         let dest = out_dir.join(out_name(&rel));
         if let Some(p) = dest.parent() { fs::create_dir_all(p)?; }
         e.unpack(&dest).with_context(|| format!("unpack {rel}"))?;
+    }
+    Ok(())
+}
+
+/// Extract a `.7z` (mpv Windows builds ship this way). sevenz-rust has no
+/// selective API, so unpack to a temp dir, then copy the wanted entries
+/// (flattened) into `out_dir` and drop the temp.
+fn extract_7z(bytes: &[u8], out_dir: &std::path::Path, extract: &[String]) -> Result<()> {
+    let tmp = out_dir.join(".7z-tmp");
+    let _ = fs::remove_dir_all(&tmp);
+    fs::create_dir_all(&tmp)?;
+    sevenz_rust::decompress(std::io::Cursor::new(bytes), &tmp)
+        .map_err(|e| anyhow::anyhow!("7z decompress: {e}"))?;
+    copy_wanted(&tmp, &tmp, out_dir, extract)?;
+    let _ = fs::remove_dir_all(&tmp);
+    Ok(())
+}
+
+/// Recursively copy files under `base` whose path (relative to `root`, top
+/// component stripped) matches `extract`, flattening via `out_name`.
+fn copy_wanted(root: &std::path::Path, base: &std::path::Path, out_dir: &std::path::Path, extract: &[String]) -> Result<()> {
+    for entry in fs::read_dir(base)? {
+        let p = entry?.path();
+        if p.is_dir() { copy_wanted(root, &p, out_dir, extract)?; continue; }
+        let rel = p.strip_prefix(root).unwrap_or(&p).to_string_lossy().replace('\\', "/");
+        let rel = strip_top(&rel);
+        if rel.is_empty() || !want(&rel, extract) { continue; }
+        let dest = out_dir.join(out_name(&rel));
+        if let Some(par) = dest.parent() { fs::create_dir_all(par)?; }
+        fs::copy(&p, &dest).with_context(|| format!("copy {rel}"))?;
     }
     Ok(())
 }
