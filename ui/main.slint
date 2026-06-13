@@ -1073,6 +1073,8 @@ export component MainWindow inherits Window {
     in-out property <int> music-yt-pl-del-id: -1;
     in-out property <bool> music-yt-res-open: false;
     in-out property <string> music-yt-res-id: "";
+    in-out property <bool> music-yt-now-video: false;
+    callback music-yt-watch-current();
     callback music-yt-clear-subs();
     callback music-yt-play-resolution(string, int);
     in-out property <string> music-yt-channel-query: "";
@@ -1080,13 +1082,25 @@ export component MainWindow inherits Window {
     in-out property <string> music-yt-dl-id: "";
     callback music-yt-channel-refresh();
     callback music-yt-channel-search(string);
+    callback music-yt-channel-load-more();
+    in property <[YtVideo]> music-yt-channel-results: [];
+    in property <bool> music-yt-channel-results-more: false;
     callback music-yt-download-resolution(string, int);
     in-out property <string> music-yt-subs-sort: "name";
+    in-out property <string> music-yt-subs-dir: "asc";
     in-out property <int> music-yt-subs-page: 0;
     in-out property <int> music-yt-subs-pages: 1;
     callback music-yt-subs-set-sort(string);
+    callback music-yt-subs-toggle-dir();
     callback music-yt-subs-set-page(int);
     callback music-yt-unsub(string);
+    // Subscribe/unsubscribe confirmation.
+    in-out property <bool> music-yt-sub-confirm-open: false;
+    in-out property <string> music-yt-sub-confirm-id: "";
+    in-out property <string> music-yt-sub-confirm-title: "";
+    in-out property <bool> music-yt-sub-confirm-add: false;
+    in-out property <bool> music-yt-sub-confirm-channelpage: false;
+    callback music-yt-sub-confirm-yes();
     callback music-yt-set-tab(string);
     callback music-yt-search(string);
     callback music-yt-search-more();
@@ -1106,6 +1120,8 @@ export component MainWindow inherits Window {
     callback music-yt-create-playlist(string);
     callback music-yt-delete-playlist(int);
     callback music-yt-import();
+    in-out property <string> music-yt-add-url: "";
+    callback music-yt-add-channel-url(string);
     // Podcast info card state.
     in-out property <bool> music-podcast-info-open: false;
     in-out property <bool> music-podcast-info-loading: false;
@@ -1874,16 +1890,27 @@ export component MainWindow inherits Window {
                 yt-subs-clear-open <=> root.music-yt-subs-clear-open;
                 yt-pl-del-open <=> root.music-yt-pl-del-open; yt-pl-del-id <=> root.music-yt-pl-del-id;
                 yt-res-open <=> root.music-yt-res-open; yt-res-id <=> root.music-yt-res-id;
+                yt-now-video: root.music-yt-now-video; yt-watch-current() => { root.music-yt-watch-current(); }
                 yt-channel-query <=> root.music-yt-channel-query;
                 yt-dl-open <=> root.music-yt-dl-open; yt-dl-id <=> root.music-yt-dl-id;
                 yt-channel-refresh() => { root.music-yt-channel-refresh(); }
                 yt-channel-search(q) => { root.music-yt-channel-search(q); }
+                yt-channel-results: root.music-yt-channel-results;
+                yt-channel-results-more: root.music-yt-channel-results-more;
+                yt-channel-load-more() => { root.music-yt-channel-load-more(); }
                 yt-download-resolution(id, h) => { root.music-yt-download-resolution(id, h); }
-                yt-subs-sort <=> root.music-yt-subs-sort; yt-subs-page <=> root.music-yt-subs-page;
+                yt-subs-sort <=> root.music-yt-subs-sort; yt-subs-dir <=> root.music-yt-subs-dir; yt-subs-page <=> root.music-yt-subs-page;
                 yt-subs-pages: root.music-yt-subs-pages;
                 yt-subs-set-sort(s) => { root.music-yt-subs-set-sort(s); }
+                yt-subs-toggle-dir() => { root.music-yt-subs-toggle-dir(); }
                 yt-subs-set-page(d) => { root.music-yt-subs-set-page(d); }
                 yt-unsub(id) => { root.music-yt-unsub(id); }
+                yt-sub-confirm-open <=> root.music-yt-sub-confirm-open;
+                yt-sub-confirm-id <=> root.music-yt-sub-confirm-id;
+                yt-sub-confirm-title <=> root.music-yt-sub-confirm-title;
+                yt-sub-confirm-add <=> root.music-yt-sub-confirm-add;
+                yt-sub-confirm-channelpage <=> root.music-yt-sub-confirm-channelpage;
+                yt-sub-confirm-yes() => { root.music-yt-sub-confirm-yes(); }
                 yt-clear-subs() => { root.music-yt-clear-subs(); }
                 yt-play-resolution(id, h) => { root.music-yt-play-resolution(id, h); }
                 yt-search(q) => { root.music-yt-search(q); }
@@ -1904,6 +1931,8 @@ export component MainWindow inherits Window {
                 yt-create-playlist(n) => { root.music-yt-create-playlist(n); }
                 yt-delete-playlist(pl) => { root.music-yt-delete-playlist(pl); }
                 yt-import() => { root.music-yt-import(); }
+                yt-add-url <=> root.music-yt-add-url;
+                yt-add-channel-url(u) => { root.music-yt-add-channel-url(u); }
                 podcast-tab <=> root.music-podcast-tab; podcast-set-tab(t) => { root.music-podcast-set-tab(t); }
                 podcast-total: root.music-podcast-total;
                 podcast-cards: root.music-podcast-cards; podcast-categories: root.music-podcast-categories;
@@ -2210,6 +2239,7 @@ export component MainWindow inherits Window {
         album: root.music-np-album; vis-bars: root.music-vis-bars; vis-style <=> root.music-vis-style; vis-style-changed(s) => { root.music-set-vis-style(s); }
         queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
         podcast-mode: root.music-player-mode == "podcast"; speed: root.music-podcast-speed; set-speed(v) => { root.music-podcast-set-speed(v); }
+        yt-now-video: root.music-yt-now-video; watch-video() => { root.music-yt-watch-current(); }
         tab <=> root.music-fs-tab;
         // Long-form modes (radio / podcast / audiobook) reopen their mini on
         // close — it's the only player those sections have.
@@ -2249,6 +2279,7 @@ export component MainWindow inherits Window {
             queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
             radio-mode: root.music-player-mode == "radio"; radio-initial: root.music-radio-np-initial;
             book-mode: root.music-player-mode == "book";
+            yt-now-video: root.music-yt-now-video; watch-video => { root.music-yt-watch-current(); }
             open-zen => { root.music-mini-open = false; root.music-fullscreen = true; }
             cycle-repeat => { root.music-cycle-repeat(); }
             close => { root.music-mini-open = false; }

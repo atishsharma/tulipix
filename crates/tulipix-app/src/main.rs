@@ -3349,6 +3349,7 @@ fn main() -> Result<()> {
                 let src = dl.clone().filter(|p| std::path::Path::new(p).exists()).unwrap_or(url);
                 play_music_url(&w, &src, &title);
                 w.set_music_player_mode("podcast".into());
+                w.set_music_yt_now_video(false);
                 w.set_music_np_title(title.into());
                 w.set_music_np_sub(if show.is_empty() { "Podcast".into() } else { show.into() });
                 w.set_music_np_accent(slint::Color::from_rgb_u8(0x8b, 0x5c, 0xf6));
@@ -3478,6 +3479,38 @@ fn main() -> Result<()> {
         populate_yt_subs(&w0);
     });
     let w = window.as_weak();
+    window.on_music_yt_subs_toggle_dir(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let dir = if w0.get_music_yt_subs_dir() == "asc" { "desc" } else { "asc" };
+        w0.set_music_yt_subs_dir(dir.into());
+        w0.set_music_yt_subs_page(0);
+        populate_yt_subs(&w0);
+    });
+    // Subscribe/unsubscribe confirmation → dispatch the real action.
+    let w = window.as_weak();
+    window.on_music_yt_sub_confirm_yes(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        if w0.get_music_yt_sub_confirm_channelpage() {
+            w0.invoke_music_yt_channel_toggle_sub();
+            return;
+        }
+        let id = w0.get_music_yt_sub_confirm_id().to_string();
+        if w0.get_music_yt_sub_confirm_add() {
+            // Re-subscribe a previously unsubscribed channel.
+            let title = w0.get_music_yt_sub_confirm_title().to_string();
+            let weak = w.clone();
+            tokio::runtime::Handle::current().spawn(async move {
+                if let Ok(pool) = pool_for("youtube").await {
+                    let _ = tulipix_music::youtube::store::import_subs(&pool,
+                        &[tulipix_music::youtube::subscriptions::ImportedSub { channel_id: id, title }]).await;
+                }
+                let _ = weak.upgrade_in_event_loop(|w| populate_yt_subs(&w));
+            });
+        } else {
+            w0.invoke_music_yt_unsub(id.into());
+        }
+    });
+    let w = window.as_weak();
     window.on_music_yt_subs_set_page(move |d| {
         let Some(w0) = w.upgrade() else { return; };
         let next = (w0.get_music_yt_subs_page() + d).clamp(0, (w0.get_music_yt_subs_pages() - 1).max(0));
@@ -3520,6 +3553,37 @@ fn main() -> Result<()> {
                 _ => {
                     let _ = weak.upgrade_in_event_loop(|w|
                         w.set_music_yt_status("Couldn't read that file — pick a Takeout subscriptions.csv or .json.".into()));
+                }
+            }
+        });
+    });
+    // Add a single channel by URL (/@handle, /channel/UC…, /c/…, or a video URL).
+    let w = window.as_weak();
+    window.on_music_yt_add_channel_url(move |url| {
+        let Some(w0) = w.upgrade() else { return; };
+        let url = url.trim().to_string();
+        if url.is_empty() { return; }
+        w0.set_music_yt_status("Resolving channel…".into());
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            match ytdlp_resolve_channel(&url).await {
+                Some((cid, title)) => {
+                    if let Ok(pool) = pool_for("youtube").await {
+                        let _ = tulipix_music::youtube::store::import_subs(&pool,
+                            &[tulipix_music::youtube::subscriptions::ImportedSub { channel_id: cid, title }]).await;
+                    }
+                    let _ = weak.upgrade_in_event_loop(|w| {
+                        w.set_music_yt_add_open(false);
+                        w.set_music_yt_add_url(slint::SharedString::new());
+                        w.set_music_yt_status(slint::SharedString::new());
+                        w.set_music_yt_tab("subscriptions".into());
+                        populate_yt_subs(&w);
+                        yt_fetch_sub_meta(w.as_weak());
+                    });
+                }
+                None => {
+                    let _ = weak.upgrade_in_event_loop(|w|
+                        w.set_music_yt_status("Couldn't resolve that channel URL — paste a channel or video link.".into()));
                 }
             }
         });
@@ -3569,21 +3633,25 @@ fn main() -> Result<()> {
     window.on_music_yt_open_channel(move |cid| {
         let Some(w0) = w.upgrade() else { return; };
         let cid = cid.to_string();
+        { let mut st = yt_ch_search_state().lock().unwrap(); st.all.clear(); st.shown = 0; }
         w0.set_music_yt_busy(true);
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let pool = pool_for("youtube").await.ok();
-            // Subscribed? + cached video count (cheap; from yt_subs meta).
-            let (subscribed, sub_line, cached) = match &pool {
+            // Subscribed? + total-subscribers line (cheap; from yt_subs meta) + the
+            // channel's own name from the sub record (so we never show "Channel").
+            let (subscribed, sub_line, fallback_name, cached) = match &pool {
                 Some(p) => {
                     let subs = tulipix_music::youtube::store::list_subs(p).await.unwrap_or_default();
                     let me = subs.iter().find(|s| s.channel_id == cid);
-                    let sub = me.is_some();
-                    let line = me.and_then(|s| s.video_count).filter(|n| *n > 0).map(|n| format!("{n} videos")).unwrap_or_default();
+                    let sub = me.map(|s| s.subscribed).unwrap_or(false);
+                    let line = me.and_then(|s| s.sub_count).filter(|n| *n > 0)
+                        .map(|n| format!("{} subscribers", yt_fmt_count(n))).unwrap_or_default();
+                    let nm = me.map(|s| s.title.clone()).filter(|t| !t.is_empty()).unwrap_or_default();
                     let cache = tulipix_music::youtube::store::get_channel_cache(p, &cid).await.unwrap_or_default();
-                    (sub, line, cache)
+                    (sub, line, nm, cache)
                 }
-                None => (false, String::new(), vec![]),
+                None => (false, String::new(), String::new(), vec![]),
             };
             // Cache-first: show stored videos instantly; only fetch when empty.
             let rows: Vec<YtVidData> = if !cached.is_empty() {
@@ -3601,7 +3669,9 @@ fn main() -> Result<()> {
                 r
             };
             yt_remember(&rows);
-            let name = rows.first().map(|r| r.channel.clone()).filter(|c| !c.is_empty()).unwrap_or_else(|| "Channel".to_string());
+            let name = rows.first().map(|r| r.channel.clone()).filter(|c| !c.is_empty())
+                .or_else(|| (!fallback_name.is_empty()).then(|| fallback_name.clone()))
+                .unwrap_or_else(|| "Channel".to_string());
             // Avatar from the sub record if we have it; else leave default.
             let avatar = match &pool {
                 Some(p) => tulipix_music::youtube::store::list_subs(p).await.unwrap_or_default()
@@ -3616,6 +3686,8 @@ fn main() -> Result<()> {
                 w.set_music_yt_channel_videos(yt_video_model(&rows));
                 w.set_music_yt_channel_subscribed(subscribed);
                 w.set_music_yt_channel_query(slint::SharedString::new());
+                w.set_music_yt_channel_results(yt_video_model(&[]));
+                w.set_music_yt_channel_results_more(false);
                 w.set_music_yt_channel_open(true);
                 w.set_music_yt_busy(false);
             });
@@ -3646,7 +3718,8 @@ fn main() -> Result<()> {
             });
         });
     });
-    // Channel-scoped search — videos from this channel only (transient).
+    // Channel-scoped search — results live in their own model (latest list is
+    // kept intact). Empty query clears results so the latest videos reappear.
     let w = window.as_weak();
     window.on_music_yt_channel_search(move |q| {
         let Some(w0) = w.upgrade() else { return; };
@@ -3654,16 +3727,10 @@ fn main() -> Result<()> {
         let q = q.trim().to_string();
         if cid.is_empty() { return; }
         if q.is_empty() {
-            // Restore the cached latest list.
-            let weak = w.clone();
-            tokio::runtime::Handle::current().spawn(async move {
-                let rows: Vec<YtVidData> = match pool_for("youtube").await.ok() {
-                    Some(p) => tulipix_music::youtube::store::get_channel_cache(&p, &cid).await.unwrap_or_default()
-                        .iter().map(yt_channelvid_to_data).collect(),
-                    None => vec![],
-                };
-                let _ = weak.upgrade_in_event_loop(move |w| w.set_music_yt_channel_videos(yt_video_model(&rows)));
-            });
+            { let mut st = yt_ch_search_state().lock().unwrap(); st.all.clear(); st.shown = 0; }
+            w0.set_music_yt_channel_results(yt_video_model(&[]));
+            w0.set_music_yt_channel_results_more(false);
+            w0.set_music_yt_busy(false);
             return;
         }
         w0.set_music_yt_busy(true);
@@ -3675,11 +3742,16 @@ fn main() -> Result<()> {
             let mut rows = Vec::with_capacity(videos.len());
             for v in &videos { rows.push(yt_vid_data(&client, &dir, v).await); }
             yt_remember(&rows);
-            let _ = weak.upgrade_in_event_loop(move |w| {
-                w.set_music_yt_channel_videos(yt_video_model(&rows));
-                w.set_music_yt_busy(false);
-            });
+            { let mut st = yt_ch_search_state().lock().unwrap(); st.shown = rows.len().min(10); st.all = rows; }
+            let _ = weak.upgrade_in_event_loop(|w| yt_render_channel_search(&w));
         });
+    });
+    // Channel search "Load more" — reveal the next 10 (capped at 20 total).
+    let w = window.as_weak();
+    window.on_music_yt_channel_load_more(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        { let mut st = yt_ch_search_state().lock().unwrap(); st.shown = (st.shown + 10).min(st.all.len()).min(20); }
+        yt_render_channel_search(&w0);
     });
     let w = window.as_weak();
     window.on_music_yt_channel_toggle_sub(move || {
@@ -3716,8 +3788,8 @@ fn main() -> Result<()> {
             let meta = yt_lookup(&id).unwrap_or_default();
             if let Some(path) = yt_dlp_fetch_audio(&id, &dir).await {
                 let (title, channel, thumb) = (meta.title.clone(), meta.channel.clone(), meta.thumb.clone());
-                let p2 = path.clone();
-                let _ = weak.upgrade_in_event_loop(move |w| yt_play_inapp(&w, p2, title, channel, thumb));
+                let (p2, id2) = (path.clone(), id.clone());
+                let _ = weak.upgrade_in_event_loop(move |w| yt_play_inapp(&w, id2, p2, title, channel, thumb, 0.0));
                 if let Ok(pool) = pool_for("youtube").await {
                     let _ = tulipix_music::youtube::store::record_cached(
                         &pool, &id, &meta.title, &meta.channel, &meta.thumb, &path, meta.dur_s).await;
@@ -3729,23 +3801,32 @@ fn main() -> Result<()> {
             }
         });
     });
-    // Video play at a chosen max height — stream via mpv fullscreen window.
+    // Watch the currently-playing YouTube audio as video (player transport button).
+    let w = window.as_weak();
+    window.on_music_yt_watch_current(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let id = yt_cur_audio().lock().map(|g| g.clone()).unwrap_or_default();
+        if id.is_empty() { return; }
+        // The picker lives in the YouTube view; switch to it so the popup renders
+        // even when triggered from the global mini/zen player on another tab.
+        w0.set_music_view("youtube".into());
+        // Offer the resolution picker (same as a normal video tap); yt-play-
+        // resolution hands off the current audio position for a seamless switch.
+        w0.set_music_yt_res_id(id.into());
+        w0.set_music_yt_res_open(true);
+    });
+    // Watch video — stops in-app audio, plays video fullscreen at the audio's
+    // position, then resumes audio for the same video where the video stopped.
     let w = window.as_weak();
     window.on_music_yt_play_resolution(move |id, height| {
         let Some(w0) = w.upgrade() else { return; };
         w0.set_music_yt_res_open(false);
-        let id = id.to_string();
-        tokio::runtime::Handle::current().spawn(async move {
-            let fmt = if height <= 0 { "best".to_string() }
-                else { format!("best[height<=?{height}]/best") };
-            let url = format!("https://www.youtube.com/watch?v={id}");
-            let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
-            if let Ok(out) = tokio::process::Command::new(bin).arg("-g").arg("-f").arg(&fmt).arg("--no-playlist").arg(&url).output().await {
-                if let Some(u) = String::from_utf8_lossy(&out.stdout).lines().next().map(|l| l.to_string()).filter(|l| !l.is_empty()) {
-                    yt_mpv_open(&u, false);
-                }
-            }
-        });
+        // If this same video's audio is playing, hand off its position to the video.
+        let start = {
+            let same = yt_cur_audio().lock().map(|g| *g == id.to_string()).unwrap_or(false);
+            if same { w0.get_music_pos() as f64 } else { 0.0 }
+        };
+        yt_watch_video(w.clone(), id.to_string(), height as i64, start);
     });
     // Download — explicit, permanent (bestaudio → opus).
     // Download button → opens the quality picker.
@@ -3916,12 +3997,13 @@ fn main() -> Result<()> {
     window.on_music_yt_import_playlist_file(move || {
         let Some(_w0) = w.upgrade() else { return; };
         let Some(path) = rfd::FileDialog::new()
-            .add_filter("Takeout playlist", &["csv"]).set_title("Import a YouTube playlist (Takeout CSV)")
+            .add_filter("Playlist export (JSON/CSV/TXT)", &["json", "csv", "txt"])
+            .set_title("Import a YouTube playlist (JSON, CSV or TXT)")
             .pick_file() else { return; };
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let text = tokio::fs::read_to_string(&path).await.unwrap_or_default();
-            let ids = tulipix_music::youtube::subscriptions::parse_playlist_ids(&text);
+            let ids = tulipix_music::youtube::subscriptions::parse_playlist_ids_any(&text);
             if ids.is_empty() { return; }
             let name = path.file_stem().and_then(|s| s.to_str()).unwrap_or("Imported playlist").to_string();
             if let Ok(pool) = pool_for("youtube").await {
@@ -5978,6 +6060,10 @@ fn main() -> Result<()> {
             s.advanced.insert(key.clone(), val);
         }
         if let Err(e) = s.save() { tracing::warn!(error = %e, "save advanced"); }
+        // Apply the universal tools dir live (no restart).
+        if key == "tools.bin-dir" {
+            tulipix_core::thumbs::set_tool_dir(s.advanced.get("tools.bin-dir").map(|v| v.as_str()));
+        }
         tracing::info!(%key, "setting text edited");
         let _ = &w; // panels not re-seeded on every keystroke
     });
@@ -5988,6 +6074,20 @@ fn main() -> Result<()> {
         match key.as_str() {
             "backup" => { let r = run_backup(); tracing::info!(ok = r.is_ok(), "backup"); }
             "export" => { let r = run_export(); tracing::info!(ok = r.is_ok(), "export json"); }
+            // Pick the universal external-tools directory, persist + apply live.
+            "tools-dir-browse" => {
+                if let Some(dir) = rfd::FileDialog::new()
+                    .set_title("Choose the folder containing mpv / yt-dlp / ffmpeg")
+                    .pick_folder()
+                {
+                    let path = dir.display().to_string();
+                    let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
+                    s.advanced.insert("tools.bin-dir".into(), path.clone());
+                    if let Err(e) = s.save() { tracing::warn!(error = %e, "save tools dir"); }
+                    tulipix_core::thumbs::set_tool_dir(Some(&path));
+                    seed_settings_panels(&w);
+                }
+            }
             // Migration import wizard (np.p1.migration): pick the source file,
             // auto-detect its kind, dry-run a plan, surface counts; Picasa
             // stars apply to the photo library (favorite flag) right away.
@@ -8290,7 +8390,7 @@ fn spawn_mpv_windowed(path: PathBuf, resume: Option<f64>, item_id: Option<i64>) 
     std::thread::spawn(move || {
         let sock = mpv_ipc::endpoint("tulipix-mpv");
         mpv_ipc::cleanup(&sock);
-        let mut cmd = std::process::Command::new("mpv");
+        let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
         cmd.arg(&path)
             .arg("--force-window=yes")
             .arg("--window-maximized=yes")   // open full-size (windowed, not borderless)
@@ -9077,7 +9177,7 @@ fn tts_speak_piper(text: &str) -> bool {
         let ffplay = tulipix_core::thumbs::tool_bin("ffplay");
         let players: [(String, Vec<&str>); 4] = [
             (ffplay.display().to_string(), vec!["-nodisp", "-autoexit", "-loglevel", "quiet"]),
-            ("mpv".into(), vec!["--no-video", "--really-quiet"]),
+            (tulipix_core::thumbs::tool_bin("mpv").display().to_string(), vec!["--no-video", "--really-quiet"]),
             ("paplay".into(), vec![]),
             ("aplay".into(), vec!["-q"]),
         ];
@@ -11948,13 +12048,15 @@ fn audiobook_pick_cover(weak: slint::Weak<MainWindow>, folder: String) {
 /// Stream an arbitrary audio URL via a fresh headless mpv (podcast episodes).
 /// Mirrors `play_music_at` minus the library-position bookkeeping.
 fn play_music_url(w: &MainWindow, url: &str, title: &str) {
+    if let Ok(mut g) = yt_cur_audio().lock() { g.clear(); }
+    w.set_music_yt_now_video(false);
     let my_gen = MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     if let Ok(mut g) = music_proc().lock() {
         if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
     }
     let sock = mpv_ipc::endpoint("tulipix-music");
     mpv_ipc::cleanup(&sock);
-    let mut cmd = std::process::Command::new("mpv");
+    let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
     cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
         .arg(format!("--input-ipc-server={}", sock.display()))
         .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
@@ -12331,13 +12433,15 @@ fn radio_refresh_all(w: &MainWindow) {
 /// observing `media-title`: Shoutcast/Icecast ICY metadata carries
 /// "Artist - Song" for most stations and becomes the now-playing title live.
 fn play_radio(w: &MainWindow, st: &tulipix_music::radio::Station) {
+    if let Ok(mut g) = yt_cur_audio().lock() { g.clear(); }
+    w.set_music_yt_now_video(false);
     let my_gen = MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     if let Ok(mut g) = music_proc().lock() {
         if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
     }
     let sock = mpv_ipc::endpoint("tulipix-music");
     mpv_ipc::cleanup(&sock);
-    let mut cmd = std::process::Command::new("mpv");
+    let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
     cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
         .arg(format!("--input-ipc-server={}", sock.display()))
         .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
@@ -12690,7 +12794,7 @@ fn music_audio_args(s: &tulipix_core::settings::Settings) -> Vec<String> {
 
 /// Enumerate audio output devices via `mpv --audio-device=help` (np.p5.music.output).
 fn enumerate_audio_devices() -> Vec<tulipix_music::output_device::AudioDevice> {
-    let out = std::process::Command::new("mpv").arg("--audio-device=help").output();
+    let out = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv")).arg("--audio-device=help").output();
     match out {
         Ok(o) => {
             let txt = String::from_utf8_lossy(&o.stdout);
@@ -13796,6 +13900,9 @@ fn play_music_at(w: &MainWindow, idx: i32) {
         let Some(p) = g.get(idx as usize).cloned() else { return; };
         (p, total)
     };
+    // Library track — not a YouTube video.
+    if let Ok(mut g) = yt_cur_audio().lock() { g.clear(); }
+    w.set_music_yt_now_video(false);
     let my_gen = MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     // Stop the previous track.
     if let Ok(mut g) = music_proc().lock() {
@@ -13803,7 +13910,7 @@ fn play_music_at(w: &MainWindow, idx: i32) {
     }
     let sock = mpv_ipc::endpoint("tulipix-music");
     mpv_ipc::cleanup(&sock);
-    let mut cmd = std::process::Command::new("mpv");
+    let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
     cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
         .arg(format!("--input-ipc-server={}", sock.display()))
         .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
@@ -14672,8 +14779,13 @@ fn seed_settings_panels(w: &MainWindow) {
         stat("Sibling subtitle auto-load", "On (.srt/.vtt/.ass next to video)", "ok"),
         txt(&s, "music.eq-preset", "Music equalizer", "flat · rock · pop · jazz · bass · treble · applies on next track"),
         hdr("BUNDLED TOOLS"),
+        // Universal override — look for mpv / yt-dlp / ffmpeg / ffprobe / etc. in
+        // this folder first (before the bundled copy and PATH). One setting for
+        // every external tool; handy on Windows where they aren't on PATH.
+        txt(&s, "tools.bin-dir", "Tools directory", "Folder holding mpv, yt-dlp, ffmpeg… — checked before bundled + PATH (blank = off)"),
+        act("tools-dir-browse", "Choose tools directory", "Pick the folder containing your external tool binaries", "Browse…"),
         tool_row("ffmpeg"), tool_row("ffprobe"), tool_row("rclone"),
-        tool_row("yt-dlp"), tool_row("whisper-cli"),
+        tool_row("yt-dlp"), tool_row("whisper-cli"), tool_row("mpv"),
         stat("ggml-tiny model", if bundled_present("ggml-tiny-1.0.bin") { "Bundled (75 MB)" } else { "Missing" },
              if bundled_present("ggml-tiny-1.0.bin") { "ok" } else { "warn" }),
         tool_row("exiftool"),
@@ -14770,10 +14882,16 @@ fn on_path(name: &str) -> bool {
         std::env::split_paths(&paths).any(|d| d.join(name).exists())
     }).unwrap_or(false)
 }
-/// Status row for a bundled CLI tool: bundled > system > missing.
+/// Status row for a CLI tool: user tools-dir > bundled > system > missing.
 fn tool_row(name: &str) -> SettingItem {
-    if bundled_present(name) { stat(name, "Bundled", "ok") }
-    else if on_path(name) { stat(name, "System", "warn") }
+    let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
+    let in_tools_dir = tulipix_core::settings::Settings::load().ok()
+        .map(|s| s.text("tools.bin-dir")).filter(|d| !d.trim().is_empty())
+        .map(|d| std::path::Path::new(d.trim()).join(format!("{name}{ext}")).exists())
+        .unwrap_or(false);
+    if in_tools_dir { stat(name, "Tools directory", "ok") }
+    else if bundled_present(name) { stat(name, "Bundled", "ok") }
+    else if on_path(name) || on_path(&format!("{name}{ext}")) { stat(name, "System", "warn") }
     else { stat(name, "Missing", "error") }
 }
 
@@ -14821,6 +14939,7 @@ const YT_PAGE: usize = 5;        // Home search results revealed per "Load more"
 #[derive(Clone, Default)]
 struct YtVidData {
     id: String,
+    channel_id: String, // owning channel ("" = unknown; set for recommended)
     title: String,
     channel: String,
     meta: String,      // "312K views · 8 years ago"
@@ -14895,7 +15014,7 @@ async fn yt_vid_data(client: &reqwest::Client, dir: &std::path::Path,
     let thumb = if v.thumbnail.is_empty() { String::new() }
         else { tulipix_music::youtube::thumbs::fetch_png(client, dir, &v.thumbnail).await.unwrap_or_default() };
     YtVidData {
-        id: v.id.clone(), title: v.title.clone(), channel: v.channel.clone(),
+        id: v.id.clone(), channel_id: String::new(), title: v.title.clone(), channel: v.channel.clone(),
         meta: yt_fmt_meta(v.views, &v.uploaded), info: yt_trunc100(&v.blurb),
         duration: yt_fmt_dur(v.duration), dur_s: v.duration, thumb,
     }
@@ -14909,7 +15028,8 @@ fn yt_img(path: &str) -> slint::Image {
 /// Build a YtVideo VecModel (UI thread — loads images from disk).
 fn yt_video_model(rows: &[YtVidData]) -> slint::ModelRc<YtVideo> {
     let v: Vec<YtVideo> = rows.iter().enumerate().map(|(i, d)| YtVideo {
-        id: d.id.clone().into(), title: d.title.clone().into(), channel: d.channel.clone().into(),
+        id: d.id.clone().into(), channel_id: d.channel_id.clone().into(),
+        title: d.title.clone().into(), channel: d.channel.clone().into(),
         meta: d.meta.clone().into(), info: d.info.clone().into(), duration: d.duration.clone().into(),
         thumb: yt_img(&d.thumb), index: i as i32,
     }).collect();
@@ -14918,7 +15038,7 @@ fn yt_video_model(rows: &[YtVidData]) -> slint::ModelRc<YtVideo> {
 
 fn yt_cached_to_data(c: &tulipix_music::youtube::store::CachedVideo) -> YtVidData {
     YtVidData {
-        id: c.video_id.clone(), title: c.title.clone(), channel: c.channel.clone(),
+        id: c.video_id.clone(), channel_id: String::new(), title: c.title.clone(), channel: c.channel.clone(),
         meta: String::new(), info: String::new(), duration: yt_fmt_dur(c.duration),
         dur_s: c.duration, thumb: c.thumb_path.clone(),
     }
@@ -14937,14 +15057,20 @@ fn populate_yt_recommended(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("youtube").await else { return; };
-        let subs = tulipix_music::youtube::store::list_subs(&pool).await.unwrap_or_default();
+        let subs: Vec<_> = tulipix_music::youtube::store::list_subs(&pool).await.unwrap_or_default()
+            .into_iter().filter(|s| s.subscribed).collect();
         if subs.is_empty() { return; }
         let client = reqwest::Client::new();
         let dir = yt_thumb_dir();
         let mut out: Vec<YtVidData> = Vec::new();
         for s in subs.iter().take(10) {
             let vids = ytdlp_channel_latest(&s.channel_id, 1).await;
-            if let Some(v) = vids.first() { out.push(yt_vid_data(&client, &dir, v).await); }
+            if let Some(v) = vids.first() {
+                let mut d = yt_vid_data(&client, &dir, v).await;
+                d.channel_id = s.channel_id.clone();
+                if d.channel.is_empty() { d.channel = s.title.clone(); }
+                out.push(d);
+            }
             if out.len() >= 10 { break; }
         }
         yt_remember(&out);
@@ -15006,7 +15132,7 @@ fn yt_pl_open() -> &'static std::sync::Mutex<YtPlOpen> {
 
 fn yt_item_to_data(it: &tulipix_music::youtube::store::PlaylistItem) -> YtVidData {
     YtVidData {
-        id: it.video_id.clone(), title: it.title.clone(), channel: it.channel.clone(),
+        id: it.video_id.clone(), channel_id: String::new(), title: it.title.clone(), channel: it.channel.clone(),
         meta: String::new(), info: String::new(), duration: yt_fmt_dur(it.duration),
         dur_s: it.duration, thumb: it.thumb_path.clone(),
     }
@@ -15098,7 +15224,7 @@ fn yt_sub_to_model(s: &tulipix_music::youtube::store::Sub, i: usize) -> YtSub {
         avatar: yt_img(&s.avatar_path.clone().unwrap_or_default()),
         count: videos.into(),
         subs: subs.into(),
-        subscribed: true,
+        subscribed: s.subscribed,
         index: i as i32,
     }
 }
@@ -15106,16 +15232,23 @@ fn yt_sub_to_model(s: &tulipix_music::youtube::store::Sub, i: usize) -> YtSub {
 /// Sort + paginate the subscriptions and push the page slice (30) + Home rail (10).
 fn yt_set_subs(w: &MainWindow, subs: &[tulipix_music::youtube::store::Sub]) {
     let sort = w.get_music_yt_subs_sort().to_string();
+    let asc = w.get_music_yt_subs_dir() != "desc";
     let mut sorted: Vec<&tulipix_music::youtube::store::Sub> = subs.iter().collect();
+    // Sort ascending by the chosen key (title as tiebreaker), then reverse for desc.
     match sort.as_str() {
-        "videos" => sorted.sort_by(|a, b| b.video_count.unwrap_or(0).cmp(&a.video_count.unwrap_or(0))
+        "videos" => sorted.sort_by(|a, b| a.video_count.unwrap_or(0).cmp(&b.video_count.unwrap_or(0))
             .then(a.title.to_lowercase().cmp(&b.title.to_lowercase()))),
-        "subscribers" => sorted.sort_by(|a, b| b.sub_count.unwrap_or(0).cmp(&a.sub_count.unwrap_or(0))
+        "subscribers" => sorted.sort_by(|a, b| a.sub_count.unwrap_or(0).cmp(&b.sub_count.unwrap_or(0))
+            .then(a.title.to_lowercase().cmp(&b.title.to_lowercase()))),
+        // Subscribed first (asc), then unsubscribed; title tiebreaker.
+        "status" => sorted.sort_by(|a, b| b.subscribed.cmp(&a.subscribed)
             .then(a.title.to_lowercase().cmp(&b.title.to_lowercase()))),
         _ => sorted.sort_by(|a, b| a.title.to_lowercase().cmp(&b.title.to_lowercase())),
     }
-    w.set_music_yt_sub_count(sorted.len() as i32);
-    let home: Vec<YtSub> = sorted.iter().take(10).enumerate().map(|(i, s)| yt_sub_to_model(s, i)).collect();
+    if !asc { sorted.reverse(); }
+    // Header count + Home rail reflect only channels you're actually subscribed to.
+    w.set_music_yt_sub_count(sorted.iter().filter(|s| s.subscribed).count() as i32);
+    let home: Vec<YtSub> = sorted.iter().filter(|s| s.subscribed).take(10).enumerate().map(|(i, s)| yt_sub_to_model(s, i)).collect();
     w.set_music_yt_home_subs(slint::ModelRc::new(slint::VecModel::from(home)));
     let pages = sorted.len().div_ceil(YT_SUBS_PER_PAGE).max(1);
     let page = (w.get_music_yt_subs_page().max(0) as usize).min(pages - 1);
@@ -15186,6 +15319,25 @@ fn yt_render_search(w: &MainWindow) {
     w.set_music_yt_busy(false);
 }
 
+// Channel-scoped search stash — separate from the cached "latest" list so the
+// latest videos are never clobbered; results page 10 at a time up to 20.
+#[derive(Default)]
+struct YtChSearch { all: Vec<YtVidData>, shown: usize }
+fn yt_ch_search_state() -> &'static std::sync::Mutex<YtChSearch> {
+    static S: OnceLock<std::sync::Mutex<YtChSearch>> = OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(YtChSearch::default()))
+}
+fn yt_render_channel_search(w: &MainWindow) {
+    let (rows, more): (Vec<YtVidData>, bool) = {
+        let st = yt_ch_search_state().lock().unwrap();
+        let shown = st.shown.min(st.all.len());
+        (st.all[..shown].to_vec(), shown < st.all.len())
+    };
+    w.set_music_yt_channel_results(yt_video_model(&rows));
+    w.set_music_yt_channel_results_more(more);
+    w.set_music_yt_busy(false);
+}
+
 async fn yt_dlp_fetch_audio(id: &str, dir: &std::path::Path) -> Option<String> {
     let _ = std::fs::create_dir_all(dir);
     let out = dir.join(format!("{id}.opus"));
@@ -15207,17 +15359,10 @@ fn yt_data_to_channelvid(d: &YtVidData) -> tulipix_music::youtube::store::Channe
 }
 fn yt_channelvid_to_data(c: &tulipix_music::youtube::store::ChannelVid) -> YtVidData {
     YtVidData {
-        id: c.video_id.clone(), title: c.title.clone(), channel: c.channel.clone(),
+        id: c.video_id.clone(), channel_id: String::new(), title: c.title.clone(), channel: c.channel.clone(),
         meta: c.meta.clone(), info: c.info.clone(), duration: yt_fmt_dur(c.duration),
         dur_s: c.duration, thumb: c.thumb_path.clone(),
     }
-}
-
-fn yt_mpv_open(arg: &str, audio_only: bool) {
-    let mut c = std::process::Command::new("mpv");
-    if audio_only { c.arg("--no-video"); }
-    else { c.arg("--fullscreen").arg("--fs").arg("--force-window=immediate").arg("--ontop"); }
-    let _ = c.arg(arg).spawn();
 }
 
 // ── Download queue (sequential, with progress) ──────────────────────────────
@@ -15434,19 +15579,111 @@ async fn ytdlp_channel_meta(id: &str) -> Option<(String, i64, i64)> {
     Some((yt_pick_avatar(&j), followers, video_count))
 }
 
+/// Resolve any channel URL (/@handle, /channel/UC…, /c/…, /user/…, or a video
+/// URL) into (channel_id, title) via yt-dlp.
+async fn ytdlp_resolve_channel(url: &str) -> Option<(String, String)> {
+    let j = ytdlp_json(vec!["--flat-playlist".into(), "-J".into(), "--no-warnings".into(),
+        "--playlist-items".into(), "0".into(), url.to_string()]).await?;
+    let cid = j.get("channel_id").and_then(|x| x.as_str())
+        .or_else(|| j.get("uploader_id").and_then(|x| x.as_str()))
+        .or_else(|| j.get("id").and_then(|x| x.as_str()))
+        .unwrap_or("").to_string();
+    if !cid.starts_with("UC") { return None; }
+    let title = j.get("channel").and_then(|x| x.as_str())
+        .or_else(|| j.get("uploader").and_then(|x| x.as_str()))
+        .or_else(|| j.get("title").and_then(|x| x.as_str()))
+        .unwrap_or("").to_string();
+    Some((cid, title))
+}
+
 /// Play a downloaded file through the in-app mpv player (bottom/mini/zen),
 /// setting now-playing metadata from the given strings.
-fn yt_play_inapp(w: &MainWindow, path: String, title: String, sub: String, thumb: String) {
+fn yt_cur_audio() -> &'static std::sync::Mutex<String> {
+    static S: OnceLock<std::sync::Mutex<String>> = OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(String::new()))
+}
+
+static YT_VID_POS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+
+/// Watch a video fullscreen: stops the in-app audio, plays the muxed stream via
+/// mpv (starting at `start` secs), tracks position, and on close resumes the
+/// in-app audio for the same video at the position the video stopped.
+fn yt_watch_video(weak: slint::Weak<MainWindow>, id: String, height: i64, start: f64) {
+    // Stop in-app audio (kill the music mpv, invalidate its reader, clear UI).
+    MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    if let Ok(mut g) = music_proc().lock() { if let Some(mut c) = g.take() { let _ = c.kill(); let _ = c.wait(); } }
+    let _ = weak.upgrade_in_event_loop(|w| w.set_music_playing(false));
+    tokio::runtime::Handle::current().spawn(async move {
+        let fmt = if height <= 0 { "best".to_string() } else { format!("best[height<=?{height}]/best") };
+        let url = format!("https://www.youtube.com/watch?v={id}");
+        let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
+        let stream = match tokio::process::Command::new(bin).arg("-g").arg("-f").arg(&fmt).arg("--no-playlist").arg(&url).output().await {
+            Ok(o) => String::from_utf8_lossy(&o.stdout).lines().next().map(|l| l.to_string()).filter(|l| !l.is_empty()),
+            Err(_) => None,
+        };
+        let Some(stream) = stream else { return; };
+        let sock = mpv_ipc::endpoint("tulipix-yt-video");
+        mpv_ipc::cleanup(&sock);
+        YT_VID_POS.store(start as i64, std::sync::atomic::Ordering::Relaxed);
+        let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
+        // Maximized normal window (keeps the WM top bar), not borderless fullscreen.
+        cmd.arg("--window-maximized=yes").arg("--force-window=immediate").arg("--title=Tulipix — YouTube")
+            .arg(format!("--input-ipc-server={}", sock.display()));
+        if start > 1.0 { cmd.arg(format!("--start={}", start as i64)); }
+        cmd.arg(&stream);
+        mpv_die_with_parent(&mut cmd);
+        let Ok(_child) = cmd.spawn() else { return; };
+        let weak2 = weak.clone();
+        std::thread::spawn(move || {
+            use std::io::{BufRead, BufReader, Write};
+            let mut conn = None;
+            for _ in 0..50 {
+                if let Ok(s) = mpv_ipc::connect(&sock) { conn = Some(s); break; }
+                std::thread::sleep(std::time::Duration::from_millis(100));
+            }
+            if let Some(mut stream) = conn {
+                let _ = stream.write_all(b"{\"command\":[\"observe_property\",1,\"time-pos\"]}\n");
+                let rd = BufReader::new(stream);
+                for line in rd.lines().map_while(Result::ok) {
+                    if let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) {
+                        if v["event"] == "property-change" && v["name"] == "time-pos" {
+                            if let Some(d) = v["data"].as_f64() { YT_VID_POS.store(d as i64, std::sync::atomic::Ordering::Relaxed); }
+                        }
+                    }
+                }
+            }
+            // mpv exited → resume in-app audio at the last video position.
+            let pos = YT_VID_POS.load(std::sync::atomic::Ordering::Relaxed) as f64;
+            let id2 = id.clone();
+            let _ = weak2.upgrade_in_event_loop(move |w| {
+                let weak3 = w.as_weak();
+                tokio::runtime::Handle::current().spawn(async move {
+                    let dir = yt_media_dir();
+                    if let Some(path) = yt_dlp_fetch_audio(&id2, &dir).await {
+                        let m = yt_lookup(&id2).unwrap_or_default();
+                        let (t, c, th, idd) = (m.title, m.channel, m.thumb, id2.clone());
+                        let _ = weak3.upgrade_in_event_loop(move |w| yt_play_inapp(&w, idd, path, t, c, th, pos));
+                    }
+                });
+            });
+        });
+    });
+}
+
+fn yt_play_inapp(w: &MainWindow, id: String, path: String, title: String, sub: String, thumb: String, start: f64) {
+    if let Ok(mut g) = yt_cur_audio().lock() { *g = id; }
+    w.set_music_yt_now_video(true);
     let my_gen = MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     if let Ok(mut g) = music_proc().lock() {
         if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
     }
     let sock = mpv_ipc::endpoint("tulipix-music");
     mpv_ipc::cleanup(&sock);
-    let mut cmd = std::process::Command::new("mpv");
+    let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
     cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
         .arg(format!("--input-ipc-server={}", sock.display()))
         .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
+    if start > 1.0 { cmd.arg(format!("--start={}", start as i64)); }
     if w.get_music_muted() { cmd.arg("--mute=yes"); }
     stop_video();
     mpv_die_with_parent(&mut cmd);

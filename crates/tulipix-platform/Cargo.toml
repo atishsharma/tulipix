@@ -17,6 +17,8 @@ tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 keyring.workspace = true
+# Used by share.rs (caps gate) on every platform — must not be Linux-only.
+tulipix-core = { path = "../tulipix-core" }
 # default-features off drops the libxdo (xdotool) link dep — absent on this
 # box and unneeded on Wayland; only bare-X11 menu positioning degrades.
 tray-icon = { version = "0.19", optional = true, default-features = false }
@@ -25,7 +27,6 @@ tray-icon = { version = "0.19", optional = true, default-features = false }
 # + gtk::main itself (Slint owns the real main thread).
 [target.'cfg(target_os = "linux")'.dependencies]
 gtk = { version = "0.18", optional = true }
-tulipix-core = { path = "../tulipix-core" }
 
 # muda's Linux backend needs a GTK window to attach to; Slint's winit backend
 # has none, so the Linux menubar path can never work — keeping muda out of the

@@ -20,3 +20,4 @@ tracing-subscriber.workspace = true
 flate2 = "1"
 tar = "0.4"
 zip = { version = "2", default-features = false, features = ["deflate"] }
+sevenz-rust = "0.6"

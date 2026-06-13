@@ -119,9 +119,49 @@ pub fn parse_playlist_ids(text: &str) -> Vec<String> {
     out
 }
 
+fn looks_like_id(s: &str) -> bool {
+    s.len() == 11 && s.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
+}
+
+fn collect_json_ids(v: &serde_json::Value, out: &mut Vec<String>, seen: &mut std::collections::HashSet<String>) {
+    match v {
+        serde_json::Value::String(s) => {
+            if looks_like_id(s) && seen.insert(s.clone()) { out.push(s.clone()); }
+        }
+        serde_json::Value::Array(a) => for x in a { collect_json_ids(x, out, seen); },
+        serde_json::Value::Object(m) => for x in m.values() { collect_json_ids(x, out, seen); },
+        _ => {}
+    }
+}
+
+/// Parse a playlist export in any of JSON / CSV / TXT shapes into a video-id list.
+/// JSON: any 11-char id-looking strings anywhere in the tree. CSV/TXT: first
+/// column ids (Takeout shape; one id per line also works).
+pub fn parse_playlist_ids_any(text: &str) -> Vec<String> {
+    let t = text.trim_start();
+    if t.starts_with('[') || t.starts_with('{') {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(text) {
+            let mut out = Vec::new();
+            let mut seen = std::collections::HashSet::new();
+            collect_json_ids(&v, &mut out, &mut seen);
+            if !out.is_empty() { return out; }
+        }
+    }
+    parse_playlist_ids(text)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_playlist_ids_any_shapes() {
+        assert_eq!(parse_playlist_ids_any("dQw4w9WgXcQ\nabc123ABC_-\n"),
+                   vec!["dQw4w9WgXcQ".to_string(), "abc123ABC_-".to_string()]);
+        let json = r#"[{"videoId":"dQw4w9WgXcQ"},{"snippet":{"resourceId":{"videoId":"abc123ABC_-"}}}]"#;
+        assert_eq!(parse_playlist_ids_any(json),
+                   vec!["dQw4w9WgXcQ".to_string(), "abc123ABC_-".to_string()]);
+    }
 
     #[test]
     fn parses_playlist_ids() {

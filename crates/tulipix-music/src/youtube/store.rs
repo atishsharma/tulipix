@@ -95,6 +95,8 @@ pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(YOUTUBE_SCHEMA).execute(pool).await?;
     // Migrate pre-existing youtube.db files lacking sub_count. Ignore if present.
     let _ = sqlx::query("ALTER TABLE yt_subs ADD COLUMN sub_count INTEGER").execute(pool).await;
+    // Soft-unsubscribe: unsubbed channels stay in the list (subscribed = 0).
+    let _ = sqlx::query("ALTER TABLE yt_subs ADD COLUMN subscribed INTEGER NOT NULL DEFAULT 1").execute(pool).await;
     let _ = sqlx::query("ALTER TABLE yt_playlists ADD COLUMN source_url TEXT").execute(pool).await;
     let _ = sqlx::query("ALTER TABLE yt_playlists ADD COLUMN video_count INTEGER").execute(pool).await;
     Ok(())
@@ -117,6 +119,7 @@ pub struct Sub {
     pub video_count: Option<i64>,
     pub sub_count: Option<i64>,
     pub fetched_at: Option<i64>,
+    pub subscribed: bool,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -153,8 +156,8 @@ pub struct PlaylistItem {
 pub async fn import_subs(pool: &SqlitePool, subs: &[ImportedSub]) -> Result<i64> {
     for s in subs {
         sqlx::query(
-            "INSERT INTO yt_subs (channel_id, title) VALUES (?, ?)
-             ON CONFLICT(channel_id) DO UPDATE SET title = excluded.title",
+            "INSERT INTO yt_subs (channel_id, title, subscribed) VALUES (?, ?, 1)
+             ON CONFLICT(channel_id) DO UPDATE SET title = excluded.title, subscribed = 1",
         )
         .bind(&s.channel_id)
         .bind(&s.title)
@@ -165,20 +168,21 @@ pub async fn import_subs(pool: &SqlitePool, subs: &[ImportedSub]) -> Result<i64>
 }
 
 pub async fn list_subs(pool: &SqlitePool) -> Result<Vec<Sub>> {
-    let rows: Vec<(String, String, Option<String>, Option<i64>, Option<i64>, Option<i64>)> = sqlx::query_as(
-        "SELECT channel_id, title, avatar_path, video_count, sub_count, fetched_at FROM yt_subs ORDER BY title COLLATE NOCASE",
+    let rows: Vec<(String, String, Option<String>, Option<i64>, Option<i64>, Option<i64>, i64)> = sqlx::query_as(
+        "SELECT channel_id, title, avatar_path, video_count, sub_count, fetched_at, subscribed FROM yt_subs ORDER BY title COLLATE NOCASE",
     )
     .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(channel_id, title, avatar_path, video_count, sub_count, fetched_at)| Sub {
+        .map(|(channel_id, title, avatar_path, video_count, sub_count, fetched_at, subscribed)| Sub {
             channel_id,
             title,
             avatar_path,
             video_count,
             sub_count,
             fetched_at,
+            subscribed: subscribed != 0,
         })
         .collect())
 }
@@ -203,8 +207,10 @@ pub async fn set_sub_meta(
     Ok(())
 }
 
+/// Soft unsubscribe — keep the channel in the list (subscribed = 0) so it can be
+/// re-subscribed later. Avatar / counts are preserved.
 pub async fn unsubscribe(pool: &SqlitePool, channel_id: &str) -> Result<()> {
-    sqlx::query("DELETE FROM yt_subs WHERE channel_id = ?")
+    sqlx::query("UPDATE yt_subs SET subscribed = 0 WHERE channel_id = ?")
         .bind(channel_id)
         .execute(pool)
         .await?;
@@ -629,8 +635,15 @@ mod tests {
         let one = subs.iter().find(|s| s.channel_id == "UC1").unwrap();
         assert_eq!(one.video_count, Some(142));
         assert_eq!(one.sub_count, Some(5000));
+        // Soft unsubscribe: channel stays in the list, just flagged subscribed=false.
         unsubscribe(&pool, "UC2").await.unwrap();
-        assert_eq!(list_subs(&pool).await.unwrap().len(), 1);
+        let subs = list_subs(&pool).await.unwrap();
+        assert_eq!(subs.len(), 2);
+        assert!(!subs.iter().find(|s| s.channel_id == "UC2").unwrap().subscribed);
+        assert!(subs.iter().find(|s| s.channel_id == "UC1").unwrap().subscribed);
+        // Re-subscribe via import restores the flag.
+        import_subs(&pool, &[ImportedSub { channel_id: "UC2".into(), title: "B".into() }]).await.unwrap();
+        assert!(list_subs(&pool).await.unwrap().iter().find(|s| s.channel_id == "UC2").unwrap().subscribed);
     }
 
     #[tokio::test]

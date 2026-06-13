@@ -107,7 +107,7 @@ pub fn redact_bytes(input: &[u8]) -> Vec<u8> {
 
 fn redact_line(line: &str) -> String {
     let mut s = String::with_capacity(line.len());
-    let mut chars = line.chars().peekable();
+    let chars = line.chars().peekable();
     let mut buf = String::new();
     for c in chars {
         if c.is_ascii_alphanumeric() || c == '_' || c == '-' || c == '.' || c == '/' || c == '\\' || c == ':' || c == '@' || c == '+' || c == '=' {
@@ -148,7 +148,7 @@ fn stem_to_unix(stem: &str) -> Option<u64> {
     // civil-from-days (inverse of logging::days_to_ymd) — good enough for cutoff math.
     let y2 = if m <= 2 { y - 1 } else { y };
     let era = if y2 >= 0 { y2 } else { y2 - 399 } / 400;
-    let yoe = (y2 - era * 400);
+    let yoe = y2 - era * 400;
     let mp = if m > 2 { m - 3 } else { m + 9 };
     let doy = (153 * mp + 2) / 5 + d - 1;
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
