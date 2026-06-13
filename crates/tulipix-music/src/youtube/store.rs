@@ -9,6 +9,7 @@ CREATE TABLE IF NOT EXISTS yt_subs (
     title       TEXT NOT NULL,
     avatar_path TEXT,
     video_count INTEGER,
+    sub_count   INTEGER,
     fetched_at  INTEGER
 );
 
@@ -44,6 +45,20 @@ CREATE TABLE IF NOT EXISTS yt_playlists (
     created_at INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS yt_channel_cache (
+    channel_id TEXT NOT NULL,
+    video_id   TEXT NOT NULL,
+    title      TEXT,
+    channel    TEXT,
+    meta       TEXT,
+    info       TEXT,
+    thumb_path TEXT,
+    duration   INTEGER,
+    position   INTEGER NOT NULL,
+    PRIMARY KEY (channel_id, video_id)
+);
+CREATE INDEX IF NOT EXISTS yt_channel_cache_idx ON yt_channel_cache(channel_id, position);
+
 CREATE TABLE IF NOT EXISTS yt_playlist_items (
     playlist_id INTEGER NOT NULL REFERENCES yt_playlists(id) ON DELETE CASCADE,
     video_id    TEXT NOT NULL,
@@ -61,6 +76,8 @@ CREATE INDEX IF NOT EXISTS yt_playlist_items_pl_idx ON yt_playlist_items(playlis
 /// Apply the youtube schema to a (youtube.db) pool. Idempotent.
 pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(YOUTUBE_SCHEMA).execute(pool).await?;
+    // Migrate pre-existing youtube.db files lacking sub_count. Ignore if present.
+    let _ = sqlx::query("ALTER TABLE yt_subs ADD COLUMN sub_count INTEGER").execute(pool).await;
     Ok(())
 }
 
@@ -79,6 +96,7 @@ pub struct Sub {
     pub title: String,
     pub avatar_path: Option<String>,
     pub video_count: Option<i64>,
+    pub sub_count: Option<i64>,
     pub fetched_at: Option<i64>,
 }
 
@@ -127,18 +145,19 @@ pub async fn import_subs(pool: &SqlitePool, subs: &[ImportedSub]) -> Result<i64>
 }
 
 pub async fn list_subs(pool: &SqlitePool) -> Result<Vec<Sub>> {
-    let rows: Vec<(String, String, Option<String>, Option<i64>, Option<i64>)> = sqlx::query_as(
-        "SELECT channel_id, title, avatar_path, video_count, fetched_at FROM yt_subs ORDER BY title COLLATE NOCASE",
+    let rows: Vec<(String, String, Option<String>, Option<i64>, Option<i64>, Option<i64>)> = sqlx::query_as(
+        "SELECT channel_id, title, avatar_path, video_count, sub_count, fetched_at FROM yt_subs ORDER BY title COLLATE NOCASE",
     )
     .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(channel_id, title, avatar_path, video_count, fetched_at)| Sub {
+        .map(|(channel_id, title, avatar_path, video_count, sub_count, fetched_at)| Sub {
             channel_id,
             title,
             avatar_path,
             video_count,
+            sub_count,
             fetched_at,
         })
         .collect())
@@ -148,13 +167,15 @@ pub async fn set_sub_meta(
     pool: &SqlitePool,
     channel_id: &str,
     avatar: Option<&str>,
-    count: Option<i64>,
+    video_count: Option<i64>,
+    sub_count: Option<i64>,
 ) -> Result<()> {
     sqlx::query(
-        "UPDATE yt_subs SET avatar_path = COALESCE(?, avatar_path), video_count = COALESCE(?, video_count), fetched_at = ? WHERE channel_id = ?",
+        "UPDATE yt_subs SET avatar_path = COALESCE(?, avatar_path), video_count = COALESCE(?, video_count), sub_count = COALESCE(?, sub_count), fetched_at = ? WHERE channel_id = ?",
     )
     .bind(avatar)
-    .bind(count)
+    .bind(video_count)
+    .bind(sub_count)
     .bind(now())
     .bind(channel_id)
     .execute(pool)
@@ -167,6 +188,48 @@ pub async fn unsubscribe(pool: &SqlitePool, channel_id: &str) -> Result<()> {
         .bind(channel_id)
         .execute(pool)
         .await?;
+    Ok(())
+}
+
+pub async fn clear_subs(pool: &SqlitePool) -> Result<()> {
+    sqlx::query("DELETE FROM yt_subs").execute(pool).await?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ChannelVid {
+    pub video_id: String,
+    pub title: String,
+    pub channel: String,
+    pub meta: String,
+    pub info: String,
+    pub thumb_path: String,
+    pub duration: i64,
+}
+
+pub async fn get_channel_cache(pool: &SqlitePool, channel_id: &str) -> Result<Vec<ChannelVid>> {
+    let rows: Vec<(String, String, String, String, String, String, i64)> = sqlx::query_as(
+        "SELECT video_id,title,channel,meta,info,thumb_path,duration FROM yt_channel_cache WHERE channel_id = ? ORDER BY position",
+    )
+    .bind(channel_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(video_id, title, channel, meta, info, thumb_path, duration)| ChannelVid {
+        video_id, title, channel, meta, info, thumb_path, duration,
+    }).collect())
+}
+
+/// Replace the cached latest-videos list for a channel.
+pub async fn set_channel_cache(pool: &SqlitePool, channel_id: &str, vids: &[ChannelVid]) -> Result<()> {
+    sqlx::query("DELETE FROM yt_channel_cache WHERE channel_id = ?").bind(channel_id).execute(pool).await?;
+    for (i, v) in vids.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO yt_channel_cache (channel_id,video_id,title,channel,meta,info,thumb_path,duration,position) VALUES (?,?,?,?,?,?,?,?,?)",
+        )
+        .bind(channel_id).bind(&v.video_id).bind(&v.title).bind(&v.channel)
+        .bind(&v.meta).bind(&v.info).bind(&v.thumb_path).bind(v.duration).bind(i as i64)
+        .execute(pool).await?;
+    }
     Ok(())
 }
 
@@ -308,6 +371,13 @@ pub async fn list_downloads(pool: &SqlitePool, limit: i64) -> Result<Vec<CachedV
             at,
         })
         .collect())
+}
+
+pub async fn remove_cached(pool: &SqlitePool, id: &str) -> Result<Option<String>> {
+    let path: Option<String> = sqlx::query_scalar("SELECT media_path FROM yt_cached WHERE video_id = ?")
+        .bind(id).fetch_optional(pool).await?;
+    sqlx::query("DELETE FROM yt_cached WHERE video_id = ?").bind(id).execute(pool).await?;
+    Ok(path)
 }
 
 pub async fn remove_download(pool: &SqlitePool, id: &str) -> Result<Option<String>> {
@@ -464,10 +534,11 @@ mod tests {
         assert_eq!(n, 2);
         let subs = list_subs(&pool).await.unwrap();
         assert_eq!(subs.len(), 2);
-        set_sub_meta(&pool, "UC1", Some("/a/av.png"), Some(142)).await.unwrap();
+        set_sub_meta(&pool, "UC1", Some("/a/av.png"), Some(142), Some(5000)).await.unwrap();
         let subs = list_subs(&pool).await.unwrap();
         let one = subs.iter().find(|s| s.channel_id == "UC1").unwrap();
         assert_eq!(one.video_count, Some(142));
+        assert_eq!(one.sub_count, Some(5000));
         unsubscribe(&pool, "UC2").await.unwrap();
         assert_eq!(list_subs(&pool).await.unwrap().len(), 1);
     }

@@ -1048,6 +1048,29 @@ export component MainWindow inherits Window {
     in-out property <string> music-yt-playlist-title: "";
     in-out property <[YtVideo]> music-yt-playlist-videos: [];
     in-out property <bool> music-yt-add-open: false;
+    in-out property <bool> music-yt-fetch-busy: false;
+    in-out property <float> music-yt-fetch-frac: 0;
+    in-out property <string> music-yt-fetch-msg: "";
+    in-out property <int> music-yt-sub-count: 0;
+    in-out property <bool> music-yt-subs-clear-open: false;
+    in-out property <bool> music-yt-pl-del-open: false;
+    in-out property <int> music-yt-pl-del-id: -1;
+    in-out property <bool> music-yt-res-open: false;
+    in-out property <string> music-yt-res-id: "";
+    callback music-yt-clear-subs();
+    callback music-yt-play-resolution(string, int);
+    in-out property <string> music-yt-channel-query: "";
+    in-out property <bool> music-yt-dl-open: false;
+    in-out property <string> music-yt-dl-id: "";
+    callback music-yt-channel-refresh();
+    callback music-yt-channel-search(string);
+    callback music-yt-download-resolution(string, int);
+    in-out property <string> music-yt-subs-sort: "name";
+    in-out property <int> music-yt-subs-page: 0;
+    in-out property <int> music-yt-subs-pages: 1;
+    callback music-yt-subs-set-sort(string);
+    callback music-yt-subs-set-page(int);
+    callback music-yt-unsub(string);
     callback music-yt-set-tab(string);
     callback music-yt-search(string);
     callback music-yt-search-more();
@@ -1819,6 +1842,23 @@ export component MainWindow inherits Window {
                 yt-playlist-open <=> root.music-yt-playlist-open; yt-playlist-title: root.music-yt-playlist-title;
                 yt-playlist-videos: root.music-yt-playlist-videos;
                 yt-add-open <=> root.music-yt-add-open;
+                yt-fetch-busy: root.music-yt-fetch-busy; yt-fetch-frac: root.music-yt-fetch-frac;
+                yt-fetch-msg: root.music-yt-fetch-msg; yt-sub-count: root.music-yt-sub-count;
+                yt-subs-clear-open <=> root.music-yt-subs-clear-open;
+                yt-pl-del-open <=> root.music-yt-pl-del-open; yt-pl-del-id <=> root.music-yt-pl-del-id;
+                yt-res-open <=> root.music-yt-res-open; yt-res-id <=> root.music-yt-res-id;
+                yt-channel-query <=> root.music-yt-channel-query;
+                yt-dl-open <=> root.music-yt-dl-open; yt-dl-id <=> root.music-yt-dl-id;
+                yt-channel-refresh() => { root.music-yt-channel-refresh(); }
+                yt-channel-search(q) => { root.music-yt-channel-search(q); }
+                yt-download-resolution(id, h) => { root.music-yt-download-resolution(id, h); }
+                yt-subs-sort <=> root.music-yt-subs-sort; yt-subs-page <=> root.music-yt-subs-page;
+                yt-subs-pages: root.music-yt-subs-pages;
+                yt-subs-set-sort(s) => { root.music-yt-subs-set-sort(s); }
+                yt-subs-set-page(d) => { root.music-yt-subs-set-page(d); }
+                yt-unsub(id) => { root.music-yt-unsub(id); }
+                yt-clear-subs() => { root.music-yt-clear-subs(); }
+                yt-play-resolution(id, h) => { root.music-yt-play-resolution(id, h); }
                 yt-search(q) => { root.music-yt-search(q); }
                 yt-search-more() => { root.music-yt-search-more(); }
                 yt-recent-click(q) => { root.music-yt-recent-click(q); }

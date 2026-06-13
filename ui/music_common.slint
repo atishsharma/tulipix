@@ -141,7 +141,9 @@ export struct YtSub {
     channel-id: string,
     title: string,
     avatar: image,
-    count: string,       // pre-formatted "142 videos" or "—"
+    count: string,       // videos line, e.g. "142 videos" or "—"
+    subs: string,        // subscribers line, e.g. "4.2M subscribers"
+    subscribed: bool,    // my subscription status
     index: int,
 }
 
