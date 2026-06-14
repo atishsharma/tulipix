@@ -1,4 +1,5 @@
 import { Theme } from "tokens.slint";
+import { AppIcon, Icons } from "icons.slint";
 
 // Local-only app: no account mode. The pill is 🏠 Local or 🔒 Locked.
 export enum Mode { local, locked }
@@ -13,11 +14,10 @@ export component ModePill inherits Rectangle {
     HorizontalLayout {
         padding-left: 8px; padding-right: 10px; spacing: 5px;
         alignment: center;
-        Text {
-            text: mode == Mode.local ? "🏠" : "🔒";
-            font-size: 10px;
-            vertical-alignment: center;
-        }
+        VerticalLayout { alignment: center; AppIcon {
+            source: mode == Mode.local ? Icons.home : Icons.lock;
+            width: 12px; height: 12px;
+        } }
         Text {
             text: mode == Mode.local ? "Local" : "Locked";
             font-size: 10px; font-weight: 600;

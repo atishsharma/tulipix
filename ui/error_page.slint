@@ -1,5 +1,6 @@
 import { Theme } from "tokens.slint";
 import { ModalFrost } from "frost.slint";
+import { AppIcon, Icons } from "icons.slint";
 
 export component ErrorBoundary inherits Rectangle {
     in property <string> title: "Something went wrong";
@@ -22,7 +23,7 @@ export component ErrorBoundary inherits Rectangle {
         z: 500;
         VerticalLayout {
             padding: 24px; spacing: 12px;
-            Text { text: "⚠  " + title; color: Theme.text; font-size: 20px; font-weight: 700; }
+            HorizontalLayout { spacing: 8px; VerticalLayout { alignment: center; AppIcon { source: Icons.triangle-alert; tint: Theme.text; width: 20px; height: 20px; } } Text { text: title; color: Theme.text; font-size: 20px; font-weight: 700; vertical-alignment: center; } }
             Text { text: message; color: Theme.text-dim; font-size: 13px; }
             Rectangle {
                 horizontal-stretch: 1; vertical-stretch: 1;

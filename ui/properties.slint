@@ -1,5 +1,6 @@
 import { Theme } from "tokens.slint";
 import { ModalFrost } from "frost.slint";
+import { AppIcon, Icons } from "icons.slint";
 
 export struct MetaRow { k: string, v: string }
 
@@ -77,9 +78,9 @@ export component PropertiesWindow inherits Rectangle {
                             Text { text: "Histogram"; color: Theme.text-dim; font-size: 11px; font-weight: 700;
                                 vertical-alignment: center; horizontal-stretch: 1; }
                             // Channel legend.
-                            Text { text: "● R"; color: #ff5252; font-size: 9px; vertical-alignment: center; }
-                            Text { text: "● G"; color: #4caf50; font-size: 9px; vertical-alignment: center; }
-                            Text { text: "● B"; color: #5c9dff; font-size: 9px; vertical-alignment: center; }
+                            HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.circle-dot; tint: #ff5252; width: 9px; height: 9px; } } Text { text: "R"; color: #ff5252; font-size: 9px; vertical-alignment: center; } }
+                            HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.circle-dot; tint: #4caf50; width: 9px; height: 9px; } } Text { text: "G"; color: #4caf50; font-size: 9px; vertical-alignment: center; } }
+                            HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.circle-dot; tint: #5c9dff; width: 9px; height: 9px; } } Text { text: "B"; color: #5c9dff; font-size: 9px; vertical-alignment: center; } }
                         }
                         Rectangle {
                             height: 96px; horizontal-stretch: 1;

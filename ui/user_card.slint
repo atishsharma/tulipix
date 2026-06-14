@@ -44,7 +44,7 @@ component MenuItem inherits Rectangle {
 }
 
 export component UserCard inherits Rectangle {
-    in property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local, avatar-emoji: "👤" };
+    in property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local, avatar-emoji: "" };
     in-out property <bool> menu-open: false;
     in property <bool> collapsed: false;   // sidebar collapsed → avatar only
 
@@ -90,8 +90,9 @@ export component UserCard inherits Rectangle {
                         border-radius: 12px;
                         background: frost.accent.with-alpha(0.18);
                         border-width: 1px; border-color: frost.accent.with-alpha(0.45);
-                        Text {
-                            text: user.avatar-emoji == "" ? "👤" : user.avatar-emoji;
+                        if user.avatar-emoji == "": AppIcon { source: Icons.user; tint: frost.accent; width: root.collapsed ? 18px : 22px; height: root.collapsed ? 18px : 22px; }
+                        if user.avatar-emoji != "": Text {
+                            text: user.avatar-emoji;
                             font-size: root.collapsed ? 18px : 23px;
                             horizontal-alignment: center; vertical-alignment: center;
                         }
@@ -132,7 +133,7 @@ export component UserCard inherits Rectangle {
             Rectangle { height: 1px; background: Theme.outline; }
             MenuItem { label: "Manage Profiles"; clicked => { root.action-profiles(); root.menu-open = false; } }
             MenuItem { label: "Edit Profile"; clicked => { root.action-edit-profile(); root.menu-open = false; } }
-            MenuItem { label: "Settings → Profile";
+            MenuItem { label: "Settings / Profile";
                 clicked => { root.action-settings-account(); root.menu-open = false; }
             }
         }

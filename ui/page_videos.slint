@@ -8,6 +8,7 @@ import { ScrollView } from "std-widgets.slint";
 import { HdrChip } from "section_header.slint";
 import { EmptyState } from "empty_state.slint";
 import { Section } from "tokens.slint";
+import { AppIcon, Icons } from "icons.slint";
 
 // Richer than PhotoTile — carries playback state so a poster can paint a
 // resume bar, a watched check, and the star badge.
@@ -43,6 +44,7 @@ export struct DiscoverCard {
 
 component PlexButton inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
     in property <bool> filled: false;
     callback clicked();
     height: 40px; min-width: 120px;
@@ -52,10 +54,13 @@ component PlexButton inherits Rectangle {
     border-width: filled ? 0px : 1px;
     border-color: #ffffff55;
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    Text {
-        text: label; font-size: 13px; font-weight: 700;
-        color: filled ? #1a1a1a : #ffffff;
-        horizontal-alignment: center; vertical-alignment: center;
+    HorizontalLayout { alignment: center; spacing: 7px;
+        if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: filled ? #1a1a1a : #ffffff; width: 15px; height: 15px; } }
+        Text {
+            text: label; font-size: 13px; font-weight: 700;
+            color: filled ? #1a1a1a : #ffffff;
+            vertical-alignment: center;
+        }
     }
 }
 
@@ -90,16 +95,14 @@ component Poster inherits Rectangle {
                 x: parent.width - self.width - 6px; y: 6px;
                 width: 24px; height: 24px; border-radius: 12px;
                 background: #000000aa;
-                Text { text: "★"; color: #e5a00d; font-size: 14px;
-                    horizontal-alignment: center; vertical-alignment: center; }
+                AppIcon { source: Icons.star-filled; tint: #e5a00d; width: 14px; height: 14px; }
             }
             // Watched check (top-left).
             if tile.watched: Rectangle {
                 x: 6px; y: 6px;
                 width: 24px; height: 24px; border-radius: 12px;
                 background: #e5a00d;
-                Text { text: "✓"; color: #1a1a1a; font-size: 14px; font-weight: 800;
-                    horizontal-alignment: center; vertical-alignment: center; }
+                AppIcon { source: Icons.check; tint: #1a1a1a; width: 14px; height: 14px; }
             }
             // Duration pill (bottom-right) when known and no resume bar overlap.
             if tile.duration != "": Rectangle {
@@ -194,7 +197,7 @@ component DiscoverCardView inherits Rectangle {
                 width: vt.preferred-width + 10px; height: 18px;
                 border-radius: 9px; background: #000000cc;
                 vt := Text {
-                    text: "★ " + Math.round(card.vote * 10.0) / 10.0;
+                    text: Math.round(card.vote * 10.0) / 10.0;
                     color: #e5a00d; font-size: 9px; font-weight: 800;
                     horizontal-alignment: center; vertical-alignment: center;
                 }
@@ -238,7 +241,7 @@ component DiscoverCardView inherits Rectangle {
 // One horizontal-scroll rail with a labelled header.
 component DiscoverRail inherits Rectangle {
     in property <string> label;
-    in property <string> icon;
+    in property <image> icon;
     in property <[DiscoverCard]> items;
     callback card-clicked(int);  // tmdb_id
     horizontal-stretch: 1;
@@ -253,7 +256,8 @@ component DiscoverRail inherits Rectangle {
             alignment: start; spacing: 10px;
             Rectangle { width: 4px; height: 18px; border-radius: 2px; background: #e5a00d;
                 horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
-            Text { text: icon + " " + label; color: #ffffff; font-size: 16px; font-weight: 700;
+            VerticalLayout { alignment: center; AppIcon { source: icon; tint: #ffffff; width: 16px; height: 16px; } }
+            Text { text: label; color: #ffffff; font-size: 16px; font-weight: 700;
                 vertical-alignment: center; }
             Text { text: items.length + " titles"; color: #6a6a72; font-size: 12px;
                 vertical-alignment: center; }
@@ -361,7 +365,7 @@ export component VideosPage inherits Rectangle {
                         border-width: 1px; border-color: #ffffff22;
                         HorizontalLayout {
                             padding-left: 18px; padding-right: 10px; spacing: 8px;
-                            Text { text: "🔍"; font-size: 14px; color: #9a9aa2; vertical-alignment: center; }
+                            AppIcon { source: Icons.search; tint: #9a9aa2; width: 14px; height: 14px; }
                             Rectangle { horizontal-stretch: 1;
                                 qi := TextInput {
                                     width: 100%; height: 100%;
@@ -381,8 +385,7 @@ export component VideosPage inherits Rectangle {
                                 horizontal-stretch: 0; vertical-stretch: 0; y: (parent.height - self.height) / 2;
                                 background: clearx.has-hover ? #ffffff33 : #ffffff22;
                                 clearx := TouchArea { mouse-cursor: pointer; clicked => { root.query = ""; root.search(""); } }
-                                Text { text: "✕"; color: #e8e8ea; font-size: 11px;
-                                    horizontal-alignment: center; vertical-alignment: center; }
+                                AppIcon { source: Icons.x; tint: #e8e8ea; width: 11px; height: 11px; }
                             }
                         }
                     }
@@ -396,7 +399,7 @@ export component VideosPage inherits Rectangle {
                     Rectangle {
                         height: 44px; border-radius: 22px; background: #e5a00d;
                         HorizontalLayout { padding-left: 16px; padding-right: 16px;
-                            Text { text: "🎬 " + root.item-count + " videos"; color: #1a1a1a; font-size: 12px; font-weight: 800; vertical-alignment: center; } }
+                            Text { text: root.item-count + " videos"; color: #1a1a1a; font-size: 12px; font-weight: 800; vertical-alignment: center; } }
                     }
                 }
             }
@@ -413,7 +416,7 @@ export component VideosPage inherits Rectangle {
                 VideoTab { label: "Archive";  active: root.category == "archive";  clicked => { root.set-category("archive"); } }
                 VideoTab { label: "Trash";    active: root.category == "trash";    clicked => { root.set-category("trash"); } }
                 Rectangle { horizontal-stretch: 1; }
-                VideoTab { label: "↻ Clear thumbs"; clicked => { root.clear-thumbs(); } }
+                VideoTab { icon: Icons.refresh-cw; label: "Clear thumbs"; clicked => { root.clear-thumbs(); } }
             }
         }
 
@@ -422,7 +425,7 @@ export component VideosPage inherits Rectangle {
             height: 44px; horizontal-stretch: 1; background: #131316;
             HorizontalLayout {
                 padding-left: 28px; spacing: 10px; alignment: start;
-                VideoTab { label: "‹ Shows"; clicked => { root.show-back(); } }
+                VideoTab { icon: Icons.chevron-left; label: "Shows"; clicked => { root.show-back(); } }
                 VerticalLayout { alignment: center;
                     Text { text: root.show-title; color: #ffffff; font-size: 15px; font-weight: 700; } }
             }
@@ -471,7 +474,7 @@ export component VideosPage inherits Rectangle {
             alignment: center; spacing: 14px;
             HorizontalLayout { alignment: center;
                 Rectangle { width: 96px; height: 96px; border-radius: 20px; background: #e5a00d22;
-                    Text { text: "📺"; font-size: 42px; horizontal-alignment: center; vertical-alignment: center; } } }
+                    AppIcon { source: Icons.tv; width: 42px; height: 42px; } } }
             Text { text: "No TV shows"; color: #ffffff; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
             Text { text: "Name episode files like 'Show S01E01.mkv' in a per-show folder; they group here."; color: #a0a0a6; font-size: 13px; horizontal-alignment: center; }
         }
@@ -510,7 +513,7 @@ export component VideosPage inherits Rectangle {
             alignment: center; spacing: 14px;
             HorizontalLayout { alignment: center;
                 Rectangle { width: 96px; height: 96px; border-radius: 20px; background: #e5a00d22;
-                    Text { text: "📺"; font-size: 42px; horizontal-alignment: center; vertical-alignment: center; } } }
+                    AppIcon { source: Icons.tv; width: 42px; height: 42px; } } }
             Text { text: "No episodes"; color: #ffffff; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
             Text { text: "This show has no episodes in the current tab."; color: #a0a0a6; font-size: 13px; horizontal-alignment: center; }
         }
@@ -540,7 +543,7 @@ export component VideosPage inherits Rectangle {
                         Text { text: item-count + " titles in your library"; color: #c8c8cc; font-size: 13px; }
                         HorizontalLayout {
                             spacing: 12px; alignment: start;
-                            PlexButton { label: "▶  Play"; filled: true; clicked => { root.tile-clicked(root.tiles[0].index); } }
+                            PlexButton { icon: Icons.play; label: "Play"; filled: true; clicked => { root.tile-clicked(root.tiles[0].index); } }
                             PlexButton { label: "+ Add media"; clicked => { root.add-folder(); } }
                         }
                     }
@@ -590,7 +593,7 @@ export component VideosPage inherits Rectangle {
             HorizontalLayout {
                 alignment: center;
                 Rectangle { width: 96px; height: 96px; border-radius: 20px; background: #e5a00d22;
-                    Text { text: "🎬"; font-size: 42px; horizontal-alignment: center; vertical-alignment: center; } }
+                    AppIcon { source: Icons.film; width: 42px; height: 42px; } }
             }
             Text { text: "Nothing here"; color: #ffffff; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
             Text { text: root.empty-msg(root.category); color: #a0a0a6; font-size: 13px; horizontal-alignment: center; }
@@ -610,30 +613,30 @@ export component VideosPage inherits Rectangle {
                         Text { text: "TMDB Trending & Upcoming"; color: #6a6a72; font-size: 11px;
                             font-weight: 700; letter-spacing: 1.5px; } }
                     VerticalLayout { alignment: center;
-                        VideoTab { label: "↻ Refresh"; clicked => { root.refresh-discover(); } }
+                        VideoTab { icon: Icons.refresh-cw; label: "Refresh"; clicked => { root.refresh-discover(); } }
                     }
                 }
 
                 DiscoverRail {
-                    label: "Trending Movies"; icon: "🔥";
+                    label: "Trending Movies"; icon: Icons.flame;
                     items: root.discover-trending-movies;
                     card-clicked(id) => { /* future: open movie detail */ }
                 }
                 Rectangle { height: 1px; background: #ffffff0a; horizontal-stretch: 1; }
                 DiscoverRail {
-                    label: "Trending TV Shows"; icon: "📺";
+                    label: "Trending TV Shows"; icon: Icons.tv;
                     items: root.discover-trending-shows;
                     card-clicked(id) => { }
                 }
                 Rectangle { height: 1px; background: #ffffff0a; horizontal-stretch: 1; }
                 DiscoverRail {
-                    label: "Upcoming Movies"; icon: "🎬";
+                    label: "Upcoming Movies"; icon: Icons.film;
                     items: root.discover-upcoming;
                     card-clicked(id) => { }
                 }
                 Rectangle { height: 1px; background: #ffffff0a; horizontal-stretch: 1; }
                 DiscoverRail {
-                    label: "On The Air"; icon: "📡";
+                    label: "On The Air"; icon: Icons.rss;
                     items: root.discover-on-air;
                     card-clicked(id) => { }
                 }

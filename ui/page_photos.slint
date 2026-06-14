@@ -2,6 +2,7 @@
 // Tabs: Timeline (date-grouped) · Starred · Archive · Library (folders) · Trash.
 import { PhotoTile } from "section_page.slint";
 import { ScrollView } from "std-widgets.slint";
+import { AppIcon, Icons } from "icons.slint";
 
 // One date group in the timeline (e.g. "May 2026" + that month's tiles).
 export struct PhotoGroup { label: string, tiles: [PhotoTile] }
@@ -21,6 +22,7 @@ export struct DedupeGroup { cluster-id: int, kind: string, left-thumb: image, ri
 
 component GPhotoChip inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
     in property <bool> active: false;
     in property <bool> blink: false;   // green confirmation flash
     callback clicked();
@@ -30,11 +32,13 @@ component GPhotoChip inherits Rectangle {
     clip: true;
     background: active ? #1a73e8 : (touch.has-hover ? #e8eaed : #f1f3f4);
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    Text {
-        text: label; font-size: 13px; font-weight: 500;
-        color: active ? #ffffff : #3c4043;
-        width: 100%; height: 100%;
-        horizontal-alignment: center; vertical-alignment: center;
+    HorizontalLayout { alignment: center; spacing: 6px;
+        if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: active ? #ffffff : #3c4043; width: 15px; height: 15px; } }
+        Text {
+            text: label; font-size: 13px; font-weight: 500;
+            color: active ? #ffffff : #3c4043;
+            vertical-alignment: center;
+        }
     }
     // Confirmation flash overlay.
     Rectangle {
@@ -43,7 +47,7 @@ component GPhotoChip inherits Rectangle {
         opacity: root.blink ? 0.9 : 0;
         animate opacity { duration: 280ms; easing: ease-in-out; }
         Text {
-            text: "✓ " + root.label; color: #ffffff; font-size: 13px; font-weight: 700;
+            text: root.label; color: #ffffff; font-size: 13px; font-weight: 700;
             width: 100%; height: 100%;
             horizontal-alignment: center; vertical-alignment: center;
             visible: root.blink;
@@ -119,9 +123,7 @@ component PhotoCell inherits Rectangle {
         background: tile.selected ? #1a73e8 : #000000a8;
         border-width: 2px; border-color: #ffffff;
         scirc := TouchArea { mouse-cursor: pointer; clicked => { root.select-toggle(tile.index); } }
-        Text { text: tile.selected ? "✓" : ""; color: #ffffff; font-size: 14px; font-weight: 700;
-            width: 100%; height: 100%;
-            horizontal-alignment: center; vertical-alignment: center; }
+        if tile.selected: AppIcon { source: Icons.check; tint: #ffffff; width: 14px; height: 14px; }
     }
     // Quick action — Star (bottom-left). White when unstarred, yellow when
     // starred. Declared after `ta` so it wins clicks.
@@ -131,9 +133,7 @@ component PhotoCell inherits Rectangle {
         width: 30px; height: 30px; border-radius: 15px;
         background: sstar.has-hover ? #000000dd : #000000a8;
         sstar := TouchArea { mouse-cursor: pointer; clicked => { root.star(tile.index); } }
-        Text { text: tile.starred ? "★" : "☆"; color: tile.starred ? #ffd54a : #ffffff; font-size: 16px;
-            width: 100%; height: 100%;
-            horizontal-alignment: center; vertical-alignment: center; }
+        AppIcon { source: tile.starred ? Icons.star-filled : Icons.star; tint: tile.starred ? #ffd54a : #ffffff; width: 16px; height: 16px; }
     }
     // Quick action — Archive (bottom-right).
     Rectangle {
@@ -142,9 +142,7 @@ component PhotoCell inherits Rectangle {
         width: 30px; height: 30px; border-radius: 15px;
         background: sarch.has-hover ? #000000dd : #000000a8;
         sarch := TouchArea { mouse-cursor: pointer; clicked => { root.archive(tile.index); } }
-        Text { text: "🗄"; color: #ffffff; font-size: 14px;
-            width: 100%; height: 100%;
-            horizontal-alignment: center; vertical-alignment: center; }
+        AppIcon { source: Icons.archive; tint: #ffffff; width: 14px; height: 14px; }
     }
     // Color-label dot (bottom-right corner, 8px dot).
     if tile.color-label != "": Rectangle {
@@ -163,9 +161,7 @@ component PhotoCell inherits Rectangle {
         x: 8px; y: parent.height - self.height - 8px;
         width: 22px; height: 22px; border-radius: 11px;
         background: #000000a8;
-        Text { text: "▶"; color: #ffffffcc; font-size: 10px;
-            width: 100%; height: 100%;
-            horizontal-alignment: center; vertical-alignment: center; }
+        AppIcon { source: Icons.play; tint: #ffffffcc; width: 10px; height: 10px; }
     }
     // Stack badge "⊞ N" (top-right corner).
     if tile.stack-count > 0: Rectangle {
@@ -211,6 +207,7 @@ component TileGrid inherits Rectangle {
 // One pill in the selection action bar (np.p2.multiselect).
 component SelBtn inherits Rectangle {
     in property <string> glyph;
+    in property <image> icon;
     in property <string> label;
     in property <bool> danger: false;
     in property <bool> dim: false;
@@ -222,7 +219,7 @@ component SelBtn inherits Rectangle {
     t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
         padding-left: 12px; padding-right: 12px; spacing: 6px; alignment: center;
-        Text { text: root.glyph; color: danger ? #f28b82 : #ffffff; font-size: 14px; vertical-alignment: center; }
+        VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: danger ? #f28b82 : #ffffff; width: 15px; height: 15px; } }
         Text { text: root.label; color: danger ? #f28b82 : #ffffff; font-size: 13px; font-weight: 600; vertical-alignment: center; }
     }
 }
@@ -242,8 +239,7 @@ component PersonCardView inherits Rectangle {
                 background: av.has-hover ? #d2e3fc : #e8eaed;
                 av := TouchArea { mouse-cursor: pointer; clicked => { root.open(p.id); } }
                 if p.cover.width > 0: Image { source: p.cover; image-fit: cover; width: 100%; height: 100%; }
-                if p.cover.width == 0: Text { text: "👤"; font-size: 46px;
-                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                if p.cover.width == 0: AppIcon { source: Icons.user; width: 46px; height: 46px; }
             }
         }
         // Inline rename — type a name and press Enter to label the cluster.
@@ -281,14 +277,13 @@ component AlbumCardView inherits Rectangle {
             background: cov.has-hover ? #d2e3fc : #e8eaed;
             cov := TouchArea { mouse-cursor: pointer; clicked => { root.open(a.id); } }
             if a.cover.width > 0: Image { source: a.cover; image-fit: cover; width: 100%; height: 100%; }
-            if a.cover.width == 0: Text { text: "🖼"; font-size: 46px;
-                width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+            if a.cover.width == 0: AppIcon { source: Icons.image; width: 46px; height: 46px; }
             // delete ✕
             Rectangle {
                 x: parent.width - self.width - 6px; y: 6px; width: 26px; height: 26px; border-radius: 13px;
                 background: del.has-hover ? #ea4335 : #000000a8;
                 del := TouchArea { mouse-cursor: pointer; clicked => { root.remove(a.id); } }
-                Text { text: "✕"; color: #fff; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; }
+                AppIcon { source: Icons.x; tint: #fff; width: 13px; height: 13px; }
             }
         }
         Rectangle {
@@ -420,7 +415,7 @@ export component PhotosPage inherits Rectangle {
                         width: 560px; height: 44px; border-radius: 22px; background: #f1f3f4;
                         HorizontalLayout {
                             padding-left: 18px; padding-right: 10px; spacing: 8px;
-                            Text { text: "🔍"; font-size: 15px; color: #5f6368; vertical-alignment: center; }
+                            AppIcon { source: Icons.search; tint: #5f6368; width: 15px; height: 15px; }
                             Rectangle {
                                 horizontal-stretch: 1;
                                 qi := TextInput {
@@ -446,8 +441,7 @@ export component PhotosPage inherits Rectangle {
                                     mouse-cursor: pointer;
                                     clicked => { root.query = ""; root.search(""); }
                                 }
-                                Text { text: "✕"; color: #3c4043; font-size: 12px;
-                                    horizontal-alignment: center; vertical-alignment: center; }
+                                AppIcon { source: Icons.x; tint: #3c4043; width: 12px; height: 12px; }
                             }
                         }
                     }
@@ -466,9 +460,9 @@ export component PhotosPage inherits Rectangle {
                         height: 44px; border-radius: 22px; background: #ea4335;
                         HorizontalLayout {
                             padding-left: 18px; padding-right: 18px; spacing: 10px;
-                            Text { text: "🖼 " + root.item-count + " photos"; color: #ffffff; font-size: 12px; font-weight: 700; vertical-alignment: center; }
+                            Text { text: root.item-count + " photos"; color: #ffffff; font-size: 12px; font-weight: 700; vertical-alignment: center; }
                             Text { text: "·"; color: #ffffffcc; vertical-alignment: center; }
-                            Text { text: "📁 " + root.folder-count + " folders"; color: #ffffff; font-size: 12px; font-weight: 700; vertical-alignment: center; }
+                            Text { text: root.folder-count + " folders"; color: #ffffff; font-size: 12px; font-weight: 700; vertical-alignment: center; }
                         }
                     }
                 }
@@ -480,30 +474,30 @@ export component PhotosPage inherits Rectangle {
             height: 54px; horizontal-stretch: 1; background: #ffffff;
             HorizontalLayout {
                 padding-left: 28px; padding-right: 28px; spacing: 8px; alignment: start;
-                VerticalLayout { alignment: center; GPhotoChip { label: "🕘  Timeline"; min-width: 97px; active: root.category == "timeline";
+                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.clock; label: "Timeline"; min-width: 97px; active: root.category == "timeline";
                     clicked => { root.category = "timeline"; root.set-category("timeline"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { label: "🗂  Library"; min-width: 97px; active: root.category == "library" || root.category == "folder";
+                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.folder; label: "Library"; min-width: 97px; active: root.category == "library" || root.category == "folder";
                     clicked => { root.category = "library"; root.set-category("library"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { label: "★  Starred"; min-width: 97px; active: root.category == "starred";
+                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.star-filled; label: "Starred"; min-width: 97px; active: root.category == "starred";
                     blink: root.blink-tab == "starred";
                     clicked => { root.category = "starred"; root.set-category("starred"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { label: "🗄  Archive"; min-width: 97px; active: root.category == "archive";
+                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.archive; label: "Archive"; min-width: 97px; active: root.category == "archive";
                     blink: root.blink-tab == "archive";
                     clicked => { root.category = "archive"; root.set-category("archive"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { label: "🗑  Trash"; min-width: 97px; active: root.category == "trash";
+                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.trash; label: "Trash"; min-width: 97px; active: root.category == "trash";
                     blink: root.blink-tab == "trash";
                     clicked => { root.category = "trash"; root.set-category("trash"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { label: "👤  People"; min-width: 97px; active: root.category == "people" || root.category == "facephotos";
+                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.user; label: "People"; min-width: 97px; active: root.category == "people" || root.category == "facephotos";
                     clicked => { root.category = "people"; root.set-category("people"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { label: "🏷  Things"; min-width: 97px; active: root.category == "things" || root.category == "tagphotos";
+                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.tag; label: "Things"; min-width: 97px; active: root.category == "things" || root.category == "tagphotos";
                     clicked => { root.category = "things"; root.set-category("things"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { label: "📚  Albums"; min-width: 97px; active: root.category == "albums" || root.category == "albumphotos";
+                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.book-open; label: "Albums"; min-width: 97px; active: root.category == "albums" || root.category == "albumphotos";
                     clicked => { root.category = "albums"; root.set-category("albums"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { label: "🎞  Memories"; min-width: 97px; active: root.category == "memories";
+                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.film; label: "Memories"; min-width: 97px; active: root.category == "memories";
                     clicked => { root.category = "memories"; root.set-category("memories"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { label: "📍  Places"; min-width: 97px; active: root.category == "places";
+                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.map-pin; label: "Places"; min-width: 97px; active: root.category == "places";
                     clicked => { root.category = "places"; root.set-category("places"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { label: "🔁  Dedupe"; min-width: 97px; active: root.category == "dedupe";
+                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.repeat; label: "Dedupe"; min-width: 97px; active: root.category == "dedupe";
                     clicked => { root.category = "dedupe"; root.set-category("dedupe"); } } }
                 Rectangle { horizontal-stretch: 1; }
             }
@@ -585,7 +579,7 @@ export component PhotosPage inherits Rectangle {
                     // Back chip — on the drill-in grids (returns to the list).
                     if root.category == "facephotos" || root.category == "tagphotos" || root.category == "albumphotos":
                         VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
-                            label: root.category == "facephotos" ? "‹ People" : root.category == "albumphotos" ? "‹ Albums" : "‹ Things";
+                            icon: Icons.chevron-left; label: root.category == "facephotos" ? "People" : root.category == "albumphotos" ? "Albums" : "Things";
                             height: 36px; min-width: 96px;
                             clicked => {
                                 root.category = root.category == "facephotos" ? "people" : root.category == "albumphotos" ? "albums" : "things";
@@ -606,15 +600,15 @@ export component PhotosPage inherits Rectangle {
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
                         Text { text: "Sort"; color: #5f6368; font-size: 12px; vertical-alignment: center; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
-                        label: "Date" + (root.sort-mode == "date" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                        label: "Date";
                         height: 36px; min-width: 96px;
                         active: root.sort-mode == "date"; clicked => { root.set-sort("date"); } } }
                     VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
-                        label: "Name" + (root.sort-mode == "name" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                        label: "Name";
                         height: 36px; min-width: 92px;
                         active: root.sort-mode == "name"; clicked => { root.set-sort("name"); } } }
                     VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
-                        label: "Size" + (root.sort-mode == "size" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                        label: "Size";
                         height: 36px; min-width: 92px;
                         active: root.sort-mode == "size"; clicked => { root.set-sort("size"); } } }
                 }
@@ -644,7 +638,7 @@ export component PhotosPage inherits Rectangle {
                         Text { text: "On This Day"; color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        GPhotoChip { label: "↻ Refresh"; height: 36px; min-width: 100px; clicked => { root.memories-refresh(); } } }
+                        GPhotoChip { icon: Icons.refresh-cw; label: "Refresh"; height: 36px; min-width: 100px; clicked => { root.memories-refresh(); } } }
                 }
                 if root.memory-rails.length == 0: VerticalLayout {
                     alignment: center; spacing: 10px;
@@ -691,7 +685,7 @@ export component PhotosPage inherits Rectangle {
                             color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        GPhotoChip { label: "↻ Refresh"; height: 36px; min-width: 100px; clicked => { root.places-refresh(); } } }
+                        GPhotoChip { icon: Icons.refresh-cw; label: "Refresh"; height: 36px; min-width: 100px; clicked => { root.places-refresh(); } } }
                 }
                 if root.map-clusters.length == 0: Text { text: "No geotagged photos found."; color: #5f6368; font-size: 13px; }
                 pclusgrid := Rectangle {
@@ -714,7 +708,7 @@ export component PhotosPage inherits Rectangle {
                                     x: parent.width - self.width - 6px; y: parent.height - self.height - 6px;
                                     width: 52px; height: 22px; border-radius: 11px;
                                     background: #000000aa;
-                                    Text { text: "📍 " + cl.count; color: #ffffff; font-size: 11px; font-weight: 700;
+                                    Text { text: cl.count; color: #ffffff; font-size: 11px; font-weight: 700;
                                         width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
                                 }
                             }
@@ -739,7 +733,7 @@ export component PhotosPage inherits Rectangle {
                             color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        GPhotoChip { label: root.dedupe-scanning ? "Scanning…" : "🔍 Scan"; active: root.dedupe-scanning;
+                        GPhotoChip { icon: root.dedupe-scanning ? @image-url("../resources/icons/search.svg") : Icons.search; label: root.dedupe-scanning ? "Scanning…" : "Scan"; active: root.dedupe-scanning;
                             height: 36px; min-width: 110px;
                             clicked => { if (!root.dedupe-scanning) { root.dedupe-scan(); } } } }
                 }
@@ -780,9 +774,9 @@ export component PhotosPage inherits Rectangle {
                                 Text { text: dg.right-label; color: #5f6368; font-size: 11px; overflow: elide; }
                             }
                             VerticalLayout { alignment: center; spacing: 8px; horizontal-stretch: 0; min-width: 110px;
-                                GPhotoChip { label: "← Keep Left"; height: 34px; min-width: 108px;
+                                GPhotoChip { icon: Icons.arrow-left; label: "Keep Left"; height: 34px; min-width: 108px;
                                     clicked => { root.dedupe-keep(dg.cluster-id, true); } }
-                                GPhotoChip { label: "Keep Right →"; height: 34px; min-width: 108px;
+                                GPhotoChip { label: "Keep Right"; height: 34px; min-width: 108px;
                                     clicked => { root.dedupe-keep(dg.cluster-id, false); } }
                                 GPhotoChip { label: "Both"; height: 34px; min-width: 108px;
                                     clicked => { root.dedupe-both(dg.cluster-id); } }
@@ -808,11 +802,11 @@ export component PhotosPage inherits Rectangle {
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
                         Text { text: "Sort"; color: #5f6368; font-size: 12px; vertical-alignment: center; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
-                        label: "Name" + (root.lib-sort == "name" ? (root.lib-sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                        label: "Name";
                         height: 36px; min-width: 92px;
                         active: root.lib-sort == "name"; clicked => { root.set-library-sort("name"); } } }
                     VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
-                        label: "Photos" + (root.lib-sort == "count" ? (root.lib-sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                        label: "Photos";
                         height: 36px; min-width: 104px;
                         active: root.lib-sort == "count"; clicked => { root.set-library-sort("count"); } } }
                 }
@@ -869,11 +863,10 @@ export component PhotosPage inherits Rectangle {
                                         width: lib-bc.preferred-width; height: 24px; border-radius: 6px;
                                         background: back.has-hover ? #e0e3e6 : transparent;
                                         back := TouchArea { mouse-cursor: pointer; clicked => { root.category = "library"; root.set-category("library"); } }
-                                        lib-bc := Text { text: "‹ Library"; color: #1a73e8; font-size: 13px; font-weight: 600;
-                                            vertical-alignment: center; }
+                                        lib-bc := HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.chevron-left; tint: #1a73e8; width: 13px; height: 13px; } } Text { text: "Library"; color: #1a73e8; font-size: 13px; font-weight: 600; vertical-alignment: center; } }
                                     }
-                                    Text { text: "›"; color: #9aa0a6; font-size: 14px; vertical-alignment: center; }
-                                    Text { text: "📁"; font-size: 13px; vertical-alignment: center; }
+                                    AppIcon { source: Icons.chevron-right; tint: #9aa0a6; width: 14px; height: 14px; }
+                                    AppIcon { source: Icons.folder; width: 13px; height: 13px; }
                                     Text { text: root.folder-name; color: #202124; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                 }
                             }
@@ -882,15 +875,15 @@ export component PhotosPage inherits Rectangle {
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
                             Text { text: "Sort"; color: #5f6368; font-size: 12px; vertical-alignment: center; } }
                         VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
-                            label: "Date taken" + (root.sort-mode == "date" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                            label: "Date taken";
                             height: 40px; min-width: 128px;
                             active: root.sort-mode == "date"; clicked => { root.set-sort("date"); } } }
                         VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
-                            label: "Name" + (root.sort-mode == "name" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                            label: "Name";
                             height: 40px; min-width: 96px;
                             active: root.sort-mode == "name"; clicked => { root.set-sort("name"); } } }
                         VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
-                            label: "Size" + (root.sort-mode == "size" ? (root.sort-dir == "asc" ? "  ▲" : "  ▼") : "");
+                            label: "Size";
                             height: 40px; min-width: 96px;
                             active: root.sort-mode == "size"; clicked => { root.set-sort("size"); } } }
                     }
@@ -963,7 +956,7 @@ export component PhotosPage inherits Rectangle {
                     HorizontalLayout {
                         padding-left: 16px; padding-right: 16px; spacing: 12px;
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
-                            Text { text: "🏷"; font-size: 16px; vertical-alignment: center; } }
+                            AppIcon { source: Icons.tag; width: 16px; height: 16px; } }
                         VerticalLayout { alignment: center; horizontal-stretch: 1;
                             Text { text: t.label; color: #202124; font-size: 14px; font-weight: 600; vertical-alignment: center; } }
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
@@ -986,9 +979,9 @@ export component PhotosPage inherits Rectangle {
                         Text { text: "Albums"; color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        GPhotoChip { label: "＋ New album"; active: true; height: 36px; min-width: 124px; clicked => { root.album-new(); } } }
+                        GPhotoChip { icon: Icons.plus; label: "New album"; active: true; height: 36px; min-width: 124px; clicked => { root.album-new(); } } }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        GPhotoChip { label: "＋ Smart album"; height: 36px; min-width: 136px;
+                        GPhotoChip { icon: Icons.plus; label: "Smart album"; height: 36px; min-width: 136px;
                             clicked => { root.smart-rule-album-id = 0; root.smart-rule-open = true; } } }
                 }
                 agrid := Rectangle {
@@ -1006,7 +999,7 @@ export component PhotosPage inherits Rectangle {
                         remove(id) => { root.album-delete(id); }
                     }
                 }
-                if root.albums.length == 0: Text { text: "No albums yet — make one, then select photos and “＋ Album”.";
+                if root.albums.length == 0: Text { text: "No albums yet — make one, then select photos and “+ Album”.";
                     color: #5f6368; font-size: 13px; }
             }
         }
@@ -1019,7 +1012,7 @@ export component PhotosPage inherits Rectangle {
                 HorizontalLayout {
                     alignment: center;
                     Rectangle { width: 96px; height: 96px; border-radius: 48px; background: #e8f0fe;
-                        Text { text: "📁"; font-size: 40px; horizontal-alignment: center; vertical-alignment: center; } }
+                        AppIcon { source: Icons.folder; width: 40px; height: 40px; } }
                 }
                 Text { text: "No folders yet"; color: #202124; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
                 Text { text: "Add a watched folder to build your photo library."; color: #5f6368; font-size: 13px; horizontal-alignment: center; }
@@ -1034,7 +1027,7 @@ export component PhotosPage inherits Rectangle {
                 HorizontalLayout {
                     alignment: center;
                     Rectangle { width: 96px; height: 96px; border-radius: 48px; background: #e8f0fe;
-                        Text { text: root.query == "" ? "🖼" : "🔍"; font-size: 40px; horizontal-alignment: center; vertical-alignment: center; } }
+                        AppIcon { source: root.query == "" ? Icons.image : Icons.search; tint: #5f6368; width: 40px; height: 40px; } }
                 }
                 Text { text: root.query == "" ? "Your photos live here" : "No photos match “" + root.query + "”";
                     color: #202124; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
@@ -1051,14 +1044,14 @@ export component PhotosPage inherits Rectangle {
                 HorizontalLayout {
                     alignment: center;
                     Rectangle { width: 96px; height: 96px; border-radius: 48px; background: #e8f0fe;
-                        Text { text: root.category == "starred" ? "★" : root.category == "archive" ? "🗄" : "🗑";
-                            font-size: 40px; horizontal-alignment: center; vertical-alignment: center; } }
+                        AppIcon { source: root.category == "starred" ? Icons.star-filled : root.category == "archive" ? Icons.archive : Icons.trash;
+                            tint: #5f6368; width: 40px; height: 40px; } }
                 }
                 Text { text: root.category == "starred" ? "Starred" : root.category == "archive" ? "Archive" : "Trash";
                     color: #202124; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
                 Text {
-                    text: root.category == "starred"  ? "No starred photos. Right-click a photo → Star to pin it here."
-                        : root.category == "archive"  ? "Archive is empty. Right-click a photo → Archive to hide it from the grid."
+                    text: root.category == "starred"  ? "No starred photos. Right-click a photo - Star to pin it here."
+                        : root.category == "archive"  ? "Archive is empty. Right-click a photo - Archive to hide it from the grid."
                         :                               "Trash is empty. Deleted photos rest here for 30 days before purge.";
                     color: #5f6368; font-size: 13px; horizontal-alignment: center; wrap: word-wrap;
                 }
@@ -1074,15 +1067,15 @@ export component PhotosPage inherits Rectangle {
                 HorizontalLayout {
                     alignment: center;
                     Rectangle { width: 96px; height: 96px; border-radius: 48px; background: #e8f0fe;
-                        Text { text: root.category == "people" ? "👤" : "🏷";
+                        Text { text: root.category == "people" ? "" : "";
                             font-size: 40px; horizontal-alignment: center; vertical-alignment: center; } }
                 }
                 Text { text: root.category == "people" ? "No people yet" : "No things tagged yet";
                     color: #202124; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
                 Text {
                     text: root.category == "people"
-                        ? "Install a face-detection model in Settings → AI Models, then run the background indexer to group faces into people."
-                        : "Install an object-detection model in Settings → AI Models, then run the background indexer to tag objects in your photos.";
+                        ? "Install a face-detection model in Settings - AI Models, then run the background indexer to group faces into people."
+                        : "Install an object-detection model in Settings - AI Models, then run the background indexer to tag objects in your photos.";
                     color: #5f6368; font-size: 13px; horizontal-alignment: center; wrap: word-wrap;
                     max-width: 420px;
                 }
@@ -1107,8 +1100,7 @@ export component PhotosPage inherits Rectangle {
                     width: 40px; height: 40px; border-radius: 20px;
                     background: xta.has-hover ? #ffffff22 : transparent;
                     xta := TouchArea { mouse-cursor: pointer; clicked => { root.sel-clear(); } }
-                    Text { text: "✕"; color: #ffffff; font-size: 16px;
-                        width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                    AppIcon { source: Icons.x; tint: #ffffff; width: 16px; height: 16px; }
                 }
             }
             VerticalLayout { alignment: center; horizontal-stretch: 0;
@@ -1116,15 +1108,15 @@ export component PhotosPage inherits Rectangle {
                     vertical-alignment: center; } }
             // Spacer between the count and the actions.
             Rectangle { width: 8px; }
-            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "★"; label: "Star"; clicked => { root.sel-star(); } } }
-            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "📚"; label: "Album"; clicked => { root.album-add-open(); } } }
-            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "🎞"; label: "Slideshow"; clicked => { root.slideshow-dialog-open = true; } } }
-            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "🗄"; label: "Archive"; clicked => { root.sel-archive(); } } }
-            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "📋"; label: "Copy"; clicked => { root.sel-copy(); } } }
-            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "✂"; label: "Cut"; clicked => { root.sel-cut(); } } }
-            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "📥"; label: "Paste"; dim: !root.can-paste; clicked => { if (root.can-paste) { root.sel-paste(); } } } }
-            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "✓"; label: "All"; clicked => { root.sel-all(); } } }
-            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { glyph: "🗑"; label: "Trash"; danger: true; clicked => { root.sel-trash(); } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { icon: Icons.star-filled; label: "Star"; clicked => { root.sel-star(); } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { icon: Icons.book-open; label: "Album"; clicked => { root.album-add-open(); } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { icon: Icons.film; label: "Slideshow"; clicked => { root.slideshow-dialog-open = true; } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { icon: Icons.archive; label: "Archive"; clicked => { root.sel-archive(); } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { icon: Icons.clipboard; label: "Copy"; clicked => { root.sel-copy(); } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { icon: Icons.scissors; label: "Cut"; clicked => { root.sel-cut(); } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { icon: Icons.inbox; label: "Paste"; dim: !root.can-paste; clicked => { if (root.can-paste) { root.sel-paste(); } } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { icon: Icons.check; label: "All"; clicked => { root.sel-all(); } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0; SelBtn { icon: Icons.trash; label: "Trash"; danger: true; clicked => { root.sel-trash(); } } }
         }
     }
 
@@ -1143,7 +1135,7 @@ export component PhotosPage inherits Rectangle {
                     height: 44px; border-radius: 10px; background: nan.has-hover ? #e8f0fe : #f1f3f4;
                     nan := TouchArea { mouse-cursor: pointer; clicked => { root.album-add-new(); } }
                     HorizontalLayout { padding-left: 14px; spacing: 10px;
-                        Text { text: "＋"; color: #1a73e8; font-size: 18px; vertical-alignment: center; }
+                        AppIcon { source: Icons.plus; tint: #1a73e8; width: 18px; height: 18px; }
                         Text { text: "New album from selection"; color: #1a73e8; font-size: 14px; font-weight: 600; vertical-alignment: center; } }
                 }
                 ScrollView {

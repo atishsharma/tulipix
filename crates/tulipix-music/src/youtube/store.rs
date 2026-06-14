@@ -99,6 +99,9 @@ pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     let _ = sqlx::query("ALTER TABLE yt_subs ADD COLUMN subscribed INTEGER NOT NULL DEFAULT 1").execute(pool).await;
     let _ = sqlx::query("ALTER TABLE yt_playlists ADD COLUMN source_url TEXT").execute(pool).await;
     let _ = sqlx::query("ALTER TABLE yt_playlists ADD COLUMN video_count INTEGER").execute(pool).await;
+    // Per-download container + quality badges (e.g. "MKV" / "1080p", "OPUS" / "Audio").
+    let _ = sqlx::query("ALTER TABLE yt_downloaded ADD COLUMN fmt TEXT").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE yt_downloaded ADD COLUMN quality TEXT").execute(pool).await;
     Ok(())
 }
 
@@ -131,6 +134,8 @@ pub struct CachedVideo {
     pub media_path: String,
     pub duration: i64,
     pub at: i64,
+    pub fmt: String,      // container badge, e.g. "MKV" / "OPUS" ("" for cached)
+    pub quality: String,  // "1080p" / "Best" / "Audio" ("" for cached)
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -322,6 +327,8 @@ pub async fn list_cached(pool: &SqlitePool, limit: i64) -> Result<Vec<CachedVide
             media_path,
             duration,
             at,
+            fmt: String::new(),
+            quality: String::new(),
         })
         .collect())
 }
@@ -360,10 +367,12 @@ pub async fn record_download(
     media: &str,
     duration: i64,
     kind: &str,
+    fmt: &str,
+    quality: &str,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO yt_downloaded (video_id,title,channel,thumb_path,media_path,duration,kind,downloaded_at) VALUES (?,?,?,?,?,?,?,?)
-         ON CONFLICT(video_id) DO UPDATE SET media_path = excluded.media_path, downloaded_at = excluded.downloaded_at, kind = excluded.kind",
+        "INSERT INTO yt_downloaded (video_id,title,channel,thumb_path,media_path,duration,kind,fmt,quality,downloaded_at) VALUES (?,?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(video_id) DO UPDATE SET media_path = excluded.media_path, downloaded_at = excluded.downloaded_at, kind = excluded.kind, fmt = excluded.fmt, quality = excluded.quality",
     )
     .bind(id)
     .bind(title)
@@ -372,6 +381,8 @@ pub async fn record_download(
     .bind(media)
     .bind(duration)
     .bind(kind)
+    .bind(fmt)
+    .bind(quality)
     .bind(now())
     .execute(pool)
     .await?;
@@ -379,15 +390,15 @@ pub async fn record_download(
 }
 
 pub async fn list_downloads(pool: &SqlitePool, limit: i64) -> Result<Vec<CachedVideo>> {
-    let rows: Vec<(String, String, String, String, String, i64, i64)> = sqlx::query_as(
-        "SELECT video_id,title,channel,thumb_path,media_path,duration,downloaded_at FROM yt_downloaded ORDER BY downloaded_at DESC, rowid DESC LIMIT ?",
+    let rows: Vec<(String, String, String, String, String, i64, i64, Option<String>, Option<String>)> = sqlx::query_as(
+        "SELECT video_id,title,channel,thumb_path,media_path,duration,downloaded_at,fmt,quality FROM yt_downloaded ORDER BY downloaded_at DESC, rowid DESC LIMIT ?",
     )
     .bind(limit)
     .fetch_all(pool)
     .await?;
     Ok(rows
         .into_iter()
-        .map(|(video_id, title, channel, thumb_path, media_path, duration, at)| CachedVideo {
+        .map(|(video_id, title, channel, thumb_path, media_path, duration, at, fmt, quality)| CachedVideo {
             video_id,
             title,
             channel,
@@ -395,6 +406,8 @@ pub async fn list_downloads(pool: &SqlitePool, limit: i64) -> Result<Vec<CachedV
             media_path,
             duration,
             at,
+            fmt: fmt.unwrap_or_default(),
+            quality: quality.unwrap_or_default(),
         })
         .collect())
 }

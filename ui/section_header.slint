@@ -2,12 +2,14 @@
 // Music · Books · Cloud · Tools) builds the same header *shape* from these,
 // passing its own accent + light/dark canvas so the per-app theme is preserved.
 // Modeled on the Photos page header (the reference look).
+import { AppIcon, Icons } from "icons.slint";
 
 // Pill tab / action chip. Generalizes the old GPhotoChip / VideoTab / MusicTab /
 // ViewTab. Light pages: grey pill, dark text. Dark pages: faint glass pill with
 // a hairline border. Active = accent fill. `blink` flashes a green confirm.
 export component HdrChip inherits Rectangle {
     in property <string> label;
+    in property <image> icon;               // optional leading icon
     in property <color> accent: #1a73e8;
     in property <color> active-text: #ffffff;   // gold accents want dark text here
     in property <bool> active: false;
@@ -46,15 +48,18 @@ export component HdrChip inherits Rectangle {
     border-color: has-grad ? tint.with-alpha(light-theme ? 0.85 : 0.55) : dk-border;
     animate background { duration: 140ms; easing: ease-out; }
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    Text {
-        text: label; font-size: 13px; font-weight: has-grad ? 700 : 600;
-        // On a light canvas the bright tints (teal/amber) wash out — darken the
-        // idle text so it stays legible; active text stays white on the gradient.
-        // Inactive coloured chips: darken on light, brighten toward white on dark
-        // so the label stays legible against the faint tint wash either way.
-        color: active ? active-text : (has-grad ? (light-theme ? tint.mix(#000000, 0.72) : tint.mix(#ffffff, 0.5)) : (dark ? dk-text : #3c4043));
-        width: 100%; height: 100%;
-        horizontal-alignment: center; vertical-alignment: center;
+    // On a light canvas the bright tints (teal/amber) wash out — darken the
+    // idle text so it stays legible; active text stays white on the gradient.
+    // Inactive coloured chips: darken on light, brighten toward white on dark
+    // so the label stays legible against the faint tint wash either way.
+    property <color> lbl-color: active ? active-text : (has-grad ? (light-theme ? tint.mix(#000000, 0.72) : tint.mix(#ffffff, 0.5)) : (dark ? dk-text : #3c4043));
+    HorizontalLayout { alignment: center; spacing: 7px; padding-left: 4px; padding-right: 4px;
+        if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: root.lbl-color; width: 15px; height: 15px; } }
+        Text {
+            text: label; font-size: 13px; font-weight: has-grad ? 700 : 600;
+            color: root.lbl-color;
+            vertical-alignment: center;
+        }
     }
     // Green confirmation flash overlay (used by Photos' star/archive tabs).
     Rectangle {
@@ -62,11 +67,12 @@ export component HdrChip inherits Rectangle {
         background: #34a853;
         opacity: root.blink ? 0.9 : 0;
         animate opacity { duration: 280ms; easing: ease-in-out; }
-        Text {
-            text: "✓ " + root.label; color: #ffffff; font-size: 13px; font-weight: 700;
-            width: 100%; height: 100%;
-            horizontal-alignment: center; vertical-alignment: center;
-            visible: root.blink;
+        HorizontalLayout { alignment: center; spacing: 6px; visible: root.blink;
+            VerticalLayout { alignment: center; AppIcon { source: Icons.check; tint: #ffffff; width: 14px; height: 14px; } }
+            Text {
+                text: root.label; color: #ffffff; font-size: 13px; font-weight: 700;
+                vertical-alignment: center;
+            }
         }
     }
 }
@@ -87,7 +93,7 @@ export component HdrSearch inherits Rectangle {
     border-color: #ffffff22;
     HorizontalLayout {
         padding-left: 18px; padding-right: 10px; spacing: 8px;
-        Text { text: "🔍"; font-size: 14px; color: dark ? #9a9aa2 : #5f6368; vertical-alignment: center; }
+        VerticalLayout { alignment: center; AppIcon { source: Icons.search; tint: dark ? #9a9aa2 : #5f6368; width: 16px; height: 16px; } }
         Rectangle {
             horizontal-stretch: 1;
             qi := TextInput {
@@ -113,8 +119,7 @@ export component HdrSearch inherits Rectangle {
                 mouse-cursor: pointer;
                 clicked => { root.query = ""; root.edited(""); root.cleared(); }
             }
-            Text { text: "✕"; color: dark ? #e8e8ea : #3c4043; font-size: 12px;
-                horizontal-alignment: center; vertical-alignment: center; }
+            AppIcon { source: Icons.x; tint: dark ? #e8e8ea : #3c4043; width: 13px; height: 13px; }
         }
     }
 }

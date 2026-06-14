@@ -3,6 +3,7 @@
 // by tulipix-photos::editor::ops; every control maps to a typed EditOp on the
 // undo/redo stack.
 import { Slider, ComboBox, ScrollView, SpinBox, LineEdit } from "std-widgets.slint";
+import { AppIcon, Icons } from "icons.slint";
 
 component AdjustRow inherits VerticalLayout {
     in property <string> label;
@@ -23,6 +24,7 @@ component AdjustRow inherits VerticalLayout {
 
 component EditChip inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
     in property <bool> active: false;
     in property <bool> dim: false;
     callback clicked();
@@ -33,6 +35,7 @@ component EditChip inherits Rectangle {
     t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
         padding-left: 8px; padding-right: 8px;
+        if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: #ffffff; width: 14px; height: 14px; } }
         Text { text: root.label; color: #ffffff; font-size: 12px; font-weight: 600;
             horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
     }
@@ -44,7 +47,7 @@ component PanelHeader inherits Text {
 
 // Vertical icon+label button for the slim left tool rail.
 component ModeBtn inherits Rectangle {
-    in property <string> icon;
+    in property <image> icon;
     in property <string> label;
     in property <bool> active: false;
     callback clicked();
@@ -52,8 +55,8 @@ component ModeBtn inherits Rectangle {
     background: root.active ? #1a73e8 : (mt.has-hover ? #2a2b2e : transparent);
     mt := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     VerticalLayout {
-        alignment: center; spacing: 2px;
-        Text { text: root.icon; color: #ffffff; font-size: 18px; horizontal-alignment: center; }
+        alignment: center; spacing: 3px;
+        VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: #ffffff; width: 18px; height: 18px; } }
         Text { text: root.label; color: #cfd2d6; font-size: 9px; horizontal-alignment: center; }
     }
 }
@@ -61,7 +64,7 @@ component ModeBtn inherits Rectangle {
 // Hold-to-act variant of ModeBtn (momentary): fires `pressed` on pointer
 // down and `released` on up. Used for the press-and-hold Compare button.
 component HoldBtn inherits Rectangle {
-    in property <string> icon;
+    in property <image> icon;
     in property <string> label;
     in property <bool> active: false;
     callback pressed();
@@ -76,8 +79,8 @@ component HoldBtn inherits Rectangle {
         }
     }
     VerticalLayout {
-        alignment: center; spacing: 2px;
-        Text { text: root.icon; color: #ffffff; font-size: 18px; horizontal-alignment: center; }
+        alignment: center; spacing: 3px;
+        VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: #ffffff; width: 18px; height: 18px; } }
         Text { text: root.label; color: #cfd2d6; font-size: 9px; horizontal-alignment: center; }
     }
 }
@@ -197,24 +200,24 @@ export component PhotoEditor inherits Rectangle {
                 width: 64px; background: #141517; border-width: 1px; border-color: #3c4043;
                 VerticalLayout {
                     padding: 6px; padding-top: 14px; spacing: 8px; alignment: start;
-                    ModeBtn { icon: "⤥"; label: "Transform"; active: root.edit-mode == "transform"; clicked => { root.enter-mode("transform"); } }
-                    ModeBtn { icon: "▢"; label: "Crop"; active: root.edit-mode == "crop"; clicked => { root.enter-mode("crop"); } }
-                    ModeBtn { icon: "⤡"; label: "Resize"; active: root.edit-mode == "resize"; clicked => { root.enter-mode("resize"); } }
+                    ModeBtn { icon: Icons.move; label: "Transform"; active: root.edit-mode == "transform"; clicked => { root.enter-mode("transform"); } }
+                    ModeBtn { icon: Icons.crop; label: "Crop"; active: root.edit-mode == "crop"; clicked => { root.enter-mode("crop"); } }
+                    ModeBtn { icon: Icons.scaling; label: "Resize"; active: root.edit-mode == "resize"; clicked => { root.enter-mode("resize"); } }
                     Rectangle { height: 1px; background: #3c4043; }
                     // Hold to peek the unedited original.
-                    HoldBtn { icon: "👁"; label: "Compare"; active: root.comparing;
+                    HoldBtn { icon: Icons.eye; label: "Compare"; active: root.comparing;
                         pressed => { root.comparing = true; } released => { root.comparing = false; } }
                     // Toggle the before/after reveal slider over the edit.
-                    ModeBtn { icon: "◫"; label: "Split"; active: root.split-compare;
+                    ModeBtn { icon: Icons.columns-2; label: "Split"; active: root.split-compare;
                         clicked => { root.split-compare = !root.split-compare; } }
                     Rectangle { height: 1px; background: #3c4043; }
                     // Tone-curve editor overlaid on the stage.
-                    ModeBtn { icon: "～"; label: "Curves"; active: root.curve-open;
+                    ModeBtn { icon: Icons.spline; label: "Curves"; active: root.curve-open;
                         clicked => { root.curve-open = !root.curve-open; } }
                     // EXIF metadata — read-only viewer + writable editor.
-                    ModeBtn { icon: "ⓘ"; label: "Info"; active: root.exif-view-open;
+                    ModeBtn { icon: Icons.info; label: "Info"; active: root.exif-view-open;
                         clicked => { root.exif-view-open = !root.exif-view-open; root.exif-edit-open = false; } }
-                    ModeBtn { icon: "✎"; label: "Meta"; active: root.exif-edit-open;
+                    ModeBtn { icon: Icons.pencil; label: "Meta"; active: root.exif-edit-open;
                         clicked => { root.exif-edit-open = !root.exif-edit-open; root.exif-view-open = false; } }
                 }
             }
@@ -236,16 +239,16 @@ export component PhotoEditor inherits Rectangle {
                             Text { text: root.nat-w + " × " + root.nat-h + " px"; color: #cfd2d6;
                                 font-size: 12px; font-weight: 600; vertical-alignment: center; } }
                         Rectangle { horizontal-stretch: 1; }
-                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "−"; clicked => { root.zoom = Math.max(0.05, root.zoom - 0.25); } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "-"; clicked => { root.zoom = Math.max(0.05, root.zoom - 0.25); } } }
                         VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: Math.round(true-scale * 100) + "%"; clicked => { root.zoom = 1.0; } } }
                         VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "+"; clicked => { root.zoom = Math.min(8.0, root.zoom + 0.25); } } }
                         VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "1:1"; active: Math.abs(true-scale - 1.0) < 0.02;
                             clicked => { root.zoom = 1.0 / max(0.001, min((stage.width / 1px) / max(1, root.nat-w), (stage.height / 1px) / max(1, root.nat-h))); } } }
                         VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "Fit"; active: Math.abs(root.zoom - 1.0) < 0.01; clicked => { root.zoom = 1.0; } } }
-                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "↶"; dim: !root.can-undo; clicked => { if (root.can-undo) { root.undo(); } } } }
-                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "↷"; dim: !root.can-redo; clicked => { if (root.can-redo) { root.redo(); } } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { icon: Icons.rotate-ccw; label: ""; dim: !root.can-undo; clicked => { if (root.can-undo) { root.undo(); } } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { icon: Icons.rotate-cw; label: ""; dim: !root.can-redo; clicked => { if (root.can-redo) { root.redo(); } } } }
                         VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "Reset"; dim: root.op-count == 0; clicked => { root.reset(); } } }
-                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "✕ Close"; clicked => { root.request-close(); } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { icon: Icons.x; label: "Close"; clicked => { root.request-close(); } } }
                     }
                 }
 
@@ -295,8 +298,7 @@ export component PhotoEditor inherits Rectangle {
                             width: 30px; height: 30px; border-radius: 15px;
                             x: (parent.width - self.width) / 2; y: (stage.height - self.height) / 2;
                             background: #1a73e8; border-width: 2px; border-color: #ffffff;
-                            Text { text: "⇋"; color: #ffffff; font-size: 14px;
-                                horizontal-alignment: center; vertical-alignment: center; }
+                            AppIcon { source: Icons.flip-horizontal; tint: #ffffff; width: 14px; height: 14px; }
                         }
                     }
                     if root.split-compare: Rectangle {
@@ -407,10 +409,10 @@ export component PhotoEditor inherits Rectangle {
                             padding-left: 10px; padding-right: 10px; spacing: 6px;
                             if root.edit-mode == "transform": HorizontalLayout {
                                 spacing: 6px;
-                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "⟲ 90°"; clicked => { root.transform("rot-left"); } } }
-                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "⟳ 90°"; clicked => { root.transform("rot-right"); } } }
-                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "⇋ Flip H"; clicked => { root.transform("flip-h"); } } }
-                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "⇅ Flip V"; clicked => { root.transform("flip-v"); } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { icon: Icons.rotate-ccw; label: "90°"; clicked => { root.transform("rot-left"); } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { icon: Icons.refresh-cw; label: "90°"; clicked => { root.transform("rot-right"); } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { icon: Icons.flip-horizontal; label: "Flip H"; clicked => { root.transform("flip-h"); } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { icon: Icons.flip-vertical; label: "Flip V"; clicked => { root.transform("flip-v"); } } }
                             }
                             if root.edit-mode == "crop": HorizontalLayout {
                                 spacing: 5px;
@@ -421,7 +423,7 @@ export component PhotoEditor inherits Rectangle {
                                 VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "16:9"; active: root.crop-aspect == "16:9"; clicked => { root.crop-aspect = "16:9"; crop.set-aspect(16, 9); } } }
                                 VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "9:16"; active: root.crop-aspect == "9:16"; clicked => { root.crop-aspect = "9:16"; crop.set-aspect(9, 16); } } }
                                 Rectangle { width: 8px; }
-                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "✓ Apply"; active: true; clicked => { root.crop-apply(crop.fx, crop.fy, crop.fw, crop.fh); root.edit-mode = ""; } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { icon: Icons.check; label: "Apply"; active: true; clicked => { root.crop-apply(crop.fx, crop.fy, crop.fw, crop.fh); root.edit-mode = ""; } } }
                             }
                             if root.edit-mode == "resize": HorizontalLayout {
                                 spacing: 8px;
@@ -429,7 +431,7 @@ export component PhotoEditor inherits Rectangle {
                                 VerticalLayout { alignment: center; horizontal-stretch: 0; SpinBox { width: 100px; minimum: 1; maximum: 30000; value <=> root.resize-w; } }
                                 VerticalLayout { alignment: center; horizontal-stretch: 0; Text { text: "× H"; color: #9aa0a6; font-size: 12px; vertical-alignment: center; } }
                                 VerticalLayout { alignment: center; horizontal-stretch: 0; SpinBox { width: 100px; minimum: 1; maximum: 30000; value <=> root.resize-h; } }
-                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { label: "✓ Apply"; active: true; clicked => { root.resize-apply(root.resize-w, root.resize-h); root.edit-mode = ""; } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0; EditChip { icon: Icons.check; label: "Apply"; active: true; clicked => { root.resize-apply(root.resize-w, root.resize-h); root.edit-mode = ""; } } }
                             }
                         }
                     }
@@ -539,7 +541,7 @@ export component PhotoEditor inherits Rectangle {
                             HorizontalLayout {
                                 Text { text: "Photo info (EXIF)"; color: #ffffff; font-size: 14px; font-weight: 700;
                                     vertical-alignment: center; horizontal-stretch: 1; }
-                                EditChip { label: "✕"; clicked => { root.exif-view-open = false; } }
+                                EditChip { icon: Icons.x; label: ""; clicked => { root.exif-view-open = false; } }
                             }
                             Rectangle { height: 1px; background: #3c4043; }
                             Flickable {
@@ -567,7 +569,7 @@ export component PhotoEditor inherits Rectangle {
                                 HorizontalLayout {
                                     Text { text: "Edit metadata"; color: #ffffff; font-size: 14px; font-weight: 700;
                                         vertical-alignment: center; horizontal-stretch: 1; }
-                                    EditChip { label: "✕"; clicked => { root.exif-edit-open = false; } }
+                                    EditChip { icon: Icons.x; label: ""; clicked => { root.exif-edit-open = false; } }
                                 }
                                 Rectangle { height: 1px; background: #3c4043; }
                                 PanelHeader { text: "ARTIST"; }
@@ -581,9 +583,9 @@ export component PhotoEditor inherits Rectangle {
                                 PanelHeader { text: "DATE TAKEN"; }
                                 LineEdit { placeholder-text: "YYYY:MM:DD HH:MM:SS"; text <=> root.exif-date; }
                                 Rectangle { height: 6px; }
-                                EditChip { label: "💾 Write metadata"; active: true;
+                                EditChip { icon: Icons.save; label: "Write metadata"; active: true;
                                     clicked => { root.exif-save(root.exif-artist, root.exif-copyright, root.exif-description, root.exif-comment, root.exif-date); } }
-                                EditChip { label: "📍 Clear GPS location";
+                                EditChip { icon: Icons.map-pin; label: "Clear GPS location";
                                     clicked => { root.exif-clear-gps(); } }
                                 Text { text: "Writes in place via exiftool. Date format: YYYY:MM:DD HH:MM:SS.";
                                     color: #9aa0a6; font-size: 10px; wrap: word-wrap; }
@@ -638,7 +640,7 @@ export component PhotoEditor inherits Rectangle {
 
                         PanelHeader { text: "ONE-TAP"; }
                         HorizontalLayout { spacing: 6px;
-                            EditChip { label: "✨ Auto Enhance"; clicked => { root.enhance(); } }
+                            EditChip { icon: Icons.sparkles; label: "Auto Enhance"; clicked => { root.enhance(); } }
                             EditChip { label: "Sharpen"; clicked => { root.sharpen(1.0); } }
                         }
 
@@ -655,8 +657,8 @@ export component PhotoEditor inherits Rectangle {
                         PanelHeader { text: "EXPORT"; }
                         ComboBox { model: ["JPEG", "PNG", "WEBP", "TIFF", "HEIC"]; current-value <=> root.export-format; }
                         AdjustRow { label: "Quality"; value <=> root.export-quality; min: 1; max: 100; changed(v) => { } }
-                        EditChip { label: "💾 Save a copy"; active: true; clicked => { root.do-export(root.export-format, root.export-quality); } }
-                        EditChip { label: "✓ Save to original"; clicked => { root.save-original(); } }
+                        EditChip { icon: Icons.save; label: "Save a copy"; active: true; clicked => { root.do-export(root.export-format, root.export-quality); } }
+                        EditChip { icon: Icons.check; label: "Save to original"; clicked => { root.save-original(); } }
                     }
                 }
             }

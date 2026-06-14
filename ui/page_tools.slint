@@ -5,6 +5,7 @@
 import { Theme } from "tokens.slint";
 import { ScrollView } from "std-widgets.slint";
 import { HdrChip, HdrSearch, CountPill } from "section_header.slint";
+import { AppIcon, Icons } from "icons.slint";
 
 // One operation row in the detail body. `cat` is shown only in search results.
 export struct ToolOpRow { cat: string, label: string }
@@ -34,7 +35,7 @@ export component ToolsPage inherits Rectangle {
     in-out property <string> category: "fileops";
     in-out property <string> query: "";
     in property <string> cat-title: "File ops";
-    in property <string> cat-icon: "📁";
+    in property <string> cat-icon: "";
     in property <[ToolOpRow]> op-rows: [];      // body rows (current category, or search matches)
     in property <string> queue-status: "Idle";  // queue summary for the count pill
     callback open-tool(string);
@@ -60,7 +61,7 @@ export component ToolsPage inherits Rectangle {
                     HdrSearch { width: 360px; dark: true; placeholder: "Find a tool";
                         query <=> root.query; edited(q) => { root.search(q); } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    CountPill { accent: root.accent; seg1: "⚙ " + root.queue-status; } }
+                    CountPill { accent: root.accent; seg1: "" + root.queue-status; } }
             }
         }
 
@@ -70,12 +71,12 @@ export component ToolsPage inherits Rectangle {
             border-width: 1px; border-color: Theme.outline;
             HorizontalLayout {
                 padding-left: 28px; padding-right: 28px; spacing: 8px; alignment: start;
-                VerticalLayout { alignment: center; HdrChip { label: "📁 File ops";  min-width: 104px; dark: true; accent: root.accent; active: category == "fileops"; clicked => { root.set-category("fileops"); } } }
-                VerticalLayout { alignment: center; HdrChip { label: "🎬 Video";     min-width: 92px;  dark: true; accent: root.accent; active: category == "video";   clicked => { root.set-category("video"); } } }
-                VerticalLayout { alignment: center; HdrChip { label: "🎵 Audio";     min-width: 92px;  dark: true; accent: root.accent; active: category == "audio";   clicked => { root.set-category("audio"); } } }
-                VerticalLayout { alignment: center; HdrChip { label: "🖼 Photo";     min-width: 92px;  dark: true; accent: root.accent; active: category == "photo";   clicked => { root.set-category("photo"); } } }
-                VerticalLayout { alignment: center; HdrChip { label: "💬 Subtitles"; min-width: 104px; dark: true; accent: root.accent; active: category == "subs";    clicked => { root.set-category("subs"); } } }
-                VerticalLayout { alignment: center; HdrChip { label: "⚙ Queue";      min-width: 92px;  dark: true; accent: root.accent; active: category == "queue";   clicked => { root.set-category("queue"); } } }
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.folder; label: "File ops";  min-width: 104px; dark: true; accent: root.accent; active: category == "fileops"; clicked => { root.set-category("fileops"); } } }
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.film; label: "Video";     min-width: 92px;  dark: true; accent: root.accent; active: category == "video";   clicked => { root.set-category("video"); } } }
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.music; label: "Audio";     min-width: 92px;  dark: true; accent: root.accent; active: category == "audio";   clicked => { root.set-category("audio"); } } }
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.image; label: "Photo";     min-width: 92px;  dark: true; accent: root.accent; active: category == "photo";   clicked => { root.set-category("photo"); } } }
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.message-circle; label: "Subtitles"; min-width: 104px; dark: true; accent: root.accent; active: category == "subs";    clicked => { root.set-category("subs"); } } }
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.settings; label: "Queue";      min-width: 92px;  dark: true; accent: root.accent; active: category == "queue";   clicked => { root.set-category("queue"); } } }
                 Rectangle { horizontal-stretch: 1; }
             }
         }
@@ -90,8 +91,7 @@ export component ToolsPage inherits Rectangle {
                     Rectangle { width: 44px; height: 44px; border-radius: 12px;
                         horizontal-stretch: 0; vertical-stretch: 0;
                         background: root.accent.with-alpha(0.16);
-                        Text { text: root.query == "" ? root.cat-icon : "🔍"; font-size: 22px;
-                            horizontal-alignment: center; vertical-alignment: center; } }
+                        AppIcon { source: root.query == "" ? Icons.folder : Icons.search; tint: Theme.text-dim; width: 22px; height: 22px; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 1;
                         Text { text: root.query == "" ? root.cat-title : "Results for “" + root.query + "”";
                             color: Theme.text; font-size: 18px; font-weight: 700; }
