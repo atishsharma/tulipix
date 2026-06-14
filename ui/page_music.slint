@@ -1237,15 +1237,17 @@ component YtSubRow inherits Rectangle {
     in property <YtSub> s;
     callback open();
     height: 56px; border-radius: 10px;
-    background: sh.has-hover ? #ef444414 : MusicTheme.surf0;
-    border-width: 1px; border-color: sh.has-hover ? #ef444466 : MusicTheme.line;
+    // Red frosted glass — faint wash idle, red overlay on hover so it pops.
+    background: sh.has-hover ? #ef4444.with-alpha(MusicTheme.light ? 0.22 : 0.18)
+                            : #ef4444.with-alpha(MusicTheme.light ? 0.12 : 0.08);
+    border-width: 1px; border-color: sh.has-hover ? #ef4444bf : #ef444452;
     animate background, border-color { duration: 120ms; easing: ease-out; }
     sh := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
     HorizontalLayout { padding: 8px; spacing: 11px;
         Rectangle { width: 40px; height: 40px; border-radius: 20px; clip: true; background: MusicTheme.surf1;
             Image { source: s.avatar; image-fit: cover; width: 100%; height: 100%; } }
         VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
-            Text { text: s.title; color: MusicTheme.fg; font-size: 14px; font-weight: 700; overflow: elide; }
+            Text { text: s.title; color: sh.has-hover ? #ef4444 : MusicTheme.fg; font-size: 14px; font-weight: 800; overflow: elide; }
             Text { text: s.subs != "" ? s.subs : s.count; color: MusicTheme.fg-dim; font-size: 11px; overflow: elide; } } }
 }
 
@@ -1253,18 +1255,21 @@ component YtSubRow inherits Rectangle {
 component YtMiniRow inherits Rectangle {
     in property <YtVideo> v;
     in property <bool> removable: false;
+    in property <color> tint: #ef4444;   // per-section frosted glass colour
     callback open();
     callback remove();
     height: 44px; border-radius: 8px;
-    background: mh.has-hover ? #ef44440f : MusicTheme.surf0;
-    border-width: 1px; border-color: mh.has-hover ? #ef444455 : MusicTheme.line;
+    // Tinted frosted glass: faint wash idle, stronger coloured overlay on hover.
+    background: mh.has-hover ? root.tint.with-alpha(MusicTheme.light ? 0.22 : 0.18)
+                             : root.tint.with-alpha(MusicTheme.light ? 0.12 : 0.08);
+    border-width: 1px; border-color: mh.has-hover ? root.tint.with-alpha(0.75) : root.tint.with-alpha(0.32);
     animate background, border-color { duration: 120ms; easing: ease-out; }
     mh := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
     HorizontalLayout { padding: 6px; spacing: 8px;
         Rectangle { width: 52px; height: 30px; border-radius: 5px; clip: true; background: MusicTheme.surf1;
             Image { source: v.thumb; image-fit: cover; width: 100%; height: 100%; } }
         VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 1px;
-            Text { text: v.title; color: MusicTheme.fg2; font-size: 11px; font-weight: 600; overflow: elide; }
+            Text { text: v.title; color: mh.has-hover ? root.tint : MusicTheme.fg2; font-size: 11px; font-weight: mh.has-hover ? 800 : 600; overflow: elide; }
             Text { text: v.channel; color: MusicTheme.fg-dim; font-size: 9px; overflow: elide; } }
         if root.removable: VerticalLayout { alignment: center;
             Rectangle { width: 22px; height: 22px; border-radius: 11px; background: xh.has-hover ? #ef4444 : transparent;
@@ -2674,19 +2679,21 @@ export component MusicPage inherits Rectangle {
                                 YtRailTitle { label: "RECENT SEARCHES"; linked: false; }
                                 VerticalLayout { spacing: 5px;
                                     for q in root.yt-recent: Rectangle { height: 26px; border-radius: 13px;
-                                        background: rch.has-hover ? MusicTheme.hov2 : MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                                        background: rch.has-hover ? #3b82f6.with-alpha(MusicTheme.light ? 0.22 : 0.18) : #3b82f6.with-alpha(MusicTheme.light ? 0.12 : 0.08);
+                                        border-width: 1px; border-color: rch.has-hover ? #3b82f6bf : #3b82f652;
+                                        animate background, border-color { duration: 120ms; easing: ease-out; }
                                         rch := TouchArea { mouse-cursor: pointer; clicked => { root.yt-recent-click(q); } }
-                                        Text { text: q; color: MusicTheme.fg2; font-size: 10px; vertical-alignment: center;
+                                        Text { text: q; color: rch.has-hover ? #3b82f6 : MusicTheme.fg2; font-size: 10px; font-weight: rch.has-hover ? 800 : 500; vertical-alignment: center;
                                             horizontal-alignment: center; overflow: elide; } } } }
                             VerticalLayout { spacing: 6px;
                                 YtRailTitle { label: "CACHED VIDEOS"; clicked => { root.yt-set-tab("cached"); } }
                                 if root.yt-home-cached.length == 0: Text { text: "Nothing cached yet."; color: MusicTheme.fg-mute; font-size: 10px; }
-                                for v in root.yt-home-cached: YtMiniRow { v: v;
+                                for v in root.yt-home-cached: YtMiniRow { v: v; tint: #22c55e;
                                     open => { root.yt-play(v.id, false); } } }
                             VerticalLayout { spacing: 6px;
                                 YtRailTitle { label: "DOWNLOADED VIDEOS"; clicked => { root.yt-set-tab("downloads"); } }
                                 if root.yt-home-downloads.length == 0: Text { text: "No downloads yet."; color: MusicTheme.fg-mute; font-size: 10px; }
-                                for v in root.yt-home-downloads: YtMiniRow { v: v; removable: true;
+                                for v in root.yt-home-downloads: YtMiniRow { v: v; removable: true; tint: #ec4899;
                                     open => { root.yt-play(v.id, false); }
                                     remove => { root.yt-remove-download(v.id); } } } } } }
                     // CENTER results.
