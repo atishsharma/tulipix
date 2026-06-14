@@ -95,5 +95,15 @@ tikv-jemallocator = { version = "0.6", optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
+# raw-window-handle pins to Slint 1.8's rwh (0.6); used to hand the native HWND
+# to souvlaki — SMTC on Windows panics without one.
+[target.'cfg(target_os = "windows")'.dependencies]
+raw-window-handle = "0.6"
+
 [build-dependencies]
 slint-build.workspace = true
+
+# Embed the .ico as a Win32 resource so the .exe (and, via winit's default,
+# the window/taskbar) carries the Tulipix icon.
+[target.'cfg(target_os = "windows")'.build-dependencies]
+embed-resource = "3"

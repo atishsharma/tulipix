@@ -1,5 +1,17 @@
 fn main() {
     slint_build::compile("../../ui/main.slint").expect("Slint compile failed");
+
+    // Embed the Tulipix icon as a Win32 resource. winit uses the executable's
+    // first icon resource as the default window/taskbar icon, so this fixes the
+    // missing icon without any runtime code. Host-gated: only runs on a native
+    // Windows build (where the embed-resource build-dep is present).
+    #[cfg(target_os = "windows")]
+    {
+        println!("cargo:rerun-if-changed=app.rc");
+        println!("cargo:rerun-if-changed=icon.ico");
+        embed_resource::compile("app.rc", embed_resource::NONE);
+    }
+
     // Trends feed list is include_str!'d from podc.md — rebuild when it changes.
     println!("cargo:rerun-if-changed=../../podc.md");
     // Embedded player links libmpv directly (render API). On Linux the system

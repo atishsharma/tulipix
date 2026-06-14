@@ -6536,7 +6536,14 @@ fn main() -> Result<()> {
 
     // OS media-key support (XF86Audio Play/Pause/Next/Prev) via MPRIS on Linux,
     // SMTC on Windows, MediaPlayer on macOS. Held alive for the app's lifetime.
-    setup_media_controls(&window);
+    // Deferred to a single-shot timer so the native window (and its HWND, which
+    // Windows SMTC requires) is realized before registration runs.
+    {
+        let weak = window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+            if let Some(w) = weak.upgrade() { setup_media_controls(&w); }
+        });
+    }
 
     // Launch filling the screen (maximised, decorations kept) rather than a
     // small floating window.
@@ -9959,9 +9966,10 @@ fn cloud_mount_ensure(remote: &str) -> anyhow::Result<PathBuf> {
             let alive = child.try_wait().ok().flatten().is_none();
             if alive && cloud_is_mounted(mp) { return Ok(mp.clone()); }
             let _ = child.kill();
-            let mp = mp.clone();
+            // Linux unmounts via fusermount; other platforms drop the child and
+            // let WinFsp/macFUSE reap the stale mount on its own.
             #[cfg(target_os = "linux")]
-            { let _ = std::process::Command::new("fusermount").args(["-u"]).arg(&mp).status(); }
+            { let mp = mp.clone(); let _ = std::process::Command::new("fusermount").args(["-u"]).arg(&mp).status(); }
             g.remove(remote);
         }
     }
@@ -14542,7 +14550,26 @@ fn media_set_playing(playing: bool) {
 /// hardware/keyboard media keys drive playback (np.p4.music.player-keys).
 fn setup_media_controls(window: &MainWindow) {
     use souvlaki::{MediaControlEvent, MediaControls, MediaPlayback, PlatformConfig};
-    let config = PlatformConfig { dbus_name: "tulipix", display_name: "Tulipix", hwnd: None };
+
+    // Windows SMTC requires the native window handle; souvlaki panics on
+    // `hwnd: None`. The HWND only exists once the window is realized, so this is
+    // called after show (see the single-shot timer at startup). Other platforms
+    // (MPRIS/MediaPlayer) take `None`.
+    #[cfg(target_os = "windows")]
+    let hwnd = {
+        use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+        match window.window().window_handle().window_handle().map(|h| h.as_raw()) {
+            Ok(RawWindowHandle::Win32(h)) => Some(h.hwnd.get() as *mut std::ffi::c_void),
+            other => {
+                tracing::warn!(?other, "media controls: no Win32 HWND yet, skipping");
+                return;
+            }
+        }
+    };
+    #[cfg(not(target_os = "windows"))]
+    let hwnd = None;
+
+    let config = PlatformConfig { dbus_name: "tulipix", display_name: "Tulipix", hwnd };
     let mut controls = match MediaControls::new(config) {
         Ok(c) => c,
         Err(e) => { tracing::warn!(error = ?e, "media controls unavailable"); return; }
