@@ -135,6 +135,8 @@ export struct YtVideo {
     duration: string,    // pre-formatted "4:12"
     thumb: image,
     index: int,          // position into the page's parallel video vec
+    fmt: string,         // download container badge ("" = none)
+    quality: string,     // download quality badge ("" = none)
 }
 
 // One subscribed channel — Home right rail + Subscriptions grid.
