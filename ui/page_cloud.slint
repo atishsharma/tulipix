@@ -3,6 +3,7 @@
 // breadcrumb. A modal connects a new remote via `rclone config create`.
 import { ScrollView, LineEdit, TextEdit } from "std-widgets.slint";
 import { HdrChip, HdrSearch, CountPill } from "section_header.slint";
+import { AppIcon, Icons } from "icons.slint";
 
 export struct CloudRemote { name: string, backend: string }
 export struct CloudEntry { name: string, is_dir: bool, size: string, modified: string, index: int }
@@ -88,11 +89,11 @@ export component CloudPage inherits Rectangle {
                     HdrSearch { width: 360px; placeholder: "Filter files";
                         query <=> root.query; edited(q) => { root.search(q); } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    HdrChip { label: "↻ Refresh"; accent: root.accent; height: 44px; min-width: 110px; clicked => { root.refresh(); } } }
+                    HdrChip { icon: Icons.refresh-cw; label: "Refresh"; accent: root.accent; height: 44px; min-width: 110px; clicked => { root.refresh(); } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     HdrChip { label: "+ Connect remote"; accent: root.accent; active: true; height: 44px; min-width: 160px; clicked => { root.connect-open-dialog(); } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    CountPill { accent: root.accent; seg1: "☁ " + remotes.length + (remotes.length == 1 ? " remote" : " remotes"); } }
+                    CountPill { accent: root.accent; seg1: remotes.length + (remotes.length == 1 ? " remote" : " remotes"); } }
             }
         }
 
@@ -106,13 +107,13 @@ export component CloudPage inherits Rectangle {
                     HorizontalLayout {
                         spacing: 6px; alignment: start;
                         Text { text: active-remote == "" ? "My remotes" : active-remote; color: root.accent; font-size: 13px; font-weight: 600; vertical-alignment: center; }
-                        if path != "": Text { text: "›"; color: #8a8886; font-size: 13px; vertical-alignment: center; }
+                        if path != "": AppIcon { source: Icons.chevron-right; tint: #8a8886; width: 13px; height: 13px; }
                         if path != "": Text { text: path; color: #605e5c; font-size: 13px; vertical-alignment: center; }
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
                 if active-remote != "": VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    HdrChip { label: "‹ Up"; accent: root.accent; min-width: 72px; clicked => { root.browse-up(); } } }
+                    HdrChip { icon: Icons.chevron-left; label: "Up"; accent: root.accent; min-width: 72px; clicked => { root.browse-up(); } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     Text { text: entries.length + " items"; color: #605e5c; font-size: 12px; vertical-alignment: center; } }
             }
@@ -146,7 +147,7 @@ export component CloudPage inherits Rectangle {
                         rta := TouchArea { mouse-cursor: pointer; clicked => { root.remote-open(r.name); } }
                         HorizontalLayout {
                             padding-left: 10px; padding-right: 6px; spacing: 8px;
-                            Text { text: "☁"; color: #0078d4; font-size: 18px; vertical-alignment: center; }
+                            AppIcon { source: Icons.cloud; tint: #0078d4; width: 18px; height: 18px; }
                             VerticalLayout {
                                 alignment: center; horizontal-stretch: 1;
                                 Text { text: r.name; color: #1b1a19; font-size: 13px; font-weight: 600; overflow: elide; }
@@ -156,7 +157,7 @@ export component CloudPage inherits Rectangle {
                                 width: 24px; height: 24px; border-radius: 4px; y: (parent.height - self.height)/2;
                                 background: dta.has-hover ? #f3d6d8 : transparent;
                                 dta := TouchArea { mouse-cursor: pointer; clicked => { root.remote-delete(r.name); } }
-                                Text { text: "🗑"; font-size: 12px; horizontal-alignment: center; vertical-alignment: center; }
+                                AppIcon { source: Icons.trash; width: 12px; height: 12px; }
                             }
                         }
                     }
@@ -186,7 +187,7 @@ export component CloudPage inherits Rectangle {
                         alignment: center; spacing: 12px;
                         HorizontalLayout { alignment: center;
                             Rectangle { width: 88px; height: 88px; border-radius: 12px; background: #deecf9;
-                                Text { text: "☁"; font-size: 40px; color: #0078d4; horizontal-alignment: center; vertical-alignment: center; } } }
+                                AppIcon { source: Icons.cloud; tint: #0078d4; width: 40px; height: 40px; } } }
                         Text { text: remotes.length == 0 ? "No remotes connected" : "Pick a remote"; color: #1b1a19; font-size: 19px; font-weight: 700; horizontal-alignment: center; }
                         Text { text: "Connect Google Drive, Dropbox, S3 and 70+ more via rclone — then browse, mount, sync and stream."; color: #605e5c; font-size: 13px; horizontal-alignment: center; wrap: word-wrap; }
                         HorizontalLayout { alignment: center; CmdButton { label: "+ Connect remote"; primary: true; clicked => { root.connect-open-dialog(); } } }
@@ -214,7 +215,7 @@ export component CloudPage inherits Rectangle {
                                     padding-left: 16px; padding-right: 16px; spacing: 0px;
                                     HorizontalLayout {
                                         horizontal-stretch: 1; spacing: 8px;
-                                        Text { text: e.is_dir ? "📁" : "📄"; font-size: 15px; vertical-alignment: center; }
+                                        AppIcon { source: e.is_dir ? Icons.folder : Icons.file-text; width: 15px; height: 15px; }
                                         Text { text: e.name; color: #1b1a19; font-size: 13px; vertical-alignment: center; overflow: elide; }
                                     }
                                     Text { text: e.modified; color: #605e5c; font-size: 12px; vertical-alignment: center; width: 130px; }

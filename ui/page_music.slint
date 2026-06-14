@@ -231,9 +231,9 @@ component Scrubber inherits Rectangle {
     }
 }
 
-// One vertical band of the graphic equalizer (−12..+12 dB, drag to set).
+// One vertical band of the graphic equalizer (-12..+12 dB, drag to set).
 component EqBand inherits VerticalLayout {
-    in property <float> value;   // dB, −12..+12
+    in property <float> value;   // dB, -12..+12
     in property <string> hz;
     callback changed(float);
     spacing: 6px; horizontal-stretch: 0; width: 40px;
@@ -1491,7 +1491,7 @@ export component MusicPage inherits Rectangle {
     callback love();                             // toggle loved on current track
     callback rate(int);                          // set 0–5 stars on current track
     callback set-song-sort(string);              // title|artist|added|plays (toggles dir if same)
-    callback set-song-page(int);                 // page delta (−1 / +1)
+    callback set-song-page(int);                 // page delta (-1 / +1)
     callback search(string);                     // filter the Songs list
     callback podcast-search(string);             // search across subscribed podcasts (+ episodes)
     callback set-songs-view(string);             // list | grid
@@ -4468,7 +4468,7 @@ export component MusicPage inherits Rectangle {
                             if (!root.lyrics-find-open) { root.lyrics-find-name = root.np-title; root.lyrics-find-artist = root.np-sub == "Playing from your library" ? "" : root.np-sub; root.lyrics-find-album = root.np-album; }
                             root.lyrics-find-open = !root.lyrics-find-open; } }
                     Rectangle { horizontal-stretch: 1; }
-                    if !root.lyrics-find-open && root.lyrics-rows.length > 0: BrowseChip { label: "−"; clicked => { root.lyrics-offset(-250); } }
+                    if !root.lyrics-find-open && root.lyrics-rows.length > 0: BrowseChip { label: "-"; clicked => { root.lyrics-offset(-250); } }
                     if !root.lyrics-find-open && root.lyrics-rows.length > 0: VerticalLayout { alignment: center; Text { text: (root.lyrics-offset-ms / 1000.0) + "s"; color: MusicTheme.fg3; font-size: 11px; } }
                     if !root.lyrics-find-open && root.lyrics-rows.length > 0: BrowseChip { label: "+"; clicked => { root.lyrics-offset(250); } } }
                 // Dedicated Find panel — 4-line form (Name / Artist / Album / Search) + results.
@@ -5737,7 +5737,7 @@ export component MusicMini inherits Rectangle {
 }
 
 // Podcast-centric bottom player (np.p5.music.podcast-feeds). Same floating frame
-// as MusicMini but tuned for spoken word: square cover (no vinyl), −15s / +30s
+// as MusicMini but tuned for spoken word: square cover (no vinyl), -15s / +30s
 // skips, playback-speed cycle, and an episodes/notes flip instead of lyrics.
 export component PodcastMini inherits Rectangle {
     in property <image> art;
@@ -5825,7 +5825,7 @@ export component PodcastMini inherits Rectangle {
             Text { text: pos-label; color: MusicTheme.fg-dim; font-size: 10px * root.uiscale; }
             Rectangle { horizontal-stretch: 1; }
             Text { text: dur-label; color: MusicTheme.fg-dim; font-size: 10px * root.uiscale; } }
-        // 5. Transport — −15s · play/pause · +30s · speed. All same height
+        // 5. Transport — -15s · play/pause · +30s · speed. All same height
         //    (level), each with a 1px outline so they read as a matched set of 4.
         HorizontalLayout { alignment: center; spacing: 14px * root.uiscale;
             VerticalLayout { alignment: center;

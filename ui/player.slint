@@ -4,18 +4,21 @@
 // chapters/fullscreen. Keyboard: space/J/K/L/arrows/m/[/]/f routed to Rust
 // via `key` (mpv-style, mapped by tulipix-player::gestures).
 import { ScrollView } from "std-widgets.slint";
+import { AppIcon, Icons } from "icons.slint";
 
 export struct PlayerTrack { id: int, label: string, selected: bool }
 export struct PlayerChapter { index: int, title: string, time: string }
 
 component IconBtn inherits Rectangle {
     in property <string> glyph;
+    in property <image> icon;
     in property <bool> active: false;
     callback clicked();
     width: 40px; height: 40px; border-radius: 8px;
     background: ta.has-hover ? #ffffff22 : (active ? #ffffff14 : transparent);
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    Text { text: glyph; color: #ffffff; font-size: 18px;
+    if root.icon.width > 0: AppIcon { source: root.icon; tint: #ffffff; width: 18px; height: 18px; }
+    if root.icon.width == 0: Text { text: glyph; color: #ffffff; font-size: 18px;
         horizontal-alignment: center; vertical-alignment: center; }
 }
 
@@ -42,7 +45,7 @@ component PickerPopup inherits Rectangle {
                     rtouch := TouchArea { mouse-cursor: pointer; clicked => { root.chosen(r.id); } }
                     HorizontalLayout {
                         padding-left: 10px; padding-right: 10px; spacing: 8px;
-                        Text { text: r.selected ? "●" : "○"; color: r.selected ? #e5a00d : #6a6a72; font-size: 12px; vertical-alignment: center; }
+                        AppIcon { source: r.selected ? Icons.circle-dot : Icons.circle; tint: r.selected ? #e5a00d : #6a6a72; width: 12px; height: 12px; }
                         Text { text: r.label; color: #e8e8ea; font-size: 13px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
                     }
                 }
@@ -55,7 +58,7 @@ component PickerPopup inherits Rectangle {
             ltouch := TouchArea { mouse-cursor: pointer; clicked => { root.load-clicked(); } }
             HorizontalLayout {
                 padding-left: 10px; padding-right: 10px; spacing: 8px;
-                Text { text: "📂"; font-size: 12px; vertical-alignment: center; }
+                AppIcon { source: Icons.folder-open; width: 12px; height: 12px; }
                 Text { text: "Load subtitle file…"; color: #e5a00d; font-size: 13px; font-weight: 600; vertical-alignment: center; horizontal-stretch: 1; }
             }
         }
@@ -145,10 +148,10 @@ export component PlayerOverlay inherits Rectangle {
                 if root.hwdec != "": Rectangle {
                     height: 24px; width: hw.preferred-width + 18px; border-radius: 12px;
                     background: #ffffff1a; y: 8px;
-                    hw := Text { text: "⚡ " + root.hwdec; color: #c8c8cc; font-size: 11px; font-weight: 600;
+                    hw := Text { text: root.hwdec; color: #c8c8cc; font-size: 11px; font-weight: 600;
                         horizontal-alignment: center; vertical-alignment: center; }
                 }
-                IconBtn { glyph: "✕"; clicked => { root.close(); } }
+                IconBtn { icon: Icons.x; clicked => { root.close(); } }
             }
         }
 
@@ -195,14 +198,14 @@ export component PlayerOverlay inherits Rectangle {
                 // Buttons row.
                 HorizontalLayout {
                     spacing: 6px; alignment: start;
-                    IconBtn { glyph: "⏮"; clicked => { root.seek-rel(-10); } }
-                    IconBtn { glyph: root.paused ? "▶" : "⏸"; clicked => { root.toggle-pause(); } }
-                    IconBtn { glyph: "⏭"; clicked => { root.seek-rel(10); } }
+                    IconBtn { icon: Icons.skip-back; clicked => { root.seek-rel(-10); } }
+                    IconBtn { icon: root.paused ? Icons.play : Icons.pause; clicked => { root.toggle-pause(); } }
+                    IconBtn { icon: Icons.skip-forward; clicked => { root.seek-rel(10); } }
 
                     Rectangle { width: 14px; }
 
                     // Volume.
-                    IconBtn { glyph: root.muted ? "🔇" : "🔊"; clicked => { root.toggle-mute(); } }
+                    IconBtn { icon: root.muted ? Icons.volume-x : Icons.volume; clicked => { root.toggle-mute(); } }
                     Rectangle {
                         width: 90px; height: 40px;
                         vol := Rectangle {
@@ -220,21 +223,21 @@ export component PlayerOverlay inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
 
                     // Speed.
-                    IconBtn { glyph: "－"; clicked => { root.set-speed(Math.max(0.25, root.speed - 0.25)); } }
+                    IconBtn { icon: Icons.minus; clicked => { root.set-speed(Math.max(0.25, root.speed - 0.25)); } }
                     Rectangle { width: 56px;
                         Text { text: root.speed + "×"; color: #e8e8ea; font-size: 13px; font-weight: 600;
                             horizontal-alignment: center; vertical-alignment: center; } }
-                    IconBtn { glyph: "＋"; clicked => { root.set-speed(Math.min(4.0, root.speed + 0.25)); } }
+                    IconBtn { icon: Icons.plus; clicked => { root.set-speed(Math.min(4.0, root.speed + 0.25)); } }
 
                     Rectangle { width: 10px; }
 
-                    IconBtn { glyph: "🎧"; active: root.popup == "audio";
+                    IconBtn { icon: Icons.headphones; active: root.popup == "audio";
                         clicked => { root.popup = root.popup == "audio" ? "" : "audio"; } }
-                    IconBtn { glyph: "💬"; active: root.popup == "sub";
+                    IconBtn { icon: Icons.message-circle; active: root.popup == "sub";
                         clicked => { root.popup = root.popup == "sub" ? "" : "sub"; } }
-                    IconBtn { glyph: "📑"; active: root.popup == "chapter";
+                    IconBtn { icon: Icons.file-text; active: root.popup == "chapter";
                         clicked => { root.popup = root.popup == "chapter" ? "" : "chapter"; } }
-                    IconBtn { glyph: "⛶"; clicked => { root.toggle-fullscreen(); } }
+                    IconBtn { icon: Icons.maximize; clicked => { root.toggle-fullscreen(); } }
                 }
             }
         }

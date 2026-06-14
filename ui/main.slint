@@ -34,6 +34,7 @@ import { ChatOverlay, ChatTurn } from "chat_overlay.slint";
 import { Gated, GateMode } from "gated.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
+import { AppIcon, Icons } from "icons.slint";
 
 export {
     ApiKeyRow,
@@ -96,6 +97,7 @@ component AcctBtn inherits Rectangle {
 // Pill button used in the photo viewer control bar.
 component ViewerButton inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
     in property <bool> primary: false;
     callback clicked();
     height: 38px; min-width: 96px;
@@ -109,10 +111,11 @@ component ViewerButton inherits Rectangle {
     animate background { duration: 120ms; easing: ease-out; }
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
-        padding-left: 16px; padding-right: 16px;
+        padding-left: 16px; padding-right: 16px; spacing: 7px; alignment: center;
+        if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: white; width: 15px; height: 15px; } }
         Text {
             text: label; color: white; font-size: 12px; font-weight: 600;
-            horizontal-alignment: center; vertical-alignment: center;
+            vertical-alignment: center;
         }
     }
 }
@@ -120,6 +123,7 @@ component ViewerButton inherits Rectangle {
 // Compact square-ish viewer control (zoom · shuffle · interval · info).
 component ViewerMini inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
     in property <bool> active: false;
     callback clicked();
     height: 38px; min-width: 46px;
@@ -133,10 +137,11 @@ component ViewerMini inherits Rectangle {
     animate background { duration: 120ms; easing: ease-out; }
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
-        padding-left: 12px; padding-right: 12px;
-        Text {
+        padding-left: 12px; padding-right: 12px; spacing: 6px; alignment: center;
+        if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: white; width: 14px; height: 14px; } }
+        if root.label != "": Text {
             text: label; color: white; font-size: 12px; font-weight: 600;
-            horizontal-alignment: center; vertical-alignment: center;
+            vertical-alignment: center;
         }
     }
 }
@@ -408,7 +413,8 @@ component SettingsPage inherits Rectangle {
                                 width: 56px; height: 56px; border-radius: 28px;
                                 background: @linear-gradient(135deg, Theme.brand, Theme.brand-2);
                                 y: (parent.height - self.height) / 2; horizontal-stretch: 0;
-                                Text { text: user.avatar-emoji == "" ? "👤" : user.avatar-emoji; font-size: 26px;
+                                if user.avatar-emoji == "": AppIcon { source: Icons.user; tint: #ffffff; width: 26px; height: 26px; }
+                                Text { text: user.avatar-emoji; visible: user.avatar-emoji != ""; font-size: 26px;
                                     horizontal-alignment: center; vertical-alignment: center; }
                             }
                             VerticalLayout {
@@ -429,8 +435,7 @@ component SettingsPage inherits Rectangle {
                         background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
                         HorizontalLayout {
                             padding: 14px; spacing: 12px;
-                            Text { text: "🏠  This app is local at heart — everything stays on this device. No accounts, no servers, full access.";
-                                color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; wrap: word-wrap; }
+                            HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.home; tint: Theme.text; width: 13px; height: 13px; } } Text { text: " This app is local at heart — everything stays on this device. No accounts, no servers, full access."; color: Theme.text; font-size: 13px; vertical-alignment: center; } }
                             VerticalLayout { alignment: center; horizontal-stretch: 0;
                                 ModePill { mode: user.mode; } }
                         }
@@ -443,7 +448,7 @@ component SettingsPage inherits Rectangle {
                         background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
                         HorizontalLayout {
                             padding: 14px; spacing: 10px;
-                            Text { text: "👤  " + (user.display-name == "" ? "Local user" : user.display-name) + "  ·  Owner";
+                            Text { text: (user.display-name == "" ? "Local user" : user.display-name) + "  ·  Owner";
                                 color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
                             VerticalLayout { alignment: center; AcctBtn { label: "Add profile"; clicked => { root.user-action("profiles"); } } }
                         }
@@ -672,7 +677,7 @@ export component MainWindow inherits Window {
     in-out property <string> tools-category: "fileops";
     in-out property <string> tools-query: "";
     in property <string> tools-cat-title: "File ops";
-    in property <string> tools-cat-icon: "📁";
+    in property <string> tools-cat-icon: "";
     in property <[ToolOpRow]> tools-op-rows: [];
     in property <string> tools-queue-status: "Idle";
     callback tools-set-category(string);
@@ -2289,7 +2294,7 @@ export component MainWindow inherits Window {
             seek(s) => { root.music-seek(s); } set-volume(v) => { root.music-set-volume(v); }
             toggle-mute => { root.music-toggle-mute(); } toggle-shuffle => { root.music-toggle-shuffle(); } play-queue(i) => { root.music-play-queue(i); }
         }
-        // Podcast mode — spoken-word tuned player (−15s / +30s / speed / notes).
+        // Podcast mode — spoken-word tuned player (-15s / +30s / speed / notes).
         if root.music-player-mode == "podcast": PodcastMini {
             width: 100%; height: 100%;
             uiscale: root.music-mini-scale;
@@ -2340,7 +2345,7 @@ export component MainWindow inherits Window {
                     horizontal-alignment: center; vertical-alignment: center; } }
             Image { source: root.music-np-art; image-fit: cover; width: 100%; height: 100%; opacity: 0.9;
                 transform-rotation: root.music-playing ? Math.mod(animation-tick() / 1ms / 14, 360) * 1deg : 0deg; }
-            if root.music-np-title == "": Text { text: "♪"; color: #ec4899; font-size: 24px; horizontal-alignment: center; vertical-alignment: center; } }
+            if root.music-np-title == "": AppIcon { source: Icons.music; tint: #ec4899; width: 24px; height: 24px; } }
         // Center spindle dot — the record-player hub.
         Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #14141b; border-width: 1.5px; border-color: #ffffffcc;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
@@ -2593,7 +2598,7 @@ export component MainWindow inherits Window {
                 height: 48px;
                 alignment: center; spacing: 8px;
                 // Zoom group. % is the true on-screen scale; clicking it fits.
-                ViewerMini { label: "−"; clicked => { root.viewer-zoom = max(0.1, root.viewer-zoom - 0.25); if root.viewer-zoom <= 1.0 { stage.pan-x = 0; stage.pan-y = 0; } } }
+                ViewerMini { label: "-"; clicked => { root.viewer-zoom = max(0.1, root.viewer-zoom - 0.25); if root.viewer-zoom <= 1.0 { stage.pan-x = 0; stage.pan-y = 0; } } }
                 ViewerMini { label: Math.round(true-scale * 100) + "%";
                     clicked => { root.viewer-zoom = 1.0; stage.pan-x = 0; stage.pan-y = 0; } }
                 ViewerMini { label: "+"; clicked => { root.viewer-zoom = min(6.0, root.viewer-zoom + 0.25); } }
@@ -2610,31 +2615,31 @@ export component MainWindow inherits Window {
                     clicked => { root.viewer-zoom = 1.0; stage.pan-x = 0; stage.pan-y = 0; } }
 
                 // Prev / Next — kept adjacent.
-                ViewerButton { label: "‹  Prev"; clicked => { root.viewer-prev(); } }
-                ViewerButton { label: "Next  ›"; clicked => { root.viewer-next(); } }
+                ViewerButton { icon: Icons.chevron-left; label: "Prev"; clicked => { root.viewer-prev(); } }
+                ViewerButton { icon: Icons.chevron-right; label: "Next"; clicked => { root.viewer-next(); } }
 
                 // Slideshow: first click reveals the interval + shuffle setup;
                 // the button then becomes "Start".
                 if !root.viewer-slideshow-setup: ViewerButton {
-                    label: "▶  Slideshow"; primary: true;
+                    icon: Icons.play; label: "Slideshow"; primary: true;
                     clicked => { root.viewer-slideshow-setup = true; root.slideshow-arm(); }
                 }
                 if root.viewer-slideshow-setup: ViewerMini {
-                    label: "−"; clicked => { root.viewer-slideshow-secs = max(1, root.viewer-slideshow-secs - 1); root.slideshow-arm(); }
+                    icon: Icons.minus; clicked => { root.viewer-slideshow-secs = max(1, root.viewer-slideshow-secs - 1); root.slideshow-arm(); }
                 }
                 if root.viewer-slideshow-setup: ViewerMini {
-                    label: "⏱ " + root.viewer-slideshow-secs + "s";
+                    icon: Icons.timer; label: "" + root.viewer-slideshow-secs + "s";
                 }
                 if root.viewer-slideshow-setup: ViewerMini {
-                    label: "+"; clicked => { root.viewer-slideshow-secs = min(10, root.viewer-slideshow-secs + 1); root.slideshow-arm(); }
+                    icon: Icons.plus; clicked => { root.viewer-slideshow-secs = min(10, root.viewer-slideshow-secs + 1); root.slideshow-arm(); }
                 }
                 if root.viewer-slideshow-setup: ViewerMini {
-                    label: "🔀 Shuffle"; active: root.viewer-shuffle;
+                    icon: Icons.shuffle; label: "Shuffle"; active: root.viewer-shuffle;
                     clicked => { root.viewer-shuffle = !root.viewer-shuffle; root.slideshow-arm(); }
                 }
                 // Transition selector — cycles the six effects.
                 if root.viewer-slideshow-setup: ViewerMini {
-                    label: "🎞 " + (root.viewer-anim == "fade"     ? "Fade"
+                    icon: Icons.film; label: "" + (root.viewer-anim == "fade"     ? "Fade"
                                   : root.viewer-anim == "zoomin"   ? "Zoom In"
                                   : root.viewer-anim == "zoomout"  ? "Zoom Out"
                                   : root.viewer-anim == "slide"    ? "Slide"
@@ -2659,7 +2664,7 @@ export component MainWindow inherits Window {
                     label: "Cancel"; clicked => { root.viewer-slideshow-setup = false; }
                 }
 
-                ViewerButton { label: "✎  Edit"; primary: true; clicked => { root.viewer-edit(); } }
+                ViewerButton { icon: Icons.pencil; label: "Edit"; primary: true; clicked => { root.viewer-edit(); } }
             }
         }
 
@@ -2683,8 +2688,7 @@ export component MainWindow inherits Window {
                         horizontal-stretch: 0; vertical-stretch: 0;
                         background: closex.has-hover ? white.with-alpha(0.18) : white.with-alpha(0.08);
                         closex := TouchArea { mouse-cursor: pointer; clicked => { root.viewer-info-open = false; } }
-                        Text { text: "✕"; color: white; font-size: 13px;
-                            horizontal-alignment: center; vertical-alignment: center; }
+                        AppIcon { source: Icons.x; tint: white; width: 13px; height: 13px; }
                     }
                 }
                 Rectangle { height: 1px; background: white.with-alpha(0.15); }
@@ -2704,9 +2708,9 @@ export component MainWindow inherits Window {
                     spacing: 8px;
                     Text { text: "Histogram"; color: white.with-alpha(0.75); font-size: 11px; font-weight: 600;
                         vertical-alignment: center; horizontal-stretch: 1; }
-                    Text { text: "● R"; color: #ff5252; font-size: 9px; vertical-alignment: center; }
-                    Text { text: "● G"; color: #4caf50; font-size: 9px; vertical-alignment: center; }
-                    Text { text: "● B"; color: #5c9dff; font-size: 9px; vertical-alignment: center; }
+                    HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.circle-dot; tint: #ff5252; width: 9px; height: 9px; } } Text { text: "R"; color: #ff5252; font-size: 9px; vertical-alignment: center; } }
+                    HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.circle-dot; tint: #4caf50; width: 9px; height: 9px; } } Text { text: "G"; color: #4caf50; font-size: 9px; vertical-alignment: center; } }
+                    HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.circle-dot; tint: #5c9dff; width: 9px; height: 9px; } } Text { text: "B"; color: #5c9dff; font-size: 9px; vertical-alignment: center; } }
                 }
                 Rectangle {
                     height: 96px; horizontal-stretch: 1;
@@ -2733,16 +2737,14 @@ export component MainWindow inherits Window {
         // Large edge tap-targets for prev / next — hidden during slideshow.
         if !root.viewer-slideshow: Rectangle {
             x: 0; y: 0; width: 80px; height: parent.height;
-            Text { text: "‹"; color: white.with-alpha(left-touch.has-hover ? 0.95 : 0.45);
-                font-size: 40px; x: 20px; y: (parent.height - self.height) / 2; }
+            AppIcon { source: Icons.chevron-left; tint: white.with-alpha(left-touch.has-hover ? 0.95 : 0.45); width: 40px; height: 40px; x: 20px; y: (parent.height - self.height) / 2; }
             left-touch := TouchArea { mouse-cursor: pointer; clicked => { root.viewer-prev(); } }
         }
         // Right edge next-tapper — suppressed while the info panel is open so
         // it can't sit on top of (and swallow clicks meant for) the panel.
         if !root.viewer-slideshow && !root.viewer-info-open: Rectangle {
             x: parent.width - 80px; y: 0; width: 80px; height: parent.height;
-            Text { text: "›"; color: white.with-alpha(right-touch.has-hover ? 0.95 : 0.45);
-                font-size: 40px; x: 20px; y: (parent.height - self.height) / 2; }
+            AppIcon { source: Icons.chevron-right; tint: white.with-alpha(right-touch.has-hover ? 0.95 : 0.45); width: 40px; height: 40px; x: 20px; y: (parent.height - self.height) / 2; }
             right-touch := TouchArea { mouse-cursor: pointer; clicked => { root.viewer-next(); } }
         }
 
@@ -2754,8 +2756,7 @@ export component MainWindow inherits Window {
             background: info-toggle.has-hover || root.viewer-info-open ? white.with-alpha(0.22) : white.with-alpha(0.10);
             info-toggle := TouchArea { mouse-cursor: pointer;
                 clicked => { root.viewer-info-open = !root.viewer-info-open; } }
-            Text { text: "ⓘ"; color: white; font-size: 18px;
-                horizontal-alignment: center; vertical-alignment: center; }
+            AppIcon { source: Icons.info; tint: white; width: 18px; height: 18px; }
         }
         // Close — sits just left of the ⓘ button (top-right corner).
         if !root.viewer-slideshow: Rectangle {
@@ -2763,8 +2764,7 @@ export component MainWindow inherits Window {
             width: 40px; height: 40px; border-radius: 20px;
             background: closebtn.has-hover ? white.with-alpha(0.22) : white.with-alpha(0.10);
             closebtn := TouchArea { mouse-cursor: pointer; clicked => { root.close-viewer(); } }
-            Text { text: "✕"; color: white; font-size: 16px;
-                horizontal-alignment: center; vertical-alignment: center; }
+            AppIcon { source: Icons.x; tint: white; width: 16px; height: 16px; }
         }
 
         // Shared-element hero — morphs the clicked thumb's rect into the
@@ -2914,11 +2914,11 @@ export component MainWindow inherits Window {
                     overflow: elide; }
                 Rectangle { height: 1px; background: Theme.outline; }
                 for opt[i] in [
-                    { key: "mymusic",    label: "🎵  My Music",   sub: "Songs, albums, artists" },
-                    { key: "podcasts",   label: "🎙  Podcasts",   sub: "RSS feeds + episodes" },
-                    { key: "audiobooks", label: "📚  Audiobooks",  sub: "Chapters + resume + speed" },
-                    { key: "radio",      label: "📻  Radio",      sub: "Stream stations" },
-                    { key: "youtube",    label: "▶  YouTube",     sub: "Downloads" },
+                    { key: "mymusic",    icon: Icons.music, label: "My Music",   sub: "Songs, albums, artists" },
+                    { key: "podcasts",   icon: Icons.mic, label: "Podcasts",   sub: "RSS feeds + episodes" },
+                    { key: "audiobooks", icon: Icons.book-open, label: "Audiobooks",  sub: "Chapters + resume + speed" },
+                    { key: "radio",      icon: Icons.radio, label: "Radio",      sub: "Stream stations" },
+                    { key: "youtube",    icon: Icons.play, label: "YouTube",     sub: "Downloads" },
                 ]: Rectangle {
                     height: 44px; border-radius: 10px;
                     background: oa.has-hover ? Accent.color.with-alpha(0.16) : Theme.panel;
@@ -2927,6 +2927,7 @@ export component MainWindow inherits Window {
                     oa := TouchArea { mouse-cursor: pointer;
                         clicked => { root.music-confirm-add-section(opt.key); root.music-add-section-open = false; } }
                     HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 10px;
+                        VerticalLayout { alignment: center; AppIcon { source: opt.icon; tint: Theme.text; width: 17px; height: 17px; } }
                         VerticalLayout { alignment: center; Text { text: opt.label; color: Theme.text; font-size: 14px; font-weight: 700; } }
                         Rectangle { horizontal-stretch: 1; }
                         VerticalLayout { alignment: center; Text { text: opt.sub; color: Theme.text-dim; font-size: 11px; } } }

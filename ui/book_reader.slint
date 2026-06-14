@@ -3,25 +3,29 @@
 // chapter text with typography), "unsupported" (honest PDF/CBR notice).
 import { ScrollView, LineEdit } from "std-widgets.slint";
 import { TocEntryRow, BookmarkRow } from "page_books.slint";
+import { AppIcon, Icons } from "icons.slint";
 
 component RBtn inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
     in property <bool> on: false;
     // Light chrome (sepia/light reading themes) needs dark glyphs — the
     // default white-on-translucent-white is invisible there.
     in property <bool> light: false;
     callback clicked();
+    property <color> fg: on ? #ffffff : light ? #20201c : #ffffff;
     height: 34px;
-    width: t.preferred-width + 24px;
+    width: lay.preferred-width + 24px;
     border-radius: 8px;
     background: on ? #1a73e8
               : ta.has-hover ? (light ? #00000016 : #ffffff22)
               : (light ? #0000000a : #ffffff14);
     border-width: 1px; border-color: light ? #00000030 : #ffffff2e;
     animate background { duration: 110ms; }
-    t := Text { text: label; color: on ? #ffffff : light ? #20201c : #ffffff;
-        font-size: 13px; font-weight: 600;
-        horizontal-alignment: center; vertical-alignment: center; }
+    lay := HorizontalLayout { alignment: center; spacing: 6px;
+        if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: root.fg; width: 15px; height: 15px; } }
+        if root.label != "": Text { text: root.label; color: root.fg;
+            font-size: 13px; font-weight: 600; vertical-alignment: center; } }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
 }
 
@@ -154,26 +158,26 @@ export component BookReader inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
 
                     // ── Shared controls (all modes) ──────────────────────────
-                    RBtn { label: "☰"; light: root.bars-light; on: root.toc-open; clicked => { root.toggle-toc(); } }
-                    RBtn { label: "🔖+"; light: root.bars-light; clicked => { root.add-bookmark(); } }
-                    RBtn { label: "📋"; light: root.bars-light; on: root.bookmarks-open; clicked => { root.toggle-bookmarks(); } }
-                    RBtn { label: root.read-mode == "paginated" ? "↕ Scroll" : "📄 Pages"; light: root.bars-light; clicked => { root.toggle-read-mode(); } }
+                    RBtn { icon: Icons.menu; label: ""; light: root.bars-light; on: root.toc-open; clicked => { root.toggle-toc(); } }
+                    RBtn { icon: Icons.bookmark; light: root.bars-light; clicked => { root.add-bookmark(); } }
+                    RBtn { icon: Icons.clipboard; label: ""; light: root.bars-light; on: root.bookmarks-open; clicked => { root.toggle-bookmarks(); } }
+                    RBtn { icon: root.read-mode == "paginated" ? Icons.move-vertical : Icons.file-text; label: root.read-mode == "paginated" ? "Scroll" : "Pages"; light: root.bars-light; clicked => { root.toggle-read-mode(); } }
 
                     // ── Text mode controls ───────────────────────────────────
                     if kind == "text": HorizontalLayout {
                         spacing: 8px;
-                        RBtn { label: "📖 Spread"; light: root.bars-light; on: root.two-page;
+                        RBtn { icon: Icons.book-open; label: "Spread"; light: root.bars-light; on: root.two-page;
                             clicked => { root.two-page = !root.two-page; } }
                         RBtn { label: "Aa"; light: root.bars-light; on: root.settings-open; clicked => { root.settings-open = !root.settings-open; } }
-                        RBtn { label: "🔍"; light: root.bars-light; on: root.find-open; clicked => { root.find-open = !root.find-open; } }
-                        RBtn { label: "📖"; light: root.bars-light; on: root.define-open; clicked => { root.define-open = !root.define-open; } }
-                        RBtn { label: "🔊"; light: root.bars-light; clicked => { root.tts-start(); } }
+                        RBtn { icon: Icons.search; label: ""; light: root.bars-light; on: root.find-open; clicked => { root.find-open = !root.find-open; } }
+                        RBtn { icon: Icons.book-open; label: ""; light: root.bars-light; on: root.define-open; clicked => { root.define-open = !root.define-open; } }
+                        RBtn { icon: Icons.volume; label: ""; light: root.bars-light; clicked => { root.tts-start(); } }
                         RBtn {
                             light: root.bars-light;
-                            label: root.theme == "sepia"  ? "☀"
-                                 : root.theme == "light"  ? "☀"
-                                 : root.theme == "dark"   ? "☾"
-                                 : "⬛";
+                            icon: root.theme == "sepia"  ? Icons.sun
+                                 : root.theme == "light"  ? Icons.sun
+                                 : root.theme == "dark"   ? Icons.moon
+                                 : Icons.contrast;
                             clicked => {
                                 root.set-theme(
                                     root.theme == "sepia"  ? "light"
@@ -192,10 +196,10 @@ export component BookReader inherits Rectangle {
                         RBtn { label: "RTL"; on: rtl; clicked => { root.toggle-rtl(); } }
                         RBtn { label: "Invert"; on: invert; clicked => { root.toggle-invert(); } }
                         RBtn { label: "Guided"; on: root.guided; clicked => { root.toggle-guided(); } }
-                        RBtn { label: "🎞"; on: root.timeline-open; clicked => { root.timeline-open = !root.timeline-open; } }
+                        RBtn { icon: Icons.film; label: ""; on: root.timeline-open; clicked => { root.timeline-open = !root.timeline-open; } }
                     }
 
-                    RBtn { label: "✕ Close"; light: root.bars-light; clicked => { root.close(); } }
+                    RBtn { icon: Icons.x; label: "Close"; light: root.bars-light; clicked => { root.close(); } }
                 }
             }
 
@@ -390,7 +394,7 @@ export component BookReader inherits Rectangle {
                 // UNSUPPORTED
                 if kind == "unsupported": VerticalLayout {
                     alignment: center; spacing: 12px;
-                    Text { text: "📄"; font-size: 52px; horizontal-alignment: center; }
+                    AppIcon { source: Icons.file-text; width: 52px; height: 52px; }
                     Text { text: page-label; color: #cfcfe0; font-size: 16px; font-weight: 600; horizontal-alignment: center; }
                     Text { text: "EPUB · CBZ · CBR · PDF · MOBI · AZW3 · FB2 · DjVu open natively. Scanned PDFs need poppler-utils, DjVu needs djvulibre. DRM'd files aren't supported.";
                         color: #8a8aa0; font-size: 12px; horizontal-alignment: center; }
@@ -402,7 +406,7 @@ export component BookReader inherits Rectangle {
                 height: 56px; background: root.bars-light ? #fbf9f3 : #00000066;
                 HorizontalLayout {
                     padding-left: 18px; padding-right: 18px; spacing: 14px;
-                    RBtn { label: "‹ Prev"; light: root.bars-light; clicked => { root.prev(); } }
+                    RBtn { icon: Icons.chevron-left; label: "Prev"; light: root.bars-light; clicked => { root.prev(); } }
                     // scrub track
                     Rectangle {
                         vertical-stretch: 1; horizontal-stretch: 1; y: 0;
@@ -420,7 +424,7 @@ export component BookReader inherits Rectangle {
                     }
                     Text { text: page-label; color: root.bars-light ? #6b6456 : #cfcfe0;
                         font-size: 12px; vertical-alignment: center; }
-                    RBtn { label: "Next ›"; light: root.bars-light; clicked => { root.next(); } }
+                    RBtn { icon: Icons.chevron-right; label: "Next"; light: root.bars-light; clicked => { root.next(); } }
                 }
             }
         }
@@ -436,12 +440,12 @@ export component BookReader inherits Rectangle {
             border-width: 1px; border-color: #ffd54f88;
             HorizontalLayout {
                 padding: 12px; spacing: 10px;
-                Text { text: "🔊"; font-size: 14px; vertical-alignment: center; }
+                AppIcon { source: Icons.volume; width: 14px; height: 14px; }
                 ttst := Text {
                     text: root.tts-sentence; color: #ffd54f; font-size: 13px;
                     wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center;
                 }
-                RBtn { label: "⏹"; clicked => { root.tts-stop(); } }
+                RBtn { icon: Icons.square; label: ""; clicked => { root.tts-stop(); } }
             }
         }
 
@@ -457,8 +461,8 @@ export component BookReader inherits Rectangle {
                     accepted(t) => { root.find-text(t); }
                 }
                 // Repeating the same query steps to the next match (wraps).
-                RBtn { label: "Next ↓"; clicked => { root.find-text(fe.text); } }
-                RBtn { label: "✕"; clicked => { root.find-open = false; } }
+                RBtn { icon: Icons.arrow-down; label: "Next"; clicked => { root.find-text(fe.text); } }
+                RBtn { icon: Icons.x; label: ""; clicked => { root.find-open = false; } }
             }
         }
 
@@ -476,7 +480,7 @@ export component BookReader inherits Rectangle {
                         accepted(t) => { root.define(t); }
                     }
                     RBtn { label: "Look up"; clicked => { root.define(de.text); } }
-                    RBtn { label: "✕"; clicked => { root.define-open = false; } }
+                    RBtn { icon: Icons.x; label: ""; clicked => { root.define-open = false; } }
                 }
                 ScrollView {
                     vertical-stretch: 1;
@@ -513,7 +517,7 @@ export component BookReader inherits Rectangle {
                 HorizontalLayout {
                     spacing: 8px;
                     Text { text: "Spacing"; color: #bbb; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                    RBtn { label: "−"; clicked => { root.set-line(max(1.0, root.line-height-val - 0.1)); } }
+                    RBtn { label: "-"; clicked => { root.set-line(max(1.0, root.line-height-val - 0.1)); } }
                     Text { text: (round(root.line-height-val * 10) / 10) + "×"; color: #fff; font-size: 12px;
                         width: 46px; horizontal-alignment: center; vertical-alignment: center; }
                     RBtn { label: "+"; clicked => { root.set-line(min(2.5, root.line-height-val + 0.1)); } }
@@ -521,7 +525,7 @@ export component BookReader inherits Rectangle {
                 HorizontalLayout {
                     spacing: 8px;
                     Text { text: "Margin"; color: #bbb; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                    RBtn { label: "−"; clicked => { root.set-margin(max(0, root.margin-pct - 2)); } }
+                    RBtn { label: "-"; clicked => { root.set-margin(max(0, root.margin-pct - 2)); } }
                     Text { text: round(root.margin-pct) + "%"; color: #fff; font-size: 12px;
                         width: 46px; horizontal-alignment: center; vertical-alignment: center; }
                     RBtn { label: "+"; clicked => { root.set-margin(min(24, root.margin-pct + 2)); } }
@@ -530,7 +534,7 @@ export component BookReader inherits Rectangle {
                     spacing: 8px;
                     RBtn { label: "Night mode"; on: root.text-dark; horizontal-stretch: 1;
                         clicked => { root.toggle-text-dark(); } }
-                    RBtn { label: "✕"; clicked => { root.settings-open = false; } }
+                    RBtn { icon: Icons.x; label: ""; clicked => { root.settings-open = false; } }
                 }
             }
         }
@@ -550,8 +554,7 @@ export component BookReader inherits Rectangle {
                     Rectangle { width: 28px; height: 28px; border-radius: 14px;
                         background: xt.has-hover ? #ffffff22 : transparent;
                         xt := TouchArea { clicked => { root.toc-open = false; } }
-                        Text { text: "✕"; color: #ffffff; font-size: 13px;
-                            horizontal-alignment: center; vertical-alignment: center; } }
+                        AppIcon { source: Icons.x; tint: #ffffff; width: 13px; height: 13px; } }
                 }
                 if root.toc-entries.length == 0: Text { text: "No chapters"; color: #7a7a7a; font-size: 12px; }
                 ScrollView { vertical-stretch: 1;
@@ -585,13 +588,11 @@ export component BookReader inherits Rectangle {
                     Rectangle { width: 28px; height: 28px; border-radius: 14px;
                         background: addbm.has-hover ? #1a73e8 : #1a73e844;
                         addbm := TouchArea { clicked => { root.add-bookmark(); } }
-                        Text { text: "＋"; color: #ffffff; font-size: 14px;
-                            horizontal-alignment: center; vertical-alignment: center; } }
+                        AppIcon { source: Icons.plus; tint: #ffffff; width: 14px; height: 14px; } }
                     Rectangle { width: 28px; height: 28px; border-radius: 14px;
                         background: xbm.has-hover ? #ffffff22 : transparent;
                         xbm := TouchArea { clicked => { root.bookmarks-open = false; } }
-                        Text { text: "✕"; color: #ffffff; font-size: 13px;
-                            horizontal-alignment: center; vertical-alignment: center; } }
+                        AppIcon { source: Icons.x; tint: #ffffff; width: 13px; height: 13px; } }
                 }
                 // Colour palette — the active colour tags the next ＋ bookmark
                 // (np.p5.books.annotations: colour-coded jump list).
@@ -612,7 +613,7 @@ export component BookReader inherits Rectangle {
                     }
                 }
                 if root.reader-bookmarks.length == 0: Text {
-                    text: "No bookmarks yet.\nTap ＋ to add one.";
+                    text: "No bookmarks yet.\nTap + to add one.";
                     color: #7a7a7a; font-size: 12px; wrap: word-wrap; }
                 ScrollView { vertical-stretch: 1;
                     VerticalLayout { alignment: start; spacing: 2px;
