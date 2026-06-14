@@ -1,3 +1,8 @@
+// Desktop GUI app: never spawn/keep a console window on Windows (all builds).
+// Logs still land in the file sink (tulipix_core::logging::LOG); only the
+// stdout `tracing` fmt layer goes silent on Windows.
+#![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
+
 use anyhow::{Context, Result};
 use slint::{ComponentHandle, Model};
 use std::path::PathBuf;

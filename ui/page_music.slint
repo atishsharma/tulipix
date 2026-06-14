@@ -383,13 +383,15 @@ component Marquee inherits Rectangle {
 // One row in a song right-click context menu (shared by TrackRow + SongCard).
 component MusicMenuRow inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
     in property <color> txt: MusicTheme.fg2;
     callback clicked();
     height: 32px; border-radius: 6px;
     background: mr.has-hover ? MusicTheme.hov2 : transparent;
     mr := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    HorizontalLayout { padding-left: 12px; padding-right: 12px;
-        Text { text: root.label; color: root.txt; font-size: 13px; font-weight: 500; vertical-alignment: center; } }
+    HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 10px;
+        VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: root.txt; width: 15px; height: 15px; } }
+        Text { text: root.label; color: root.txt; font-size: 13px; font-weight: 500; vertical-alignment: center; horizontal-stretch: 1; } }
 }
 
 // One detailed track row: thumb · title/artist · duration · play on click.
@@ -491,12 +493,12 @@ component SongCard inherits Rectangle {
                 Rectangle { width: 100%; height: 100%; border-radius: 12px; background: MusicTheme.surf-pop;
                     border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: 36px; drop-shadow-color: #000000e6;
                     VerticalLayout { padding: 6px; spacing: 1px;
-                        MusicMenuRow { label: "▶   Play"; clicked => { ctxpop.close(); root.clicked(); } }
-                        MusicMenuRow { label: "⧉   Play in default player"; clicked => { ctxpop.close(); root.play-default(); } }
-                        MusicMenuRow { label: "▦   View album"; clicked => { ctxpop.close(); root.view-album(); } }
-                        MusicMenuRow { label: "◐   View artist"; clicked => { ctxpop.close(); root.view-artist(); } }
-                        MusicMenuRow { label: "♪   View lyrics"; clicked => { ctxpop.close(); root.view-lyrics(); } }
-                        MusicMenuRow { label: track.loved ? "♥   Remove from favourites" : "♡   Add to favourites"; clicked => { ctxpop.close(); root.fav(); } }
+                        MusicMenuRow { icon: Icons.play; label: "Play"; clicked => { ctxpop.close(); root.clicked(); } }
+                        MusicMenuRow { icon: Icons.monitor-play; label: "Play in default player"; clicked => { ctxpop.close(); root.play-default(); } }
+                        MusicMenuRow { icon: Icons.layout-grid; label: "View album"; clicked => { ctxpop.close(); root.view-album(); } }
+                        MusicMenuRow { icon: Icons.user; label: "View artist"; clicked => { ctxpop.close(); root.view-artist(); } }
+                        MusicMenuRow { icon: Icons.music; label: "View lyrics"; clicked => { ctxpop.close(); root.view-lyrics(); } }
+                        MusicMenuRow { icon: Icons.heart; label: track.loved ? "Remove from favourites" : "Add to favourites"; clicked => { ctxpop.close(); root.fav(); } }
                         // Star rating — pick 1..5 inline.
                         Rectangle { height: 34px; border-radius: 6px;
                             HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 6px;
@@ -504,11 +506,11 @@ component SongCard inherits Rectangle {
                                 Rectangle { horizontal-stretch: 1; }
                                 for n[i] in [1, 2, 3, 4, 5]: VerticalLayout { alignment: center; Rectangle { width: 22px; height: 28px;
                                     str := TouchArea { mouse-cursor: pointer; clicked => { ctxpop.close(); root.rate(track.stars == n ? 0 : n); } }
-                                    Text { text: track.stars >= n ? "★" : "☆"; color: track.stars >= n ? #e5a00d : MusicTheme.fg-mute; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; } } } } }
+                                    AppIcon { source: track.stars >= n ? Icons.star-filled : Icons.star; tint: track.stars >= n ? #e5a00d : MusicTheme.fg-mute; width: 16px; height: 16px; } } } } }
                         Rectangle { height: 7px; Rectangle { y: 3px; height: 1px; background: MusicTheme.line; } }
-                        MusicMenuRow { label: "ⓘ   Properties"; clicked => { ctxpop.close(); root.properties(); } }
-                        MusicMenuRow { label: "✎   Edit media info for library"; clicked => { ctxpop.close(); root.edit-media(); } }
-                        MusicMenuRow { label: "🗑   Delete song (from system)"; txt: #ef4444; clicked => { ctxpop.close(); root.delete-song(); } }
+                        MusicMenuRow { icon: Icons.info; label: "Properties"; clicked => { ctxpop.close(); root.properties(); } }
+                        MusicMenuRow { icon: Icons.pencil; label: "Edit media info for library"; clicked => { ctxpop.close(); root.edit-media(); } }
+                        MusicMenuRow { icon: Icons.trash; label: "Delete song (from system)"; txt: #ef4444; clicked => { ctxpop.close(); root.delete-song(); } }
                     }
                 }
             }
@@ -2666,7 +2668,14 @@ export component MusicPage inherits Rectangle {
                                     remove => { root.yt-remove-download(v.id); } } } } } }
                     // CENTER results.
                     GlassCard { horizontal-stretch: 3; radius: 16px; clip-content: true;
-                    ScrollView { width: 100%; height: 100%;
+                    recoscroll := ScrollView { width: 100%; height: 100%;
+                        // Always open at the top. The ScrollView otherwise keeps a
+                        // stale viewport-y, so async-loaded recommendations land
+                        // mid-list — reset on first paint and whenever the list
+                        // (re)populates (np.p4.music.youtube).
+                        init => { recoscroll.viewport-y = 0; }
+                        property <int> reco-watch: root.yt-recommended.length + root.yt-results.length;
+                        changed reco-watch => { recoscroll.viewport-y = 0; }
                         VerticalLayout { spacing: 10px; padding: 14px;
                             if root.yt-busy: Text { text: "Searching…"; color: MusicTheme.fg-mute; font-size: 12px; }
                             // No search → recommended from your subscriptions.
@@ -3912,7 +3921,11 @@ export component MusicPage inherits Rectangle {
         // ── Glassmorphism now-playing player (np.p4.music.player) ─────────
         // Hidden on Podcasts, Audiobooks AND Radio — those sections use the
         // floating mini-player as their only player.
-        if tiles.length > 0 && root.view != "podcasts" && root.view != "audiobooks" && root.view != "radio": Rectangle {
+        // Show the glass player whenever there's a local library OR something is
+        // loaded in the transport (np-title set) — the latter covers YouTube
+        // audio, which streams via the same mpv-IPC now-playing state even when
+        // no music folder has been added (np.p4.music.player / .youtube).
+        if (tiles.length > 0 || root.np-title != "") && root.view != "podcasts" && root.view != "audiobooks" && root.view != "radio": Rectangle {
             height: 124px; horizontal-stretch: 1;
             background: MusicTheme.surf-player;
             border-width: 1px; border-color: MusicTheme.line;
