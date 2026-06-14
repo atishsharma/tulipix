@@ -9,7 +9,7 @@ fn main() {
     {
         println!("cargo:rerun-if-changed=app.rc");
         println!("cargo:rerun-if-changed=icon.ico");
-        embed_resource::compile("app.rc", embed_resource::NONE);
+        let _ = embed_resource::compile("app.rc", embed_resource::NONE);
     }
 
     // Trends feed list is include_str!'d from podc.md — rebuild when it changes.
