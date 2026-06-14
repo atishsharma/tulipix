@@ -1014,17 +1014,99 @@ component RadioStationRow inherits Rectangle {
 }
 
 // ── YouTube cards (np.p4.music.youtube) ──────────────────────────────────────
-// Small stacked action button used in the video cards' action column.
-component YtActionBtn inherits Rectangle {
-    in property <string> label;
-    callback clicked();
-    height: 26px; border-radius: 5px;
-    background: yb.has-hover ? MusicTheme.hov2 : MusicTheme.surf0;
-    border-width: 1px; border-color: MusicTheme.line;
-    yb := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    HorizontalLayout { padding-left: 9px; padding-right: 9px; alignment: center;
-        Text { text: root.label; color: MusicTheme.fg2; font-size: 10px; font-weight: 600;
+// Frosted glass surface shared by every YouTube card. Layered translucent fill
+// + accent wash + inner sheen + theme-safe outline that lights up red on hover.
+// Reads MusicTheme tokens so it tracks light / dark / OLED automatically.
+component GlassCard inherits Rectangle {
+    in property <bool> hot: false;            // hover/active → red edge + brighter wash + lift
+    in property <length> radius: 13px;
+    in property <bool> clip-content: false;
+    border-radius: root.radius;
+    background: MusicTheme.surf1;
+    border-width: 1px;
+    border-color: root.hot ? #ef4444 : MusicTheme.line;
+    drop-shadow-blur: root.hot ? 24px : 0px;
+    drop-shadow-color: #ef444455;
+    clip: root.clip-content;
+    animate border-color, drop-shadow-blur { duration: 150ms; easing: ease-out; }
+    // accent colour wash — always a faint pop, stronger on hover.
+    Rectangle { border-radius: parent.border-radius; background: #ef4444;
+        opacity: root.hot ? 0.09 : 0.035; animate opacity { duration: 150ms; easing: ease-out; } }
+    // frost sheen — 1px inner highlight (bright in light theme, faint in dark).
+    Rectangle { x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+        border-radius: parent.border-radius - 1px; border-width: 1px;
+        border-color: MusicTheme.light ? #ffffffcc : #ffffff1c; }
+    @children
+}
+
+// Card thumbnail — cover image with hover zoom, bottom legibility gradient, a
+// centre play badge that fades in on hover, and an optional duration pill.
+component YtThumb inherits Rectangle {
+    in property <image> src;
+    in property <string> duration: "";
+    in property <bool> hot: false;
+    clip: true;
+    Image { source: root.src; image-fit: cover;
+        width: parent.width * (root.hot ? 1.08 : 1.0);
+        height: parent.height * (root.hot ? 1.08 : 1.0);
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        animate width, height { duration: 260ms; easing: ease-out; } }
+    Rectangle { y: parent.height - self.height; height: 38px; width: parent.width;
+        background: @linear-gradient(180deg, #00000000 0%, #000000aa 100%); }
+    // hover play badge
+    Rectangle { width: 46px; height: 46px; border-radius: 23px;
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        background: #ef2222; border-width: 2px; border-color: #ffffffdd;
+        opacity: root.hot ? 1.0 : 0.0;
+        drop-shadow-blur: 18px; drop-shadow-color: #ef4444;
+        animate opacity { duration: 170ms; easing: ease-out; }
+        AppIcon { source: Icons.play; tint: #ffffff; width: 20px; height: 20px;
+            x: (parent.width - self.width) / 2 + 1px; y: (parent.height - self.height) / 2; } }
+    if root.duration != "": Rectangle { x: parent.width - self.width - 6px; y: parent.height - self.height - 6px;
+        width: dur.preferred-width + 12px; height: 18px; border-radius: 5px; background: #000000cc;
+        dur := Text { text: root.duration; color: #f3f3f3; font-size: 10px; font-weight: 600;
             horizontal-alignment: center; vertical-alignment: center; } }
+}
+
+// Polished action button. Variants pop in every theme:
+//   primary → filled YouTube-red gradient (white icon/label)
+//   save    → red-tinted glass, red icon/label
+//   ghost   → neutral glass that lights red on hover
+//   danger  → red-tinted, for destructive actions
+// Pressing shifts the fill darker (the "colour changes on press" ask).
+component YtBtn inherits Rectangle {
+    in property <image> icon;
+    in property <string> label: "";          // "" → icon-only square
+    in property <string> variant: "ghost";   // primary | save | ghost | danger
+    in property <length> fs: 11px;
+    out property <bool> hovering: ta.has-hover;
+    callback clicked();
+
+    property <bool> prim: root.variant == "primary";
+    property <bool> sav:  root.variant == "save";
+    property <bool> dang: root.variant == "danger";
+    property <color> fgc: root.prim ? #ffffff : ((root.sav || root.dang) ? #ef4444 : MusicTheme.fg2);
+
+    height: 30px;
+    border-radius: 8px;
+    border-width: 1px;
+    border-color: root.prim ? #00000000
+                : (ta.pressed ? #ef4444 : (ta.has-hover ? #ef4444aa : (root.sav || root.dang ? #ef444455 : MusicTheme.line)));
+    background:
+        root.prim ? (ta.pressed ? @linear-gradient(180deg, #c41212 0%, #960d0d 100%)
+                                : @linear-gradient(180deg, #ff4b4b 0%, #e01313 100%))
+      : (ta.pressed ? #ef444440 : (ta.has-hover ? #ef444422 : ((root.sav || root.dang) ? #ef444412 : MusicTheme.surf0)));
+    drop-shadow-blur: root.prim ? (ta.has-hover ? 16px : 7px) : 0px;
+    drop-shadow-color: #ef4444aa;
+    opacity: ta.pressed ? 0.92 : 1.0;
+    animate background, border-color, drop-shadow-blur, opacity { duration: 120ms; easing: ease-out; }
+
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout { padding-left: root.label == "" ? 0px : 12px; padding-right: root.label == "" ? 0px : 12px;
+        spacing: 6px; alignment: center;
+        AppIcon { source: root.icon; tint: root.fgc; width: 15px; height: 15px; vertical-alignment: center; }
+        if root.label != "": Text { text: root.label; color: root.fgc; font-size: root.fs; font-weight: 700;
+            vertical-alignment: center; } }
 }
 
 // One resolution choice row in the Watch-video picker.
@@ -1056,75 +1138,76 @@ component YtWatchBtn inherits Rectangle {
         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
 }
 
-// Horizontal video card — Home search results. Thumb left, stacked text middle,
-// vertical action column right; ⋯ opens an Add-to-playlist menu.
+// Horizontal video card — Home recommended / search results. Big 2-line title,
+// glass surface, hover lift + thumb zoom, coloured action column on the right.
 component YtVideoCard inherits Rectangle {
     in property <YtVideo> v;
+    in property <int> idx: 0;       // for staggered entrance
     callback play(bool);            // want-video
     callback download();
     callback menu();                // opens the page-level ⋯ menu
     callback open-channel(string);  // jump to the owning channel page
-    height: 122px; border-radius: 9px; background: MusicTheme.surf1;
-    border-width: 1px; border-color: MusicTheme.line;
-    HorizontalLayout { padding: 10px; spacing: 11px;
-        VerticalLayout { alignment: center;
-            Rectangle { width: 168px; height: 94px; border-radius: 7px; clip: true;
-                Image { source: v.thumb; image-fit: cover; width: 100%; height: 100%; }
-                Rectangle { x: parent.width - self.width - 5px; y: parent.height - self.height - 5px;
-                    width: dt.preferred-width + 10px; height: 16px; border-radius: 3px; background: #000000aa;
-                    dt := Text { text: v.duration; color: #eeeeee; font-size: 10px;
-                        horizontal-alignment: center; vertical-alignment: center; } } } }
-        VerticalLayout { horizontal-stretch: 1; spacing: 4px; alignment: center;
-            Text { text: v.title; color: MusicTheme.fg; font-size: 13px; font-weight: 700; overflow: elide; }
-            // Channel name links to its page (when the owning channel is known).
-            HorizontalLayout { spacing: 7px;
-                Rectangle { horizontal-stretch: 0; height: 16px;
-                    cnh := TouchArea { mouse-cursor: pointer; clicked => { if (v.channel-id != "") { root.open-channel(v.channel-id); } } }
-                    Text { text: v.channel; color: v.channel-id != "" ? #ef4444 : MusicTheme.fg-dim;
-                        font-size: 11px; font-weight: v.channel-id != "" ? 700 : 400; vertical-alignment: center; overflow: elide; } }
-                Text { text: v.meta; color: MusicTheme.fg-dim; font-size: 11px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; } }
-            Text { text: v.info; color: MusicTheme.fg-dim2; font-size: 11px; wrap: word-wrap; overflow: elide; } }
-        VerticalLayout { alignment: center; spacing: 6px;
-            YtActionBtn { label: "▶ Play"; clicked => { root.play(false); } }
-            YtActionBtn { label: "⬇ Save"; clicked => { root.download(); } }
-            YtActionBtn { label: "⋯ More"; clicked => { root.menu(); } } }
+    height: 134px;
+    property <bool> hovered: ca.has-hover || pb.hovering || sb.hovering || mb.hovering;
+    property <bool> appeared: false;
+    init => { root.appeared = true; }
+    opacity: root.appeared ? 1.0 : 0.0;
+    animate opacity { duration: 320ms; easing: ease-out; delay: root.idx * 45ms; }
+    GlassCard { width: 100%; height: 100%; radius: 14px; hot: root.hovered;
+        ca := TouchArea { mouse-cursor: pointer; clicked => { root.play(false); } }
+        HorizontalLayout { padding: 11px; spacing: 13px;
+            YtThumb { width: 184px; height: 112px; border-radius: 9px; src: v.thumb; duration: v.duration; hot: root.hovered; }
+            VerticalLayout { horizontal-stretch: 1; spacing: 5px; alignment: center;
+                Rectangle { height: 42px;
+                    Text { width: 100%; text: v.title; color: MusicTheme.fg; font-size: 15px; font-weight: 700;
+                        wrap: word-wrap; overflow: elide; vertical-alignment: top; } }
+                HorizontalLayout { spacing: 7px;
+                    Rectangle { horizontal-stretch: 0; height: 18px;
+                        cnh := TouchArea { mouse-cursor: pointer; clicked => { if (v.channel-id != "") { root.open-channel(v.channel-id); } } }
+                        Text { text: v.channel; color: v.channel-id != "" ? #ef4444 : MusicTheme.fg-dim;
+                            font-size: 12px; font-weight: v.channel-id != "" ? 700 : 400; vertical-alignment: center; overflow: elide; } }
+                    Text { text: v.meta; color: MusicTheme.fg-dim; font-size: 12px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1; } }
+                Text { text: v.info; color: MusicTheme.fg-dim2; font-size: 11px; wrap: word-wrap; overflow: elide; } }
+            VerticalLayout { width: 108px; alignment: center; spacing: 7px;
+                pb := YtBtn { variant: "primary"; icon: Icons.play; label: "Play"; clicked => { root.play(false); } }
+                sb := YtBtn { variant: "save"; icon: Icons.download; label: "Save"; clicked => { root.download(); } }
+                mb := YtBtn { variant: "ghost"; icon: Icons.ellipsis; label: "More"; clicked => { root.menu(); } } }
+        }
     }
 }
 
-// Vertical grid card — channel / playlist / cached / downloads grids (5 per row).
-// FIXED layout (thumb · title · views · buttons) so every card is identical
-// height — grids position cards absolutely, so a variable height would overlap.
-// Card height = thumb (width·9/16) + GRID-CARD-BODY.
+// Vertical grid card — channel / cached / downloads grids (5 per row). FIXED
+// height so absolute-positioned grids never overlap: thumb (width·9/16) + 112px
+// body (10 pad · 34 title (2 lines) · 14 meta · 30 buttons · 14 gaps · 10 pad).
 component YtVideoGridCard inherits Rectangle {
     in property <YtVideo> v;
     in property <string> remove-glyph: "";   // "" hides the remove action
+    in property <int> idx: 0;
     callback play(bool);
     callback download();
     callback menu();
     callback remove();
-    height: self.width * 9 / 16 + 96px;
-    border-radius: 9px; background: MusicTheme.surf1; clip: true;
-    border-width: 1px; border-color: gh.has-hover ? #ef4444 : MusicTheme.line;
-    gh := TouchArea { mouse-cursor: pointer; clicked => { root.play(false); } }
-    VerticalLayout { spacing: 0;
-        Rectangle { height: root.width * 9 / 16; clip: true;
-            Image { source: v.thumb; image-fit: cover; width: 100%; height: 100%; }
-            Rectangle { x: parent.width - self.width - 5px; y: parent.height - self.height - 5px;
-                width: gdt.preferred-width + 10px; height: 15px; border-radius: 3px; background: #000000bb;
-                gdt := Text { text: v.duration; color: #eeeeee; font-size: 9px;
-                    horizontal-alignment: center; vertical-alignment: center; } } }
-        VerticalLayout { padding: 8px; spacing: 5px;
-            // title — fixed 2-line block.
-            Rectangle { height: 30px;
-                Text { width: 100%; text: v.title; color: MusicTheme.fg; font-size: 11px; font-weight: 700;
-                    wrap: word-wrap; overflow: elide; vertical-alignment: top; } }
-            // views (pre-formatted "312K views · …").
-            Text { height: 12px; text: v.meta; color: MusicTheme.fg-dim; font-size: 9px; overflow: elide; }
-            HorizontalLayout { height: 26px; spacing: 5px;
-                YtActionBtn { label: "▶"; clicked => { root.play(false); } }
-                YtActionBtn { label: "⬇"; clicked => { root.download(); } }
-                YtActionBtn { label: "⋯"; clicked => { root.menu(); } }
-                if root.remove-glyph != "": YtActionBtn { label: root.remove-glyph; clicked => { root.remove(); } } } }
+    height: self.width * 9 / 16 + 112px;
+    property <bool> hovered: gh.has-hover || pb.hovering || db.hovering || mb.hovering;
+    property <bool> appeared: false;
+    init => { root.appeared = true; }
+    opacity: root.appeared ? 1.0 : 0.0;
+    animate opacity { duration: 300ms; easing: ease-out; delay: root.idx * 35ms; }
+    GlassCard { width: 100%; height: 100%; radius: 13px; clip-content: true; hot: root.hovered;
+        gh := TouchArea { mouse-cursor: pointer; clicked => { root.play(false); } }
+        VerticalLayout { spacing: 0;
+            YtThumb { height: root.width * 9 / 16; src: v.thumb; duration: v.duration; hot: root.hovered; }
+            VerticalLayout { padding: 10px; spacing: 7px;
+                Rectangle { height: 34px;
+                    Text { width: 100%; text: v.title; color: MusicTheme.fg; font-size: 13px; font-weight: 700;
+                        wrap: word-wrap; overflow: elide; vertical-alignment: top; } }
+                Text { height: 14px; text: v.meta; color: MusicTheme.fg-dim; font-size: 10px; overflow: elide; }
+                HorizontalLayout { height: 30px; spacing: 6px;
+                    pb := YtBtn { horizontal-stretch: 1; variant: "primary"; icon: Icons.play; clicked => { root.play(false); } }
+                    db := YtBtn { horizontal-stretch: 1; variant: "save"; icon: Icons.download; clicked => { root.download(); } }
+                    mb := YtBtn { horizontal-stretch: 1; variant: "ghost"; icon: Icons.ellipsis; clicked => { root.menu(); } }
+                    if root.remove-glyph != "": YtBtn { horizontal-stretch: 1; variant: "danger"; icon: Icons.x; clicked => { root.remove(); } } } }
+        }
     }
 }
 
@@ -1132,15 +1215,17 @@ component YtVideoGridCard inherits Rectangle {
 component YtSubRow inherits Rectangle {
     in property <YtSub> s;
     callback open();
-    height: 44px; border-radius: 8px;
-    background: sh.has-hover ? MusicTheme.hov : transparent;
+    height: 46px; border-radius: 9px;
+    background: sh.has-hover ? #ef444414 : MusicTheme.surf0;
+    border-width: 1px; border-color: sh.has-hover ? #ef444466 : MusicTheme.line;
+    animate background, border-color { duration: 120ms; easing: ease-out; }
     sh := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
-    HorizontalLayout { padding: 5px; spacing: 9px;
-        Rectangle { width: 30px; height: 30px; border-radius: 15px; clip: true; background: MusicTheme.surf1;
+    HorizontalLayout { padding: 6px; spacing: 9px;
+        Rectangle { width: 32px; height: 32px; border-radius: 16px; clip: true; background: MusicTheme.surf1;
             Image { source: s.avatar; image-fit: cover; width: 100%; height: 100%; } }
-        VerticalLayout { alignment: center; horizontal-stretch: 1;
-            Text { text: s.title; color: MusicTheme.fg; font-size: 11px; font-weight: 600; overflow: elide; }
-            Text { text: s.count; color: MusicTheme.fg-dim; font-size: 9px; } } }
+        VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 1px;
+            Text { text: s.title; color: MusicTheme.fg; font-size: 12px; font-weight: 700; overflow: elide; }
+            Text { text: s.count; color: MusicTheme.fg-dim; font-size: 10px; overflow: elide; } } }
 }
 
 // Compact video mini — Home left rail (Cached / Downloaded).
@@ -1149,20 +1234,22 @@ component YtMiniRow inherits Rectangle {
     in property <bool> removable: false;
     callback open();
     callback remove();
-    height: 40px; border-radius: 7px;
-    background: mh.has-hover ? MusicTheme.hov : transparent;
+    height: 44px; border-radius: 8px;
+    background: mh.has-hover ? #ef44440f : MusicTheme.surf0;
+    border-width: 1px; border-color: mh.has-hover ? #ef444455 : MusicTheme.line;
+    animate background, border-color { duration: 120ms; easing: ease-out; }
     mh := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
-    HorizontalLayout { padding: 5px; spacing: 7px;
-        Rectangle { width: 46px; height: 28px; border-radius: 4px; clip: true; background: MusicTheme.surf1;
+    HorizontalLayout { padding: 6px; spacing: 8px;
+        Rectangle { width: 52px; height: 30px; border-radius: 5px; clip: true; background: MusicTheme.surf1;
             Image { source: v.thumb; image-fit: cover; width: 100%; height: 100%; } }
-        VerticalLayout { alignment: center; horizontal-stretch: 1;
-            Text { text: v.title; color: MusicTheme.fg2; font-size: 10px; font-weight: 600; overflow: elide; }
+        VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 1px;
+            Text { text: v.title; color: MusicTheme.fg2; font-size: 11px; font-weight: 600; overflow: elide; }
             Text { text: v.channel; color: MusicTheme.fg-dim; font-size: 9px; overflow: elide; } }
         if root.removable: VerticalLayout { alignment: center;
-            Rectangle { width: 18px; height: 18px; border-radius: 9px; background: xh.has-hover ? #ef4444 : transparent;
+            Rectangle { width: 22px; height: 22px; border-radius: 11px; background: xh.has-hover ? #ef4444 : transparent;
                 xh := TouchArea { mouse-cursor: pointer; clicked => { root.remove(); } }
-                Text { text: "✕"; color: xh.has-hover ? #ffffff : MusicTheme.fg-mute; font-size: 10px;
-                    horizontal-alignment: center; vertical-alignment: center; } } } }
+                AppIcon { source: Icons.x; tint: xh.has-hover ? #ffffff : MusicTheme.fg-mute; width: 13px; height: 13px;
+                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } } }
 }
 
 // Outlined clickable section title (Home rails → jump to that page).
@@ -1170,34 +1257,38 @@ component YtRailTitle inherits Rectangle {
     in property <string> label;
     in property <bool> linked: true;
     callback clicked();
-    height: 24px; horizontal-stretch: 0;
-    border-radius: 7px;
-    border-width: root.linked ? 1px : 0px; border-color: #ef444466;
-    background: root.linked && rt.has-hover ? #ef44441a : transparent;
+    height: 26px; horizontal-stretch: 0;
+    border-radius: 8px;
+    border-width: root.linked ? 1px : 0px; border-color: rt.has-hover ? #ef4444 : #ef444455;
+    background: root.linked && rt.has-hover ? #ef444418 : transparent;
+    animate background, border-color { duration: 120ms; easing: ease-out; }
     rt := TouchArea { mouse-cursor: pointer; enabled: root.linked; clicked => { root.clicked(); } }
-    HorizontalLayout { padding-left: root.linked ? 9px : 0px; padding-right: root.linked ? 9px : 0px; spacing: 5px;
-        Text { text: root.label; color: #ef4444; font-size: 9px; font-weight: 700; vertical-alignment: center; }
-        if root.linked: Text { text: "›"; color: #ef4444aa; font-size: 12px; vertical-alignment: center; } }
+    HorizontalLayout { padding-left: root.linked ? 10px : 2px; padding-right: root.linked ? 10px : 2px; spacing: 5px;
+        Text { text: root.label; color: #ef4444; font-size: 10px; font-weight: 800; letter-spacing: 0.5px; vertical-alignment: center; }
+        if root.linked: AppIcon { source: Icons.chevron-right; tint: #ef4444; width: 13px; height: 13px; vertical-alignment: center; } }
 }
 
-// Playlist card — Playlists page grid.
+// Playlist card — Playlists page grid. Same fixed-height glass treatment.
 component YtPlaylistCard inherits Rectangle {
     in property <YtPlaylist> p;
     callback open();
     callback play-all();
     callback remove();
-    border-radius: 10px; background: MusicTheme.surf1; clip: true;
-    border-width: 1px; border-color: ph.has-hover ? #ef4444 : MusicTheme.line;
-    ph := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
-    VerticalLayout { spacing: 0;
-        Rectangle { height: root.width * 9 / 16; clip: true; background: MusicTheme.surf1;
-            Image { source: p.cover; image-fit: cover; width: 100%; height: 100%; } }
-        VerticalLayout { padding: 9px; spacing: 4px;
-            Text { text: p.name; color: MusicTheme.fg; font-size: 12px; font-weight: 700; overflow: elide; }
-            Text { text: p.sub; color: MusicTheme.fg-dim; font-size: 9px; }
-            HorizontalLayout { spacing: 5px;
-                YtActionBtn { label: "▶ Play all"; clicked => { root.play-all(); } }
-                YtActionBtn { label: "🗑"; clicked => { root.remove(); } } } }
+    height: self.width * 9 / 16 + 112px;
+    property <bool> hovered: ph.has-hover || pa.hovering || rb.hovering;
+    GlassCard { width: 100%; height: 100%; radius: 14px; clip-content: true; hot: root.hovered;
+        ph := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
+        VerticalLayout { spacing: 0;
+            YtThumb { height: root.width * 9 / 16; src: p.cover; hot: root.hovered; }
+            VerticalLayout { padding: 10px; spacing: 7px;
+                Rectangle { height: 34px;
+                    Text { width: 100%; text: p.name; color: MusicTheme.fg; font-size: 14px; font-weight: 700;
+                        wrap: word-wrap; overflow: elide; vertical-alignment: top; } }
+                Text { height: 14px; text: p.sub; color: MusicTheme.fg-dim; font-size: 10px; overflow: elide; }
+                HorizontalLayout { height: 30px; spacing: 6px;
+                    pa := YtBtn { horizontal-stretch: 1; variant: "primary"; icon: Icons.play; label: "Play all"; clicked => { root.play-all(); } }
+                    rb := YtBtn { width: 40px; variant: "danger"; icon: Icons.trash; clicked => { root.remove(); } } } }
+        }
     }
 }
 
@@ -2435,11 +2526,11 @@ export component MusicPage inherits Rectangle {
                     if root.yt-channel-query == "": Rectangle { horizontal-stretch: 1;
                         property <int> cols: 5;
                         property <length> cw: self.width / cols;
-                        property <length> ch: cw * 9 / 16 + 96px;
+                        property <length> ch: cw * 9 / 16 + 112px;
                         height: Math.max(1, Math.ceil(root.yt-channel-videos.length / cols)) * ch;
                         for v[idx] in root.yt-channel-videos: YtVideoGridCard {
                             x: Math.mod(idx, cols) * cw + 6px; y: Math.floor(idx / cols) * ch;
-                            width: cw - 12px; v: v;
+                            width: cw - 12px; v: v; idx: idx;
                             play(wv) => { root.yt-play(v.id, wv); }
                             download => { root.yt-download(v.id); }
                             menu => { root.yt-menu-video = v.id; root.yt-menu-open = true; } } }
@@ -2447,11 +2538,11 @@ export component MusicPage inherits Rectangle {
                     if root.yt-channel-query != "": Rectangle { horizontal-stretch: 1;
                         property <int> cols: 5;
                         property <length> cw: self.width / cols;
-                        property <length> ch: cw * 9 / 16 + 96px;
+                        property <length> ch: cw * 9 / 16 + 112px;
                         height: Math.max(1, Math.ceil(root.yt-channel-results.length / cols)) * ch;
                         for v[idx] in root.yt-channel-results: YtVideoGridCard {
                             x: Math.mod(idx, cols) * cw + 6px; y: Math.floor(idx / cols) * ch;
-                            width: cw - 12px; v: v;
+                            width: cw - 12px; v: v; idx: idx;
                             play(wv) => { root.yt-play(v.id, wv); }
                             download => { root.yt-download(v.id); }
                             menu => { root.yt-menu-video = v.id; root.yt-menu-open = true; } } }
@@ -2500,11 +2591,11 @@ export component MusicPage inherits Rectangle {
                     Rectangle { horizontal-stretch: 1;
                         property <int> cols: 5;
                         property <length> cw: self.width / cols;
-                        property <length> ch: cw * 9 / 16 + 96px;
+                        property <length> ch: cw * 9 / 16 + 112px;
                         height: Math.max(1, Math.ceil(root.yt-playlist-videos.length / cols)) * ch;
                         for v[idx] in root.yt-playlist-videos: YtVideoGridCard {
                             x: Math.mod(idx, cols) * cw + 6px; y: Math.floor(idx / cols) * ch;
-                            width: cw - 12px; v: v;
+                            width: cw - 12px; v: v; idx: idx;
                             play(wv) => { root.yt-play(v.id, wv); }
                             download => { root.yt-download(v.id); }
                             menu => { root.yt-menu-video = v.id; root.yt-menu-open = true; } } }
@@ -2523,6 +2614,11 @@ export component MusicPage inherits Rectangle {
             // ══ HOME (20/60/20) ═══════════════════════════════════════════
             if root.yt-tab == "home" && !root.yt-channel-open && !root.yt-playlist-open: VerticalLayout {
                 padding: 28px; padding-top: 14px; spacing: 14px;
+                // First-paint entrance — the whole home fades up; cards stagger in on top.
+                property <bool> appeared: false;
+                init => { appeared = true; }
+                opacity: appeared ? 1.0 : 0.0;
+                animate opacity { duration: 360ms; easing: ease-out; }
                 // Search bar — center-column width, above the grid.
                 HorizontalLayout { spacing: 12px;
                     Rectangle { horizontal-stretch: 1; }
@@ -2530,7 +2626,7 @@ export component MusicPage inherits Rectangle {
                         Rectangle { horizontal-stretch: 1; height: 44px; border-radius: 10px; background: MusicTheme.surf1;
                             border-width: 1px; border-color: MusicTheme.line;
                             HorizontalLayout { padding-left: 14px; padding-right: 12px; spacing: 8px;
-                                VerticalLayout { alignment: center; Text { text: "🔍"; font-size: 14px; } }
+                                VerticalLayout { alignment: center; AppIcon { source: Icons.search; tint: MusicTheme.fg-mute; width: 16px; height: 16px; } }
                                 Rectangle { horizontal-stretch: 1;
                                     yti := TextInput { width: 100%; height: 100%; text <=> root.yt-query; color: MusicTheme.fg;
                                         font-size: 14px; vertical-alignment: center; single-line: true;
@@ -2546,8 +2642,9 @@ export component MusicPage inherits Rectangle {
                 // 20 / 60 / 20 grid.
                 HorizontalLayout { spacing: 12px; vertical-stretch: 1;
                     // LEFT rail.
-                    ScrollView { horizontal-stretch: 1;
-                        VerticalLayout { spacing: 16px; padding-right: 4px;
+                    GlassCard { horizontal-stretch: 1; radius: 16px; clip-content: true;
+                    ScrollView { width: 100%; height: 100%;
+                        VerticalLayout { spacing: 16px; padding: 13px;
                             VerticalLayout { spacing: 7px;
                                 YtRailTitle { label: "RECENT SEARCHES"; linked: false; }
                                 VerticalLayout { spacing: 5px;
@@ -2566,16 +2663,17 @@ export component MusicPage inherits Rectangle {
                                 if root.yt-home-downloads.length == 0: Text { text: "No downloads yet."; color: MusicTheme.fg-mute; font-size: 10px; }
                                 for v in root.yt-home-downloads: YtMiniRow { v: v; removable: true;
                                     open => { root.yt-play(v.id, false); }
-                                    remove => { root.yt-remove-download(v.id); } } } } }
+                                    remove => { root.yt-remove-download(v.id); } } } } } }
                     // CENTER results.
-                    ScrollView { horizontal-stretch: 3;
-                        VerticalLayout { spacing: 10px; padding-left: 4px; padding-right: 4px;
+                    GlassCard { horizontal-stretch: 3; radius: 16px; clip-content: true;
+                    ScrollView { width: 100%; height: 100%;
+                        VerticalLayout { spacing: 10px; padding: 14px;
                             if root.yt-busy: Text { text: "Searching…"; color: MusicTheme.fg-mute; font-size: 12px; }
                             // No search → recommended from your subscriptions.
                             if root.yt-query == "" && root.yt-results.length == 0: VerticalLayout { spacing: 10px;
                                 Text { text: "Recommended for you"; color: #ef4444; font-size: 10px; font-weight: 700; }
                                 if root.yt-recommended.length == 0 && !root.yt-busy: Text { text: "Import subscriptions to see picks here."; color: MusicTheme.fg-dim2; font-size: 13px; }
-                                for v in root.yt-recommended: YtVideoCard { v: v;
+                                for v[i] in root.yt-recommended: YtVideoCard { v: v; idx: i;
                                     play(wv) => { root.yt-play(v.id, wv); }
                                     download => { root.yt-download(v.id); }
                                     open-channel(c) => { root.yt-open-channel(c); }
@@ -2583,7 +2681,7 @@ export component MusicPage inherits Rectangle {
                             // Searching → results.
                             if root.yt-query != "" && !root.yt-busy && root.yt-results.length == 0: VerticalLayout { alignment: center; spacing: 10px; padding: 30px;
                                 Text { text: root.yt-status != "" ? root.yt-status : "No results."; color: MusicTheme.fg-dim2; font-size: 13px; horizontal-alignment: center; } }
-                            for v in root.yt-results: YtVideoCard { v: v;
+                            for v[i] in root.yt-results: YtVideoCard { v: v; idx: i;
                                 play(wv) => { root.yt-play(v.id, wv); }
                                 download => { root.yt-download(v.id); }
                                 open-channel(c) => { root.yt-open-channel(c); }
@@ -2592,13 +2690,14 @@ export component MusicPage inherits Rectangle {
                                 border-width: 1px; border-color: MusicTheme.line;
                                 lm := TouchArea { mouse-cursor: pointer; clicked => { root.yt-search-more(); } }
                                 Text { text: "↓ Load more"; color: MusicTheme.fg2; font-size: 12px; font-weight: 600;
-                                    horizontal-alignment: center; vertical-alignment: center; } } } }
+                                    horizontal-alignment: center; vertical-alignment: center; } } } } }
                     // RIGHT rail.
-                    ScrollView { horizontal-stretch: 1;
-                        VerticalLayout { spacing: 6px; padding-left: 4px;
+                    GlassCard { horizontal-stretch: 1; radius: 16px; clip-content: true;
+                    ScrollView { width: 100%; height: 100%;
+                        VerticalLayout { spacing: 6px; padding: 13px;
                             YtRailTitle { label: "SUBSCRIBED"; clicked => { root.yt-set-tab("subscriptions"); } }
                             if root.yt-home-subs.length == 0: Text { text: "Import your subscriptions via + Add."; color: MusicTheme.fg-mute; font-size: 10px; wrap: word-wrap; }
-                            for s in root.yt-home-subs: YtSubRow { s: s; open => { root.yt-open-channel(s.channel-id); } } } } }
+                            for s in root.yt-home-subs: YtSubRow { s: s; open => { root.yt-open-channel(s.channel-id); } } } } } }
             }
 
             // ══ SUBSCRIPTIONS ═════════════════════════════════════════════
@@ -2708,7 +2807,7 @@ export component MusicPage inherits Rectangle {
                     Rectangle { horizontal-stretch: 1;
                         property <int> cols: 4;
                         property <length> cw: self.width / cols;
-                        property <length> ch: cw * 9 / 16 + 86px;
+                        property <length> ch: cw * 9 / 16 + 112px;
                         height: Math.max(1, Math.ceil(root.yt-playlists.length / cols)) * ch;
                         for p[idx] in root.yt-playlists: YtPlaylistCard {
                             x: Math.mod(idx, cols) * cw + 6px; y: Math.floor(idx / cols) * ch;
@@ -2731,11 +2830,11 @@ export component MusicPage inherits Rectangle {
                     Rectangle { horizontal-stretch: 1;
                         property <int> cols: 5;
                         property <length> cw: self.width / cols;
-                        property <length> ch: cw * 9 / 16 + 96px;
+                        property <length> ch: cw * 9 / 16 + 112px;
                         height: Math.max(1, Math.ceil(root.yt-cached.length / cols)) * ch;
                         for v[idx] in root.yt-cached: YtVideoGridCard {
                             x: Math.mod(idx, cols) * cw + 6px; y: Math.floor(idx / cols) * ch;
-                            width: cw - 12px; v: v; remove-glyph: "✕";
+                            width: cw - 12px; v: v; idx: idx; remove-glyph: "✕";
                             play(wv) => { root.yt-play(v.id, wv); }
                             download => { root.yt-download(v.id); }
                             menu => { root.yt-menu-video = v.id; root.yt-menu-open = true; }
@@ -2768,11 +2867,11 @@ export component MusicPage inherits Rectangle {
                     Rectangle { horizontal-stretch: 1;
                         property <int> cols: 5;
                         property <length> cw: self.width / cols;
-                        property <length> ch: cw * 9 / 16 + 96px;
+                        property <length> ch: cw * 9 / 16 + 112px;
                         height: Math.max(1, Math.ceil(root.yt-downloads.length / cols)) * ch;
                         for v[idx] in root.yt-downloads: YtVideoGridCard {
                             x: Math.mod(idx, cols) * cw + 6px; y: Math.floor(idx / cols) * ch;
-                            width: cw - 12px; v: v; remove-glyph: "✕";
+                            width: cw - 12px; v: v; idx: idx; remove-glyph: "✕";
                             play(wv) => { root.yt-play(v.id, wv); }
                             download => { root.yt-download(v.id); }
                             menu => { root.yt-menu-video = v.id; root.yt-menu-open = true; }

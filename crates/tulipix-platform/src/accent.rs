@@ -91,6 +91,9 @@ fn read_linux() -> Option<Rgb> {
     None
 }
 
+// Only the Linux accent probe (and its unit test) consults this table; gate it
+// so non-Linux builds don't flag it as dead code.
+#[cfg(any(target_os = "linux", test))]
 fn gnome_accent_name_to_rgb(name: &str) -> Option<Rgb> {
     Some(match name {
         "blue"    => Rgb::new(0x35, 0x84, 0xe4),

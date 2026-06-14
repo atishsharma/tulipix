@@ -14,7 +14,13 @@ path = "src/main.rs"
 # (whisper, AI execution providers, large models, plugin sandboxes) are
 # behind their own feature flag so the base binary stays ~40% smaller and
 # loads them lazily on first use.
-default = []
+# `embedded-mpv` on by default: links libmpv for the in-app Videos player
+# (render API → Slint texture). Build with `--no-default-features` to drop the
+# libmpv link entirely (e.g. Windows without mpv.lib); the Videos embedded
+# player goes inert, while music/podcast/radio/YouTube keep using out-of-process
+# mpv.exe. See build.rs + src/mpv_stub.rs.
+default = ["embedded-mpv"]
+embedded-mpv = []
 
 # Dev UI live-reload. `slint/live-preview` swaps the generated UI for an
 # interpreter-backed LiveReloadingComponent that re-reads .slint at runtime —
@@ -66,6 +72,7 @@ zip = { version = "2.4", default-features = false, features = ["deflate"] }
 sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true
+serde.workspace = true
 walkdir = "2"
 # OS media-key / now-playing integration (Linux MPRIS · Windows SMTC · macOS).
 souvlaki = "0.7"
@@ -89,5 +96,15 @@ tikv-jemallocator = { version = "0.6", optional = true }
 [target.'cfg(target_os = "linux")'.dependencies]
 libc = "0.2"
 
+# raw-window-handle pins to Slint 1.8's rwh (0.6); used to hand the native HWND
+# to souvlaki — SMTC on Windows panics without one.
+[target.'cfg(target_os = "windows")'.dependencies]
+raw-window-handle = "0.6"
+
 [build-dependencies]
 slint-build.workspace = true
+
+# Embed the .ico as a Win32 resource so the .exe (and, via winit's default,
+# the window/taskbar) carries the Tulipix icon.
+[target.'cfg(target_os = "windows")'.build-dependencies]
+embed-resource = "3"

@@ -59,6 +59,6 @@ tulipix_plan.html
 .cursorrules
 resources/bin/
 target-dev/
-
+target-win/
 # brainstorming visual companion artifacts
 .superpowers/

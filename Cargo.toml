@@ -31,7 +31,7 @@ license = "Apache-2.0"
 repository = "https://github.com/atishsharma/tulipix"
 
 [workspace.dependencies]
-slint = { version = "1.8", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-skia", "renderer-skia-opengl", "unstable-fontique-08"] }
+slint = { version = "1.8", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-skia", "renderer-skia-opengl", "unstable-fontique-08", "raw-window-handle-06"] }
 slint-build = "1.8"
 # Trimmed from "full": no crate uses tokio::net / signal / io-std (reqwest and
 # sqlx enable their own net stack). Member crates may add features on top.
