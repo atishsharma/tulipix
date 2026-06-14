@@ -7070,6 +7070,7 @@ dependencies = [
  "raw-window-handle",
  "reqwest",
  "rfd",
+ "serde",
  "serde_json",
  "sha2",
  "slint",

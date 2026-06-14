@@ -72,6 +72,7 @@ zip = { version = "2.4", default-features = false, features = ["deflate"] }
 sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true
+serde.workspace = true
 walkdir = "2"
 # OS media-key / now-playing integration (Linux MPRIS · Windows SMTC · macOS).
 souvlaki = "0.7"

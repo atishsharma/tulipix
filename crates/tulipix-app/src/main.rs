@@ -14968,7 +14968,7 @@ const YT_CACHE_KEEP: i64 = 60;   // newest N auto-cached videos kept; rest evict
 const YT_PAGE: usize = 5;        // Home search results revealed per "Load more"
 
 /// Send-safe video row gathered off the UI thread (thumb is a file path).
-#[derive(Clone, Default)]
+#[derive(Clone, Default, serde::Serialize, serde::Deserialize)]
 struct YtVidData {
     id: String,
     channel_id: String, // owning channel ("" = unknown; set for recommended)
@@ -15083,9 +15083,47 @@ fn yt_reco() -> &'static std::sync::Mutex<Vec<YtVidData>> {
 
 /// Home "Recommended" — latest video from up to 10 subscribed channels. Cached
 /// in-memory for the session so it's built once.
+/// Home recommendations refresh at most once a day. Order: in-memory (this
+/// session) → on-disk cache if <24h old (no network) → otherwise fetch the
+/// latest from subs and persist with a timestamp.
+const YT_RECO_TTL: u64 = 24 * 60 * 60;
+
+fn yt_now_secs() -> u64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs()).unwrap_or(0)
+}
+fn yt_reco_cache_path() -> std::path::PathBuf {
+    tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("youtube_reco.json")
+}
+#[derive(serde::Serialize, serde::Deserialize, Default)]
+struct YtRecoCache { fetched: u64, items: Vec<YtVidData> }
+
+fn yt_reco_load() -> Option<YtRecoCache> {
+    serde_json::from_str(&std::fs::read_to_string(yt_reco_cache_path()).ok()?).ok()
+}
+fn yt_reco_save(items: &[YtVidData]) {
+    let c = YtRecoCache { fetched: yt_now_secs(), items: items.to_vec() };
+    if let Ok(j) = serde_json::to_string(&c) {
+        let p = yt_reco_cache_path();
+        if let Some(dir) = p.parent() { let _ = std::fs::create_dir_all(dir); }
+        let _ = std::fs::write(p, j);
+    }
+}
+
 fn populate_yt_recommended(w: &MainWindow) {
+    // 1. In-memory (this session) — instant, no I/O.
     let cached = yt_reco().lock().map(|g| g.clone()).unwrap_or_default();
     if !cached.is_empty() { w.set_music_yt_recommended(yt_video_model(&cached)); return; }
+    // 2. On-disk daily cache — reuse if younger than the TTL, no network.
+    if let Some(c) = yt_reco_load() {
+        if !c.items.is_empty() && yt_now_secs().saturating_sub(c.fetched) < YT_RECO_TTL {
+            yt_remember(&c.items);
+            if let Ok(mut g) = yt_reco().lock() { *g = c.items.clone(); }
+            w.set_music_yt_recommended(yt_video_model(&c.items));
+            return;
+        }
+    }
+    // 3. Stale or absent — fetch the day's picks from subs and persist them.
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("youtube").await else { return; };
@@ -15105,7 +15143,9 @@ fn populate_yt_recommended(w: &MainWindow) {
             }
             if out.len() >= 10 { break; }
         }
+        if out.is_empty() { return; }
         yt_remember(&out);
+        yt_reco_save(&out);
         if let Ok(mut g) = yt_reco().lock() { *g = out.clone(); }
         let _ = weak.upgrade_in_event_loop(move |w| w.set_music_yt_recommended(yt_video_model(&out)));
     });
