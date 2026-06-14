@@ -1082,6 +1082,9 @@ export component MainWindow inherits Window {
     callback music-yt-watch-current();
     callback music-yt-clear-subs();
     callback music-yt-play-resolution(string, int);
+    in-out property <int> music-yt-default-res: -999;
+    callback music-yt-set-default-res(int);
+    callback music-yt-reset-video-prefs();
     in-out property <string> music-yt-channel-query: "";
     in-out property <bool> music-yt-dl-open: false;
     in-out property <string> music-yt-dl-id: "";
@@ -1895,6 +1898,9 @@ export component MainWindow inherits Window {
                 yt-subs-clear-open <=> root.music-yt-subs-clear-open;
                 yt-pl-del-open <=> root.music-yt-pl-del-open; yt-pl-del-id <=> root.music-yt-pl-del-id;
                 yt-res-open <=> root.music-yt-res-open; yt-res-id <=> root.music-yt-res-id;
+                yt-default-res <=> root.music-yt-default-res;
+                yt-set-default-res(h) => { root.music-yt-set-default-res(h); }
+                yt-reset-video-prefs() => { root.music-yt-reset-video-prefs(); }
                 yt-now-video: root.music-yt-now-video; yt-watch-current() => { root.music-yt-watch-current(); }
                 yt-channel-query <=> root.music-yt-channel-query;
                 yt-dl-open <=> root.music-yt-dl-open; yt-dl-id <=> root.music-yt-dl-id;

@@ -1130,13 +1130,16 @@ component YtBtn inherits Rectangle {
 component ResBtn inherits Rectangle {
     in property <string> label;
     in property <int> height-px;
+    in property <bool> checked: false;     // marks the saved default quality
     callback pick(int);
     height: 34px; border-radius: 8px;
-    background: rrb.has-hover ? #ef44441a : MusicTheme.surf1;
-    border-width: 1px; border-color: rrb.has-hover ? #ef4444 : MusicTheme.line;
+    background: root.checked ? #ef444422 : (rrb.has-hover ? #ef44441a : MusicTheme.surf1);
+    border-width: 1px; border-color: root.checked || rrb.has-hover ? #ef4444 : MusicTheme.line;
     rrb := TouchArea { mouse-cursor: pointer; clicked => { root.pick(root.height-px); } }
-    Text { text: root.label; color: MusicTheme.fg2; font-size: 12px; font-weight: 600;
-        horizontal-alignment: center; vertical-alignment: center; }
+    HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 6px;
+        Text { text: root.label; color: root.checked ? #ef4444 : MusicTheme.fg2; font-size: 12px; font-weight: root.checked ? 800 : 600;
+            vertical-alignment: center; horizontal-stretch: 1; horizontal-alignment: center; }
+        if root.checked: VerticalLayout { alignment: center; AppIcon { source: Icons.check; tint: #ef4444; width: 14px; height: 14px; } } }
 }
 
 // YouTube "watch video" button — bright-red blinking round button, white
@@ -1199,13 +1202,14 @@ component YtVideoCard inherits Rectangle {
 component YtVideoGridCard inherits Rectangle {
     in property <YtVideo> v;
     in property <string> remove-glyph: "";   // "" hides the remove action
+    in property <bool> hide-download: false;  // downloaded items: Download lives in ⋯
     in property <int> idx: 0;
     callback play(bool);
     callback download();
     callback menu();
     callback remove();
     height: self.width * 9 / 16 + 112px;
-    property <bool> hovered: gh.has-hover || pb.hovering || db.hovering || mb.hovering;
+    property <bool> hovered: gh.has-hover || pb.hovering || mb.hovering;
     property <bool> appeared: false;
     init => { root.appeared = true; }
     opacity: root.appeared ? 1.0 : 0.0;
@@ -1221,7 +1225,7 @@ component YtVideoGridCard inherits Rectangle {
                 Text { height: 14px; text: v.meta; color: MusicTheme.fg-dim; font-size: 10px; overflow: elide; }
                 HorizontalLayout { height: 30px; spacing: 6px;
                     pb := YtBtn { horizontal-stretch: 1; variant: "primary"; icon: Icons.play; clicked => { root.play(false); } }
-                    db := YtBtn { horizontal-stretch: 1; variant: "save"; icon: Icons.download; clicked => { root.download(); } }
+                    if !root.hide-download: YtBtn { horizontal-stretch: 1; variant: "save"; icon: Icons.download; clicked => { root.download(); } }
                     mb := YtBtn { horizontal-stretch: 1; variant: "ghost"; icon: Icons.ellipsis; clicked => { root.menu(); } }
                     if root.remove-glyph != "": YtBtn { horizontal-stretch: 1; variant: "danger"; icon: Icons.x; clicked => { root.remove(); } } } }
         }
@@ -1242,7 +1246,7 @@ component YtSubRow inherits Rectangle {
             Image { source: s.avatar; image-fit: cover; width: 100%; height: 100%; } }
         VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
             Text { text: s.title; color: MusicTheme.fg; font-size: 14px; font-weight: 700; overflow: elide; }
-            Text { text: s.count; color: MusicTheme.fg-dim; font-size: 11px; overflow: elide; } } }
+            Text { text: s.subs != "" ? s.subs : s.count; color: MusicTheme.fg-dim; font-size: 11px; overflow: elide; } } }
 }
 
 // Compact video mini — Home left rail (Cached / Downloaded).
@@ -1842,8 +1846,8 @@ export component MusicPage inherits Rectangle {
     in property <float> yt-fetch-frac: 0;
     in property <string> yt-fetch-msg: "";
     in property <int> yt-sub-count: 0;            // total channels (row-1 header)
-    in-out property <string> yt-subs-sort: "name"; // name | videos | subscribers
-    in-out property <string> yt-subs-dir: "asc";   // asc | desc
+    in-out property <string> yt-subs-sort: "subscribers"; // name | videos | subscribers
+    in-out property <string> yt-subs-dir: "desc";  // asc | desc — most-followed first
     in-out property <int> yt-subs-page: 0;
     in property <int> yt-subs-pages: 1;
     callback yt-subs-set-sort(string);
@@ -1866,6 +1870,10 @@ export component MusicPage inherits Rectangle {
     in-out property <bool> yt-res-open: false;
     in-out property <string> yt-res-id: "";
     callback yt-play-resolution(string, int);
+    // Saved default watch resolution (-999 = unset → picker shows every time).
+    in-out property <int> yt-default-res: -999;
+    callback yt-set-default-res(int);   // persist a default height
+    callback yt-reset-video-prefs();    // clear the default → picker returns
     // Page-level ⋯ action menu (avoids per-card PopupWindow — Slint #6426).
     in-out property <bool> yt-menu-open: false;
     in-out property <string> yt-menu-video: "";
@@ -2871,6 +2879,12 @@ export component MusicPage inherits Rectangle {
                 VerticalLayout { padding: 36px; padding-top: 16px; spacing: 14px;
                     HorizontalLayout { spacing: 8px;
                         Text { text: "Downloads"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; horizontal-stretch: 1; vertical-alignment: center; }
+                        // Reset the saved watch-resolution default → the picker returns.
+                        if root.yt-default-res != -999: Rectangle { width: 184px; height: 32px; border-radius: 8px;
+                            background: rvp.has-hover ? #ef444422 : MusicTheme.surf1;
+                            border-width: 1px; border-color: #ef444455;
+                            rvp := TouchArea { mouse-cursor: pointer; clicked => { root.yt-reset-video-prefs(); } }
+                            HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.rotate-ccw; tint: #ef4444; width: 12px; height: 12px; } } Text { text: "Reset Video Preferences"; color: #ef4444; font-size: 10px; font-weight: 700; vertical-alignment: center; } } }
                         if root.yt-downloads.length > 0: Rectangle { width: 140px; height: 32px; border-radius: 8px; background: MusicTheme.surf1;
                             border-width: 1px; border-color: MusicTheme.line;
                             cld := TouchArea { mouse-cursor: pointer; clicked => { root.yt-clear-downloads(); } }
@@ -2896,7 +2910,7 @@ export component MusicPage inherits Rectangle {
                         height: Math.max(1, Math.ceil(root.yt-downloads.length / cols)) * ch;
                         for v[idx] in root.yt-downloads: YtVideoGridCard {
                             x: Math.mod(idx, cols) * cw + 6px; y: Math.floor(idx / cols) * ch;
-                            width: cw - 12px; v: v; idx: idx; remove-glyph: "x";
+                            width: cw - 12px; v: v; idx: idx; remove-glyph: "x"; hide-download: true;
                             play(wv) => { root.yt-play(v.id, wv); }
                             download => { root.yt-download(v.id); }
                             menu => { root.yt-menu-video = v.id; root.yt-menu-open = true; }
@@ -3048,17 +3062,27 @@ export component MusicPage inherits Rectangle {
                                 Text { text: "Delete"; color: #ffffff; font-size: 12px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } } } } }
 
             // ══ VIDEO RESOLUTION PICKER ═══════════════════════════════════
-            if root.yt-res-open: Rectangle { background: #000000aa;
-                ovrs := TouchArea { clicked => { root.yt-res-open = false; } }
-                Rectangle { width: 320px; height: 300px; border-radius: 14px; background: MusicTheme.surf-header;
+            if root.yt-res-open: resov := Rectangle { background: #000000aa;
+                property <bool> setdef: false;   // true → next tap saves the default
+                TouchArea { clicked => { root.yt-res-open = false; } }
+                Rectangle { width: 340px; height: 372px; border-radius: 14px; background: MusicTheme.surf-header;
                     border-width: 1px; border-color: MusicTheme.line;
-                    VerticalLayout { padding: 20px; padding-bottom: 24px; spacing: 9px;
-                        Text { text: "Watch in resolution"; color: MusicTheme.fg; font-size: 16px; font-weight: 800; }
-                        Text { text: "Opens a full-window player."; color: MusicTheme.fg-dim; font-size: 11px; }
-                        ResBtn { label: "1080p"; height-px: 1080; pick(h) => { root.yt-play-resolution(root.yt-res-id, h); } }
-                        ResBtn { label: "720p";  height-px: 720;  pick(h) => { root.yt-play-resolution(root.yt-res-id, h); } }
-                        ResBtn { label: "480p";  height-px: 480;  pick(h) => { root.yt-play-resolution(root.yt-res-id, h); } }
-                        ResBtn { label: "Best available"; height-px: 0; pick(h) => { root.yt-play-resolution(root.yt-res-id, h); } } } }
+                    VerticalLayout { padding: 20px; padding-bottom: 22px; spacing: 9px;
+                        Text { text: resov.setdef ? "Pick a default quality" : "Watch in resolution"; color: MusicTheme.fg; font-size: 16px; font-weight: 800; }
+                        Text { text: resov.setdef ? "Tap a quality — every video plays at it, no more popup." : "Opens a full-window player."; color: MusicTheme.fg-dim; font-size: 11px; wrap: word-wrap; }
+                        ResBtn { label: "1080p"; height-px: 1080; checked: root.yt-default-res == 1080; pick(h) => { if (resov.setdef) { root.yt-set-default-res(h); } else { root.yt-play-resolution(root.yt-res-id, h); } } }
+                        ResBtn { label: "720p";  height-px: 720;  checked: root.yt-default-res == 720;  pick(h) => { if (resov.setdef) { root.yt-set-default-res(h); } else { root.yt-play-resolution(root.yt-res-id, h); } } }
+                        ResBtn { label: "480p";  height-px: 480;  checked: root.yt-default-res == 480;  pick(h) => { if (resov.setdef) { root.yt-set-default-res(h); } else { root.yt-play-resolution(root.yt-res-id, h); } } }
+                        ResBtn { label: "Best available"; height-px: 0; checked: root.yt-default-res == 0; pick(h) => { if (resov.setdef) { root.yt-set-default-res(h); } else { root.yt-play-resolution(root.yt-res-id, h); } } }
+                        Rectangle { height: 4px; }
+                        // Set-as-default toggle — gradient when arming the next pick.
+                        Rectangle { height: 36px; border-radius: 9px;
+                            background: resov.setdef ? @linear-gradient(120deg, #ef4444, #f59e0b) : (sdt.has-hover ? #ef444422 : MusicTheme.surf1);
+                            border-width: 1px; border-color: resov.setdef ? transparent : #ef444455;
+                            sdt := TouchArea { mouse-cursor: pointer; clicked => { resov.setdef = !resov.setdef; } }
+                            Text { text: resov.setdef ? "Now tap a quality above" : "Set a default quality";
+                                color: resov.setdef ? #ffffff : #ef4444; font-size: 12px; font-weight: 700;
+                                horizontal-alignment: center; vertical-alignment: center; } } } }
             }
 
             // ══ DOWNLOAD QUALITY PICKER ═══════════════════════════════════
@@ -3091,10 +3115,23 @@ export component MusicPage inherits Rectangle {
                         if root.yt-playlists.length > 0: Text { text: "ADD TO PLAYLIST"; color: #ef4444; font-size: 8px; font-weight: 700; }
                         if root.yt-playlists.length > 0: ScrollView { vertical-stretch: 1;
                             VerticalLayout { spacing: 1px;
-                                for p in root.yt-playlists: MusicMenuRow { label: "≣  " + p.name;
+                                for p in root.yt-playlists: MusicMenuRow { icon: Icons.list-music; label: p.name;
                                     clicked => { root.yt-menu-open = false; root.yt-add-to-playlist(root.yt-menu-video, p.id); } } } }
                         MusicMenuRow { icon: Icons.plus; label: "New playlist…"; txt: #22c55e;
                             clicked => { root.yt-menu-open = false; root.yt-add-to-playlist(root.yt-menu-video, -1); } } } } }
+            // Escape closes the ⋯ menu / resolution / download pickers (these
+            // have no text input, so grabbing focus is safe).
+            if root.yt-menu-open || root.yt-res-open || root.yt-dl-open: FocusScope {
+                width: 0px; height: 0px;
+                init => { self.focus(); }
+                key-pressed(e) => {
+                    if (e.text == Key.Escape) {
+                        root.yt-menu-open = false; root.yt-res-open = false; root.yt-dl-open = false;
+                        return accept;
+                    }
+                    return reject;
+                }
+            }
         }
 
         // Podcasts (np.p5.music.podcast-feeds) — Home / Subscribed / Downloads.

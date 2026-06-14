@@ -3788,27 +3788,52 @@ fn main() -> Result<()> {
         let Some(w0) = w.upgrade() else { return; };
         let id = id.to_string();
         if want_video {
-            w0.set_music_yt_res_id(id.into());
-            w0.set_music_yt_res_open(true);
+            // Saved default → skip the picker and play straight at that quality.
+            let def = yt_default_res();
+            if def != -999 {
+                let start = {
+                    let same = yt_cur_audio().lock().map(|g| *g == id).unwrap_or(false);
+                    if same { w0.get_music_pos() as f64 } else { 0.0 }
+                };
+                yt_watch_video(w.clone(), id, def, start);
+            } else {
+                w0.set_music_yt_res_id(id.into());
+                w0.set_music_yt_res_open(true);
+            }
             return;
         }
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let dir = yt_media_dir();
             let meta = yt_lookup(&id).unwrap_or_default();
-            if let Some(path) = yt_dlp_fetch_audio(&id, &dir).await {
-                let (title, channel, thumb) = (meta.title.clone(), meta.channel.clone(), meta.thumb.clone());
-                let (p2, id2) = (path.clone(), id.clone());
-                let _ = weak.upgrade_in_event_loop(move |w| yt_play_inapp(&w, id2, p2, title, channel, thumb, 0.0));
-                if let Ok(pool) = pool_for("youtube").await {
-                    let _ = tulipix_music::youtube::store::record_cached(
-                        &pool, &id, &meta.title, &meta.channel, &meta.thumb, &path, meta.dur_s).await;
-                    for (_v, p) in tulipix_music::youtube::store::evict_cached_over(&pool, YT_CACHE_KEEP).await.unwrap_or_default() {
-                        let _ = std::fs::remove_file(&p);
-                    }
-                }
-                let _ = weak.upgrade_in_event_loop(|w| populate_yt_cached(&w));
+            let (title, channel, thumb) = (meta.title.clone(), meta.channel.clone(), meta.thumb.clone());
+            // 1. Cached file → play it directly (instant + offline).
+            let cached = dir.join(format!("{id}.opus"));
+            if cached.exists() {
+                let (p2, id2, t, c, th) = (cached.to_string_lossy().into_owned(), id.clone(), title.clone(), channel.clone(), thumb.clone());
+                let _ = weak.upgrade_in_event_loop(move |w| yt_play_inapp(&w, id2, p2, t, c, th, 0.0));
+                return;
             }
+            // 2. Not cached → resolve the stream URL (fast) and start mpv on it
+            //    immediately; no waiting for a full download.
+            if let Some(stream_url) = yt_dlp_stream_url(&id).await {
+                let (u2, id2, t, c, th) = (stream_url, id.clone(), title.clone(), channel.clone(), thumb.clone());
+                let _ = weak.upgrade_in_event_loop(move |w| yt_play_inapp(&w, id2, u2, t, c, th, 0.0));
+            }
+            // 3. Cache the audio file in the background for next time (audio-only).
+            let weak2 = weak.clone();
+            tokio::runtime::Handle::current().spawn(async move {
+                if let Some(path) = yt_dlp_fetch_audio(&id, &dir).await {
+                    if let Ok(pool) = pool_for("youtube").await {
+                        let _ = tulipix_music::youtube::store::record_cached(
+                            &pool, &id, &meta.title, &meta.channel, &meta.thumb, &path, meta.dur_s).await;
+                        for (_v, p) in tulipix_music::youtube::store::evict_cached_over(&pool, YT_CACHE_KEEP).await.unwrap_or_default() {
+                            let _ = std::fs::remove_file(&p);
+                        }
+                    }
+                    let _ = weak2.upgrade_in_event_loop(|w| populate_yt_cached(&w));
+                }
+            });
         });
     });
     // Watch the currently-playing YouTube audio as video (player transport button).
@@ -3837,6 +3862,21 @@ fn main() -> Result<()> {
             if same { w0.get_music_pos() as f64 } else { 0.0 }
         };
         yt_watch_video(w.clone(), id.to_string(), height as i64, start);
+    });
+    // Save / clear the default watch resolution (np.p4.music.youtube).
+    window.set_music_yt_default_res(yt_default_res() as i32);
+    let w = window.as_weak();
+    window.on_music_yt_set_default_res(move |h| {
+        let Some(w0) = w.upgrade() else { return; };
+        yt_store_default_res(Some(h as i64));
+        w0.set_music_yt_default_res(h);
+        w0.set_music_yt_res_open(false);
+    });
+    let w = window.as_weak();
+    window.on_music_yt_reset_video_prefs(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        yt_store_default_res(None);
+        w0.set_music_yt_default_res(-999);
     });
     // Download — explicit, permanent (bestaudio → opus).
     // Download button → opens the quality picker.
@@ -15015,6 +15055,21 @@ fn piped_instance() -> String {
         .filter(|v| !v.is_empty())
         .unwrap_or_else(|| "https://pipedapi.kavin.rocks".to_string())
 }
+/// Saved default watch resolution height (-999 = unset). Persisted in settings.
+fn yt_default_res() -> i64 {
+    tulipix_core::settings::Settings::load().ok()
+        .and_then(|s| s.advanced.get("yt.default-res").cloned())
+        .and_then(|v| v.parse::<i64>().ok())
+        .unwrap_or(-999)
+}
+fn yt_store_default_res(h: Option<i64>) {
+    let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
+    match h {
+        Some(v) => { s.advanced.insert("yt.default-res".into(), v.to_string()); }
+        None => { s.advanced.remove("yt.default-res"); }
+    }
+    let _ = s.save();
+}
 fn yt_thumb_dir() -> std::path::PathBuf {
     tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("youtube_thumbs")
 }
@@ -15426,6 +15481,20 @@ async fn yt_dlp_fetch_audio(id: &str, dir: &std::path::Path) -> Option<String> {
         .arg("-f").arg("bestaudio").arg("-x").arg("--audio-format").arg("opus")
         .arg("--no-playlist").arg("-o").arg(&tmpl).arg(&url).status().await;
     if out.exists() { Some(out.to_string_lossy().into_owned()) } else { None }
+}
+
+/// Resolve a direct best-audio stream URL (no download) so playback can start
+/// instantly — mpv streams the googlevideo URL while we cache the file in the
+/// background (np.p4.music.youtube — instant audio, video-style streaming).
+async fn yt_dlp_stream_url(id: &str) -> Option<String> {
+    let url = format!("https://www.youtube.com/watch?v={id}");
+    let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
+    let out = tokio::process::Command::new(bin)
+        .arg("-g").arg("-f").arg("bestaudio/best").arg("--no-playlist").arg(&url)
+        .output().await.ok()?;
+    if !out.status.success() { return None; }
+    String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_string())
+        .find(|l| !l.is_empty())
 }
 
 fn yt_data_to_channelvid(d: &YtVidData) -> tulipix_music::youtube::store::ChannelVid {
