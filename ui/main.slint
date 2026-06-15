@@ -1073,6 +1073,8 @@ export component MainWindow inherits Window {
     callback music-yt-playlist-search(string);
     callback music-yt-playlist-set-sort(string);
     callback music-yt-playlist-play-all();
+    callback music-yt-playlist-play-all-id(int);
+    in-out property <bool> music-yt-pl-playall-busy: false;
     callback music-yt-import-url(string);
     callback music-yt-import-playlist-file();
     in-out property <bool> music-yt-add-open: false;
@@ -1916,6 +1918,8 @@ export component MainWindow inherits Window {
                 yt-playlist-search(q) => { root.music-yt-playlist-search(q); }
                 yt-playlist-set-sort(s) => { root.music-yt-playlist-set-sort(s); }
                 yt-playlist-play-all() => { root.music-yt-playlist-play-all(); }
+                yt-playlist-play-all-id(pid) => { root.music-yt-playlist-play-all-id(pid); }
+                yt-pl-playall-busy <=> root.music-yt-pl-playall-busy;
                 yt-import-url(u) => { root.music-yt-import-url(u); }
                 yt-import-playlist-file() => { root.music-yt-import-playlist-file(); }
                 yt-add-open <=> root.music-yt-add-open;

@@ -1272,7 +1272,20 @@ fn main() -> Result<()> {
     });
     // Play a track from the queue panel (index = playback position).
     let w = window.as_weak();
-    window.on_music_play_queue(move |i| { if let Some(w) = w.upgrade() { play_music_at(&w, i); } });
+    window.on_music_play_queue(move |i| {
+        let Some(w0) = w.upgrade() else { return; };
+        // YouTube queue active → jump to that video; else a library position.
+        if YT_QUEUE_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+            let id = { let mut g = match yt_queue().lock() { Ok(g) => g, Err(_) => return };
+                let i = i.max(0) as usize;
+                if i >= g.0.len() { return; }
+                g.1 = i; g.0[i].clone() };
+            if let Ok(mut g) = yt_cur_audio().lock() { *g = id.clone(); }
+            yt_play_audio(w.clone(), id);
+            return;
+        }
+        play_music_at(&w0, i);
+    });
     // Add current track to a playlist — open a picker listing manual playlists
     // (np.p5.music.playlists-builder).
     let w = window.as_weak();
@@ -1361,12 +1374,9 @@ fn main() -> Result<()> {
                 "youtube" => {
                     w.set_music_yt_channel_open(false);
                     w.set_music_yt_playlist_open(false);
-                    populate_yt_subs(&w);
-                    populate_yt_cached(&w);
-                    populate_yt_downloads(&w);
-                    populate_yt_recent(&w);
-                    populate_yt_recommended(&w);
-                    populate_yt_playlists(&w);
+                    // Warmed once (here or on Music-section enter); switching in/out
+                    // reuses the loaded models instead of re-decoding every thumb.
+                    warm_youtube(&w);
                 }
                 _ => {}
             }
@@ -1383,6 +1393,8 @@ fn main() -> Result<()> {
             populate_podcast_latest(&w0);
             populate_podcast_downloads(&w0);
             populate_podcast_trends(&w0);
+            // Warm YouTube in the background too, so its first open is instant.
+            warm_youtube(&w0);
         }
     });
     let w = window.as_weak();
@@ -3456,14 +3468,10 @@ fn main() -> Result<()> {
     window.on_music_yt_set_tab(move |t| {
         let Some(w0) = w.upgrade() else { return; };
         w0.set_music_yt_tab(t.clone());
-        match t.as_str() {
-            "subscriptions" => populate_yt_subs(&w0),
-            "cached"        => populate_yt_cached(&w0),
-            "downloads"     => populate_yt_downloads(&w0),
-            "playlists"     => populate_yt_playlists(&w0),
-            "home" => { populate_yt_subs(&w0); populate_yt_cached(&w0); populate_yt_downloads(&w0); populate_yt_recent(&w0); populate_yt_recommended(&w0); }
-            _ => {}
-        }
+        // Models are warmed once (warm_youtube) and refreshed by their own actions
+        // (download/sub/cache/remove), so plain sub-tab switches are instant — no
+        // re-decoding thumbnails on every click. First open warms if not already.
+        warm_youtube(&w0);
     });
     let w = window.as_weak();
     window.on_music_yt_back(move || {
@@ -3493,14 +3501,18 @@ fn main() -> Result<()> {
     window.on_music_yt_add_home_channel(move |id| {
         let Some(w0) = w.upgrade() else { return; };
         yt_add_home_channel(&id);
+        yt_reco_clear();              // Home rail changed → rebuild Recommended
         populate_yt_subs(&w0);
+        populate_yt_recommended(&w0);
     });
     // Unpin a channel from the Home rail (fired after the confirm dialog).
     let w = window.as_weak();
     window.on_music_yt_remove_home_channel(move |id| {
         let Some(w0) = w.upgrade() else { return; };
         yt_remove_home_channel(&id);
+        yt_reco_clear();
         populate_yt_subs(&w0);
+        populate_yt_recommended(&w0);
     });
     // Toggle the Subscriptions page filter (subscribed ↔ unsubscribed); persist.
     let w = window.as_weak();
@@ -4097,27 +4109,21 @@ fn main() -> Result<()> {
         w0.set_music_yt_playlist_sort(s.clone());
         yt_playlist_load(w.clone(), 0, s.to_string(), w0.get_music_yt_playlist_query().to_string());
     });
-    // Play all — queue every video in the open playlist (audio) and auto-advance.
+    // Play all (open detail page) — queue every video + play, with full metadata.
     let w = window.as_weak();
     window.on_music_yt_playlist_play_all(move || {
-        let weak = w.clone();
-        tokio::runtime::Handle::current().spawn(async move {
-            let (id, source_url, total) = { let g = yt_pl_open().lock().unwrap(); (g.id, g.source_url.clone(), g.total) };
-            let Ok(pool) = pool_for("youtube").await else { return; };
-            let ids: Vec<String> = if let Some(url) = &source_url {
-                // Remote: flat id list (cheap), fall back to whatever's cached.
-                let vids = ytdlp_playlist_window(url, 1, total.max(1)).await;
-                if !vids.is_empty() { vids.iter().map(|v| v.id.clone()).collect() }
-                else { tulipix_music::youtube::store::get_playlist_cache(&pool, id).await.unwrap_or_default()
-                    .iter().map(|c| c.video_id.clone()).collect() }
-            } else {
-                tulipix_music::youtube::store::playlist_items_page(&pool, id, 0, 100000).await.unwrap_or_default()
-                    .iter().map(|it| it.video_id.clone()).collect()
-            };
-            if ids.is_empty() { return; }
-            if let Ok(mut g) = yt_queue().lock() { *g = (ids.clone(), 0); }
-            yt_play_audio(weak, ids[0].clone());
-        });
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_yt_pl_playall_busy(true);
+        let id = yt_pl_open().lock().ok().map(|g| g.id).unwrap_or(-1);
+        if id < 0 { w0.set_music_yt_pl_playall_busy(false); return; }
+        yt_play_all_playlist(w.clone(), id);
+    });
+    // Play all from the playlist card (Playlists grid) — same, addressed by id.
+    let w = window.as_weak();
+    window.on_music_yt_playlist_play_all_id(move |pid| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_yt_pl_playall_busy(true);
+        yt_play_all_playlist(w.clone(), pid as i64);
     });
     // Import a YouTube playlist by URL (metadata + count only; videos lazy).
     let w = window.as_weak();
@@ -10610,6 +10616,8 @@ fn rebuild_browse_tab(w: &MainWindow, tab: &str) {
 /// reordered/explicit queue survives relaunch — np.p5.music.queue-persist) and
 /// falls back to the tracks after the current position (np.p4.music.queue).
 fn build_music_queue(w: &MainWindow) {
+    // YouTube playback owns the Up-next panel while active.
+    if YT_QUEUE_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) { build_yt_queue_panel(w); return; }
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("music").await else { return; };
@@ -14070,6 +14078,7 @@ fn play_music_at(w: &MainWindow, idx: i32) {
     };
     // Library track — not a YouTube video.
     if let Ok(mut g) = yt_cur_audio().lock() { g.clear(); }
+    YT_QUEUE_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
     w.set_music_yt_now_video(false);
     let my_gen = MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     // Stop the previous track.
@@ -15287,6 +15296,100 @@ fn yt_cached_to_data(c: &tulipix_music::youtube::store::CachedVideo) -> YtVidDat
     }
 }
 
+/// One-time YouTube warm-up. The six populate_yt_* calls each decode their rows'
+/// thumbnails from disk on the UI thread; re-running them on every tab switch is
+/// what made YouTube feel slow. We warm them once (on entering the Music section
+/// or first YouTube open) and rely on the per-action refreshers afterwards, so
+/// switching in/out of the YouTube tab is instant — like the other tabs.
+static YT_WARMED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+fn warm_youtube(w: &MainWindow) {
+    if YT_WARMED.swap(true, std::sync::atomic::Ordering::Relaxed) { return; }
+    populate_yt_subs(w);
+    populate_yt_cached(w);
+    populate_yt_downloads(w);
+    populate_yt_recent(w);
+    populate_yt_recommended(w);
+    populate_yt_playlists(w);
+}
+
+/// Collect EVERY video in a playlist (local items or remote flat list), remember
+/// their metadata so the queue panel shows real titles/thumbs, queue them, and
+/// start playback. Shared by the playlist card + detail "Play all" buttons.
+fn yt_play_all_playlist(weak: slint::Weak<MainWindow>, pl_id: i64) {
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("youtube").await else {
+            let _ = weak.upgrade_in_event_loop(|w| w.set_music_yt_pl_playall_busy(false)); return;
+        };
+        let (source_url, count) = match tulipix_music::youtube::store::get_playlist(&pool, pl_id).await {
+            Ok(Some((_, su, vc))) => (su, vc.unwrap_or(0)),
+            _ => (None, 0),
+        };
+        let mut datas: Vec<YtVidData> = if let Some(url) = &source_url {
+            let vids = ytdlp_playlist_window(url, 1, count.max(1)).await;
+            if !vids.is_empty() {
+                vids.iter().map(|v| YtVidData {
+                    id: v.id.clone(), title: v.title.clone(), channel: v.channel.clone(),
+                    meta: yt_fmt_meta(v.views, &v.uploaded), duration: yt_fmt_dur(v.duration),
+                    dur_s: v.duration, ..Default::default()
+                }).collect()
+            } else {
+                tulipix_music::youtube::store::get_playlist_cache(&pool, pl_id).await.unwrap_or_default()
+                    .iter().map(yt_channelvid_to_data).collect()
+            }
+        } else {
+            tulipix_music::youtube::store::playlist_items_page(&pool, pl_id, 0, 100000).await.unwrap_or_default()
+                .iter().map(|it| YtVidData {
+                    id: it.video_id.clone(), title: it.title.clone(), channel: it.channel.clone(),
+                    duration: yt_fmt_dur(it.duration), dur_s: it.duration, thumb: it.thumb_path.clone(),
+                    ..Default::default()
+                }).collect()
+        };
+        if datas.is_empty() {
+            let _ = weak.upgrade_in_event_loop(|w| w.set_music_yt_pl_playall_busy(false)); return;
+        }
+        yt_remember(&datas);
+        let ids: Vec<String> = datas.iter().map(|d| d.id.clone()).collect();
+        if let Ok(mut g) = yt_queue().lock() { *g = (ids.clone(), 0); }
+        yt_play_audio(weak.clone(), ids[0].clone());
+        // Background: fetch + cache thumbnails for every queued item that lacks
+        // one (YouTube's deterministic hqdefault URL — no yt-dlp call), persist
+        // local-playlist rows to the DB, then refresh the queue panel.
+        let is_local = source_url.is_none();
+        tokio::runtime::Handle::current().spawn(async move {
+            let client = reqwest::Client::new();
+            let dir = yt_thumb_dir();
+            let pool2 = pool_for("youtube").await.ok();
+            let mut changed = false;
+            for d in datas.iter_mut() {
+                if !d.thumb.is_empty() && std::path::Path::new(&d.thumb).exists() { continue; }
+                let url = format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", d.id);
+                if let Ok(path) = tulipix_music::youtube::thumbs::fetch_png(&client, &dir, &url).await {
+                    if path.is_empty() { continue; }
+                    d.thumb = path.clone();
+                    changed = true;
+                    if is_local {
+                        if let Some(p) = &pool2 {
+                            let _ = tulipix_music::youtube::store::update_playlist_item_meta(
+                                p, pl_id, &d.id, &d.title, &d.channel, &path, d.dur_s).await;
+                        }
+                    }
+                }
+            }
+            if changed {
+                yt_remember(&datas);
+                let _ = weak.upgrade_in_event_loop(|w| if YT_QUEUE_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) { build_yt_queue_panel(&w); });
+            }
+        });
+    });
+}
+
+/// Drop the cached Recommended picks (memory + disk) so the next populate
+/// refetches — used when the Home rail's pinned channels change.
+fn yt_reco_clear() {
+    if let Ok(mut g) = yt_reco().lock() { g.clear(); }
+    let _ = std::fs::remove_file(yt_reco_cache_path());
+}
+
 fn yt_reco() -> &'static std::sync::Mutex<Vec<YtVidData>> {
     static S: OnceLock<std::sync::Mutex<Vec<YtVidData>>> = OnceLock::new();
     S.get_or_init(|| std::sync::Mutex::new(Vec::new()))
@@ -15307,13 +15410,19 @@ fn yt_reco_cache_path() -> std::path::PathBuf {
     tulipix_core::paths::cache_dir().unwrap_or_else(std::env::temp_dir).join("youtube_reco.json")
 }
 #[derive(serde::Serialize, serde::Deserialize, Default)]
-struct YtRecoCache { fetched: u64, items: Vec<YtVidData> }
+struct YtRecoCache {
+    fetched: u64,
+    items: Vec<YtVidData>,
+    // Source channel ids the picks were built from. When the Home rail changes,
+    // this no longer matches → the cache is ignored and Recommended refetches.
+    #[serde(default)] sources: Vec<String>,
+}
 
 fn yt_reco_load() -> Option<YtRecoCache> {
     serde_json::from_str(&std::fs::read_to_string(yt_reco_cache_path()).ok()?).ok()
 }
-fn yt_reco_save(items: &[YtVidData]) {
-    let c = YtRecoCache { fetched: yt_now_secs(), items: items.to_vec() };
+fn yt_reco_save(items: &[YtVidData], sources: &[String]) {
+    let c = YtRecoCache { fetched: yt_now_secs(), items: items.to_vec(), sources: sources.to_vec() };
     if let Ok(j) = serde_json::to_string(&c) {
         let p = yt_reco_cache_path();
         if let Some(dir) = p.parent() { let _ = std::fs::create_dir_all(dir); }
@@ -15322,29 +15431,34 @@ fn yt_reco_save(items: &[YtVidData]) {
 }
 
 fn populate_yt_recommended(w: &MainWindow) {
-    // 1. In-memory (this session) — instant, no I/O.
-    let cached = yt_reco().lock().map(|g| g.clone()).unwrap_or_default();
-    if !cached.is_empty() { w.set_music_yt_recommended(yt_video_model(&cached)); return; }
-    // 2. On-disk daily cache — reuse if younger than the TTL, no network.
-    if let Some(c) = yt_reco_load() {
-        if !c.items.is_empty() && yt_now_secs().saturating_sub(c.fetched) < YT_RECO_TTL {
-            yt_remember(&c.items);
-            if let Ok(mut g) = yt_reco().lock() { *g = c.items.clone(); }
-            w.set_music_yt_recommended(yt_video_model(&c.items));
-            return;
-        }
-    }
-    // 3. Stale or absent — fetch the day's picks from subs and persist them.
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("youtube").await else { return; };
-        let subs: Vec<_> = tulipix_music::youtube::store::list_subs(&pool).await.unwrap_or_default()
-            .into_iter().filter(|s| s.subscribed).collect();
-        if subs.is_empty() { return; }
+        let all_subs = tulipix_music::youtube::store::list_subs(&pool).await.unwrap_or_default();
+        // Mirror the Home right rail: pinned channels if any are pinned, else the
+        // subscribed channels. The exact set is the cache key.
+        let pins = yt_home_channels();
+        let chans: Vec<_> = if !pins.is_empty() {
+            pins.iter().filter_map(|pid| all_subs.iter().find(|s| &s.channel_id == pid).cloned()).collect()
+        } else {
+            all_subs.into_iter().filter(|s| s.subscribed).collect()
+        };
+        let want: Vec<String> = chans.iter().take(10).map(|s| s.channel_id.clone()).collect();
+        if want.is_empty() { return; }
+        // Reuse the cache only when it was built from the SAME channels and is
+        // still fresh; a changed Home rail forces an immediate refetch.
+        if let Some(c) = yt_reco_load() {
+            if !c.items.is_empty() && c.sources == want && yt_now_secs().saturating_sub(c.fetched) < YT_RECO_TTL {
+                let items = c.items.clone();
+                yt_remember(&items);
+                let _ = weak.upgrade_in_event_loop(move |w| w.set_music_yt_recommended(yt_video_model(&items)));
+                return;
+            }
+        }
         let client = reqwest::Client::new();
         let dir = yt_thumb_dir();
         let mut out: Vec<YtVidData> = Vec::new();
-        for s in subs.iter().take(10) {
+        for s in chans.iter().take(10) {
             let vids = ytdlp_channel_latest(&s.channel_id, 1).await;
             if let Some(v) = vids.first() {
                 let mut d = yt_vid_data(&client, &dir, v).await;
@@ -15356,8 +15470,7 @@ fn populate_yt_recommended(w: &MainWindow) {
         }
         if out.is_empty() { return; }
         yt_remember(&out);
-        yt_reco_save(&out);
-        if let Ok(mut g) = yt_reco().lock() { *g = out.clone(); }
+        yt_reco_save(&out, &want);
         let _ = weak.upgrade_in_event_loop(move |w| w.set_music_yt_recommended(yt_video_model(&out)));
     });
 }
@@ -15983,6 +16096,30 @@ fn yt_queue() -> &'static std::sync::Mutex<(Vec<String>, usize)> {
     S.get_or_init(|| std::sync::Mutex::new((Vec::new(), 0)))
 }
 
+/// True while the visible Up-next panel reflects the YouTube queue (set on yt
+/// playback, cleared when a library track plays). Lets the shared queue panel +
+/// row-click route to YouTube instead of the music library.
+static YT_QUEUE_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Fill the player's Up-next panel from the current YouTube queue (titles +
+/// channel + thumb from the in-memory video cache). `index` = queue position.
+fn build_yt_queue_panel(w: &MainWindow) {
+    let (ids, _cur) = yt_queue().lock().map(|g| (g.0.clone(), g.1)).unwrap_or_default();
+    let cur_id = yt_cur_audio().lock().map(|g| g.clone()).unwrap_or_default();
+    let ids: Vec<String> = if ids.is_empty() { if cur_id.is_empty() { vec![] } else { vec![cur_id] } } else { ids };
+    let rows: Vec<MusicSongRow> = ids.iter().enumerate().map(|(i, id)| {
+        let m = yt_lookup(id).unwrap_or_default();
+        MusicSongRow {
+            thumb: yt_img(&m.thumb),
+            title: if m.title.is_empty() { "Video".into() } else { m.title.into() },
+            artist: m.channel.into(),
+            duration: m.duration.into(),
+            index: i as i32,
+        }
+    }).collect();
+    w.set_music_queue_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+}
+
 /// Stream + play one YouTube video's audio (cached file preferred), caching the
 /// opus in the background. Shared by single taps and queue advance.
 fn yt_play_audio(weak: slint::Weak<MainWindow>, id: String) {
@@ -16115,6 +16252,10 @@ fn yt_play_local_video(weak: slint::Weak<MainWindow>, path: String) {
 fn yt_play_inapp(w: &MainWindow, id: String, path: String, title: String, sub: String, thumb: String, start: f64) {
     if let Ok(mut g) = yt_cur_audio().lock() { *g = id; }
     w.set_music_yt_now_video(true);
+    // Reflect the YouTube queue in the shared Up-next panel + route row clicks.
+    YT_QUEUE_ACTIVE.store(true, std::sync::atomic::Ordering::Relaxed);
+    w.set_music_yt_pl_playall_busy(false); // playback started → clear the loading fill
+    build_yt_queue_panel(w);
     let my_gen = MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     if let Ok(mut g) = music_proc().lock() {
         if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }

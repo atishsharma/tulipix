@@ -531,7 +531,7 @@ component MusicTab inherits HdrChip {
     accent: #ec4899;
     dark: true;
     light-theme: MusicTheme.light;
-    min-width: 86px;
+    min-width: 104px;
     // Theme-aware surfaces so the row-2 tabs read in light mode too.
     dk-idle: MusicTheme.surf1;
     dk-hover: MusicTheme.hov2;
@@ -1330,7 +1330,7 @@ component YtPlaylistCard inherits Rectangle {
     callback open();
     callback play-all();
     callback remove();
-    height: self.width * 9 / 16 + 112px;
+    height: self.width * 9 / 16 + 126px;
     property <bool> hovered: ph.has-hover || pa.hovering || rb.hovering;
     GlassCard { width: 100%; height: 100%; radius: 14px; clip-content: true; hot: root.hovered; wash-bottom-inset: 48px;
         ph := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
@@ -1340,7 +1340,14 @@ component YtPlaylistCard inherits Rectangle {
                 Rectangle { height: 34px;
                     Text { width: 100%; text: p.name; color: MusicTheme.fg; font-size: 14px; font-weight: 700;
                         wrap: word-wrap; overflow: elide; vertical-alignment: top; } }
-                Text { height: 14px; text: p.sub; color: MusicTheme.fg-dim; font-size: 10px; overflow: elide; }
+                // Total-videos count — gradient-outlined pill, larger text.
+                HorizontalLayout { alignment: start;
+                    Rectangle { height: 24px; border-radius: 12px; background: @linear-gradient(120deg, #ef4444, #f59e0b);
+                        HorizontalLayout { padding: 1.5px;
+                            Rectangle { border-radius: 10.5px; background: MusicTheme.surf-header;
+                                HorizontalLayout { padding-left: 10px; padding-right: 10px;
+                                    Text { text: p.sub; font-size: 12px; font-weight: 800; vertical-alignment: center;
+                                        color: MusicTheme.fg; } } } } } }
                 HorizontalLayout { height: 30px; spacing: 6px;
                     pa := YtBtn { horizontal-stretch: 1; variant: "primary"; icon: Icons.play; label: "Play all"; clicked => { root.play-all(); } }
                     rb := YtBtn { width: 40px; variant: "danger"; icon: Icons.trash; clicked => { root.remove(); } } } }
@@ -1869,6 +1876,8 @@ export component MusicPage inherits Rectangle {
     callback yt-playlist-search(string);
     callback yt-playlist-set-sort(string);
     callback yt-playlist-play-all();
+    callback yt-playlist-play-all-id(int);          // play-all straight from a playlist card
+    in-out property <bool> yt-pl-playall-busy: false; // Play-all loading → progress fill
     // Playlist import popup (URL or Takeout file).
     in-out property <bool> yt-pl-import-open: false;
     in-out property <string> yt-pl-import-url: "";
@@ -2648,15 +2657,8 @@ export component MusicPage inherits Rectangle {
                                 border-width: 1px; border-color: MusicTheme.line;
                                 bpl := TouchArea { mouse-cursor: pointer; clicked => { root.yt-back(); } }
                                 HorizontalLayout { alignment: center; spacing: 5px; VerticalLayout { alignment: center; AppIcon { source: Icons.chevron-left; tint: MusicTheme.fg2; width: 12px; height: 12px; } } Text { text: "Back"; color: MusicTheme.fg2; font-size: 12px; vertical-alignment: center; } } } }
-                        VerticalLayout { alignment: center;
-                            Rectangle { width: 104px; height: 38px; border-radius: 9px;
-                                background: ppa.has-hover ? @linear-gradient(120deg, #ff4b4b, #e01313) : @linear-gradient(120deg, #ef4444, #f59e0b);
-                                drop-shadow-blur: ppa.has-hover ? 16px : 7px; drop-shadow-color: #ef4444aa;
-                                ppa := TouchArea { mouse-cursor: pointer; clicked => { root.yt-playlist-play-all(); } }
-                                HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.play; tint: #ffffff; width: 14px; height: 14px; } } Text { text: "Play all"; color: #ffffff; font-size: 13px; font-weight: 700; vertical-alignment: center; } } } }
-                        VerticalLayout { alignment: center; spacing: 2px; horizontal-stretch: 1;
-                            Text { text: root.yt-playlist-title; color: MusicTheme.fg; font-size: 18px; font-weight: 800; overflow: elide; }
-                            Text { text: root.yt-playlist-sub; color: MusicTheme.fg-dim; font-size: 11px; } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 1;
+                            Text { text: root.yt-playlist-title; color: MusicTheme.fg; font-size: 18px; font-weight: 800; overflow: elide; } }
                         // search — fixed compact width, pinned to the right next to Sort
                         Rectangle { width: 240px; height: 38px; border-radius: 9px; background: MusicTheme.surf1;
                             border-width: 1px; border-color: MusicTheme.line;
@@ -2672,6 +2674,24 @@ export component MusicPage inherits Rectangle {
                                     Rectangle { width: 24px; height: 24px; border-radius: 12px; background: pxb.has-hover ? #ef4444 : transparent;
                                         pxb := TouchArea { mouse-cursor: pointer; clicked => { root.yt-playlist-query = ""; root.yt-playlist-search(""); } }
                                         AppIcon { source: Icons.x; tint: pxb.has-hover ? #ffffff : MusicTheme.fg-mute; width: 11px; height: 11px; } } } } }
+                        // Total-videos count — gradient-outlined pill next to Play all.
+                        VerticalLayout { alignment: center;
+                            Rectangle { height: 26px; border-radius: 13px; background: @linear-gradient(120deg, #ef4444, #f59e0b);
+                                HorizontalLayout { padding: 1.5px;
+                                    Rectangle { border-radius: 11.5px; background: MusicTheme.surf-header;
+                                        HorizontalLayout { padding-left: 11px; padding-right: 11px;
+                                            Text { text: root.yt-playlist-sub; color: MusicTheme.fg; font-size: 12px; font-weight: 800; vertical-alignment: center; } } } } } }
+                        // Play all — queue every video, then play. Shows a loading sweep meanwhile.
+                        VerticalLayout { alignment: center;
+                            Rectangle { width: 116px; height: 38px; border-radius: 9px; clip: true;
+                                background: ppa.has-hover ? @linear-gradient(120deg, #ff4b4b, #e01313) : @linear-gradient(120deg, #ef4444, #f59e0b);
+                                drop-shadow-blur: ppa.has-hover ? 16px : 7px; drop-shadow-color: #ef4444aa;
+                                if root.yt-pl-playall-busy: Rectangle {
+                                    property <float> t: Math.mod(animation-tick() / 1200ms, 1.0);
+                                    x: (parent.width + 90px) * t - 90px; width: 90px; height: 100%;
+                                    background: @linear-gradient(90deg, #ffffff00, #ffffff66, #ffffff00); }
+                                ppa := TouchArea { mouse-cursor: pointer; clicked => { root.yt-pl-playall-busy = true; root.yt-playlist-play-all(); } }
+                                HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.play; tint: #ffffff; width: 14px; height: 14px; } } Text { text: root.yt-pl-playall-busy ? "Loading…" : "Play all"; color: #ffffff; font-size: 13px; font-weight: 700; vertical-alignment: center; } } } }
                         VerticalLayout { alignment: center; Text { text: "Sort"; color: MusicTheme.fg-mute; font-size: 12px; vertical-alignment: center; } }
                         VerticalLayout { alignment: center; SortChip { label: "Default"; active: root.yt-playlist-sort == "default"; clicked => { root.yt-playlist-set-sort("default"); } } }
                         VerticalLayout { alignment: center; SortChip { label: "Title"; active: root.yt-playlist-sort == "title"; clicked => { root.yt-playlist-set-sort("title"); } } }
@@ -2929,13 +2949,13 @@ export component MusicPage inherits Rectangle {
                     Rectangle { horizontal-stretch: 1;
                         property <int> cols: 4;
                         property <length> cw: self.width / cols;
-                        property <length> ch: cw * 9 / 16 + 112px;
+                        property <length> ch: cw * 9 / 16 + 126px;
                         height: Math.max(1, Math.ceil(root.yt-playlists.length / cols)) * ch;
                         for p[idx] in root.yt-playlists: YtPlaylistCard {
                             x: Math.mod(idx, cols) * cw + 6px; y: Math.floor(idx / cols) * ch;
                             width: cw - 12px; p: p;
                             open => { root.yt-open-playlist(p.id); }
-                            play-all => { root.yt-open-playlist(p.id); }
+                            play-all => { root.yt-pl-playall-busy = true; root.yt-playlist-play-all-id(p.id); }
                             remove => { root.yt-pl-del-id = p.id; root.yt-pl-del-open = true; } } } }
             }
 
