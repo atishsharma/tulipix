@@ -23,15 +23,20 @@ CREATE TABLE IF NOT EXISTS yt_cached (
     cached_at  INTEGER NOT NULL
 );
 
+-- One row per (video, quality): the same video downloaded at different
+-- resolutions/formats keeps a distinct entry (audio, best, 1080p, 720p, …).
 CREATE TABLE IF NOT EXISTS yt_downloaded (
-    video_id      TEXT PRIMARY KEY,
+    video_id      TEXT NOT NULL,
     title         TEXT,
     channel       TEXT,
     thumb_path    TEXT,
     media_path    TEXT,
     duration      INTEGER,
     kind          TEXT NOT NULL DEFAULT 'audio',   -- audio | video
-    downloaded_at INTEGER NOT NULL
+    fmt           TEXT NOT NULL DEFAULT '',        -- container badge (MKV / OPUS)
+    quality       TEXT NOT NULL DEFAULT '',        -- Audio | Best | 1080p | 720p …
+    downloaded_at INTEGER NOT NULL,
+    PRIMARY KEY (video_id, quality)
 );
 
 CREATE TABLE IF NOT EXISTS yt_recent_searches (
@@ -118,6 +123,39 @@ pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     // Per-download container + quality badges (e.g. "MKV" / "1080p", "OPUS" / "Audio").
     let _ = sqlx::query("ALTER TABLE yt_downloaded ADD COLUMN fmt TEXT").execute(pool).await;
     let _ = sqlx::query("ALTER TABLE yt_downloaded ADD COLUMN quality TEXT").execute(pool).await;
+    // v1: rebuild yt_downloaded with a composite (video_id, quality) primary key so
+    // re-downloading a video at a different resolution no longer overwrites the
+    // previous file — each resolution keeps its own row. Old single-PK tables (and
+    // a freshly-created composite one) both pass through harmlessly once.
+    let ver: i64 = sqlx::query_scalar("PRAGMA user_version").fetch_one(pool).await.unwrap_or(0);
+    if ver < 1 {
+        let _ = sqlx::raw_sql(
+            r#"
+            CREATE TABLE yt_downloaded_v1 (
+                video_id      TEXT NOT NULL,
+                title         TEXT,
+                channel       TEXT,
+                thumb_path    TEXT,
+                media_path    TEXT,
+                duration      INTEGER,
+                kind          TEXT NOT NULL DEFAULT 'audio',
+                fmt           TEXT NOT NULL DEFAULT '',
+                quality       TEXT NOT NULL DEFAULT '',
+                downloaded_at INTEGER NOT NULL,
+                PRIMARY KEY (video_id, quality)
+            );
+            INSERT OR IGNORE INTO yt_downloaded_v1
+                SELECT video_id, title, channel, thumb_path, media_path, duration, kind,
+                       COALESCE(fmt,''), COALESCE(quality,''), downloaded_at
+                FROM yt_downloaded;
+            DROP TABLE yt_downloaded;
+            ALTER TABLE yt_downloaded_v1 RENAME TO yt_downloaded;
+            PRAGMA user_version = 1;
+            "#,
+        )
+        .execute(pool)
+        .await;
+    }
     Ok(())
 }
 
@@ -318,6 +356,11 @@ pub async fn push_recent_search(pool: &SqlitePool, query: &str) -> Result<()> {
     Ok(())
 }
 
+pub async fn clear_recent_searches(pool: &SqlitePool) -> Result<()> {
+    sqlx::query("DELETE FROM yt_recent_searches").execute(pool).await?;
+    Ok(())
+}
+
 pub async fn list_recent_searches(pool: &SqlitePool, limit: i64) -> Result<Vec<String>> {
     Ok(
         sqlx::query_scalar("SELECT query FROM yt_recent_searches ORDER BY searched_at DESC, rowid DESC LIMIT ?")
@@ -414,7 +457,7 @@ pub async fn record_download(
 ) -> Result<()> {
     sqlx::query(
         "INSERT INTO yt_downloaded (video_id,title,channel,thumb_path,media_path,duration,kind,fmt,quality,downloaded_at) VALUES (?,?,?,?,?,?,?,?,?,?)
-         ON CONFLICT(video_id) DO UPDATE SET media_path = excluded.media_path, downloaded_at = excluded.downloaded_at, kind = excluded.kind, fmt = excluded.fmt, quality = excluded.quality",
+         ON CONFLICT(video_id,quality) DO UPDATE SET media_path = excluded.media_path, downloaded_at = excluded.downloaded_at, kind = excluded.kind, fmt = excluded.fmt, title = excluded.title, channel = excluded.channel, thumb_path = excluded.thumb_path",
     )
     .bind(id)
     .bind(title)
@@ -471,6 +514,27 @@ pub async fn remove_download(pool: &SqlitePool, id: &str) -> Result<Option<Strin
         .execute(pool)
         .await?;
     Ok(path)
+}
+
+/// Remove a single download identified by its (unique) media file path — the way
+/// the Downloads grid targets one specific resolution row without touching the
+/// video's other downloaded resolutions.
+pub async fn remove_download_by_path(pool: &SqlitePool, media_path: &str) -> Result<Option<String>> {
+    sqlx::query("DELETE FROM yt_downloaded WHERE media_path = ?")
+        .bind(media_path)
+        .execute(pool)
+        .await?;
+    Ok(Some(media_path.to_string()))
+}
+
+/// Wipe every download row; returns the media paths so the caller can delete the
+/// files on disk.
+pub async fn clear_downloads(pool: &SqlitePool) -> Result<Vec<String>> {
+    let paths: Vec<String> = sqlx::query_scalar("SELECT media_path FROM yt_downloaded")
+        .fetch_all(pool)
+        .await?;
+    sqlx::query("DELETE FROM yt_downloaded").execute(pool).await?;
+    Ok(paths)
 }
 
 pub async fn create_playlist(pool: &SqlitePool, name: &str) -> Result<i64> {
@@ -726,10 +790,32 @@ mod tests {
     #[tokio::test]
     async fn downloads_add_and_remove() {
         let (_t, pool) = open_pool().await;
-        record_download(&pool, "v1", "T", "C", "/t.png", "/m.opus", 120, "audio").await.unwrap();
+        record_download(&pool, "v1", "T", "C", "/t.png", "/m.opus", 120, "audio", "OPUS", "Audio").await.unwrap();
         assert_eq!(list_downloads(&pool, 10).await.unwrap().len(), 1);
         let path = remove_download(&pool, "v1").await.unwrap();
         assert_eq!(path.as_deref(), Some("/m.opus"));
+        assert!(list_downloads(&pool, 10).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn downloads_keep_each_resolution() {
+        let (_t, pool) = open_pool().await;
+        // Same video, three qualities → three distinct rows (not overwritten).
+        record_download(&pool, "v1", "T", "C", "/t.png", "/v1.audio.opus", 120, "audio", "OPUS", "Audio").await.unwrap();
+        record_download(&pool, "v1", "T", "C", "/t.png", "/v1.1080p.mkv", 120, "video", "MKV", "1080p").await.unwrap();
+        record_download(&pool, "v1", "T", "C", "/t.png", "/v1.720p.mkv", 120, "video", "MKV", "720p").await.unwrap();
+        assert_eq!(list_downloads(&pool, 10).await.unwrap().len(), 3);
+        // Re-downloading the same quality updates in place (no duplicate).
+        record_download(&pool, "v1", "T", "C", "/t.png", "/v1.720p.mkv", 120, "video", "MKV", "720p").await.unwrap();
+        assert_eq!(list_downloads(&pool, 10).await.unwrap().len(), 3);
+        // Path-targeted removal drops only that resolution.
+        remove_download_by_path(&pool, "/v1.720p.mkv").await.unwrap();
+        let left = list_downloads(&pool, 10).await.unwrap();
+        assert_eq!(left.len(), 2);
+        assert!(left.iter().all(|d| d.media_path != "/v1.720p.mkv"));
+        // Clear removes the rest + returns paths.
+        let paths = clear_downloads(&pool).await.unwrap();
+        assert_eq!(paths.len(), 2);
         assert!(list_downloads(&pool, 10).await.unwrap().is_empty());
     }
 

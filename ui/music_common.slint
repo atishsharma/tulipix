@@ -137,6 +137,7 @@ export struct YtVideo {
     index: int,          // position into the page's parallel video vec
     fmt: string,         // download container badge ("" = none)
     quality: string,     // download quality badge ("" = none)
+    path: string,        // downloaded file path (unique per-resolution row id; "" = not a download)
 }
 
 // One subscribed channel — Home right rail + Subscriptions grid.

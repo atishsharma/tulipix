@@ -1069,6 +1069,7 @@ component YtThumb inherits Rectangle {
     in property <string> duration: "";
     in property <string> fmt: "";       // download container badge (top-left)
     in property <string> quality: "";   // download quality badge (top-right)
+    in property <string> count: "";     // gradient count pill (top-right, playlists)
     in property <bool> hot: false;
     clip: true;
     Image { source: root.src; image-fit: cover;
@@ -1100,6 +1101,16 @@ component YtThumb inherits Rectangle {
         background: #000000cc; drop-shadow-blur: 6px; drop-shadow-color: #000000aa;
         qlt := Text { text: root.quality; color: #f3f3f3; font-size: 9px; font-weight: 800;
             horizontal-alignment: center; vertical-alignment: center; } }
+    // Count pill (Playlists) — gradient-outlined, top-right over the cover.
+    if root.count != "": Rectangle { x: parent.width - self.width - 6px; y: 6px;
+        width: cnt.preferred-width + 22px; height: 22px; border-radius: 11px;
+        background: @linear-gradient(120deg, #ef4444, #f59e0b);
+        drop-shadow-blur: 7px; drop-shadow-color: #000000aa;
+        Rectangle { width: parent.width - 3px; height: parent.height - 3px; border-radius: 9.5px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: MusicTheme.surf-header;
+            cnt := Text { text: root.count; font-size: 11px; font-weight: 800; color: MusicTheme.fg;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } }
 }
 
 // Polished action button. Variants pop in every theme:
@@ -1330,24 +1341,17 @@ component YtPlaylistCard inherits Rectangle {
     callback open();
     callback play-all();
     callback remove();
-    height: self.width * 9 / 16 + 126px;
+    height: self.width * 9 / 16 + 95px;
     property <bool> hovered: ph.has-hover || pa.hovering || rb.hovering;
     GlassCard { width: 100%; height: 100%; radius: 14px; clip-content: true; hot: root.hovered; wash-bottom-inset: 48px;
         ph := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
         VerticalLayout { spacing: 0;
-            YtThumb { height: root.width * 9 / 16; src: p.cover; hot: root.hovered; }
+            // Total-videos count rides the cover, top-right.
+            YtThumb { height: root.width * 9 / 16; src: p.cover; count: p.sub; hot: root.hovered; }
             VerticalLayout { padding: 10px; spacing: 7px;
                 Rectangle { height: 34px;
                     Text { width: 100%; text: p.name; color: MusicTheme.fg; font-size: 14px; font-weight: 700;
                         wrap: word-wrap; overflow: elide; vertical-alignment: top; } }
-                // Total-videos count — gradient-outlined pill, larger text.
-                HorizontalLayout { alignment: start;
-                    Rectangle { height: 24px; border-radius: 12px; background: @linear-gradient(120deg, #ef4444, #f59e0b);
-                        HorizontalLayout { padding: 1.5px;
-                            Rectangle { border-radius: 10.5px; background: MusicTheme.surf-header;
-                                HorizontalLayout { padding-left: 10px; padding-right: 10px;
-                                    Text { text: p.sub; font-size: 12px; font-weight: 800; vertical-alignment: center;
-                                        color: MusicTheme.fg; } } } } } }
                 HorizontalLayout { height: 30px; spacing: 6px;
                     pa := YtBtn { horizontal-stretch: 1; variant: "primary"; icon: Icons.play; label: "Play all"; clicked => { root.play-all(); } }
                     rb := YtBtn { width: 40px; variant: "danger"; icon: Icons.trash; clicked => { root.remove(); } } } }
@@ -1944,6 +1948,7 @@ export component MusicPage inherits Rectangle {
     callback yt-search(string);
     callback yt-search-more();
     callback yt-recent-click(string);
+    callback yt-clear-recent();                      // wipe the Home recent-search list
     callback yt-open-channel(string);                // channel-id
     callback yt-channel-page-go(int);                // +1 / -1
     callback yt-channel-toggle-sub();
@@ -1956,6 +1961,8 @@ export component MusicPage inherits Rectangle {
     callback yt-remove-download(string);
     callback yt-clear-cached();
     callback yt-clear-downloads();
+    in-out property <bool> yt-cached-clear-open: false;   // Clear-cache confirm dialog
+    in-out property <bool> yt-dl-clear-open: false;       // Clear-downloads confirm dialog
     callback yt-open-playlist(int);
     callback yt-create-playlist(string);
     callback yt-delete-playlist(int);
@@ -2575,35 +2582,53 @@ export component MusicPage inherits Rectangle {
                                         if root.yt-channel-query == "": Text { text: "Search this channel…"; color: MusicTheme.fg-mute; font-size: 12px;
                                             vertical-alignment: center; height: 100%; visible: !cqi.has-focus; } } } } }
                         VerticalLayout { alignment: center;
-                            Rectangle { width: 64px; height: 36px; border-radius: 9px; background: csb.has-hover ? #f87171 : #ef4444;
+                            Rectangle { width: 64px; height: 36px; border-radius: 9px;
+                                background: csb.has-hover ? @linear-gradient(120deg, #fb7185, #ef4444) : @linear-gradient(120deg, #ef4444, #ec4899);
+                                drop-shadow-blur: csb.has-hover ? 14px : 6px; drop-shadow-color: #ef4444aa;
+                                animate drop-shadow-blur { duration: 140ms; easing: ease-out; }
                                 csb := TouchArea { mouse-cursor: pointer; clicked => { root.yt-channel-search(root.yt-channel-query); } }
                                 Text { text: "Search"; color: #ffffff; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
                         VerticalLayout { alignment: center;
-                            Rectangle { width: 54px; height: 36px; border-radius: 9px; background: ccb.has-hover ? MusicTheme.hov2 : MusicTheme.surf1;
-                                border-width: 1px; border-color: MusicTheme.line;
+                            Rectangle { width: 54px; height: 36px; border-radius: 9px; background: ccb.has-hover ? #ef44441e : MusicTheme.surf1;
+                                border-width: 1px; border-color: ccb.has-hover ? #ef444466 : MusicTheme.line;
+                                animate background, border-color { duration: 140ms; easing: ease-out; }
                                 ccb := TouchArea { mouse-cursor: pointer; clicked => { root.yt-channel-query = ""; root.yt-channel-search(""); } }
-                                Text { text: "Clear"; color: MusicTheme.fg2; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } } }
+                                Text { text: "Clear"; color: ccb.has-hover ? #ef4444 : MusicTheme.fg2; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } } }
+                        // Latest — re-fetch + show this channel's newest uploads (blue toggle).
                         VerticalLayout { alignment: center;
-                            Rectangle { width: 90px; height: 36px; border-radius: 9px; background: rfb.has-hover ? MusicTheme.hov2 : MusicTheme.surf1;
-                                border-width: 1px; border-color: root.yt-channel-mode == "latest" ? #ef444488 : MusicTheme.line;
+                            Rectangle { width: 90px; height: 36px; border-radius: 9px;
+                                background: root.yt-channel-mode == "latest" ? @linear-gradient(120deg, #3b82f6, #06b6d4)
+                                          : (rfb.has-hover ? #3b82f622 : MusicTheme.surf1);
+                                border-width: 1px;
+                                border-color: root.yt-channel-mode == "latest" ? transparent : (rfb.has-hover ? #3b82f6aa : MusicTheme.line);
+                                drop-shadow-blur: root.yt-channel-mode == "latest" ? 13px : 0px; drop-shadow-color: #3b82f6aa;
+                                animate background, border-color, drop-shadow-blur { duration: 140ms; easing: ease-out; }
                                 rfb := TouchArea { mouse-cursor: pointer; clicked => { root.yt-channel-refresh(); } }
-                                HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.refresh-cw; tint: MusicTheme.fg2; width: 11px; height: 11px; } } Text { text: "Refresh"; color: MusicTheme.fg2; font-size: 11px; font-weight: 600; vertical-alignment: center; } } } }
-                        // Popular — fetch + store this channel's top-10 most-watched (on demand).
+                                HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.refresh-cw; tint: root.yt-channel-mode == "latest" ? #ffffff : MusicTheme.fg2; width: 11px; height: 11px; } } Text { text: "Latest"; color: root.yt-channel-mode == "latest" ? #ffffff : MusicTheme.fg2; font-size: 11px; font-weight: 700; vertical-alignment: center; } } } }
+                        // Popular — fetch + store this channel's top-10 most-watched (flame toggle).
                         VerticalLayout { alignment: center;
                             Rectangle { width: 96px; height: 36px; border-radius: 9px;
-                                background: root.yt-channel-mode == "popular" ? #ef4444 : (pob.has-hover ? MusicTheme.hov2 : MusicTheme.surf1);
-                                border-width: 1px; border-color: root.yt-channel-mode == "popular" ? transparent : MusicTheme.line;
+                                background: root.yt-channel-mode == "popular" ? @linear-gradient(120deg, #f59e0b, #ef4444)
+                                          : (pob.has-hover ? #ef444422 : MusicTheme.surf1);
+                                border-width: 1px;
+                                border-color: root.yt-channel-mode == "popular" ? transparent : (pob.has-hover ? #ef4444aa : MusicTheme.line);
+                                drop-shadow-blur: root.yt-channel-mode == "popular" ? 13px : 0px; drop-shadow-color: #ef4444aa;
+                                animate background, border-color, drop-shadow-blur { duration: 140ms; easing: ease-out; }
                                 pob := TouchArea { mouse-cursor: pointer; clicked => { root.yt-channel-popular(); } }
-                                HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.flame; tint: root.yt-channel-mode == "popular" ? #ffffff : MusicTheme.fg2; width: 12px; height: 12px; } } Text { text: "Popular"; color: root.yt-channel-mode == "popular" ? #ffffff : MusicTheme.fg2; font-size: 11px; font-weight: 600; vertical-alignment: center; } } } }
+                                HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.flame; tint: root.yt-channel-mode == "popular" ? #ffffff : MusicTheme.fg2; width: 12px; height: 12px; } } Text { text: "Popular"; color: root.yt-channel-mode == "popular" ? #ffffff : MusicTheme.fg2; font-size: 11px; font-weight: 700; vertical-alignment: center; } } } }
                         VerticalLayout { alignment: center;
                             Rectangle { width: 70px; height: 36px; border-radius: 9px; background: cbb.has-hover ? MusicTheme.hov2 : MusicTheme.surf1;
-                                border-width: 1px; border-color: MusicTheme.line;
+                                border-width: 1px; border-color: cbb.has-hover ? #a855f7aa : MusicTheme.line;
+                                animate border-color { duration: 140ms; easing: ease-out; }
                                 cbb := TouchArea { mouse-cursor: pointer; clicked => { root.yt-back(); } }
-                                HorizontalLayout { alignment: center; spacing: 5px; VerticalLayout { alignment: center; AppIcon { source: Icons.chevron-left; tint: MusicTheme.fg2; width: 11px; height: 11px; } } Text { text: "Back"; color: MusicTheme.fg2; font-size: 11px; font-weight: 600; vertical-alignment: center; } } } }
+                                HorizontalLayout { alignment: center; spacing: 5px; VerticalLayout { alignment: center; AppIcon { source: Icons.chevron-left; tint: cbb.has-hover ? #a855f7 : MusicTheme.fg2; width: 11px; height: 11px; } } Text { text: "Back"; color: cbb.has-hover ? #a855f7 : MusicTheme.fg2; font-size: 11px; font-weight: 600; vertical-alignment: center; } } } }
                         VerticalLayout { alignment: center;
                             Rectangle { height: 36px; min-width: 118px; border-radius: 8px;
-                                background: root.yt-channel-subscribed ? MusicTheme.surf1 : #ef4444;
-                                border-width: 1px; border-color: root.yt-channel-subscribed ? MusicTheme.line : transparent;
+                                background: root.yt-channel-subscribed ? (tsb.has-hover ? #22c55e22 : MusicTheme.surf1)
+                                          : @linear-gradient(120deg, #ef4444, #ec4899);
+                                border-width: 1px; border-color: root.yt-channel-subscribed ? (tsb.has-hover ? #22c55eaa : MusicTheme.line) : transparent;
+                                drop-shadow-blur: root.yt-channel-subscribed ? 0px : (tsb.has-hover ? 14px : 7px); drop-shadow-color: #ef4444aa;
+                                animate background, border-color, drop-shadow-blur { duration: 140ms; easing: ease-out; }
                                 tsb := TouchArea { mouse-cursor: pointer; clicked => {
                                     root.yt-sub-confirm-title = root.yt-channel-title;
                                     root.yt-sub-confirm-add = !root.yt-channel-subscribed;
@@ -2756,7 +2781,16 @@ export component MusicPage inherits Rectangle {
                     ScrollView { width: 100%; height: 100%;
                         VerticalLayout { spacing: 16px; padding: 13px;
                             VerticalLayout { spacing: 7px;
-                                YtRailTitle { label: "RECENT SEARCHES"; linked: false; }
+                                HorizontalLayout { spacing: 6px;
+                                    YtRailTitle { label: "RECENT SEARCHES"; linked: false; }
+                                    if root.yt-recent.length > 0: VerticalLayout { alignment: center;
+                                        Rectangle { width: 30px; height: 30px; border-radius: 8px;
+                                            background: rcl.has-hover ? #ef444422 : MusicTheme.surf0;
+                                            border-width: 1px; border-color: rcl.has-hover ? #ef4444aa : MusicTheme.line;
+                                            animate background, border-color { duration: 120ms; easing: ease-out; }
+                                            rcl := TouchArea { mouse-cursor: pointer; clicked => { root.yt-clear-recent(); } }
+                                            AppIcon { source: Icons.trash; tint: rcl.has-hover ? #ef4444 : MusicTheme.fg2; width: 14px; height: 14px;
+                                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } } }
                                 VerticalLayout { spacing: 5px;
                                     for q in root.yt-recent: Rectangle { height: 26px; border-radius: 13px;
                                         background: rch.has-hover ? #3b82f6.with-alpha(MusicTheme.light ? 0.22 : 0.18) : #3b82f6.with-alpha(MusicTheme.light ? 0.12 : 0.08);
@@ -2774,8 +2808,8 @@ export component MusicPage inherits Rectangle {
                                 YtRailTitle { label: "DOWNLOADED VIDEOS"; clicked => { root.yt-set-tab("downloads"); } }
                                 if root.yt-home-downloads.length == 0: Text { text: "No downloads yet."; color: MusicTheme.fg-mute; font-size: 10px; }
                                 for v in root.yt-home-downloads: YtMiniRow { v: v; removable: true; tint: #ec4899;
-                                    open => { root.yt-play(v.id, false); }
-                                    remove => { root.yt-remove-download(v.id); } } } } } }
+                                    open => { root.yt-play-download(v.path); }
+                                    remove => { root.yt-remove-download(v.path); } } } } } }
                     // CENTER results.
                     GlassCard { horizontal-stretch: 3; radius: 16px; clip-content: true;
                     recoscroll := ScrollView { width: 100%; height: 100%;
@@ -2966,7 +3000,7 @@ export component MusicPage inherits Rectangle {
                         Text { text: "Cached videos"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; horizontal-stretch: 1; vertical-alignment: center; }
                         if root.yt-cached.length > 0: Rectangle { width: 120px; height: 32px; border-radius: 8px; background: MusicTheme.surf1;
                             border-width: 1px; border-color: MusicTheme.line;
-                            clc := TouchArea { mouse-cursor: pointer; clicked => { root.yt-clear-cached(); } }
+                            clc := TouchArea { mouse-cursor: pointer; clicked => { root.yt-cached-clear-open = true; } }
                             HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.trash; tint: MusicTheme.fg2; width: 10px; height: 10px; } } Text { text: "Clear cache"; color: MusicTheme.fg2; font-size: 10px; vertical-alignment: center; } } } }
                     if root.yt-cached.length == 0: Text { text: "Played videos are cached here automatically."; color: MusicTheme.fg-dim2; font-size: 12px; }
                     Rectangle { horizontal-stretch: 1;
@@ -2985,7 +3019,9 @@ export component MusicPage inherits Rectangle {
 
             // ══ DOWNLOADS ═════════════════════════════════════════════════
             if root.yt-tab == "downloads": ScrollView {
-                VerticalLayout { padding: 36px; padding-top: 16px; spacing: 12px;
+                // alignment: start — otherwise the default stretch spreads the short
+                // content, dragging the active "Downloading" row away from its header.
+                VerticalLayout { padding: 36px; padding-top: 16px; spacing: 12px; alignment: start;
                     // ── Row 1: title + sort + pagination + clear ──
                     HorizontalLayout { spacing: 8px;
                         Text { text: "Downloads"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; horizontal-stretch: 1; vertical-alignment: center; }
@@ -2999,10 +3035,10 @@ export component MusicPage inherits Rectangle {
                             PageNav { page: root.yt-downloads-page; pages: root.yt-downloads-pages; go(d) => { root.yt-downloads-set-page(d); } } }
                         if root.yt-downloads.length > 0: Rectangle { width: 140px; height: 32px; border-radius: 8px; background: MusicTheme.surf1;
                             border-width: 1px; border-color: MusicTheme.line;
-                            cld := TouchArea { mouse-cursor: pointer; clicked => { root.yt-clear-downloads(); } }
+                            cld := TouchArea { mouse-cursor: pointer; clicked => { root.yt-dl-clear-open = true; } }
                             HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.trash; tint: MusicTheme.fg2; width: 10px; height: 10px; } } Text { text: "Clear downloads"; color: MusicTheme.fg2; font-size: 10px; vertical-alignment: center; } } } }
                     // ── Row 2: active + queued downloads with live progress (yt-dlp) ──
-                    if root.yt-dl-jobs.length > 0: VerticalLayout { spacing: 5px;
+                    if root.yt-dl-jobs.length > 0: VerticalLayout { spacing: 5px; alignment: start;
                         Text { text: "Downloading"; color: #ef4444; font-size: 11px; font-weight: 800; }
                         for j in root.yt-dl-jobs: Rectangle { height: 46px; border-radius: 8px; background: MusicTheme.surf1;
                             border-width: 1px; border-color: MusicTheme.line; clip: true;
@@ -3023,10 +3059,10 @@ export component MusicPage inherits Rectangle {
                         for v[idx] in root.yt-downloads: YtVideoGridCard {
                             x: Math.mod(idx, cols) * cw + 6px; y: Math.floor(idx / cols) * ch;
                             width: cw - 12px; v: v; idx: idx; dl-frac: v.id == root.yt-dl-active-id ? root.yt-dl-active-frac : -1; remove-glyph: "x"; hide-download: true; compact: true;
-                            play(wv) => { root.yt-play-download(v.id); }
+                            play(wv) => { root.yt-play-download(v.path); }
                             download => { root.yt-download(v.id); }
                             menu => { root.yt-menu-video = v.id; root.yt-menu-open = true; }
-                            remove => { root.yt-remove-download(v.id); } } }
+                            remove => { root.yt-remove-download(v.path); } } }
                     if root.yt-downloads-pages > 1: HorizontalLayout { alignment: center;
                         PageNav { page: root.yt-downloads-page; pages: root.yt-downloads-pages; go(d) => { root.yt-downloads-set-page(d); } } } }
             }
@@ -5395,6 +5431,52 @@ export component MusicPage inherits Rectangle {
                     Rectangle { width: 110px; height: 38px; border-radius: 19px; background: rccy.has-hover ? #dc2626 : #ef4444;
                         rccy := TouchArea { mouse-cursor: pointer; clicked => { root.radio-clear-confirm-open = false; root.radio-clear-recent(); } }
                         Text { text: "Clear"; color: #ffffff; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+            }
+        }
+    }
+
+    // YouTube — clear-cached confirmation.
+    if root.yt-cached-clear-open: Rectangle {
+        width: 100%; height: 100%; background: #000000aa;
+        TouchArea { clicked => { root.yt-cached-clear-open = false; } }
+        Rectangle { width: 420px; height: 200px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
+            drop-shadow-blur: 48px; drop-shadow-color: #000000ee; clip: true;
+            TouchArea {}
+            VerticalLayout { padding: 24px; spacing: 12px; alignment: start;
+                Text { text: "Clear cached videos?"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; }
+                Text { text: "Deletes every auto-cached stream from disk. Downloads are kept — they live in the Downloads tab."; color: MusicTheme.fg-dim; font-size: 13px; wrap: word-wrap; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    Rectangle { width: 100px; height: 38px; border-radius: 19px; background: yccn.has-hover ? MusicTheme.hov2 : MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                        yccn := TouchArea { mouse-cursor: pointer; clicked => { root.yt-cached-clear-open = false; } }
+                        Text { text: "Cancel"; color: MusicTheme.fg; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                    Rectangle { width: 110px; height: 38px; border-radius: 19px; background: yccy.has-hover ? #dc2626 : #ef4444;
+                        yccy := TouchArea { mouse-cursor: pointer; clicked => { root.yt-cached-clear-open = false; root.yt-clear-cached(); } }
+                        Text { text: "Clear"; color: #ffffff; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+            }
+        }
+    }
+
+    // YouTube — clear-downloads confirmation.
+    if root.yt-dl-clear-open: Rectangle {
+        width: 100%; height: 100%; background: #000000aa;
+        TouchArea { clicked => { root.yt-dl-clear-open = false; } }
+        Rectangle { width: 440px; height: 210px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+            border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
+            drop-shadow-blur: 48px; drop-shadow-color: #000000ee; clip: true;
+            TouchArea {}
+            VerticalLayout { padding: 24px; spacing: 12px; alignment: start;
+                Text { text: "Clear all downloads?"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; }
+                Text { text: "Permanently deletes every downloaded file across all resolutions. This can't be undone."; color: MusicTheme.fg-dim; font-size: 13px; wrap: word-wrap; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    Rectangle { width: 100px; height: 38px; border-radius: 19px; background: ydcn.has-hover ? MusicTheme.hov2 : MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                        ydcn := TouchArea { mouse-cursor: pointer; clicked => { root.yt-dl-clear-open = false; } }
+                        Text { text: "Cancel"; color: MusicTheme.fg; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                    Rectangle { width: 130px; height: 38px; border-radius: 19px; background: ydcy.has-hover ? #dc2626 : #ef4444;
+                        ydcy := TouchArea { mouse-cursor: pointer; clicked => { root.yt-dl-clear-open = false; root.yt-clear-downloads(); } }
+                        Text { text: "Delete all"; color: #ffffff; font-size: 13px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
             }
         }
     }

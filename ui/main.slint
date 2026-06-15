@@ -1133,6 +1133,7 @@ export component MainWindow inherits Window {
     callback music-yt-search(string);
     callback music-yt-search-more();
     callback music-yt-recent-click(string);
+    callback music-yt-clear-recent();
     callback music-yt-open-channel(string);
     callback music-yt-channel-page-go(int);
     callback music-yt-channel-toggle-sub();
@@ -1965,6 +1966,7 @@ export component MainWindow inherits Window {
                 yt-search(q) => { root.music-yt-search(q); }
                 yt-search-more() => { root.music-yt-search-more(); }
                 yt-recent-click(q) => { root.music-yt-recent-click(q); }
+                yt-clear-recent() => { root.music-yt-clear-recent(); }
                 yt-open-channel(c) => { root.music-yt-open-channel(c); }
                 yt-channel-page-go(d) => { root.music-yt-channel-page-go(d); }
                 yt-channel-toggle-sub() => { root.music-yt-channel-toggle-sub(); }

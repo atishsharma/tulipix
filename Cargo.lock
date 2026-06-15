@@ -1702,7 +1702,7 @@ dependencies = [
 
 [[package]]
 name = "fetch-resources"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "flate2",
@@ -7044,7 +7044,7 @@ dependencies = [
 
 [[package]]
 name = "tulipix-ai"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -7055,7 +7055,7 @@ dependencies = [
 
 [[package]]
 name = "tulipix-app"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "chrono",
@@ -7099,7 +7099,7 @@ dependencies = [
 
 [[package]]
 name = "tulipix-books"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "reqwest",
@@ -7114,7 +7114,7 @@ dependencies = [
 
 [[package]]
 name = "tulipix-cli"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "serde_json",
@@ -7125,7 +7125,7 @@ dependencies = [
 
 [[package]]
 name = "tulipix-cloud"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "keyring",
@@ -7141,7 +7141,7 @@ dependencies = [
 
 [[package]]
 name = "tulipix-core"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "keyring",
@@ -7161,7 +7161,7 @@ dependencies = [
 
 [[package]]
 name = "tulipix-music"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "image",
@@ -7179,7 +7179,7 @@ dependencies = [
 
 [[package]]
 name = "tulipix-photos"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "futures-util",
@@ -7199,7 +7199,7 @@ dependencies = [
 
 [[package]]
 name = "tulipix-platform"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "gtk",
@@ -7218,7 +7218,7 @@ dependencies = [
 
 [[package]]
 name = "tulipix-player"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7230,7 +7230,7 @@ dependencies = [
 
 [[package]]
 name = "tulipix-plugins"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "mlua",
@@ -7243,7 +7243,7 @@ dependencies = [
 
 [[package]]
 name = "tulipix-tools"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "serde",
@@ -7258,7 +7258,7 @@ dependencies = [
 
 [[package]]
 name = "tulipix-videos"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -7275,7 +7275,7 @@ dependencies = [
 
 [[package]]
 name = "tulipix-whisper"
-version = "0.1.2"
+version = "0.3.0"
 dependencies = [
  "anyhow",
  "reqwest",
