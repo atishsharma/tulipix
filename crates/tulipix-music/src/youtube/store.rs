@@ -76,6 +76,22 @@ CREATE TABLE IF NOT EXISTS yt_channel_cache (
 );
 CREATE INDEX IF NOT EXISTS yt_channel_cache_idx ON yt_channel_cache(channel_id, position);
 
+-- Top "most-watched" videos for a channel — fetched + stored only when the user
+-- taps the channel-page "Popular" button (mirrors yt_channel_cache).
+CREATE TABLE IF NOT EXISTS yt_channel_popular (
+    channel_id TEXT NOT NULL,
+    video_id   TEXT NOT NULL,
+    title      TEXT,
+    channel    TEXT,
+    meta       TEXT,
+    info       TEXT,
+    thumb_path TEXT,
+    duration   INTEGER,
+    position   INTEGER NOT NULL,
+    PRIMARY KEY (channel_id, video_id)
+);
+CREATE INDEX IF NOT EXISTS yt_channel_popular_idx ON yt_channel_popular(channel_id, position);
+
 CREATE TABLE IF NOT EXISTS yt_playlist_items (
     playlist_id INTEGER NOT NULL REFERENCES yt_playlists(id) ON DELETE CASCADE,
     video_id    TEXT NOT NULL,
@@ -256,6 +272,32 @@ pub async fn set_channel_cache(pool: &SqlitePool, channel_id: &str, vids: &[Chan
     for (i, v) in vids.iter().enumerate() {
         sqlx::query(
             "INSERT INTO yt_channel_cache (channel_id,video_id,title,channel,meta,info,thumb_path,duration,position) VALUES (?,?,?,?,?,?,?,?,?)",
+        )
+        .bind(channel_id).bind(&v.video_id).bind(&v.title).bind(&v.channel)
+        .bind(&v.meta).bind(&v.info).bind(&v.thumb_path).bind(v.duration).bind(i as i64)
+        .execute(pool).await?;
+    }
+    Ok(())
+}
+
+pub async fn get_channel_popular(pool: &SqlitePool, channel_id: &str) -> Result<Vec<ChannelVid>> {
+    let rows: Vec<(String, String, String, String, String, String, i64)> = sqlx::query_as(
+        "SELECT video_id,title,channel,meta,info,thumb_path,duration FROM yt_channel_popular WHERE channel_id = ? ORDER BY position",
+    )
+    .bind(channel_id)
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|(video_id, title, channel, meta, info, thumb_path, duration)| ChannelVid {
+        video_id, title, channel, meta, info, thumb_path, duration,
+    }).collect())
+}
+
+/// Replace the cached most-watched list for a channel.
+pub async fn set_channel_popular(pool: &SqlitePool, channel_id: &str, vids: &[ChannelVid]) -> Result<()> {
+    sqlx::query("DELETE FROM yt_channel_popular WHERE channel_id = ?").bind(channel_id).execute(pool).await?;
+    for (i, v) in vids.iter().enumerate() {
+        sqlx::query(
+            "INSERT INTO yt_channel_popular (channel_id,video_id,title,channel,meta,info,thumb_path,duration,position) VALUES (?,?,?,?,?,?,?,?,?)",
         )
         .bind(channel_id).bind(&v.video_id).bind(&v.title).bind(&v.channel)
         .bind(&v.meta).bind(&v.info).bind(&v.thumb_path).bind(v.duration).bind(i as i64)
