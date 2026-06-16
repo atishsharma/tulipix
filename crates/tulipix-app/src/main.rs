@@ -9,6 +9,7 @@ use std::path::PathBuf;
 use std::sync::OnceLock;
 use tracing_subscriber::EnvFilter;
 use tulipix_core::libraries::{ScanCadence, Section as LibrarySection};
+use tulipix_core::proc::NoWindow;
 
 #[cfg(all(feature = "alloc-mimalloc", any(target_os = "linux", target_os = "windows")))]
 #[global_allocator]
@@ -19,6 +20,10 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
 slint::include_modules!();
+
+/// Idle threshold meaning "never" — pushed a year out so the idle listener never
+/// fires while auto-lock is disabled (the default).
+const IDLE_NEVER_SECS: u64 = 60 * 60 * 24 * 365;
 
 #[cfg(feature = "dev-reload")]
 mod dev_reload;
@@ -239,11 +244,19 @@ fn main() -> Result<()> {
     // Settings → Security auto-lock timeout when enabled, else the 600 s
     // ambient default.
     let boot_settings = tulipix_core::settings::Settings::load().unwrap_or_default();
+    // Idle behaviour (ambient screensaver + optional lock) stays OFF until the
+    // user enables "Auto-lock when idle" in Settings → Security. With the flag
+    // off we push the threshold a year out so nothing fires on idle.
     let idle_secs = std::env::var("TULIPIX_IDLE_SECS").ok()
         .and_then(|s| s.parse::<u64>().ok())
-        .or_else(|| (boot_settings.flag("autolock", false) && boot_settings.idle_lock_secs > 0)
-            .then_some(boot_settings.idle_lock_secs))
-        .unwrap_or(600);
+        .unwrap_or_else(|| {
+            if boot_settings.flag("autolock", false) {
+                let s = boot_settings.idle_lock_secs;
+                if s > 0 { s } else { 600 }
+            } else {
+                IDLE_NEVER_SECS
+            }
+        });
     tulipix_core::idle::set_threshold(idle_secs);
     tulipix_core::idle::spawn_tracker();
 
@@ -289,6 +302,19 @@ fn main() -> Result<()> {
         let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
         s.theme = theme_choice_str(choice).to_string();
         if let Err(e) = s.save() { tracing::warn!(error = %e, "save settings (theme)"); }
+    });
+
+    // Music-section theme toggle (sun/moon/star) — persist the light/dark/OLED
+    // choice so it survives restarts (np.p5.music.theme-memory).
+    let w = window.as_weak();
+    window.on_music_theme_changed(move || {
+        let Some(w) = w.upgrade() else { return; };
+        let mode = if w.get_music_light() { "light" }
+                   else if w.get_music_oled() { "oled" }
+                   else { "dark" };
+        let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
+        s.advanced.insert("music.theme".into(), mode.to_string());
+        if let Err(e) = s.save() { tracing::warn!(error = %e, "save settings (music theme)"); }
     });
 
     // Folder picker — used by every "Add a folder" / "+ Add Location"
@@ -1190,6 +1216,11 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_music_next(move || {
         let Some(w) = w.upgrade() else { return; };
+        // YouTube queue active → skip within it (honours shuffle); else library.
+        if YT_QUEUE_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+            yt_queue_jump(w.as_weak(), true, w.get_music_shuffle());
+            return;
+        }
         let total = w.get_music_np_total();
         if total <= 0 { return; }
         // Shuffle → random next; else sequential wrap.
@@ -1206,6 +1237,11 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_music_prev(move || {
         let Some(w) = w.upgrade() else { return; };
+        // YouTube queue active → step back within it; else library.
+        if YT_QUEUE_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+            yt_queue_jump(w.as_weak(), false, false);
+            return;
+        }
         let total = w.get_music_np_total();
         if total <= 0 { return; }
         play_music_at(&w, (w.get_music_np_index() - 1).rem_euclid(total));
@@ -2707,6 +2743,7 @@ fn main() -> Result<()> {
                 let out = tokio::process::Command::new(&ffmpeg)
                     .args(["-hide_banner", "-nostats", "-i"]).arg(&path)
                     .args(["-map", "a:0", "-af", "ebur128", "-f", "null", "-"])
+                    .no_window()
                     .output().await;
                 if let Ok(out) = out {
                     let err = String::from_utf8_lossy(&out.stderr);
@@ -3639,7 +3676,12 @@ fn main() -> Result<()> {
     window.on_music_yt_search(move |q| {
         let Some(w0) = w.upgrade() else { return; };
         let q = q.trim().to_string();
-        if q.is_empty() { return; }
+        if q.is_empty() {
+            // Cleared → drop search results so Home shows "Recommended" again.
+            { let mut st = yt_search_state().lock().unwrap(); st.all.clear(); st.shown = 0; st.nextpage = None; }
+            yt_render_search(&w0);
+            return;
+        }
         w0.set_music_yt_busy(true);
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
@@ -3672,6 +3714,32 @@ fn main() -> Result<()> {
         let Some(w0) = w.upgrade() else { return; };
         w0.set_music_yt_query(q.clone());
         w0.invoke_music_yt_search(q);
+    });
+    let w = window.as_weak();
+    window.on_music_yt_clear_recent(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        // Clear the UI list immediately, then wipe the DB rows in the background.
+        w0.set_music_yt_recent(slint::ModelRc::new(slint::VecModel::from(Vec::<slint::SharedString>::new())));
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            if let Ok(pool) = pool_for("youtube").await {
+                let _ = tulipix_music::youtube::store::clear_recent_searches(&pool).await;
+            }
+            let _ = weak.upgrade_in_event_loop(|w| populate_yt_recent(&w));
+        });
+    });
+    // Context-aware top-search filter for the list pages (subs/playlists/cached/downloads).
+    let w = window.as_weak();
+    window.on_music_yt_filter(move |kind, q| {
+        let Some(w0) = w.upgrade() else { return; };
+        let q = q.to_string();
+        match kind.as_str() {
+            "subs"      => { if let Ok(mut g) = yt_subs_q().lock()   { *g = q; } populate_yt_subs(&w0); }
+            "playlists" => { if let Ok(mut g) = yt_pls_q().lock()    { *g = q; } populate_yt_playlists(&w0); }
+            "cached"    => { if let Ok(mut g) = yt_cached_q().lock() { *g = q; } populate_yt_cached(&w0); }
+            "downloads" => { if let Ok(mut g) = yt_dls_q().lock()    { *g = q; } w0.set_music_yt_downloads_page(0); populate_yt_downloads(&w0); }
+            _ => {}
+        }
     });
     // Open a channel page (first page).
     let w = window.as_weak();
@@ -3893,31 +3961,50 @@ fn main() -> Result<()> {
         }
         // A single tap cancels any active play-queue, then streams instantly.
         if let Ok(mut g) = yt_queue().lock() { g.0.clear(); g.1 = 0; }
+        w0.set_music_yt_playing_pl_id(-1);  // single video → no playlist is "playing"
+        // Instant feedback: paint the now-playing card from the row we already have
+        // so a card tap / ⋯ "Play (audio)" responds the moment it's clicked instead
+        // of waiting on the stream-URL resolve — same snappiness as the Play button.
+        if let Some(m) = yt_lookup(&id) {
+            w0.set_music_player_mode("music".into());
+            w0.set_music_yt_now_video(true);
+            w0.set_music_np_title(m.title.clone().into());
+            w0.set_music_np_sub(if m.channel.is_empty() { "YouTube".into() } else { m.channel.clone().into() });
+            w0.set_music_np_art(yt_img(&m.thumb));
+            w0.set_music_np_accent(if m.thumb.is_empty() { slint::Color::from_rgb_u8(0xef, 0x44, 0x44) }
+                else { dominant_color(std::path::Path::new(&m.thumb)).unwrap_or(slint::Color::from_rgb_u8(0xef, 0x44, 0x44)) });
+            w0.set_music_pos(0.0); w0.set_music_dur(0.0);
+            w0.set_music_pos_label("0:00".into()); w0.set_music_dur_label("0:00".into());
+            w0.set_music_playing(true);
+        }
         yt_play_audio(w.clone(), id);
     });
     // Play a DOWNLOADED item from its local file: video downloads open windowed
     // mpv (the downloaded video, not re-streamed audio); audio downloads play
     // in-app from the local file. No caching — they're already permanent.
     let w = window.as_weak();
-    window.on_music_yt_play_download(move |id| {
+    window.on_music_yt_play_download(move |path| {
         let Some(_w0) = w.upgrade() else { return; };
-        let id = id.to_string();
+        let path = path.to_string();
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("youtube").await else { return; };
+            // The Downloads grid identifies a row by its unique media-file path so a
+            // video downloaded at several resolutions plays the exact one tapped.
             let dls = tulipix_music::youtube::store::list_downloads(&pool, 100000).await.unwrap_or_default();
-            match dls.into_iter().find(|d| d.video_id == id) {
+            match dls.into_iter().find(|d| d.media_path == path) {
                 Some(d) if !d.media_path.is_empty() && std::path::Path::new(&d.media_path).exists() => {
                     if d.quality == "Audio" {
-                        let (idd, p, t, c, th) = (id.clone(), d.media_path.clone(), d.title.clone(), d.channel.clone(), d.thumb_path.clone());
+                        let (idd, p, t, c, th) = (d.video_id.clone(), d.media_path.clone(), d.title.clone(), d.channel.clone(), d.thumb_path.clone());
                         if let Ok(mut g) = yt_queue().lock() { g.0.clear(); g.1 = 0; }
                         let _ = weak.upgrade_in_event_loop(move |w| yt_play_inapp(&w, idd, p, t, c, th, 0.0));
                     } else {
                         yt_play_local_video(weak.clone(), d.media_path.clone());
                     }
                 }
-                // Missing local file → fall back to streaming the audio.
-                _ => { if let Ok(mut g) = yt_queue().lock() { g.0.clear(); g.1 = 0; } yt_play_audio(weak.clone(), id); }
+                // Missing local file → fall back to streaming the audio by video id.
+                Some(d) => { if let Ok(mut g) = yt_queue().lock() { g.0.clear(); g.1 = 0; } yt_play_audio(weak.clone(), d.video_id.clone()); }
+                None => {}
             }
         });
     });
@@ -3997,13 +4084,14 @@ fn main() -> Result<()> {
         });
     });
     let w = window.as_weak();
-    window.on_music_yt_remove_download(move |id| {
+    window.on_music_yt_remove_download(move |path| {
         let Some(_w0) = w.upgrade() else { return; };
-        let id = id.to_string();
+        let path = path.to_string();
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             if let Ok(pool) = pool_for("youtube").await {
-                if let Some(p) = tulipix_music::youtube::store::remove_download(&pool, &id).await.ok().flatten() { let _ = std::fs::remove_file(&p); }
+                // Path-targeted: removes just this resolution, not the video's others.
+                if let Some(p) = tulipix_music::youtube::store::remove_download_by_path(&pool, &path).await.ok().flatten() { let _ = std::fs::remove_file(&p); }
             }
             let _ = weak.upgrade_in_event_loop(|w| populate_yt_downloads(&w));
         });
@@ -4025,8 +4113,7 @@ fn main() -> Result<()> {
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             if let Ok(pool) = pool_for("youtube").await {
-                let dls = tulipix_music::youtube::store::list_downloads(&pool, 100000).await.unwrap_or_default();
-                for d in dls { if let Some(p) = tulipix_music::youtube::store::remove_download(&pool, &d.video_id).await.ok().flatten() { let _ = std::fs::remove_file(&p); } }
+                for p in tulipix_music::youtube::store::clear_downloads(&pool).await.unwrap_or_default() { let _ = std::fs::remove_file(&p); }
             }
             let _ = weak.upgrade_in_event_loop(|w| populate_yt_downloads(&w));
         });
@@ -5437,12 +5524,20 @@ fn main() -> Result<()> {
     // ── Settings panels: load persisted settings, seed the UI models ───────
     {
         let s = tulipix_core::settings::Settings::load().unwrap_or_default();
-        // Always launch in light theme regardless of the persisted choice
-        // (user preference). The in-session theme picker still works; we just
-        // never *start* dark.
-        let choice = ThemeChoice::Light;
+        // Restore the last-used app theme and keep it until the user changes it.
+        let choice = match s.theme.as_str() {
+            "extra-dark" => ThemeChoice::ExtraDark,
+            "system"     => ThemeChoice::System,
+            _             => ThemeChoice::Light,
+        };
         window.set_theme_choice(choice);
         apply_theme_choice(&window, choice);
+        // Restore the last-used Music-section theme (light / dark / OLED).
+        match s.advanced.get("music.theme").map(|v| v.as_str()) {
+            Some("dark") => { window.set_music_light(false); window.set_music_oled(false); }
+            Some("oled") => { window.set_music_light(false); window.set_music_oled(true); }
+            _            => { window.set_music_light(true);  window.set_music_oled(false); }
+        }
         window.set_reduce_motion(s.reduce_motion);
         window.set_default_cadence(cadence_str(s.libraries.default_cadence).into());
         // First-run onboarding (np.p1.auth-shell) — show until completed once.
@@ -6210,6 +6305,13 @@ fn main() -> Result<()> {
         let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
         s.flags.insert(key.clone(), on);
         if let Err(e) = s.save() { tracing::warn!(error = %e, "save flag"); }
+        // Auto-lock takes effect live: enabling arms the idle threshold,
+        // disabling pushes it a year out so idle stops doing anything.
+        if key == "autolock" {
+            let secs = if on { if s.idle_lock_secs > 0 { s.idle_lock_secs } else { 600 } }
+                       else { IDLE_NEVER_SECS };
+            tulipix_core::idle::set_threshold(secs);
+        }
         tracing::info!(%key, on, "setting toggled");
         seed_settings_panels(&w);
     });
@@ -6220,6 +6322,10 @@ fn main() -> Result<()> {
         let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
         if key == "idle_lock_secs" {
             s.idle_lock_secs = val.trim().parse::<u64>().unwrap_or(0);
+            // Re-arm the idle threshold live when auto-lock is enabled.
+            if s.flag("autolock", false) {
+                tulipix_core::idle::set_threshold(if s.idle_lock_secs > 0 { s.idle_lock_secs } else { 600 });
+            }
         } else if val.trim().is_empty() {
             s.advanced.remove(&key);
         } else {
@@ -8564,6 +8670,7 @@ fn spawn_mpv_windowed(path: PathBuf, resume: Option<f64>, item_id: Option<i64>) 
         let sock = mpv_ipc::endpoint("tulipix-mpv");
         mpv_ipc::cleanup(&sock);
         let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
+        cmd.no_window();
         cmd.arg(&path)
             .arg("--force-window=yes")
             .arg("--window-maximized=yes")   // open full-size (windowed, not borderless)
@@ -9319,7 +9426,7 @@ fn tts_speak_sentence(text: &str) {
         let ps = format!("Add-Type -AssemblyName System.Speech; \
             (New-Object System.Speech.Synthesis.SpeechSynthesizer).Speak(@'\n{}\n'@)",
             text.replace('\'', "''"));
-        std::process::Command::new("powershell").args(["-NoProfile","-Command",&ps]).status()
+        std::process::Command::new("powershell").args(["-NoProfile","-Command",&ps]).no_window().status()
     };
 }
 
@@ -9340,6 +9447,7 @@ fn tts_speak_piper(text: &str) -> bool {
             .stdin(std::process::Stdio::piped())
             .stdout(std::process::Stdio::null())
             .stderr(std::process::Stdio::null())
+            .no_window()
             .spawn().ok()?;
         {
             use std::io::Write;
@@ -9356,7 +9464,7 @@ fn tts_speak_piper(text: &str) -> bool {
         ];
         players.iter().any(|(bin, args)| {
             std::process::Command::new(bin).args(args).arg(&wav)
-                .status().map(|s| s.success()).unwrap_or(false)
+                .no_window().status().map(|s| s.success()).unwrap_or(false)
         }).then_some(())
     };
     attempt().is_some()
@@ -10146,6 +10254,7 @@ fn cloud_mount_ensure(remote: &str) -> anyhow::Result<PathBuf> {
         .args(&args)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .no_window()
         .spawn()
         .map_err(|e| anyhow::anyhow!("spawn rclone mount: {e}"))?;
     let mut ok = false;
@@ -12020,6 +12129,7 @@ async fn audiobook_cover_px(folder: &str, custom: Option<PathBuf>, first_chapter
                     std::process::Command::new(&ffmpeg)
                         .args(["-y", "-loglevel", "quiet", "-i"]).arg(&chapter)
                         .args(["-map", "0:v:0", "-frames:v", "1"]).arg(&outc)
+                        .no_window()
                         .status()
                 }).await;
             }
@@ -12233,6 +12343,7 @@ fn play_music_url(w: &MainWindow, url: &str, title: &str) {
     let sock = mpv_ipc::endpoint("tulipix-music");
     mpv_ipc::cleanup(&sock);
     let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
+    cmd.no_window();
     cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
         .arg(format!("--input-ipc-server={}", sock.display()))
         .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
@@ -12618,6 +12729,7 @@ fn play_radio(w: &MainWindow, st: &tulipix_music::radio::Station) {
     let sock = mpv_ipc::endpoint("tulipix-music");
     mpv_ipc::cleanup(&sock);
     let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
+    cmd.no_window();
     cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
         .arg(format!("--input-ipc-server={}", sock.display()))
         .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
@@ -12970,7 +13082,7 @@ fn music_audio_args(s: &tulipix_core::settings::Settings) -> Vec<String> {
 
 /// Enumerate audio output devices via `mpv --audio-device=help` (np.p5.music.output).
 fn enumerate_audio_devices() -> Vec<tulipix_music::output_device::AudioDevice> {
-    let out = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv")).arg("--audio-device=help").output();
+    let out = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv")).arg("--audio-device=help").no_window().output();
     match out {
         Ok(o) => {
             let txt = String::from_utf8_lossy(&o.stdout);
@@ -13501,7 +13613,7 @@ fn ffprobe_tags(path: &std::path::Path) -> tulipix_music::tags::TrackTags {
     let ff = tulipix_core::thumbs::tool_bin("ffprobe");
     let out = std::process::Command::new(ff)
         .args(["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams"])
-        .arg(path).output();
+        .arg(path).no_window().output();
     let Ok(out) = out else { return fallback_title(t, path); };
     let json: serde_json::Value = match serde_json::from_slice(&out.stdout) { Ok(v) => v, Err(_) => return fallback_title(t, path) };
     let fmt = &json["format"];
@@ -13543,6 +13655,7 @@ fn write_audio_tags(path: &str, title: &str, artist: &str, album: &str) {
     let tmp = src.with_extension(format!("tulipix-tmp.{ext}"));
     let ff = tulipix_core::thumbs::tool_bin("ffmpeg");
     let mut cmd = std::process::Command::new(ff);
+    cmd.no_window();
     cmd.arg("-v").arg("error").arg("-y").arg("-i").arg(src)
         .arg("-map_metadata").arg("0").arg("-c").arg("copy");
     if !title.is_empty()  { cmd.arg("-metadata").arg(format!("title={title}")); }
@@ -13902,7 +14015,7 @@ fn stop_video() {
     if pid == 0 { return; }
     #[cfg(windows)]
     let _ = std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/F", "/T"]).status();
+        .args(["/PID", &pid.to_string(), "/F", "/T"]).no_window().status();
     #[cfg(not(windows))]
     let _ = std::process::Command::new("kill").arg("-9").arg(pid.to_string()).status();
 }
@@ -14088,6 +14201,7 @@ fn play_music_at(w: &MainWindow, idx: i32) {
     let sock = mpv_ipc::endpoint("tulipix-music");
     mpv_ipc::cleanup(&sock);
     let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
+    cmd.no_window();
     cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
         .arg(format!("--input-ipc-server={}", sock.display()))
         .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
@@ -15145,6 +15259,7 @@ struct YtVidData {
     thumb: String,     // cached PNG path
     #[serde(default)] fmt: String,      // download container badge ("" = none)
     #[serde(default)] quality: String,  // download quality badge ("" = none)
+    #[serde(default)] path: String,     // downloaded file path (per-resolution row id; "" = not a download)
 }
 
 #[derive(Default)]
@@ -15283,6 +15398,7 @@ fn yt_video_model(rows: &[YtVidData]) -> slint::ModelRc<YtVideo> {
         meta: d.meta.clone().into(), info: d.info.clone().into(), duration: d.duration.clone().into(),
         thumb: yt_img(&d.thumb), index: i as i32,
         fmt: d.fmt.clone().into(), quality: d.quality.clone().into(),
+        path: d.path.clone().into(),
     }).collect();
     slint::ModelRc::new(slint::VecModel::from(v))
 }
@@ -15293,6 +15409,7 @@ fn yt_cached_to_data(c: &tulipix_music::youtube::store::CachedVideo) -> YtVidDat
         meta: String::new(), info: String::new(), duration: yt_fmt_dur(c.duration),
         dur_s: c.duration, thumb: c.thumb_path.clone(),
         fmt: c.fmt.clone(), quality: c.quality.clone(),
+        path: c.media_path.clone(),
     }
 }
 
@@ -15347,9 +15464,31 @@ fn yt_play_all_playlist(weak: slint::Weak<MainWindow>, pl_id: i64) {
         if datas.is_empty() {
             let _ = weak.upgrade_in_event_loop(|w| w.set_music_yt_pl_playall_busy(false)); return;
         }
+        // Mark this playlist as the playing one → its card shows a pill sweep.
+        let _ = weak.upgrade_in_event_loop(move |w| w.set_music_yt_playing_pl_id(pl_id as i32));
         yt_remember(&datas);
         let ids: Vec<String> = datas.iter().map(|d| d.id.clone()).collect();
         if let Ok(mut g) = yt_queue().lock() { *g = (ids.clone(), 0); }
+        // Fetch the FIRST track's thumbnail BEFORE playback so the now-playing
+        // card, the cached row, and the queue panel all show art immediately —
+        // otherwise it loads after the fact and the first song appears thumbless.
+        if datas[0].thumb.is_empty() || !std::path::Path::new(&datas[0].thumb).exists() {
+            let client = reqwest::Client::new();
+            let dir = yt_thumb_dir();
+            let url = format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", datas[0].id);
+            if let Ok(path) = tulipix_music::youtube::thumbs::fetch_png(&client, &dir, &url).await {
+                if !path.is_empty() {
+                    datas[0].thumb = path.clone();
+                    if source_url.is_none() {
+                        if let Ok(p) = pool_for("youtube").await {
+                            let _ = tulipix_music::youtube::store::update_playlist_item_meta(
+                                &p, pl_id, &datas[0].id, &datas[0].title, &datas[0].channel, &path, datas[0].dur_s).await;
+                        }
+                    }
+                    yt_remember(&datas);
+                }
+            }
+        }
         yt_play_audio(weak.clone(), ids[0].clone());
         // Background: fetch + cache thumbnails for every queued item that lacks
         // one (YouTube's deterministic hqdefault URL — no yt-dlp call), persist
@@ -15487,6 +15626,14 @@ fn populate_yt_recent(w: &MainWindow) {
     });
 }
 
+// Per-page text filters for the context-aware top search (np.p4.music.youtube).
+// Set by the `yt-filter` callback, read by the matching populate fn.
+fn yt_cached_q() -> &'static std::sync::Mutex<String> { static S: OnceLock<std::sync::Mutex<String>> = OnceLock::new(); S.get_or_init(|| std::sync::Mutex::new(String::new())) }
+fn yt_dls_q()    -> &'static std::sync::Mutex<String> { static S: OnceLock<std::sync::Mutex<String>> = OnceLock::new(); S.get_or_init(|| std::sync::Mutex::new(String::new())) }
+fn yt_subs_q()   -> &'static std::sync::Mutex<String> { static S: OnceLock<std::sync::Mutex<String>> = OnceLock::new(); S.get_or_init(|| std::sync::Mutex::new(String::new())) }
+fn yt_pls_q()    -> &'static std::sync::Mutex<String> { static S: OnceLock<std::sync::Mutex<String>> = OnceLock::new(); S.get_or_init(|| std::sync::Mutex::new(String::new())) }
+fn yt_q_get(m: &std::sync::Mutex<String>) -> String { m.lock().map(|g| g.to_lowercase()).unwrap_or_default() }
+
 fn populate_yt_cached(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
@@ -15501,7 +15648,10 @@ fn populate_yt_cached(w: &MainWindow) {
         yt_remember(&rows);
         let _ = weak.upgrade_in_event_loop(move |w| {
             let home: Vec<YtVidData> = rows.iter().take(3).cloned().collect();
-            w.set_music_yt_cached(yt_video_model(&rows));
+            let q = yt_q_get(yt_cached_q());
+            let shown: Vec<YtVidData> = if q.is_empty() { rows.clone() }
+                else { rows.iter().filter(|d| d.title.to_lowercase().contains(&q) || d.channel.to_lowercase().contains(&q)).cloned().collect() };
+            w.set_music_yt_cached(yt_video_model(&shown));
             w.set_music_yt_home_cached(yt_video_model(&home));
         });
     });
@@ -15525,11 +15675,16 @@ fn populate_yt_downloads(w: &MainWindow) {
         }
         yt_remember(&rows);
         let home: Vec<YtVidData> = rows.iter().take(3).cloned().collect();
+        let q = yt_q_get(yt_dls_q());
+        let rows: Vec<YtVidData> = if q.is_empty() { rows }
+            else { rows.into_iter().filter(|d| d.title.to_lowercase().contains(&q) || d.channel.to_lowercase().contains(&q)).collect() };
+        let total = rows.len() as i32;
         let pages = ((rows.len() as i64 + YT_DL_LIST_PAGE - 1) / YT_DL_LIST_PAGE).max(1);
         let page = page.min(pages - 1);
         let start = (page * YT_DL_LIST_PAGE) as usize;
         let pagerows: Vec<YtVidData> = rows.into_iter().skip(start).take(YT_DL_LIST_PAGE as usize).collect();
         let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_music_yt_downloads_count(total);
             w.set_music_yt_downloads_pages(pages as i32);
             w.set_music_yt_downloads_page(page as i32);
             w.set_music_yt_downloads(yt_video_model(&pagerows));
@@ -15618,7 +15773,9 @@ fn populate_yt_playlists(w: &MainWindow) {
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("youtube").await else { return; };
         let pls = tulipix_music::youtube::store::list_playlists(&pool).await.unwrap_or_default();
+        let q = yt_q_get(yt_pls_q());
         let rows: Vec<(i64, String, String, i64)> = pls.iter()
+            .filter(|p| q.is_empty() || p.name.to_lowercase().contains(&q))
             .map(|p| (p.id, p.name.clone(), p.cover.clone().unwrap_or_default(), p.count)).collect();
         let _ = weak.upgrade_in_event_loop(move |w| {
             let m: Vec<YtPlaylist> = rows.iter().enumerate().map(|(i, (id, name, cover, count))| YtPlaylist {
@@ -15656,8 +15813,10 @@ fn yt_set_subs(w: &MainWindow, subs: &[tulipix_music::youtube::store::Sub]) {
     let filter = yt_subs_filter();
     w.set_music_yt_subs_filter(filter.clone().into());
     let pin_set: std::collections::HashSet<String> = yt_home_channels().into_iter().collect();
+    let q = yt_q_get(yt_subs_q());
     let mut sorted: Vec<&tulipix_music::youtube::store::Sub> = subs.iter()
         .filter(|s| if filter == "unsub" { !s.subscribed } else { s.subscribed })
+        .filter(|s| q.is_empty() || s.title.to_lowercase().contains(&q))
         .collect();
     // Sort ascending by the chosen key (title as tiebreaker), then reverse for desc.
     match sort.as_str() {
@@ -15781,7 +15940,7 @@ async fn yt_dlp_fetch_audio(id: &str, dir: &std::path::Path) -> Option<String> {
     let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
     let _ = tokio::process::Command::new(bin)
         .arg("-f").arg("bestaudio").arg("-x").arg("--audio-format").arg("opus")
-        .arg("--no-playlist").arg("-o").arg(&tmpl).arg(&url).status().await;
+        .arg("--no-playlist").arg("-o").arg(&tmpl).arg(&url).no_window().status().await;
     if out.exists() { Some(out.to_string_lossy().into_owned()) } else { None }
 }
 
@@ -15793,6 +15952,7 @@ async fn yt_dlp_stream_url(id: &str) -> Option<String> {
     let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
     let out = tokio::process::Command::new(bin)
         .arg("-g").arg("-f").arg("bestaudio/best").arg("--no-playlist").arg(&url)
+        .no_window()
         .output().await.ok()?;
     if !out.status.success() { return None; }
     String::from_utf8_lossy(&out.stdout).lines().map(|l| l.trim().to_string())
@@ -15857,7 +16017,9 @@ fn yt_dl_set(id: &str, frac: f32, status: &str) {
 
 fn yt_dl_enqueue(weak: slint::Weak<MainWindow>, job: YtDlJobData) {
     if let Ok(mut g) = yt_dl_jobs().lock() {
-        if g.iter().any(|j| j.id == job.id) { return; }
+        // Keyed by (video, resolution) so the same video can queue at several
+        // qualities at once; only an identical resolution is a no-op duplicate.
+        if g.iter().any(|j| j.id == job.id && j.height == job.height) { return; }
         g.push(job);
     }
     yt_dl_refresh(&weak);
@@ -15881,7 +16043,7 @@ fn yt_dl_enqueue(weak: slint::Weak<MainWindow>, job: YtDlJobData) {
                         &pool, &job.id, &job.title, &job.channel, &job.thumb, &path, 0, kind, fmt, &quality).await;
                 }
             }
-            if let Ok(mut g) = yt_dl_jobs().lock() { g.retain(|j| j.id != job.id); }
+            if let Ok(mut g) = yt_dl_jobs().lock() { g.retain(|j| !(j.id == job.id && j.height == job.height)); }
             yt_dl_refresh(&weak);
             let _ = weak.upgrade_in_event_loop(|w| populate_yt_downloads(&w));
         }
@@ -15892,12 +16054,20 @@ fn yt_dl_enqueue(weak: slint::Weak<MainWindow>, job: YtDlJobData) {
 async fn yt_dl_run(job: &YtDlJobData, dir: &std::path::Path, weak: &slint::Weak<MainWindow>) -> Option<String> {
     use tokio::io::{AsyncBufReadExt, BufReader};
     let url = format!("https://www.youtube.com/watch?v={}", job.id);
-    let tmpl = dir.join(format!("{}.%(ext)s", job.id));
+    // Per-resolution stem so different qualities of one video are distinct files
+    // (e.g. `<id>.audio.opus`, `<id>.best.mkv`, `<id>.720p.mkv`) instead of one
+    // shared `<id>.<ext>` that each new download would overwrite.
+    let suffix = if job.height < 0 { "audio".to_string() }
+        else if job.height == 0 { "best".to_string() }
+        else { format!("{}p", job.height) };
+    let stem = format!("{}.{}", job.id, suffix);
+    let tmpl = dir.join(format!("{}.%(ext)s", stem));
     let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
     let mut cmd = tokio::process::Command::new(bin);
+    cmd.no_window();
     let expected = if job.height < 0 {
         cmd.arg("-f").arg("bestaudio").arg("-x").arg("--audio-format").arg("opus");
-        dir.join(format!("{}.opus", job.id))
+        dir.join(format!("{}.opus", stem))
     } else {
         let ff = tulipix_core::thumbs::tool_bin("ffmpeg");
         let fmt = if job.height == 0 { "bestvideo+bestaudio/best".to_string() }
@@ -15907,7 +16077,7 @@ async fn yt_dl_run(job: &YtDlJobData, dir: &std::path::Path, weak: &slint::Weak<
         // ("ffmpeg") is NOT resolved against PATH by yt-dlp and silently breaks the
         // merge, leaving split .f###.m4a/.mp4 fragments and no .mkv → never recorded.
         if ff.is_absolute() && ff.exists() { cmd.arg("--ffmpeg-location").arg(&ff); }
-        dir.join(format!("{}.mkv", job.id))
+        dir.join(format!("{}.mkv", stem))
     };
     cmd.arg("--newline").arg("--no-playlist").arg("-o").arg(&tmpl).arg(&url)
         .stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::null());
@@ -15926,18 +16096,19 @@ async fn yt_dl_run(job: &YtDlJobData, dir: &std::path::Path, weak: &slint::Weak<
     }
     let _ = child.wait().await;
     if expected.exists() { return Some(expected.to_string_lossy().into_owned()); }
-    // Fallback: the merged file should be `{id}.<ext>`. yt-dlp names split streams
-    // `{id}.f###.<ext>`, so match by stem first; failing that, pick the largest
-    // `{id}.*` file that isn't an in-progress fragment.
+    // Fallback: the merged file should be `{stem}.<ext>`. yt-dlp names split
+    // streams `{stem}.f###.<ext>`, so match by this resolution's stem first;
+    // failing that, pick the largest `{stem}.*` file that isn't an in-progress
+    // fragment. Scoping to `stem` keeps one resolution from grabbing another's file.
     if let Ok(rd) = std::fs::read_dir(dir) {
         let mut best: Option<(u64, std::path::PathBuf)> = None;
         for e in rd.flatten() {
             let p = e.path();
             let name = p.file_name().and_then(|s| s.to_str()).unwrap_or("");
-            if p.file_stem().and_then(|s| s.to_str()) == Some(job.id.as_str()) {
+            if p.file_stem().and_then(|s| s.to_str()) == Some(stem.as_str()) {
                 return Some(p.to_string_lossy().into_owned());
             }
-            if name.starts_with(&format!("{}.", job.id)) && !name.ends_with(".part") && !name.ends_with(".ytdl") {
+            if name.starts_with(&format!("{}.", stem)) && !name.ends_with(".part") && !name.ends_with(".ytdl") {
                 let sz = e.metadata().map(|m| m.len()).unwrap_or(0);
                 if best.as_ref().map(|(b, _)| sz > *b).unwrap_or(true) { best = Some((sz, p)); }
             }
@@ -15950,7 +16121,7 @@ async fn yt_dl_run(job: &YtDlJobData, dir: &std::path::Path, weak: &slint::Weak<
 // ── yt-dlp browsing backend (reliable, replaces flaky Piped at runtime) ──────
 async fn ytdlp_json(args: Vec<String>) -> Option<serde_json::Value> {
     let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
-    let out = tokio::process::Command::new(bin).args(&args).output().await.ok()?;
+    let out = tokio::process::Command::new(bin).args(&args).no_window().output().await.ok()?;
     serde_json::from_slice(&out.stdout).ok()
 }
 
@@ -16008,13 +16179,20 @@ async fn ytdlp_channel_latest(id: &str, n: usize) -> Vec<tulipix_music::youtube:
 /// Top `n` most-watched videos for a channel. Pulls a flat window of recent
 /// uploads (which carry `view_count`), drops Shorts, sorts by views desc.
 async fn ytdlp_channel_popular(id: &str, n: usize) -> Vec<tulipix_music::youtube::piped::Video> {
-    let url = format!("https://www.youtube.com/channel/{id}/videos");
+    // YouTube's "popular" sort (legacy `sort=p`), which yt-dlp's channel-tab
+    // extractor honours — the server returns entries already ordered by views.
+    // Flat mode omits `view_count`, so the earlier local `sort_by(views)` was a
+    // no-op (all zeros) and Popular came back identical to Latest; trust the
+    // server order here and only re-sort when counts are actually present.
+    let url = format!("https://www.youtube.com/channel/{id}/videos?view=0&sort=p&flow=grid");
     let Some(j) = ytdlp_json(vec!["--flat-playlist".into(), "-J".into(), "--no-warnings".into(),
-        "--playlist-end".into(), "60".into(), url]).await else { return vec![]; };
+        "--playlist-end".into(), (n * 3).to_string(), url]).await else { return vec![]; };
     let vids = j.get("entries").and_then(|e| e.as_array())
         .map(|arr| arr.iter().map(yt_entry_to_video).collect::<Vec<_>>()).unwrap_or_default();
     let mut vids = tulipix_music::youtube::piped::without_shorts(vids);
-    vids.sort_by(|a, b| b.views.cmp(&a.views));
+    // Stable sort: keeps the server's popularity order when counts are missing,
+    // sharpens it when yt-dlp does surface view_count.
+    if vids.iter().any(|v| v.views > 0) { vids.sort_by(|a, b| b.views.cmp(&a.views)); }
     vids.truncate(n);
     vids
 }
@@ -16154,11 +16332,55 @@ fn yt_play_audio(weak: slint::Weak<MainWindow>, id: String) {
 }
 
 /// EOF reached on a queued track → play the next one (no-op if no queue/at end).
+fn yt_rand_nanos() -> u32 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.subsec_nanos()).unwrap_or(0)
+}
+
+/// Manual transport skip inside the YouTube queue (wraps at both ends).
+/// `forward` = next track, else previous; `shuffle` picks a random next.
+fn yt_queue_jump(weak: slint::Weak<MainWindow>, forward: bool, shuffle: bool) {
+    let id = {
+        let mut g = match yt_queue().lock() { Ok(g) => g, Err(_) => return };
+        let len = g.0.len();
+        if len == 0 { return; }
+        let idx = if forward && shuffle && len > 1 {
+            let mut n = (yt_rand_nanos() as usize) % len;
+            if n == g.1 { n = (n + 1) % len; }
+            n
+        } else if forward {
+            (g.1 + 1) % len
+        } else {
+            (g.1 + len - 1) % len
+        };
+        g.1 = idx;
+        g.0[idx].clone()
+    };
+    yt_play_audio(weak, id);
+}
+
+/// EOF reached on a queued track → play the next one. Honours shuffle and
+/// repeat-all (wrap); repeat-one is handled by mpv `loop-file` so EOF never
+/// fires there. Returns false (→ stop) only at a hard end with repeat off.
 fn yt_queue_advance(weak: slint::Weak<MainWindow>) -> bool {
+    let (shuffle, repeat) = weak.upgrade()
+        .map(|w| (w.get_music_shuffle(), w.get_music_repeat().to_string()))
+        .unwrap_or((false, "off".to_string()));
     let next = {
         let mut g = match yt_queue().lock() { Ok(g) => g, Err(_) => return false };
-        if g.0.is_empty() || g.1 + 1 >= g.0.len() { return false; }
-        g.1 += 1;
+        let len = g.0.len();
+        if len == 0 { return false; }
+        if shuffle && len > 1 {
+            let mut n = (yt_rand_nanos() as usize) % len;
+            if n == g.1 { n = (n + 1) % len; }
+            g.1 = n;
+        } else if g.1 + 1 < len {
+            g.1 += 1;
+        } else if repeat == "all" {
+            g.1 = 0;
+        } else {
+            return false;
+        }
         g.0[g.1].clone()
     };
     yt_play_audio(weak, next);
@@ -16179,7 +16401,7 @@ fn yt_watch_video(weak: slint::Weak<MainWindow>, id: String, height: i64, start:
         let fmt = if height <= 0 { "best".to_string() } else { format!("best[height<=?{height}]/best") };
         let url = format!("https://www.youtube.com/watch?v={id}");
         let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
-        let stream = match tokio::process::Command::new(bin).arg("-g").arg("-f").arg(&fmt).arg("--no-playlist").arg(&url).output().await {
+        let stream = match tokio::process::Command::new(bin).arg("-g").arg("-f").arg(&fmt).arg("--no-playlist").arg(&url).no_window().output().await {
             Ok(o) => String::from_utf8_lossy(&o.stdout).lines().next().map(|l| l.to_string()).filter(|l| !l.is_empty()),
             Err(_) => None,
         };
@@ -16188,6 +16410,7 @@ fn yt_watch_video(weak: slint::Weak<MainWindow>, id: String, height: i64, start:
         mpv_ipc::cleanup(&sock);
         YT_VID_POS.store(start as i64, std::sync::atomic::Ordering::Relaxed);
         let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
+        cmd.no_window();
         // Maximized normal window (keeps the WM top bar), not borderless fullscreen.
         cmd.arg("--window-maximized=yes").arg("--force-window=immediate").arg("--title=Tulipix — YouTube")
             .arg(format!("--input-ipc-server={}", sock.display()));
@@ -16223,8 +16446,14 @@ fn yt_watch_video(weak: slint::Weak<MainWindow>, id: String, height: i64, start:
                     let dir = yt_media_dir();
                     if let Some(path) = yt_dlp_fetch_audio(&id2, &dir).await {
                         let m = yt_lookup(&id2).unwrap_or_default();
+                        // A watched video also lands in the Cached tab (parity with
+                        // audio playback — record the cached opus + its metadata).
+                        if let Ok(pool) = pool_for("youtube").await {
+                            let _ = tulipix_music::youtube::store::record_cached(
+                                &pool, &id2, &m.title, &m.channel, &m.thumb, &path, m.dur_s).await;
+                        }
                         let (t, c, th, idd) = (m.title, m.channel, m.thumb, id2.clone());
-                        let _ = weak3.upgrade_in_event_loop(move |w| yt_play_inapp(&w, idd, path, t, c, th, pos));
+                        let _ = weak3.upgrade_in_event_loop(move |w| { yt_play_inapp(&w, idd, path, t, c, th, pos); populate_yt_cached(&w); });
                     }
                 });
             });
@@ -16242,6 +16471,7 @@ fn yt_play_local_video(weak: slint::Weak<MainWindow>, path: String) {
     let sock = mpv_ipc::endpoint("tulipix-yt-video");
     mpv_ipc::cleanup(&sock);
     let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
+    cmd.no_window();
     cmd.arg("--window-maximized=yes").arg("--force-window=immediate").arg("--title=Tulipix — YouTube")
         .arg(format!("--input-ipc-server={}", sock.display()))
         .arg(&path);
@@ -16263,6 +16493,7 @@ fn yt_play_inapp(w: &MainWindow, id: String, path: String, title: String, sub: S
     let sock = mpv_ipc::endpoint("tulipix-music");
     mpv_ipc::cleanup(&sock);
     let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
+    cmd.no_window();
     cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
         .arg(format!("--input-ipc-server={}", sock.display()))
         .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
@@ -16287,12 +16518,20 @@ fn yt_play_inapp(w: &MainWindow, id: String, path: String, title: String, sub: S
                 "{\"command\":[\"observe_property\",2,\"duration\"]}\n",
                 "{\"command\":[\"observe_property\",3,\"pause\"]}\n",
                 "{\"command\":[\"observe_property\",4,\"volume\"]}\n",
-                "{\"command\":[\"observe_property\",5,\"mute\"]}\n").as_bytes());
+                "{\"command\":[\"observe_property\",5,\"mute\"]}\n",
+                "{\"command\":[\"observe_property\",6,\"af-metadata/vis/lavfi.r128.M\"]}\n").as_bytes());
             let rd = BufReader::new(stream);
             for line in rd.lines().map_while(Result::ok) {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
                 if v["event"] != "property-change" { continue; }
                 let name = v["name"].as_str().unwrap_or("").to_string();
+                // Real loudness → visualizer atomic (YouTube audio also pulses).
+                if name == "af-metadata/vis/lavfi.r128.M" {
+                    if let Some(l) = v["data"].as_str().and_then(|s| s.parse::<f64>().ok()) {
+                        MUSIC_LOUDNESS.store((loudness_to_amp(l) * 1000.0) as i32, std::sync::atomic::Ordering::Relaxed);
+                    }
+                    continue;
+                }
                 let wk = weak.clone();
                 let _ = slint::invoke_from_event_loop(move || {
                     let Some(w) = wk.upgrade() else { return; };

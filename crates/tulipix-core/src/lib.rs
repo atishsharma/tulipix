@@ -30,6 +30,7 @@ pub mod perf;
 pub mod populator;
 pub mod power_aware;
 pub mod prefs;
+pub mod proc;
 pub mod providers;
 pub mod quota;
 pub mod rtl;

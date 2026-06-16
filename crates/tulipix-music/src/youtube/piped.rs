@@ -3,6 +3,7 @@
 
 use anyhow::Result;
 use serde::Deserialize;
+use tulipix_core::proc::NoWindow;
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Video {
@@ -209,7 +210,7 @@ pub async fn channel_next(
 async fn yt_dlp_search_fallback(query: &str) -> Result<ChannelPage> {
     let args = crate::yt_search::search_args(crate::yt_search::Source::YouTube, query, 20);
     let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
-    let out = tokio::process::Command::new(bin).args(&args).output().await?;
+    let out = tokio::process::Command::new(bin).args(&args).no_window().output().await?;
     let stdout = String::from_utf8_lossy(&out.stdout);
     let hits = crate::yt_search::parse_dump_json(&stdout);
     let videos = hits

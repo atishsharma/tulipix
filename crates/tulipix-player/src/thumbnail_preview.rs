@@ -71,10 +71,16 @@ pub fn render_sheet(src: &Path, duration_s: f64, out: &Path) -> Result<SpriteShe
         interval = interval, tw = DEFAULT_TILE_W, th = DEFAULT_TILE_H, cols = cols, rows = rows,
     );
     let ff = bundled_bin("ffmpeg");
-    let status = Command::new(&ff)
-        .args(["-y", "-loglevel", "error", "-i"]).arg(src)
-        .args(["-vf", &fps_filter, "-frames:v", "1"]).arg(out)
-        .status().with_context(|| format!("spawn {}", ff.display()))?;
+    let mut cmd = Command::new(&ff);
+    cmd.args(["-y", "-loglevel", "error", "-i"]).arg(src)
+        .args(["-vf", &fps_filter, "-frames:v", "1"]).arg(out);
+    // Suppress the console window the child would pop on Windows (GUI app).
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x0800_0000);
+    }
+    let status = cmd.status().with_context(|| format!("spawn {}", ff.display()))?;
     if !status.success() { anyhow::bail!("ffmpeg exit {status}"); }
     Ok(SpriteSheet {
         path: out.to_path_buf(),
