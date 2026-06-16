@@ -1,4 +1,5 @@
 import { Theme, Section, Accent } from "tokens.slint";
+import { MusicTheme } from "theme.slint";
 import { ScrollView } from "std-widgets.slint";
 import { Sidebar } from "sidebar.slint";
 import { Orbs } from "orbs.slint";
@@ -481,6 +482,11 @@ export component MainWindow inherits Window {
     in-out property <bool> dark <=> Theme.dark;
     in-out property <bool> reduce-motion <=> Theme.reduce-motion;
     callback reduce-motion-changed(bool);
+    // Music-section theme (light / dark / OLED) — two-way bound so Rust can
+    // restore the last-used choice on boot and persist it when it changes.
+    in-out property <bool> music-light <=> MusicTheme.light;
+    in-out property <bool> music-oled <=> MusicTheme.oled;
+    callback music-theme-changed();
 
     in-out property <[ApiKeyRow]> api-rows: [];
     in-out property <[LibraryRow]> library-rows: [];
@@ -1039,6 +1045,7 @@ export component MainWindow inherits Window {
     in-out property <int> music-yt-downloads-page: 0;
     in-out property <int> music-yt-downloads-pages: 1;
     in-out property <string> music-yt-downloads-sort: "new";
+    in-out property <int> music-yt-downloads-count: 0;
     in-out property <[YtDlJob]> music-yt-dl-jobs: [];
     in-out property <string> music-yt-dl-active-id: "";
     in-out property <float> music-yt-dl-active-frac: 0;
@@ -1082,6 +1089,7 @@ export component MainWindow inherits Window {
     in-out property <float> music-yt-fetch-frac: 0;
     in-out property <string> music-yt-fetch-msg: "";
     in-out property <int> music-yt-sub-count: 0;
+    in-out property <int> music-yt-playing-pl-id: -1;
     in-out property <bool> music-yt-subs-clear-open: false;
     in-out property <bool> music-yt-pl-del-open: false;
     in-out property <int> music-yt-pl-del-id: -1;
@@ -1132,6 +1140,7 @@ export component MainWindow inherits Window {
     callback music-yt-set-tab(string);
     callback music-yt-search(string);
     callback music-yt-search-more();
+    callback music-yt-filter(string, string);
     callback music-yt-recent-click(string);
     callback music-yt-clear-recent();
     callback music-yt-open-channel(string);
@@ -1843,6 +1852,7 @@ export component MainWindow inherits Window {
                 lyrics-view-mode <=> root.music-lyrics-view-mode; lyrics-view-results: root.music-lyrics-view-results;
                 lyrics-view-searching: root.music-lyrics-view-searching;
                 lyrics-view-pick(i) => { root.music-lyrics-view-pick(i); } lyrics-view-back => { root.music-lyrics-view-back(); }
+                music-theme-changed => { root.music-theme-changed(); }
                 song-total: root.music-song-total; song-page: root.music-song-page;
                 song-pages: root.music-song-pages; song-sort: root.music-song-sort; song-dir: root.music-song-dir;
                 set-song-sort(s) => { root.music-set-song-sort(s); } set-song-page(d) => { root.music-set-song-page(d); }
@@ -1894,12 +1904,14 @@ export component MainWindow inherits Window {
                 yt-query <=> root.music-yt-query; yt-recent: root.music-yt-recent;
                 yt-cached: root.music-yt-cached; yt-downloads: root.music-yt-downloads;
                 yt-downloads-page <=> root.music-yt-downloads-page; yt-downloads-pages: root.music-yt-downloads-pages; yt-downloads-sort <=> root.music-yt-downloads-sort;
+                yt-downloads-count: root.music-yt-downloads-count;
                 yt-downloads-set-page(d) => { root.music-yt-downloads-set-page(d); }
                 yt-downloads-set-sort(s) => { root.music-yt-downloads-set-sort(s); }
                 yt-dl-jobs: root.music-yt-dl-jobs;
                 yt-dl-active-id: root.music-yt-dl-active-id;
                 yt-dl-active-frac: root.music-yt-dl-active-frac;
                 yt-subs: root.music-yt-subs; yt-playlists: root.music-yt-playlists;
+                yt-playing-pl-id: root.music-yt-playing-pl-id;
                 yt-home-cached: root.music-yt-home-cached; yt-home-downloads: root.music-yt-home-downloads;
                 yt-home-subs: root.music-yt-home-subs;
                 yt-channel-open <=> root.music-yt-channel-open; yt-channel-title: root.music-yt-channel-title;
@@ -1965,6 +1977,7 @@ export component MainWindow inherits Window {
                 yt-play-resolution(id, h) => { root.music-yt-play-resolution(id, h); }
                 yt-search(q) => { root.music-yt-search(q); }
                 yt-search-more() => { root.music-yt-search-more(); }
+                yt-filter(k, q) => { root.music-yt-filter(k, q); }
                 yt-recent-click(q) => { root.music-yt-recent-click(q); }
                 yt-clear-recent() => { root.music-yt-clear-recent(); }
                 yt-open-channel(c) => { root.music-yt-open-channel(c); }

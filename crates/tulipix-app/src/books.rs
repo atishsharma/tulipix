@@ -10,6 +10,7 @@
 //! DjVu (native lib) and DRM'd AZW stay honestly unsupported.
 
 use anyhow::{Context, Result};
+use tulipix_core::proc::NoWindow;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use tulipix_books::scan::{format_from_ext, Format};
@@ -447,6 +448,7 @@ pub fn cbr_image_paths(path: &Path) -> Option<Vec<PathBuf>> {
             std::process::Command::new(bin).args(args)
                 .stdout(std::process::Stdio::null())
                 .stderr(std::process::Stdio::null())
+                .no_window()
                 .status().map(|s| s.success()).unwrap_or(false)
         });
         if !ok { return None; }
@@ -469,6 +471,7 @@ pub fn cbr_image_paths(path: &Path) -> Option<Vec<PathBuf>> {
 fn run_capture(bin: &str, args: &[&str]) -> Option<String> {
     let out = std::process::Command::new(bin).args(args)
         .stderr(std::process::Stdio::null())
+        .no_window()
         .output().ok()?;
     if !out.status.success() { return None; }
     Some(String::from_utf8_lossy(&out.stdout).into_owned())
@@ -498,6 +501,7 @@ pub fn pdf_raster_page_image(path: &Path, index: usize) -> Option<PathBuf> {
         .arg(path).arg(&prefix)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .no_window()
         .status().map(|s| s.success()).unwrap_or(false);
     if !ok || !out.exists() { return None; }
     Some(out)
@@ -523,6 +527,7 @@ pub fn djvu_page_image(path: &Path, index: usize) -> Option<PathBuf> {
         .arg(path).arg(&pnm)
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())
+        .no_window()
         .status().map(|s| s.success()).unwrap_or(false);
     if !ok || !pnm.exists() { return None; }
     let img = image::open(&pnm).ok()?;

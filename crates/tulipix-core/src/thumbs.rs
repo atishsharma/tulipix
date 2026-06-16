@@ -237,6 +237,8 @@ pub fn render_or_cache(src: &Path, spec: ThumbSpec) -> Result<Option<ThumbResult
 }
 
 fn run_ok(mut cmd: Command) -> Result<()> {
+    use crate::proc::NoWindow;
+    cmd.no_window();
     let status = cmd.status()?;
     if !status.success() { anyhow::bail!("renderer exited {status}"); }
     Ok(())
