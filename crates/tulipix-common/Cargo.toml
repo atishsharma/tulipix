@@ -13,6 +13,9 @@ license.workspace = true
 anyhow.workspace = true
 sqlx = { workspace = true }
 tracing.workspace = true
+slint.workspace = true
+# Cross-section image helpers (histogram render). png/jpeg/webp match the app.
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 tulipix-core = { path = "../tulipix-core" }
 tulipix-photos = { path = "../tulipix-photos" }
 tulipix-videos = { path = "../tulipix-videos" }

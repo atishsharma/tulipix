@@ -27,7 +27,8 @@ pub use tulipix_ui::*;
 // tulipix-common; re-export so existing `crate::pool_for` / `dirs_default` /
 // `bundled_bin_dir` / … paths in this crate + submodules keep resolving.
 pub(crate) use tulipix_common::{
-    bundled_present, dirs_default, dirs_default_documents, on_path, pool_for,
+    bundled_present, dirs_default, dirs_default_documents, histogram_buf, histogram_image,
+    human_size, on_path, pool_for,
 };
 
 /// Idle threshold meaning "never" — pushed a year out so the idle listener never
@@ -14420,51 +14421,7 @@ fn show_photo_at(w: &MainWindow, idx: i32) {
 /// Render a 256×100 RGB histogram for `path` into a Slint image. Channels are
 /// drawn additively so overlapping bins brighten — the usual histogram look.
 /// A decode failure yields a transparent image (the panel just shows empty).
-fn histogram_image(path: &std::path::Path) -> slint::Image {
-    let Ok(img) = image::open(path) else {
-        use slint::{Rgba8Pixel, SharedPixelBuffer};
-        return slint::Image::from_rgba8(SharedPixelBuffer::<Rgba8Pixel>::new(256, 100));
-    };
-    slint::Image::from_rgba8(histogram_buf(&img))
-}
-
-/// Render a 256×100 additive RGB histogram buffer from an already-decoded
-/// image. Shared by the viewer/properties panels and the editor curve grid.
-fn histogram_buf(img: &image::DynamicImage) -> slint::SharedPixelBuffer<slint::Rgba8Pixel> {
-    use slint::{Rgba8Pixel, SharedPixelBuffer};
-    const W: usize = 256;
-    const H: usize = 100;
-    let mut buf = SharedPixelBuffer::<Rgba8Pixel>::new(W as u32, H as u32);
-    let px = buf.make_mut_slice();
-    for p in px.iter_mut() { *p = Rgba8Pixel { r: 0, g: 0, b: 0, a: 0 }; }
-
-    let small = img.thumbnail(256, 256).to_rgb8();
-    let (mut rh, mut gh, mut bh) = ([0u32; 256], [0u32; 256], [0u32; 256]);
-    for p in small.pixels() {
-        rh[p[0] as usize] += 1; gh[p[1] as usize] += 1; bh[p[2] as usize] += 1;
-    }
-    let maxv = rh.iter().chain(&gh).chain(&bh).copied().max().unwrap_or(1).max(1);
-    for x in 0..W {
-        for (count, (cr, cg, cb)) in [
-            (rh[x], (210u16, 40, 40)),
-            (gh[x], (40, 200, 90)),
-            (bh[x], (50, 120, 230)),
-        ] {
-            let bar = ((count as f64 / maxv as f64) * (H as f64 - 1.0)).round() as usize;
-            for y in (H - bar)..H {
-                let idx = y * W + x;
-                let c = px[idx];
-                px[idx] = Rgba8Pixel {
-                    r: (c.r as u16 + cr).min(255) as u8,
-                    g: (c.g as u16 + cg).min(255) as u8,
-                    b: (c.b as u16 + cb).min(255) as u8,
-                    a: 235,
-                };
-            }
-        }
-    }
-    buf
-}
+// histogram_image / histogram_buf moved to tulipix_common (shared with Cloud).
 
 /// Build the viewer's Info panel — an exiftool-style readout of ~24 common
 /// attributes. Missing tags render as an empty "—" so the layout is stable.
@@ -14794,22 +14751,7 @@ fn fmt_time_gmt(t: Option<std::time::SystemTime>) -> String {
         .unwrap_or_else(|| "—".into())
 }
 
-/// Human-readable byte size: "2.89 MB (3,031,744 bytes)".
-fn human_size(bytes: u64) -> String {
-    let b = bytes as f64;
-    let (val, unit) = if b >= 1_073_741_824.0 { (b / 1_073_741_824.0, "GB") }
-        else if b >= 1_048_576.0 { (b / 1_048_576.0, "MB") }
-        else if b >= 1024.0 { (b / 1024.0, "KB") }
-        else { (b, "bytes") };
-    // Thousands-separated raw byte count.
-    let mut raw = String::new();
-    let digits = bytes.to_string();
-    for (i, c) in digits.chars().enumerate() {
-        if i > 0 && (digits.len() - i) % 3 == 0 { raw.push(','); }
-        raw.push(c);
-    }
-    if unit == "bytes" { format!("{raw} bytes") } else { format!("{val:.2} {unit} ({raw} bytes)") }
-}
+// human_size moved to tulipix_common (shared with Cloud).
 
 /// Minimal URL query-component percent-encoder (spaces → +).
 fn urlencoding(s: &str) -> String {
