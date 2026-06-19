@@ -690,6 +690,7 @@ export component MainWindow inherits Window {
     in property <[ToolField]> tools-fields: [];
     in property <string> tools-active-op: "";
     in property <string> tools-active-label: "";
+    in property <string> tools-active-info: "";
     in property <string> tools-error: "";
     in property <[QueueJob]> queue-jobs: [];
     in property <[ToolStatus]> tool-statuses: [];
@@ -2211,6 +2212,7 @@ export component MainWindow inherits Window {
                 fields: root.tools-fields;
                 active-op: root.tools-active-op;
                 active-label: root.tools-active-label;
+                active-info: root.tools-active-info;
                 error: root.tools-error;
                 queue-jobs: root.queue-jobs;
                 tool-statuses: root.tool-statuses;

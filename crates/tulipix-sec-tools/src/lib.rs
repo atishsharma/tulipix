@@ -82,6 +82,38 @@ fn tool_label(kind: &str) -> &'static str {
     }
 }
 
+/// One-paragraph "what it does + how to use it" blurb shown in the tool's info
+/// box, above its form. Keep it concrete: name the inputs and the result.
+fn tool_info(kind: &str) -> &'static str {
+    match kind {
+        "compress_video" => "Shrinks a video's file size by re-encoding it at a chosen quality. Pick the source video, set the quality/CRF, then Run — the smaller copy is written beside the original.",
+        "compress_audio" => "Re-encodes an audio file to a smaller size at a target bitrate. Choose the file and bitrate, then Run; the compressed copy lands beside the source.",
+        "compress_photo" => "Reduces an image's file size by re-encoding it. Pick the photo and quality, then Run — a lighter copy is saved next to it.",
+        "convert" => "Converts a media file from one container/codec to another. Choose the file and the target format, then Run.",
+        "trim" => "Cuts a clip out of a video between a start and end time without re-encoding where possible. Pick the file, set start/end, then Run.",
+        "resize" => "Scales a video or image to a new resolution. Pick the file, set the target width/height, then Run.",
+        "thumbnail" => "Grabs a single still frame from a video as an image. Pick the video and the timestamp, then Run.",
+        "extract" => "Pulls the audio track out of a video into a standalone audio file. Pick the video, choose the audio format, then Run.",
+        "normalize" => "Levels a file's loudness to a standard target (EBU R128) so playback volume is consistent. Pick the file, then Run.",
+        "watermark" => "Overlays an image or text watermark onto a video. Pick the video and the watermark, position it, then Run.",
+        "burn_subs" => "Permanently renders a subtitle file into the video picture. Pick the video and the .srt/.ass, then Run.",
+        "split" => "Splits one media file into multiple parts (by time or chapters). Pick the file, set how to split, then Run.",
+        "merge" => "Joins several media files of the same type into one. Add the files in order, then Run to concatenate them.",
+        "download" => "Downloads a single video/audio from a URL via yt-dlp. Paste the link, pick a format, then Run.",
+        "download_playlist" => "Downloads an entire playlist via yt-dlp. Paste the playlist URL, choose a format, then Run — items queue up one by one.",
+        "download_live" => "Records a live stream to disk via yt-dlp until you stop it. Paste the stream URL, then Run.",
+        "hash" => "Computes checksums (e.g. SHA-256) for a file so you can verify its integrity. Pick the file, then Run; the digest shows in the queue row.",
+        "folder_diff" => "Compares two folders and reports which files are added, removed, or changed between them. Choose folder A and folder B, then Run — the differences are listed in the result.",
+        "rename" => "Batch-renames files in a folder using a pattern. Pick the folder, set the naming pattern, then Run.",
+        "transcribe" => "Transcribes speech in an audio/video file to a text/subtitle file using Whisper. Pick the file, choose the model, then Run.",
+        "pdf" => "Runs a PDF operation (merge/split/compress). Pick the PDF(s), choose the action, then Run.",
+        "mediainfo" => "Reports detailed technical metadata (codecs, bitrate, streams, duration) for a media file. Pick the file, then Run — the report appears in the queue row.",
+        "contact_sheet" => "Builds a grid of thumbnails sampled across a video (a contact sheet). Pick the video, set the grid size, then Run.",
+        "cache_clean" => "Clears Tulipix's thumbnail cache to reclaim disk space. Thumbnails regenerate on demand the next time you browse. Just Run.",
+        _ => "Set the options below, then Run. Progress shows in the Queue tab.",
+    }
+}
+
 /// Keep the last 200 chars of an error/message for the queue row.
 fn truncate_msg(s: &str) -> String {
     let s = s.trim();
@@ -733,6 +765,7 @@ pub fn wire(window: &MainWindow) {
         *tools_form().lock().unwrap() = (kind.clone(), map);
         w0.set_tools_active_op(kind.as_str().into());
         w0.set_tools_active_label(tool_label(&kind).into());
+        w0.set_tools_active_info(tool_info(&kind).into());
         w0.set_tools_queue_status(tool_label(&kind).into()); // header shows the tool immediately
         w0.set_tools_error("".into());
         tools_apply_form(&w0);

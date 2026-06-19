@@ -65,20 +65,27 @@ component ToolTab inherits Rectangle {
     in property <ToolOpRow> op;
     in property <bool> active: false;
     in property <bool> show-cat: false;
+    in property <color> tint: #cfe3ff;   // per-tool base hue (light pastel)
     callback clicked();
     horizontal-stretch: 1; height: 44px; border-radius: 11px;
+    // Inactive tabs each carry their own light pastel gradient so every tool
+    // reads as distinct; the active tab is the amber→orange identity gradient.
+    // Pastel fills + dark bold text pop on both light and dark backgrounds.
     background: active
         ? @linear-gradient(135deg, Theme.tools-accent, Theme.tools-accent-2)
-        : (touch.has-hover ? Theme.panel-2 : Theme.panel);
-    border-width: 1px; border-color: active ? transparent : Theme.outline;
+        : (touch.has-hover
+            ? @linear-gradient(135deg, tint.brighter(8%), tint)
+            : @linear-gradient(135deg, tint, tint.darker(9%)));
+    border-width: 1px;
+    border-color: active ? transparent : tint.darker(22%).with-alpha(0.55);
     animate background { duration: 130ms; easing: ease-out; }
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     VerticalLayout {
         alignment: center; padding-left: 8px; padding-right: 8px;
-        Text { text: op.label; color: active ? #2a1c05 : Theme.text; font-size: 13px;
-            font-weight: active ? 800 : 600; horizontal-alignment: center; overflow: elide; }
-        if show-cat: Text { text: op.cat; color: active ? #2a1c05 : Theme.text-dim; font-size: 10px;
-            horizontal-alignment: center; }
+        Text { text: op.label; color: #1b2330; font-size: 13px;
+            font-weight: active ? 800 : 700; horizontal-alignment: center; overflow: elide; }
+        if show-cat: Text { text: op.cat; color: #1b2330.with-alpha(0.65); font-size: 10px;
+            font-weight: 600; horizontal-alignment: center; }
     }
 }
 
@@ -202,6 +209,7 @@ export component ToolsPage inherits Rectangle {
     in property <[ToolField]> fields: [];
     in property <string> active-op: "";
     in property <string> active-label: "";
+    in property <string> active-info: "";   // what the tool does + how to use it
     in property <string> error: "";
     in property <[QueueJob]> queue-jobs: [];
     in property <[ToolStatus]> tool-statuses: [];
@@ -220,6 +228,11 @@ export component ToolsPage inherits Rectangle {
     callback update-tool(string);
 
     property <color> accent: Theme.tools-accent;
+    // Distinct light pastels cycled across the tool tabs so each tool reads
+    // apart from its neighbours (active tab overrides with the amber identity).
+    property <[color]> tab-palette: [
+        #bcd9ff, #c2efce, #e0d3ff, #ffd0e4, #c4ecef, #ffe2ad, #ffd0c8, #dcefb4, #d6dcff, #f6d2bf,
+    ];
     // confirm-dialog state
     property <bool> confirm-open: false;
     property <string> confirm-msg: "";
@@ -278,8 +291,9 @@ export component ToolsPage inherits Rectangle {
             border-width: 1px; border-color: Theme.outline;
             HorizontalLayout {
                 padding-left: 28px; padding-right: 28px; padding-top: 12px; padding-bottom: 12px; spacing: 10px;
-                for op in root.op-rows: ToolTab {
+                for op[idx] in root.op-rows: ToolTab {
                     op: op; show-cat: root.query != ""; active: op.kind == root.active-op;
+                    tint: root.tab-palette[mod(idx, 10)];
                     clicked => { root.open-tool(op.kind); }
                 }
                 if root.op-rows.length == 0: VerticalLayout { alignment: center;
@@ -294,7 +308,7 @@ export component ToolsPage inherits Rectangle {
 
             // Queue.
             if category == "queue": VerticalLayout {
-                padding: 28px; spacing: 14px; alignment: start;
+                padding: 28px; spacing: 14px;
                 HorizontalLayout {
                     spacing: 12px;
                     VerticalLayout { alignment: center; horizontal-stretch: 1;
@@ -322,7 +336,7 @@ export component ToolsPage inherits Rectangle {
 
             // Settings — external tool availability.
             if category == "settings": VerticalLayout {
-                padding: 28px; spacing: 14px; alignment: start;
+                padding: 28px; spacing: 14px;
                 Text { text: "Tool availability"; color: Theme.text; font-size: 18px; font-weight: 700; }
                 Text { text: "Where each external tool resolves from (Tools dir → bundled → system PATH). Set a Tools directory in Settings → System to override.";
                     color: Theme.text-dim; font-size: 12px; wrap: word-wrap; }
@@ -364,6 +378,23 @@ export component ToolsPage inherits Rectangle {
                                     VerticalLayout { alignment: center; horizontal-stretch: 1;
                                         Text { text: root.active-label; color: Theme.text; font-size: 18px; font-weight: 700; } }
                                     ActBtn { label: "Close"; clicked => { root.close-detail(); } }
+                                }
+                                // Info box: what the tool does + how to use it, shown
+                                // above the form so the controls have context.
+                                if root.active-info != "": Rectangle {
+                                    border-radius: 12px;
+                                    background: @linear-gradient(135deg, root.accent.with-alpha(0.13), root.accent.with-alpha(0.06));
+                                    border-width: 1px; border-color: root.accent.with-alpha(0.32);
+                                    VerticalLayout {
+                                        padding: 14px; spacing: 7px;
+                                        HorizontalLayout { spacing: 8px; alignment: start;
+                                            AppIcon { source: Icons.info; tint: root.accent; width: 16px; height: 16px;
+                                                y: 1px; horizontal-stretch: 0; }
+                                            Text { text: "About " + root.active-label; color: root.accent;
+                                                font-size: 12px; font-weight: 800; vertical-alignment: center; } }
+                                        Text { text: root.active-info; color: Theme.text; font-size: 13px;
+                                            wrap: word-wrap; }
+                                    }
                                 }
                                 for f in root.fields: FieldRow { field: f;
                                     set(k, v) => { root.field-set(k, v); }
