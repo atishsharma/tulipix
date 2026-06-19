@@ -27,9 +27,14 @@ pub use tulipix_ui::*;
 // tulipix-common; re-export so existing `crate::pool_for` / `dirs_default` /
 // `bundled_bin_dir` / … paths in this crate + submodules keep resolving.
 pub(crate) use tulipix_common::{
-    bundled_present, dirs_default, dirs_default_documents, histogram_image,
-    human_size, load_watched_folders, now_secs, on_path, pool_for, watched_folders_path,
+    anime4k_shader_args, bundled_present, dirs_default, dirs_default_documents, histogram_image,
+    human_size, kill_all_mpv, load_watched_folders, mpv_die_with_parent, music_ipc, music_proc,
+    music_sock, now_secs, on_path, pool_for, spawn_mpv_windowed, stop_video, video_ipc,
+    watched_folders_path, MUSIC_GEN,
 };
+// Out-of-process mpv IPC transport now lives in tulipix-common; re-import so
+// the leftover music/radio/youtube spawn paths keep using `mpv_ipc::` bare.
+pub(crate) use tulipix_common::mpv_ipc;
 // Photos section (grid/library/editor/viewer helpers) lives in
 // tulipix-sec-photos; glob-import so the photo `window.on_*` callbacks that
 // stay in main keep calling `show_photo_at` / `open_editor` / … unqualified.
@@ -47,7 +52,6 @@ mod mpv;
 #[cfg(not(feature = "embedded-mpv"))]
 #[path = "mpv_stub.rs"]
 mod mpv;
-mod mpv_ipc;
 mod books;
 mod cloud;
 
@@ -7340,95 +7344,9 @@ fn play_video_at(weak: slint::Weak<MainWindow>, idx: i32) {
 /// Anime4K-style GLSL shader chain (np.p3.player.upscale): all `.glsl` files in
 /// `<config>/shaders`, sorted, joined for mpv's `--glsl-shaders` list option.
 /// Returns `(dir, count)` for status display; the chain itself via `.0`.
-fn anime4k_shader_args() -> Option<(String, usize)> {
-    let dir = crate::dirs_default()?.join("shaders");
-    let mut files: Vec<String> = std::fs::read_dir(&dir).ok()?
-        .flatten()
-        .map(|e| e.path())
-        .filter(|p| p.extension().and_then(|e| e.to_str()) == Some("glsl"))
-        .filter_map(|p| p.to_str().map(str::to_string))
-        .collect();
-    if files.is_empty() { return None; }
-    files.sort();
-    Some((files.join(":"), files.len()))
-}
+// anime4k_shader_args moved to tulipix_common.
 
-/// Launch a video in an external mpv window with resume + watch-progress
-/// writeback over the JSON IPC socket. Runs entirely off the UI thread so the
-/// app never blocks on playback (np.p3.player — windowed path).
-fn spawn_mpv_windowed(path: PathBuf, resume: Option<f64>, item_id: Option<i64>) {
-    use std::io::{BufRead, BufReader, Write};
-    let rt = tokio::runtime::Handle::current();
-    // Universal single stream: a new video stops music + any prior video.
-    kill_music_proc();
-    stop_video();
-    std::thread::spawn(move || {
-        let sock = mpv_ipc::endpoint("tulipix-mpv");
-        mpv_ipc::cleanup(&sock);
-        let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
-        cmd.no_window();
-        cmd.arg(&path)
-            .arg("--force-window=yes")
-            .arg("--window-maximized=yes")   // open full-size (windowed, not borderless)
-            .arg("--keep-open=no")
-            .arg(format!("--input-ipc-server={}", sock.display()));
-        if let Some(r) = resume { if r > 1.0 { cmd.arg(format!("--start={r}")); } }
-        // GLSL upscale chain (np.p3.player.upscale) — opt-in + shaders present.
-        let s = tulipix_core::settings::Settings::load().unwrap_or_default();
-        if s.flag("playback.upscale", false) {
-            if let Some((chain, _)) = anime4k_shader_args() {
-                cmd.arg(format!("--glsl-shaders={chain}"));
-            }
-        }
-        mpv_die_with_parent(&mut cmd);
-        let mut child = match cmd.spawn() {
-            Ok(c) => c,
-            Err(e) => { tracing::error!(error = %e, "mpv window launch failed"); return; }
-        };
-        let vpid = child.id();
-        VIDEO_PID.store(vpid, std::sync::atomic::Ordering::SeqCst);
-        // Reader thread: observe time-pos + duration into a shared cell.
-        let pos = std::sync::Arc::new(std::sync::Mutex::new((0f64, 0f64)));
-        let pos2 = pos.clone();
-        let sockp = sock.clone();
-        let reader = std::thread::spawn(move || {
-            let Ok(mut stream) = mpv_ipc::connect(&sockp) else { return; };
-            let _ = stream.write_all(
-                b"{\"command\":[\"observe_property\",1,\"time-pos\"]}\n{\"command\":[\"observe_property\",2,\"duration\"]}\n");
-            let rd = BufReader::new(stream);
-            for line in rd.lines().map_while(Result::ok) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
-                if v["event"] == "property-change" {
-                    if let Some(d) = v["data"].as_f64() {
-                        if let Ok(mut g) = pos2.lock() {
-                            match v["name"].as_str() {
-                                Some("time-pos") => g.0 = d,
-                                Some("duration") => g.1 = d,
-                                _ => {}
-                            }
-                        }
-                    }
-                }
-            }
-        });
-        let _ = child.wait();
-        let _ = VIDEO_PID.compare_exchange(vpid, 0, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst);
-        let _ = std::fs::remove_file(&sock);
-        let _ = reader.join();
-        let (p, d) = pos.lock().map(|g| *g).unwrap_or((0.0, 0.0));
-        if let Some(id) = item_id {
-            rt.spawn(async move {
-                if let Ok(pool) = pool_for("videos").await {
-                    if d > 0.0 && p >= d * 0.98 {
-                        let _ = tulipix_videos::watch_progress::mark_finished(&pool, id, true).await;
-                    } else if p > 1.0 {
-                        let _ = tulipix_videos::watch_progress::update(&pool, id, p, Some(d)).await;
-                    }
-                }
-            });
-        }
-    });
-}
+// spawn_mpv_windowed moved to tulipix_common (playback core).
 
 /// Hook up the embedded player's control callbacks (transport, tracks, speed,
 /// fullscreen, and keyboard gestures via tulipix-player::gestures).
@@ -12645,64 +12563,11 @@ fn populate_music_views(weak: slint::Weak<MainWindow>) {
 
 // Single audio player instance — replacing it on each play avoids stacking
 // overlapping mpv processes the way video (separate windows) can tolerate.
-static MUSIC_PROC: std::sync::OnceLock<std::sync::Mutex<Option<std::process::Child>>> =
-    std::sync::OnceLock::new();
-fn music_proc() -> &'static std::sync::Mutex<Option<std::process::Child>> {
-    MUSIC_PROC.get_or_init(|| std::sync::Mutex::new(None))
-}
-/// PID of the windowed video mpv (0 = none). Tracked so music↔video share one
-/// "universal" stream and so playback dies with the app.
-static VIDEO_PID: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
-/// Make a spawned child die with us — on Linux the kernel sends SIGKILL when
-/// the parent (tulipix) exits for ANY reason (close, crash, kill), so mpv never
-/// orphans. `PR_SET_PDEATHSIG` is Linux-only; on other OSes children are reaped
-/// by `kill_all_mpv()` on window close + `child.kill()` on track change.
-#[cfg(target_os = "linux")]
-fn mpv_die_with_parent(cmd: &mut std::process::Command) {
-    use std::os::unix::process::CommandExt;
-    unsafe {
-        cmd.pre_exec(|| {
-            libc::prctl(libc::PR_SET_PDEATHSIG, libc::SIGKILL as libc::c_ulong, 0, 0, 0);
-            Ok(())
-        });
-    }
-}
-#[cfg(not(target_os = "linux"))]
-fn mpv_die_with_parent(_cmd: &mut std::process::Command) {
-    // macOS/Windows: no PR_SET_PDEATHSIG. A Win32 Job Object with
-    // JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE would harden crash-time cleanup.
-}
-/// Kill the windowed video mpv if one is running.
-fn stop_video() {
-    let pid = VIDEO_PID.swap(0, std::sync::atomic::Ordering::SeqCst);
-    if pid == 0 { return; }
-    #[cfg(windows)]
-    let _ = std::process::Command::new("taskkill")
-        .args(["/PID", &pid.to_string(), "/F", "/T"]).no_window().status();
-    #[cfg(not(windows))]
-    let _ = std::process::Command::new("kill").arg("-9").arg(pid.to_string()).status();
-}
-/// Kill the headless music mpv if one is running.
-fn kill_music_proc() {
-    MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst); // suppress auto-advance
-    if let Ok(mut g) = music_proc().lock() {
-        if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
-    }
-}
-/// Stop every mpv we spawned — called when the app window closes so nothing keeps
-/// playing in the background (np: universal-player teardown).
-fn kill_all_mpv() { kill_music_proc(); stop_video(); }
+// MUSIC_PROC / VIDEO_PID / mpv_die_with_parent / stop_video / kill_music_proc / kill_all_mpv moved to tulipix_common.
 /// Generation counter for the music sleep timer; bumped on each cycle so a
 /// pending timer task knows it was superseded.
 static SLEEP_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-/// Active music IPC socket path (mpv `--input-ipc-server`) for live control.
-static MUSIC_SOCK: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> = std::sync::OnceLock::new();
-fn music_sock() -> &'static std::sync::Mutex<Option<PathBuf>> {
-    MUSIC_SOCK.get_or_init(|| std::sync::Mutex::new(None))
-}
-/// Playback generation — bumped on each play/stop so a finished track's reader
-/// only auto-advances if it's still the current one.
-static MUSIC_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+// MUSIC_SOCK / music_sock / MUSIC_GEN moved to tulipix_common.
 /// Live 10-band equalizer gains (dB), shared by presets + per-band drags.
 static MUSIC_EQ: std::sync::OnceLock<std::sync::Mutex<[f64; 10]>> = std::sync::OnceLock::new();
 fn music_eq() -> &'static std::sync::Mutex<[f64; 10]> {
@@ -12757,36 +12622,7 @@ fn populate_eq_customs(w: &MainWindow) {
     let names: Vec<slint::SharedString> = load_eq_customs().into_iter().map(|(n, _)| n.into()).collect();
     w.set_music_eq_custom_names(slint::ModelRc::new(slint::VecModel::from(names)));
 }
-
-/// Send a single JSON command to the live music mpv over its IPC socket.
-fn music_ipc(args: &[&str]) {
-    use std::io::Write;
-    let Some(sock) = music_sock().lock().ok().and_then(|g| g.clone()) else { return; };
-    let payload = format!("{{\"command\":[{}]}}\n",
-        args.iter().map(|a| {
-            // numbers/bools pass through; everything else is JSON-quoted.
-            if a.parse::<f64>().is_ok() || **a == *"true" || **a == *"false" { a.to_string() }
-            else { format!("\"{a}\"") }
-        }).collect::<Vec<_>>().join(","));
-    if let Ok(mut s) = mpv_ipc::connect(&sock) {
-        let _ = s.write_all(payload.as_bytes());
-    }
-}
-
-/// Same JSON-IPC push for the windowed VIDEO mpv ("tulipix-mpv" socket) —
-/// drives PiP float / shader toggles on the external player window.
-fn video_ipc(args: &[&str]) {
-    use std::io::Write;
-    let sock = mpv_ipc::endpoint("tulipix-mpv");
-    let payload = format!("{{\"command\":[{}]}}\n",
-        args.iter().map(|a| {
-            if a.parse::<f64>().is_ok() || **a == *"true" || **a == *"false" { a.to_string() }
-            else { format!("\"{a}\"") }
-        }).collect::<Vec<_>>().join(","));
-    if let Ok(mut s) = mpv_ipc::connect(&sock) {
-        let _ = s.write_all(payload.as_bytes());
-    }
-}
+// music_ipc / video_ipc moved to tulipix_common (playback core).
 
 /// Advance to the next track honoring shuffle + repeat (off/all/one). Called on
 /// natural end-of-file and by the Next button.
