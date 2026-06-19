@@ -769,6 +769,9 @@ pub fn wire(window: &MainWindow) {
         w0.set_tools_queue_status(tool_label(&kind).into()); // header shows the tool immediately
         w0.set_tools_error("".into());
         tools_apply_form(&w0);
+        // Populate the in-window queue with any jobs already running/queued.
+        let weak = w0.as_weak();
+        tokio::runtime::Handle::current().spawn(async move { tools_refresh_queue(weak).await; });
     });
     // Field edits (no model rebuild — the control holds its own value).
     window.on_tools_field_set(move |key, value| {
@@ -793,7 +796,11 @@ pub fn wire(window: &MainWindow) {
             tools_apply_form(&w0);
         }
     });
-    // Run → validate required fields, build the spec, submit, jump to Queue.
+    // Run → validate required fields, build the spec, submit. The tool stays
+    // open; the job appears in the in-window queue (below the form) with live
+    // progress. (Keeping the panel mounted also sidesteps the live-preview
+    // interpreter's "deleted parent" panic, #6426 — the Run button no longer
+    // removes the element it fires from.)
     let w = window.as_weak();
     window.on_tools_run(move || {
         let Some(w0) = w.upgrade() else { return; };
@@ -812,20 +819,6 @@ pub fn wire(window: &MainWindow) {
             if let Ok(pool) = pool_for("tools").await {
                 let _ = tulipix_tools::queue::submit(&pool, &kind, &spec, 0).await;
                 tools_refresh_queue(weak).await;
-            }
-        });
-        // Defer the detail-panel teardown to the next event-loop tick. The Run
-        // button lives inside the `if active-op != ""` block; clearing active-op
-        // synchronously deletes the element whose click is still being handled,
-        // which makes the Slint live-preview interpreter panic ("accessing
-        // deleted parent", upstream #6426). Switching views on the next tick lets
-        // this handler return on a live element first.
-        let weak_v = w0.as_weak();
-        let _ = slint::invoke_from_event_loop(move || {
-            if let Some(w0) = weak_v.upgrade() {
-                w0.set_tools_active_op("".into());
-                w0.set_tools_category("queue".into());
-                tools_refresh(&w0);
             }
         });
     });

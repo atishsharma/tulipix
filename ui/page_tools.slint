@@ -279,14 +279,13 @@ export component ToolsPage inherits Rectangle {
                 VerticalLayout { alignment: center; HdrChip { icon: Icons.music; label: "Audio";     min-width: 88px;  dark: Theme.dark; accent: root.accent; active: category == "audio";   clicked => { root.set-category("audio"); } } }
                 VerticalLayout { alignment: center; HdrChip { icon: Icons.image; label: "Photo";     min-width: 88px;  dark: Theme.dark; accent: root.accent; active: category == "photo";   clicked => { root.set-category("photo"); } } }
                 VerticalLayout { alignment: center; HdrChip { icon: Icons.message-circle; label: "Subtitles"; min-width: 100px; dark: Theme.dark; accent: root.accent; active: category == "subs";    clicked => { root.set-category("subs"); } } }
-                VerticalLayout { alignment: center; HdrChip { icon: Icons.inbox; label: "Queue";      min-width: 88px;  dark: Theme.dark; accent: root.accent; active: category == "queue";   clicked => { root.set-category("queue"); } } }
                 VerticalLayout { alignment: center; HdrChip { icon: Icons.settings; label: "Settings"; min-width: 96px; dark: Theme.dark; accent: root.accent; active: category == "settings"; clicked => { root.set-category("settings"); } } }
                 Rectangle { horizontal-stretch: 1; }
             }
         }
 
         // Row 3 — horizontal tool bar (tool categories only).
-        if category != "queue" && category != "settings": Rectangle {
+        if category != "settings": Rectangle {
             height: 68px; horizontal-stretch: 1; background: Theme.atmosphere;
             border-width: 1px; border-color: Theme.outline;
             HorizontalLayout {
@@ -306,34 +305,6 @@ export component ToolsPage inherits Rectangle {
         Rectangle {
             vertical-stretch: 1; horizontal-stretch: 1; background: transparent;
 
-            // Queue.
-            if category == "queue": VerticalLayout {
-                padding: 28px; spacing: 14px;
-                HorizontalLayout {
-                    spacing: 12px;
-                    VerticalLayout { alignment: center; horizontal-stretch: 1;
-                        Text { text: "Job queue"; color: Theme.text; font-size: 18px; font-weight: 700; }
-                        Text { text: root.queue-status; color: Theme.text-dim; font-size: 12px; } }
-                    VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        Text { text: "Workers: " + root.worker-slots; color: Theme.text-dim; font-size: 12px; } }
-                    VerticalLayout { alignment: center; horizontal-stretch: 0; width: 150px;
-                        Slider { minimum: 1; maximum: 6; value: root.worker-slots;
-                            changed(v) => { root.worker-slots = round(v); root.set-workers(round(v)); } } }
-                    ActBtn { label: "Clear all"; tint: Theme.error;
-                        clicked => { root.ask(-1, "clear", "Clear all jobs from the queue?"); } }
-                }
-                ScrollView {
-                    vertical-stretch: 1; horizontal-stretch: 1;
-                    VerticalLayout { spacing: 10px; alignment: start;
-                        for job in root.queue-jobs: QueueRow { job: job;
-                            action(i, a) => { root.queue-action(i, a); }
-                            confirm(i, a) => { root.ask(i, a, "Remove this job from the queue?"); } }
-                        if root.queue-jobs.length == 0: Text { text: "No jobs yet. Pick a tool and Run.";
-                            color: Theme.text-dim; font-size: 13px; }
-                    }
-                }
-            }
-
             // Settings — external tool availability.
             if category == "settings": VerticalLayout {
                 padding: 28px; spacing: 14px;
@@ -350,7 +321,7 @@ export component ToolsPage inherits Rectangle {
             }
 
             // Tool detail (full width) or hint.
-            if category != "queue" && category != "settings": Rectangle {
+            if category != "settings": Rectangle {
                 if root.active-op == "": VerticalLayout {
                     alignment: center;
                     HorizontalLayout { alignment: center;
@@ -358,7 +329,7 @@ export component ToolsPage inherits Rectangle {
                             background: root.accent.with-alpha(0.14);
                             AppIcon { source: Icons.settings; tint: root.accent; width: 30px; height: 30px; } } }
                     Text { text: "Pick a tool above"; color: Theme.text; font-size: 16px; font-weight: 700; horizontal-alignment: center; }
-                    Text { text: "Set its options, then Run — progress shows in the Queue tab.";
+                    Text { text: "Set its options, then Run — jobs and their progress show inside the tool, below the form.";
                         color: Theme.text-dim; font-size: 13px; horizontal-alignment: center; }
                 }
                 if root.active-op != "": HorizontalLayout {
@@ -407,6 +378,34 @@ export component ToolsPage inherits Rectangle {
                                     RunButton { label: "Run"; clicked => { root.run(); } }
                                     RunButton { label: "Reset"; primary: false; clicked => { root.reset(); } }
                                 }
+
+                                // ── Job queue, in-window ──────────────────────────
+                                // The queue lives under each tool's form (no separate
+                                // tab): Run drops a job here and it shows live progress
+                                // with the same pause/resume/cancel/retry/remove/reorder
+                                // controls. The queue is global, so jobs from any tool
+                                // appear here.
+                                Rectangle { height: 1px; background: Theme.outline; }
+                                HorizontalLayout {
+                                    spacing: 12px;
+                                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                        Text { text: "Job queue"; color: Theme.text; font-size: 15px; font-weight: 700; }
+                                        Text { text: root.queue-status; color: Theme.text-dim; font-size: 11px; } }
+                                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                        Text { text: "Workers " + root.worker-slots; color: Theme.text-dim; font-size: 11px;
+                                            horizontal-alignment: center; }
+                                        Slider { width: 120px; minimum: 1; maximum: 6; value: root.worker-slots;
+                                            changed(v) => { root.worker-slots = round(v); root.set-workers(round(v)); } } }
+                                    VerticalLayout { alignment: center;
+                                        ActBtn { label: "Clear all"; tint: Theme.error;
+                                            clicked => { root.ask(-1, "clear", "Clear all jobs from the queue?"); } } }
+                                }
+                                for job in root.queue-jobs: QueueRow { job: job;
+                                    action(i, a) => { root.queue-action(i, a); }
+                                    confirm(i, a) => { root.ask(i, a, "Remove this job from the queue?"); } }
+                                if root.queue-jobs.length == 0: Text {
+                                    text: "No jobs yet. Set the options above and press Run.";
+                                    color: Theme.text-dim; font-size: 12px; }
                             }
                         }
                     }

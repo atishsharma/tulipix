@@ -53,9 +53,11 @@ export component HdrChip inherits Rectangle {
     // Inactive coloured chips: darken on light, brighten toward white on dark
     // so the label stays legible against the faint tint wash either way.
     property <color> lbl-color: active ? active-text : (has-grad ? (light-theme ? tint.mix(#000000, 0.72) : tint.mix(#ffffff, 0.5)) : (dark ? dk-text : #3c4043));
-    HorizontalLayout { alignment: center; spacing: 7px; padding-left: 4px; padding-right: 4px;
+    HorizontalLayout { alignment: center; spacing: root.label == "" ? 0px : 7px; padding-left: 4px; padding-right: 4px;
         if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: root.lbl-color; width: 15px; height: 15px; } }
-        Text {
+        // Icon-only chips (label == "") drop the Text so the chip can shrink to a
+        // compact square — keeps row-2 tab rows from clipping on scaled displays.
+        if root.label != "": Text {
             text: label; font-size: 13px; font-weight: has-grad ? 700 : 600;
             color: root.lbl-color;
             vertical-alignment: center;
