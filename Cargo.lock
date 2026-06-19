@@ -7152,6 +7152,7 @@ dependencies = [
  "tulipix-sec-music",
  "tulipix-sec-photos",
  "tulipix-sec-tools",
+ "tulipix-sec-videos",
  "tulipix-tools",
  "tulipix-ui",
  "tulipix-videos",
@@ -7383,6 +7384,22 @@ dependencies = [
  "tulipix-tools",
  "tulipix-ui",
  "walkdir",
+]
+
+[[package]]
+name = "tulipix-sec-videos"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "sha2",
+ "slint",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tulipix-common",
+ "tulipix-core",
+ "tulipix-ui",
+ "tulipix-videos",
 ]
 
 [[package]]
