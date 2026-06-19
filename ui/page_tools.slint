@@ -1,48 +1,219 @@
-// Tools section — a utilitarian control center. Two-tier header (Photos
-// pattern): row 1 title · search · queue-status pill; row 2 category tabs
-// (File ops · Video · Audio · Photo · Subtitles · Queue). Picking a tab shows
-// that category's ops; the search filters ops across every category.
+// Tools section — a utilitarian control center, redesigned.
+//
+// Layout: two-tier header (title · search · queue pill; category tabs). Body is
+// two-pane — left = the category's op list, right = an inline detail panel that
+// renders the selected tool's declarative `[ToolField]` form and runs it through
+// the shared job queue. The Queue tab takes the body full-width and shows live
+// jobs with progress + pause/resume/cancel/retry.
+//
+// Identity: amber→orange gradient (Theme.tools-accent → tools-accent-2) on the
+// active chip, Run button, progress bars, and accent dots.
 import { Theme } from "tokens.slint";
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, LineEdit, ComboBox, Slider, Switch } from "std-widgets.slint";
 import { HdrChip, HdrSearch, CountPill } from "section_header.slint";
 import { AppIcon, Icons } from "icons.slint";
 
-// One operation row in the detail body. `cat` is shown only in search results.
-export struct ToolOpRow { cat: string, label: string }
+// One operation row in the op list. `cat` is shown only in search results.
+export struct ToolOpRow { cat: string, label: string, kind: string }
 
+// One field in a tool's inline form.
+export struct ToolField {
+    key: string, label: string,
+    kind: string,          // file | files | folder | text | number | dropdown | slider | toggle
+    value: string,
+    options: [string],     // dropdown choices
+    min: float, max: float, // slider bounds
+    required: bool,
+    hint: string,
+}
+
+// One row in the live Queue view.
+export struct QueueJob { id: int, name: string, state: string, progress: float, message: string }
+
+// ── op list row ─────────────────────────────────────────────────────────────
 component OpRow inherits Rectangle {
     in property <ToolOpRow> op;
     in property <bool> show-cat: false;
+    in property <bool> active: false;
     in property <color> tint;
     callback clicked();
-    height: 56px; horizontal-stretch: 1; border-radius: Theme.radius-md;
-    background: touch.has-hover ? Theme.panel-2 : Theme.panel;
-    border-width: 1px; border-color: touch.has-hover ? tint : Theme.outline;
-    animate border-color { duration: 140ms; easing: ease-out; }
+    height: 52px; horizontal-stretch: 1; border-radius: Theme.radius-md;
+    background: active ? tint.with-alpha(0.14) : (touch.has-hover ? Theme.panel-2 : Theme.panel);
+    border-width: 1px; border-color: active || touch.has-hover ? tint : Theme.outline;
+    animate border-color, background { duration: 130ms; easing: ease-out; }
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
-        padding-left: 16px; padding-right: 16px; spacing: 12px;
-        Rectangle { width: 8px; height: 8px; border-radius: 4px; background: tint;
+        padding-left: 14px; padding-right: 14px; spacing: 12px;
+        Rectangle { width: 8px; height: 8px; border-radius: 4px;
+            background: @linear-gradient(135deg, Theme.tools-accent, Theme.tools-accent-2);
             horizontal-stretch: 0; vertical-stretch: 0; y: (parent.height - self.height) / 2; }
         VerticalLayout { alignment: center; horizontal-stretch: 1;
             Text { text: op.label; color: Theme.text; font-size: 14px; font-weight: 600; vertical-alignment: center; } }
         if show-cat: VerticalLayout { alignment: center; horizontal-stretch: 0;
             Text { text: op.cat; color: Theme.text-dim; font-size: 11px; font-weight: 600; vertical-alignment: center; } }
+        VerticalLayout { alignment: center; horizontal-stretch: 0;
+            AppIcon { source: Icons.chevron-right; tint: Theme.text-dim; width: 16px; height: 16px; } }
     }
 }
 
+// ── gradient action button ──────────────────────────────────────────────────
+component RunButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: true;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 40px; min-width: 120px; border-radius: 10px;
+    background: primary
+        ? (enabled ? @linear-gradient(135deg, Theme.tools-accent, Theme.tools-accent-2) : Theme.panel-2)
+        : (b.has-hover ? Theme.panel-2 : transparent);
+    border-width: primary ? 0px : 1px; border-color: Theme.outline;
+    opacity: enabled ? 1.0 : 0.5;
+    b := TouchArea { mouse-cursor: enabled ? pointer : default; clicked => { if (root.enabled) { root.clicked(); } } }
+    Text { text: label; color: primary ? #1a1040 : Theme.text; font-size: 14px; font-weight: 700;
+        horizontal-alignment: center; vertical-alignment: center; }
+}
+
+// ── one form field renderer ───────────────────────────────────────────────────
+component FieldRow inherits VerticalLayout {
+    in property <ToolField> field;
+    callback set(string, string);
+    callback pick(string);
+    spacing: 6px;
+    Text {
+        text: field.label + (field.required ? "  *" : "");
+        color: Theme.text; font-size: 13px; font-weight: 600;
+    }
+    // path-picker fields (file / files / folder)
+    if field.kind == "file" || field.kind == "files" || field.kind == "folder": HorizontalLayout {
+        spacing: 8px;
+        Rectangle {
+            horizontal-stretch: 1; height: 38px; border-radius: 9px;
+            background: Theme.panel-2; border-width: 1px; border-color: Theme.outline;
+            HorizontalLayout { padding-left: 12px; padding-right: 12px;
+                Text {
+                    text: field.value == "" ? "No file chosen"
+                          : (field.kind == "files" ? "Multiple files selected" : field.value);
+                    color: field.value == "" ? Theme.text-dim : Theme.text;
+                    font-size: 12px; vertical-alignment: center; overflow: elide; horizontal-stretch: 1;
+                } }
+        }
+        RunButton { label: field.kind == "folder" ? "Choose folder…" : "Choose…"; primary: false;
+            min-width: 130px; clicked => { root.pick(field.key); } }
+    }
+    if field.kind == "text": LineEdit {
+        text: field.value; placeholder-text: field.hint;
+        edited(t) => { root.set(field.key, t); }
+    }
+    if field.kind == "number": LineEdit {
+        text: field.value; input-type: number; placeholder-text: field.hint;
+        edited(t) => { root.set(field.key, t); }
+    }
+    if field.kind == "dropdown": ComboBox {
+        model: field.options; current-value: field.value;
+        selected(v) => { root.set(field.key, v); }
+    }
+    if field.kind == "slider": HorizontalLayout {
+        spacing: 12px;
+        Slider {
+            horizontal-stretch: 1; minimum: field.min; maximum: field.max;
+            value: field.value == "" ? field.min : field.value.to-float();
+            changed(v) => { root.set(field.key, "\{round(v)}"); }
+        }
+        Text { text: field.value == "" ? "—" : field.value; color: Theme.text-dim;
+            font-size: 13px; font-weight: 700; vertical-alignment: center; min-width: 36px; }
+    }
+    if field.kind == "toggle": HorizontalLayout {
+        alignment: start;
+        Switch { checked: field.value == "true"; text: field.hint;
+            toggled => { root.set(field.key, self.checked ? "true" : "false"); } }
+    }
+    if field.hint != "" && field.kind != "text" && field.kind != "number" && field.kind != "toggle": Text {
+        text: field.hint; color: Theme.text-dim; font-size: 11px;
+    }
+}
+
+component ActBtn inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    horizontal-stretch: 0; height: 28px; min-width: 64px; border-radius: 8px;
+    background: t.has-hover ? Theme.panel-2 : transparent;
+    border-width: 1px; border-color: Theme.outline;
+    t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    Text { text: label; color: Theme.text; font-size: 12px; font-weight: 600;
+        horizontal-alignment: center; vertical-alignment: center; }
+}
+
+// ── live queue row ────────────────────────────────────────────────────────────
+component QueueRow inherits Rectangle {
+    in property <QueueJob> job;
+    callback action(int, string);
+    height: 76px; horizontal-stretch: 1; border-radius: Theme.radius-md;
+    background: Theme.panel; border-width: 1px; border-color: Theme.outline;
+    property <color> chip:
+        job.state == "running" ? Theme.tools-accent :
+        job.state == "done"    ? Theme.ok :
+        job.state == "error"   ? Theme.error :
+        job.state == "paused"  ? Theme.warn : Theme.text-dim;
+    VerticalLayout {
+        padding: 12px; spacing: 7px;
+        HorizontalLayout {
+            spacing: 10px;
+            Text { text: job.name; color: Theme.text; font-size: 14px; font-weight: 700;
+                vertical-alignment: center; horizontal-stretch: 0; }
+            // state chip
+            Rectangle { horizontal-stretch: 0; border-radius: 7px; background: chip.with-alpha(0.16);
+                HorizontalLayout { padding-left: 9px; padding-right: 9px; padding-top: 3px; padding-bottom: 3px;
+                    Text { text: job.state; color: chip; font-size: 10px; font-weight: 800; } } }
+            Rectangle { horizontal-stretch: 1; }
+            // contextual actions
+            if job.state == "running": ActBtn { label: "Pause"; clicked => { root.action(job.id, "pause"); } }
+            if job.state == "paused":  ActBtn { label: "Resume"; clicked => { root.action(job.id, "resume"); } }
+            if job.state == "error":   ActBtn { label: "Retry"; clicked => { root.action(job.id, "retry"); } }
+            if job.state == "running" || job.state == "queued" || job.state == "paused":
+                ActBtn { label: "Cancel"; clicked => { root.action(job.id, "cancel"); } }
+        }
+        // progress bar
+        Rectangle {
+            height: 7px; border-radius: 4px; background: Theme.panel-2;
+            border-width: 1px; border-color: Theme.outline;
+            Rectangle {
+                x: 0; height: parent.height; border-radius: 4px;
+                width: parent.width * max(0.0, min(1.0, job.progress));
+                background: @linear-gradient(90deg, Theme.tools-accent, Theme.tools-accent-2);
+                animate width { duration: 200ms; easing: ease-out; }
+            }
+        }
+        if job.message != "": Text { text: job.message; color: Theme.text-dim; font-size: 11px; overflow: elide; }
+    }
+}
+
+// ── page ─────────────────────────────────────────────────────────────────────
 export component ToolsPage inherits Rectangle {
     in-out property <string> category: "fileops";
     in-out property <string> query: "";
     in property <string> cat-title: "File ops";
     in property <string> cat-icon: "";
-    in property <[ToolOpRow]> op-rows: [];      // body rows (current category, or search matches)
-    in property <string> queue-status: "Idle";  // queue summary for the count pill
+    in property <[ToolOpRow]> op-rows: [];
+    in property <string> queue-status: "Idle";
+    in property <[ToolField]> fields: [];
+    in property <string> active-op: "";
+    in property <string> active-label: "";
+    in property <string> error: "";
+    in property <[QueueJob]> queue-jobs: [];
+    in-out property <int> worker-slots: 2;
+
     callback open-tool(string);
     callback set-category(string);
     callback search(string);
+    callback field-set(string, string);
+    callback field-pick(string);
+    callback run();
+    callback reset();
+    callback close-detail();
+    callback queue-action(int, string);
+    callback set-workers(int);
 
-    property <color> accent: #14b8a6;
+    property <color> accent: Theme.tools-accent;
     background: transparent;
 
     VerticalLayout {
@@ -58,7 +229,7 @@ export component ToolsPage inherits Rectangle {
                     Text { text: "Tools"; color: Theme.text; font-size: 22px; font-weight: 700; } }
                 Rectangle { horizontal-stretch: 1; }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    HdrSearch { width: 360px; dark: true; placeholder: "Find a tool";
+                    HdrSearch { width: 340px; dark: true; placeholder: "Find a tool";
                         query <=> root.query; edited(q) => { root.search(q); } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     CountPill { accent: root.accent; seg1: "" + root.queue-status; } }
@@ -81,31 +252,101 @@ export component ToolsPage inherits Rectangle {
             }
         }
 
-        // Body — detail list for the selected category (or search results).
-        ScrollView {
+        // Body.
+        if category == "queue": queue-body := Rectangle {
             vertical-stretch: 1; horizontal-stretch: 1;
             VerticalLayout {
-                padding: 32px; padding-top: 24px; spacing: 14px; alignment: start;
+                padding: 28px; spacing: 14px; alignment: start;
                 HorizontalLayout {
-                    spacing: 12px; alignment: start;
-                    Rectangle { width: 44px; height: 44px; border-radius: 12px;
-                        horizontal-stretch: 0; vertical-stretch: 0;
-                        background: root.accent.with-alpha(0.16);
-                        AppIcon { source: root.query == "" ? Icons.folder : Icons.search; tint: Theme.text-dim; width: 22px; height: 22px; } }
+                    spacing: 12px;
                     VerticalLayout { alignment: center; horizontal-stretch: 1;
-                        Text { text: root.query == "" ? root.cat-title : "Results for “" + root.query + "”";
-                            color: Theme.text; font-size: 18px; font-weight: 700; }
+                        Text { text: "Job queue"; color: Theme.text; font-size: 18px; font-weight: 700; }
+                        Text { text: root.queue-status; color: Theme.text-dim; font-size: 12px; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Text { text: "Parallel workers: " + root.worker-slots; color: Theme.text-dim; font-size: 12px; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0; width: 160px;
+                        Slider { minimum: 1; maximum: 6; value: root.worker-slots;
+                            changed(v) => { root.worker-slots = round(v); root.set-workers(round(v)); } } }
+                }
+                ScrollView {
+                    vertical-stretch: 1; horizontal-stretch: 1;
+                    VerticalLayout { spacing: 10px; alignment: start;
+                        for job in root.queue-jobs: QueueRow { job: job; action(i, a) => { root.queue-action(i, a); } }
+                        if root.queue-jobs.length == 0: Text { text: "No jobs yet. Pick a tool and Run.";
+                            color: Theme.text-dim; font-size: 13px; }
+                    }
+                }
+            }
+        }
+
+        if category != "queue": split := HorizontalLayout {
+            vertical-stretch: 1; horizontal-stretch: 1; spacing: 0px;
+
+            // Left — op list for the category (or search matches).
+            Rectangle {
+                width: 380px; background: transparent;
+                border-width: 1px; border-color: Theme.outline;
+                ScrollView {
+                    VerticalLayout {
+                        padding: 20px; spacing: 10px; alignment: start;
+                        Text {
+                            text: root.query == "" ? root.cat-title : "Results for “" + root.query + "”";
+                            color: Theme.text; font-size: 16px; font-weight: 700;
+                        }
                         Text { text: root.op-rows.length + (root.op-rows.length == 1 ? " operation" : " operations");
-                            color: Theme.text-dim; font-size: 12px; } }
+                            color: Theme.text-dim; font-size: 12px; }
+                        for op in root.op-rows: OpRow {
+                            op: op; tint: root.accent; show-cat: root.query != "";
+                            active: op.kind == root.active-op;
+                            clicked => { root.open-tool(op.kind); }
+                        }
+                        if root.op-rows.length == 0: Text {
+                            text: root.query == "" ? "No operations here." : "No tools match “" + root.query + "”.";
+                            color: Theme.text-dim; font-size: 13px;
+                        }
+                    }
                 }
-                for op[i] in root.op-rows: OpRow {
-                    op: op; tint: root.accent; show-cat: root.query != "";
-                    clicked => { root.open-tool(op.label); }
+            }
+
+            // Right — inline detail panel for the active tool, or a hint.
+            Rectangle {
+                horizontal-stretch: 1; background: transparent;
+                if root.active-op == "": VerticalLayout {
+                    alignment: center;
+                    HorizontalLayout { alignment: center;
+                        Rectangle { width: 64px; height: 64px; border-radius: 16px;
+                            background: root.accent.with-alpha(0.14);
+                            AppIcon { source: Icons.settings; tint: root.accent; width: 30px; height: 30px; } } }
+                    Text { text: "Pick a tool on the left"; color: Theme.text; font-size: 16px;
+                        font-weight: 700; horizontal-alignment: center; }
+                    Text { text: "Set its options, then Run — progress shows in the Queue tab.";
+                        color: Theme.text-dim; font-size: 13px; horizontal-alignment: center; }
                 }
-                if root.op-rows.length == 0: Text {
-                    text: root.query == "" ? "No operations in this category."
-                                           : "No tools match “" + root.query + "”.";
-                    color: Theme.text-dim; font-size: 13px;
+                if root.active-op != "": ScrollView {
+                    VerticalLayout {
+                        padding: 28px; spacing: 18px; alignment: start;
+                        HorizontalLayout {
+                            spacing: 12px;
+                            Rectangle { width: 44px; height: 44px; border-radius: 12px;
+                                horizontal-stretch: 0;
+                                background: @linear-gradient(135deg, Theme.tools-accent.with-alpha(0.22), Theme.tools-accent-2.with-alpha(0.22));
+                                AppIcon { source: Icons.settings; tint: root.accent; width: 22px; height: 22px; } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                Text { text: root.active-label; color: Theme.text; font-size: 18px; font-weight: 700; } }
+                            ActBtn { label: "Close"; clicked => { root.close-detail(); } }
+                        }
+                        for f in root.fields: FieldRow {
+                            field: f;
+                            set(k, v) => { root.field-set(k, v); }
+                            pick(k) => { root.field-pick(k); }
+                        }
+                        if root.error != "": Text { text: root.error; color: Theme.error; font-size: 12px; font-weight: 600; }
+                        HorizontalLayout {
+                            spacing: 10px; alignment: start;
+                            RunButton { label: "Run"; clicked => { root.run(); } }
+                            RunButton { label: "Reset"; primary: false; clicked => { root.reset(); } }
+                        }
+                    }
                 }
             }
         }

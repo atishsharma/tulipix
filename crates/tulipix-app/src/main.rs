@@ -87,7 +87,12 @@ fn main() -> Result<()> {
     // NativeOpenGL context). Force it unless the user overrode the backend.
     if std::env::var_os("SLINT_BACKEND").is_none() {
         // Safety: set at the very top of main, before any threads spawn.
+        // skia-opengl is required for the embedded-mpv texture path; a lean
+        // femtovg build (no embedded player) uses the femtovg backend instead.
+        #[cfg(feature = "renderer-skia")]
         unsafe { std::env::set_var("SLINT_BACKEND", "winit-skia-opengl"); }
+        #[cfg(all(not(feature = "renderer-skia"), feature = "renderer-femtovg"))]
+        unsafe { std::env::set_var("SLINT_BACKEND", "winit-femtovg"); }
     }
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
@@ -944,7 +949,7 @@ fn main() -> Result<()> {
         if let Some(w0) = w.upgrade() { cloud_set_filtered(&w0); }
     });
 
-    // ── Tools: category tabs + op search (static catalog, no backend yet) ──
+    // ── Tools: category tabs + op search ──
     let w = window.as_weak();
     window.on_tools_set_category(move |c| {
         if let Some(w0) = w.upgrade() { w0.set_tools_category(c.clone()); tools_refresh(&w0); }
@@ -953,11 +958,130 @@ fn main() -> Result<()> {
     window.on_tools_search(move |_q| {
         if let Some(w0) = w.upgrade() { tools_refresh(&w0); }
     });
-    window.on_tools_open(move |t| {
-        // Op execution is wired in a later pass.
-        let _ = t;
+    // Open a tool → seed its form defaults + show the inline detail panel.
+    let w = window.as_weak();
+    window.on_tools_open(move |kind| {
+        let Some(w0) = w.upgrade() else { return; };
+        let kind = kind.to_string();
+        let mut map = std::collections::HashMap::new();
+        for f in tool_fields(&kind) { map.insert(f.key.to_string(), f.value.to_string()); }
+        *tools_form().lock().unwrap() = (kind.clone(), map);
+        w0.set_tools_active_op(kind.as_str().into());
+        w0.set_tools_active_label(tool_label(&kind).into());
+        w0.set_tools_error("".into());
+        tools_apply_form(&w0);
+    });
+    // Field edits (no model rebuild — the control holds its own value).
+    window.on_tools_field_set(move |key, value| {
+        tools_form().lock().unwrap().1.insert(key.to_string(), value.to_string());
+    });
+    // File/folder pickers → write the path back + rebuild the model.
+    let w = window.as_weak();
+    window.on_tools_field_pick(move |key| {
+        let Some(w0) = w.upgrade() else { return; };
+        let key = key.to_string();
+        let active = w0.get_tools_active_op().to_string();
+        let fkind = tool_fields(&active).into_iter().find(|f| f.key == key)
+            .map(|f| f.kind.to_string()).unwrap_or_default();
+        let picked: Option<String> = match fkind.as_str() {
+            "folder" => rfd::FileDialog::new().pick_folder().map(|p| p.to_string_lossy().to_string()),
+            "files"  => rfd::FileDialog::new().pick_files().map(|ps|
+                ps.iter().map(|p| p.to_string_lossy().to_string()).collect::<Vec<_>>().join("\n")),
+            _ => rfd::FileDialog::new().pick_file().map(|p| p.to_string_lossy().to_string()),
+        };
+        if let Some(v) = picked {
+            tools_form().lock().unwrap().1.insert(key, v);
+            tools_apply_form(&w0);
+        }
+    });
+    // Run → validate required fields, build the spec, submit, jump to Queue.
+    let w = window.as_weak();
+    window.on_tools_run(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let (kind, map) = { let g = tools_form().lock().unwrap(); (g.0.clone(), g.1.clone()) };
+        if kind.is_empty() { return; }
+        for f in tool_fields(&kind) {
+            if f.required && map.get(f.key.as_str()).map(|v| v.trim().is_empty()).unwrap_or(true) {
+                w0.set_tools_error(format!("{} is required", f.label).into());
+                return;
+            }
+        }
+        w0.set_tools_error("".into());
+        let spec = tools_build_spec(&kind, &map).to_string();
+        let weak = w0.as_weak();
+        tokio::runtime::Handle::current().spawn(async move {
+            if let Ok(pool) = pool_for("tools").await {
+                let _ = tulipix_tools::queue::submit(&pool, &kind, &spec, 0).await;
+                tools_refresh_queue(weak).await;
+            }
+        });
+        w0.set_tools_active_op("".into());
+        w0.set_tools_category("queue".into());
+        tools_refresh(&w0);
+    });
+    // Reset → re-seed the active tool's defaults.
+    let w = window.as_weak();
+    window.on_tools_reset(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let kind = w0.get_tools_active_op().to_string();
+        let mut map = std::collections::HashMap::new();
+        for f in tool_fields(&kind) { map.insert(f.key.to_string(), f.value.to_string()); }
+        *tools_form().lock().unwrap() = (kind, map);
+        w0.set_tools_error("".into());
+        tools_apply_form(&w0);
+    });
+    let w = window.as_weak();
+    window.on_tools_close(move || {
+        if let Some(w0) = w.upgrade() { w0.set_tools_active_op("".into()); }
+    });
+    // Queue row actions + worker-slot slider.
+    let w = window.as_weak();
+    window.on_queue_action(move |id, act| {
+        let Some(w0) = w.upgrade() else { return; };
+        let weak = w0.as_weak();
+        let (id, act) = (id as i64, act.to_string());
+        tokio::runtime::Handle::current().spawn(async move {
+            if let Ok(pool) = pool_for("tools").await {
+                let _ = match act.as_str() {
+                    "pause"  => tulipix_tools::queue::pause(&pool, id).await,
+                    "resume" => tulipix_tools::queue::resume(&pool, id).await,
+                    "cancel" => tulipix_tools::queue::cancel(&pool, id).await,
+                    "retry"  => tulipix_tools::queue::retry(&pool, id).await,
+                    _ => Ok(()),
+                };
+                tools_refresh_queue(weak).await;
+            }
+        });
+    });
+    window.on_tools_set_workers(move |n| {
+        tokio::runtime::Handle::current().spawn(async move {
+            if let Ok(pool) = pool_for("tools").await {
+                let _ = tulipix_tools::queue::set_worker_slots(&pool, n as i64).await;
+            }
+        });
     });
     tools_refresh(&window);
+    // Load persisted worker-slot count + start the queue drainer.
+    {
+        let weak = window.as_weak();
+        tokio::runtime::Handle::current().spawn(async move {
+            if let Ok(pool) = pool_for("tools").await {
+                let n = tulipix_tools::queue::worker_slots(&pool).await.unwrap_or(2);
+                let _ = weak.upgrade_in_event_loop(move |w| w.set_tools_worker_slots(n as i32));
+            }
+        });
+        tools_start_worker();
+    }
+    // Poll tools.db into the Queue model (also catches CLI-submitted jobs).
+    {
+        let weak = window.as_weak();
+        let timer = slint::Timer::default();
+        timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(750), move || {
+            let w = weak.clone();
+            tokio::runtime::Handle::current().spawn(async move { tools_refresh_queue(w).await; });
+        });
+        std::mem::forget(timer); // fire for the app's lifetime
+    }
 
     // Photo viewer — click a tile to open the original in a full-screen modal,
     // then navigate the library with prev/next (and the slideshow timer).
@@ -1399,11 +1523,12 @@ fn main() -> Result<()> {
             match v.as_str() {
                 "podcasts" => {
                     w.set_music_podcast_detail_open(false);
-                    populate_podcasts(&w);
-                    populate_podcast_latest(&w);
-                    populate_podcast_downloads(&w);
+                    // First switch only — models persist; mutations refresh their own view.
+                    if music_warm_once("podcasts") { populate_podcasts(&w); }
+                    if music_warm_once("podcast_latest") { populate_podcast_latest(&w); }
+                    if music_warm_once("podcast_downloads") { populate_podcast_downloads(&w); }
                 }
-                "audiobooks" => populate_audiobooks(&w),
+                "audiobooks" => { if music_warm_once("audiobooks") { populate_audiobooks(&w); } }
                 // Counts feed the Home tiles; an empty cache (first ever open)
                 // auto-triggers one full Refresh so the section self-populates.
                 "radio" => radio_load_counts(w.as_weak(), true),
@@ -1425,10 +1550,11 @@ fn main() -> Result<()> {
     window.on_section_changed(move |s| {
         let Some(w0) = w.upgrade() else { return; };
         if s.as_str() == "music" {
-            populate_podcasts(&w0);
-            populate_podcast_latest(&w0);
-            populate_podcast_downloads(&w0);
-            populate_podcast_trends(&w0);
+            // Warm each sub-page once; re-entering the section reuses loaded models.
+            if music_warm_once("podcasts") { populate_podcasts(&w0); }
+            if music_warm_once("podcast_latest") { populate_podcast_latest(&w0); }
+            if music_warm_once("podcast_downloads") { populate_podcast_downloads(&w0); }
+            if music_warm_once("podcast_trends") { populate_podcast_trends(&w0); }
             // Warm YouTube in the background too, so its first open is instant.
             warm_youtube(&w0);
         }
@@ -1915,36 +2041,66 @@ fn main() -> Result<()> {
                 .fetch_all(&pool).await.unwrap_or_default();
             let total = rows.len();
             if total == 0 { let _ = weak.upgrade_in_event_loop(|w| w.set_music_lyrics_sync_status("All synced".into())); return; }
-            let client = reqwest::Client::new();
-            let (mut done, mut found) = (0usize, 0usize);
+            // Per-request timeout so one hung connection can't stall the batch.
+            let client = reqwest::Client::builder()
+                .timeout(std::time::Duration::from_secs(12))
+                .build().unwrap_or_default();
+            // Bounded parallelism: up to 8 LRCLIB lookups in flight at once (≈one
+            // batch of work where the old loop did one-at-a-time + 150ms sleeps).
+            let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(8));
+            let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let found = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+            let mut set = tokio::task::JoinSet::new();
             for (id, title, artist, album, dur) in rows {
                 let title = title.unwrap_or_default();
                 let artist = artist.unwrap_or_default();
                 let album = album.unwrap_or_default();
-                if !title.is_empty() {
-                    let url = tulipix_music::lyrics::get_url(&artist, &title, &album, dur);
-                    if let Ok(resp) = client.get(&url)
-                        .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
-                        .send().await {
-                        if let Ok(json) = resp.json::<serde_json::Value>().await {
-                            let synced = json["syncedLyrics"].as_str().unwrap_or("");
-                            let plain = json["plainLyrics"].as_str().unwrap_or("");
-                            if !synced.is_empty() { let _ = tulipix_music::lyrics::store(&pool, id, synced, true, "lrclib").await; found += 1; }
-                            else if !plain.is_empty() { let _ = tulipix_music::lyrics::store(&pool, id, plain, false, "lrclib").await; found += 1; }
+                let (pool, client) = (pool.clone(), client.clone());
+                let (sem, done, found, weak) = (sem.clone(), done.clone(), found.clone(), weak.clone());
+                set.spawn(async move {
+                    let _permit = sem.acquire().await;
+                    if !title.is_empty() {
+                        let url = tulipix_music::lyrics::get_url(&artist, &title, &album, dur);
+                        // Up to 2 attempts: retry once on a transport error or 429.
+                        for attempt in 0..2u32 {
+                            match client.get(&url)
+                                .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
+                                .send().await {
+                                Ok(resp) => {
+                                    if resp.status().as_u16() == 429 {
+                                        tokio::time::sleep(std::time::Duration::from_millis(400 * (attempt as u64 + 1))).await;
+                                        continue;
+                                    }
+                                    if let Ok(json) = resp.json::<serde_json::Value>().await {
+                                        let synced = json["syncedLyrics"].as_str().unwrap_or("");
+                                        let plain = json["plainLyrics"].as_str().unwrap_or("");
+                                        if !synced.is_empty() {
+                                            let _ = tulipix_music::lyrics::store(&pool, id, synced, true, "lrclib").await;
+                                            found.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        } else if !plain.is_empty() {
+                                            let _ = tulipix_music::lyrics::store(&pool, id, plain, false, "lrclib").await;
+                                            found.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        }
+                                    }
+                                    break;
+                                }
+                                Err(_) => { tokio::time::sleep(std::time::Duration::from_millis(300)).await; }
+                            }
                         }
                     }
-                }
-                done += 1;
-                if done % 4 == 0 || done == total {
-                    let pct = done * 100 / total;
-                    let frac = done as f32 / total as f32;
-                    let _ = weak.upgrade_in_event_loop(move |w| {
-                        w.set_music_lyrics_sync_status(format!("{pct}%").into());
-                        w.set_music_lyrics_sync_progress(frac);
-                    });
-                }
-                tokio::time::sleep(std::time::Duration::from_millis(150)).await; // be gentle on LRCLIB
+                    let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                    if d % 4 == 0 || d == total {
+                        let pct = d * 100 / total;
+                        let frac = d as f32 / total as f32;
+                        let _ = weak.upgrade_in_event_loop(move |w| {
+                            w.set_music_lyrics_sync_status(format!("{pct}%").into());
+                            w.set_music_lyrics_sync_progress(frac);
+                        });
+                    }
+                });
             }
+            while set.join_next().await.is_some() {}
+            let found = found.load(std::sync::atomic::Ordering::Relaxed);
             let _ = weak.upgrade_in_event_loop(move |w| {
                 w.set_music_lyrics_sync_status(format!("{found} found").into());
                 w.set_music_lyrics_sync_progress(1.0);
@@ -2701,6 +2857,22 @@ fn main() -> Result<()> {
         let on = !w.get_music_home_connect();
         w.set_music_home_connect(on);
         save_music_pref("music.home_connect", if on { "1" } else { "0" });
+    });
+    // YouTube Home gradient outline (default on) — persisted.
+    let w = window.as_weak();
+    window.on_music_toggle_yt_home_connect(move || {
+        let Some(w) = w.upgrade() else { return; };
+        let on = !w.get_music_yt_home_connect();
+        w.set_music_yt_home_connect(on);
+        save_music_pref("music.yt_home_connect", if on { "1" } else { "0" });
+    });
+    // Bold gradient outline on the now-playing mini players (default on) — persisted.
+    let w = window.as_weak();
+    window.on_music_toggle_mini_outline(move || {
+        let Some(w) = w.upgrade() else { return; };
+        let on = !w.get_music_mini_outline();
+        w.set_music_mini_outline(on);
+        save_music_pref("music.mini_outline", if on { "1" } else { "0" });
     });
     let w = window.as_weak();
     window.on_music_set_crossfade(move |v| {
@@ -3526,6 +3698,12 @@ fn main() -> Result<()> {
             let _ = weak.upgrade_in_event_loop(|w| populate_yt_subs(&w));
         });
     });
+    // Manual refresh — re-fetch subscriber/video counts for every channel. Counts
+    // never auto-refresh on opening the page; this button is the only trigger.
+    let w = window.as_weak();
+    window.on_music_yt_refresh_subs(move || {
+        if let Some(w0) = w.upgrade() { yt_fetch_sub_meta(w0.as_weak(), true); }
+    });
     let w = window.as_weak();
     window.on_music_yt_subs_set_sort(move |s| {
         let Some(w0) = w.upgrade() else { return; };
@@ -3629,7 +3807,7 @@ fn main() -> Result<()> {
                         w.set_music_yt_status(slint::SharedString::new());
                         w.set_music_yt_tab("subscriptions".into());
                         populate_yt_subs(&w);
-                        yt_fetch_sub_meta(w.as_weak());
+                        yt_fetch_sub_meta(w.as_weak(), false);
                     });
                 }
                 _ => {
@@ -3660,7 +3838,7 @@ fn main() -> Result<()> {
                         w.set_music_yt_status(slint::SharedString::new());
                         w.set_music_yt_tab("subscriptions".into());
                         populate_yt_subs(&w);
-                        yt_fetch_sub_meta(w.as_weak());
+                        yt_fetch_sub_meta(w.as_weak(), false);
                     });
                 }
                 None => {
@@ -5058,6 +5236,10 @@ fn main() -> Result<()> {
         let s = tulipix_core::settings::Settings::load().unwrap_or_default();
         window.set_music_gapless(s.advanced.get("music.gapless").map(|v| v != "0").unwrap_or(true));
         window.set_music_home_connect(s.advanced.get("music.home_connect").map(|v| v == "1").unwrap_or(false));
+        // YouTube Home gradient outline defaults ON when unset.
+        window.set_music_yt_home_connect(s.advanced.get("music.yt_home_connect").map(|v| v == "1").unwrap_or(true));
+        // Mini-player bold outline defaults ON when unset.
+        window.set_music_mini_outline(s.advanced.get("music.mini_outline").map(|v| v == "1").unwrap_or(true));
         window.set_music_crossfade(s.advanced.get("music.crossfade").and_then(|v| v.parse().ok()).unwrap_or(0.0));
         window.set_music_replaygain(s.advanced.get("music.replaygain").cloned().unwrap_or_else(|| "off".into()).into());
         window.set_music_grid_density(s.advanced.get("music.grid_density")
@@ -6849,6 +7031,8 @@ static CLOUD_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
 static PODCASTS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
 static RADIO_POOL:    OnceLock<sqlx::SqlitePool> = OnceLock::new();
 static YOUTUBE_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
+// Tools job queue (tools.db) — shared by the GUI Tools section + CLI.
+static TOOLS_POOL:    OnceLock<sqlx::SqlitePool> = OnceLock::new();
 // Map photo tile index → absolute path so the click handler can pop the
 // viewer with the original (not the 320px thumb).
 static PHOTO_PATHS: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();
@@ -9997,15 +10181,24 @@ fn cloud_set_filtered(w: &MainWindow) {
     w.set_cloud_entries(slint::ModelRc::new(slint::VecModel::from(rows)));
 }
 
-// Static Tools catalog: (key, title, icon, ops). Mirrors the cards the page used
-// to show; the detail body + search read from here.
-const TOOLS_CATALOG: &[(&str, &str, &str, &[&str])] = &[
-    ("fileops", "File ops",  "📁", &["Rename", "Merge", "Split", "Hash", "Folder diff"]),
-    ("video",   "Video",     "🎬", &["Compress", "Trim", "Convert", "Thumbnails", "Download"]),
-    ("audio",   "Audio",     "🎵", &["Compress", "Normalise (R128)", "Extract tracks"]),
-    ("photo",   "Photo",     "🖼", &["Compress", "Resize", "Watermark", "PDF tools"]),
-    ("subs",    "Subtitles", "💬", &["Transcribe (whisper)", "Burn-in subtitles"]),
-    ("queue",   "Queue",     "⚙", &["Parallel workers", "Pause / resume", "Retry"]),
+// Static Tools catalog: (key, title, icon, ops). Each op is (label, kind) where
+// `kind` is the job kind the executor + form bridge dispatch on. The detail
+// body + search read from here.
+type ToolOp = (&'static str, &'static str); // (label, kind)
+const TOOLS_CATALOG: &[(&str, &str, &str, &[ToolOp])] = &[
+    ("fileops", "File ops",  "📁", &[
+        ("Rename", "rename"), ("Merge", "merge"), ("Split", "split"),
+        ("Hash", "hash"), ("Folder diff", "folder_diff")]),
+    ("video",   "Video",     "🎬", &[
+        ("Compress video", "compress_video"), ("Trim", "trim"), ("Convert", "convert"),
+        ("Thumbnail", "thumbnail"), ("Download", "download"), ("Live record", "download_live")]),
+    ("audio",   "Audio",     "🎵", &[
+        ("Compress audio", "compress_audio"), ("Normalise (R128)", "normalize"),
+        ("Extract audio", "extract")]),
+    ("photo",   "Photo",     "🖼", &[
+        ("Compress photo", "compress_photo"), ("Resize", "resize"), ("Watermark", "watermark")]),
+    ("subs",    "Subtitles", "💬", &[
+        ("Transcribe", "transcribe"), ("Burn-in subtitles", "burn_subs")]),
 ];
 
 /// Rebuild the Tools body from the window's category + query. Empty query shows
@@ -10018,20 +10211,503 @@ fn tools_refresh(w: &MainWindow) {
         if let Some((_, title, icon, ops)) = TOOLS_CATALOG.iter().find(|(k, ..)| *k == cat) {
             w.set_tools_cat_title((*title).into());
             w.set_tools_cat_icon((*icon).into());
-            for op in *ops {
-                rows.push(ToolOpRow { cat: (*title).into(), label: (*op).into() });
+            for (label, kind) in *ops {
+                rows.push(ToolOpRow { cat: (*title).into(), label: (*label).into(), kind: (*kind).into() });
             }
         }
     } else {
         for (_, title, _, ops) in TOOLS_CATALOG {
-            for op in *ops {
-                if op.to_lowercase().contains(&q) {
-                    rows.push(ToolOpRow { cat: (*title).into(), label: (*op).into() });
+            for (label, kind) in *ops {
+                if label.to_lowercase().contains(&q) {
+                    rows.push(ToolOpRow { cat: (*title).into(), label: (*label).into(), kind: (*kind).into() });
                 }
             }
         }
     }
     w.set_tools_op_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+}
+
+// ── Tools worker + job execution ───────────────────────────────────────────
+// One drainer task claims queued jobs (respecting the worker-slot cap that
+// `queue::claim_next` enforces), runs each on its own task, and reports live
+// progress back into tools.db. The GUI polls tools.db on a timer to render the
+// Queue view, so CLI-submitted jobs show up live too.
+
+/// In-memory edit buffer for the active tool's form: (kind, key→value).
+static TOOLS_FORM: OnceLock<std::sync::Mutex<(String, std::collections::HashMap<String, String>)>> = OnceLock::new();
+fn tools_form() -> &'static std::sync::Mutex<(String, std::collections::HashMap<String, String>)> {
+    TOOLS_FORM.get_or_init(|| std::sync::Mutex::new((String::new(), std::collections::HashMap::new())))
+}
+
+/// Human label for a job kind (queue rows + recent strip).
+fn tool_label(kind: &str) -> &'static str {
+    match kind {
+        "compress_video" => "Compress video", "compress_audio" => "Compress audio",
+        "compress_photo" => "Compress photo", "convert" => "Convert",
+        "trim" => "Trim", "resize" => "Resize", "thumbnail" => "Thumbnail",
+        "extract" => "Extract audio", "normalize" => "Normalise", "watermark" => "Watermark",
+        "burn_subs" => "Burn subtitles", "split" => "Split", "merge" => "Merge",
+        "download" => "Download", "download_playlist" => "Playlist download",
+        "download_live" => "Live record", "hash" => "Hash", "folder_diff" => "Folder diff",
+        "rename" => "Rename", "transcribe" => "Transcribe", "pdf" => "PDF",
+        _ => "Job",
+    }
+}
+
+/// Keep the last 200 chars of an error/message for the queue row.
+fn truncate_msg(s: &str) -> String {
+    let s = s.trim();
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() > 200 { chars[chars.len() - 200..].iter().collect() } else { s.to_string() }
+}
+
+/// Probe a media file's duration (seconds) via ffprobe; 0.0 if unknown.
+async fn ffprobe_duration(path: &str) -> f64 {
+    let bin = tulipix_core::thumbs::tool_bin("ffprobe");
+    let out = tokio::process::Command::new(&bin)
+        .args(["-v", "error", "-show_entries", "format=duration",
+               "-of", "default=noprint_wrappers=1:nokey=1", path])
+        .output().await;
+    out.ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .unwrap_or(0.0)
+}
+
+/// Spawn the queue drainer. Idempotent-ish: call once at startup.
+fn tools_start_worker() {
+    let handle = tokio::runtime::Handle::current();
+    handle.spawn(async move {
+        loop {
+            let pool = match pool_for("tools").await {
+                Ok(p) => p,
+                Err(_) => { tokio::time::sleep(std::time::Duration::from_secs(2)).await; continue; }
+            };
+            match tulipix_tools::queue::claim_next(&pool).await {
+                Ok(Some(id)) => {
+                    let pool2 = pool.clone();
+                    tokio::spawn(async move {
+                        let row: Option<(String, String)> =
+                            sqlx::query_as("SELECT kind, spec_json FROM jobs WHERE id = ?")
+                                .bind(id).fetch_optional(&pool2).await.ok().flatten();
+                        let Some((kind, spec)) = row else { return; };
+                        let res = tools_run_job(&pool2, id, &kind, &spec).await;
+                        let _ = match res {
+                            Ok(msg) => tulipix_tools::queue::complete(&pool2, id, true, Some(msg.as_str())).await,
+                            Err(e)  => tulipix_tools::queue::complete(&pool2, id, false, Some(truncate_msg(&e.to_string()).as_str())).await,
+                        };
+                    });
+                    // Let claim_next see the new 'running' count before retrying.
+                    tokio::time::sleep(std::time::Duration::from_millis(80)).await;
+                }
+                _ => tokio::time::sleep(std::time::Duration::from_millis(500)).await,
+            }
+        }
+    });
+}
+
+/// Run a job: plan its steps and execute them in order, scaling progress.
+async fn tools_run_job(pool: &sqlx::SqlitePool, id: i64, kind: &str, spec_json: &str) -> anyhow::Result<String> {
+    let spec: serde_json::Value = serde_json::from_str(spec_json).unwrap_or_else(|_| serde_json::json!({}));
+    let steps = tulipix_tools::exec::plan(kind, &spec)?;
+    let n = steps.len().max(1);
+    for (i, step) in steps.into_iter().enumerate() {
+        tools_run_step(pool, id, step, i as f64 / n as f64, 1.0 / n as f64).await?;
+    }
+    Ok("Completed".into())
+}
+
+/// Configure a Command to spawn silently on Windows (no console window).
+fn quiet_cmd(bin: &std::path::Path) -> tokio::process::Command {
+    let cmd = tokio::process::Command::new(bin);
+    #[cfg(windows)]
+    { let mut cmd = cmd; use std::os::windows::process::CommandExt; cmd.creation_flags(0x0800_0000); return cmd; }
+    #[cfg(not(windows))]
+    cmd
+}
+
+/// Drain stderr concurrently (avoids a full-pipe deadlock) and return it.
+fn spawn_stderr_drain(child: &mut tokio::process::Child) -> tokio::task::JoinHandle<String> {
+    let stderr = child.stderr.take();
+    tokio::spawn(async move {
+        use tokio::io::AsyncReadExt;
+        let mut s = String::new();
+        if let Some(mut se) = stderr { let _ = se.read_to_string(&mut s).await; }
+        s
+    })
+}
+
+async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::exec::Step, base: f64, span: f64) -> anyhow::Result<()> {
+    use tokio::io::AsyncBufReadExt;
+    use tulipix_tools::exec::Step;
+    match step {
+        Step::Ffmpeg { args, duration_input } => {
+            let bin = tulipix_core::thumbs::tool_bin("ffmpeg");
+            let dur = match &duration_input { Some(p) => ffprobe_duration(p).await, None => 0.0 };
+            let mut cmd = quiet_cmd(&bin);
+            cmd.arg("-y").arg("-nostdin");
+            cmd.args(&args);
+            cmd.arg("-progress").arg("pipe:1").arg("-nostats");
+            cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("ffmpeg not found ({e}) — set Tools directory in Settings"))?;
+            let err_task = spawn_stderr_drain(&mut child);
+            if let Some(stdout) = child.stdout.take() {
+                let mut lines = tokio::io::BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if let Some(f) = tulipix_tools::exec::parse_ffmpeg_progress(&line, dur) {
+                        let _ = tulipix_tools::queue::set_progress(pool, id, base + f * span, None).await;
+                    }
+                }
+            }
+            let status = child.wait().await?;
+            let err = err_task.await.unwrap_or_default();
+            if !status.success() { anyhow::bail!("ffmpeg failed: {}", truncate_msg(&err)); }
+        }
+        Step::YtDlp { args } => {
+            let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
+            let ff = tulipix_core::thumbs::tool_bin("ffmpeg");
+            let mut cmd = quiet_cmd(&bin);
+            cmd.arg("--newline");
+            if let Some(dir) = ff.parent() { cmd.arg("--ffmpeg-location").arg(dir); }
+            cmd.args(&args);
+            cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
+            let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("yt-dlp not found ({e}) — set Tools directory in Settings"))?;
+            let err_task = spawn_stderr_drain(&mut child);
+            if let Some(stdout) = child.stdout.take() {
+                let mut lines = tokio::io::BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = lines.next_line().await {
+                    if let Some(f) = tulipix_tools::exec::parse_ytdlp_progress(&line) {
+                        let _ = tulipix_tools::queue::set_progress(pool, id, base + f * span, None).await;
+                    }
+                }
+            }
+            let status = child.wait().await?;
+            let err = err_task.await.unwrap_or_default();
+            if !status.success() { anyhow::bail!("yt-dlp failed: {}", truncate_msg(&err)); }
+        }
+        Step::Native(n) => tools_run_native(pool, id, n, base, span).await?,
+    }
+    let _ = tulipix_tools::queue::set_progress(pool, id, base + span, None).await;
+    Ok(())
+}
+
+async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::exec::Native, base: f64, span: f64) -> anyhow::Result<()> {
+    use tulipix_tools::exec::Native;
+    use tulipix_tools::hash::{manifest_line, sha256_hex, Algo};
+    match n {
+        Native::Hash { files, manifest, .. } => {
+            let total = files.len().max(1);
+            let mut lines = Vec::new();
+            for (i, f) in files.iter().enumerate() {
+                let bytes = tokio::fs::read(f).await.map_err(|e| anyhow::anyhow!("read {f}: {e}"))?;
+                let hex = sha256_hex(&bytes);
+                lines.push(manifest_line(Algo::Sha256, &hex, f));
+                let _ = tulipix_tools::queue::set_progress(pool, id, base + ((i + 1) as f64 / total as f64) * span, None).await;
+            }
+            if let Some(m) = manifest { tokio::fs::write(&m, lines.join("\n")).await?; }
+            else { let _ = tulipix_tools::queue::set_progress(pool, id, base + span, Some(lines.join(" · ").as_str())).await; }
+        }
+        Native::FolderDiff { a, b } => {
+            let ma = folder_hash_map(&a).await;
+            let mb = folder_hash_map(&b).await;
+            let d = tulipix_tools::folder_diff::diff(&ma, &mb);
+            let msg = format!("only-in-A {} · only-in-B {} · modified {} · same {}",
+                d.only_in_a.len(), d.only_in_b.len(), d.modified.len(), d.identical.len());
+            let _ = tulipix_tools::queue::set_progress(pool, id, base + span, Some(msg.as_str())).await;
+        }
+        Native::Rename { dir, pattern, start } => {
+            let mut entries: Vec<std::path::PathBuf> = std::fs::read_dir(&dir)
+                .map_err(|e| anyhow::anyhow!("read dir {dir}: {e}"))?
+                .filter_map(|e| e.ok().map(|e| e.path()))
+                .filter(|p| p.is_file()).collect();
+            entries.sort();
+            let empty = std::collections::HashMap::new();
+            let total = entries.len().max(1);
+            for (i, src) in entries.iter().enumerate() {
+                let src_s = src.to_string_lossy().to_string();
+                let newname = tulipix_tools::rename::expand(&pattern, &empty, start + i, &src_s);
+                if let Some(parent) = src.parent() {
+                    let dst = parent.join(&newname);
+                    if dst != *src { let _ = std::fs::rename(src, &dst); }
+                }
+                let _ = tulipix_tools::queue::set_progress(pool, id, base + ((i + 1) as f64 / total as f64) * span, None).await;
+            }
+        }
+        Native::Merge { inputs, output } => {
+            let refs: Vec<&str> = inputs.iter().map(|s| s.as_str()).collect();
+            let list = tulipix_tools::merge::concat_list(&refs);
+            let tmp = std::env::temp_dir().join(format!("tulipix-merge-{id}.txt"));
+            tokio::fs::write(&tmp, list).await?;
+            let bin = tulipix_core::thumbs::tool_bin("ffmpeg");
+            let args = tulipix_tools::merge::concat_copy_args(&tmp.to_string_lossy(), &output);
+            let mut cmd = quiet_cmd(&bin);
+            cmd.arg("-y");
+            cmd.args(&args);
+            cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+            let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("ffmpeg not found ({e})"))?;
+            let err_task = spawn_stderr_drain(&mut child);
+            let status = child.wait().await?;
+            let err = err_task.await.unwrap_or_default();
+            let _ = tokio::fs::remove_file(&tmp).await;
+            if !status.success() { anyhow::bail!("merge failed: {}", truncate_msg(&err)); }
+        }
+    }
+    Ok(())
+}
+
+/// Build a `rel_path → sha256` map for a folder (recursive), for folder-diff.
+async fn folder_hash_map(root: &str) -> std::collections::BTreeMap<String, String> {
+    let root = root.to_string();
+    tokio::task::spawn_blocking(move || {
+        let mut m = std::collections::BTreeMap::new();
+        let base = std::path::Path::new(&root);
+        for entry in walkdir::WalkDir::new(base).into_iter().filter_map(|e| e.ok()) {
+            if !entry.file_type().is_file() { continue; }
+            let p = entry.path();
+            let rel = p.strip_prefix(base).unwrap_or(p).to_string_lossy().to_string();
+            if let Ok(bytes) = std::fs::read(p) {
+                m.insert(rel, tulipix_tools::hash::sha256_hex(&bytes));
+            }
+        }
+        m
+    }).await.unwrap_or_default()
+}
+
+/// Read tools.db jobs into the Queue model (newest activity first).
+async fn tools_refresh_queue(weak: slint::Weak<MainWindow>) {
+    let Ok(pool) = pool_for("tools").await else { return; };
+    let rows: Vec<(i64, String, String, f64, Option<String>)> = sqlx::query_as(
+        "SELECT id, kind, state, progress, message FROM jobs \
+         ORDER BY (state IN ('running','queued','paused')) DESC, updated DESC LIMIT 100")
+        .fetch_all(&pool).await.unwrap_or_default();
+    let summary = {
+        let running = rows.iter().filter(|r| r.2 == "running").count();
+        let queued = rows.iter().filter(|r| r.2 == "queued").count();
+        if running + queued == 0 { "Idle".to_string() }
+        else { format!("{running} running · {queued} queued") }
+    };
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        let jobs: Vec<QueueJob> = rows.into_iter().map(|(id, kind, state, progress, message)| QueueJob {
+            id: id as i32,
+            name: tool_label(&kind).into(),
+            state: state.into(),
+            progress: progress as f32,
+            message: message.unwrap_or_default().into(),
+        }).collect();
+        w.set_queue_jobs(slint::ModelRc::new(slint::VecModel::from(jobs)));
+        w.set_tools_queue_status(summary.into());
+    });
+}
+
+/// Build one ToolField. `opts`/`min`/`max`/`hint` default to empty/0.
+#[allow(clippy::too_many_arguments)]
+fn mk_field(key: &str, label: &str, kind: &str, value: &str, required: bool, hint: &str, opts: &[&str], min: f32, max: f32) -> ToolField {
+    ToolField {
+        key: key.into(), label: label.into(), kind: kind.into(), value: value.into(),
+        required, hint: hint.into(), min, max,
+        options: slint::ModelRc::new(slint::VecModel::from(
+            opts.iter().map(|s| slint::SharedString::from(*s)).collect::<Vec<_>>())),
+    }
+}
+
+/// The declarative form for a tool kind. Output fields are blank by default →
+/// the spec builder fills "beside source + suffix".
+fn tool_fields(kind: &str) -> Vec<ToolField> {
+    let file = |k: &str, l: &str| mk_field(k, l, "file", "", true, "", &[], 0.0, 0.0);
+    let out = || mk_field("output", "Output (blank = beside source)", "text", "", false, "auto-named next to the source", &[], 0.0, 0.0);
+    match kind {
+        "compress_video" => vec![
+            file("input", "Source video"),
+            mk_field("codec", "Codec", "dropdown", "h264", true, "", &["h264", "h265", "av1"], 0.0, 0.0),
+            mk_field("crf", "Quality — CRF (lower = better, bigger)", "slider", "23", false, "18 great · 28 small", &[], 18.0, 35.0),
+            out(),
+        ],
+        "compress_audio" => vec![
+            file("input", "Source audio"),
+            mk_field("codec", "Codec", "dropdown", "mp3", true, "", &["mp3", "aac", "opus", "vorbis"], 0.0, 0.0),
+            mk_field("kbps", "Bitrate (kbps)", "slider", "192", false, "", &[], 64.0, 320.0),
+            out(),
+        ],
+        "compress_photo" => vec![
+            file("input", "Source image"),
+            mk_field("format", "Format", "dropdown", "jpeg", true, "", &["jpeg", "webp", "avif"], 0.0, 0.0),
+            mk_field("quality", "Quality", "slider", "82", false, "1–100", &[], 1.0, 100.0),
+            out(),
+        ],
+        "convert" => vec![
+            file("input", "Source file"),
+            mk_field("target_ext", "Convert to", "dropdown", "mp4", true, "", &["mp4", "mkv", "webm", "mp3", "m4a", "opus", "flac", "png", "jpg", "webp"], 0.0, 0.0),
+            out(),
+        ],
+        "trim" => vec![
+            file("input", "Source video"),
+            mk_field("start_s", "Start (seconds)", "number", "0", true, "e.g. 12.5", &[], 0.0, 0.0),
+            mk_field("end_s", "End (seconds)", "number", "", true, "e.g. 48", &[], 0.0, 0.0),
+            mk_field("lossless", "Lossless cut (keyframe-aligned)", "toggle", "true", false, "fast, no re-encode", &[], 0.0, 0.0),
+            out(),
+        ],
+        "resize" => vec![
+            file("input", "Source image"),
+            mk_field("w", "Width (px)", "number", "1920", true, "", &[], 0.0, 0.0),
+            mk_field("h", "Height (px)", "number", "1080", true, "", &[], 0.0, 0.0),
+            out(),
+        ],
+        "thumbnail" => vec![
+            file("input", "Source video"),
+            mk_field("at_s", "At timestamp (seconds)", "number", "1", false, "", &[], 0.0, 0.0),
+            mk_field("width", "Thumbnail width (px)", "number", "320", false, "", &[], 0.0, 0.0),
+            out(),
+        ],
+        "extract" => vec![
+            file("input", "Source video"),
+            mk_field("stream", "Stream", "dropdown", "audio", true, "", &["audio", "subtitle"], 0.0, 0.0),
+            mk_field("index", "Track index", "number", "0", false, "0 = first", &[], 0.0, 0.0),
+            out(),
+        ],
+        "normalize" => vec![
+            file("input", "Source audio/video"),
+            mk_field("lufs", "Target loudness (LUFS)", "number", "-23", false, "EBU R128 = -23", &[], 0.0, 0.0),
+            out(),
+        ],
+        "watermark" => vec![
+            file("input", "Source image/video"),
+            mk_field("text", "Watermark text", "text", "", true, "shown bottom-right", &[], 0.0, 0.0),
+            out(),
+        ],
+        "burn_subs" => vec![
+            file("input", "Source video"),
+            mk_field("sub", "Subtitle file (.srt/.ass)", "file", "", true, "", &[], 0.0, 0.0),
+            out(),
+        ],
+        "split" => vec![
+            file("input", "Source video"),
+            mk_field("every_s", "Segment length (seconds)", "number", "60", true, "", &[], 0.0, 0.0),
+            mk_field("output", "Output template (blank = beside source)", "text", "", false, "", &[], 0.0, 0.0),
+        ],
+        "merge" => vec![
+            mk_field("inputs", "Source files (pick several)", "files", "", true, "", &[], 0.0, 0.0),
+            mk_field("output", "Output file", "text", "", true, "", &[], 0.0, 0.0),
+        ],
+        "download" | "download_live" => vec![
+            mk_field("url", "URL", "text", "", true, "YouTube / Vimeo / 1800+ sites", &[], 0.0, 0.0),
+            mk_field("audio_only", "Audio only", "toggle", "false", false, "extract audio", &[], 0.0, 0.0),
+            mk_field("max_height", "Max height (px, blank = best)", "number", "", false, "e.g. 1080", &[], 0.0, 0.0),
+            mk_field("embed_subs", "Embed subtitles", "toggle", "false", false, "", &[], 0.0, 0.0),
+            mk_field("output", "Save folder (blank = Downloads)", "folder", "", false, "", &[], 0.0, 0.0),
+        ],
+        "transcribe" => vec![
+            file("input", "Audio/video file"),
+            mk_field("output", "Output .srt (blank = beside source)", "text", "", false, "", &[], 0.0, 0.0),
+        ],
+        "hash" => vec![
+            mk_field("files", "Files to hash (pick several)", "files", "", true, "SHA-256", &[], 0.0, 0.0),
+            mk_field("manifest", "Save manifest to (blank = show inline)", "text", "", false, "", &[], 0.0, 0.0),
+        ],
+        "folder_diff" => vec![
+            mk_field("a", "Folder A", "folder", "", true, "", &[], 0.0, 0.0),
+            mk_field("b", "Folder B", "folder", "", true, "", &[], 0.0, 0.0),
+        ],
+        "rename" => vec![
+            mk_field("dir", "Folder", "folder", "", true, "", &[], 0.0, 0.0),
+            mk_field("pattern", "Pattern", "text", "{n:03}_{name}", true, "{n}, {n:03} = sequence", &[], 0.0, 0.0),
+            mk_field("start", "Start number", "number", "1", false, "", &[], 0.0, 0.0),
+        ],
+        _ => vec![],
+    }
+}
+
+/// Extension of a path (lowercase), or fallback.
+fn ext_of(path: &str) -> String {
+    std::path::Path::new(path).extension().and_then(|e| e.to_str())
+        .map(|e| e.to_ascii_lowercase()).unwrap_or_else(|| "out".into())
+}
+
+/// `dir/stem.suffix.ext` next to `input`.
+fn beside_source(input: &str, suffix: &str, ext: &str) -> String {
+    let p = std::path::Path::new(input);
+    let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
+    let parent = p.parent().map(|x| x.to_path_buf()).unwrap_or_default();
+    parent.join(format!("{stem}.{suffix}.{ext}")).to_string_lossy().to_string()
+}
+
+/// Convert the active form's string map into a typed JSON spec, filling the
+/// output path (beside source + suffix) when the user left it blank.
+fn tools_build_spec(kind: &str, map: &std::collections::HashMap<String, String>) -> serde_json::Value {
+    let fields = tool_fields(kind);
+    let mut o = serde_json::Map::new();
+    for f in &fields {
+        let key = f.key.to_string();
+        let v = map.get(&key).cloned().unwrap_or_else(|| f.value.to_string());
+        let val = match f.kind.as_str() {
+            "files" => serde_json::Value::Array(
+                v.split('\n').filter(|s| !s.trim().is_empty())
+                    .map(|s| serde_json::Value::String(s.trim().to_string())).collect()),
+            "number" | "slider" => v.trim().parse::<f64>().ok()
+                .map(|n| serde_json::json!(n)).unwrap_or(serde_json::Value::String(v.clone())),
+            "toggle" => serde_json::Value::Bool(v == "true"),
+            _ => serde_json::Value::String(v),
+        };
+        o.insert(key, val);
+    }
+    // Output defaults.
+    let input = map.get("input").cloned().unwrap_or_default();
+    let blank_out = o.get("output").and_then(|v| v.as_str()).map(|s| s.trim().is_empty()).unwrap_or(true);
+    let set_out = |o: &mut serde_json::Map<String, serde_json::Value>, path: String| {
+        o.insert("output".into(), serde_json::Value::String(path));
+    };
+    if blank_out && !input.is_empty() {
+        match kind {
+            "compress_video" | "trim" | "normalize" | "watermark" | "burn_subs" =>
+                set_out(&mut o, beside_source(&input, "tulipix", &ext_of(&input))),
+            "compress_audio" => {
+                let ext = match map.get("codec").map(|s| s.as_str()) {
+                    Some("aac") => "m4a", Some("opus") => "opus", Some("vorbis") => "ogg", _ => "mp3" };
+                set_out(&mut o, beside_source(&input, "tulipix", ext));
+            }
+            "compress_photo" => {
+                let ext = match map.get("format").map(|s| s.as_str()) {
+                    Some("webp") => "webp", Some("avif") => "avif", _ => "jpg" };
+                set_out(&mut o, beside_source(&input, "tulipix", ext));
+            }
+            "convert" => {
+                let ext = map.get("target_ext").cloned().unwrap_or_else(|| "mp4".into());
+                set_out(&mut o, beside_source(&input, "tulipix", &ext));
+            }
+            "resize" => set_out(&mut o, beside_source(&input, "resized", &ext_of(&input))),
+            "thumbnail" => set_out(&mut o, beside_source(&input, "thumb", "jpg")),
+            "extract" => set_out(&mut o, beside_source(&input, "track", "m4a")),
+            "transcribe" => set_out(&mut o, beside_source(&input, "", "srt")),
+            "split" => {
+                let p = std::path::Path::new(&input);
+                let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("clip");
+                let ext = ext_of(&input);
+                let tmpl = p.parent().unwrap_or_else(|| std::path::Path::new("."))
+                    .join(format!("{stem}_%03d.{ext}"));
+                set_out(&mut o, tmpl.to_string_lossy().to_string());
+            }
+            _ => {}
+        }
+    }
+    // download: blank "output" folder → into the user's Downloads.
+    if kind == "download" || kind == "download_live" {
+        let folder = o.get("output").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
+        let base = if folder.is_empty() {
+            dirs_default().map(|d| d.join("Downloads")).unwrap_or_else(|| std::path::PathBuf::from("."))
+        } else { std::path::PathBuf::from(&folder) };
+        let tmpl = base.join("%(title)s.%(ext)s").to_string_lossy().to_string();
+        o.insert("out_template".into(), serde_json::Value::String(tmpl));
+    }
+    serde_json::Value::Object(o)
+}
+
+/// Rebuild the active tool's field model, overlaying current edits.
+fn tools_apply_form(w: &MainWindow) {
+    let (kind, map) = { let g = tools_form().lock().unwrap(); (g.0.clone(), g.1.clone()) };
+    let fields: Vec<ToolField> = tool_fields(&kind).into_iter().map(|mut f| {
+        if let Some(v) = map.get(f.key.as_str()) { f.value = v.as_str().into(); }
+        f
+    }).collect();
+    w.set_tools_fields(slint::ModelRc::new(slint::VecModel::from(fields)));
 }
 
 /// `rclone config dump` → mirror into cloud.db → set the remotes model.
@@ -12772,9 +13448,12 @@ fn play_radio(w: &MainWindow, st: &tulipix_music::radio::Station) {
                         "pause" => if let Some(p) = v["data"].as_bool() { w.set_music_playing(!p); }
                         "media-title" => if let Some(t) = v["data"].as_str() {
                             let t = t.trim();
-                            // mpv reports the URL until the first ICY update — ignore those.
+                            // The title stays the STATION name (from the channel list) so it's
+                            // static across the bottom + zen players. The ICY now-playing track
+                            // (when present) rides the second line instead. mpv reports the URL
+                            // until the first ICY update — ignore those.
                             if !t.is_empty() && t != su && !t.starts_with("http") {
-                                w.set_music_np_title(t.into());
+                                w.set_music_np_sub(t.into());
                             }
                         }
                         _ => {}
@@ -15386,21 +16065,79 @@ async fn yt_vid_data(client: &reqwest::Client, dir: &std::path::Path,
 }
 
 fn yt_img(path: &str) -> slint::Image {
-    if path.is_empty() { Default::default() }
-    else { slint::Image::load_from_path(std::path::Path::new(path)).unwrap_or_default() }
+    // Routes through the shared decode cache (`yt_decode_thumb`), so a thumbnail
+    // pre-decoded off the UI thread is just a cheap refcounted wrap here.
+    match yt_decode_thumb(path) {
+        Some(buf) => slint::Image::from_rgba8(buf),
+        None => Default::default(),
+    }
 }
 
-/// Build a YtVideo VecModel (UI thread — loads images from disk).
-fn yt_video_model(rows: &[YtVidData]) -> slint::ModelRc<YtVideo> {
-    let v: Vec<YtVideo> = rows.iter().enumerate().map(|(i, d)| YtVideo {
-        id: d.id.clone().into(), channel_id: d.channel_id.clone().into(),
-        title: d.title.clone().into(), channel: d.channel.clone().into(),
-        meta: d.meta.clone().into(), info: d.info.clone().into(), duration: d.duration.clone().into(),
-        thumb: yt_img(&d.thumb), index: i as i32,
-        fmt: d.fmt.clone().into(), quality: d.quality.clone().into(),
-        path: d.path.clone().into(),
+/// A decoded thumbnail as raw pixels. `slint::Image` is NOT `Send`, but a
+/// `SharedPixelBuffer` is — so the expensive PNG decode runs on the tokio worker
+/// and only the cheap `Image::from_rgba8` wrap happens on the UI thread.
+type YtPixels = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
+
+/// Bounded decode cache (path → pixels). A given video's thumbnail appears in
+/// several lists (home rail, recommended, search, its tab) and survives
+/// refreshes; decoding the PNG once and cloning the refcounted buffer avoids
+/// repeat decode work. Cleared wholesale past the cap — coarse but allocation-
+/// free and the worst case is an occasional cold re-decode.
+fn yt_thumb_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, YtPixels>> {
+    static S: OnceLock<std::sync::Mutex<std::collections::HashMap<String, YtPixels>>> = OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Decode a thumbnail PNG into a Send pixel buffer. Call OFF the UI thread.
+fn yt_decode_thumb(path: &str) -> Option<YtPixels> {
+    if path.is_empty() { return None; }
+    if let Ok(c) = yt_thumb_cache().lock() {
+        if let Some(buf) = c.get(path) { return Some(buf.clone()); }
+    }
+    let img = image::open(path).ok()?.into_rgba8();
+    let (w, h) = img.dimensions();
+    let mut buf = YtPixels::new(w, h);
+    buf.make_mut_bytes().copy_from_slice(img.as_raw());
+    if let Ok(mut c) = yt_thumb_cache().lock() {
+        if c.len() >= 512 { c.clear(); }
+        c.insert(path.to_string(), buf.clone());
+    }
+    Some(buf)
+}
+
+/// A Send-able pre-decoded row: every field is `Send`, so the whole `Vec` can
+/// cross into `upgrade_in_event_loop`. Built by `yt_videos` on the worker.
+struct YtRow { d: YtVidData, index: i32, pixels: Option<YtPixels> }
+
+/// Decode rows + their thumbnails into Send-able structs. Call OFF the UI thread
+/// (inside the tokio worker) for large lists so PNG decode stays off the UI
+/// thread; the UI thread then only wraps pixels via `yt_model` (cheap).
+fn yt_videos(rows: &[YtVidData]) -> Vec<YtRow> {
+    rows.iter().enumerate()
+        .map(|(i, d)| YtRow { d: d.clone(), index: i as i32, pixels: yt_decode_thumb(&d.thumb) })
+        .collect()
+}
+
+/// Wrap pre-decoded rows into a model — cheap, safe on the UI thread (no decode).
+fn yt_model(rows: Vec<YtRow>) -> slint::ModelRc<YtVideo> {
+    let v: Vec<YtVideo> = rows.into_iter().map(|r| {
+        let d = r.d;
+        YtVideo {
+            id: d.id.into(), channel_id: d.channel_id.into(),
+            title: d.title.into(), channel: d.channel.into(),
+            meta: d.meta.into(), info: d.info.into(), duration: d.duration.into(),
+            thumb: r.pixels.map(slint::Image::from_rgba8).unwrap_or_default(), index: r.index,
+            fmt: d.fmt.into(), quality: d.quality.into(),
+            path: d.path.into(),
+        }
     }).collect();
     slint::ModelRc::new(slint::VecModel::from(v))
+}
+
+/// Convenience: decode + wrap in one call (decode on the calling thread). Prefer
+/// `yt_videos` in the worker + `yt_model` on the UI thread for large lists.
+fn yt_video_model(rows: &[YtVidData]) -> slint::ModelRc<YtVideo> {
+    yt_model(yt_videos(rows))
 }
 
 fn yt_cached_to_data(c: &tulipix_music::youtube::store::CachedVideo) -> YtVidData {
@@ -15427,6 +16164,18 @@ fn warm_youtube(w: &MainWindow) {
     populate_yt_recent(w);
     populate_yt_recommended(w);
     populate_yt_playlists(w);
+}
+
+/// One-shot guard for the populate bundles that fire on Music-section entry and
+/// sub-view switches. Returns true the FIRST time a key is seen (caller should
+/// populate), false afterwards. Slint models persist across switches and every
+/// data mutation (subscribe/refresh/download/category) calls its own populate
+/// directly — bypassing this guard — so re-querying on each switch was pure
+/// UI-thread waste. Same idea as warm_youtube, applied to podcasts/audiobooks.
+fn music_warm_once(key: &str) -> bool {
+    static S: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    let set = S.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()));
+    set.lock().map(|mut g| g.insert(key.to_string())).unwrap_or(true)
 }
 
 /// Collect EVERY video in a playlist (local items or remote flat list), remember
@@ -15590,27 +16339,38 @@ fn populate_yt_recommended(w: &MainWindow) {
             if !c.items.is_empty() && c.sources == want && yt_now_secs().saturating_sub(c.fetched) < YT_RECO_TTL {
                 let items = c.items.clone();
                 yt_remember(&items);
-                let _ = weak.upgrade_in_event_loop(move |w| w.set_music_yt_recommended(yt_video_model(&items)));
+                let items = yt_videos(&items);
+                let _ = weak.upgrade_in_event_loop(move |w| w.set_music_yt_recommended(yt_model(items)));
                 return;
             }
         }
         let client = reqwest::Client::new();
         let dir = yt_thumb_dir();
-        let mut out: Vec<YtVidData> = Vec::new();
-        for s in chans.iter().take(10) {
-            let vids = ytdlp_channel_latest(&s.channel_id, 1).await;
-            if let Some(v) = vids.first() {
-                let mut d = yt_vid_data(&client, &dir, v).await;
+        // Fetch every channel's latest video concurrently instead of serially —
+        // 10 yt-dlp spawns + thumbnail downloads in parallel collapse the Home
+        // rail load from ~sum to ~max latency. Order is preserved by awaiting the
+        // handles in spawn order.
+        let handles: Vec<_> = chans.iter().take(10).cloned().map(|s| {
+            let client = client.clone();
+            let dir = dir.clone();
+            tokio::spawn(async move {
+                let vids = ytdlp_channel_latest(&s.channel_id, 1).await;
+                let v = vids.into_iter().next()?;
+                let mut d = yt_vid_data(&client, &dir, &v).await;
                 d.channel_id = s.channel_id.clone();
                 if d.channel.is_empty() { d.channel = s.title.clone(); }
-                out.push(d);
-            }
-            if out.len() >= 10 { break; }
+                Some(d)
+            })
+        }).collect();
+        let mut out: Vec<YtVidData> = Vec::new();
+        for h in handles {
+            if let Ok(Some(d)) = h.await { out.push(d); }
         }
         if out.is_empty() { return; }
         yt_remember(&out);
         yt_reco_save(&out, &want);
-        let _ = weak.upgrade_in_event_loop(move |w| w.set_music_yt_recommended(yt_video_model(&out)));
+        let out = yt_videos(&out);
+        let _ = weak.upgrade_in_event_loop(move |w| w.set_music_yt_recommended(yt_model(out)));
     });
 }
 
@@ -15646,13 +16406,15 @@ fn populate_yt_cached(w: &MainWindow) {
             .unwrap_or_default().iter().map(yt_cached_to_data)
             .filter(|d| !dl_ids.contains(&d.id)).collect();
         yt_remember(&rows);
+        // Decode thumbnails here (worker thread), not in the event loop.
+        let home = yt_videos(&rows.iter().take(3).cloned().collect::<Vec<_>>());
+        let q = yt_q_get(yt_cached_q());
+        let shown: Vec<YtVidData> = if q.is_empty() { rows }
+            else { rows.into_iter().filter(|d| d.title.to_lowercase().contains(&q) || d.channel.to_lowercase().contains(&q)).collect() };
+        let shown = yt_videos(&shown);
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let home: Vec<YtVidData> = rows.iter().take(3).cloned().collect();
-            let q = yt_q_get(yt_cached_q());
-            let shown: Vec<YtVidData> = if q.is_empty() { rows.clone() }
-                else { rows.iter().filter(|d| d.title.to_lowercase().contains(&q) || d.channel.to_lowercase().contains(&q)).cloned().collect() };
-            w.set_music_yt_cached(yt_video_model(&shown));
-            w.set_music_yt_home_cached(yt_video_model(&home));
+            w.set_music_yt_cached(yt_model(shown));
+            w.set_music_yt_home_cached(yt_model(home));
         });
     });
 }
@@ -15683,12 +16445,15 @@ fn populate_yt_downloads(w: &MainWindow) {
         let page = page.min(pages - 1);
         let start = (page * YT_DL_LIST_PAGE) as usize;
         let pagerows: Vec<YtVidData> = rows.into_iter().skip(start).take(YT_DL_LIST_PAGE as usize).collect();
+        // Decode thumbnails here (worker thread), not in the event loop.
+        let home = yt_videos(&home);
+        let pagerows = yt_videos(&pagerows);
         let _ = weak.upgrade_in_event_loop(move |w| {
             w.set_music_yt_downloads_count(total);
             w.set_music_yt_downloads_pages(pages as i32);
             w.set_music_yt_downloads_page(page as i32);
-            w.set_music_yt_downloads(yt_video_model(&pagerows));
-            w.set_music_yt_home_downloads(yt_video_model(&home));
+            w.set_music_yt_downloads(yt_model(pagerows));
+            w.set_music_yt_home_downloads(yt_model(home));
         });
     });
 }
@@ -15847,6 +16612,14 @@ fn yt_set_subs(w: &MainWindow, subs: &[tulipix_music::youtube::store::Sub]) {
     let page = (w.get_music_yt_subs_page().max(0) as usize).min(pages - 1);
     w.set_music_yt_subs_pages(pages as i32);
     w.set_music_yt_subs_page(page as i32);
+    // Warm avatars for this page + the immediate neighbours off the UI thread, so
+    // paging stays instant without decoding every one of the (20+) pages at once.
+    let win_start = page.saturating_sub(1) * YT_SUBS_PER_PAGE;
+    let window: Vec<String> = sorted.iter().skip(win_start).take(YT_SUBS_PER_PAGE * 3)
+        .filter_map(|s| s.avatar_path.clone()).collect();
+    if !window.is_empty() {
+        tokio::runtime::Handle::current().spawn_blocking(move || { for p in &window { yt_decode_thumb(p); } });
+    }
     let slice: Vec<YtSub> = sorted.iter().skip(page * YT_SUBS_PER_PAGE).take(YT_SUBS_PER_PAGE)
         .enumerate().map(|(i, s)| yt_sub_to_model(s, i, pin_set.contains(&s.channel_id))).collect();
     w.set_music_yt_subs(slint::ModelRc::new(slint::VecModel::from(slice)));
@@ -15863,39 +16636,57 @@ fn populate_yt_subs(w: &MainWindow) {
     });
 }
 
-// One-time metadata fetch (avatar + video count) for channels lacking it, with a
-// live progress bar. Runs at import time only — keeps the Subscriptions page cheap.
-fn yt_fetch_sub_meta(weak: slint::Weak<MainWindow>) {
+// Channel metadata fetch (avatar + video/subscriber count) with a live progress
+// bar. `force = false` fills only channels lacking meta — runs at import time so
+// the Subscriptions page stays cheap. `force = true` re-fetches every subscribed
+// channel — wired to the page's Refresh button (counts never auto-refresh on
+// open). Channels are fetched concurrently (bounded) instead of serially.
+fn yt_fetch_sub_meta(weak: slint::Weak<MainWindow>, force: bool) {
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("youtube").await else { return; };
         let subs = tulipix_music::youtube::store::list_subs(&pool).await.unwrap_or_default();
-        let need: Vec<String> = subs.iter().filter(|s| s.fetched_at.is_none()).map(|s| s.channel_id.clone()).collect();
+        let need: Vec<String> = if force {
+            subs.iter().filter(|s| s.subscribed).map(|s| s.channel_id.clone()).collect()
+        } else {
+            subs.iter().filter(|s| s.fetched_at.is_none()).map(|s| s.channel_id.clone()).collect()
+        };
         if need.is_empty() { return; }
         let total = need.len();
         let client = reqwest::Client::new();
         let dir = yt_thumb_dir();
-        let wk = weak.clone();
-        let _ = wk.upgrade_in_event_loop(move |w| { w.set_music_yt_fetch_busy(true); w.set_music_yt_fetch_frac(0.0);
+        let _ = weak.upgrade_in_event_loop(move |w| { w.set_music_yt_fetch_busy(true); w.set_music_yt_fetch_frac(0.0);
             w.set_music_yt_fetch_msg(format!("Fetching 0 / {total} channels…").into()); });
-        for (i, cid) in need.into_iter().enumerate() {
-            if let Some((avatar_url, followers, video_count)) = ytdlp_channel_meta(&cid).await {
-                let avatar = if avatar_url.is_empty() { None }
-                    else { tulipix_music::youtube::thumbs::fetch_png(&client, &dir, &avatar_url).await.ok() };
-                let _ = tulipix_music::youtube::store::set_sub_meta(&pool, &cid, avatar.as_deref(), Some(video_count), Some(followers)).await;
-            } else {
-                let _ = tulipix_music::youtube::store::set_sub_meta(&pool, &cid, None, Some(0), Some(0)).await;
-            }
-            let done = i + 1;
-            let frac = done as f32 / total as f32;
-            if done % 3 == 0 || done == total {
-                let subs_now = tulipix_music::youtube::store::list_subs(&pool).await.unwrap_or_default();
-                let _ = weak.upgrade_in_event_loop(move |w| {
-                    yt_set_subs(&w, &subs_now);
-                    w.set_music_yt_fetch_frac(frac);
-                    w.set_music_yt_fetch_msg(format!("Fetching {done} / {total} channels…").into());
-                });
-            }
+        // Cap parallel yt-dlp spawns so we don't fork dozens of processes at once.
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(6));
+        let done = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut set = tokio::task::JoinSet::new();
+        for cid in need {
+            let (pool, client, dir) = (pool.clone(), client.clone(), dir.clone());
+            let (sem, done, weak) = (sem.clone(), done.clone(), weak.clone());
+            set.spawn(async move {
+                let _permit = sem.acquire().await;
+                if let Some((avatar_url, followers, video_count)) = ytdlp_channel_meta(&cid).await {
+                    let avatar = if avatar_url.is_empty() { None }
+                        else { tulipix_music::youtube::thumbs::fetch_png(&client, &dir, &avatar_url).await.ok() };
+                    let _ = tulipix_music::youtube::store::set_sub_meta(&pool, &cid, avatar.as_deref(), Some(video_count), Some(followers)).await;
+                } else if !force {
+                    // First-time fill: stamp 0/0 so we don't retry forever. A forced
+                    // refresh that fails leaves the previous counts untouched.
+                    let _ = tulipix_music::youtube::store::set_sub_meta(&pool, &cid, None, Some(0), Some(0)).await;
+                }
+                let d = done.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+                let frac = d as f32 / total as f32;
+                if d % 3 == 0 || d == total {
+                    let subs_now = tulipix_music::youtube::store::list_subs(&pool).await.unwrap_or_default();
+                    let _ = weak.upgrade_in_event_loop(move |w| {
+                        yt_set_subs(&w, &subs_now);
+                        w.set_music_yt_fetch_frac(frac);
+                        w.set_music_yt_fetch_msg(format!("Fetching {d} / {total} channels…").into());
+                    });
+                }
+            });
         }
+        while set.join_next().await.is_some() {}
         let _ = weak.upgrade_in_event_loop(|w| w.set_music_yt_fetch_busy(false));
     });
 }
@@ -16577,6 +17368,7 @@ async fn pool_for(section: &str) -> Result<sqlx::SqlitePool> {
         "podcasts" => &PODCASTS_POOL,
         "radio"    => &RADIO_POOL,
         "youtube"  => &YOUTUBE_POOL,
+        "tools"    => &TOOLS_POOL,
         _ => anyhow::bail!("unknown section"),
     };
     if let Some(p) = cache.get() { return Ok(p.clone()); }
@@ -16632,6 +17424,7 @@ async fn pool_for(section: &str) -> Result<sqlx::SqlitePool> {
         }
         "books"  => tulipix_books::schema::apply(&pool).await?,
         "cloud"  => tulipix_cloud::schema::apply(&pool).await?,
+        "tools"  => tulipix_tools::schema::apply(&pool).await?,
         _ => {}
     }
     let _ = cache.set(pool.clone());

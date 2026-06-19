@@ -15,12 +15,28 @@ path = "src/main.rs"
 # behind their own feature flag so the base binary stays ~40% smaller and
 # loads them lazily on first use.
 # `embedded-mpv` on by default: links libmpv for the in-app Videos player
-# (render API → Slint texture). Build with `--no-default-features` to drop the
-# libmpv link entirely (e.g. Windows without mpv.lib); the Videos embedded
-# player goes inert, while music/podcast/radio/YouTube keep using out-of-process
-# mpv.exe. See build.rs + src/mpv_stub.rs.
-default = ["embedded-mpv"]
-embedded-mpv = []
+# (render API → Slint texture) and forces the skia-opengl renderer. Build with
+# `--no-default-features` to drop the libmpv link entirely (e.g. Windows without
+# mpv.lib); the Videos embedded player goes inert, while music/podcast/radio/
+# YouTube keep using out-of-process mpv.exe. Because the renderer rides on
+# embedded-mpv, a `--no-default-features` build MUST add a renderer feature —
+# `--features renderer-skia` (parity) or `--features renderer-femtovg` (lean).
+# See build.rs + src/mpv_stub.rs.
+# alloc-mimalloc on by default: 10-20% on the thumb pipeline + DB pool. The
+# global_allocator is cfg-gated to Linux/Windows (macOS keeps system malloc),
+# so this is a no-op allocator-wise on mac.
+default = ["embedded-mpv", "alloc-mimalloc"]
+# The embedded player hands libmpv frames to Slint as a BorrowedOpenGLTexture,
+# which only the skia-opengl surface provides — so embedded-mpv pulls skia.
+embedded-mpv = ["renderer-skia"]
+
+# Renderer selection (Slint feature-unifies, so pick exactly one).
+#   skia    — default; GPU, best text/AA, required by embedded-mpv. Larger binary.
+#   femtovg — size-lean GPU renderer for a "lite" build. Incompatible with the
+#             in-app video player, so pair it with --no-default-features:
+#               cargo build -p tulipix-app --release --no-default-features --features renderer-femtovg
+renderer-skia = ["slint/renderer-skia", "slint/renderer-skia-opengl"]
+renderer-femtovg = ["slint/renderer-femtovg"]
 
 # Dev UI live-reload. `slint/live-preview` swaps the generated UI for an
 # interpreter-backed LiveReloadingComponent that re-reads .slint at runtime —
@@ -68,6 +84,7 @@ tulipix-player = { path = "../tulipix-player" }
 tulipix-music = { path = "../tulipix-music" }
 tulipix-books = { path = "../tulipix-books" }
 tulipix-cloud = { path = "../tulipix-cloud" }
+tulipix-tools = { path = "../tulipix-tools" }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
