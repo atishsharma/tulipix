@@ -1,0 +1,22 @@
+[package]
+name = "tulipix-common"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Shared app infrastructure used by every section-wiring crate: the per-section
+# SQLite pool cache (`pool_for`), the data-dir helpers, and the bundled-binary
+# probes. Lives in its own crate so section crates don't depend on tulipix-app.
+
+[dependencies]
+anyhow.workspace = true
+sqlx = { workspace = true }
+tracing.workspace = true
+tulipix-core = { path = "../tulipix-core" }
+tulipix-photos = { path = "../tulipix-photos" }
+tulipix-videos = { path = "../tulipix-videos" }
+tulipix-music = { path = "../tulipix-music" }
+tulipix-books = { path = "../tulipix-books" }
+tulipix-cloud = { path = "../tulipix-cloud" }
+tulipix-tools = { path = "../tulipix-tools" }

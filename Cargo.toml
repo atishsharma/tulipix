@@ -8,6 +8,7 @@ default-members = ["crates/tulipix-app"]
 members = [
     "crates/tulipix-app",
     "crates/tulipix-ui",
+    "crates/tulipix-common",
     "crates/tulipix-core",
     "crates/tulipix-photos",
     "crates/tulipix-videos",
@@ -20,6 +21,7 @@ members = [
     "crates/tulipix-platform",
     "crates/tulipix-plugins",
     "crates/tulipix-tools",
+    "crates/tulipix-sec-tools",
     "crates/tulipix-cli",
     "tools/fetch-resources",
 ]

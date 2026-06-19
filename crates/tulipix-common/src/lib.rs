@@ -1,0 +1,162 @@
+//! Shared app infrastructure for the section-wiring crates.
+//!
+//! Owns the per-section SQLite pool cache (`pool_for`), the data-directory
+//! helpers, and the bundled-binary probes — everything a section crate needs
+//! that isn't section-specific, without depending on `tulipix-app`.
+
+use anyhow::Result;
+use std::sync::OnceLock;
+
+static PHOTOS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
+static VIDEOS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
+static MUSIC_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
+static BOOKS_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
+static CLOUD_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
+// Music sub-sections split out of music.db (no items FK — self-contained).
+static PODCASTS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
+static RADIO_POOL:    OnceLock<sqlx::SqlitePool> = OnceLock::new();
+static YOUTUBE_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
+// Tools job queue (tools.db) — shared by the GUI Tools section + CLI.
+static TOOLS_POOL:    OnceLock<sqlx::SqlitePool> = OnceLock::new();
+
+/// Open (or return the cached) SQLite pool for a section, applying its schema
+/// on first open. Both the GUI and CLI go through here so every front-end sees
+/// the same DB + migrations.
+pub async fn pool_for(section: &str) -> Result<sqlx::SqlitePool> {
+    let cache = match section {
+        "photos" => &PHOTOS_POOL,
+        "videos" => &VIDEOS_POOL,
+        "music"  => &MUSIC_POOL,
+        "books"  => &BOOKS_POOL,
+        "cloud"  => &CLOUD_POOL,
+        "podcasts" => &PODCASTS_POOL,
+        "radio"    => &RADIO_POOL,
+        "youtube"  => &YOUTUBE_POOL,
+        "tools"    => &TOOLS_POOL,
+        _ => anyhow::bail!("unknown section"),
+    };
+    if let Some(p) = cache.get() { return Ok(p.clone()); }
+    let handle = tulipix_core::db::DbHandle::open(section)?;
+    let pool = handle.init_pool().await?;
+    match section {
+        "photos" => {
+            tulipix_photos::schema::apply(&pool).await?;
+            // Phase 6 migrations (safe — ALTER TABLE IF NOT EXISTS equivalent).
+            let _ = sqlx::query("ALTER TABLE photo_meta ADD COLUMN color_label TEXT").execute(&pool).await;
+            // Apply stacks schema (idempotent CREATE TABLE IF NOT EXISTS).
+            let _ = tulipix_photos::stacks::apply_schema(&pool).await;
+            // Dedup tables (created by build_clusters; ensure they exist).
+            let _ = sqlx::query(
+                "CREATE TABLE IF NOT EXISTS dedup_clusters (
+                    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+                    kind    TEXT NOT NULL,
+                    key     TEXT NOT NULL,
+                    created INTEGER NOT NULL,
+                    UNIQUE(kind, key)
+                )"
+            ).execute(&pool).await;
+            let _ = sqlx::query(
+                "CREATE TABLE IF NOT EXISTS dedup_members (
+                    cluster_id INTEGER NOT NULL REFERENCES dedup_clusters(id) ON DELETE CASCADE,
+                    item_id    INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+                    PRIMARY KEY (cluster_id, item_id)
+                )"
+            ).execute(&pool).await;
+        }
+        "videos" => tulipix_videos::schema::apply(&pool).await?,
+        "music"  => tulipix_music::schema::apply(&pool).await?,
+        "podcasts" => {
+            tulipix_music::podcasts::apply_schema(&pool).await?;
+            migrate_split_from_music(&pool, &[
+                ("podcasts",
+                 "id, feed_url, title, author, image_url, category, description, last_checked"),
+                ("podcast_episodes",
+                 "id, podcast_id, guid, title, audio_url, published, duration_s, \
+                  description, image_url, downloaded_path, position_s, played"),
+            ]).await;
+        }
+        "radio" => {
+            tulipix_music::radio::apply_schema(&pool).await?;
+            migrate_split_from_music(&pool, &[
+                ("radio_stations",
+                 "id, station_uuid, name, url, favicon, country, tags, favourite"),
+            ]).await;
+        }
+        "youtube" => {
+            tulipix_music::youtube::store::apply_schema(&pool).await?;
+        }
+        "books"  => tulipix_books::schema::apply(&pool).await?,
+        "cloud"  => tulipix_cloud::schema::apply(&pool).await?,
+        "tools"  => tulipix_tools::schema::apply(&pool).await?,
+        _ => {}
+    }
+    let _ = cache.set(pool.clone());
+    Ok(pool)
+}
+
+/// One-time migration: move `tables` (each `(name, explicit_column_list)`) out
+/// of the legacy shared `music.db` into the freshly-opened section `dest` pool.
+/// Idempotent: no-ops once the source tables are gone.
+async fn migrate_split_from_music(dest: &sqlx::SqlitePool, tables: &[(&str, &str)]) {
+    let Some(music_path) = tulipix_core::paths::db_path("music") else { return; };
+    if !music_path.exists() { return; }
+    let Ok(mut conn) = dest.acquire().await else { return; };
+    if sqlx::query(&format!("ATTACH DATABASE '{}' AS legacy", music_path.display()))
+        .execute(&mut *conn).await.is_err() { return; }
+    let mut moved_any = false;
+    for (table, cols) in tables {
+        let exists: Option<String> = sqlx::query_scalar(
+            "SELECT name FROM legacy.sqlite_master WHERE type='table' AND name = ?")
+            .bind(*table).fetch_optional(&mut *conn).await.ok().flatten();
+        if exists.is_none() { continue; }
+        moved_any = true;
+        let _ = sqlx::query(&format!(
+            "INSERT OR IGNORE INTO {table} ({cols}) SELECT {cols} FROM legacy.{table}"))
+            .execute(&mut *conn).await;
+    }
+    if moved_any {
+        for (table, _) in tables.iter().rev() {
+            let _ = sqlx::query(&format!("DROP TABLE IF EXISTS legacy.{table}")).execute(&mut *conn).await;
+        }
+        tracing::info!("migrated {} table(s) out of music.db into a split section DB", tables.len());
+    }
+    let _ = sqlx::query("DETACH DATABASE legacy").execute(&mut *conn).await;
+}
+
+/// App data dir (`<config>/Tulipix`), per OS.
+pub fn dirs_default() -> Option<std::path::PathBuf> {
+    let base = if cfg!(target_os = "linux") {
+        std::env::var_os("XDG_CONFIG_HOME").map(std::path::PathBuf::from)
+            .or_else(|| std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join(".config")))
+    } else if cfg!(target_os = "macos") {
+        std::env::var_os("HOME").map(|h| std::path::PathBuf::from(h).join("Library/Application Support"))
+    } else {
+        std::env::var_os("APPDATA").map(std::path::PathBuf::from)
+    };
+    base.map(|b| b.join("Tulipix"))
+}
+
+/// The user's Documents folder (best effort), home as the fallback.
+pub fn dirs_default_documents() -> std::path::PathBuf {
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    let docs = home.join("Documents");
+    if docs.is_dir() { docs } else { home }
+}
+
+/// Directory holding the per-OS bundled binaries (dev layout).
+pub fn bundled_bin_dir() -> std::path::PathBuf {
+    std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../resources/bin/linux-x86_64"))
+}
+
+/// Is `file` present in the bundled-binary dir?
+pub fn bundled_present(file: &str) -> bool { bundled_bin_dir().join(file).exists() }
+
+/// Is `name` resolvable on PATH?
+pub fn on_path(name: &str) -> bool {
+    std::env::var_os("PATH").map(|paths| {
+        std::env::split_paths(&paths).any(|d| d.join(name).exists())
+    }).unwrap_or(false)
+}

@@ -7142,12 +7142,14 @@ dependencies = [
  "tulipix-ai",
  "tulipix-books",
  "tulipix-cloud",
+ "tulipix-common",
  "tulipix-core",
  "tulipix-music",
  "tulipix-photos",
  "tulipix-platform",
  "tulipix-player",
  "tulipix-plugins",
+ "tulipix-sec-tools",
  "tulipix-tools",
  "tulipix-ui",
  "tulipix-videos",
@@ -7196,6 +7198,22 @@ dependencies = [
  "tokio",
  "tracing",
  "tulipix-core",
+]
+
+[[package]]
+name = "tulipix-common"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "sqlx",
+ "tracing",
+ "tulipix-books",
+ "tulipix-cloud",
+ "tulipix-core",
+ "tulipix-music",
+ "tulipix-photos",
+ "tulipix-tools",
+ "tulipix-videos",
 ]
 
 [[package]]
@@ -7298,6 +7316,23 @@ dependencies = [
  "thiserror 1.0.69",
  "tracing",
  "wasmtime",
+]
+
+[[package]]
+name = "tulipix-sec-tools"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "rfd",
+ "serde_json",
+ "slint",
+ "sqlx",
+ "tokio",
+ "tulipix-common",
+ "tulipix-core",
+ "tulipix-tools",
+ "tulipix-ui",
+ "walkdir",
 ]
 
 [[package]]

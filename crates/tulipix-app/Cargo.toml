@@ -42,7 +42,7 @@ renderer-femtovg = ["slint/renderer-femtovg"]
 # interpreter-backed LiveReloadingComponent that re-reads .slint at runtime —
 # the build must ALSO run with SLINT_LIVE_PREVIEW=1 so the slint compiler
 # emits the live-preview glue (see vendor/i-slint-compiler/generator/rust.rs).
-dev-reload = ["dep:notify", "slint/live-preview", "tulipix-ui/dev-reload"]
+dev-reload = ["dep:notify", "slint/live-preview", "tulipix-ui/dev-reload", "tulipix-sec-tools/dev-reload"]
 
 # Real ONNX editor AI ops (upscale/colorize/heal/sky). Pulls ORT into
 # tulipix-photos (downloads the native runtime at build time).
@@ -66,6 +66,7 @@ full = ["lazy-whisper", "lazy-ai-ep", "lazy-plugins"]
 [dependencies]
 slint.workspace = true
 tulipix-ui = { path = "../tulipix-ui" }
+tulipix-common = { path = "../tulipix-common" }
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
@@ -86,6 +87,7 @@ tulipix-music = { path = "../tulipix-music" }
 tulipix-books = { path = "../tulipix-books" }
 tulipix-cloud = { path = "../tulipix-cloud" }
 tulipix-tools = { path = "../tulipix-tools" }
+tulipix-sec-tools = { path = "../tulipix-sec-tools" }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
