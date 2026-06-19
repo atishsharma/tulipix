@@ -82,6 +82,44 @@ fn tool_label(kind: &str) -> &'static str {
     }
 }
 
+/// Directory downloads land in (yt-dlp writes here, relative out_template).
+/// ~/Downloads, created on demand.
+fn tools_download_dir() -> std::path::PathBuf {
+    let home = std::env::var_os("HOME").or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from).unwrap_or_else(std::env::temp_dir);
+    let d = home.join("Downloads");
+    let _ = std::fs::create_dir_all(&d);
+    d
+}
+
+/// Human byte size for the downloads list (compact).
+fn human_bytes(n: u64) -> String {
+    if n >= 1_073_741_824 { format!("{:.1} GB", n as f64 / 1_073_741_824.0) }
+    else if n >= 1_048_576 { format!("{:.1} MB", n as f64 / 1_048_576.0) }
+    else if n >= 1024 { format!("{:.0} KB", n as f64 / 1024.0) }
+    else { format!("{n} B") }
+}
+
+/// List media files in the downloads dir, newest first, as (name, abs, meta).
+fn list_downloaded() -> Vec<(String, String, String)> {
+    let dir = tools_download_dir();
+    let mut items: Vec<(std::time::SystemTime, String, String, String)> = std::fs::read_dir(&dir)
+        .into_iter().flatten().flatten()
+        .filter_map(|e| {
+            let p = e.path();
+            if !p.is_file() { return None; }
+            // Skip yt-dlp partials.
+            let name = p.file_name()?.to_str()?.to_string();
+            if name.ends_with(".part") || name.ends_with(".ytdl") { return None; }
+            let md = e.metadata().ok()?;
+            let mtime = md.modified().unwrap_or(std::time::UNIX_EPOCH);
+            Some((mtime, name, p.to_string_lossy().into_owned(), human_bytes(md.len())))
+        })
+        .collect();
+    items.sort_by(|a, b| b.0.cmp(&a.0));
+    items.into_iter().take(200).map(|(_, n, p, sz)| (n, p, sz)).collect()
+}
+
 /// One-paragraph "what it does + how to use it" blurb shown in the tool's info
 /// box, above its form. Keep it concrete: name the inputs and the result.
 fn tool_info(kind: &str) -> &'static str {
@@ -227,6 +265,9 @@ async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::e
             let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
             let ff = tulipix_core::thumbs::tool_bin("ffmpeg");
             let mut cmd = quiet_cmd(&bin);
+            // Land downloads in ~/Downloads (the out_template is relative) so the
+            // in-tool "Downloaded" list can find + open them.
+            cmd.current_dir(tools_download_dir());
             cmd.arg("--newline");
             if let Some(dir) = ff.parent() { cmd.arg("--ffmpeg-location").arg(dir); }
             cmd.args(&args);
@@ -438,13 +479,17 @@ async fn tools_refresh_queue(weak: slint::Weak<MainWindow>) {
                 None => label,
             }
         } else { summary.clone() };
-        let jobs: Vec<QueueJob> = rows.into_iter().map(|(id, kind, state, progress, message)| QueueJob {
-            id: id as i32,
-            name: tool_label(&kind).into(),
-            state: state.into(),
-            progress: progress as f32,
-            message: message.unwrap_or_default().into(),
-        }).collect();
+        // Queue is scoped to the open tool: show only this tool's jobs (when one
+        // is open), so each tool's window carries its own independent queue.
+        let jobs: Vec<QueueJob> = rows.into_iter()
+            .filter(|(_, kind, ..)| active.is_empty() || *kind == active)
+            .map(|(id, kind, state, progress, message)| QueueJob {
+                id: id as i32,
+                name: tool_label(&kind).into(),
+                state: state.into(),
+                progress: progress as f32,
+                message: message.unwrap_or_default().into(),
+            }).collect();
         w.set_queue_jobs(slint::ModelRc::new(slint::VecModel::from(jobs)));
         w.set_tools_queue_status(header.into());
     });
@@ -676,10 +721,18 @@ fn tools_apply_form(w: &MainWindow) {
 
 /// Where a tool binary resolves from, for the Settings tab.
 fn tool_source(name: &str) -> &'static str {
-    let p = tulipix_core::thumbs::tool_bin(name);
-    if p.is_absolute() && p.exists() {
-        if p == bundled_bin_dir().join(name) { "Bundled" } else { "Tools dir" }
-    } else if on_path(name) { "System PATH" } else { "Missing" }
+    // Mirror the main Settings page (tool_row): user Tools dir → bundled → PATH.
+    // The old path-equality check against tool_bin() reported false "Missing" for
+    // tools like exiftool (perl script / resolved path differs from the join).
+    let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
+    let in_tools_dir = tulipix_core::settings::Settings::load().ok()
+        .map(|s| s.text("tools.bin-dir")).filter(|d| !d.trim().is_empty())
+        .map(|d| std::path::Path::new(d.trim()).join(format!("{name}{ext}")).exists())
+        .unwrap_or(false);
+    if in_tools_dir { "Tools dir" }
+    else if bundled_present(name) || bundled_present(&format!("{name}{ext}")) { "Bundled" }
+    else if on_path(name) || on_path(&format!("{name}{ext}")) { "System PATH" }
+    else { "Missing" }
 }
 
 /// First line of `<bin> --version` (or `-version`), trimmed.
@@ -859,6 +912,19 @@ pub fn wire(window: &MainWindow) {
             }
             tools_refresh_status(weak).await;
         });
+    });
+    // Download tool: list finished downloads + open one in the OS default app.
+    let w = window.as_weak();
+    window.on_tools_list_downloads(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let rows: Vec<DownloadItem> = list_downloaded().into_iter()
+            .map(|(name, path, meta)| DownloadItem { name: name.into(), path: path.into(), meta: meta.into() })
+            .collect();
+        w0.set_tools_downloads(slint::ModelRc::new(slint::VecModel::from(rows)));
+    });
+    window.on_tools_open_download(move |path| {
+        let p = std::path::PathBuf::from(path.to_string());
+        std::thread::spawn(move || { let _ = tulipix_platform::fm::open_default(&p); });
     });
     // Queue row actions + worker-slot slider.
     let w = window.as_weak();

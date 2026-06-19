@@ -31,6 +31,9 @@ export struct QueueJob { id: int, name: string, state: string, progress: float, 
 // One external tool's availability (Settings tab).
 export struct ToolStatus { name: string, source: string, detail: string, available: bool, updatable: bool }
 
+// One finished download (download tool's "Downloaded" list).
+export struct DownloadItem { name: string, path: string, meta: string }
+
 // ── gradient action button ──────────────────────────────────────────────────
 component RunButton inherits Rectangle {
     in property <string> label;
@@ -186,15 +189,21 @@ component StatusRow inherits Rectangle {
     property <color> badge: tool.available ? Theme.ok : Theme.error;
     HorizontalLayout {
         padding-left: 16px; padding-right: 16px; spacing: 12px;
+        // Update button in a fixed left slot so every row's content lines up in
+        // the same columns whether or not the tool is updatable (was misaligned
+        // because the button used to sit at the right end, stretched full-height).
+        Rectangle { width: 92px; horizontal-stretch: 0;
+            if tool.updatable: VerticalLayout { alignment: center;
+                ActBtn { label: "Update"; tint: Theme.tools-accent; clicked => { root.update(tool.name); } } } }
         Rectangle { width: 10px; height: 10px; border-radius: 5px; background: badge;
             horizontal-stretch: 0; y: (parent.height - self.height) / 2; }
         VerticalLayout { alignment: center; horizontal-stretch: 1;
             Text { text: tool.name; color: Theme.text; font-size: 14px; font-weight: 700; }
             Text { text: tool.detail; color: Theme.text-dim; font-size: 11px; overflow: elide; } }
-        Rectangle { horizontal-stretch: 0; border-radius: 7px; background: badge.with-alpha(0.16);
-            HorizontalLayout { padding-left: 10px; padding-right: 10px; padding-top: 4px; padding-bottom: 4px;
-                Text { text: tool.source; color: badge; font-size: 11px; font-weight: 800; vertical-alignment: center; } } }
-        if tool.updatable: ActBtn { label: "Update"; tint: Theme.tools-accent; clicked => { root.update(tool.name); } }
+        VerticalLayout { alignment: center; horizontal-stretch: 0;
+            Rectangle { horizontal-stretch: 0; border-radius: 7px; background: badge.with-alpha(0.16);
+                HorizontalLayout { padding-left: 10px; padding-right: 10px; padding-top: 4px; padding-bottom: 4px;
+                    Text { text: tool.source; color: badge; font-size: 11px; font-weight: 800; vertical-alignment: center; } } } }
     }
 }
 
@@ -213,7 +222,9 @@ export component ToolsPage inherits Rectangle {
     in property <string> error: "";
     in property <[QueueJob]> queue-jobs: [];
     in property <[ToolStatus]> tool-statuses: [];
+    in property <[DownloadItem]> downloads: [];
     in-out property <int> worker-slots: 2;
+    property <bool> downloads-open: false;
 
     callback open-tool(string);
     callback set-category(string);
@@ -226,6 +237,8 @@ export component ToolsPage inherits Rectangle {
     callback queue-action(int, string);
     callback set-workers(int);
     callback update-tool(string);
+    callback list-downloads();
+    callback open-download(string);
 
     property <color> accent: Theme.tools-accent;
     // Distinct light pastels cycled across the tool tabs so each tool reads
@@ -348,6 +361,10 @@ export component ToolsPage inherits Rectangle {
                                         AppIcon { source: Icons.settings; tint: root.accent; width: 22px; height: 22px; } }
                                     VerticalLayout { alignment: center; horizontal-stretch: 1;
                                         Text { text: root.active-label; color: Theme.text; font-size: 18px; font-weight: 700; } }
+                                    // Download tools: jump to the list of finished files.
+                                    if root.active-op == "download" || root.active-op == "download_playlist" || root.active-op == "download_live":
+                                        ActBtn { label: "Downloaded"; tint: root.accent; min-width: 100px;
+                                            clicked => { root.list-downloads(); root.downloads-open = true; } }
                                     ActBtn { label: "Close"; clicked => { root.close-detail(); } }
                                 }
                                 // Info box: what the tool does + how to use it, shown
@@ -441,6 +458,53 @@ export component ToolsPage inherits Rectangle {
                     }
                     Text { text: "Enter to confirm · Esc to cancel"; color: Theme.text-dim; font-size: 11px;
                         horizontal-alignment: center; }
+                }
+            }
+        }
+    }
+
+    // ── Downloaded-files browser (download tool) ─────────────────────────────
+    if root.downloads-open: Rectangle {
+        background: #00000088;
+        TouchArea { clicked => { root.downloads-open = false; } } // backdrop = close
+        Rectangle {
+            width: min(560px, root.width - 64px); height: min(520px, root.height - 80px);
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: Theme.modal; border-width: 1px; border-color: Theme.outline-strong;
+            border-radius: Theme.radius-lg; clip: true;
+            VerticalLayout {
+                padding: 20px; spacing: 14px;
+                HorizontalLayout {
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        Text { text: "Downloaded"; color: Theme.text; font-size: 17px; font-weight: 700; }
+                        Text { text: "~/Downloads · click an item to open in the system player";
+                            color: Theme.text-dim; font-size: 11px; } }
+                    ActBtn { label: "Close"; clicked => { root.downloads-open = false; } }
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout { spacing: 8px; alignment: start;
+                        for d in root.downloads: Rectangle {
+                            height: 54px; border-radius: 10px; background: Theme.panel;
+                            border-width: 1px; border-color: Theme.outline;
+                            row := TouchArea { mouse-cursor: pointer; clicked => { root.open-download(d.path); } }
+                            HorizontalLayout {
+                                padding-left: 14px; padding-right: 14px; spacing: 12px;
+                                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                    Rectangle { width: 30px; height: 30px; border-radius: 8px;
+                                        background: root.accent.with-alpha(row.has-hover ? 0.26 : 0.14);
+                                        AppIcon { source: Icons.play; tint: root.accent; width: 15px; height: 15px; } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                    Text { text: d.name; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
+                                    Text { text: d.meta; color: Theme.text-dim; font-size: 11px; } }
+                                VerticalLayout { alignment: center;
+                                    ActBtn { label: "Open"; tint: root.accent; clicked => { root.open-download(d.path); } } }
+                            }
+                        }
+                        if root.downloads.length == 0: Text {
+                            text: "Nothing downloaded yet. Run a download, then check back.";
+                            color: Theme.text-dim; font-size: 13px; }
+                    }
                 }
             }
         }

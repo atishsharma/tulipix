@@ -15,7 +15,7 @@ import { MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, Me
 import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow, AuthorRow, CollectionRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry } from "page_cloud.slint";
-import { ToolsPage, ToolOpRow, ToolField, QueueJob, ToolStatus } from "page_tools.slint";
+import { ToolsPage, ToolOpRow, ToolField, QueueJob, ToolStatus, DownloadItem } from "page_tools.slint";
 import { ThemePicker, ThemeChoice } from "theme_picker.slint";
 import { UserState } from "user_card.slint";
 import { Mode } from "mode_pill.slint";
@@ -694,6 +694,7 @@ export component MainWindow inherits Window {
     in property <string> tools-error: "";
     in property <[QueueJob]> queue-jobs: [];
     in property <[ToolStatus]> tool-statuses: [];
+    in property <[DownloadItem]> tools-downloads: [];
     in-out property <int> tools-worker-slots: 2;
     callback tools-set-category(string);
     callback tools-search(string);
@@ -706,6 +707,8 @@ export component MainWindow inherits Window {
     callback queue-action(int, string);
     callback tools-set-workers(int);
     callback tools-update-tool(string);
+    callback tools-list-downloads();
+    callback tools-open-download(string);
     in-out property <string> default-cadence: "daily";
 
     // Scan progress (one row per section currently scanning).
@@ -2216,6 +2219,7 @@ export component MainWindow inherits Window {
                 error: root.tools-error;
                 queue-jobs: root.queue-jobs;
                 tool-statuses: root.tool-statuses;
+                downloads: root.tools-downloads;
                 worker-slots <=> root.tools-worker-slots;
                 set-category(c) => { root.tools-set-category(c); }
                 search(q) => { root.tools-search(q); }
@@ -2228,6 +2232,8 @@ export component MainWindow inherits Window {
                 queue-action(i, a) => { root.queue-action(i, a); }
                 set-workers(n) => { root.tools-set-workers(n); }
                 update-tool(n) => { root.tools-update-tool(n); }
+                list-downloads() => { root.tools-list-downloads(); }
+                open-download(p) => { root.tools-open-download(p); }
             }
             if active-section == "settings": SettingsPage {
                 width: parent.width; height: parent.height;

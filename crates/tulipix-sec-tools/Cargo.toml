@@ -24,4 +24,5 @@ rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "t
 tulipix-ui = { path = "../tulipix-ui" }
 tulipix-common = { path = "../tulipix-common" }
 tulipix-core = { path = "../tulipix-core" }
+tulipix-platform = { path = "../tulipix-platform" }
 tulipix-tools = { path = "../tulipix-tools" }
