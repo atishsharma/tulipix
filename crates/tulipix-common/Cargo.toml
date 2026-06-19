@@ -18,6 +18,9 @@ tokio.workspace = true
 slint.workspace = true
 # Cross-section image helpers (histogram render). png/jpeg/webp match the app.
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# OS now-playing surface (MPRIS/SMTC) — media_set_playing mirrors play state.
+souvlaki = "0.7"
 tulipix-core = { path = "../tulipix-core" }
 tulipix-photos = { path = "../tulipix-photos" }
 tulipix-videos = { path = "../tulipix-videos" }

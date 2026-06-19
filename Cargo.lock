@@ -7206,10 +7206,12 @@ name = "tulipix-common"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "image",
  "libc",
  "serde_json",
  "slint",
+ "souvlaki",
  "sqlx",
  "tokio",
  "tracing",

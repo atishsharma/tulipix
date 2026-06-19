@@ -27,11 +27,16 @@ pub use tulipix_ui::*;
 // tulipix-common; re-export so existing `crate::pool_for` / `dirs_default` /
 // `bundled_bin_dir` / … paths in this crate + submodules keep resolving.
 pub(crate) use tulipix_common::{
-    anime4k_shader_args, bundled_present, dirs_default, dirs_default_documents, histogram_image,
-    human_size, kill_all_mpv, load_watched_folders, mpv_die_with_parent, music_ipc, music_proc,
-    music_sock, now_secs, on_path, pool_for, spawn_mpv_windowed, stop_video, video_ipc,
-    watched_folders_path, MUSIC_GEN,
+    anime4k_shader_args, bundled_present, cycle_folder_section, dirs_default, dirs_default_documents,
+    fmt_clock, fmt_date, fmt_duration, folder_sections_path, fuzzy_score, histogram_image,
+    human_size, kill_all_mpv, load_folder_sections, load_watched_folders, media_set_playing,
+    mpv_die_with_parent, music_ipc, music_proc, music_section_key, music_section_label, music_sock,
+    now_secs, on_path, pool_for, set_folder_section, spawn_mpv_windowed,
+    stop_video, video_ipc, watched_folders_path, MUSIC_GEN,
 };
+// MPRIS/SMTC handle storage now lives in common (media_set_playing reads it);
+// setup_media_controls in main writes to it.
+pub(crate) use tulipix_common::MEDIA_CONTROLS;
 // Out-of-process mpv IPC transport now lives in tulipix-common; re-import so
 // the leftover music/radio/youtube spawn paths keep using `mpv_ipc::` bare.
 pub(crate) use tulipix_common::mpv_ipc;
@@ -7115,31 +7120,7 @@ fn video_query() -> &'static std::sync::Mutex<String> {
     VIDEO_QUERY.get_or_init(|| std::sync::Mutex::new(String::new()))
 }
 
-/// Format a duration in seconds as `H:MM:SS` (or `M:SS` under an hour).
-fn fmt_duration(secs: f64) -> String {
-    if !(secs.is_finite()) || secs < 1.0 { return String::new(); }
-    let total = secs as i64;
-    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
-    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
-}
-
-/// Clock label for the player scrubber — always renders (`0:00` at zero).
-fn fmt_clock(secs: f64) -> String {
-    let secs = if secs.is_finite() && secs > 0.0 { secs } else { 0.0 };
-    let total = secs as i64;
-    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
-    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
-}
-
-/// Unix-epoch seconds → "12 Jun 2022" (podcast episode dates).
-fn fmt_date(epoch: i64) -> String {
-    use chrono::{TimeZone, Utc, Datelike};
-    const MON: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-    match Utc.timestamp_opt(epoch, 0).single() {
-        Some(dt) => format!("{} {} {}", dt.day(), MON[(dt.month0() as usize).min(11)], dt.year()),
-        None => String::new(),
-    }
-}
+// fmt_duration / fmt_clock / fmt_date moved to tulipix_common.
 
 // Currently-playing item (for watch_progress writeback) + pending resume seek.
 static PLAYER_ITEM: std::sync::OnceLock<std::sync::Mutex<Option<i64>>> = std::sync::OnceLock::new();
@@ -7257,58 +7238,7 @@ fn persist_watched_folder(path: &std::path::Path) {
 // Each scanned music folder can be assigned to one of the 5 top music sections
 // so the user controls where its tracks belong. Persisted next to the watched
 // folders so the assignment survives restarts.
-const MUSIC_SECTIONS: [&str; 5] = ["mymusic", "podcasts", "audiobooks", "radio", "youtube"];
-
-fn folder_sections_path() -> Option<PathBuf> {
-    tulipix_core::paths::config_dir().map(|d| d.join("music_folder_sections.json"))
-}
-fn load_folder_sections() -> std::collections::HashMap<String, String> {
-    folder_sections_path()
-        .and_then(|p| std::fs::read_to_string(&p).ok())
-        .and_then(|b| serde_json::from_str(&b).ok())
-        .unwrap_or_default()
-}
-fn save_folder_sections(map: &std::collections::HashMap<String, String>) {
-    let Some(file) = folder_sections_path() else { return; };
-    if let Some(parent) = file.parent() { let _ = std::fs::create_dir_all(parent); }
-    if let Ok(body) = serde_json::to_string_pretty(map) { let _ = std::fs::write(&file, body); }
-}
-/// Human label for a section key.
-fn music_section_label(key: &str) -> &'static str {
-    match key {
-        "podcasts"   => "Podcasts",
-        "audiobooks" => "Audiobooks",
-        "radio"      => "Radio",
-        "youtube"    => "YouTube",
-        _            => "My Music",
-    }
-}
-/// Section key for a human label (inverse of `music_section_label`).
-fn music_section_key(label: &str) -> &'static str {
-    match label {
-        "Podcasts"   => "podcasts",
-        "Audiobooks" => "audiobooks",
-        "Radio"      => "radio",
-        "YouTube"    => "youtube",
-        _            => "mymusic",
-    }
-}
-/// Persist a folder → section assignment (settings dropdown / chip both use this).
-fn set_folder_section(folder: &str, key: &str) {
-    let mut map = load_folder_sections();
-    map.insert(folder.to_string(), key.to_string());
-    save_folder_sections(&map);
-}
-/// Advance a folder's section tag to the next of the 5 and persist it.
-fn cycle_folder_section(folder: &str) -> String {
-    let mut map = load_folder_sections();
-    let cur = map.get(folder).map(|s| s.as_str()).unwrap_or("mymusic");
-    let idx = MUSIC_SECTIONS.iter().position(|s| *s == cur).unwrap_or(0);
-    let next = MUSIC_SECTIONS[(idx + 1) % MUSIC_SECTIONS.len()].to_string();
-    map.insert(folder.to_string(), next.clone());
-    save_folder_sections(&map);
-    next
-}
+// MUSIC_SECTIONS + folder-section helpers moved to tulipix_common.
 
 /// Open a library video in the embedded player (np.p3.player.*): resume from
 /// the stored position (np.p3.watch-progress) and record the access for the
@@ -13052,28 +12982,7 @@ fn build_palette_rows(query: &str) -> Vec<PaletteRow> {
 
 /// Subsequence fuzzy match: every char of `q` must appear in order in `hay`.
 /// Score rewards contiguous runs + early matches. `None` = no match.
-fn fuzzy_score(q: &str, hay: &str) -> Option<f32> {
-    let hay: Vec<char> = hay.chars().collect();
-    let mut hi = 0usize;
-    let mut score = 0.0f32;
-    let mut run = 0.0f32;
-    for qc in q.chars() {
-        let mut found = false;
-        while hi < hay.len() {
-            if hay[hi] == qc {
-                run += 1.0;
-                score += run + (1.0 / (hi as f32 + 1.0));
-                hi += 1;
-                found = true;
-                break;
-            }
-            run = 0.0;
-            hi += 1;
-        }
-        if !found { return None; }
-    }
-    Some(score)
-}
+// fuzzy_score moved to tulipix_common.
 
 /// Gather filesystem + content properties for the Properties window.
 fn build_props(path: &std::path::Path) -> AssetProperties {
@@ -13141,27 +13050,9 @@ fn urlencoding(s: &str) -> String {
     }).collect()
 }
 
-thread_local! {
-    /// OS media-control handle, held on the UI thread so playback-state updates
-    /// (which must mirror real state or the DE sends the wrong key event) and the
-    /// initial registration share one connection.
-    static MEDIA_CONTROLS: std::cell::RefCell<Option<souvlaki::MediaControls>> = const { std::cell::RefCell::new(None) };
-}
+// MEDIA_CONTROLS moved to tulipix_common.
 
-/// Mirror the real playback state to the OS media surface so the desktop sends
-/// the correct Play vs Pause event for the next media-key press.
-fn media_set_playing(playing: bool) {
-    MEDIA_CONTROLS.with(|c| {
-        if let Some(ctrl) = c.borrow_mut().as_mut() {
-            let st = if playing {
-                souvlaki::MediaPlayback::Playing { progress: None }
-            } else {
-                souvlaki::MediaPlayback::Paused { progress: None }
-            };
-            let _ = ctrl.set_playback(st);
-        }
-    });
-}
+// media_set_playing moved to tulipix_common.
 
 /// Register an OS media-control surface (MPRIS / SMTC / MediaPlayer) so the
 /// hardware/keyboard media keys drive playback (np.p4.music.player-keys).

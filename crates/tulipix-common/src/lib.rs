@@ -435,3 +435,128 @@ pub fn spawn_mpv_windowed(path: PathBuf, resume: Option<f64>, item_id: Option<i6
     });
 }
 
+// ---- Shared formatters / folder-section config / media surface --------------
+/// Format a duration in seconds as `H:MM:SS` (or `M:SS` under an hour).
+pub fn fmt_duration(secs: f64) -> String {
+    if !(secs.is_finite()) || secs < 1.0 { return String::new(); }
+    let total = secs as i64;
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+/// Clock label for the player scrubber — always renders (`0:00` at zero).
+pub fn fmt_clock(secs: f64) -> String {
+    let secs = if secs.is_finite() && secs > 0.0 { secs } else { 0.0 };
+    let total = secs as i64;
+    let (h, m, s) = (total / 3600, (total % 3600) / 60, total % 60);
+    if h > 0 { format!("{h}:{m:02}:{s:02}") } else { format!("{m}:{s:02}") }
+}
+
+/// Unix-epoch seconds → "12 Jun 2022" (podcast episode dates).
+pub fn fmt_date(epoch: i64) -> String {
+    use chrono::{TimeZone, Utc, Datelike};
+    const MON: [&str; 12] = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+    match Utc.timestamp_opt(epoch, 0).single() {
+        Some(dt) => format!("{} {} {}", dt.day(), MON[(dt.month0() as usize).min(11)], dt.year()),
+        None => String::new(),
+    }
+}
+
+pub const MUSIC_SECTIONS: [&str; 5] = ["mymusic", "podcasts", "audiobooks", "radio", "youtube"];
+
+pub fn folder_sections_path() -> Option<PathBuf> {
+    tulipix_core::paths::config_dir().map(|d| d.join("music_folder_sections.json"))
+}
+pub fn load_folder_sections() -> std::collections::HashMap<String, String> {
+    folder_sections_path()
+        .and_then(|p| std::fs::read_to_string(&p).ok())
+        .and_then(|b| serde_json::from_str(&b).ok())
+        .unwrap_or_default()
+}
+pub fn save_folder_sections(map: &std::collections::HashMap<String, String>) {
+    let Some(file) = folder_sections_path() else { return; };
+    if let Some(parent) = file.parent() { let _ = std::fs::create_dir_all(parent); }
+    if let Ok(body) = serde_json::to_string_pretty(map) { let _ = std::fs::write(&file, body); }
+}
+/// Human label for a section key.
+pub fn music_section_label(key: &str) -> &'static str {
+    match key {
+        "podcasts"   => "Podcasts",
+        "audiobooks" => "Audiobooks",
+        "radio"      => "Radio",
+        "youtube"    => "YouTube",
+        _            => "My Music",
+    }
+}
+/// Section key for a human label (inverse of `music_section_label`).
+pub fn music_section_key(label: &str) -> &'static str {
+    match label {
+        "Podcasts"   => "podcasts",
+        "Audiobooks" => "audiobooks",
+        "Radio"      => "radio",
+        "YouTube"    => "youtube",
+        _            => "mymusic",
+    }
+}
+/// Persist a folder → section assignment (settings dropdown / chip both use this).
+pub fn set_folder_section(folder: &str, key: &str) {
+    let mut map = load_folder_sections();
+    map.insert(folder.to_string(), key.to_string());
+    save_folder_sections(&map);
+}
+/// Advance a folder's section tag to the next of the 5 and persist it.
+pub fn cycle_folder_section(folder: &str) -> String {
+    let mut map = load_folder_sections();
+    let cur = map.get(folder).map(|s| s.as_str()).unwrap_or("mymusic");
+    let idx = MUSIC_SECTIONS.iter().position(|s| *s == cur).unwrap_or(0);
+    let next = MUSIC_SECTIONS[(idx + 1) % MUSIC_SECTIONS.len()].to_string();
+    map.insert(folder.to_string(), next.clone());
+    save_folder_sections(&map);
+    next
+}
+
+pub fn fuzzy_score(q: &str, hay: &str) -> Option<f32> {
+    let hay: Vec<char> = hay.chars().collect();
+    let mut hi = 0usize;
+    let mut score = 0.0f32;
+    let mut run = 0.0f32;
+    for qc in q.chars() {
+        let mut found = false;
+        while hi < hay.len() {
+            if hay[hi] == qc {
+                run += 1.0;
+                score += run + (1.0 / (hi as f32 + 1.0));
+                hi += 1;
+                found = true;
+                break;
+            }
+            run = 0.0;
+            hi += 1;
+        }
+        if !found { return None; }
+    }
+    Some(score)
+}
+
+thread_local! {
+    /// OS media-control handle, held on the UI thread so playback-state updates
+    /// (which must mirror real state or the DE sends the wrong key event) and the
+    /// initial registration share one connection.
+    pub static MEDIA_CONTROLS: std::cell::RefCell<Option<souvlaki::MediaControls>> = const { std::cell::RefCell::new(None) };
+}
+
+/// Mirror the real playback state to the OS media surface so the desktop sends
+/// the correct Play vs Pause event for the next media-key press.
+pub fn media_set_playing(playing: bool) {
+    MEDIA_CONTROLS.with(|c| {
+        if let Some(ctrl) = c.borrow_mut().as_mut() {
+            let st = if playing {
+                souvlaki::MediaPlayback::Playing { progress: None }
+            } else {
+                souvlaki::MediaPlayback::Paused { progress: None }
+            };
+            let _ = ctrl.set_playback(st);
+        }
+    });
+}
+
