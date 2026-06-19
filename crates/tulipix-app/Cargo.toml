@@ -42,7 +42,7 @@ renderer-femtovg = ["slint/renderer-femtovg"]
 # interpreter-backed LiveReloadingComponent that re-reads .slint at runtime —
 # the build must ALSO run with SLINT_LIVE_PREVIEW=1 so the slint compiler
 # emits the live-preview glue (see vendor/i-slint-compiler/generator/rust.rs).
-dev-reload = ["dep:notify", "slint/live-preview"]
+dev-reload = ["dep:notify", "slint/live-preview", "tulipix-ui/dev-reload"]
 
 # Real ONNX editor AI ops (upscale/colorize/heal/sky). Pulls ORT into
 # tulipix-photos (downloads the native runtime at build time).
@@ -65,6 +65,7 @@ full = ["lazy-whisper", "lazy-ai-ep", "lazy-plugins"]
 
 [dependencies]
 slint.workspace = true
+tulipix-ui = { path = "../tulipix-ui" }
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
@@ -119,7 +120,7 @@ libc = "0.2"
 raw-window-handle = "0.6"
 
 [build-dependencies]
-slint-build.workspace = true
+# slint-build moved to the tulipix-ui crate (it owns the .slint codegen).
 
 # Embed the .ico as a Win32 resource so the .exe (and, via winit's default,
 # the window/taskbar) carries the Tulipix icon.

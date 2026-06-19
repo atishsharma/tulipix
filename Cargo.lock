@@ -7133,7 +7133,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "slint",
- "slint-build",
  "souvlaki",
  "sqlx",
  "tikv-jemallocator",
@@ -7150,6 +7149,7 @@ dependencies = [
  "tulipix-player",
  "tulipix-plugins",
  "tulipix-tools",
+ "tulipix-ui",
  "tulipix-videos",
  "tulipix-whisper",
  "walkdir",
@@ -7313,6 +7313,14 @@ dependencies = [
  "tokio",
  "tracing",
  "tulipix-core",
+]
+
+[[package]]
+name = "tulipix-ui"
+version = "0.3.0"
+dependencies = [
+ "slint",
+ "slint-build",
 ]
 
 [[package]]
