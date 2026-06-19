@@ -781,9 +781,20 @@ pub fn wire(window: &MainWindow) {
                 tools_refresh_queue(weak).await;
             }
         });
-        w0.set_tools_active_op("".into());
-        w0.set_tools_category("queue".into());
-        tools_refresh(&w0);
+        // Defer the detail-panel teardown to the next event-loop tick. The Run
+        // button lives inside the `if active-op != ""` block; clearing active-op
+        // synchronously deletes the element whose click is still being handled,
+        // which makes the Slint live-preview interpreter panic ("accessing
+        // deleted parent", upstream #6426). Switching views on the next tick lets
+        // this handler return on a live element first.
+        let weak_v = w0.as_weak();
+        let _ = slint::invoke_from_event_loop(move || {
+            if let Some(w0) = weak_v.upgrade() {
+                w0.set_tools_active_op("".into());
+                w0.set_tools_category("queue".into());
+                tools_refresh(&w0);
+            }
+        });
     });
     // Reset → re-seed the active tool's defaults.
     let w = window.as_weak();
@@ -799,7 +810,12 @@ pub fn wire(window: &MainWindow) {
     let w = window.as_weak();
     window.on_tools_close(move || {
         if let Some(w0) = w.upgrade() {
-            w0.set_tools_active_op("".into());
+            // Same as Run: defer clearing active-op (the Close button lives in
+            // the panel it removes) to dodge interpreter #6426.
+            let weak_v = w0.as_weak();
+            let _ = slint::invoke_from_event_loop(move || {
+                if let Some(w0) = weak_v.upgrade() { w0.set_tools_active_op("".into()); }
+            });
             let weak = w0.as_weak();
             tokio::runtime::Handle::current().spawn(async move { tools_refresh_queue(weak).await; });
         }
