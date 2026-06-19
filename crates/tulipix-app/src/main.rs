@@ -19,7 +19,10 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 #[global_allocator]
 static GLOBAL: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
 
-slint::include_modules!();
+// The generated Slint UI now lives in the tulipix-ui crate (its own rustc
+// unit). Re-export it at the crate root so existing `crate::MainWindow` /
+// `ToolField` / … paths in this crate and its submodules keep resolving.
+pub use tulipix_ui::*;
 
 /// Idle threshold meaning "never" — pushed a year out so the idle listener never
 /// fires while auto-lock is disabled (the default).
@@ -952,7 +955,14 @@ fn main() -> Result<()> {
     // ── Tools: category tabs + op search ──
     let w = window.as_weak();
     window.on_tools_set_category(move |c| {
-        if let Some(w0) = w.upgrade() { w0.set_tools_category(c.clone()); tools_refresh(&w0); }
+        if let Some(w0) = w.upgrade() {
+            w0.set_tools_category(c.clone());
+            tools_refresh(&w0);
+            if c == "settings" {
+                let weak = w0.as_weak();
+                tokio::runtime::Handle::current().spawn(async move { tools_refresh_status(weak).await; });
+            }
+        }
     });
     let w = window.as_weak();
     window.on_tools_search(move |_q| {
@@ -968,6 +978,7 @@ fn main() -> Result<()> {
         *tools_form().lock().unwrap() = (kind.clone(), map);
         w0.set_tools_active_op(kind.as_str().into());
         w0.set_tools_active_label(tool_label(&kind).into());
+        w0.set_tools_queue_status(tool_label(&kind).into()); // header shows the tool immediately
         w0.set_tools_error("".into());
         tools_apply_form(&w0);
     });
@@ -1032,7 +1043,25 @@ fn main() -> Result<()> {
     });
     let w = window.as_weak();
     window.on_tools_close(move || {
-        if let Some(w0) = w.upgrade() { w0.set_tools_active_op("".into()); }
+        if let Some(w0) = w.upgrade() {
+            w0.set_tools_active_op("".into());
+            let weak = w0.as_weak();
+            tokio::runtime::Handle::current().spawn(async move { tools_refresh_queue(weak).await; });
+        }
+    });
+    // Settings tab: self-update a tool (yt-dlp -U), then re-probe statuses.
+    let w = window.as_weak();
+    window.on_tools_update_tool(move |name| {
+        let Some(w0) = w.upgrade() else { return; };
+        let weak = w0.as_weak();
+        let name = name.to_string();
+        tokio::runtime::Handle::current().spawn(async move {
+            if name == "yt-dlp" {
+                let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
+                let _ = tokio::process::Command::new(&bin).arg("-U").output().await;
+            }
+            tools_refresh_status(weak).await;
+        });
     });
     // Queue row actions + worker-slot slider.
     let w = window.as_weak();
@@ -1047,6 +1076,10 @@ fn main() -> Result<()> {
                     "resume" => tulipix_tools::queue::resume(&pool, id).await,
                     "cancel" => tulipix_tools::queue::cancel(&pool, id).await,
                     "retry"  => tulipix_tools::queue::retry(&pool, id).await,
+                    "remove" => tulipix_tools::queue::remove(&pool, id).await,
+                    "clear"  => tulipix_tools::queue::clear_all(&pool).await,
+                    "up"     => tulipix_tools::queue::reorder(&pool, id, true).await,
+                    "down"   => tulipix_tools::queue::reorder(&pool, id, false).await,
                     _ => Ok(()),
                 };
                 tools_refresh_queue(weak).await;
@@ -10188,10 +10221,12 @@ type ToolOp = (&'static str, &'static str); // (label, kind)
 const TOOLS_CATALOG: &[(&str, &str, &str, &[ToolOp])] = &[
     ("fileops", "File ops",  "📁", &[
         ("Rename", "rename"), ("Merge", "merge"), ("Split", "split"),
-        ("Hash", "hash"), ("Folder diff", "folder_diff")]),
+        ("Hash", "hash"), ("Folder diff", "folder_diff"),
+        ("Media info", "mediainfo"), ("Clean cache", "cache_clean")]),
     ("video",   "Video",     "🎬", &[
         ("Compress video", "compress_video"), ("Trim", "trim"), ("Convert", "convert"),
-        ("Thumbnail", "thumbnail"), ("Download", "download"), ("Live record", "download_live")]),
+        ("Thumbnail", "thumbnail"), ("Contact sheet", "contact_sheet"),
+        ("Download", "download"), ("Live record", "download_live")]),
     ("audio",   "Audio",     "🎵", &[
         ("Compress audio", "compress_audio"), ("Normalise (R128)", "normalize"),
         ("Extract audio", "extract")]),
@@ -10250,6 +10285,7 @@ fn tool_label(kind: &str) -> &'static str {
         "download" => "Download", "download_playlist" => "Playlist download",
         "download_live" => "Live record", "hash" => "Hash", "folder_diff" => "Folder diff",
         "rename" => "Rename", "transcribe" => "Transcribe", "pdf" => "PDF",
+        "mediainfo" => "Media info", "contact_sheet" => "Contact sheet", "cache_clean" => "Clean cache",
         _ => "Job",
     }
 }
@@ -10478,6 +10514,58 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
             let _ = tokio::fs::remove_file(&wav).await;
             if !status.success() { anyhow::bail!("whisper failed: {}", truncate_msg(&err)); }
         }
+        Native::MediaInfo { input, output } => {
+            let bin = tulipix_core::thumbs::tool_bin("ffprobe");
+            let out = tokio::process::Command::new(&bin)
+                .args(["-v", "quiet", "-print_format", "default", "-show_format", "-show_streams", &input])
+                .output().await.map_err(|e| anyhow::anyhow!("ffprobe not found ({e})"))?;
+            if !out.status.success() {
+                anyhow::bail!("ffprobe failed: {}", truncate_msg(&String::from_utf8_lossy(&out.stderr)));
+            }
+            let report = String::from_utf8_lossy(&out.stdout).to_string();
+            tokio::fs::write(&output, &report).await.map_err(|e| anyhow::anyhow!("write {output}: {e}"))?;
+            // Surface a one-line summary in the queue row.
+            let codec = report.lines().find(|l| l.trim_start().starts_with("codec_name="))
+                .and_then(|l| l.split('=').nth(1)).unwrap_or("");
+            let dur = report.lines().find(|l| l.trim_start().starts_with("duration="))
+                .and_then(|l| l.split('=').nth(1)).unwrap_or("");
+            let _ = tulipix_tools::queue::set_progress(pool, id, base + span,
+                Some(format!("{codec} · {dur}s → {output}").as_str())).await;
+        }
+        Native::ContactSheet { input, output, cols, rows } => {
+            let dur = ffprobe_duration(&input).await;
+            let filter = tulipix_tools::thumbnail::contact_sheet_filter(dur, cols, rows, 320);
+            let bin = tulipix_core::thumbs::tool_bin("ffmpeg");
+            let mut c = quiet_cmd(&bin);
+            c.arg("-y").args(["-i", &input, "-vf", &filter, "-frames:v", "1"]);
+            c.arg(&output).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+            let mut child = c.spawn().map_err(|e| anyhow::anyhow!("ffmpeg not found ({e})"))?;
+            let err_task = spawn_stderr_drain(&mut child);
+            let status = child.wait().await?;
+            let err = err_task.await.unwrap_or_default();
+            if !status.success() { anyhow::bail!("contact sheet failed: {}", truncate_msg(&err)); }
+        }
+        Native::CacheClean => {
+            let dir = tulipix_core::paths::thumbs_dir();
+            let (mut freed, mut count) = (0u64, 0u64);
+            if let Some(dir) = dir {
+                let d = dir.clone();
+                let res = tokio::task::spawn_blocking(move || {
+                    let (mut bytes, mut n) = (0u64, 0u64);
+                    for entry in walkdir::WalkDir::new(&d).into_iter().filter_map(|e| e.ok()) {
+                        if entry.file_type().is_file() {
+                            if let Ok(m) = entry.metadata() { bytes += m.len(); }
+                            if std::fs::remove_file(entry.path()).is_ok() { n += 1; }
+                        }
+                    }
+                    (bytes, n)
+                }).await.unwrap_or((0, 0));
+                freed = res.0; count = res.1;
+            }
+            let mb = freed as f64 / (1024.0 * 1024.0);
+            let _ = tulipix_tools::queue::set_progress(pool, id, base + span,
+                Some(format!("cleared {count} cached files · {mb:.1} MB freed").as_str())).await;
+        }
     }
     Ok(())
 }
@@ -10514,6 +10602,18 @@ async fn tools_refresh_queue(weak: slint::Weak<MainWindow>) {
         else { format!("{running} running · {queued} queued") }
     };
     let _ = weak.upgrade_in_event_loop(move |w| {
+        // Header: when a tool is open, show it + its newest job's live progress;
+        // otherwise the queue summary.
+        let active = w.get_tools_active_op().to_string();
+        let header = if !active.is_empty() {
+            let label = w.get_tools_active_label().to_string();
+            match rows.iter().find(|(_, k, ..)| *k == active) {
+                Some((_, _, state, progress, _)) if state == "running" =>
+                    format!("{label} · {}%", (progress * 100.0).round() as i32),
+                Some((_, _, state, ..)) => format!("{label} · {state}"),
+                None => label,
+            }
+        } else { summary.clone() };
         let jobs: Vec<QueueJob> = rows.into_iter().map(|(id, kind, state, progress, message)| QueueJob {
             id: id as i32,
             name: tool_label(&kind).into(),
@@ -10522,7 +10622,7 @@ async fn tools_refresh_queue(weak: slint::Weak<MainWindow>) {
             message: message.unwrap_or_default().into(),
         }).collect();
         w.set_queue_jobs(slint::ModelRc::new(slint::VecModel::from(jobs)));
-        w.set_tools_queue_status(summary.into());
+        w.set_tools_queue_status(header.into());
     });
 }
 
@@ -10639,6 +10739,17 @@ fn tool_fields(kind: &str) -> Vec<ToolField> {
             mk_field("pattern", "Pattern", "text", "{n:03}_{name}", true, "{n}, {n:03} = sequence", &[], 0.0, 0.0),
             mk_field("start", "Start number", "number", "1", false, "", &[], 0.0, 0.0),
         ],
+        "mediainfo" => vec![
+            file("input", "File to inspect"),
+            mk_field("output", "Report .txt (blank = beside source)", "text", "", false, "codec/stream/bitrate report", &[], 0.0, 0.0),
+        ],
+        "contact_sheet" => vec![
+            file("input", "Source video"),
+            mk_field("cols", "Columns", "number", "4", false, "", &[], 0.0, 0.0),
+            mk_field("rows", "Rows", "number", "4", false, "", &[], 0.0, 0.0),
+            mk_field("output", "Output .jpg (blank = beside source)", "text", "", false, "", &[], 0.0, 0.0),
+        ],
+        "cache_clean" => vec![],
         _ => vec![],
     }
 }
@@ -10702,6 +10813,8 @@ fn tools_build_spec(kind: &str, map: &std::collections::HashMap<String, String>)
             }
             "resize" => set_out(&mut o, beside_source(&input, "resized", &ext_of(&input))),
             "thumbnail" => set_out(&mut o, beside_source(&input, "thumb", "jpg")),
+            "mediainfo" => set_out(&mut o, beside_source(&input, "info", "txt")),
+            "contact_sheet" => set_out(&mut o, beside_source(&input, "sheet", "jpg")),
             "extract" => set_out(&mut o, beside_source(&input, "track", "m4a")),
             "transcribe" => set_out(&mut o, beside_source(&input, "", "srt")),
             "split" => {
@@ -10735,6 +10848,69 @@ fn tools_apply_form(w: &MainWindow) {
         f
     }).collect();
     w.set_tools_fields(slint::ModelRc::new(slint::VecModel::from(fields)));
+}
+
+/// Where a tool binary resolves from, for the Settings tab.
+fn tool_source(name: &str) -> &'static str {
+    let p = tulipix_core::thumbs::tool_bin(name);
+    if p.is_absolute() && p.exists() {
+        if p == bundled_bin_dir().join(name) { "Bundled" } else { "Tools dir" }
+    } else if on_path(name) { "System PATH" } else { "Missing" }
+}
+
+/// First line of `<bin> --version` (or `-version`), trimmed.
+async fn tool_version(name: &str) -> String {
+    let bin = tulipix_core::thumbs::tool_bin(name);
+    for flag in ["--version", "-version"] {
+        if let Ok(o) = tokio::process::Command::new(&bin).arg(flag).output().await {
+            if o.status.success() {
+                let s = String::from_utf8_lossy(&o.stdout);
+                let line = s.lines().next().unwrap_or("").trim();
+                if !line.is_empty() { return line.chars().take(64).collect(); }
+            }
+        }
+    }
+    String::new()
+}
+
+/// Probe every external tool the app uses → the Settings-tab model.
+async fn tools_refresh_status(weak: slint::Weak<MainWindow>) {
+    // (name, what it powers)
+    const TOOLS: &[(&str, &str)] = &[
+        ("ffmpeg", "transcode · compress · convert"),
+        ("ffprobe", "media inspection"),
+        ("yt-dlp", "URL downloads"),
+        ("whisper-cli", "transcription"),
+        ("mpv", "playback"),
+        ("rclone", "cloud sync"),
+        ("exiftool", "EXIF metadata"),
+    ];
+    let mut rows: Vec<ToolStatus> = Vec::new();
+    for (name, role) in TOOLS {
+        let source = tool_source(name);
+        let detail = if source == "Missing" { role.to_string() } else {
+            let v = tool_version(name).await;
+            if v.is_empty() { role.to_string() } else { v }
+        };
+        rows.push(ToolStatus {
+            name: (*name).into(),
+            source: source.into(),
+            detail: detail.into(),
+            available: source != "Missing",
+            updatable: *name == "yt-dlp" && source != "Missing",
+        });
+    }
+    // Bundled AI model (not a binary).
+    let have_model = bundled_present("ggml-tiny-1.0.bin");
+    rows.push(ToolStatus {
+        name: "ggml-tiny (whisper model)".into(),
+        source: if have_model { "Bundled".into() } else { "Missing".into() },
+        detail: if have_model { "75 MB · transcription model".into() } else { "transcription model".into() },
+        available: have_model, updatable: false,
+    });
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        w.set_tool_statuses(slint::ModelRc::new(slint::VecModel::from(rows)));
+    });
 }
 
 /// `rclone config dump` → mirror into cloud.db → set the remotes model.

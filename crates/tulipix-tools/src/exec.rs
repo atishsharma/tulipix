@@ -38,6 +38,12 @@ pub enum Native {
     /// Extract 16 kHz mono wav, then whisper-cli → SRT (the app resolves
     /// whisper-cli + the bundled model).
     Transcribe { input: String, output: String },
+    /// ffprobe report (format + streams) → text file beside source.
+    MediaInfo { input: String, output: String },
+    /// Contact sheet — app probes duration, builds the tile filter, runs ffmpeg.
+    ContactSheet { input: String, output: String, cols: u32, rows: u32 },
+    /// Clear the app's thumbnail/temp cache; report bytes freed.
+    CacheClean,
 }
 
 fn s(v: &Value, k: &str) -> Option<String> {
@@ -198,6 +204,15 @@ pub fn plan(kind: &str, spec: &Value) -> Result<Vec<Step>> {
         "transcribe" => Ok(vec![Step::Native(Native::Transcribe {
             input: req(spec, "input")?, output: req(spec, "output")?,
         })]),
+        "mediainfo" => Ok(vec![Step::Native(Native::MediaInfo {
+            input: req(spec, "input")?, output: req(spec, "output")?,
+        })]),
+        "contact_sheet" => Ok(vec![Step::Native(Native::ContactSheet {
+            input: req(spec, "input")?, output: req(spec, "output")?,
+            cols: num(spec, "cols").unwrap_or(4.0).max(1.0) as u32,
+            rows: num(spec, "rows").unwrap_or(4.0).max(1.0) as u32,
+        })]),
+        "cache_clean" => Ok(vec![Step::Native(Native::CacheClean)]),
         "folder_diff" => Ok(vec![Step::Native(Native::FolderDiff {
             a: req(spec, "a")?, b: req(spec, "b")?,
         })]),
