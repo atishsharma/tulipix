@@ -42,11 +42,11 @@ renderer-femtovg = ["slint/renderer-femtovg"]
 # interpreter-backed LiveReloadingComponent that re-reads .slint at runtime —
 # the build must ALSO run with SLINT_LIVE_PREVIEW=1 so the slint compiler
 # emits the live-preview glue (see vendor/i-slint-compiler/generator/rust.rs).
-dev-reload = ["dep:notify", "slint/live-preview", "tulipix-ui/dev-reload", "tulipix-sec-tools/dev-reload"]
+dev-reload = ["dep:notify", "slint/live-preview", "tulipix-ui/dev-reload", "tulipix-sec-tools/dev-reload", "tulipix-sec-photos/dev-reload"]
 
 # Real ONNX editor AI ops (upscale/colorize/heal/sky). Pulls ORT into
 # tulipix-photos (downloads the native runtime at build time).
-ai-onnx = ["tulipix-photos/onnx"]
+ai-onnx = ["tulipix-photos/onnx", "tulipix-sec-photos/ai-onnx"]
 
 # Global allocator. mimalloc on Win/Linux gives 10-20% perf on the thumb
 # pipeline + DB pool; macOS keeps system malloc (jemalloc nightly-only).
@@ -88,6 +88,7 @@ tulipix-books = { path = "../tulipix-books" }
 tulipix-cloud = { path = "../tulipix-cloud" }
 tulipix-tools = { path = "../tulipix-tools" }
 tulipix-sec-tools = { path = "../tulipix-sec-tools" }
+tulipix-sec-photos = { path = "../tulipix-sec-photos" }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }

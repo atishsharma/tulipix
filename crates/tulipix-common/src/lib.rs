@@ -5,6 +5,7 @@
 //! that isn't section-specific, without depending on `tulipix-app`.
 
 use anyhow::Result;
+use std::path::PathBuf;
 use std::sync::OnceLock;
 
 static PHOTOS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
@@ -227,4 +228,28 @@ pub fn histogram_buf(img: &image::DynamicImage) -> slint::SharedPixelBuffer<slin
         }
     }
     buf
+}
+
+// ---- Watched folders + time (shared by every media section) ----------------
+/// JSON file holding the list of watched root folders, so libraries survive
+/// restarts (the grids re-scan from these on launch).
+pub fn watched_folders_path() -> Option<PathBuf> {
+    tulipix_core::paths::config_dir().map(|d| d.join("watched_folders.json"))
+}
+
+pub fn load_watched_folders() -> Vec<PathBuf> {
+    let Some(p) = watched_folders_path() else { return Vec::new(); };
+    let Ok(body) = std::fs::read_to_string(&p) else { return Vec::new(); };
+    serde_json::from_str::<Vec<String>>(&body)
+        .unwrap_or_default()
+        .into_iter()
+        .map(PathBuf::from)
+        .collect()
+}
+
+pub fn now_secs() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }
