@@ -10451,6 +10451,33 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
             let _ = tokio::fs::remove_file(&tmp).await;
             if !status.success() { anyhow::bail!("merge failed: {}", truncate_msg(&err)); }
         }
+        Native::Transcribe { input, output } => {
+            // 1. Extract 16 kHz mono PCM wav (what whisper.cpp expects).
+            let ff = tulipix_core::thumbs::tool_bin("ffmpeg");
+            let wav = std::env::temp_dir().join(format!("tulipix-whisper-{id}.wav"));
+            let mut c = quiet_cmd(&ff);
+            c.arg("-y").args(["-i", &input, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"]);
+            c.arg(&wav).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+            let mut child = c.spawn().map_err(|e| anyhow::anyhow!("ffmpeg not found ({e})"))?;
+            let err_task = spawn_stderr_drain(&mut child);
+            let status = child.wait().await?;
+            let err = err_task.await.unwrap_or_default();
+            if !status.success() { anyhow::bail!("audio extract failed: {}", truncate_msg(&err)); }
+            let _ = tulipix_tools::queue::set_progress(pool, id, base + span * 0.4, None).await;
+            // 2. whisper-cli → SRT.
+            let model = bundled_bin_dir().join("ggml-tiny-1.0.bin");
+            let whisper = tulipix_core::thumbs::tool_bin("whisper-cli");
+            let out_prefix = output.strip_suffix(".srt").unwrap_or(&output).to_string();
+            let args = tulipix_tools::transcribe::args(&model.to_string_lossy(), &wav.to_string_lossy(), &out_prefix, 4);
+            let mut c = quiet_cmd(&whisper);
+            c.args(&args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+            let mut child = c.spawn().map_err(|e| anyhow::anyhow!("whisper-cli not found ({e}) — set Tools directory in Settings"))?;
+            let err_task = spawn_stderr_drain(&mut child);
+            let status = child.wait().await?;
+            let err = err_task.await.unwrap_or_default();
+            let _ = tokio::fs::remove_file(&wav).await;
+            if !status.success() { anyhow::bail!("whisper failed: {}", truncate_msg(&err)); }
+        }
     }
     Ok(())
 }

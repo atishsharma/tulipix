@@ -35,6 +35,9 @@ pub enum Native {
     FolderDiff { a: String, b: String },
     Rename { dir: String, pattern: String, start: usize },
     Merge { inputs: Vec<String>, output: String },
+    /// Extract 16 kHz mono wav, then whisper-cli → SRT (the app resolves
+    /// whisper-cli + the bundled model).
+    Transcribe { input: String, output: String },
 }
 
 fn s(v: &Value, k: &str) -> Option<String> {
@@ -192,6 +195,9 @@ pub fn plan(kind: &str, spec: &Value) -> Result<Vec<Step>> {
                 manifest: s(spec, "manifest"),
             })])
         }
+        "transcribe" => Ok(vec![Step::Native(Native::Transcribe {
+            input: req(spec, "input")?, output: req(spec, "output")?,
+        })]),
         "folder_diff" => Ok(vec![Step::Native(Native::FolderDiff {
             a: req(spec, "a")?, b: req(spec, "b")?,
         })]),
