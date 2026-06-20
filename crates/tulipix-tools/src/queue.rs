@@ -57,6 +57,14 @@ pub async fn claim_next(pool: &SqlitePool) -> Result<Option<i64>> {
     Ok(next)
 }
 
+/// Update only a job's message (e.g. the resolved download title) without
+/// touching its progress.
+pub async fn set_message(pool: &SqlitePool, id: i64, message: &str) -> Result<()> {
+    sqlx::query("UPDATE jobs SET message = ?, updated = ? WHERE id = ?")
+        .bind(message).bind(now()).bind(id).execute(pool).await?;
+    Ok(())
+}
+
 pub async fn set_progress(pool: &SqlitePool, id: i64, progress: f64, message: Option<&str>) -> Result<()> {
     sqlx::query("UPDATE jobs SET progress = ?, message = COALESCE(?, message), updated = ? WHERE id = ?")
         .bind(progress.clamp(0.0, 1.0)).bind(message).bind(now()).bind(id).execute(pool).await?;

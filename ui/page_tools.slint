@@ -292,6 +292,21 @@ export component ToolsPage inherits Rectangle {
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     Text { text: "Tools"; color: Theme.text; font-size: 22px; font-weight: 700; } }
                 Rectangle { horizontal-stretch: 1; }
+                // Universal parallel-worker cap (applies to every tool's queue).
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Rectangle { height: 40px; min-width: 180px; border-radius: 20px;
+                        background: Theme.panel-2; border-width: 1px; border-color: Theme.outline;
+                        HorizontalLayout { padding-left: 16px; padding-right: 16px; spacing: 10px;
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                AppIcon { source: Icons.sliders; tint: root.accent; width: 15px; height: 15px; } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                Text { text: "Workers"; color: Theme.text-dim; font-size: 11px; font-weight: 700; vertical-alignment: center; } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                Slider { minimum: 1; maximum: 6; value: root.worker-slots;
+                                    changed(v) => { root.worker-slots = round(v); root.set-workers(round(v)); } } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                Text { text: "" + root.worker-slots; color: Theme.text; font-size: 14px; font-weight: 800;
+                                    vertical-alignment: center; min-width: 12px; horizontal-alignment: center; } } } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     HdrSearch { width: 320px; dark: Theme.dark; placeholder: "Find a tool";
                         query <=> root.query; edited(q) => { root.search(q); } } }
@@ -427,11 +442,6 @@ export component ToolsPage inherits Rectangle {
                                     VerticalLayout { alignment: center; horizontal-stretch: 1;
                                         Text { text: "Job queue"; color: Theme.text; font-size: 15px; font-weight: 700; }
                                         Text { text: root.queue-status; color: Theme.text-dim; font-size: 11px; } }
-                                    VerticalLayout { alignment: center; horizontal-stretch: 0;
-                                        Text { text: "Workers " + root.worker-slots; color: Theme.text-dim; font-size: 11px;
-                                            horizontal-alignment: center; }
-                                        Slider { width: 120px; minimum: 1; maximum: 6; value: root.worker-slots;
-                                            changed(v) => { root.worker-slots = round(v); root.set-workers(round(v)); } } }
                                     VerticalLayout { alignment: center;
                                         ActBtn { label: "Clear all"; tint: Theme.error;
                                             clicked => { root.ask(-1, "clear", "Clear all jobs from the queue?"); } } }

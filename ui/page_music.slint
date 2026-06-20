@@ -2264,12 +2264,13 @@ export component MusicPage inherits Rectangle {
                     MusicTab { icon: Icons.layout-grid; label: "Albums";    has-grad: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.lib-tab == "albums";    clicked => { root.set-lib-tab("albums"); } }
                     MusicTab { icon: Icons.user; label: "Artists";   has-grad: true; tint: #06b6d4; grad: @linear-gradient(120deg, #06b6d4, #14b8a6); active: root.lib-tab == "artists";   clicked => { root.set-lib-tab("artists"); } }
                     MusicTab { icon: Icons.music; label: "Genres";    has-grad: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.lib-tab == "genres";    clicked => { root.set-lib-tab("genres"); } }
-                    // Icon-only (no label) + compact width — these clip on scaled
-                    // displays when carrying text, so just the glyph remains.
-                    MusicTab { icon: Icons.list-music; label: ""; min-width: 44px; has-grad: true; tint: #22c55e; grad: @linear-gradient(120deg, #22c55e, #84cc16); active: root.lib-tab == "playlists"; clicked => { root.set-lib-tab("playlists"); } }
-                    MusicTab { icon: Icons.folder; label: ""; min-width: 44px; has-grad: true; tint: #f59e0b; grad: @linear-gradient(120deg, #f59e0b, #f97316); active: root.lib-tab == "folders";   clicked => { root.set-lib-tab("folders"); } }
-                    MusicTab { icon: Icons.heart-filled; label: ""; min-width: 44px; has-grad: true; tint: #f43f5e; grad: @linear-gradient(120deg, #f43f5e, #ec4899); active: root.lib-tab == "favorites"; clicked => { root.set-lib-tab("favorites"); } }
-                    MusicTab { icon: Icons.rotate-ccw; label: ""; min-width: 44px; has-grad: true; tint: #a855f7; grad: @linear-gradient(120deg, #a855f7, #8b5cf6); active: root.lib-tab == "history";   clicked => { root.set-lib-tab("history"); } }
+                    // Collapsible — icon-only at rest, expand to icon + title on
+                    // hover/active. Keeps the row compact on scaled displays while
+                    // still naming each tab on demand (animated width).
+                    MusicTab { icon: Icons.list-music; label: "Playlists"; collapsible: true; min-width: self.revealed ? 116px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #22c55e; grad: @linear-gradient(120deg, #22c55e, #84cc16); active: root.lib-tab == "playlists"; clicked => { root.set-lib-tab("playlists"); } }
+                    MusicTab { icon: Icons.folder; label: "Folders"; collapsible: true; min-width: self.revealed ? 104px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #f59e0b; grad: @linear-gradient(120deg, #f59e0b, #f97316); active: root.lib-tab == "folders";   clicked => { root.set-lib-tab("folders"); } }
+                    MusicTab { icon: Icons.heart-filled; label: "Loved"; collapsible: true; min-width: self.revealed ? 96px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #f43f5e; grad: @linear-gradient(120deg, #f43f5e, #ec4899); active: root.lib-tab == "favorites"; clicked => { root.set-lib-tab("favorites"); } }
+                    MusicTab { icon: Icons.rotate-ccw; label: "History"; collapsible: true; min-width: self.revealed ? 104px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #a855f7; grad: @linear-gradient(120deg, #a855f7, #8b5cf6); active: root.lib-tab == "history";   clicked => { root.set-lib-tab("history"); } }
                 } }
                 // Podcast sub-tabs — order: Home (Latest) · Subscribed · Downloads.
                 // Hidden while a single-podcast detail page is open.

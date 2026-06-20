@@ -264,6 +264,24 @@ async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::e
         Step::YtDlp { args } => {
             let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
             let ff = tulipix_core::thumbs::tool_bin("ffmpeg");
+            // Best-effort: resolve the video title up front so the queue row
+            // names the actual video (not just "Download"). The URL is the last
+            // argv element (DownloadSpec pushes it last).
+            if let Some(url) = args.last() {
+                if let Ok(out) = quiet_cmd(&bin)
+                    .args(["--no-warnings", "--skip-download", "--playlist-items", "1",
+                           "--print", "%(title)s", url])
+                    .output().await
+                {
+                    if out.status.success() {
+                        let title = String::from_utf8_lossy(&out.stdout)
+                            .lines().next().unwrap_or("").trim().to_string();
+                        if !title.is_empty() {
+                            let _ = tulipix_tools::queue::set_message(pool, id, &title).await;
+                        }
+                    }
+                }
+            }
             let mut cmd = quiet_cmd(&bin);
             // Land downloads in ~/Downloads (the out_template is relative) so the
             // in-tool "Downloaded" list can find + open them.
@@ -369,14 +387,20 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
             let err = err_task.await.unwrap_or_default();
             if !status.success() { anyhow::bail!("audio extract failed: {}", truncate_msg(&err)); }
             let _ = tulipix_tools::queue::set_progress(pool, id, base + span * 0.4, None).await;
-            // 2. whisper-cli → SRT.
+            // 2. whisper.cpp → SRT.
             let model = bundled_bin_dir().join("ggml-tiny-1.0.bin");
-            let whisper = tulipix_core::thumbs::tool_bin("whisper-cli");
+            if !model.exists() {
+                let _ = tokio::fs::remove_file(&wav).await;
+                anyhow::bail!("whisper model missing at {} — run `just fetch` to download it", model.display());
+            }
+            let whisper = whisper_bin().ok_or_else(|| { anyhow::anyhow!(
+                "whisper.cpp CLI not found — install whisper.cpp (provides `whisper-cli`), \
+                 or drop the binary in the Tools directory set in Settings") })?;
             let out_prefix = output.strip_suffix(".srt").unwrap_or(&output).to_string();
             let args = tulipix_tools::transcribe::args(&model.to_string_lossy(), &wav.to_string_lossy(), &out_prefix, 4);
             let mut c = quiet_cmd(&whisper);
             c.args(&args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
-            let mut child = c.spawn().map_err(|e| anyhow::anyhow!("whisper-cli not found ({e}) — set Tools directory in Settings"))?;
+            let mut child = c.spawn().map_err(|e| anyhow::anyhow!("whisper failed to start ({e})"))?;
             let err_task = spawn_stderr_drain(&mut child);
             let status = child.wait().await?;
             let err = err_task.await.unwrap_or_default();
@@ -591,7 +615,9 @@ fn tool_fields(kind: &str) -> Vec<ToolField> {
         "download" | "download_live" => vec![
             mk_field("url", "URL", "text", "", true, "YouTube / Vimeo / 1800+ sites", &[], 0.0, 0.0),
             mk_field("audio_only", "Audio only", "toggle", "false", false, "extract audio", &[], 0.0, 0.0),
-            mk_field("max_height", "Max height (px, blank = best)", "number", "", false, "e.g. 1080", &[], 0.0, 0.0),
+            mk_field("max_height", "Resolution", "dropdown", "1080",
+                false, "“Best” grabs the highest available",
+                &["Best", "2160", "1440", "1080", "720", "480", "360", "240"], 0.0, 0.0),
             mk_field("embed_subs", "Embed subtitles", "toggle", "false", false, "", &[], 0.0, 0.0),
             mk_field("output", "Save folder (blank = Downloads)", "folder", "", false, "", &[], 0.0, 0.0),
         ],
@@ -721,6 +747,18 @@ fn tools_apply_form(w: &MainWindow) {
         f
     }).collect();
     w.set_tools_fields(slint::ModelRc::new(slint::VecModel::from(fields)));
+}
+
+/// Resolve the whisper.cpp CLI. The upstream binary was renamed across releases
+/// (`main` → `whisper` → `whisper-cli`) and distros package it under a couple of
+/// names, so try each: the Tools dir / bundled copy first (tool_bin), then PATH.
+fn whisper_bin() -> Option<std::path::PathBuf> {
+    for name in ["whisper-cli", "whisper-cpp"] {
+        let p = tulipix_core::thumbs::tool_bin(name);
+        if p.is_absolute() && p.exists() { return Some(p); }
+        if on_path(name) { return Some(std::path::PathBuf::from(name)); }
+    }
+    None
 }
 
 /// Where a tool binary resolves from, for the Settings tab.
