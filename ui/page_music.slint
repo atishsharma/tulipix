@@ -591,6 +591,25 @@ component ColorChip inherits Rectangle {
             vertical-alignment: center; horizontal-alignment: center; overflow: elide; } }
 }
 
+// Manager popup tab — active tab gets the pink→purple fill, inactive is a
+// quiet outline (np.p5.atmusic.mgr-tabs). Used by the combined Tags/Lyrics popup.
+component MgrTab inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> active: false;
+    callback clicked();
+    height: 36px; horizontal-stretch: 1; vertical-stretch: 0; border-radius: 18px;
+    background: root.active ? @linear-gradient(120deg, #ec4899, #8b5cf6)
+        : (mt.has-hover ? MusicTheme.hov2 : MusicTheme.surf0);
+    border-width: 1px; border-color: root.active ? transparent : MusicTheme.line;
+    mt := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout { spacing: 7px; alignment: center;
+        if root.icon.width > 0: VerticalLayout { alignment: center;
+            AppIcon { source: root.icon; tint: root.active ? #ffffff : MusicTheme.fg-dim; width: 14px; height: 14px; } }
+        Text { text: root.label; color: root.active ? #ffffff : MusicTheme.fg-dim; font-size: 13px; font-weight: 700;
+            vertical-alignment: center; horizontal-alignment: center; } }
+}
+
 // Fancy gradient count pill — big number + label fill the whole chip
 // (np.p5.atmusic.count-pill). Used in the header for per-section totals.
 component FancyCount inherits Rectangle {
@@ -630,7 +649,7 @@ component PageNav inherits HorizontalLayout {
         background: @linear-gradient(120deg, #ec489926, #8b5cf626); border-width: 1px; border-color: MusicTheme.line;
         HorizontalLayout { padding-left: 12px; padding-right: 12px;
             Text { text: (root.page + 1) + " / " + root.pages; color: MusicTheme.fg2; font-size: 12px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } } }
-    VerticalLayout { alignment: center; PageBtn { icon: Icons.play; clicked => { root.go(1); } } }
+    VerticalLayout { alignment: center; PageBtn { icon: Icons.chevron-right; clicked => { root.go(1); } } }
 }
 
 // Standard pill action button for the detail header — Lucide icon + label,
@@ -1368,6 +1387,8 @@ component YtPlaylistCard inherits Rectangle {
 export component MusicPage inherits Rectangle {
     in property <int> item-count: 0;
     in property <bool> home-connect: false;       // gradient-outline the Home blocks
+    in property <bool> yt-home-connect: true;     // gradient-outline the YouTube Home rails (default on)
+    in property <bool> mini-outline: true;        // bold gradient ring on the now-playing mini players
     in property <[PhotoTile]> tiles: [];
     in property <string> np-title: "";
     in property <string> np-sub: "";
@@ -1502,6 +1523,8 @@ export component MusicPage inherits Rectangle {
     // Library metadata manager (np.p5.atmusic.metadata-manager) — fetch title /
     // artist / album / year / genre from MusicBrainz using the filename.
     in-out property <bool> meta-mgr-open: false;
+    // Active tab in the combined Tags/Lyrics popup: "tags" | "lyrics".
+    in-out property <string> mgr-tab: "tags";
     in property <int> meta-mgr-total: 0;
     in property <int> meta-mgr-tagged: 0;          // songs that already have artist+album
     in property <int> meta-mgr-missing: 0;         // songs still missing tags
@@ -1582,6 +1605,8 @@ export component MusicPage inherits Rectangle {
     callback toggle-exclusive();
     callback toggle-gapless();
     callback toggle-home-connect();
+    callback toggle-yt-home-connect();
+    callback toggle-mini-outline();
     callback set-crossfade(float);
     callback set-replaygain(string);
     callback rg-scan();                           // compute gains for untagged files
@@ -1929,6 +1954,7 @@ export component MusicPage inherits Rectangle {
     in-out property <bool> yt-pl-del-open: false;
     in-out property <int> yt-pl-del-id: -1;
     callback yt-clear-subs();
+    callback yt-refresh-subs();   // re-fetch subscriber/video counts (manual only)
     // Subscribe / unsubscribe confirmation (used by sub cards + channel page).
     in-out property <bool> yt-sub-confirm-open: false;
     in-out property <string> yt-sub-confirm-id: "";
@@ -2238,10 +2264,12 @@ export component MusicPage inherits Rectangle {
                     MusicTab { icon: Icons.layout-grid; label: "Albums";    has-grad: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.lib-tab == "albums";    clicked => { root.set-lib-tab("albums"); } }
                     MusicTab { icon: Icons.user; label: "Artists";   has-grad: true; tint: #06b6d4; grad: @linear-gradient(120deg, #06b6d4, #14b8a6); active: root.lib-tab == "artists";   clicked => { root.set-lib-tab("artists"); } }
                     MusicTab { icon: Icons.music; label: "Genres";    has-grad: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.lib-tab == "genres";    clicked => { root.set-lib-tab("genres"); } }
-                    MusicTab { icon: Icons.list-music; label: "Playlists"; has-grad: true; tint: #22c55e; grad: @linear-gradient(120deg, #22c55e, #84cc16); active: root.lib-tab == "playlists"; clicked => { root.set-lib-tab("playlists"); } }
-                    MusicTab { icon: Icons.folder; label: "Folders";   has-grad: true; tint: #f59e0b; grad: @linear-gradient(120deg, #f59e0b, #f97316); active: root.lib-tab == "folders";   clicked => { root.set-lib-tab("folders"); } }
-                    MusicTab { icon: Icons.heart-filled; label: "Loved";     has-grad: true; tint: #f43f5e; grad: @linear-gradient(120deg, #f43f5e, #ec4899); active: root.lib-tab == "favorites"; clicked => { root.set-lib-tab("favorites"); } }
-                    MusicTab { icon: Icons.rotate-ccw; label: "History";   has-grad: true; tint: #a855f7; grad: @linear-gradient(120deg, #a855f7, #8b5cf6); active: root.lib-tab == "history";   clicked => { root.set-lib-tab("history"); } }
+                    // Icon-only (no label) + compact width — these clip on scaled
+                    // displays when carrying text, so just the glyph remains.
+                    MusicTab { icon: Icons.list-music; label: ""; min-width: 44px; has-grad: true; tint: #22c55e; grad: @linear-gradient(120deg, #22c55e, #84cc16); active: root.lib-tab == "playlists"; clicked => { root.set-lib-tab("playlists"); } }
+                    MusicTab { icon: Icons.folder; label: ""; min-width: 44px; has-grad: true; tint: #f59e0b; grad: @linear-gradient(120deg, #f59e0b, #f97316); active: root.lib-tab == "folders";   clicked => { root.set-lib-tab("folders"); } }
+                    MusicTab { icon: Icons.heart-filled; label: ""; min-width: 44px; has-grad: true; tint: #f43f5e; grad: @linear-gradient(120deg, #f43f5e, #ec4899); active: root.lib-tab == "favorites"; clicked => { root.set-lib-tab("favorites"); } }
+                    MusicTab { icon: Icons.rotate-ccw; label: ""; min-width: 44px; has-grad: true; tint: #a855f7; grad: @linear-gradient(120deg, #a855f7, #8b5cf6); active: root.lib-tab == "history";   clicked => { root.set-lib-tab("history"); } }
                 } }
                 // Podcast sub-tabs — order: Home (Latest) · Subscribed · Downloads.
                 // Hidden while a single-podcast detail page is open.
@@ -2476,26 +2504,22 @@ export component MusicPage inherits Rectangle {
                     // Reset to the default cell size (200px — the slider midpoint).
                     VerticalLayout { alignment: center; GlyphBtn { icon: Icons.rotate-ccw; size: 26px;
                         clicked => { root.grid-density = 200; root.set-grid-density(200); } } }
-                    // Sync lyrics for the whole library (LRCLIB) — progress-fill button.
+                    // Combined Tags + Lyrics manager — one fill pill, opens a
+                    // two-tab popup (np.p5.atmusic.library-manager). Fill = mean
+                    // of tag + lyrics coverage, auto-filled on load.
                     VerticalLayout { alignment: center; Rectangle { width: 1px; height: 18px; background: MusicTheme.line; } }
-                    VerticalLayout { alignment: center; Rectangle { width: 80px; height: 30px; border-radius: 15px; clip: true;
+                    VerticalLayout { alignment: center; mlpill := Rectangle { width: 132px; height: 30px; border-radius: 15px; clip: true;
                         background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
-                        // gradient fill = % done (auto-filled to current coverage on load)
-                        Rectangle { x: 0; width: parent.width * Math.clamp(root.lyrics-sync-progress, 0, 1); height: 100%;
+                        property <float> fill: (Math.clamp(root.meta-fetch-progress, 0, 1) + Math.clamp(root.lyrics-sync-progress, 0, 1)) / 2;
+                        Rectangle { x: 0; width: parent.width * mlpill.fill; height: 100%;
                             background: @linear-gradient(90deg, #ec4899, #8b5cf6); animate width { duration: 200ms; } }
-                        slt := TouchArea { mouse-cursor: pointer; clicked => { root.open-lyrics-manager(); } }
-                        Text { text: root.lyrics-sync-status != "" ? root.lyrics-sync-status : "Lyrics";
-                            color: root.lyrics-sync-progress > 0.5 ? #ffffff : MusicTheme.fg; font-size: 11px; font-weight: 600;
-                            horizontal-alignment: center; vertical-alignment: center; } } }
-                    // Metadata manager — fetch tags from MusicBrainz (progress-fill button).
-                    VerticalLayout { alignment: center; Rectangle { width: 75px; height: 30px; border-radius: 15px; clip: true;
-                        background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
-                        Rectangle { x: 0; width: parent.width * Math.clamp(root.meta-fetch-progress, 0, 1); height: 100%;
-                            background: @linear-gradient(90deg, #8b5cf6, #ec4899); animate width { duration: 200ms; } }
-                        mtt := TouchArea { mouse-cursor: pointer; clicked => { root.open-meta-manager(); } }
-                        Text { text: root.meta-fetch-status != "" ? root.meta-fetch-status : "Tags";
-                            color: root.meta-fetch-progress > 0.5 ? #ffffff : MusicTheme.fg; font-size: 11px; font-weight: 600;
-                            horizontal-alignment: center; vertical-alignment: center; } } }
+                        mlt := TouchArea { mouse-cursor: pointer;
+                            clicked => { root.mgr-tab = "tags"; root.open-meta-manager(); } }
+                        HorizontalLayout { alignment: center; spacing: 6px;
+                            VerticalLayout { alignment: center; AppIcon { source: Icons.tag; tint: mlpill.fill > 0.5 ? #ffffff : MusicTheme.fg; width: 12px; height: 12px; } }
+                            Text { text: "Tags & Lyrics";
+                                color: mlpill.fill > 0.5 ? #ffffff : MusicTheme.fg; font-size: 11px; font-weight: 600;
+                                vertical-alignment: center; } } } }
                     // Pagination — docked at the right edge of row 2.
                     if root.song-pages > 1: VerticalLayout { alignment: center; Rectangle { width: 10px; } }
                     if root.song-pages > 1: VerticalLayout { alignment: center; PageNav { page: root.song-page; pages: root.song-pages; go(d) => { root.set-song-page(d); } } }
@@ -2672,8 +2696,9 @@ export component MusicPage inherits Rectangle {
                                 HorizontalLayout { alignment: center; spacing: 5px; VerticalLayout { alignment: center; AppIcon { source: Icons.chevron-left; tint: cbb.has-hover ? #a855f7 : MusicTheme.fg2; width: 11px; height: 11px; } } Text { text: "Back"; color: cbb.has-hover ? #a855f7 : MusicTheme.fg2; font-size: 11px; font-weight: 600; vertical-alignment: center; } } } }
                         VerticalLayout { alignment: center;
                             Rectangle { height: 36px; min-width: 118px; border-radius: 8px;
+                                // Subscribed (ON) = red gradient; not-subscribed = neutral violet so red clearly signals the on-state.
                                 background: root.yt-channel-subscribed ? (tsb.has-hover ? @linear-gradient(120deg, #f87171, #dc2626) : @linear-gradient(120deg, #ef4444, #b91c1c))
-                                          : @linear-gradient(120deg, #ef4444, #ec4899);
+                                          : (tsb.has-hover ? @linear-gradient(120deg, #a855f7, #7c3aed) : @linear-gradient(120deg, #8b5cf6, #7c3aed));
                                 border-width: 0px; border-color: transparent;
                                 drop-shadow-blur: tsb.has-hover ? 14px : 7px; drop-shadow-color: #ef4444aa;
                                 animate background, border-color, drop-shadow-blur { duration: 140ms; easing: ease-out; }
@@ -2834,7 +2859,9 @@ export component MusicPage inherits Rectangle {
                 // 20 / 60 / 20 grid.
                 HorizontalLayout { spacing: 12px; vertical-stretch: 1;
                     // LEFT rail.
-                    GlassCard { horizontal-stretch: 1; radius: 16px; clip-content: true;
+                    GradOutline { on: root.yt-home-connect; horizontal-stretch: 1;
+                    VerticalLayout { padding: root.yt-home-connect ? 3px : 0px;
+                    GlassCard { radius: 14px; clip-content: true;
                     ScrollView { width: 100%; height: 100%;
                         VerticalLayout { spacing: 16px; padding: 13px;
                             VerticalLayout { spacing: 7px;
@@ -2866,9 +2893,11 @@ export component MusicPage inherits Rectangle {
                                 if root.yt-home-downloads.length == 0: Text { text: "No downloads yet."; color: MusicTheme.fg-mute; font-size: 10px; }
                                 for v in root.yt-home-downloads: YtMiniRow { v: v; removable: true; tint: #ec4899;
                                     open => { root.yt-play-download(v.path); }
-                                    remove => { root.yt-del-kind = "download"; root.yt-del-id = v.path; root.yt-del-title = v.title; root.yt-del-open = true; } } } } } }
+                                    remove => { root.yt-del-kind = "download"; root.yt-del-id = v.path; root.yt-del-title = v.title; root.yt-del-open = true; } } } } } } } }
                     // CENTER results.
-                    GlassCard { horizontal-stretch: 3; radius: 16px; clip-content: true;
+                    GradOutline { on: root.yt-home-connect; horizontal-stretch: 3;
+                    VerticalLayout { padding: root.yt-home-connect ? 3px : 0px;
+                    GlassCard { radius: 14px; clip-content: true;
                     recoscroll := ScrollView { width: 100%; height: 100%;
                         // Always open at the top. The ScrollView otherwise keeps a
                         // stale viewport-y, so async-loaded recommendations land
@@ -2902,15 +2931,17 @@ export component MusicPage inherits Rectangle {
                             if root.yt-results-more: Rectangle { height: 40px; border-radius: 8px; background: lm.has-hover ? MusicTheme.hov2 : MusicTheme.surf1;
                                 border-width: 1px; border-color: MusicTheme.line;
                                 lm := TouchArea { mouse-cursor: pointer; clicked => { root.yt-search-more(); } }
-                                HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.arrow-down; tint: MusicTheme.fg2; width: 12px; height: 12px; } } Text { text: "Load more"; color: MusicTheme.fg2; font-size: 12px; font-weight: 600; vertical-alignment: center; } } } } } }
+                                HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.arrow-down; tint: MusicTheme.fg2; width: 12px; height: 12px; } } Text { text: "Load more"; color: MusicTheme.fg2; font-size: 12px; font-weight: 600; vertical-alignment: center; } } } } } } } }
                     // RIGHT rail.
-                    GlassCard { horizontal-stretch: 1; radius: 16px; clip-content: true;
+                    GradOutline { on: root.yt-home-connect; horizontal-stretch: 1;
+                    VerticalLayout { padding: root.yt-home-connect ? 3px : 0px;
+                    GlassCard { radius: 14px; clip-content: true;
                     ScrollView { width: 100%; height: 100%;
                         VerticalLayout { spacing: 12px; padding: 13px;
                             YtRailTitle { label: "SUBSCRIBED"; clicked => { root.yt-set-tab("subscriptions"); } }
                             if root.yt-home-subs.length == 0: Text { text: "Import your subscriptions via + Add."; color: MusicTheme.fg-mute; font-size: 10px; wrap: word-wrap; }
                             VerticalLayout { spacing: 9px;
-                                for s in root.yt-home-subs: YtSubRow { s: s; open => { root.yt-open-channel(s.channel-id); } } } } } } }
+                                for s in root.yt-home-subs: YtSubRow { s: s; open => { root.yt-open-channel(s.channel-id); } } } } } } } } }
             }
 
             // ══ SUBSCRIPTIONS ═════════════════════════════════════════════
@@ -2937,6 +2968,13 @@ export component MusicPage inherits Rectangle {
                                     vertical-alignment: center; } } } }
                         if root.yt-subs-pages > 1: VerticalLayout { alignment: center;
                             PageNav { page: root.yt-subs-page; pages: root.yt-subs-pages; go(d) => { root.yt-subs-set-page(d); } } }
+                        // Manual count refresh — sits next to Clear. Disabled while a fetch runs.
+                        if root.yt-subs.length > 0: Rectangle { width: 100px; height: 32px; border-radius: 8px;
+                            background: root.yt-fetch-busy ? MusicTheme.surf1 : (rfs.has-hover ? MusicTheme.hov2 : MusicTheme.surf1);
+                            border-width: 1px; border-color: rfs.has-hover ? #ef4444aa : MusicTheme.line;
+                            animate border-color { duration: 140ms; easing: ease-out; }
+                            rfs := TouchArea { mouse-cursor: root.yt-fetch-busy ? default : pointer; enabled: !root.yt-fetch-busy; clicked => { root.yt-refresh-subs(); } }
+                            HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.refresh-cw; tint: rfs.has-hover ? #ef4444 : MusicTheme.fg2; width: 11px; height: 11px; } } Text { text: "Refresh"; color: rfs.has-hover ? #ef4444 : MusicTheme.fg2; font-size: 10px; font-weight: 700; vertical-alignment: center; } } }
                         if root.yt-subs.length > 0: Rectangle { width: 150px; height: 32px; border-radius: 8px;
                             background: cls.has-hover ? @linear-gradient(120deg, #f87171, #dc2626) : @linear-gradient(120deg, #ef4444, #f59e0b);
                             drop-shadow-blur: cls.has-hover ? 12px : 5px; drop-shadow-color: #ef4444aa;
@@ -2990,20 +3028,21 @@ export component MusicPage inherits Rectangle {
                                             HorizontalLayout { padding-left: 16px; padding-right: 16px; alignment: center;
                                                 Text { text: s.subs != "" ? s.subs : "—"; color: #ffffff; font-size: 12px; font-weight: 800; vertical-alignment: center; } } } }
                                     Rectangle { vertical-stretch: 1; }
-                                    // Subscribed → unsubscribe (hover red); unsubscribed → re-subscribe (solid red).
+                                    // Subscribed (ON) = filled red gradient; not-subscribed = violet. Hover on a
+                                    // subscribed channel brightens to rose + flips the label to Unsubscribe.
                                     Rectangle { height: 28px; border-radius: 14px;
                                         background: s.subscribed
-                                            ? (usb.has-hover ? @linear-gradient(135deg, #ef4444, #f43f5e) : MusicTheme.surf0)
-                                            : @linear-gradient(135deg, #ef4444, #f59e0b);
-                                        border-width: 1px; border-color: (s.subscribed && !usb.has-hover) ? MusicTheme.line : transparent;
+                                            ? (usb.has-hover ? @linear-gradient(135deg, #f87171, #f43f5e) : @linear-gradient(135deg, #ef4444, #b91c1c))
+                                            : (usb.has-hover ? @linear-gradient(135deg, #a855f7, #7c3aed) : @linear-gradient(135deg, #8b5cf6, #7c3aed));
+                                        border-width: 0px; border-color: transparent;
                                         usb := TouchArea { mouse-cursor: pointer; clicked => {
                                             root.yt-sub-confirm-id = s.channel-id;
                                             root.yt-sub-confirm-title = s.title;
                                             root.yt-sub-confirm-add = !s.subscribed;
                                             root.yt-sub-confirm-channelpage = false;
                                             root.yt-sub-confirm-open = true; } }
-                                        HorizontalLayout { alignment: center; spacing: 5px; VerticalLayout { alignment: center; AppIcon { source: s.subscribed ? (usb.has-hover ? Icons.x : Icons.check) : Icons.plus; tint: (s.subscribed && !usb.has-hover) ? MusicTheme.fg2 : #ffffff; width: 11px; height: 11px; } } Text { text: s.subscribed ? (usb.has-hover ? "Unsubscribe" : "Subscribed") : "Subscribe";
-                                            color: (s.subscribed && !usb.has-hover) ? MusicTheme.fg2 : #ffffff; font-size: 10px; font-weight: 700;
+                                        HorizontalLayout { alignment: center; spacing: 5px; VerticalLayout { alignment: center; AppIcon { source: s.subscribed ? (usb.has-hover ? Icons.x : Icons.check) : Icons.plus; tint: #ffffff; width: 11px; height: 11px; } } Text { text: s.subscribed ? (usb.has-hover ? "Unsubscribe" : "Subscribed") : "Subscribe";
+                                            color: #ffffff; font-size: 10px; font-weight: 700;
                                             vertical-alignment: center; } } }
                                     // Pin / unpin this channel from the Home right rail. Add is
                                     // instant (with a pressed flash); Remove asks for confirmation.
@@ -4454,6 +4493,12 @@ export component MusicPage inherits Rectangle {
                         Text { text: root.lyrics-mgr-mode == "list" ? "Lyrics manager" : (root.lyrics-mgr-mode == "search" ? "Find lyrics" : (root.lyrics-view-title == "" ? "Lyrics" : root.lyrics-view-title)); color: MusicTheme.fg; font-size: 18px; font-weight: 800; overflow: elide; } }
                     PlayerBtn { icon: Icons.x; size: 30px; isz: 14px; clicked => { root.lyrics-mgr-open = false; } } }
 
+                // Tags / Lyrics tab switcher (only on the list page).
+                if root.lyrics-mgr-mode == "list": HorizontalLayout { spacing: 8px;
+                    MgrTab { label: "Tags"; icon: Icons.tag; active: false;
+                        clicked => { root.mgr-tab = "tags"; root.lyrics-mgr-open = false; root.open-meta-manager(); } }
+                    MgrTab { label: "Lyrics"; icon: Icons.lyrics; active: true; } }
+
                 // ── LIST mode ──
                 // Stat cards double as filters — click one to filter the list below.
                 if root.lyrics-mgr-mode == "list": HorizontalLayout { spacing: 10px;
@@ -4869,6 +4914,8 @@ export component MusicPage inherits Rectangle {
                     VerticalLayout { spacing: 12px;
                         Text { text: "HOME"; color: #ec4899; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
                         BrowseChip { icon: root.home-connect ? Icons.square-check : Icons.square; label: root.home-connect ? "Gradient outline connecting the home blocks" : "Gradient outline connecting the home blocks"; clicked => { root.toggle-home-connect(); } }
+                        BrowseChip { icon: root.yt-home-connect ? Icons.square-check : Icons.square; label: "Gradient outline on the YouTube home rails"; clicked => { root.toggle-yt-home-connect(); } }
+                        BrowseChip { icon: root.mini-outline ? Icons.square-check : Icons.square; label: "Bold gradient outline on the mini players"; clicked => { root.toggle-mini-outline(); } }
                     }
                     Rectangle { height: 1px; background: MusicTheme.surf1; }
                     // Connect.
@@ -4913,6 +4960,11 @@ export component MusicPage inherits Rectangle {
                     VerticalLayout { alignment: center; horizontal-stretch: 1;
                         Text { text: "Metadata"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; } }
                     PlayerBtn { icon: Icons.x; size: 30px; isz: 14px; clicked => { root.meta-mgr-open = false; } } }
+                // Tags / Lyrics tab switcher.
+                HorizontalLayout { spacing: 8px;
+                    MgrTab { label: "Tags"; icon: Icons.tag; active: true; }
+                    MgrTab { label: "Lyrics"; icon: Icons.lyrics; active: false;
+                        clicked => { root.mgr-tab = "lyrics"; root.meta-mgr-open = false; root.open-lyrics-manager(); } } }
                 Text { text: "Reads each filename as “Artist - Title - Album”, looks it up on MusicBrainz, then updates title, artist, album, year and genre.";
                     color: MusicTheme.fg-dim; font-size: 12px; wrap: word-wrap; }
                 // Stat cards double as filters — click one to filter the list below.
@@ -5962,9 +6014,12 @@ export component MusicMini inherits Rectangle {
     // Audiobook mode — the second line carries the book title (set as `sub`).
     in property <bool> book-mode: false;
     callback open-zen();                  // full-screen zen player
+    in property <bool> bold-outline: true;   // thick gradient ring for visibility (toggle)
 
     width: 300px; height: 488px; border-radius: 18px;
-    background: MusicTheme.surf-player; border-width: 1px; border-color: MusicTheme.line;
+    background: MusicTheme.surf-player;
+    border-width: root.bold-outline ? 2px : 1px;
+    border-color: root.bold-outline ? @linear-gradient(135deg, #ec4899, #8b5cf6 55%, #06b6d4) : MusicTheme.line;
     drop-shadow-blur: 42px; drop-shadow-color: #000000e6;
     VerticalLayout {
         // alignment:start collects any slack at the very bottom instead of
@@ -5979,11 +6034,13 @@ export component MusicMini inherits Rectangle {
         // 2. Second line by mode — music: artist · album; audiobook: book title;
         //    radio: a gradient LIVE pill (no song metadata leaks in).
         if root.radio-mode: HorizontalLayout { alignment: center;
+            // Pill takes the art-derived thumb fill colour; shows the playing channel + Live.
             Rectangle { height: 18px * root.uiscale; border-radius: 9px * root.uiscale; horizontal-stretch: 0;
-                background: @linear-gradient(120deg, #14b8a6, #22c55e);
-                HorizontalLayout { padding-left: 10px * root.uiscale; padding-right: 10px * root.uiscale;
-                    Text { text: "Internet Radio - Live"; color: #ffffff; font-size: 10px * root.uiscale; font-weight: 800;
-                        vertical-alignment: center; } } } }
+                background: @linear-gradient(120deg, root.accent.brighter(0.15), root.accent.darker(0.2));
+                HorizontalLayout { padding-left: 9px * root.uiscale; padding-right: 10px * root.uiscale; spacing: 5px * root.uiscale;
+                    VerticalLayout { alignment: center; Rectangle { width: 6px * root.uiscale; height: 6px * root.uiscale; border-radius: 3px * root.uiscale; background: #ffffff; } }
+                    Text { text: (title == "" ? "Live" : title + "  ·  Live"); color: #ffffff; font-size: 10px * root.uiscale; font-weight: 800;
+                        vertical-alignment: center; overflow: elide; } } } }
         if !root.radio-mode: Text {
             text: title == "" ? "Pick a track"
                 : (root.book-mode ? sub : (album != "" ? sub + "  ·  " + album : sub));
@@ -6132,9 +6189,12 @@ export component PodcastMini inherits Rectangle {
     callback toggle-mute();
     callback play-episode(int);
     callback open-zen();                 // full-screen zen player
+    in property <bool> bold-outline: true;   // thick gradient ring for visibility (toggle)
 
     width: 300px; height: 442px; border-radius: 18px;
-    background: MusicTheme.surf-player; border-width: 1px; border-color: MusicTheme.line;
+    background: MusicTheme.surf-player;
+    border-width: root.bold-outline ? 2px : 1px;
+    border-color: root.bold-outline ? @linear-gradient(135deg, #8b5cf6, #ec4899 55%, #06b6d4) : MusicTheme.line;
     drop-shadow-blur: 42px; drop-shadow-color: #000000e6;
     VerticalLayout {
         padding: 14px * root.uiscale; spacing: 8px * root.uiscale;
