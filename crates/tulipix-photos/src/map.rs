@@ -32,7 +32,11 @@ pub struct PinCluster {
 
 pub async fn open_mbtiles(path: &Path) -> Result<SqlitePool> {
     let url = format!("sqlite://{}?mode=ro", path.display());
-    let opts = SqliteConnectOptions::from_str(&url)?.read_only(true);
+    let opts = SqliteConnectOptions::from_str(&url)?.read_only(true)
+        // Map tiles are read-heavy blobs — memory-map + a larger page cache cut
+        // the per-tile syscall/copy overhead while panning/zooming.
+        .pragma("mmap_size", "268435456")
+        .pragma("cache_size", "-16000");
     let pool = SqlitePoolOptions::new()
         .max_connections(4)
         .connect_with(opts).await
