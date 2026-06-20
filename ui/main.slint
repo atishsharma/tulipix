@@ -15,7 +15,7 @@ import { MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, Me
 import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow, AuthorRow, CollectionRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry } from "page_cloud.slint";
-import { ToolsPage, ToolOpRow, ToolField, QueueJob, ToolStatus, DownloadItem } from "page_tools.slint";
+import { ToolsPage, ToolOpRow, ToolField, QueueJob, ToolStatus, DownloadItem, ToolInfoRow, ToolDiffRow, TrimSeg } from "page_tools.slint";
 import { ThemePicker, ThemeChoice } from "theme_picker.slint";
 import { UserState } from "user_card.slint";
 import { Mode } from "mode_pill.slint";
@@ -691,11 +691,27 @@ export component MainWindow inherits Window {
     in property <string> tools-active-op: "";
     in property <string> tools-active-label: "";
     in property <string> tools-active-info: "";
+    in property <string> tools-log: "";              // live CLI output of the running tool
     in property <string> tools-error: "";
     in property <[QueueJob]> queue-jobs: [];
     in property <[ToolStatus]> tool-statuses: [];
     in property <[DownloadItem]> tools-downloads: [];
     in-out property <int> tools-worker-slots: 2;
+    // Rich result popup (mediainfo / folder-diff) backing state.
+    in property <bool> tools-result-open: false;
+    in property <string> tools-result-kind: "";
+    in property <string> tools-result-title: "";
+    in property <[ToolInfoRow]> tools-result-info: [];
+    in property <[ToolDiffRow]> tools-result-diff: [];
+    // Trim timeline editor backing state.
+    in property <bool> tools-trim-open: false;
+    in property <string> tools-trim-path: "";
+    in property <float> tools-trim-duration: 0;
+    in property <image> tools-trim-filmstrip;
+    in property <image> tools-trim-waveform;
+    in property <[TrimSeg]> tools-trim-segments: [];
+    in property <string> tools-trim-status: "";
+    in-out property <float> tools-trim-playhead: 0;
     callback tools-set-category(string);
     callback tools-search(string);
     callback tools-open(string);
@@ -710,6 +726,14 @@ export component MainWindow inherits Window {
     callback tools-list-downloads();
     callback tools-open-download(string);
     callback tools-remove-download(string);
+    callback tools-clear-console();
+    callback tools-result(int);
+    callback tools-result-close();
+    callback tools-trim-editor();
+    callback tools-trim-add-seg(float, float);
+    callback tools-trim-del-seg(int);
+    callback tools-trim-join();
+    callback tools-trim-close();
     in-out property <string> default-cadence: "daily";
 
     // Scan progress (one row per section currently scanning).
@@ -2217,6 +2241,7 @@ export component MainWindow inherits Window {
                 active-op: root.tools-active-op;
                 active-label: root.tools-active-label;
                 active-info: root.tools-active-info;
+                log: root.tools-log;
                 error: root.tools-error;
                 queue-jobs: root.queue-jobs;
                 tool-statuses: root.tool-statuses;
@@ -2236,6 +2261,27 @@ export component MainWindow inherits Window {
                 list-downloads() => { root.tools-list-downloads(); }
                 open-download(p) => { root.tools-open-download(p); }
                 remove-download(p) => { root.tools-remove-download(p); }
+                clear-console() => { root.tools-clear-console(); }
+                result-open: root.tools-result-open;
+                result-kind: root.tools-result-kind;
+                result-title: root.tools-result-title;
+                result-info: root.tools-result-info;
+                result-diff: root.tools-result-diff;
+                result(i) => { root.tools-result(i); }
+                result-close() => { root.tools-result-close(); }
+                trim-open: root.tools-trim-open;
+                trim-path: root.tools-trim-path;
+                trim-duration: root.tools-trim-duration;
+                trim-filmstrip: root.tools-trim-filmstrip;
+                trim-waveform: root.tools-trim-waveform;
+                trim-segments: root.tools-trim-segments;
+                trim-status: root.tools-trim-status;
+                trim-playhead <=> root.tools-trim-playhead;
+                trim-editor() => { root.tools-trim-editor(); }
+                trim-add-seg(s, e) => { root.tools-trim-add-seg(s, e); }
+                trim-del-seg(i) => { root.tools-trim-del-seg(i); }
+                trim-join() => { root.tools-trim-join(); }
+                trim-close() => { root.tools-trim-close(); }
             }
             if active-section == "settings": SettingsPage {
                 width: parent.width; height: parent.height;

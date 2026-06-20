@@ -136,6 +136,11 @@ pub async fn state_of(pool: &SqlitePool, id: i64) -> Result<Option<String>> {
     Ok(sqlx::query_scalar("SELECT state FROM jobs WHERE id = ?").bind(id).fetch_optional(pool).await?)
 }
 
+/// The job's stored spec JSON — used to resolve its output path (Open button).
+pub async fn job_spec(pool: &SqlitePool, id: i64) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar("SELECT spec_json FROM jobs WHERE id = ?").bind(id).fetch_optional(pool).await?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -55,6 +55,8 @@ const IDLE_NEVER_SECS: u64 = 60 * 60 * 24 * 365;
 
 #[cfg(feature = "dev-reload")]
 mod dev_reload;
+#[cfg(feature = "hot")]
+mod hot;
 #[cfg(feature = "embedded-mpv")]
 mod mpv;
 // No-op stand-in when libmpv isn't linked (e.g. Windows --no-default-features).
@@ -976,8 +978,13 @@ fn main() -> Result<()> {
         if let Some(w0) = w.upgrade() { cloud_set_filtered(&w0); }
     });
 
-    // Tools section wiring lives in the tulipix-sec-tools crate.
+    // Tools section wiring lives in the tulipix-sec-tools crate. Under the `hot`
+    // feature it is routed through the tulipix-hot dylib so the callbacks can be
+    // re-wired into the running app on every dylib rebuild (no restart).
+    #[cfg(not(feature = "hot"))]
     tulipix_sec_tools::wire(&window);
+    #[cfg(feature = "hot")]
+    crate::hot::wire_and_watch(&window);
 
     // Photo viewer — click a tile to open the original in a full-screen modal,
     // then navigate the library with prev/next (and the slideshow timer).

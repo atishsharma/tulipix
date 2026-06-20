@@ -36,8 +36,9 @@ pub enum Native {
     Rename { dir: String, pattern: String, start: usize },
     Merge { inputs: Vec<String>, output: String },
     /// Extract 16 kHz mono wav, then whisper-cli → SRT (the app resolves
-    /// whisper-cli + the bundled model).
-    Transcribe { input: String, output: String },
+    /// whisper-cli + the bundled model). `language` is a whisper code or "auto";
+    /// `translate` uses whisper's built-in speech-translation → English.
+    Transcribe { input: String, output: String, translate: bool, language: String },
     /// ffprobe report (format + streams) → text file beside source.
     MediaInfo { input: String, output: String },
     /// Contact sheet — app probes duration, builds the tile filter, runs ffmpeg.
@@ -203,6 +204,8 @@ pub fn plan(kind: &str, spec: &Value) -> Result<Vec<Step>> {
         }
         "transcribe" => Ok(vec![Step::Native(Native::Transcribe {
             input: req(spec, "input")?, output: req(spec, "output")?,
+            translate: boolean(spec, "translate"),
+            language: s(spec, "language").unwrap_or_else(|| "auto".into()),
         })]),
         "mediainfo" => Ok(vec![Step::Native(Native::MediaInfo {
             input: req(spec, "input")?, output: req(spec, "output")?,

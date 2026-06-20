@@ -94,13 +94,16 @@ export component HdrSearch inherits Rectangle {
     in property <bool> dark: false;
     in property <string> placeholder: "Search";
     in-out property <string> query: "";
+    // Force a visible border even on a light canvas (the default light search
+    // box is borderless). Lets a caller outline the box for definition.
+    in property <bool> outline: false;
     callback edited(string);
     callback cleared();
     width: 360px; height: 44px; border-radius: 22px;
     horizontal-stretch: 0; vertical-stretch: 0;
     background: dark ? #ffffff14 : #f1f3f4;
-    border-width: dark ? 1px : 0px;
-    border-color: #ffffff22;
+    border-width: (dark || outline) ? 1px : 0px;
+    border-color: dark ? #ffffff22 : #0000002e;
     HorizontalLayout {
         padding-left: 18px; padding-right: 10px; spacing: 8px;
         VerticalLayout { alignment: center; AppIcon { source: Icons.search; tint: dark ? #9a9aa2 : #5f6368; width: 16px; height: 16px; } }

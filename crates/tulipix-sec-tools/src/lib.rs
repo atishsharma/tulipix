@@ -124,7 +124,7 @@ fn list_downloaded() -> Vec<(String, String, String)> {
 /// box, above its form. Keep it concrete: name the inputs and the result.
 fn tool_info(kind: &str) -> &'static str {
     match kind {
-        "compress_video" => "Shrinks a video's file size by re-encoding it at a chosen quality. Pick the source video, set the quality/CRF, then Run — the smaller copy is written beside the original.",
+        "compress_video" => "Shrinks a video's file size by re-encoding it at a chosen quality. CRF (Constant Rate Factor) is the quality dial: the encoder keeps a constant visual quality and lets the bitrate vary to hit it. LOWER CRF = higher quality + bigger file; HIGHER CRF = smaller file + more quality loss. Each +6 roughly halves the size. Sweet spots: ~18 visually lossless, ~23 default, ~28 small. Pick the source video, set the CRF, then Run — the smaller copy is written beside the original.",
         "compress_audio" => "Re-encodes an audio file to a smaller size at a target bitrate. Choose the file and bitrate, then Run; the compressed copy lands beside the source.",
         "compress_photo" => "Reduces an image's file size by re-encoding it. Pick the photo and quality, then Run — a lighter copy is saved next to it.",
         "convert" => "Converts a media file from one container/codec to another. Choose the file and the target format, then Run.",
@@ -143,7 +143,7 @@ fn tool_info(kind: &str) -> &'static str {
         "hash" => "Computes checksums (e.g. SHA-256) for a file so you can verify its integrity. Pick the file, then Run; the digest shows in the queue row.",
         "folder_diff" => "Compares two folders and reports which files are added, removed, or changed between them. Choose folder A and folder B, then Run — the differences are listed in the result.",
         "rename" => "Batch-renames files in a folder using a pattern. Pick the folder, set the naming pattern, then Run.",
-        "transcribe" => "Transcribes speech in an audio/video file to a text/subtitle file using Whisper. Pick the file, choose the model, then Run.",
+        "transcribe" => "Transcribes speech in an audio/video file to an SRT subtitle using Whisper. Leave language on auto-detect or pick one; flip \"Translate to English\" to turn any language straight into English subtitles. Pick the file, then Run.",
         "pdf" => "Runs a PDF operation (merge/split/compress). Pick the PDF(s), choose the action, then Run.",
         "mediainfo" => "Reports detailed technical metadata (codecs, bitrate, streams, duration) for a media file. Pick the file, then Run — the report appears in the queue row.",
         "contact_sheet" => "Builds a grid of thumbnails sampled across a video (a contact sheet). Pick the video, set the grid size, then Run.",
@@ -206,6 +206,7 @@ fn tools_start_worker() {
 
 /// Run a job: plan its steps and execute them in order, scaling progress.
 async fn tools_run_job(pool: &sqlx::SqlitePool, id: i64, kind: &str, spec_json: &str) -> anyhow::Result<String> {
+    tools_log_reset(&format!("$ {kind}  (job #{id})"));
     let spec: serde_json::Value = serde_json::from_str(spec_json).unwrap_or_else(|_| serde_json::json!({}));
     let steps = tulipix_tools::exec::plan(kind, &spec)?;
     let n = steps.len().max(1);
@@ -224,14 +225,235 @@ fn quiet_cmd(bin: &std::path::Path) -> tokio::process::Command {
     cmd
 }
 
-/// Drain stderr concurrently (avoids a full-pipe deadlock) and return it.
-fn spawn_stderr_drain(child: &mut tokio::process::Child) -> tokio::task::JoinHandle<String> {
+/// Live console log of the currently-running tool's CLI output, surfaced under
+/// the queue. One shared buffer (cleared per job); good enough for the common
+/// 1–2 worker case. Capped so a chatty tool can't grow it without bound.
+fn tools_log() -> &'static std::sync::Mutex<String> {
+    static L: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
+    L.get_or_init(|| std::sync::Mutex::new(String::new()))
+}
+fn tools_log_snapshot() -> String { tools_log().lock().map(|g| g.clone()).unwrap_or_default() }
+fn tools_log_reset(header: &str) {
+    if let Ok(mut g) = tools_log().lock() { g.clear(); g.push_str(header); g.push('\n'); }
+}
+fn tools_log_push(line: &str) {
+    if let Ok(mut g) = tools_log().lock() {
+        g.push_str(line); g.push('\n');
+        if g.len() > 24_000 { let start = g.len() - 18_000; *g = format!("…\n{}", &g[start..]); }
+    }
+}
+/// Wipe the console buffer (Clear button).
+fn tools_log_clear() { if let Ok(mut g) = tools_log().lock() { g.clear(); } }
+
+// ── Rich result popup builders (Media info table · Folder diff list) ─────────
+fn fmt_bytes(s: &str) -> String {
+    let Ok(b) = s.parse::<f64>() else { return String::new(); };
+    let u = ["B", "KB", "MB", "GB", "TB"]; let (mut x, mut i) = (b, 0usize);
+    while x >= 1024.0 && i < u.len() - 1 { x /= 1024.0; i += 1; }
+    format!("{x:.1} {}", u[i])
+}
+fn fmt_bitrate(s: &str) -> String {
+    let Ok(b) = s.parse::<f64>() else { return String::new(); };
+    if b >= 1_000_000.0 { format!("{:.1} Mbps", b / 1_000_000.0) } else { format!("{:.0} kbps", b / 1000.0) }
+}
+fn fmt_duration(s: &str) -> String {
+    let Ok(sec) = s.parse::<f64>() else { return String::new(); };
+    let t = sec as i64; format!("{:02}:{:02}:{:02}", t / 3600, (t % 3600) / 60, t % 60)
+}
+fn fmt_fps(s: &str) -> String {
+    if let Some((n, d)) = s.split_once('/') {
+        if let (Ok(n), Ok(d)) = (n.parse::<f64>(), d.parse::<f64>()) {
+            if d > 0.0 { return format!("{:.3} fps", n / d).replace(".000 ", " "); }
+        }
+    }
+    String::new()
+}
+
+/// Run ffprobe on `input` and flatten its JSON into categorized (section, key,
+/// value) rows for the Media-info popup.
+fn mediainfo_rows(input: &str) -> Vec<(String, String, String)> {
+    let ff = tulipix_core::thumbs::tool_bin("ffprobe");
+    let Ok(out) = std::process::Command::new(&ff)
+        .args(["-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", input])
+        .output() else { return vec![]; };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return vec![]; };
+    let s = |x: &serde_json::Value, k: &str| match x.get(k) {
+        Some(serde_json::Value::String(t)) => t.clone(),
+        Some(other) => other.to_string(),
+        None => String::new(),
+    };
+    let mut rows: Vec<(String, String, String)> = Vec::new();
+    if let Some(f) = v.get("format") {
+        rows.push(("General".into(), "Format".into(), s(f, "format_long_name")));
+        rows.push(("General".into(), "Duration".into(), fmt_duration(&s(f, "duration"))));
+        rows.push(("General".into(), "Size".into(), fmt_bytes(&s(f, "size"))));
+        rows.push(("General".into(), "Bitrate".into(), fmt_bitrate(&s(f, "bit_rate"))));
+        rows.push(("General".into(), "Streams".into(), s(f, "nb_streams")));
+    }
+    if let Some(streams) = v.get("streams").and_then(|x| x.as_array()) {
+        let (mut nv, mut na, mut ns) = (0, 0, 0);
+        let lang = |st: &serde_json::Value| st.get("tags").and_then(|t| t.get("language"))
+            .and_then(|l| l.as_str()).unwrap_or("").to_string();
+        for st in streams {
+            match s(st, "codec_type").as_str() {
+                "video" => { nv += 1; let sec = format!("Video {nv}");
+                    rows.push((sec.clone(), "Codec".into(), s(st, "codec_name")));
+                    let (w, h) = (s(st, "width"), s(st, "height"));
+                    if !w.is_empty() { rows.push((sec.clone(), "Resolution".into(), format!("{w}×{h}"))); }
+                    rows.push((sec.clone(), "Pixel format".into(), s(st, "pix_fmt")));
+                    rows.push((sec.clone(), "Frame rate".into(), fmt_fps(&s(st, "r_frame_rate"))));
+                    rows.push((sec, "Bitrate".into(), fmt_bitrate(&s(st, "bit_rate")))); }
+                "audio" => { na += 1; let sec = format!("Audio {na}");
+                    rows.push((sec.clone(), "Codec".into(), s(st, "codec_name")));
+                    rows.push((sec.clone(), "Channels".into(), s(st, "channels")));
+                    let sr = s(st, "sample_rate"); if !sr.is_empty() { rows.push((sec.clone(), "Sample rate".into(), format!("{sr} Hz"))); }
+                    rows.push((sec.clone(), "Bitrate".into(), fmt_bitrate(&s(st, "bit_rate"))));
+                    rows.push((sec, "Language".into(), lang(st))); }
+                "subtitle" => { ns += 1; let sec = format!("Subtitle {ns}");
+                    rows.push((sec.clone(), "Codec".into(), s(st, "codec_name")));
+                    rows.push((sec, "Language".into(), lang(st))); }
+                _ => {}
+            }
+        }
+    }
+    rows.retain(|(_, _, v)| !v.is_empty());
+    rows
+}
+
+/// A preview thumbnail for any filetype: a real render for media, else an OS
+/// file-type icon.
+fn diff_thumb_path(p: &std::path::Path) -> Option<std::path::PathBuf> {
+    let ext = p.extension().and_then(|e| e.to_str()).unwrap_or("").to_lowercase();
+    let spec = tulipix_core::thumbs::ThumbSpec {
+        kind: tulipix_core::thumbs::kind_for(&ext), width: 80, height: 80 };
+    if let Ok(Some(r)) = tulipix_core::thumbs::render_or_cache(p, spec) {
+        return Some(r.path);
+    }
+    tulipix_core::thumbs::os_icon_for(p)
+}
+
+/// Re-diff folders A/B and build (kind, rel-path, full-path, thumb) rows. Thumb
+/// resolution runs off the async runtime (decodes media). Capped per bucket.
+async fn folderdiff_rows(a: &str, b: &str) -> Vec<(String, String, String, Option<std::path::PathBuf>)> {
+    let ma = folder_hash_map(a).await;
+    let mb = folder_hash_map(b).await;
+    let d = tulipix_tools::folder_diff::diff(&ma, &mb);
+    let (a, b) = (a.to_string(), b.to_string());
+    tokio::task::spawn_blocking(move || {
+        let mut out: Vec<(String, String, String, Option<std::path::PathBuf>)> = Vec::new();
+        let mut add = |kind: &str, rel: &str, root: &str, out: &mut Vec<(String, String, String, Option<std::path::PathBuf>)>| {
+            let full = std::path::Path::new(root).join(rel);
+            let thumb = diff_thumb_path(&full);
+            out.push((kind.into(), rel.into(), full.to_string_lossy().into(), thumb));
+        };
+        for rel in d.only_in_b.iter().take(120) { add("only-b", rel, &b, &mut out); }
+        for rel in d.modified.iter().take(120) { add("modified", rel, &b, &mut out); }
+        for rel in d.only_in_a.iter().take(120) { add("only-a", rel, &a, &mut out); }
+        out
+    }).await.unwrap_or_default()
+}
+
+// ── Trim timeline editor (filmstrip + waveform + multi-segment cut/join) ─────
+static TRIM_SEGS: std::sync::OnceLock<std::sync::Mutex<Vec<(f32, f32)>>> = std::sync::OnceLock::new();
+fn trim_segs() -> &'static std::sync::Mutex<Vec<(f32, f32)>> {
+    TRIM_SEGS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+fn trim_push_segments(w: &MainWindow) {
+    let segs: Vec<TrimSeg> = trim_segs().lock()
+        .map(|g| g.iter().map(|(s, e)| TrimSeg { start: *s, end: *e }).collect())
+        .unwrap_or_default();
+    w.set_tools_trim_segments(slint::ModelRc::new(slint::VecModel::from(segs)));
+}
+fn trim_probe_duration(input: &str) -> f64 {
+    let ff = tulipix_core::thumbs::tool_bin("ffprobe");
+    std::process::Command::new(&ff)
+        .args(["-v", "quiet", "-show_entries", "format=duration", "-of", "default=nw=1:nk=1", input])
+        .output().ok()
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .and_then(|s| s.trim().parse::<f64>().ok())
+        .unwrap_or(0.0)
+}
+/// A single wide PNG of ~20 frames tiled across the video's duration.
+fn trim_gen_filmstrip(input: &str, dur: f64) -> Option<std::path::PathBuf> {
+    let ff = tulipix_core::thumbs::tool_bin("ffmpeg");
+    let out = std::env::temp_dir().join(format!("tulipix-trim-strip-{}.png", std::process::id()));
+    let fps = if dur > 1.0 { format!("{:.5}", 20.0 / dur) } else { "1".to_string() };
+    let vf = format!("fps={fps},scale=-1:104,tile=20x1");
+    let ok = std::process::Command::new(&ff)
+        .args(["-y", "-i", input, "-vf", &vf, "-frames:v", "1", "-update", "1"]).arg(&out)
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
+    (ok && out.exists()).then_some(out)
+}
+/// A waveform overview PNG (empty if the file has no audio).
+fn trim_gen_waveform(input: &str) -> Option<std::path::PathBuf> {
+    let ff = tulipix_core::thumbs::tool_bin("ffmpeg");
+    let out = std::env::temp_dir().join(format!("tulipix-trim-wave-{}.png", std::process::id()));
+    let ok = std::process::Command::new(&ff)
+        .args(["-y", "-i", input, "-filter_complex", "showwavespic=s=1600x96:colors=0x06b6d4", "-frames:v", "1"]).arg(&out)
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .status().map(|s| s.success()).unwrap_or(false);
+    (ok && out.exists()).then_some(out)
+}
+/// Cut each keep-segment (re-encoded for frame accuracy + uniform codecs) then
+/// concat-demux them into `output`.
+fn trim_join_run(input: &str, segs: &[(f32, f32)], output: &str) -> Result<(), String> {
+    let ff = tulipix_core::thumbs::tool_bin("ffmpeg");
+    let tmp = std::env::temp_dir();
+    let pid = std::process::id();
+    let mut parts = Vec::new();
+    for (i, (s, e)) in segs.iter().enumerate() {
+        let part = tmp.join(format!("tulipix-trim-part-{pid}-{i}.mp4"));
+        let st = std::process::Command::new(&ff)
+            .args(["-y", "-ss", &format!("{s}"), "-to", &format!("{e}"), "-i", input,
+                   "-c:v", "libx264", "-preset", "veryfast", "-c:a", "aac"]).arg(&part)
+            .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+            .status().map_err(|e| e.to_string())?;
+        if !st.success() { return Err(format!("cut {} failed", i + 1)); }
+        parts.push(part);
+    }
+    let list = tmp.join(format!("tulipix-trim-list-{pid}.txt"));
+    let body = parts.iter().map(|p| format!("file '{}'", p.display())).collect::<Vec<_>>().join("\n");
+    std::fs::write(&list, body).map_err(|e| e.to_string())?;
+    let st = std::process::Command::new(&ff)
+        .args(["-y", "-f", "concat", "-safe", "0", "-i"]).arg(&list).args(["-c", "copy"]).arg(output)
+        .stdout(std::process::Stdio::null()).stderr(std::process::Stdio::null())
+        .status().map_err(|e| e.to_string())?;
+    for p in &parts { let _ = std::fs::remove_file(p); }
+    let _ = std::fs::remove_file(&list);
+    if st.success() { Ok(()) } else { Err("concat failed".into()) }
+}
+
+/// Open a job's output file in the system default app. Reads the job's spec to
+/// find its `output` path and opens it if present — so a halted/partial job
+/// (e.g. an aborted transcribe with a half-written .srt) is still openable.
+async fn tools_open_job_output(pool: &sqlx::SqlitePool, id: i64) {
+    let Ok(Some(spec)) = tulipix_tools::queue::job_spec(pool, id).await else { return; };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&spec) else { return; };
+    if let Some(out) = v.get("output").and_then(|x| x.as_str()) {
+        let p = std::path::PathBuf::from(out);
+        if p.exists() {
+            std::thread::spawn(move || { let _ = tulipix_platform::fm::open_default(&p); });
+        }
+    }
+}
+
+/// Drain stderr concurrently (avoids a full-pipe deadlock), streaming each line
+/// to the live console log so the running tool's output shows up under the queue
+/// in real time. Returns the full stderr for error reporting.
+fn spawn_stderr_log_drain(child: &mut tokio::process::Child) -> tokio::task::JoinHandle<String> {
     let stderr = child.stderr.take();
     tokio::spawn(async move {
-        use tokio::io::AsyncReadExt;
-        let mut s = String::new();
-        if let Some(mut se) = stderr { let _ = se.read_to_string(&mut s).await; }
-        s
+        use tokio::io::AsyncBufReadExt;
+        let mut full = String::new();
+        if let Some(se) = stderr {
+            let mut lines = tokio::io::BufReader::new(se).lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                tools_log_push(&line);
+                full.push_str(&line); full.push('\n');
+            }
+        }
+        full
     })
 }
 
@@ -248,7 +470,7 @@ async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::e
             cmd.arg("-progress").arg("pipe:1").arg("-nostats");
             cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
             let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("ffmpeg not found ({e}) — set Tools directory in Settings"))?;
-            let err_task = spawn_stderr_drain(&mut child);
+            let err_task = spawn_stderr_log_drain(&mut child);
             if let Some(stdout) = child.stdout.take() {
                 let mut lines = tokio::io::BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -295,7 +517,7 @@ async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::e
             cmd.args(&args);
             cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
             let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("yt-dlp not found ({e}) — set Tools directory in Settings"))?;
-            let err_task = spawn_stderr_drain(&mut child);
+            let err_task = spawn_stderr_log_drain(&mut child);
             if let Some(stdout) = child.stdout.take() {
                 let mut lines = tokio::io::BufReader::new(stdout).lines();
                 while let Ok(Some(line)) = lines.next_line().await {
@@ -368,13 +590,13 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
             cmd.args(&args);
             cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
             let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("ffmpeg not found ({e})"))?;
-            let err_task = spawn_stderr_drain(&mut child);
+            let err_task = spawn_stderr_log_drain(&mut child);
             let status = child.wait().await?;
             let err = err_task.await.unwrap_or_default();
             let _ = tokio::fs::remove_file(&tmp).await;
             if !status.success() { anyhow::bail!("merge failed: {}", truncate_msg(&err)); }
         }
-        Native::Transcribe { input, output } => {
+        Native::Transcribe { input, output, translate, language } => {
             // 1. Extract 16 kHz mono PCM wav (what whisper.cpp expects).
             let ff = tulipix_core::thumbs::tool_bin("ffmpeg");
             let wav = std::env::temp_dir().join(format!("tulipix-whisper-{id}.wav"));
@@ -382,7 +604,7 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
             c.arg("-y").args(["-i", &input, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"]);
             c.arg(&wav).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
             let mut child = c.spawn().map_err(|e| anyhow::anyhow!("ffmpeg not found ({e})"))?;
-            let err_task = spawn_stderr_drain(&mut child);
+            let err_task = spawn_stderr_log_drain(&mut child);
             let status = child.wait().await?;
             let err = err_task.await.unwrap_or_default();
             if !status.success() { anyhow::bail!("audio extract failed: {}", truncate_msg(&err)); }
@@ -397,11 +619,20 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
                 "whisper.cpp CLI not found — install whisper.cpp (provides `whisper-cli`), \
                  or drop the binary in the Tools directory set in Settings") })?;
             let out_prefix = output.strip_suffix(".srt").unwrap_or(&output).to_string();
-            let args = tulipix_tools::transcribe::args(&model.to_string_lossy(), &wav.to_string_lossy(), &out_prefix, 4);
+            let args = tulipix_tools::transcribe::args(&model.to_string_lossy(), &wav.to_string_lossy(), &out_prefix, 4, translate, &language);
             let mut c = quiet_cmd(&whisper);
-            c.args(&args).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
+            c.args(&args).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
             let mut child = c.spawn().map_err(|e| anyhow::anyhow!("whisper failed to start ({e})"))?;
-            let err_task = spawn_stderr_drain(&mut child);
+            // whisper.cpp prints the transcribed segments to stdout — stream them
+            // into the console log so the user watches the transcription appear.
+            if let Some(out) = child.stdout.take() {
+                tokio::spawn(async move {
+                    use tokio::io::AsyncBufReadExt;
+                    let mut lines = tokio::io::BufReader::new(out).lines();
+                    while let Ok(Some(line)) = lines.next_line().await { tools_log_push(&line); }
+                });
+            }
+            let err_task = spawn_stderr_log_drain(&mut child);
             let status = child.wait().await?;
             let err = err_task.await.unwrap_or_default();
             let _ = tokio::fs::remove_file(&wav).await;
@@ -433,7 +664,7 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
             c.arg("-y").args(["-i", &input, "-vf", &filter, "-frames:v", "1"]);
             c.arg(&output).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
             let mut child = c.spawn().map_err(|e| anyhow::anyhow!("ffmpeg not found ({e})"))?;
-            let err_task = spawn_stderr_drain(&mut child);
+            let err_task = spawn_stderr_log_drain(&mut child);
             let status = child.wait().await?;
             let err = err_task.await.unwrap_or_default();
             if !status.success() { anyhow::bail!("contact sheet failed: {}", truncate_msg(&err)); }
@@ -494,7 +725,9 @@ async fn tools_refresh_queue(weak: slint::Weak<MainWindow>) {
         if running + queued == 0 { "Idle".to_string() }
         else { format!("{running} running · {queued} queued") }
     };
+    let log = tools_log_snapshot();
     let _ = weak.upgrade_in_event_loop(move |w| {
+        w.set_tools_log(log.into());
         // Header: when a tool is open, show it + its newest job's live progress;
         // otherwise the queue summary.
         let active = w.get_tools_active_op().to_string();
@@ -514,6 +747,7 @@ async fn tools_refresh_queue(weak: slint::Weak<MainWindow>) {
             .map(|(id, kind, state, progress, message)| QueueJob {
                 id: id as i32,
                 name: tool_label(&kind).into(),
+                kind: kind.into(),
                 state: state.into(),
                 progress: progress as f32,
                 message: message.unwrap_or_default().into(),
@@ -543,7 +777,7 @@ fn tool_fields(kind: &str) -> Vec<ToolField> {
         "compress_video" => vec![
             file("input", "Source video"),
             mk_field("codec", "Codec", "dropdown", "h264", true, "", &["h264", "h265", "av1"], 0.0, 0.0),
-            mk_field("crf", "Quality — CRF (lower = better, bigger)", "slider", "23", false, "18 great · 28 small", &[], 18.0, 35.0),
+            mk_field("crf", "Quality — CRF (lower = better, bigger)", "slider", "23", false, "Constant Rate Factor · ~18 near-lossless · 23 default · 28 small · each +6 ≈ half the size", &[], 18.0, 35.0),
             out(),
         ],
         "compress_audio" => vec![
@@ -623,6 +857,12 @@ fn tool_fields(kind: &str) -> Vec<ToolField> {
         ],
         "transcribe" => vec![
             file("input", "Audio/video file"),
+            mk_field("language", "Source language", "dropdown", "auto", false,
+                "auto-detect, or pick to sharpen accuracy",
+                &["auto", "en", "es", "fr", "de", "it", "pt", "nl", "ru", "uk", "pl", "tr", "ar", "fa", "hi", "ur", "bn", "ta", "th", "vi", "id", "ja", "ko", "zh"],
+                0.0, 0.0),
+            mk_field("translate", "Translate to English", "toggle", "false", false,
+                "transcribe any language straight to English (Whisper built-in)", &[], 0.0, 0.0),
             mk_field("output", "Output .srt (blank = beside source)", "text", "", false, "", &[], 0.0, 0.0),
         ],
         "hash" => vec![
@@ -994,6 +1234,9 @@ pub fn wire(window: &MainWindow) {
                     "clear"  => tulipix_tools::queue::clear_all(&pool).await,
                     "up"     => tulipix_tools::queue::reorder(&pool, id, true).await,
                     "down"   => tulipix_tools::queue::reorder(&pool, id, false).await,
+                    // Open the job's output in the system default app — works even
+                    // for a halted/partial job, as long as the file exists on disk.
+                    "open"   => { tools_open_job_output(&pool, id).await; Ok(()) }
                     _ => Ok(()),
                 };
                 tools_refresh_queue(weak).await;
@@ -1006,6 +1249,143 @@ pub fn wire(window: &MainWindow) {
                 let _ = tulipix_tools::queue::set_worker_slots(&pool, n as i64).await;
             }
         });
+    });
+    window.on_tools_clear_console({
+        let w = window.as_weak();
+        move || {
+            tools_log_clear();
+            if let Some(w0) = w.upgrade() { w0.set_tools_log(slint::SharedString::new()); }
+        }
+    });
+    window.on_tools_result({
+        let w = window.as_weak();
+        move |id| {
+            let weak = w.clone();
+            let id = id as i64;
+            tokio::runtime::Handle::current().spawn(async move {
+                let Ok(pool) = pool_for("tools").await else { return; };
+                let row: Option<(String, String)> = sqlx::query_as("SELECT kind, spec_json FROM jobs WHERE id = ?")
+                    .bind(id).fetch_optional(&pool).await.ok().flatten();
+                let Some((kind, spec)) = row else { return; };
+                let v: serde_json::Value = serde_json::from_str(&spec).unwrap_or_default();
+                if kind == "mediainfo" {
+                    let input = v.get("input").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let title = std::path::Path::new(&input).file_name()
+                        .map(|s| s.to_string_lossy().to_string()).unwrap_or_else(|| "Media info".into());
+                    let rows = tokio::task::spawn_blocking(move || mediainfo_rows(&input)).await.unwrap_or_default();
+                    let _ = weak.upgrade_in_event_loop(move |w| {
+                        let model: Vec<ToolInfoRow> = rows.into_iter()
+                            .map(|(section, key, value)| ToolInfoRow { section: section.into(), key: key.into(), value: value.into() })
+                            .collect();
+                        w.set_tools_result_info(slint::ModelRc::new(slint::VecModel::from(model)));
+                        w.set_tools_result_diff(slint::ModelRc::new(slint::VecModel::from(Vec::<ToolDiffRow>::new())));
+                        w.set_tools_result_kind("info".into());
+                        w.set_tools_result_title(title.into());
+                        w.set_tools_result_open(true);
+                    });
+                } else if kind == "folder_diff" {
+                    let a = v.get("a").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let b = v.get("b").and_then(|x| x.as_str()).unwrap_or("").to_string();
+                    let rows = folderdiff_rows(&a, &b).await;
+                    let title = format!("Folder diff · {} changes", rows.len());
+                    let _ = weak.upgrade_in_event_loop(move |w| {
+                        let model: Vec<ToolDiffRow> = rows.into_iter().map(|(kind, path, detail, thumb)| ToolDiffRow {
+                            kind: kind.into(), path: path.into(), detail: detail.into(),
+                            thumb: thumb.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default(),
+                        }).collect();
+                        w.set_tools_result_diff(slint::ModelRc::new(slint::VecModel::from(model)));
+                        w.set_tools_result_info(slint::ModelRc::new(slint::VecModel::from(Vec::<ToolInfoRow>::new())));
+                        w.set_tools_result_kind("diff".into());
+                        w.set_tools_result_title(title.into());
+                        w.set_tools_result_open(true);
+                    });
+                }
+            });
+        }
+    });
+    window.on_tools_result_close({
+        let w = window.as_weak();
+        move || { if let Some(w0) = w.upgrade() { w0.set_tools_result_open(false); } }
+    });
+    window.on_tools_trim_editor({
+        let w = window.as_weak();
+        move || {
+            let input = { let g = tools_form().lock().unwrap(); g.1.get("input").cloned().unwrap_or_default() };
+            let Some(w0) = w.upgrade() else { return; };
+            if input.is_empty() {
+                // Surface why nothing happened instead of failing silently.
+                w0.set_tools_trim_path(slint::SharedString::new());
+                w0.set_tools_trim_status("Pick a source video first (use Choose… above), then Open timeline editor.".into());
+                w0.set_tools_trim_open(true);
+                return;
+            }
+            if let Ok(mut g) = trim_segs().lock() { g.clear(); }
+            // Open the editor IMMEDIATELY with a loading state — filmstrip + full
+            // waveform decode can take seconds, and a delayed modal looks dead.
+            w0.set_tools_trim_path(input.clone().into());
+            w0.set_tools_trim_duration(0.0);
+            w0.set_tools_trim_playhead(0.0);
+            w0.set_tools_trim_filmstrip(slint::Image::default());
+            w0.set_tools_trim_waveform(slint::Image::default());
+            trim_push_segments(&w0);
+            w0.set_tools_trim_status("Generating timeline… (decoding video + audio)".into());
+            w0.set_tools_trim_open(true);
+            let weak = w.clone();
+            tokio::runtime::Handle::current().spawn(async move {
+                let inp = input.clone();
+                let (dur, strip, wave) = tokio::task::spawn_blocking(move || {
+                    let d = trim_probe_duration(&inp);
+                    (d, trim_gen_filmstrip(&inp, d), trim_gen_waveform(&inp))
+                }).await.unwrap_or((0.0, None, None));
+                let _ = weak.upgrade_in_event_loop(move |w| {
+                    w.set_tools_trim_duration(dur as f32);
+                    if let Some(p) = strip { w.set_tools_trim_filmstrip(slint::Image::load_from_path(&p).unwrap_or_default()); }
+                    if let Some(p) = wave { w.set_tools_trim_waveform(slint::Image::load_from_path(&p).unwrap_or_default()); }
+                    w.set_tools_trim_status(if dur > 0.0 { slint::SharedString::new() }
+                        else { "Could not read this file (is it a valid video?)".into() });
+                });
+            });
+        }
+    });
+    window.on_tools_trim_add_seg({
+        let w = window.as_weak();
+        move |s, e| {
+            if let Ok(mut g) = trim_segs().lock() { g.push((s, e)); }
+            if let Some(w0) = w.upgrade() { trim_push_segments(&w0); }
+        }
+    });
+    window.on_tools_trim_del_seg({
+        let w = window.as_weak();
+        move |i| {
+            if let Ok(mut g) = trim_segs().lock() { let i = i as usize; if i < g.len() { g.remove(i); } }
+            if let Some(w0) = w.upgrade() { trim_push_segments(&w0); }
+        }
+    });
+    window.on_tools_trim_close({
+        let w = window.as_weak();
+        move || { if let Some(w0) = w.upgrade() { w0.set_tools_trim_open(false); } }
+    });
+    window.on_tools_trim_join({
+        let w = window.as_weak();
+        move || {
+            let input = { let g = tools_form().lock().unwrap(); g.1.get("input").cloned().unwrap_or_default() };
+            let segs: Vec<(f32, f32)> = trim_segs().lock().map(|g| g.clone()).unwrap_or_default();
+            if input.is_empty() || segs.is_empty() { return; }
+            let out = beside_source(&input, "trimmed", &ext_of(&input));
+            if let Some(w0) = w.upgrade() { w0.set_tools_trim_status("Joining…".into()); }
+            let weak = w.clone();
+            tokio::runtime::Handle::current().spawn(async move {
+                let (inp, out2) = (input, out.clone());
+                let res = tokio::task::spawn_blocking(move || trim_join_run(&inp, &segs, &out2))
+                    .await.unwrap_or_else(|_| Err("join task panicked".into()));
+                let _ = weak.upgrade_in_event_loop(move |w| {
+                    match res {
+                        Ok(()) => w.set_tools_trim_status(format!("Saved → {out}").into()),
+                        Err(e) => w.set_tools_trim_status(format!("Failed: {e}").into()),
+                    }
+                });
+            });
+        }
     });
     tools_refresh(window);
     // Load persisted worker-slot count + start the queue drainer.

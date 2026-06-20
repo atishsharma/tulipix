@@ -26,15 +26,71 @@ run:
 # .slint files at runtime (Slint live-preview). Separate target dir so the
 # dev-reload feature set never invalidates the default build's cache.
 # Memory-capped like `run` — the cold target-dev build has the same RAM peak.
+#
+# INSTANT-ITERATE TUNING (differs from `run`, which favours cold-cache reuse):
+#  • NO sccache wrapper — sccache refuses to cache incremental crates and so
+#    silently forces incremental=false. Dropping it lets `profile.dev`'s
+#    incremental=true actually fire, giving function-level rebuilds of the crate
+#    you just edited (sec-tools / tulipix-app) instead of full recodegen. This is
+#    fingerprint-transparent (same rustc bytes) so it does NOT invalidate the
+#    cached deps — crucially skia-bindings, which can only rebuild WITH network.
+#  • mold stays via .cargo/config's target rustflags — we deliberately set NO
+#    RUSTFLAGS env here: any RUSTFLAGS change alters every crate's fingerprint and
+#    forces a full skia rebuild (offline-impossible). That ruled out -Zthreads.
+# Net: edit one fn → relink in seconds. First no-sccache build recompiles only
+# the workspace crates once (to seed the incremental cache); deps stay cached.
 run-dev:
     systemd-run --user --scope --unit=tulipix-run-dev \
       -p MemoryHigh=5800M -p MemoryMax=6400M -p MemorySwapMax=infinity \
       --setenv=CARGO_PROFILE_DEV_DEBUG=0 \
-      --setenv=RUSTC_WRAPPER=sccache \
       --setenv=SLINT_LIVE_PREVIEW=1 \
       --setenv=CARGO_TARGET_DIR=target-dev \
       nice -n 15 ionice -c3 \
       cargo +nightly {{fast}} run -j 4 -p tulipix-app --features dev-reload
+
+# Sub-2s error feedback loop: `bacon` runs `cargo check` on every save (no
+# codegen, no link, incremental) in the dev-reload feature set + target-dev dir,
+# so it shares cache with `run-dev` and never fights it. Pair it with a live
+# `run-dev` app: bacon catches type errors instantly, the app hot-reloads .slint,
+# and you only restart `run-dev` when you actually change Rust behaviour.
+# One-time: `cargo install bacon`. Capped so a cold check can't freeze the box.
+watch:
+    systemd-run --user --scope --unit=tulipix-watch \
+      -p MemoryHigh=4800M -p MemoryMax=5600M -p MemorySwapMax=infinity \
+      --setenv=CARGO_TARGET_DIR=target-dev \
+      nice -n 18 ionice -c3 \
+      bacon --job check -- -p tulipix-app --features dev-reload
+
+# ── Rust hot-patch (no-restart section reloading) ───────────────────────────
+# Two panes:
+#   pane 1: `just hot`      — runs the app; routes section wire-up through the
+#                             tulipix-hot dylib via hot-lib-reloader.
+#   pane 2: `just hot-lib`  — watches + rebuilds ONLY that dylib on section edits.
+# Edit a section callback → pane 2 rebuilds the small .so (seconds) → the running
+# app re-wires it live. main.rs (9.5k lines) never recompiles during the loop.
+# Limits: only section `wire()`-registered callbacks reload; editing main.rs or
+# the dylib's public fn signatures still needs a `just hot` restart; section
+# `static`/`OnceLock` state resets on reload (DBs on disk survive).
+hot:
+    systemd-run --user --scope --unit=tulipix-hot-app \
+      -p MemoryHigh=5800M -p MemoryMax=6400M -p MemorySwapMax=infinity \
+      --setenv=CARGO_PROFILE_DEV_DEBUG=0 \
+      --setenv=SLINT_LIVE_PREVIEW=1 \
+      --setenv=CARGO_TARGET_DIR=target-dev \
+      nice -n 15 ionice -c3 \
+      cargo +nightly {{fast}} run -j 4 -p tulipix-app --features hot
+
+# Watch + rebuild only the tulipix-hot dylib. Mirrors `hot`'s target dir + flags
+# + feature so the rebuilt .so ABI matches the running app. One-time:
+# `cargo install cargo-watch`. Light build (≤2 crates) — no memory scope needed.
+hot-lib:
+    cargo watch -w crates/tulipix-hot -w crates/tulipix-sec-tools -s 'just _hot-build'
+
+# (internal) single dylib rebuild fired by `hot-lib`'s watcher.
+_hot-build:
+    CARGO_TARGET_DIR=target-dev \
+      nice -n 18 ionice -c3 \
+      cargo +nightly {{fast}} build -p tulipix-hot --features dev-reload
 
 # Caps tracing
 trace:
@@ -59,6 +115,22 @@ fmt:
 # Release build (current host)
 release-linux:
     cargo build -p tulipix-app --release --target x86_64-unknown-linux-gnu
+
+# Size-lean release: femtovg renderer, no embedded video player (external mpv
+# only). Smallest binary / fastest cold start. Use where the in-app player isn't
+# needed.
+release-lite:
+    cargo build -p tulipix-app --release --no-default-features --features renderer-femtovg
+
+# Absolute-minimum binary (nightly, Linux): lite build + recompiled std with
+# panic_immediate_abort, dropping panic-formatting/unwinding machinery from std.
+# Needs the rust-src component (`rustup component add rust-src`). Experimental —
+# panic messages become abort-only; verify before shipping.
+release-min:
+    cargo +nightly build -p tulipix-app --release \
+      --no-default-features --features renderer-femtovg \
+      -Z build-std=std,panic_abort -Z build-std-features=panic_immediate_abort \
+      --target x86_64-unknown-linux-gnu
 
 release-win:
     cargo build -p tulipix-app --release --target x86_64-pc-windows-msvc

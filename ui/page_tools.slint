@@ -26,7 +26,17 @@ export struct ToolField {
     hint: string,
 }
 
-export struct QueueJob { id: int, name: string, state: string, progress: float, message: string }
+export struct QueueJob { id: int, kind: string, name: string, state: string, progress: float, message: string }
+
+// One row in the Media-info result popup (a categorized key/value).
+export struct ToolInfoRow { section: string, key: string, value: string }
+
+// One row in the Folder-diff result popup. `kind` = only-a | only-b | modified;
+// `thumb` is a generated preview (or OS icon) for any filetype.
+export struct ToolDiffRow { kind: string, path: string, detail: string, thumb: image }
+
+// One keep-segment in the Trim timeline editor (seconds).
+export struct TrimSeg { start: float, end: float }
 
 // One external tool's availability (Settings tab).
 export struct ToolStatus { name: string, source: string, detail: string, available: bool, updatable: bool }
@@ -47,19 +57,26 @@ component RunButton inherits Rectangle {
     border-width: primary ? 0px : 1px; border-color: Theme.outline;
     opacity: enabled ? 1.0 : 0.5;
     b := TouchArea { mouse-cursor: enabled ? pointer : default; clicked => { if (root.enabled) { root.clicked(); } } }
-    Text { text: label; color: primary ? #2a1c05 : Theme.text; font-size: 14px; font-weight: 700;
+    Text { text: label; color: primary ? #ffffff : Theme.text; font-size: 14px; font-weight: 700;
         horizontal-alignment: center; vertical-alignment: center; }
 }
 
 component ActBtn inherits Rectangle {
     in property <string> label;
     in property <color> tint: Theme.text;
+    // Filled variant: a gradient pill (used by the Close buttons to carry the
+    // tool's section color). White label, no outline.
+    in property <bool> filled: false;
+    in property <brush> grad;
     callback clicked();
     horizontal-stretch: 0; height: 28px; min-width: 60px; border-radius: 8px;
-    background: t.has-hover ? Theme.panel-2 : transparent;
-    border-width: 1px; border-color: Theme.outline;
+    background: filled
+        ? (t.has-hover ? grad : grad)
+        : (t.has-hover ? Theme.panel-2 : transparent);
+    opacity: (filled && t.has-hover) ? 0.9 : 1.0;
+    border-width: filled ? 0px : 1px; border-color: Theme.outline;
     t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    Text { text: label; color: tint; font-size: 12px; font-weight: 600;
+    Text { text: label; color: filled ? #ffffff : tint; font-size: 12px; font-weight: filled ? 700 : 600;
         horizontal-alignment: center; vertical-alignment: center; }
 }
 
@@ -85,9 +102,9 @@ component ToolTab inherits Rectangle {
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     VerticalLayout {
         alignment: center; padding-left: 8px; padding-right: 8px;
-        Text { text: op.label; color: #1b2330; font-size: 13px;
+        Text { text: op.label; color: active ? #ffffff : #1b2330; font-size: 13px;
             font-weight: active ? 800 : 700; horizontal-alignment: center; overflow: elide; }
-        if show-cat: Text { text: op.cat; color: #1b2330.with-alpha(0.65); font-size: 10px;
+        if show-cat: Text { text: op.cat; color: (active ? #ffffff : #1b2330).with-alpha(0.7); font-size: 10px;
             font-weight: 600; horizontal-alignment: center; }
     }
 }
@@ -139,8 +156,9 @@ component FieldRow inherits VerticalLayout {
 // ── live queue row ────────────────────────────────────────────────────────────
 component QueueRow inherits Rectangle {
     in property <QueueJob> job;
-    callback action(int, string);   // pause|resume|cancel|retry|up|down
+    callback action(int, string);   // pause|resume|cancel|retry|up|down|open
     callback confirm(int, string);  // remove (routes through the confirm modal)
+    callback result(int);           // open the rich result popup (mediainfo/folder_diff)
     height: 80px; horizontal-stretch: 1; border-radius: Theme.radius-md;
     background: Theme.panel; border-width: 1px; border-color: Theme.outline;
     property <color> chip:
@@ -165,6 +183,13 @@ component QueueRow inherits Rectangle {
                         Text { text: job.state; color: chip; font-size: 10px; font-weight: 800;
                             vertical-alignment: center; } } } }
             Rectangle { horizontal-stretch: 1; }
+            // Rich result popup for tools whose output is a report/diff rather than
+            // a single openable file.
+            if (job.kind == "mediainfo" || job.kind == "folder_diff") && job.state == "done":
+                ActBtn { label: "Result"; tint: Theme.tools-accent; clicked => { root.result(job.id); } }
+            // Open the output in the system default app — available even mid-run or
+            // after a halt, as long as the file exists (e.g. a partial .srt).
+            if job.state != "queued" && job.kind != "folder_diff": ActBtn { label: "Open"; clicked => { root.action(job.id, "open"); } }
             if job.state == "running": ActBtn { label: "Pause"; clicked => { root.action(job.id, "pause"); } }
             if job.state == "paused":  ActBtn { label: "Resume"; clicked => { root.action(job.id, "resume"); } }
             if job.state == "error":   ActBtn { label: "Retry"; clicked => { root.action(job.id, "retry"); } }
@@ -223,12 +248,35 @@ export component ToolsPage inherits Rectangle {
     in property <string> active-op: "";
     in property <string> active-label: "";
     in property <string> active-info: "";   // what the tool does + how to use it
+    in property <string> log: "";            // live CLI output of the running tool
     in property <string> error: "";
     in property <[QueueJob]> queue-jobs: [];
     in property <[ToolStatus]> tool-statuses: [];
     in property <[DownloadItem]> downloads: [];
     in-out property <int> worker-slots: 2;
     property <bool> downloads-open: false;
+    property <bool> console-open: false;     // console starts collapsed (arrow to expand)
+    // Rich result popup (mediainfo info-table / folder-diff). Filled by the
+    // backend when a Result button is pressed; `result-kind` picks the layout.
+    in property <bool> result-open: false;
+    in property <string> result-kind: "";    // "info" | "diff"
+    in property <string> result-title: "";
+    in property <[ToolInfoRow]> result-info: [];
+    in property <[ToolDiffRow]> result-diff: [];
+    // Trim timeline editor.
+    in property <bool> trim-open: false;
+    in property <string> trim-path: "";
+    in property <float> trim-duration: 0;     // seconds
+    in property <image> trim-filmstrip;
+    in property <image> trim-waveform;
+    in property <[TrimSeg]> trim-segments: [];
+    in property <string> trim-status: "";
+    in-out property <float> trim-playhead: 0; // seconds
+    property <float> trim-pending-in: -1;     // armed "In" point awaiting an "Out"
+    // seconds → m:ss for the timeline readouts.
+    pure function fmt(t: float) -> string {
+        return Math.floor(t / 60) + ":" + (Math.mod(t, 60) < 10 ? "0" : "") + Math.floor(Math.mod(t, 60));
+    }
 
     callback open-tool(string);
     callback set-category(string);
@@ -244,6 +292,14 @@ export component ToolsPage inherits Rectangle {
     callback list-downloads();
     callback open-download(string);
     callback remove-download(string);
+    callback clear-console();
+    callback result(int);        // request the rich result popup for a job
+    callback result-close();
+    callback trim-editor();          // open the timeline editor for the current trim input
+    callback trim-add-seg(float, float);
+    callback trim-del-seg(int);
+    callback trim-join();
+    callback trim-close();
 
     property <color> accent: Theme.tools-accent;
     // Distinct light pastels cycled across the tool tabs so each tool reads
@@ -294,7 +350,7 @@ export component ToolsPage inherits Rectangle {
                 Rectangle { horizontal-stretch: 1; }
                 // Universal parallel-worker cap (applies to every tool's queue).
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Rectangle { height: 40px; min-width: 180px; border-radius: 20px;
+                    Rectangle { height: 40px; min-width: 300px; border-radius: 20px;
                         background: Theme.panel-2; border-width: 1px; border-color: Theme.outline;
                         HorizontalLayout { padding-left: 16px; padding-right: 16px; spacing: 10px;
                             VerticalLayout { alignment: center; horizontal-stretch: 0;
@@ -302,16 +358,16 @@ export component ToolsPage inherits Rectangle {
                             VerticalLayout { alignment: center; horizontal-stretch: 0;
                                 Text { text: "Workers"; color: Theme.text-dim; font-size: 11px; font-weight: 700; vertical-alignment: center; } }
                             VerticalLayout { alignment: center; horizontal-stretch: 1;
-                                Slider { minimum: 1; maximum: 6; value: root.worker-slots;
+                                Slider { min-width: 160px; minimum: 1; maximum: 6; value: root.worker-slots;
                                     changed(v) => { root.worker-slots = round(v); root.set-workers(round(v)); } } }
                             VerticalLayout { alignment: center; horizontal-stretch: 0;
                                 Text { text: "" + root.worker-slots; color: Theme.text; font-size: 14px; font-weight: 800;
                                     vertical-alignment: center; min-width: 12px; horizontal-alignment: center; } } } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    HdrSearch { width: 320px; dark: Theme.dark; placeholder: "Find a tool";
+                    HdrSearch { width: 320px; dark: Theme.dark; outline: true; placeholder: "Find a tool";
                         query <=> root.query; edited(q) => { root.search(q); } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    CountPill { accent: root.accent; text-color: #2a1c05; seg1: "" + root.queue-status; } }
+                    CountPill { accent: root.accent; text-color: #ffffff; seg1: "" + root.queue-status; } }
             }
         }
 
@@ -399,7 +455,9 @@ export component ToolsPage inherits Rectangle {
                                     if root.active-op == "download" || root.active-op == "download_playlist" || root.active-op == "download_live":
                                         ActBtn { label: "Downloaded"; tint: root.accent; min-width: 100px;
                                             clicked => { root.dl-page = 0; root.list-downloads(); root.downloads-open = true; } }
-                                    ActBtn { label: "Close"; clicked => { root.close-detail(); } }
+                                    ActBtn { label: "Close"; filled: true; min-width: 76px;
+                                        grad: @linear-gradient(135deg, root.accent, Theme.tools-accent-2);
+                                        clicked => { root.close-detail(); } }
                                 }
                                 // Info box: what the tool does + how to use it, shown
                                 // above the form so the controls have context.
@@ -412,7 +470,7 @@ export component ToolsPage inherits Rectangle {
                                         HorizontalLayout { spacing: 8px; alignment: start;
                                             AppIcon { source: Icons.info; tint: root.accent; width: 16px; height: 16px;
                                                 y: 1px; horizontal-stretch: 0; }
-                                            Text { text: "About " + root.active-label; color: root.accent;
+                                            Text { text: "About " + root.active-label; color: Theme.text;
                                                 font-size: 12px; font-weight: 800; vertical-alignment: center; } }
                                         Text { text: root.active-info; color: Theme.text; font-size: 13px;
                                             wrap: word-wrap; }
@@ -427,6 +485,8 @@ export component ToolsPage inherits Rectangle {
                                 if root.error != "": Text { text: root.error; color: Theme.error; font-size: 12px; font-weight: 600; }
                                 HorizontalLayout { spacing: 10px; alignment: start;
                                     RunButton { label: "Run"; clicked => { root.run(); } }
+                                    if root.active-op == "trim": RunButton { label: "Open timeline editor"; primary: false;
+                                        clicked => { root.trim-editor(); } }
                                     RunButton { label: "Reset"; primary: false; clicked => { root.reset(); } }
                                 }
 
@@ -448,10 +508,41 @@ export component ToolsPage inherits Rectangle {
                                 }
                                 for job in root.queue-jobs: QueueRow { job: job;
                                     action(i, a) => { root.queue-action(i, a); }
-                                    confirm(i, a) => { root.ask(i, a, "Remove this job from the queue?"); } }
+                                    confirm(i, a) => { root.ask(i, a, "Remove this job from the queue?"); }
+                                    result(i) => { root.result(i); } }
                                 if root.queue-jobs.length == 0: Text {
                                     text: "No jobs yet. Set the options above and press Run.";
                                     color: Theme.text-dim; font-size: 12px; }
+
+                                // ── Console — live CLI output of the running tool ──
+                                // Starts collapsed; the title row's chevron toggles it. A Clear
+                                // button at the far end wipes the buffer.
+                                if root.log != "": Rectangle { height: 1px; background: Theme.outline; }
+                                if root.log != "": HorizontalLayout { spacing: 8px; alignment: start;
+                                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                        AppIcon { source: Icons.command; tint: root.accent; width: 14px; height: 14px; } }
+                                    // title + chevron — whole strip is the open/close toggle
+                                    Rectangle { horizontal-stretch: 1;
+                                        TouchArea { mouse-cursor: pointer; clicked => { root.console-open = !root.console-open; } }
+                                        HorizontalLayout { spacing: 6px; alignment: start;
+                                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                                AppIcon { source: root.console-open ? Icons.chevron-down : Icons.chevron-right;
+                                                    tint: Theme.text-dim; width: 14px; height: 14px; } }
+                                            VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                                Text { text: "Console output"; color: Theme.text; font-size: 13px; font-weight: 700; } } } }
+                                    // Clear — far end of the title line
+                                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                        ActBtn { label: "Clear"; tint: Theme.text-dim; min-width: 60px;
+                                            clicked => { root.clear-console(); root.console-open = false; } } } }
+                                if root.log != "" && root.console-open: Rectangle {
+                                    height: 180px; border-radius: 10px; clip: true;
+                                    background: Theme.dark ? #0b0f14 : #11161d;
+                                    border-width: 1px; border-color: Theme.outline;
+                                    ScrollView { width: 100%; height: 100%;
+                                        VerticalLayout { padding: 12px;
+                                            Text { text: root.log; color: #c7d2da;
+                                                font-family: "monospace"; font-size: 11px; wrap: word-wrap; } } }
+                                }
                             }
                         }
                     }
@@ -492,6 +583,173 @@ export component ToolsPage inherits Rectangle {
         }
     }
 
+    // ── Rich result popup — mediainfo info-table / folder-diff list ──────────
+    if root.result-open: Rectangle {
+        background: #00000088;
+        TouchArea { clicked => { root.result-close(); } } // backdrop = close
+        Rectangle {
+            width: min(680px, root.width - 64px); height: min(620px, root.height - 80px);
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: Theme.modal; border-width: 1px; border-color: Theme.outline-strong;
+            border-radius: Theme.radius-lg; clip: true;
+            VerticalLayout {
+                padding: 20px; spacing: 14px;
+                HorizontalLayout { spacing: 10px;
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        Text { text: root.result-title; color: Theme.text; font-size: 16px; font-weight: 800; overflow: elide; } }
+                    ActBtn { label: "Close"; filled: true; min-width: 76px;
+                        grad: @linear-gradient(135deg, root.accent, Theme.tools-accent-2);
+                        clicked => { root.result-close(); } }
+                }
+                Rectangle { height: 1px; background: Theme.outline; }
+                ScrollView {
+                    VerticalLayout { spacing: 8px;
+                        // INFO — categorized key/value rows (Media info)
+                        if root.result-kind == "info": VerticalLayout { spacing: 2px;
+                          for r in root.result-info: Rectangle {
+                            height: 28px;
+                            HorizontalLayout { spacing: 12px;
+                                Rectangle { width: 82px; horizontal-stretch: 0;
+                                    VerticalLayout { alignment: center;
+                                        Text { text: r.section; color: root.accent; font-size: 11px; font-weight: 800; overflow: elide; } } }
+                                Rectangle { width: 150px; horizontal-stretch: 0;
+                                    VerticalLayout { alignment: center;
+                                        Text { text: r.key; color: Theme.text-dim; font-size: 12px; overflow: elide; } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                    Text { text: r.value; color: Theme.text; font-size: 12px; font-weight: 600; overflow: elide; } }
+                            }
+                          } }
+                        // DIFF — thumb + path + kind badge (Folder diff)
+                        if root.result-kind == "diff": VerticalLayout { spacing: 8px;
+                          for r in root.result-diff: Rectangle {
+                            height: 56px; border-radius: 8px; background: Theme.panel;
+                            border-width: 1px; border-color: Theme.outline;
+                            HorizontalLayout { padding: 8px; spacing: 10px;
+                                Image { source: r.thumb; width: 40px; height: 40px; image-fit: contain; }
+                                VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                    Text { text: r.path; color: Theme.text; font-size: 12px; font-weight: 600; overflow: elide; }
+                                    Text { text: r.detail; color: Theme.text-dim; font-size: 10px; overflow: elide; } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                    Rectangle { border-radius: 7px;
+                                        background: (r.kind == "only-a" ? Theme.error : r.kind == "only-b" ? Theme.ok : Theme.warn).with-alpha(0.16);
+                                        HorizontalLayout { padding-left: 9px; padding-right: 9px; padding-top: 3px; padding-bottom: 3px;
+                                            Text { text: r.kind == "only-a" ? "removed" : r.kind == "only-b" ? "added" : "modified";
+                                                color: r.kind == "only-a" ? Theme.error : r.kind == "only-b" ? Theme.ok : Theme.warn;
+                                                font-size: 10px; font-weight: 800; } } } }
+                            }
+                          } }
+                        if (root.result-kind == "info" && root.result-info.length == 0)
+                           || (root.result-kind == "diff" && root.result-diff.length == 0): Text {
+                            text: "No data."; color: Theme.text-dim; font-size: 12px; }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Trim timeline editor — filmstrip + waveform, multi-segment cut & join ─
+    if root.trim-open: Rectangle {
+        background: #000000aa;
+        TouchArea { clicked => { root.trim-close(); } } // backdrop = close
+        Rectangle {
+            width: min(900px, root.width - 48px); height: min(580px, root.height - 56px);
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            background: Theme.modal; border-width: 1px; border-color: Theme.outline-strong;
+            border-radius: Theme.radius-lg; clip: true;
+            VerticalLayout {
+                padding: 18px; spacing: 12px;
+                HorizontalLayout { spacing: 10px;
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        Text { text: "Timeline editor"; color: Theme.text; font-size: 16px; font-weight: 800; }
+                        Text { text: root.trim-path; color: Theme.text-dim; font-size: 11px; overflow: elide; } }
+                    ActBtn { label: "Close"; filled: true; min-width: 76px;
+                        grad: @linear-gradient(135deg, root.accent, Theme.tools-accent-2);
+                        clicked => { root.trim-close(); } }
+                }
+                // ── timeline: filmstrip over waveform, with segment bands + playhead ──
+                Rectangle {
+                    height: 200px; border-radius: 10px; clip: true;
+                    background: Theme.dark ? #0b0f14 : #11161d; border-width: 1px; border-color: Theme.outline;
+                    VerticalLayout {
+                        Image { source: root.trim-filmstrip; height: 104px; width: 100%; image-fit: fill; }
+                        Image { source: root.trim-waveform; height: 96px; width: 100%; image-fit: fill; }
+                    }
+                    // keep-segment bands
+                    for seg in root.trim-segments: Rectangle {
+                        x: parent.width * (root.trim-duration > 0 ? seg.start / root.trim-duration : 0);
+                        width: parent.width * (root.trim-duration > 0 ? (seg.end - seg.start) / root.trim-duration : 0);
+                        y: 0; height: parent.height;
+                        background: Theme.tools-accent.with-alpha(0.22);
+                        border-width: 1px; border-color: Theme.tools-accent;
+                    }
+                    // armed "In" marker
+                    if root.trim-pending-in >= 0: Rectangle {
+                        width: 2px; height: parent.height; y: 0;
+                        x: parent.width * (root.trim-duration > 0 ? root.trim-pending-in / root.trim-duration : 0);
+                        background: Theme.ok;
+                    }
+                    // playhead
+                    Rectangle {
+                        width: 2px; height: parent.height; y: 0;
+                        x: parent.width * (root.trim-duration > 0 ? root.trim-playhead / root.trim-duration : 0);
+                        background: #ffffff;
+                    }
+                    scrub := TouchArea {
+                        moved => { root.trim-playhead = Math.max(0, Math.min(root.trim-duration, root.trim-duration * (self.mouse-x / self.width))); }
+                        clicked => { root.trim-playhead = Math.max(0, Math.min(root.trim-duration, root.trim-duration * (self.mouse-x / self.width))); }
+                    }
+                }
+                // ── transport + mark controls ──
+                HorizontalLayout { spacing: 10px;
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        Text { text: root.fmt(root.trim-playhead) + " / " + root.fmt(root.trim-duration)
+                            + (root.trim-pending-in >= 0 ? "   ·  In @ " + root.fmt(root.trim-pending-in) : "");
+                            color: Theme.text; font-size: 13px; font-weight: 600; } }
+                    ActBtn { label: "Set In"; tint: Theme.ok; min-width: 70px;
+                        clicked => { root.trim-pending-in = root.trim-playhead; } }
+                    ActBtn { label: "Set Out + Add"; tint: Theme.tools-accent; min-width: 110px;
+                        clicked => {
+                            if (root.trim-pending-in >= 0 && root.trim-playhead > root.trim-pending-in) {
+                                root.trim-add-seg(root.trim-pending-in, root.trim-playhead);
+                                root.trim-pending-in = -1;
+                            }
+                        } }
+                }
+                // ── segment list ──
+                Text { text: "Segments to keep (joined in order)"; color: Theme.text-dim; font-size: 11px; font-weight: 700; }
+                Rectangle { vertical-stretch: 1; clip: true;
+                    ScrollView {
+                        VerticalLayout { spacing: 6px;
+                            for seg[i] in root.trim-segments: Rectangle {
+                                height: 34px; border-radius: 7px; background: Theme.panel;
+                                border-width: 1px; border-color: Theme.outline;
+                                HorizontalLayout { padding-left: 10px; padding-right: 8px; spacing: 10px;
+                                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                        Text { text: (i + 1) + "."; color: Theme.tools-accent; font-size: 12px; font-weight: 800; } }
+                                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                        Text { text: root.fmt(seg.start) + "  →  " + root.fmt(seg.end)
+                                            + "   (" + root.fmt(seg.end - seg.start) + ")";
+                                            color: Theme.text; font-size: 12px; } }
+                                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                        ActBtn { label: "Remove"; tint: Theme.error; clicked => { root.trim-del-seg(i); } } }
+                                }
+                            }
+                            if root.trim-segments.length == 0: Text {
+                                text: "Scrub the timeline, press Set In then Set Out + Add to mark a piece to keep.";
+                                color: Theme.text-dim; font-size: 12px; }
+                        }
+                    }
+                }
+                // ── footer ──
+                HorizontalLayout { spacing: 10px; alignment: start;
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        if root.trim-status != "": Text { text: root.trim-status; color: Theme.text-dim; font-size: 11px; overflow: elide; } }
+                    RunButton { label: "Join → video"; clicked => { root.trim-join(); } }
+                }
+            }
+        }
+    }
+
     // ── Downloaded-files browser (download tool) ─────────────────────────────
     if root.downloads-open: Rectangle {
         background: #00000088;
@@ -508,7 +766,9 @@ export component ToolsPage inherits Rectangle {
                         Text { text: "Downloaded"; color: Theme.text; font-size: 17px; font-weight: 700; }
                         Text { text: "~/Downloads · click an item to open in the system player";
                             color: Theme.text-dim; font-size: 11px; } }
-                    ActBtn { label: "Close"; clicked => { root.downloads-open = false; } }
+                    ActBtn { label: "Close"; filled: true; min-width: 76px;
+                        grad: @linear-gradient(135deg, root.accent, Theme.tools-accent-2);
+                        clicked => { root.downloads-open = false; } }
                 }
                 ScrollView {
                     vertical-stretch: 1;

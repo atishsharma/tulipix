@@ -25,6 +25,7 @@ members = [
     "crates/tulipix-sec-photos",
     "crates/tulipix-sec-music",
     "crates/tulipix-sec-videos",
+    "crates/tulipix-hot",
     "crates/tulipix-cli",
     "tools/fetch-resources",
 ]

@@ -1748,6 +1748,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "file-id"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1fc6a637b6dc58414714eddd9170ff187ecb0933d4c7024d1abbd23a3cc26e9"
+dependencies = [
+ "windows-sys 0.60.2",
+]
+
+[[package]]
 name = "filetime"
 version = "0.2.29"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2571,6 +2580,32 @@ name = "hex"
 version = "0.4.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
+
+[[package]]
+name = "hot-lib-reloader"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eda706fdb8bcf5279ce95754dd86a23eab0a81ad2823d5402c2e10a4dd3283c2"
+dependencies = [
+ "crc32fast",
+ "hot-lib-reloader-macro",
+ "libloading 0.8.9",
+ "log",
+ "notify 6.1.1",
+ "notify-debouncer-full",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "hot-lib-reloader-macro"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f01c6c25eabdd8e2de50ccdb7e13186ba2ac0f69ebd8bd5f96ae235414180800"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
 
 [[package]]
 name = "htmlparser"
@@ -4088,6 +4123,20 @@ dependencies = [
  "notify-types",
  "walkdir",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "notify-debouncer-full"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb7fd166739789c9ff169e654dc1501373db9d80a4c3f972817c8a4d7cf8f34e"
+dependencies = [
+ "crossbeam-channel",
+ "file-id",
+ "log",
+ "notify 6.1.1",
+ "parking_lot",
+ "walkdir",
 ]
 
 [[package]]
@@ -6454,6 +6503,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
 dependencies = [
  "proc-macro2",
+ "quote",
  "unicode-ident",
 ]
 
@@ -7119,6 +7169,7 @@ dependencies = [
  "chrono",
  "dark-light",
  "embed-resource",
+ "hot-lib-reloader",
  "image",
  "kamadak-exif",
  "libc",
@@ -7144,6 +7195,7 @@ dependencies = [
  "tulipix-cloud",
  "tulipix-common",
  "tulipix-core",
+ "tulipix-hot",
  "tulipix-music",
  "tulipix-photos",
  "tulipix-platform",
@@ -7244,6 +7296,15 @@ dependencies = [
  "toml 0.8.2",
  "tracing",
  "walkdir",
+]
+
+[[package]]
+name = "tulipix-hot"
+version = "0.3.0"
+dependencies = [
+ "slint",
+ "tulipix-sec-tools",
+ "tulipix-ui",
 ]
 
 [[package]]
