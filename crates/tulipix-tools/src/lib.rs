@@ -18,6 +18,7 @@ pub mod download;
 pub mod download_live;
 pub mod download_playlist;
 pub mod download_routing;
+pub mod exec;
 pub mod extract;
 pub mod folder_diff;
 pub mod hash;

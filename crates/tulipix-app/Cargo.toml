@@ -15,22 +15,45 @@ path = "src/main.rs"
 # behind their own feature flag so the base binary stays ~40% smaller and
 # loads them lazily on first use.
 # `embedded-mpv` on by default: links libmpv for the in-app Videos player
-# (render API → Slint texture). Build with `--no-default-features` to drop the
-# libmpv link entirely (e.g. Windows without mpv.lib); the Videos embedded
-# player goes inert, while music/podcast/radio/YouTube keep using out-of-process
-# mpv.exe. See build.rs + src/mpv_stub.rs.
-default = ["embedded-mpv"]
-embedded-mpv = []
+# (render API → Slint texture) and forces the skia-opengl renderer. Build with
+# `--no-default-features` to drop the libmpv link entirely (e.g. Windows without
+# mpv.lib); the Videos embedded player goes inert, while music/podcast/radio/
+# YouTube keep using out-of-process mpv.exe. Because the renderer rides on
+# embedded-mpv, a `--no-default-features` build MUST add a renderer feature —
+# `--features renderer-skia` (parity) or `--features renderer-femtovg` (lean).
+# See build.rs + src/mpv_stub.rs.
+# alloc-mimalloc on by default: 10-20% on the thumb pipeline + DB pool. The
+# global_allocator is cfg-gated to Linux/Windows (macOS keeps system malloc),
+# so this is a no-op allocator-wise on mac.
+default = ["embedded-mpv", "alloc-mimalloc"]
+# The embedded player hands libmpv frames to Slint as a BorrowedOpenGLTexture,
+# which only the skia-opengl surface provides — so embedded-mpv pulls skia.
+embedded-mpv = ["renderer-skia"]
+
+# Renderer selection (Slint feature-unifies, so pick exactly one).
+#   skia    — default; GPU, best text/AA, required by embedded-mpv. Larger binary.
+#   femtovg — size-lean GPU renderer for a "lite" build. Incompatible with the
+#             in-app video player, so pair it with --no-default-features:
+#               cargo build -p tulipix-app --release --no-default-features --features renderer-femtovg
+renderer-skia = ["slint/renderer-skia", "slint/renderer-skia-opengl"]
+renderer-femtovg = ["slint/renderer-femtovg"]
 
 # Dev UI live-reload. `slint/live-preview` swaps the generated UI for an
 # interpreter-backed LiveReloadingComponent that re-reads .slint at runtime —
 # the build must ALSO run with SLINT_LIVE_PREVIEW=1 so the slint compiler
 # emits the live-preview glue (see vendor/i-slint-compiler/generator/rust.rs).
-dev-reload = ["dep:notify", "slint/live-preview"]
+dev-reload = ["dep:notify", "slint/live-preview", "tulipix-ui/dev-reload", "tulipix-sec-tools/dev-reload", "tulipix-sec-photos/dev-reload", "tulipix-sec-music/dev-reload", "tulipix-sec-videos/dev-reload"]
+
+# Dev-only Rust hot-patch. Routes section wire-up through the tulipix-hot dylib
+# (loaded by hot-lib-reloader): edit section callback logic, rebuild that small
+# dylib, and the RUNNING app re-wires — no restart, no main.rs (9.5k) recompile.
+# Implies dev-reload so the dylib + app share one interpreter-backed MainWindow
+# layout across the .so boundary. Drive it with `just hot` + `just hot-lib`.
+hot = ["dev-reload", "dep:hot-lib-reloader", "dep:tulipix-hot", "tulipix-hot/dev-reload"]
 
 # Real ONNX editor AI ops (upscale/colorize/heal/sky). Pulls ORT into
 # tulipix-photos (downloads the native runtime at build time).
-ai-onnx = ["tulipix-photos/onnx"]
+ai-onnx = ["tulipix-photos/onnx", "tulipix-sec-photos/ai-onnx"]
 
 # Global allocator. mimalloc on Win/Linux gives 10-20% perf on the thumb
 # pipeline + DB pool; macOS keeps system malloc (jemalloc nightly-only).
@@ -49,6 +72,8 @@ full = ["lazy-whisper", "lazy-ai-ep", "lazy-plugins"]
 
 [dependencies]
 slint.workspace = true
+tulipix-ui = { path = "../tulipix-ui" }
+tulipix-common = { path = "../tulipix-common" }
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
@@ -58,6 +83,10 @@ rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "t
 # rfd) — v1 dragged a second, duplicate zbus4 + dbus stack (~15 crates).
 dark-light = "2"
 notify = { version = "6", optional = true }
+# Dev-only hot-patch runtime + the section-wiring dylib it loads. Both optional,
+# pulled in ONLY by the `hot` feature, so default/release builds never see them.
+hot-lib-reloader = { version = "0.7", optional = true }
+tulipix-hot = { path = "../tulipix-hot", optional = true }
 tulipix-core = { path = "../tulipix-core" }
 # `tray` on by default — np.p1.tray needs the real tray-icon backend, the
 # stub returned false and System claimed "Active" wrongly.
@@ -68,6 +97,11 @@ tulipix-player = { path = "../tulipix-player" }
 tulipix-music = { path = "../tulipix-music" }
 tulipix-books = { path = "../tulipix-books" }
 tulipix-cloud = { path = "../tulipix-cloud" }
+tulipix-tools = { path = "../tulipix-tools" }
+tulipix-sec-tools = { path = "../tulipix-sec-tools" }
+tulipix-sec-photos = { path = "../tulipix-sec-photos" }
+tulipix-sec-music = { path = "../tulipix-sec-music" }
+tulipix-sec-videos = { path = "../tulipix-sec-videos" }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
 sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
@@ -102,7 +136,7 @@ libc = "0.2"
 raw-window-handle = "0.6"
 
 [build-dependencies]
-slint-build.workspace = true
+# slint-build moved to the tulipix-ui crate (it owns the .slint codegen).
 
 # Embed the .ico as a Win32 resource so the .exe (and, via winit's default,
 # the window/taskbar) carries the Tulipix icon.

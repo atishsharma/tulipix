@@ -1,5 +1,7 @@
 fn main() {
-    slint_build::compile("../../ui/main.slint").expect("Slint compile failed");
+    // The Slint UI is compiled by the tulipix-ui crate (its own rustc unit);
+    // this crate just links against it. Rebuild if any .slint changes.
+    println!("cargo:rerun-if-changed=../../ui");
 
     // Embed the Tulipix icon as a Win32 resource. winit uses the executable's
     // first icon resource as the default window/taskbar icon, so this fixes the

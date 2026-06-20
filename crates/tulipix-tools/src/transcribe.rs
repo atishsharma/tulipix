@@ -30,14 +30,23 @@ pub fn auto_tier(ram_mb: u64) -> Tier {
 }
 
 /// whisper.cpp argv to transcribe `input` to SRT at `out` (without `.srt`).
-pub fn args(model_path: &str, input: &str, out_prefix: &str, threads: u32) -> Vec<String> {
-    vec![
+///
+/// `language` is a whisper language code or "auto" (empty == "auto"). Passing
+/// `-l auto` matters: with no `-l`, whisper.cpp defaults to English and
+/// mis-decodes other languages. `translate` adds `-tr`, whisper's built-in
+/// speech-translation that emits English regardless of the source language.
+pub fn args(model_path: &str, input: &str, out_prefix: &str, threads: u32, translate: bool, language: &str) -> Vec<String> {
+    let lang = if language.trim().is_empty() { "auto" } else { language.trim() };
+    let mut a = vec![
         "-m".into(), model_path.into(),
         "-f".into(), input.into(),
         "-osrt".into(),
         "-of".into(), out_prefix.into(),
         "-t".into(), threads.max(1).to_string(),
-    ]
+        "-l".into(), lang.into(),
+    ];
+    if translate { a.push("-tr".into()); }
+    a
 }
 
 /// Format milliseconds as an SRT timestamp `HH:MM:SS,mmm`.
@@ -68,8 +77,23 @@ mod tests {
 
     #[test]
     fn argv_emits_srt() {
-        let a = args("m.bin", "in.mkv", "out", 4);
+        let a = args("m.bin", "in.mkv", "out", 4, false, "auto");
         assert!(a.contains(&"-osrt".to_string()));
         assert!(a.windows(2).any(|w| w == ["-t", "4"]));
+        assert!(a.windows(2).any(|w| w == ["-l", "auto"]));
+        assert!(!a.contains(&"-tr".to_string()));
+    }
+
+    #[test]
+    fn argv_translate_to_english() {
+        let a = args("m.bin", "in.mkv", "out", 4, true, "es");
+        assert!(a.contains(&"-tr".to_string()));
+        assert!(a.windows(2).any(|w| w == ["-l", "es"]));
+    }
+
+    #[test]
+    fn blank_language_is_auto() {
+        let a = args("m.bin", "in.mkv", "out", 4, false, "  ");
+        assert!(a.windows(2).any(|w| w == ["-l", "auto"]));
     }
 }

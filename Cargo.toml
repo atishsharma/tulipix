@@ -7,6 +7,8 @@ resolver = "2"
 default-members = ["crates/tulipix-app"]
 members = [
     "crates/tulipix-app",
+    "crates/tulipix-ui",
+    "crates/tulipix-common",
     "crates/tulipix-core",
     "crates/tulipix-photos",
     "crates/tulipix-videos",
@@ -19,6 +21,11 @@ members = [
     "crates/tulipix-platform",
     "crates/tulipix-plugins",
     "crates/tulipix-tools",
+    "crates/tulipix-sec-tools",
+    "crates/tulipix-sec-photos",
+    "crates/tulipix-sec-music",
+    "crates/tulipix-sec-videos",
+    "crates/tulipix-hot",
     "crates/tulipix-cli",
     "tools/fetch-resources",
 ]
@@ -31,7 +38,10 @@ license = "Apache-2.0"
 repository = "https://github.com/atishsharma/tulipix"
 
 [workspace.dependencies]
-slint = { version = "1.8", default-features = false, features = ["std", "compat-1-2", "backend-winit", "renderer-skia", "renderer-skia-opengl", "unstable-fontique-08", "raw-window-handle-06"] }
+# Renderer features are NOT set here — tulipix-app selects them via its own
+# `renderer-skia` / `renderer-femtovg` features so a size-lean femtovg build is
+# possible. Default (embedded-mpv) still pulls skia-opengl. See app Cargo.toml.
+slint = { version = "1.8", default-features = false, features = ["std", "compat-1-2", "backend-winit", "unstable-fontique-08", "raw-window-handle-06"] }
 slint-build = "1.8"
 # Trimmed from "full": no crate uses tokio::net / signal / io-std (reqwest and
 # sqlx enable their own net stack). Member crates may add features on top.
@@ -68,7 +78,8 @@ opt-level = 1
 debug = false
 
 [profile.release]
-lto = "thin"
+opt-level = "s"               # optimize for size; smaller binary = faster cold start
+lto = "fat"                   # whole-program LTO: smaller + faster (slower link, packaging-only)
 codegen-units = 1
 strip = "symbols"
 panic = "abort"

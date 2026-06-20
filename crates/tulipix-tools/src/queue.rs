@@ -57,6 +57,14 @@ pub async fn claim_next(pool: &SqlitePool) -> Result<Option<i64>> {
     Ok(next)
 }
 
+/// Update only a job's message (e.g. the resolved download title) without
+/// touching its progress.
+pub async fn set_message(pool: &SqlitePool, id: i64, message: &str) -> Result<()> {
+    sqlx::query("UPDATE jobs SET message = ?, updated = ? WHERE id = ?")
+        .bind(message).bind(now()).bind(id).execute(pool).await?;
+    Ok(())
+}
+
 pub async fn set_progress(pool: &SqlitePool, id: i64, progress: f64, message: Option<&str>) -> Result<()> {
     sqlx::query("UPDATE jobs SET progress = ?, message = COALESCE(?, message), updated = ? WHERE id = ?")
         .bind(progress.clamp(0.0, 1.0)).bind(message).bind(now()).bind(id).execute(pool).await?;
@@ -87,6 +95,37 @@ pub async fn retry(pool: &SqlitePool, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Delete a single job (not while it's running — its process is live).
+pub async fn remove(pool: &SqlitePool, id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM jobs WHERE id = ? AND state != 'running'").bind(id).execute(pool).await?;
+    Ok(())
+}
+
+/// Clear every job except the ones currently running.
+pub async fn clear_all(pool: &SqlitePool) -> Result<()> {
+    sqlx::query("DELETE FROM jobs WHERE state != 'running'").execute(pool).await?;
+    Ok(())
+}
+
+/// Move a queued job up (sooner) or down in run order. Rewrites all queued
+/// priorities to distinct descending values so the new order is deterministic
+/// (claim_next reads priority DESC, id).
+pub async fn reorder(pool: &SqlitePool, id: i64, up: bool) -> Result<()> {
+    let mut ids: Vec<i64> = sqlx::query_scalar(
+        "SELECT id FROM jobs WHERE state = 'queued' ORDER BY priority DESC, id").fetch_all(pool).await?;
+    let Some(pos) = ids.iter().position(|r| *r == id) else { return Ok(()); };
+    let tgt = if up { pos.checked_sub(1) } else if pos + 1 < ids.len() { Some(pos + 1) } else { None };
+    let Some(tgt) = tgt else { return Ok(()); };
+    ids.swap(pos, tgt);
+    let n = ids.len() as i64;
+    let t = now();
+    for (i, rid) in ids.iter().enumerate() {
+        sqlx::query("UPDATE jobs SET priority = ?, updated = ? WHERE id = ?")
+            .bind(n - i as i64).bind(t).bind(rid).execute(pool).await?;
+    }
+    Ok(())
+}
+
 async fn transition(pool: &SqlitePool, id: i64, from: &str, to: &str) -> Result<()> {
     sqlx::query("UPDATE jobs SET state = ?, updated = ? WHERE id = ? AND state = ?")
         .bind(to).bind(now()).bind(id).bind(from).execute(pool).await?;
@@ -95,6 +134,11 @@ async fn transition(pool: &SqlitePool, id: i64, from: &str, to: &str) -> Result<
 
 pub async fn state_of(pool: &SqlitePool, id: i64) -> Result<Option<String>> {
     Ok(sqlx::query_scalar("SELECT state FROM jobs WHERE id = ?").bind(id).fetch_optional(pool).await?)
+}
+
+/// The job's stored spec JSON — used to resolve its output path (Open button).
+pub async fn job_spec(pool: &SqlitePool, id: i64) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar("SELECT spec_json FROM jobs WHERE id = ?").bind(id).fetch_optional(pool).await?)
 }
 
 #[cfg(test)]

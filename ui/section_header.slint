@@ -30,6 +30,11 @@ export component HdrChip inherits Rectangle {
     // Light-mode flag so colored (has-grad) chips can darken their text + deepen
     // the idle wash for readability on a light canvas.
     in property <bool> light-theme: false;
+    // Collapsible chip: icon-only at rest, expands to icon + title on hover (or
+    // when active). The caller animates min-width off `revealed`. Lets a tight
+    // row stay compact yet still surface each tab's name on demand.
+    in property <bool> collapsible: false;
+    out property <bool> revealed: touch.has-hover || active;
     callback clicked();
     height: 36px; min-width: 84px;
     horizontal-stretch: 0; vertical-stretch: 0;
@@ -53,9 +58,14 @@ export component HdrChip inherits Rectangle {
     // Inactive coloured chips: darken on light, brighten toward white on dark
     // so the label stays legible against the faint tint wash either way.
     property <color> lbl-color: active ? active-text : (has-grad ? (light-theme ? tint.mix(#000000, 0.72) : tint.mix(#ffffff, 0.5)) : (dark ? dk-text : #3c4043));
-    HorizontalLayout { alignment: center; spacing: 7px; padding-left: 4px; padding-right: 4px;
+    HorizontalLayout { alignment: center;
+        spacing: (root.label == "" || (root.collapsible && !root.revealed)) ? 0px : 7px;
+        padding-left: 4px; padding-right: 4px;
         if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: root.lbl-color; width: 15px; height: 15px; } }
-        Text {
+        // Icon-only chips (label == "") drop the Text so the chip can shrink to a
+        // compact square. Collapsible chips drop it only at rest, revealing it on
+        // hover — keeps row-2 tab rows from clipping on scaled displays.
+        if root.label != "" && (!root.collapsible || root.revealed): Text {
             text: label; font-size: 13px; font-weight: has-grad ? 700 : 600;
             color: root.lbl-color;
             vertical-alignment: center;
@@ -84,13 +94,16 @@ export component HdrSearch inherits Rectangle {
     in property <bool> dark: false;
     in property <string> placeholder: "Search";
     in-out property <string> query: "";
+    // Force a visible border even on a light canvas (the default light search
+    // box is borderless). Lets a caller outline the box for definition.
+    in property <bool> outline: false;
     callback edited(string);
     callback cleared();
     width: 360px; height: 44px; border-radius: 22px;
     horizontal-stretch: 0; vertical-stretch: 0;
     background: dark ? #ffffff14 : #f1f3f4;
-    border-width: dark ? 1px : 0px;
-    border-color: #ffffff22;
+    border-width: (dark || outline) ? 1px : 0px;
+    border-color: dark ? #ffffff22 : #0000002e;
     HorizontalLayout {
         padding-left: 18px; padding-right: 10px; spacing: 8px;
         VerticalLayout { alignment: center; AppIcon { source: Icons.search; tint: dark ? #9a9aa2 : #5f6368; width: 16px; height: 16px; } }

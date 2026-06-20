@@ -1,0 +1,22 @@
+[package]
+name = "tulipix-ui"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# The generated Slint UI (MainWindow + all exported structs) lives here so it
+# compiles as its own rustc unit — keeping the tulipix-app binary crate (and any
+# section-wiring crate) small enough to type-check without exhausting memory.
+
+[features]
+# Mirror tulipix-app's dev-reload: `slint/live-preview` changes what the Slint
+# compiler emits (interpreter-backed LiveReloadingComponent), so the codegen
+# here must enable it too. Build with SLINT_LIVE_PREVIEW=1.
+dev-reload = ["slint/live-preview"]
+
+[dependencies]
+slint.workspace = true
+
+[build-dependencies]
+slint-build.workspace = true

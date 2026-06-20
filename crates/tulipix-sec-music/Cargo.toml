@@ -1,0 +1,32 @@
+[package]
+name = "tulipix-sec-music"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Music section wiring extracted from tulipix-app: My Music / Podcasts / Radio /
+# Audiobooks plus the YouTube tabs (one unified out-of-process player). Reaches
+# the shared playback core + now-playing surface through tulipix-common; the
+# music `window.on_*` callbacks in main call these via `use tulipix_sec_music::*`.
+
+[features]
+dev-reload = ["tulipix-ui/dev-reload"]
+
+[dependencies]
+slint.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+sqlx = { workspace = true }
+serde.workspace = true
+serde_json.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+sha2 = "0.10"
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+tulipix-ui = { path = "../tulipix-ui" }
+tulipix-common = { path = "../tulipix-common" }
+tulipix-core = { path = "../tulipix-core" }
+tulipix-music = { path = "../tulipix-music" }

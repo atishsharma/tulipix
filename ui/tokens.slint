@@ -35,8 +35,14 @@ export global Theme {
     out property <color> sec-music:    #ec4899; // pink
     out property <color> sec-books:    #10b981; // emerald
     out property <color> sec-cloud:    #14b8a6; // teal
-    out property <color> sec-tools:    #f59e0b; // amber
+    out property <color> sec-tools:    #06b6d4; // cyan
     out property <color> sec-settings: #94a3b8; // slate
+
+    // Tools section identity — cyan→sky gradient ramp (run button, chips,
+    // progress bars, accent dots). `tools-accent` == sec-tools for the sidebar.
+    // Bright + saturated so the accent reads as text on a light canvas too.
+    out property <color> tools-accent:   #06b6d4; // cyan
+    out property <color> tools-accent-2: #0ea5e9; // sky
 
     // --- Status ---
     out property <color> ok:    #16a34a;

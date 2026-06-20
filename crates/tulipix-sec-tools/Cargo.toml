@@ -1,0 +1,28 @@
+[package]
+name = "tulipix-sec-tools"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Tools-section wiring: the declarative form bridge, job-queue worker/executor
+# glue, and all `window.on_tools_*` callbacks. tulipix-app calls `wire(&window)`.
+
+[features]
+# Forward live-reload to the UI crate so a dev-reload app build keeps the
+# generated UI types in sync (slint/live-preview swaps them out).
+dev-reload = ["tulipix-ui/dev-reload"]
+
+[dependencies]
+slint.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+sqlx = { workspace = true }
+serde_json.workspace = true
+walkdir = "2"
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+tulipix-ui = { path = "../tulipix-ui" }
+tulipix-common = { path = "../tulipix-common" }
+tulipix-core = { path = "../tulipix-core" }
+tulipix-platform = { path = "../tulipix-platform" }
+tulipix-tools = { path = "../tulipix-tools" }

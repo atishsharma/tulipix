@@ -1701,6 +1701,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "femtovg"
+version = "0.23.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "727c5dd9d601f3f4ea133b8a6ba37d37ca67ed59781675dc1c9c9f1701e0d197"
+dependencies = [
+ "bitflags 2.11.1",
+ "bytemuck",
+ "fnv",
+ "glow",
+ "imgref",
+ "itertools 0.14.0",
+ "log",
+ "rgb",
+ "slotmap",
+ "swash",
+ "wasm-bindgen",
+ "web-sys",
+]
+
+[[package]]
 name = "fetch-resources"
 version = "0.3.0"
 dependencies = [
@@ -1725,6 +1745,15 @@ checksum = "38e2275cc4e4fc009b0669731a1e5ab7ebf11f469eaede2bab9309a5b4d6057f"
 dependencies = [
  "memoffset",
  "rustc_version",
+]
+
+[[package]]
+name = "file-id"
+version = "0.2.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "e1fc6a637b6dc58414714eddd9170ff187ecb0933d4c7024d1abbd23a3cc26e9"
+dependencies = [
+ "windows-sys 0.60.2",
 ]
 
 [[package]]
@@ -1780,6 +1809,12 @@ dependencies = [
  "futures-sink",
  "spin",
 ]
+
+[[package]]
+name = "fnv"
+version = "1.0.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "3f9eec918d3f24069decb9af1554cad7c880e2da24a9afd88aca000531ab82c1"
 
 [[package]]
 name = "foldhash"
@@ -2547,6 +2582,32 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "7f24254aa9a54b5c858eaee2f5bccdb46aaf0e486a595ed5fd8f86ba55232a70"
 
 [[package]]
+name = "hot-lib-reloader"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eda706fdb8bcf5279ce95754dd86a23eab0a81ad2823d5402c2e10a4dd3283c2"
+dependencies = [
+ "crc32fast",
+ "hot-lib-reloader-macro",
+ "libloading 0.8.9",
+ "log",
+ "notify 6.1.1",
+ "notify-debouncer-full",
+ "thiserror 1.0.69",
+]
+
+[[package]]
+name = "hot-lib-reloader-macro"
+version = "0.7.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "f01c6c25eabdd8e2de50ccdb7e13186ba2ac0f69ebd8bd5f96ae235414180800"
+dependencies = [
+ "proc-macro2",
+ "quote",
+ "syn 1.0.109",
+]
+
+[[package]]
 name = "htmlparser"
 version = "0.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2663,6 +2724,7 @@ dependencies = [
  "glutin",
  "i-slint-common",
  "i-slint-core",
+ "i-slint-renderer-femtovg",
  "i-slint-renderer-skia",
  "input",
  "memmap2",
@@ -2697,6 +2759,7 @@ dependencies = [
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
+ "i-slint-renderer-femtovg",
  "i-slint-renderer-skia",
 ]
 
@@ -2717,6 +2780,7 @@ dependencies = [
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
+ "i-slint-renderer-femtovg",
  "i-slint-renderer-skia",
  "lyon_path",
  "muda 0.18.0",
@@ -2841,6 +2905,28 @@ dependencies = [
  "quote",
  "serde_json",
  "syn 2.0.117",
+]
+
+[[package]]
+name = "i-slint-renderer-femtovg"
+version = "1.16.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "72b28a8f0a7a777e670fbe2af6cbcec4935c37335bc0dab100f73bdc197dfa3a"
+dependencies = [
+ "cfg-if",
+ "const-field-offset",
+ "derive_more",
+ "femtovg",
+ "glow",
+ "i-slint-common",
+ "i-slint-core",
+ "i-slint-core-macros",
+ "imgref",
+ "lyon_path",
+ "pin-weak",
+ "rgb",
+ "wasm-bindgen",
+ "web-sys",
 ]
 
 [[package]]
@@ -3112,6 +3198,12 @@ name = "imagesize"
 version = "0.14.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "09e54e57b4c48b40f7aec75635392b12b3421fa26fe8b4332e63138ed278459c"
+
+[[package]]
+name = "imgref"
+version = "1.12.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "89194689a993ab15268672e99e7b0e19da2da3268ac682e8f02d29d4d1434cd7"
 
 [[package]]
 name = "indexmap"
@@ -4031,6 +4123,20 @@ dependencies = [
  "notify-types",
  "walkdir",
  "windows-sys 0.60.2",
+]
+
+[[package]]
+name = "notify-debouncer-full"
+version = "0.3.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "fb7fd166739789c9ff169e654dc1501373db9d80a4c3f972817c8a4d7cf8f34e"
+dependencies = [
+ "crossbeam-channel",
+ "file-id",
+ "log",
+ "notify 6.1.1",
+ "parking_lot",
+ "walkdir",
 ]
 
 [[package]]
@@ -5941,6 +6047,7 @@ dependencies = [
  "i-slint-common",
  "i-slint-core",
  "i-slint-core-macros",
+ "i-slint-renderer-femtovg",
  "i-slint-renderer-software",
  "num-traits",
  "once_cell",
@@ -6396,6 +6503,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "72b64191b275b66ffe2469e8af2c1cfe3bafa67b529ead792a6d0160888b4237"
 dependencies = [
  "proc-macro2",
+ "quote",
  "unicode-ident",
 ]
 
@@ -7061,6 +7169,7 @@ dependencies = [
  "chrono",
  "dark-light",
  "embed-resource",
+ "hot-lib-reloader",
  "image",
  "kamadak-exif",
  "libc",
@@ -7075,7 +7184,6 @@ dependencies = [
  "serde_json",
  "sha2",
  "slint",
- "slint-build",
  "souvlaki",
  "sqlx",
  "tikv-jemallocator",
@@ -7085,12 +7193,20 @@ dependencies = [
  "tulipix-ai",
  "tulipix-books",
  "tulipix-cloud",
+ "tulipix-common",
  "tulipix-core",
+ "tulipix-hot",
  "tulipix-music",
  "tulipix-photos",
  "tulipix-platform",
  "tulipix-player",
  "tulipix-plugins",
+ "tulipix-sec-music",
+ "tulipix-sec-photos",
+ "tulipix-sec-tools",
+ "tulipix-sec-videos",
+ "tulipix-tools",
+ "tulipix-ui",
  "tulipix-videos",
  "tulipix-whisper",
  "walkdir",
@@ -7140,6 +7256,29 @@ dependencies = [
 ]
 
 [[package]]
+name = "tulipix-common"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "image",
+ "libc",
+ "serde_json",
+ "slint",
+ "souvlaki",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tulipix-books",
+ "tulipix-cloud",
+ "tulipix-core",
+ "tulipix-music",
+ "tulipix-photos",
+ "tulipix-tools",
+ "tulipix-videos",
+]
+
+[[package]]
 name = "tulipix-core"
 version = "0.3.0"
 dependencies = [
@@ -7157,6 +7296,15 @@ dependencies = [
  "toml 0.8.2",
  "tracing",
  "walkdir",
+]
+
+[[package]]
+name = "tulipix-hot"
+version = "0.3.0"
+dependencies = [
+ "slint",
+ "tulipix-sec-tools",
+ "tulipix-ui",
 ]
 
 [[package]]
@@ -7242,6 +7390,81 @@ dependencies = [
 ]
 
 [[package]]
+name = "tulipix-sec-music"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "image",
+ "reqwest",
+ "rfd",
+ "serde",
+ "serde_json",
+ "sha2",
+ "slint",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tulipix-common",
+ "tulipix-core",
+ "tulipix-music",
+ "tulipix-ui",
+]
+
+[[package]]
+name = "tulipix-sec-photos"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "chrono",
+ "image",
+ "kamadak-exif",
+ "serde_json",
+ "slint",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tulipix-common",
+ "tulipix-core",
+ "tulipix-photos",
+ "tulipix-ui",
+]
+
+[[package]]
+name = "tulipix-sec-tools"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "rfd",
+ "serde_json",
+ "slint",
+ "sqlx",
+ "tokio",
+ "tulipix-common",
+ "tulipix-core",
+ "tulipix-platform",
+ "tulipix-tools",
+ "tulipix-ui",
+ "walkdir",
+]
+
+[[package]]
+name = "tulipix-sec-videos"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "sha2",
+ "slint",
+ "sqlx",
+ "tokio",
+ "tracing",
+ "tulipix-common",
+ "tulipix-core",
+ "tulipix-ui",
+ "tulipix-videos",
+]
+
+[[package]]
 name = "tulipix-tools"
 version = "0.3.0"
 dependencies = [
@@ -7254,6 +7477,14 @@ dependencies = [
  "tokio",
  "tracing",
  "tulipix-core",
+]
+
+[[package]]
+name = "tulipix-ui"
+version = "0.3.0"
+dependencies = [
+ "slint",
+ "slint-build",
 ]
 
 [[package]]

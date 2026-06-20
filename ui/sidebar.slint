@@ -87,6 +87,9 @@ component NavRow inherits Rectangle {
                 y: (parent.height - self.height) / 2;
             }
         }
+        // Title is icon-only at rest: the label fades in on hover (and stays
+        // up for the active row so you always know where you are). Layout space
+        // is reserved either way, so revealing it never reflows the row.
         if !root.collapsed: Text {
             text: label;
             color: active ? Theme.text : Theme.text-dim;
@@ -94,6 +97,8 @@ component NavRow inherits Rectangle {
             font-weight: active ? 600 : 500;
             vertical-alignment: center;
             horizontal-stretch: 1;
+            opacity: (active || touch.has-hover) ? 1.0 : 0.0;
+            animate opacity { duration: 160ms; easing: ease-out; }
         }
         // Trailing dot for visual rhythm; visible on active row only.
         if active && !root.collapsed: Rectangle {

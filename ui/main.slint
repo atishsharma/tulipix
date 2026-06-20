@@ -15,7 +15,7 @@ import { MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, Me
 import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow, AuthorRow, CollectionRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry } from "page_cloud.slint";
-import { ToolsPage, ToolOpRow } from "page_tools.slint";
+import { ToolsPage, ToolOpRow, ToolField, QueueJob, ToolStatus, DownloadItem, ToolInfoRow, ToolDiffRow, TrimSeg } from "page_tools.slint";
 import { ThemePicker, ThemeChoice } from "theme_picker.slint";
 import { UserState } from "user_card.slint";
 import { Mode } from "mode_pill.slint";
@@ -686,9 +686,54 @@ export component MainWindow inherits Window {
     in property <string> tools-cat-icon: "";
     in property <[ToolOpRow]> tools-op-rows: [];
     in property <string> tools-queue-status: "Idle";
+    // Active tool's inline detail-panel form + queue model.
+    in property <[ToolField]> tools-fields: [];
+    in property <string> tools-active-op: "";
+    in property <string> tools-active-label: "";
+    in property <string> tools-active-info: "";
+    in property <string> tools-log: "";              // live CLI output of the running tool
+    in property <string> tools-error: "";
+    in property <[QueueJob]> queue-jobs: [];
+    in property <[ToolStatus]> tool-statuses: [];
+    in property <[DownloadItem]> tools-downloads: [];
+    in-out property <int> tools-worker-slots: 2;
+    // Rich result popup (mediainfo / folder-diff) backing state.
+    in property <bool> tools-result-open: false;
+    in property <string> tools-result-kind: "";
+    in property <string> tools-result-title: "";
+    in property <[ToolInfoRow]> tools-result-info: [];
+    in property <[ToolDiffRow]> tools-result-diff: [];
+    // Trim timeline editor backing state.
+    in property <bool> tools-trim-open: false;
+    in property <string> tools-trim-path: "";
+    in property <float> tools-trim-duration: 0;
+    in property <image> tools-trim-filmstrip;
+    in property <image> tools-trim-waveform;
+    in property <[TrimSeg]> tools-trim-segments: [];
+    in property <string> tools-trim-status: "";
+    in-out property <float> tools-trim-playhead: 0;
     callback tools-set-category(string);
     callback tools-search(string);
     callback tools-open(string);
+    callback tools-field-set(string, string);
+    callback tools-field-pick(string);
+    callback tools-run();
+    callback tools-reset();
+    callback tools-close();
+    callback queue-action(int, string);
+    callback tools-set-workers(int);
+    callback tools-update-tool(string);
+    callback tools-list-downloads();
+    callback tools-open-download(string);
+    callback tools-remove-download(string);
+    callback tools-clear-console();
+    callback tools-result(int);
+    callback tools-result-close();
+    callback tools-trim-editor();
+    callback tools-trim-add-seg(float, float);
+    callback tools-trim-del-seg(int);
+    callback tools-trim-join();
+    callback tools-trim-close();
     in-out property <string> default-cadence: "daily";
 
     // Scan progress (one row per section currently scanning).
@@ -943,12 +988,16 @@ export component MainWindow inherits Window {
     in-out property <bool> music-exclusive: false;
     in-out property <bool> music-gapless: true;
     in-out property <bool> music-home-connect: false;
+    in-out property <bool> music-yt-home-connect: true;
+    in-out property <bool> music-mini-outline: true;
     in-out property <float> music-crossfade: 0;
     in-out property <string> music-replaygain: "off";
     callback music-set-device(string);
     callback music-toggle-exclusive();
     callback music-toggle-gapless();
     callback music-toggle-home-connect();
+    callback music-toggle-yt-home-connect();
+    callback music-toggle-mini-outline();
     callback music-set-crossfade(float);
     callback music-set-replaygain(string);
     callback music-rg-scan(); // np.p5.music.replaygain loudness scan
@@ -1098,6 +1147,7 @@ export component MainWindow inherits Window {
     in-out property <bool> music-yt-now-video: false;
     callback music-yt-watch-current();
     callback music-yt-clear-subs();
+    callback music-yt-refresh-subs();
     callback music-yt-play-resolution(string, int);
     in-out property <int> music-yt-default-res: -999;
     callback music-yt-set-default-res(int);
@@ -1867,6 +1917,8 @@ export component MainWindow inherits Window {
                 devices: root.music-devices; device <=> root.music-device; exclusive <=> root.music-exclusive;
                 gapless <=> root.music-gapless; crossfade <=> root.music-crossfade; replaygain <=> root.music-replaygain;
                 home-connect <=> root.music-home-connect; toggle-home-connect => { root.music-toggle-home-connect(); }
+                yt-home-connect <=> root.music-yt-home-connect; toggle-yt-home-connect => { root.music-toggle-yt-home-connect(); }
+                mini-outline <=> root.music-mini-outline; toggle-mini-outline => { root.music-toggle-mini-outline(); }
                 set-device(d) => { root.music-set-device(d); } toggle-exclusive => { root.music-toggle-exclusive(); }
                 toggle-gapless => { root.music-toggle-gapless(); } set-crossfade(v) => { root.music-set-crossfade(v); }
                 set-replaygain(r) => { root.music-set-replaygain(r); }
@@ -1974,6 +2026,7 @@ export component MainWindow inherits Window {
                 yt-sub-confirm-channelpage <=> root.music-yt-sub-confirm-channelpage;
                 yt-sub-confirm-yes() => { root.music-yt-sub-confirm-yes(); }
                 yt-clear-subs() => { root.music-yt-clear-subs(); }
+                yt-refresh-subs() => { root.music-yt-refresh-subs(); }
                 yt-play-resolution(id, h) => { root.music-yt-play-resolution(id, h); }
                 yt-search(q) => { root.music-yt-search(q); }
                 yt-search-more() => { root.music-yt-search-more(); }
@@ -2184,9 +2237,51 @@ export component MainWindow inherits Window {
                 cat-icon: root.tools-cat-icon;
                 op-rows: root.tools-op-rows;
                 queue-status: root.tools-queue-status;
+                fields: root.tools-fields;
+                active-op: root.tools-active-op;
+                active-label: root.tools-active-label;
+                active-info: root.tools-active-info;
+                log: root.tools-log;
+                error: root.tools-error;
+                queue-jobs: root.queue-jobs;
+                tool-statuses: root.tool-statuses;
+                downloads: root.tools-downloads;
+                worker-slots <=> root.tools-worker-slots;
                 set-category(c) => { root.tools-set-category(c); }
                 search(q) => { root.tools-search(q); }
                 open-tool(t) => { root.tools-open(t); }
+                field-set(k, v) => { root.tools-field-set(k, v); }
+                field-pick(k) => { root.tools-field-pick(k); }
+                run() => { root.tools-run(); }
+                reset() => { root.tools-reset(); }
+                close-detail() => { root.tools-close(); }
+                queue-action(i, a) => { root.queue-action(i, a); }
+                set-workers(n) => { root.tools-set-workers(n); }
+                update-tool(n) => { root.tools-update-tool(n); }
+                list-downloads() => { root.tools-list-downloads(); }
+                open-download(p) => { root.tools-open-download(p); }
+                remove-download(p) => { root.tools-remove-download(p); }
+                clear-console() => { root.tools-clear-console(); }
+                result-open: root.tools-result-open;
+                result-kind: root.tools-result-kind;
+                result-title: root.tools-result-title;
+                result-info: root.tools-result-info;
+                result-diff: root.tools-result-diff;
+                result(i) => { root.tools-result(i); }
+                result-close() => { root.tools-result-close(); }
+                trim-open: root.tools-trim-open;
+                trim-path: root.tools-trim-path;
+                trim-duration: root.tools-trim-duration;
+                trim-filmstrip: root.tools-trim-filmstrip;
+                trim-waveform: root.tools-trim-waveform;
+                trim-segments: root.tools-trim-segments;
+                trim-status: root.tools-trim-status;
+                trim-playhead <=> root.tools-trim-playhead;
+                trim-editor() => { root.tools-trim-editor(); }
+                trim-add-seg(s, e) => { root.tools-trim-add-seg(s, e); }
+                trim-del-seg(i) => { root.tools-trim-del-seg(i); }
+                trim-join() => { root.tools-trim-join(); }
+                trim-close() => { root.tools-trim-close(); }
             }
             if active-section == "settings": SettingsPage {
                 width: parent.width; height: parent.height;
@@ -2337,6 +2432,7 @@ export component MainWindow inherits Window {
         // Music mode — full music mini player (vinyl / queue / lyrics).
         if root.music-player-mode != "podcast": MusicMini {
             width: 100%; height: 100%;
+            bold-outline: root.music-mini-outline;
             uiscale: root.music-mini-scale;
             art: root.music-np-art; accent: root.music-np-accent; title: root.music-np-title; sub: root.music-np-sub; album: root.music-np-album; playing: root.music-playing;
             pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
@@ -2357,6 +2453,7 @@ export component MainWindow inherits Window {
         // Podcast mode — spoken-word tuned player (-15s / +30s / speed / notes).
         if root.music-player-mode == "podcast": PodcastMini {
             width: 100%; height: 100%;
+            bold-outline: root.music-mini-outline;
             uiscale: root.music-mini-scale;
             art: root.music-np-art; accent: root.music-np-accent; title: root.music-np-title; sub: root.music-np-sub; playing: root.music-playing;
             pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;

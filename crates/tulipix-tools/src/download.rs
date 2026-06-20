@@ -32,6 +32,9 @@ impl DownloadSpec {
     pub fn args(&self) -> Vec<String> {
         let mut a = vec!["-f".into(), self.format_selector(), "-o".into(), self.out_template.clone()];
         if self.audio_only { a.extend(["-x".into(), "--audio-format".into(), "opus".into()]); }
+        // Merge the separate bestvideo+bestaudio streams into a single mp4 and
+        // drop the fragments (yt-dlp deletes the parts after a successful merge).
+        else { a.extend(["--merge-output-format".into(), "mp4".into()]); }
         if self.embed_subs { a.extend(["--write-subs".into(), "--embed-subs".into()]); }
         if self.embed_thumbnail { a.push("--embed-thumbnail".into()); }
         if let Some(b) = &self.cookies_from { a.push("--cookies-from-browser".into()); a.push(b.clone()); }
