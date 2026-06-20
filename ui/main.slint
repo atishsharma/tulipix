@@ -709,6 +709,7 @@ export component MainWindow inherits Window {
     callback tools-update-tool(string);
     callback tools-list-downloads();
     callback tools-open-download(string);
+    callback tools-remove-download(string);
     in-out property <string> default-cadence: "daily";
 
     // Scan progress (one row per section currently scanning).
@@ -2234,6 +2235,7 @@ export component MainWindow inherits Window {
                 update-tool(n) => { root.tools-update-tool(n); }
                 list-downloads() => { root.tools-list-downloads(); }
                 open-download(p) => { root.tools-open-download(p); }
+                remove-download(p) => { root.tools-remove-download(p); }
             }
             if active-section == "settings": SettingsPage {
                 width: parent.width; height: parent.height;

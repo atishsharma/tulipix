@@ -269,7 +269,11 @@ async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::e
             // in-tool "Downloaded" list can find + open them.
             cmd.current_dir(tools_download_dir());
             cmd.arg("--newline");
-            if let Some(dir) = ff.parent() { cmd.arg("--ffmpeg-location").arg(dir); }
+            // Only pin --ffmpeg-location when ffmpeg is an absolute path (bundled
+            // / Tools dir). For a PATH ffmpeg, tool_bin returns the bare name and
+            // its parent is "" — passing that broke the merge (separate video +
+            // audio kept, no final file). Empty ⇒ let yt-dlp find ffmpeg on PATH.
+            if ff.is_absolute() { if let Some(dir) = ff.parent() { cmd.arg("--ffmpeg-location").arg(dir); } }
             cmd.args(&args);
             cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
             let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("yt-dlp not found ({e}) — set Tools directory in Settings"))?;
@@ -925,6 +929,15 @@ pub fn wire(window: &MainWindow) {
     window.on_tools_open_download(move |path| {
         let p = std::path::PathBuf::from(path.to_string());
         std::thread::spawn(move || { let _ = tulipix_platform::fm::open_default(&p); });
+    });
+    let w = window.as_weak();
+    window.on_tools_remove_download(move |path| {
+        let Some(w0) = w.upgrade() else { return; };
+        let _ = std::fs::remove_file(std::path::PathBuf::from(path.to_string()));
+        let rows: Vec<DownloadItem> = list_downloaded().into_iter()
+            .map(|(name, path, meta)| DownloadItem { name: name.into(), path: path.into(), meta: meta.into() })
+            .collect();
+        w0.set_tools_downloads(slint::ModelRc::new(slint::VecModel::from(rows)));
     });
     // Queue row actions + worker-slot slider.
     let w = window.as_weak();
