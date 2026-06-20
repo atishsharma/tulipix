@@ -59,6 +59,13 @@ impl DbHandle {
             .synchronous(SqliteSynchronous::Normal)
             .foreign_keys(true)
             .busy_timeout(std::time::Duration::from_secs(5))
+            // Read-path tuning: memory-mapped I/O + a larger page cache cut the
+            // syscalls/copies behind list queries (faster section loads), and
+            // temp tables/indexes for sorts stay in RAM. cache_size is negative
+            // = KiB (here ~16 MiB); mmap_size is bytes (256 MiB ceiling).
+            .pragma("mmap_size", "268435456")
+            .pragma("cache_size", "-16000")
+            .pragma("temp_store", "MEMORY")
             .create_if_missing(true);
         let pool = SqlitePoolOptions::new()
             .max_connections(8)
