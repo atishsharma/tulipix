@@ -53,6 +53,16 @@ pub async fn remove(pool: &SqlitePool, name: &str) -> Result<()> {
     Ok(())
 }
 
+/// cloud.db id for a remote name (None if not mirrored yet).
+pub async fn id_of(pool: &SqlitePool, name: &str) -> Result<Option<i64>> {
+    Ok(sqlx::query_scalar("SELECT id FROM remotes WHERE name = ?").bind(name).fetch_optional(pool).await?)
+}
+
+/// Remote name for a cloud.db id.
+pub async fn name_of(pool: &SqlitePool, id: i64) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar("SELECT name FROM remotes WHERE id = ?").bind(id).fetch_optional(pool).await?)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

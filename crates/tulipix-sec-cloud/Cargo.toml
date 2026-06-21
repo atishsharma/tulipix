@@ -1,0 +1,31 @@
+[package]
+name = "tulipix-sec-cloud"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Cloud-section wiring: rclone remote CRUD, the remote-tree browser, Sync &
+# Tools, upload/download with progress, mount/unmount, and every
+# `window.on_cloud_*` callback. tulipix-app calls `wire(&window)`.
+
+[features]
+# Forward live-reload to the UI crate so a dev-reload app build keeps the
+# generated UI types in sync (slint/live-preview swaps them out).
+dev-reload = ["tulipix-ui/dev-reload"]
+# Dev-only: lets `cargo check -p tulipix-sec-cloud` satisfy slint's winit
+# backend renderer requirement in isolation (the app normally selects it).
+_check = ["slint/renderer-skia", "slint/renderer-skia-opengl"]
+
+[dependencies]
+slint.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+tulipix-ui = { path = "../tulipix-ui" }
+tulipix-common = { path = "../tulipix-common" }
+tulipix-core = { path = "../tulipix-core" }
+tulipix-cloud = { path = "../tulipix-cloud" }
+tulipix-platform = { path = "../tulipix-platform" }
+tulipix-sec-photos = { path = "../tulipix-sec-photos" }

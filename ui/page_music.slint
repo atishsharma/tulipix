@@ -360,7 +360,7 @@ component SortChip inherits Rectangle {
     s := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 6px;
         if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: active ? #ec4899 : MusicTheme.fg2; width: 13px; height: 13px; } }
-        Text { text: label; color: active ? #ec4899 : MusicTheme.fg2; font-size: 12px; font-weight: active ? 700 : 500;
+        if root.label != "": Text { text: label; color: active ? #ec4899 : MusicTheme.fg2; font-size: 12px; font-weight: active ? 700 : 500;
             vertical-alignment: center; }
         if root.dir > 0: VerticalLayout { alignment: center; AppIcon { source: root.dir == 1 ? Icons.chevron-up : Icons.chevron-down; tint: active ? #ec4899 : MusicTheme.fg2; width: 12px; height: 12px; } }
     }
@@ -2492,19 +2492,56 @@ export component MusicPage inherits Rectangle {
                         dir: root.song-sort == "artist" ? (root.song-dir == "asc" ? 1 : 2) : 0; label: "Artist";
                         active: root.song-sort == "artist"; clicked => { root.set-song-sort("artist"); } } }
                     VerticalLayout { alignment: center; SortChip {
-                        icon: Icons.star-filled; dir: root.song-sort == "rating" ? (root.song-dir == "asc" ? 1 : 2) : 0; label: "Stars";
+                        icon: Icons.star-filled; dir: root.song-sort == "rating" ? (root.song-dir == "asc" ? 1 : 2) : 0;
                         active: root.song-sort == "rating"; clicked => { root.set-song-sort("rating"); } } }
-                    // Grid density slider (np.p4.music.grid-density) — 100→300px live re-flow.
+                    // Grid density (np.p4.music.grid-density) — a thumb-size button that
+                    // opens a vertical slider; the default-reset sits at the slider top.
                     VerticalLayout { alignment: center; Rectangle { width: 1px; height: 18px; background: MusicTheme.line; } }
-                    VerticalLayout { alignment: center; AppIcon { source: Icons.layout-grid; tint: MusicTheme.fg-mute; width: 11px; height: 11px; } }
-                    VerticalLayout { alignment: center; Scrubber {
-                        width: 90px; fill-color: #8b5cf6;
-                        value: Math.clamp(root.grid-density, 100, 300) - 100; maximum: 200;
-                        changed(v) => { root.grid-density = v + 100; root.set-grid-density(v + 100); } } }
-                    VerticalLayout { alignment: center; AppIcon { source: Icons.layout-grid; tint: MusicTheme.fg-mute; width: 15px; height: 15px; } }
-                    // Reset to the default cell size (200px — the slider midpoint).
-                    VerticalLayout { alignment: center; GlyphBtn { icon: Icons.rotate-ccw; size: 26px;
-                        clicked => { root.grid-density = 200; root.set-grid-density(200); } } }
+                    VerticalLayout { alignment: center;
+                        Rectangle {
+                            width: 30px; height: 30px; border-radius: 8px;
+                            // Solid fill + outline so it reads as a button at rest.
+                            background: tszta.has-hover ? MusicTheme.hov2 : MusicTheme.surf1;
+                            border-width: 1px; border-color: #8b5cf680;
+                            tszta := TouchArea { mouse-cursor: pointer; clicked => { tszpop.show(); } }
+                            AppIcon { source: Icons.layout-grid; tint: #8b5cf6; width: 15px; height: 15px;
+                                x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+                            // Slider drops directly from the button (just below it).
+                            tszpop := PopupWindow {
+                                x: -14px; y: 34px; width: 58px; height: 182px;
+                                Rectangle {
+                                    background: MusicTheme.surf-header2; border-radius: 14px;
+                                    border-width: 1px; border-color: MusicTheme.line;
+                                    drop-shadow-blur: 24px; drop-shadow-color: #00000066; drop-shadow-offset-y: 8px;
+                                    VerticalLayout {
+                                        padding: 10px; spacing: 10px; alignment: center;
+                                        // Default-size reset — at the TOP of the slider.
+                                        VerticalLayout { alignment: center; GlyphBtn { icon: Icons.rotate-ccw; size: 28px;
+                                            clicked => { root.grid-density = 200; root.set-grid-density(200); } } }
+                                        // Vertical thumb-size slider (drag up = bigger).
+                                        HorizontalLayout { alignment: center;
+                                            Rectangle {
+                                                width: 12px; height: 112px; border-radius: 6px; background: MusicTheme.hov2;
+                                                Rectangle {  // fill from the bottom
+                                                    width: parent.width; border-radius: 6px;
+                                                    height: parent.height * Math.clamp((root.grid-density - 100) / 200, 0.0, 1.0);
+                                                    y: parent.height - self.height;
+                                                    background: @linear-gradient(180deg, #8b5cf6 0%, #ec4899 100%);
+                                                }
+                                                Rectangle { width: 18px; height: 5px; border-radius: 2.5px; background: MusicTheme.fg;
+                                                    x: (parent.width - self.width)/2;
+                                                    y: parent.height * (1 - Math.clamp((root.grid-density - 100)/200, 0.0, 1.0)) - 2.5px; }
+                                                vslta := TouchArea { mouse-cursor: pointer; width: 100%; height: 100%;
+                                                    clicked => { root.grid-density = Math.clamp(300 - (self.mouse-y / self.height) * 200, 100, 300); root.set-grid-density(root.grid-density); }
+                                                    moved => { if (self.pressed) { root.grid-density = Math.clamp(300 - (self.mouse-y / self.height) * 200, 100, 300); root.set-grid-density(root.grid-density); } }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                     // Combined Tags + Lyrics manager — one fill pill, opens a
                     // two-tab popup (np.p5.atmusic.library-manager). Fill = mean
                     // of tag + lyrics coverage, auto-filled on load.
@@ -2536,7 +2573,7 @@ export component MusicPage inherits Rectangle {
                         active: root.browse-sort == "count"; clicked => { root.set-browse-sort("count"); } } }
                     // Rating sort — albums/artists thumbs.
                     if root.lib-tab == "albums" || root.lib-tab == "artists": VerticalLayout { alignment: center; SortChip {
-                        icon: Icons.star-filled; dir: root.browse-sort == "rating" ? (root.browse-dir == "asc" ? 1 : 2) : 0; label: "Stars";
+                        icon: Icons.star-filled; dir: root.browse-sort == "rating" ? (root.browse-dir == "asc" ? 1 : 2) : 0;
                         active: root.browse-sort == "rating"; clicked => { root.set-browse-sort("rating"); } } }
                     // Pagination — albums/artists only, docked at the right edge.
                     if (root.lib-tab == "albums" || root.lib-tab == "artists" || root.lib-tab == "genres") && root.browse-pages > 1: VerticalLayout { alignment: center; Rectangle { width: 10px; } }

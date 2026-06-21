@@ -1,1 +1,20 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3H5a2 2 0 0 0-2 2v14"/><path d="M16 3h3a2 2 0 0 1 2 2v3"/><path d="M21 14v5a2 2 0 0 1-2 2h-5"/><path d="M3 21 21 3"/></svg>
+<!--
+tags: [picture, photo, alter, change, height, width, resize, creative, artistic, visual]
+category: Design
+version: "1.39"
+unicode: "eecf"
+-->
+<svg
+  xmlns="http://www.w3.org/2000/svg"
+  width="24"
+  height="24"
+  viewBox="0 0 24 24"
+  fill="none"
+  stroke="currentColor"
+  stroke-width="2"
+  stroke-linecap="round"
+  stroke-linejoin="round"
+>
+  <path d="M4 11v8a1 1 0 0 0 1 1h8m-9 -14v-1a1 1 0 0 1 1 -1h1m5 0h2m5 0h1a1 1 0 0 1 1 1v1m0 5v2m0 5v1a1 1 0 0 1 -1 1h-1" />
+  <path d="M4 12h7a1 1 0 0 1 1 1v7" />
+</svg>

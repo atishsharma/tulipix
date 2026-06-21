@@ -46,7 +46,7 @@ run-dev:
       --setenv=SLINT_LIVE_PREVIEW=1 \
       --setenv=CARGO_TARGET_DIR=target-dev \
       nice -n 15 ionice -c3 \
-      cargo +nightly {{fast}} run -j 4 -p tulipix-app --features dev-reload
+      cargo +nightly {{fast}} run -j 1 -p tulipix-app --features dev-reload
 
 # Sub-2s error feedback loop: `bacon` runs `cargo check` on every save (no
 # codegen, no link, incremental) in the dev-reload feature set + target-dev dir,

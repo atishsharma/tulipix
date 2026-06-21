@@ -1,3 +1,9 @@
+<!--
+tags: [button, player, video, film, music, omit, skip, forward, content, entertainment]
+category: Media
+version: "1.28"
+unicode: "ed49"
+-->
 <svg
   xmlns="http://www.w3.org/2000/svg"
   width="24"
@@ -9,6 +15,6 @@
   stroke-linecap="round"
   stroke-linejoin="round"
 >
-  <path d="M21 4v16" />
-  <path d="M6.029 4.285A2 2 0 0 0 3 6v12a2 2 0 0 0 3.029 1.715l9.997-5.998a2 2 0 0 0 .003-3.432z" />
+  <path d="M4 5v14l12 -7l-12 -7" />
+  <path d="M20 5l0 14" />
 </svg>

@@ -33,6 +33,56 @@ pub fn mount_args(remote: &str, mount_path: &str, kind: FsKind) -> Vec<String> {
     a
 }
 
+/// `np.p5.cloud.mount-cache` — VFS cache mode for a mount.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VfsCache { Off, Minimal, Writes, Full }
+
+impl VfsCache {
+    pub fn as_str(self) -> &'static str {
+        match self { VfsCache::Off => "off", VfsCache::Minimal => "minimal", VfsCache::Writes => "writes", VfsCache::Full => "full" }
+    }
+    pub fn parse(s: &str) -> Option<VfsCache> {
+        Some(match s.trim().to_ascii_lowercase().as_str() {
+            "off" => VfsCache::Off, "minimal" => VfsCache::Minimal,
+            "writes" => VfsCache::Writes, "full" => VfsCache::Full, _ => return None,
+        })
+    }
+}
+
+/// `rclone mount` argv with an explicit VFS cache mode and a cache-cleanup
+/// max-age (`--vfs-cache-max-age`, e.g. "1h", "24h"; empty = rclone default).
+/// `mount_args` is the always-full convenience wrapper over this.
+pub fn mount_args_cached(remote: &str, mount_path: &str, kind: FsKind, cache: VfsCache, max_age: &str) -> Vec<String> {
+    let mut a = vec![
+        "mount".into(),
+        format!("{remote}:"),
+        mount_path.into(),
+        "--vfs-cache-mode".into(), cache.as_str().into(),
+        "--dir-cache-time".into(), "30s".into(),
+    ];
+    let ma = max_age.trim();
+    if cache != VfsCache::Off && !ma.is_empty() {
+        a.push("--vfs-cache-max-age".into()); a.push(ma.to_string());
+    }
+    if kind == FsKind::WinFsp { a.push("--network-mode".into()); }
+    a
+}
+
+/// Mounts flagged to auto-mount on app startup (`auto_remount = 1`).
+pub async fn startup_mounts(pool: &SqlitePool) -> Result<Vec<(i64, String)>> {
+    Ok(sqlx::query_as("SELECT remote_id, mount_path FROM mounts WHERE auto_remount = 1")
+        .fetch_all(pool).await?)
+}
+
+/// Toggle mount-on-startup for a remote (creates the row if missing).
+pub async fn set_auto(pool: &SqlitePool, remote_id: i64, mount_path: &str, kind: FsKind, auto: bool) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO mounts (remote_id, mount_path, fs_kind, auto_remount, status) VALUES (?,?,?,?,'unmounted')
+         ON CONFLICT(remote_id) DO UPDATE SET auto_remount = excluded.auto_remount",
+    ).bind(remote_id).bind(mount_path).bind(kind.as_str()).bind(auto as i64).execute(pool).await?;
+    Ok(())
+}
+
 /// Backoff (seconds) for the Nth consecutive remount attempt: 2^n capped at 60.
 pub fn remount_backoff_s(attempt: u32) -> u64 {
     (1u64 << attempt.min(6)).min(60)
@@ -74,6 +124,28 @@ mod tests {
         assert_eq!(remount_backoff_s(3), 8);
         assert_eq!(remount_backoff_s(20), 60); // capped
         assert_eq!(FsKind::for_os("windows"), FsKind::WinFsp);
+    }
+
+    #[test]
+    fn cached_argv_modes() {
+        let a = mount_args_cached("g", "/mnt", FsKind::Fuse, VfsCache::Writes, "1h");
+        assert!(a.windows(2).any(|w| w == ["--vfs-cache-mode", "writes"]));
+        assert!(a.windows(2).any(|w| w == ["--vfs-cache-max-age", "1h"]));
+        // off mode drops max-age
+        let b = mount_args_cached("g", "/mnt", FsKind::Fuse, VfsCache::Off, "1h");
+        assert!(b.windows(2).any(|w| w == ["--vfs-cache-mode", "off"]));
+        assert!(!b.iter().any(|s| s == "--vfs-cache-max-age"));
+        assert_eq!(VfsCache::parse("full"), Some(VfsCache::Full));
+    }
+
+    #[tokio::test]
+    async fn auto_startup_list() {
+        let (_t, pool) = open_pool().await;
+        let r = add_remote(&pool, "gdrive", "drive").await;
+        set_auto(&pool, r, "/mnt/g", FsKind::Fuse, true).await.unwrap();
+        assert_eq!(startup_mounts(&pool).await.unwrap(), vec![(r, "/mnt/g".to_string())]);
+        set_auto(&pool, r, "/mnt/g", FsKind::Fuse, false).await.unwrap();
+        assert!(startup_mounts(&pool).await.unwrap().is_empty());
     }
 
     #[tokio::test]

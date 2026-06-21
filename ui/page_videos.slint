@@ -344,6 +344,11 @@ export component VideosPage inherits Rectangle {
             HorizontalLayout {
                 padding-left: 28px; padding-right: 28px; spacing: 12px;
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Rectangle { width: 34px; height: 34px; border-radius: 10px;
+                        background: #e5a00d.with-alpha(0.18);
+                        AppIcon { source: Icons.film; tint: #e5a00d; width: 18px; height: 18px;
+                            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
                     Text { text: "Videos"; color: #ffffff; font-size: 22px; font-weight: 700; } }
 
                 // Top-level kind tabs (before the search, per request).
