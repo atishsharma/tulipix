@@ -346,6 +346,11 @@ export component ToolsPage inherits Rectangle {
             HorizontalLayout {
                 padding-left: 28px; padding-right: 28px; spacing: 14px;
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Rectangle { width: 34px; height: 34px; border-radius: 10px;
+                        background: root.accent.with-alpha(0.16);
+                        AppIcon { source: Icons.wrench; tint: root.accent; width: 18px; height: 18px;
+                            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
                     Text { text: "Tools"; color: Theme.text; font-size: 22px; font-weight: 700; } }
                 Rectangle { horizontal-stretch: 1; }
                 // Universal parallel-worker cap (applies to every tool's queue).

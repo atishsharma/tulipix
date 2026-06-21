@@ -78,6 +78,28 @@ CREATE TABLE IF NOT EXISTS uploads (
     bytes_done  INTEGER NOT NULL DEFAULT 0,
     state       TEXT    NOT NULL DEFAULT 'queued'  -- 'queued' | 'running' | 'done' | 'error'
 );
+
+-- np.p5.cloud.schedule — saved sync jobs the core scheduler polls.
+CREATE TABLE IF NOT EXISTS sync_jobs (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    src        TEXT    NOT NULL,
+    dst        TEXT    NOT NULL,
+    direction  TEXT    NOT NULL DEFAULT 'oneway',  -- 'oneway' | 'bisync'
+    bwlimit    TEXT,
+    interval_s INTEGER NOT NULL DEFAULT 0,         -- 0 = manual only
+    last_run   INTEGER NOT NULL DEFAULT 0,
+    enabled    INTEGER NOT NULL DEFAULT 1
+);
+
+-- np.p5.cloud.quota — transfer history for the usage dashboard.
+CREATE TABLE IF NOT EXISTS transfer_log (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    kind    TEXT    NOT NULL,   -- 'sync' | 'copy' | 'move' | 'verify' | 'dedupe' | 'import'
+    detail  TEXT    NOT NULL,
+    ok      INTEGER NOT NULL,
+    at      INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS transfer_log_time_idx ON transfer_log(at DESC);
 "#;
 
 pub async fn apply(pool: &SqlitePool) -> Result<()> {

@@ -44,6 +44,22 @@ export global Theme {
     out property <color> tools-accent:   #06b6d4; // cyan
     out property <color> tools-accent-2: #0ea5e9; // sky
 
+    // --- Neutral surface ramp ---
+    // Sections whose light identity is the Google-neutral white/grey palette
+    // (Photos, Cloud explorer) follow the app light/dark via these. Light
+    // values reproduce the original hardcoded Google-Photos greys exactly so
+    // light mode is unchanged; dark values give a clean neutral dark surface.
+    out property <color> n-canvas:      dark ? #141518 : #ffffff;
+    out property <color> n-card:        dark ? #1b1d22 : #f8f9fa;
+    out property <color> n-chip:        dark ? #26282e : #f1f3f4;
+    out property <color> n-tile:        dark ? #2a2d33 : #e8eaed;
+    out property <color> n-hover:       dark ? #2f3239 : #f1f3f4;
+    out property <color> n-hair:        dark ? #33363d : #e8eaed;
+    out property <color> n-ink:         dark ? #e8eaed : #202124;
+    out property <color> n-ink2:        dark ? #9aa0a6 : #5f6368;
+    out property <color> n-ink3:        dark ? #bdc1c6 : #3c4043;
+    out property <color> n-accent-soft: dark ? #1a2740 : #e8f0fe;
+
     // --- Status ---
     out property <color> ok:    #16a34a;
     out property <color> warn:  #f59e0b;

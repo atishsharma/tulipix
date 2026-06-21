@@ -7201,6 +7201,7 @@ dependencies = [
  "tulipix-platform",
  "tulipix-player",
  "tulipix-plugins",
+ "tulipix-sec-cloud",
  "tulipix-sec-music",
  "tulipix-sec-photos",
  "tulipix-sec-tools",
@@ -7387,6 +7388,23 @@ dependencies = [
  "thiserror 1.0.69",
  "tracing",
  "wasmtime",
+]
+
+[[package]]
+name = "tulipix-sec-cloud"
+version = "0.3.0"
+dependencies = [
+ "anyhow",
+ "rfd",
+ "slint",
+ "tokio",
+ "tracing",
+ "tulipix-cloud",
+ "tulipix-common",
+ "tulipix-core",
+ "tulipix-platform",
+ "tulipix-sec-photos",
+ "tulipix-ui",
 ]
 
 [[package]]

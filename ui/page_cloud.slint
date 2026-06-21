@@ -1,54 +1,351 @@
-// Cloud section — OneDrive language: light canvas, blue accent. Left rail lists
-// connected rclone remotes; main pane is a lazy remote-tree file table with a
-// breadcrumb. A modal connects a new remote via `rclone config create`.
-import { ScrollView, LineEdit, TextEdit } from "std-widgets.slint";
-import { HdrChip, HdrSearch, CountPill } from "section_header.slint";
+// Cloud section — "Aurora Teal" identity (sky→teal gradient) that now follows
+// the app light/dark theme. Left rail lists rclone remotes (green dot = mounted);
+// the main pane is a lazy remote-tree browser (list or thumb grid). "Sync &
+// Tools" swaps the pane for a full tabbed workspace. Modals connect / encrypt /
+// mount / upload, and confirm remote removal + unmount.
+import { TextEdit } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
+import { Theme } from "tokens.slint";
 
-export struct CloudRemote { name: string, backend: string }
-export struct CloudEntry { name: string, is_dir: bool, size: string, modified: string, index: int }
+export struct CloudRemote { name: string, backend: string, mounted: bool }
+// `kind`: folder | image | video | audio | doc | archive | file (for thumb tiles)
+export struct CloudEntry { name: string, is_dir: bool, size: string, modified: string, index: int, kind: string }
+export struct CloudJob { id: int, label: string, schedule: string, enabled: bool }
+export struct CloudUsage { remote: string, used: string, total: string, fraction: float, has_quota: bool }
+export struct CloudXfer { id: int, kind: string, detail: string, ok: bool, when: string }
 
-component CmdButton inherits Rectangle {
+// ── Aurora Teal design kit (theme-aware) ───────────────────────────────────
+
+component GradButton inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
     in property <bool> primary: false;
+    in property <bool> danger: false;
     callback clicked();
-    height: 34px; min-width: 96px;
+    property <bool> dk: Theme.dark;
+    height: 40px; min-width: 92px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 4px;
-    background: primary ? #0078d4 : (touch.has-hover ? #eef6fc : transparent);
+    border-radius: 12px;
+    background: primary
+        ? (danger ? @linear-gradient(120deg, #fb7185, #e11d48) : @linear-gradient(120deg, #0ea5e9, #14b8a6))
+        : (ta.has-hover ? (dk ? #20304a : #eaf0f4) : (dk ? #16223a : #ffffff));
     border-width: primary ? 0px : 1px;
-    border-color: #d2d0ce;
-    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    Text { text: label; font-size: 13px; font-weight: 600;
-        color: primary ? #ffffff : #0078d4;
-        horizontal-alignment: center; vertical-alignment: center; }
+    border-color: danger ? (dk ? #7f1d2e : #fecdd3) : (dk ? #2a3a54 : #d9e1e8);
+    drop-shadow-blur: primary ? 16px : 0px;
+    drop-shadow-color: primary ? (danger ? #e11d4866 : #0d948866) : #00000000;
+    drop-shadow-offset-y: primary ? 5px : 0px;
+    animate background { duration: 140ms; easing: ease-out; }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        alignment: center; spacing: 7px; padding-left: 14px; padding-right: 14px;
+        if root.icon.width > 0: VerticalLayout { alignment: center;
+            AppIcon { source: root.icon; tint: primary ? #ffffff : (danger ? #fb7185 : (dk ? #5eead4 : #0d9488)); width: 16px; height: 16px; } }
+        if root.label != "": Text { text: root.label; font-size: 13px; font-weight: 700;
+            color: primary ? #ffffff : (danger ? (dk ? #fda4af : #be123c) : (dk ? #e8eef6 : #0f172a)); vertical-alignment: center; }
+    }
+}
+
+component Pill inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> active: false;
+    callback clicked();
+    property <bool> dk: Theme.dark;
+    height: 38px; min-width: 84px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: self.height / 2;
+    background: active ? @linear-gradient(120deg, #0ea5e9, #14b8a6) : (ta.has-hover ? (dk ? #20304a : #e3ebf0) : (dk ? #16223a : #eef3f6));
+    drop-shadow-blur: active ? 12px : 0px;
+    drop-shadow-color: active ? #0d948855 : #00000000;
+    drop-shadow-offset-y: active ? 4px : 0px;
+    animate background { duration: 140ms; easing: ease-out; }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        alignment: center; spacing: 7px; padding-left: 14px; padding-right: 14px;
+        if root.icon.width > 0: VerticalLayout { alignment: center;
+            AppIcon { source: root.icon; tint: active ? #ffffff : (dk ? #a7b6c8 : #51606e); width: 15px; height: 15px; } }
+        if root.label != "": Text { text: root.label; font-size: 13px; font-weight: 700;
+            color: active ? #ffffff : (dk ? #a7b6c8 : #51606e); vertical-alignment: center; }
+    }
+}
+
+// Pill that shows an indeterminate sliding progress bar while `busy`.
+component BusyPill inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> busy: false;
+    callback clicked();
+    property <bool> dk: Theme.dark;
+    height: 40px; min-width: 84px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: self.height / 2; clip: true;
+    background: busy ? (dk ? #16223a : #e6f6f3) : (ta.has-hover ? (dk ? #20304a : #eaf0f4) : (dk ? #16223a : #ffffff));
+    border-width: 1px; border-color: dk ? #2a3a54 : #d9e1e8;
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        alignment: center; spacing: 7px; padding-left: 14px; padding-right: 14px;
+        if root.icon.width > 0: VerticalLayout { alignment: center;
+            AppIcon { source: root.icon; tint: dk ? #5eead4 : #0d9488; width: 16px; height: 16px; } }
+        if root.label != "": Text { text: root.busy ? "Refreshing…" : root.label; font-size: 13px; font-weight: 700;
+            color: dk ? #e8eef6 : #0f172a; vertical-alignment: center; }
+    }
+    if busy: Rectangle {
+        x: 0; y: parent.height - 3px; width: 100%; height: 3px; clip: true;
+        Rectangle { height: 100%; width: parent.width * 0.4; border-radius: 1.5px;
+            background: @linear-gradient(90deg, #0ea5e9, #14b8a6);
+            x: -0.4 * parent.width + Math.mod(animation-tick() / 1ms, 1300) / 1300 * (parent.width * 1.4);
+        }
+    }
+}
+
+component IconBtn inherits Rectangle {
+    in property <image> icon;
+    in property <bool> active: false;
+    callback clicked();
+    property <bool> dk: Theme.dark;
+    width: 40px; height: 40px; border-radius: 12px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    background: active ? @linear-gradient(120deg, #0ea5e9, #14b8a6) : (ta.has-hover ? (dk ? #20304a : #eaf0f4) : (dk ? #16223a : #ffffff));
+    border-width: active ? 0px : 1px; border-color: dk ? #2a3a54 : #d9e1e8;
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    AppIcon { source: root.icon; tint: active ? #ffffff : (dk ? #5eead4 : #0d9488); width: 17px; height: 17px; }
 }
 
 component CtxItem inherits Rectangle {
     in property <string> label;
     in property <bool> danger: false;
     callback clicked();
-    height: 32px; horizontal-stretch: 1;
-    background: ci.has-hover ? (danger ? #fde7e9 : #eef6fc) : transparent;
+    property <bool> dk: Theme.dark;
+    height: 34px; horizontal-stretch: 1; border-radius: 7px;
+    background: ci.has-hover ? (danger ? (dk ? #3a1a22 : #ffe4e6) : (dk ? #20304a : #e8f7f3)) : transparent;
     ci := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
         padding-left: 12px; padding-right: 12px;
-        Text { text: root.label; color: root.danger ? #c50f1f : #1b1a19; font-size: 13px;
+        Text { text: root.label; color: root.danger ? (dk ? #fda4af : #be123c) : (dk ? #d7e0ea : #1e2a37); font-size: 13px;
             vertical-alignment: center; horizontal-stretch: 1; }
     }
+}
+
+// Labelled themed text field (custom input so dark mode reads correctly).
+component Field {
+    in property <string> label;
+    in property <string> placeholder;
+    in-out property <string> text;
+    callback edited(string);
+    property <bool> dk: Theme.dark;
+    VerticalLayout {
+        spacing: 5px;
+        Text { text: root.label; color: dk ? #9fb1c4 : #64748b; font-size: 11px; font-weight: 700; }
+        Rectangle {
+            height: 38px; border-radius: 10px; background: dk ? #0f1828 : #ffffff;
+            border-width: 1px; border-color: ti.has-focus ? #14b8a6 : (dk ? #2a3a54 : #d9e1e8);
+            clip: true;
+            HorizontalLayout {
+                padding-left: 12px; padding-right: 12px;
+                Rectangle { horizontal-stretch: 1; clip: true;
+                    ti := TextInput { width: 100%; height: 100%; text <=> root.text; color: dk ? #e8eef6 : #0f172a;
+                        font-size: 13px; vertical-alignment: center; single-line: true; edited => { root.edited(self.text); } }
+                    if root.text == "": Text { text: root.placeholder; color: dk ? #5d7d92 : #94a3b8; font-size: 13px;
+                        vertical-alignment: center; height: 100%; visible: !ti.has-focus; }
+                }
+            }
+        }
+    }
+}
+
+// Remote+path picker: a dropdown of connected remotes (or Local) + a path box.
+// Emits combined "remote:path" (or bare local path) via value-changed so the
+// user only types the directory and picks the remote from a list.
+component RemotePathField {
+    in property <[CloudRemote]> remotes;
+    in property <string> label;
+    in property <string> placeholder;
+    callback value-changed(string);
+    property <bool> dk: Theme.dark;
+    property <string> sel: "Local";
+    property <string> dir: "";
+    VerticalLayout {
+        spacing: 5px;
+        Text { text: root.label; color: dk ? #9fb1c4 : #64748b; font-size: 11px; font-weight: 700; }
+        HorizontalLayout {
+            spacing: 8px;
+            Rectangle {
+                width: 150px; height: 38px; border-radius: 10px;
+                background: dk ? #0f1828 : #ffffff; border-width: 1px; border-color: dk ? #2a3a54 : #d9e1e8;
+                HorizontalLayout {
+                    padding-left: 12px; padding-right: 10px; spacing: 6px;
+                    Text { text: root.sel; color: #14b8a6; font-size: 13px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                    Text { text: "▾"; color: dk ? #7a8ba0 : #94a3b8; font-size: 10px; vertical-alignment: center; }
+                }
+                ddta := TouchArea { mouse-cursor: pointer; clicked => { dpop.show(); } }
+                dpop := PopupWindow {
+                    x: 0; y: 42px; width: 190px;
+                    Rectangle {
+                        background: dk ? #141d2e : #ffffff; border-radius: 12px;
+                        border-width: 1px; border-color: dk ? #2a3a54 : #e6ebf0;
+                        drop-shadow-blur: 26px; drop-shadow-color: #00000088; drop-shadow-offset-y: 8px;
+                        VerticalLayout {
+                            padding: 6px; spacing: 1px;
+                            Rectangle { height: 32px; border-radius: 7px;
+                                background: loc.has-hover ? (dk ? #20304a : #e8f7f3) : transparent;
+                                loc := TouchArea { mouse-cursor: pointer; clicked => { root.sel = "Local"; root.value-changed(root.dir); } }
+                                HorizontalLayout { padding-left: 12px;
+                                    Text { text: "Local path"; color: dk ? #d7e0ea : #1e2a37; font-size: 13px; vertical-alignment: center; } }
+                            }
+                            for r[i] in root.remotes: Rectangle { height: 32px; border-radius: 7px;
+                                background: rmh.has-hover ? (dk ? #20304a : #e8f7f3) : transparent;
+                                rmh := TouchArea { mouse-cursor: pointer; clicked => { root.sel = r.name; root.value-changed(r.name + ":" + root.dir); } }
+                                HorizontalLayout { padding-left: 12px; spacing: 8px;
+                                    VerticalLayout { alignment: center; AppIcon { source: Icons.cloud; tint: #14b8a6; width: 14px; height: 14px; } }
+                                    Text { text: r.name; color: dk ? #d7e0ea : #1e2a37; font-size: 13px; vertical-alignment: center; } }
+                            }
+                        }
+                    }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1; height: 38px; border-radius: 10px;
+                background: dk ? #0f1828 : #ffffff; border-width: 1px; border-color: pin.has-focus ? #14b8a6 : (dk ? #2a3a54 : #d9e1e8);
+                HorizontalLayout {
+                    padding-left: 12px; padding-right: 12px;
+                    Rectangle { horizontal-stretch: 1; clip: true;
+                        pin := TextInput { width: 100%; height: 100%; text: root.dir; color: dk ? #e8eef6 : #0f172a;
+                            font-size: 13px; vertical-alignment: center; single-line: true;
+                            edited => { root.dir = self.text; root.value-changed(root.sel == "Local" ? self.text : (root.sel + ":" + self.text)); } }
+                        if root.dir == "": Text { text: root.placeholder; color: dk ? #5d7d92 : #94a3b8; font-size: 13px;
+                            vertical-alignment: center; height: 100%; visible: !pin.has-focus; }
+                    }
+                }
+            }
+        }
+    }
+}
+
+component CyclePill inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    callback clicked();
+    property <bool> dk: Theme.dark;
+    height: 38px; border-radius: 10px; border-width: 1px; border-color: dk ? #2a3a54 : #d9e1e8;
+    background: ta.has-hover ? (dk ? #20304a : #e8f7f3) : (dk ? #0f1828 : #ffffff);
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px; spacing: 6px;
+        Text { text: root.label; color: dk ? #7a8ba0 : #94a3b8; font-size: 11px; vertical-alignment: center; }
+        Text { text: root.value; color: #14b8a6; font-size: 13px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
+        Text { text: "▾"; color: dk ? #7a8ba0 : #94a3b8; font-size: 10px; vertical-alignment: center; }
+    }
+}
+
+component CheckRow inherits Rectangle {
+    in property <string> label;
+    in-out property <bool> checked;
+    callback toggled(bool);
+    property <bool> dk: Theme.dark;
+    height: 30px;
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.checked = !root.checked; root.toggled(root.checked); } }
+    HorizontalLayout {
+        spacing: 10px;
+        Rectangle {
+            width: 20px; height: 20px; border-radius: 6px; y: (parent.height - self.height)/2;
+            border-width: 1px; border-color: root.checked ? #14b8a6 : (dk ? #3a4a64 : #b6c2cd);
+            background: root.checked ? @linear-gradient(120deg, #0ea5e9, #14b8a6) : transparent;
+            Text { text: "✓"; color: #ffffff; font-size: 13px; font-weight: 700;
+                visible: root.checked; horizontal-alignment: center; vertical-alignment: center; }
+        }
+        Text { text: root.label; color: dk ? #d7e0ea : #1e2a37; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
+    }
+}
+
+component ToolCard inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    // Optional right-aligned action button on the title row (e.g. Refresh / Clear all).
+    in property <bool> has-action: false;
+    in property <string> action-label;
+    in property <image> action-icon;
+    in property <bool> action-danger: false;
+    callback action();
+    property <bool> dk: Theme.dark;
+    border-radius: 16px; background: dk ? #141d2e : #ffffff;
+    border-width: dk ? 1px : 0px; border-color: #243349;
+    drop-shadow-blur: 24px; drop-shadow-color: dk ? #00000055 : #1e293b14; drop-shadow-offset-y: 6px;
+    VerticalLayout {
+        padding: 20px; spacing: 14px;
+        HorizontalLayout { spacing: 12px;
+            VerticalLayout { spacing: 2px; horizontal-stretch: 1;
+                Text { text: root.title; color: dk ? #e8eef6 : #0f172a; font-size: 15px; font-weight: 700; }
+                if root.subtitle != "": Text { text: root.subtitle; color: dk ? #8a9bb0 : #94a3b8; font-size: 11px; }
+            }
+            if root.has-action: VerticalLayout { alignment: center; horizontal-stretch: 0;
+                GradButton { label: root.action-label; icon: root.action-icon; danger: root.action-danger;
+                    clicked => { root.action(); } } }
+        }
+        @children
+    }
+}
+
+// Reusable modal wrapper: dims the page, closes on Esc OR a click on the scrim
+// (outside the dialog). Default for every confirmation/dialog in this section —
+// place the dialog Rectangle as the single child; it auto-centres. Add a
+// `TouchArea {}` as the dialog's first child to keep clicks inside from closing.
+component ModalScrim inherits FocusScope {
+    callback close();
+    width: 100%; height: 100%;
+    init => { self.focus(); }
+    key-pressed(e) => { if (e.text == Key.Escape) { root.close(); return accept; } return reject; }
+    Rectangle {
+        background: #0f172a99;
+        TouchArea { clicked => { root.close(); } }
+        @children
+    }
+}
+
+// One recent-transfer row — status dot, kind, detail, time, retry + clear.
+// Reused by the Sync & Tools "Transfers" tab and the files-header popup.
+component XferRow inherits HorizontalLayout {
+    in property <CloudXfer> xfer;
+    callback retry();
+    callback clear();
+    property <bool> dk: Theme.dark;
+    spacing: 10px; height: 34px;
+    VerticalLayout { alignment: center;
+        Rectangle { width: 20px; height: 20px; border-radius: 10px;
+            background: xfer.ok ? (dk ? #0c3a2a : #d1fae5) : (dk ? #3a1a22 : #ffe4e6);
+            Text { text: xfer.ok ? "✓" : "✕"; color: xfer.ok ? #34d399 : #fb7185; font-size: 11px; font-weight: 700;
+                horizontal-alignment: center; vertical-alignment: center; } } }
+    Text { text: xfer.kind; color: #14b8a6; font-size: 12px; font-weight: 700; vertical-alignment: center; width: 64px; }
+    Text { text: xfer.detail; color: dk ? #9fb1c4 : #64748b; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+    Text { text: xfer.when; color: dk ? #708194 : #94a3b8; font-size: 11px; vertical-alignment: center; }
+    VerticalLayout { alignment: center;
+        Rectangle { width: 30px; height: 30px; border-radius: 9px;
+            background: rtb.has-hover ? (dk ? #1c2738 : #eaf0f4) : transparent;
+            rtb := TouchArea { mouse-cursor: pointer; clicked => { root.retry(); } }
+            AppIcon { source: Icons.refresh-cw; tint: #14b8a6; width: 14px; height: 14px; } } }
+    VerticalLayout { alignment: center;
+        Rectangle { width: 30px; height: 30px; border-radius: 9px;
+            background: xcb.has-hover ? (dk ? #3a1a22 : #ffe4e6) : transparent;
+            xcb := TouchArea { mouse-cursor: pointer; clicked => { root.clear(); } }
+            AppIcon { source: Icons.x; tint: #e11d48; width: 12px; height: 12px; } } }
 }
 
 export component CloudPage inherits Rectangle {
     in property <[CloudRemote]> remotes: [];
     in property <string> active-remote: "";
+    in property <bool> active-mounted: false;
     in property <string> path: "";
     in property <[CloudEntry]> entries: [];
-    // Right-click context menu state.
+    in property <bool> refreshing: false;
+    // Operation progress (upload / download).
+    in property <bool> op-active: false;
+    in property <string> op-label: "";
+    in property <float> op-frac: 0;
     in-out property <bool> ctx-open: false;
     in-out property <length> ctx-x: 0;
     in-out property <length> ctx-y: 0;
     in-out property <int> ctx-index: 0;
     in-out property <bool> ctx-is-dir: false;
+    in-out property <string> ctx-name: "";
     callback ctx-action(int, string);
     in-out property <string> query: "";
     in property <bool> rclone-ok: true;
@@ -58,171 +355,584 @@ export component CloudPage inherits Rectangle {
     in-out property <string> form-backend: "drive";
     in-out property <string> form-opts: "";
 
+    // Sync & Tools
+    in-out property <bool> tools-open: false;
+    in-out property <string> sync-src: "";
+    in-out property <string> sync-dst: "";
+    in-out property <string> sync-direction: "oneway";
+    in-out property <string> sync-conflict: "newer";
+    in-out property <string> sync-bwlimit: "";
+    in-out property <string> sync-transfers: "4";
+    in-out property <string> sync-includes: "";
+    in-out property <string> sync-excludes: "";
+    in-out property <string> sync-maxsize: "";
+    in-out property <string> sync-minage: "";
+    in-out property <string> sync-interval: "manual";
+    in property <[CloudJob]> jobs: [];
+    in-out property <string> copy-src: "";
+    in-out property <string> copy-dst: "";
+    in-out property <bool> copy-move: false;
+    in-out property <bool> copy-serverside: true;
+    in-out property <string> verify-src: "";
+    in-out property <string> verify-dst: "";
+    in-out property <string> dedupe-target: "";
+    in-out property <string> dedupe-mode: "newest";
+    in property <[CloudUsage]> usage-rows: [];
+    in property <[CloudXfer]> xfer-rows: [];
+    in-out property <bool> crypt-open: false;
+    in-out property <string> crypt-name: "";
+    in-out property <string> crypt-wrapped: "";
+    in-out property <string> crypt-pass: "";
+    in-out property <string> crypt-pass2: "";
+    in-out property <bool> mountopts-open: false;
+    in-out property <string> mountopts-remote: "";
+    in-out property <bool> mountopts-auto: false;
+    in-out property <string> mountopts-cache: "full";
+    in-out property <string> mountopts-maxage: "1h";
+    // Upload
+    in-out property <bool> upload-multi: true;
+
+    // Local UI state
+    property <string> tools-tab: "sync";
+    property <string> view: "list";
+    property <bool> confirm-open: false;
+    property <string> confirm-remote: "";
+    property <bool> unmount-confirm-open: false;
+    property <bool> upload-open: false;
+    // Delete-entry + transfer-clear confirmations.
+    property <bool> delete-confirm-open: false;
+    property <bool> xfer-clear-open: false;
+    property <int> xfer-clear-id: 0;
+    property <string> xfer-clear-detail: "";
+    property <bool> xfer-clearall-open: false;
+    property <bool> xfer-popup-open: false;
+
+    callback tools-toggle();
+    callback run-sync();
+    callback save-job();
+    callback job-toggle(int);
+    callback job-delete(int);
+    callback job-run(int);
+    callback run-copy();
+    callback run-verify();
+    callback run-dedupe();
+    callback refresh-usage();
+    callback reload-xfers();
+    callback crypt-open-dialog();
+    callback crypt-submit();
+    callback crypt-cancel();
+    callback mountopts-open-dialog(string);
+    callback mountopts-submit();
+    callback mountopts-cancel();
+    callback unmount-remote(string);
+    callback upload-pick(string);   // "files" | "folder"
+
     callback refresh();
     callback connect-open-dialog();
     callback connect-submit();
     callback connect-cancel();
     callback remote-open(string);
+    callback go-home();
     callback remote-delete(string);
     callback entry-activate(int);
     callback browse-up();
     callback search(string);
+    callback search-deep();
+    callback xfer-retry(int);
+    callback xfer-clear(int);
+    callback xfer-clear-all();
 
-    // OneDrive blue — shared so header chips stay on-theme.
-    property <color> accent: #0078d4;
+    // Theme-aware palette.
+    property <bool> dk: Theme.dark;
+    property <color> canvas: dk ? #0b1220 : #f4f7f9;
+    property <color> surf:   dk ? #141d2e : #ffffff;
+    property <color> surf2:  dk ? #0f1828 : #eef2f5;
+    property <color> ink:    dk ? #e8eef6 : #0f172a;
+    property <color> ink2:   dk ? #9fb1c4 : #64748b;
+    property <color> ink3:   dk ? #708194 : #94a3b8;
+    property <color> hair:   dk ? #202b3d : #e6ebf0;
+    property <color> field:  dk ? #0f1828 : #eef3f6;
+    property <color> hover:  dk ? #1c2738 : #eaf0f4;
 
-    background: #faf9f8;
+    pure function kind-icon(k: string) -> image {
+        return k == "folder" ? Icons.folder
+        : k == "image" ? Icons.image
+        : k == "video" ? Icons.film
+        : k == "audio" ? Icons.music
+        : k == "archive" ? Icons.archive
+        : Icons.file-text;
+    }
+    pure function kind-tint(k: string) -> color {
+        return k == "folder" ? #14b8a6
+        : k == "image" ? #8b5cf6
+        : k == "video" ? #6366f1
+        : k == "audio" ? #ec4899
+        : k == "archive" ? #f59e0b
+        : #64748b;
+    }
+
+    background: canvas;
 
     VerticalLayout {
         spacing: 0px;
 
-        // Row 1 — title · filter · refresh · connect · count pill.
+        // ── Row 1 — aurora header ──
         Rectangle {
-            height: 72px; horizontal-stretch: 1; background: #ffffff;
-            border-width: 1px; border-color: #edebe9;
+            height: 78px; horizontal-stretch: 1; background: surf;
+            Rectangle { x: 0; y: 0; width: 100%; height: 100%; opacity: dk ? 0.35 : 0.5;
+                background: @linear-gradient(115deg, #0ea5e914 0%, #14b8a610 45%, #ffffff00 75%); }
+            Rectangle { x: 0; y: parent.height - 1px; width: 100%; height: 1px; background: hair; }
             HorizontalLayout {
-                padding-left: 28px; padding-right: 28px; spacing: 14px;
+                padding-left: 28px; padding-right: 28px; spacing: 12px;
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Text { text: "Cloud"; color: #1b1a19; font-size: 22px; font-weight: 700; } }
-                Rectangle { horizontal-stretch: 1; }
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    HdrSearch { width: 360px; placeholder: "Filter files";
-                        query <=> root.query; edited(q) => { root.search(q); } } }
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    HdrChip { icon: Icons.refresh-cw; label: "Refresh"; accent: root.accent; height: 44px; min-width: 110px; clicked => { root.refresh(); } } }
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    HdrChip { label: "+ Connect remote"; accent: root.accent; active: true; height: 44px; min-width: 160px; clicked => { root.connect-open-dialog(); } } }
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    CountPill { accent: root.accent; seg1: remotes.length + (remotes.length == 1 ? " remote" : " remotes"); } }
-            }
-        }
-
-        // Row 2 — breadcrumb · up · item count.
-        Rectangle {
-            height: 54px; horizontal-stretch: 1; background: #ffffff;
-            border-width: 1px; border-color: #edebe9;
-            HorizontalLayout {
-                padding-left: 28px; padding-right: 28px; spacing: 10px; alignment: start;
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    HorizontalLayout {
-                        spacing: 6px; alignment: start;
-                        Text { text: active-remote == "" ? "My remotes" : active-remote; color: root.accent; font-size: 13px; font-weight: 600; vertical-alignment: center; }
-                        if path != "": AppIcon { source: Icons.chevron-right; tint: #8a8886; width: 13px; height: 13px; }
-                        if path != "": Text { text: path; color: #605e5c; font-size: 13px; vertical-alignment: center; }
+                    HorizontalLayout { spacing: 12px;
+                        Rectangle { width: 44px; height: 44px; border-radius: 13px; y: (parent.height - self.height)/2;
+                            background: @linear-gradient(135deg, #0ea5e9, #14b8a6);
+                            drop-shadow-blur: 14px; drop-shadow-color: #0d948855; drop-shadow-offset-y: 4px;
+                            AppIcon { source: Icons.cloud; tint: #ffffff; width: 24px; height: 24px; } }
+                        VerticalLayout { alignment: center;
+                            Text { text: "Cloud"; color: ink; font-size: 22px; font-weight: 700; }
+                            Text { text: remotes.length + (remotes.length == 1 ? " remote connected" : " remotes connected"); color: ink3; font-size: 11px; }
+                        }
                     }
                 }
                 Rectangle { horizontal-stretch: 1; }
-                if active-remote != "": VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    HdrChip { icon: Icons.chevron-left; label: "Up"; accent: root.accent; min-width: 72px; clicked => { root.browse-up(); } } }
+                // compact search + internal clear
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Text { text: entries.length + " items"; color: #605e5c; font-size: 12px; vertical-alignment: center; } }
+                    Rectangle {
+                        width: 240px; height: 42px; border-radius: 21px; background: field; border-width: 1px; border-color: hair;
+                        HorizontalLayout {
+                            padding-left: 16px; padding-right: 8px; spacing: 8px;
+                            VerticalLayout { alignment: center; AppIcon { source: Icons.search; tint: ink3; width: 16px; height: 16px; } }
+                            Rectangle { horizontal-stretch: 1;
+                                qi := TextInput { width: 100%; height: 100%; text <=> root.query; color: ink; font-size: 13px;
+                                    vertical-alignment: center; single-line: true; edited => { root.search(self.text); } }
+                                if root.query == "": Text { text: "Filter files"; color: ink3; font-size: 13px; vertical-alignment: center; height: 100%; visible: !qi.has-focus; }
+                            }
+                            if root.query != "": Rectangle { width: 26px; height: 26px; border-radius: 13px; y: (parent.height - self.height)/2;
+                                background: cx.has-hover ? hover : transparent;
+                                cx := TouchArea { mouse-cursor: pointer; clicked => { root.query = ""; root.search(""); } }
+                                AppIcon { source: Icons.x; tint: ink2; width: 12px; height: 12px; } }
+                        }
+                    }
+                }
+                // external search button
+                VerticalLayout { alignment: center; horizontal-stretch: 0; IconBtn { icon: Icons.search; clicked => { root.search-deep(); } } }
+                VerticalLayout { alignment: center; horizontal-stretch: 0; BusyPill { icon: Icons.refresh-cw; label: "Refresh"; busy: root.refreshing; clicked => { root.refresh(); } } }
+                VerticalLayout { alignment: center; horizontal-stretch: 0; IconBtn { icon: Icons.clock; clicked => { root.reload-xfers(); root.xfer-popup-open = true; } } }
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Pill { icon: Icons.settings; label: "Sync & Tools"; active: root.tools-open; height: 40px; clicked => { root.tools-toggle(); } } }
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    GradButton { icon: Icons.plus; label: "Connect"; primary: true; clicked => { root.connect-open-dialog(); } } }
             }
         }
 
-        // rclone-missing banner.
+        // ── Banners ──
         if !rclone-ok: Rectangle {
-            height: 34px; background: #fde7e9; border-width: 1px; border-color: #f3c9cd;
+            height: 32px; background: dk ? #3a1a22 : #fff1f2;
             Text { text: "rclone not found — install rclone (or bundle it) to connect remotes.";
-                color: #a4262c; font-size: 12px; vertical-alignment: center;
-                horizontal-alignment: center; }
+                color: dk ? #fda4af : #be123c; font-size: 12px; vertical-alignment: center; horizontal-alignment: center; }
         }
-        if status != "": Rectangle {
-            height: 28px; background: #f3f2f1;
-            Text { text: status; color: #605e5c; font-size: 11px; vertical-alignment: center;
-                horizontal-alignment: center; }
+        if status != "" && !op-active: Rectangle {
+            height: 28px; background: dk ? #102a22 : #ecfdf5;
+            Text { text: status; color: dk ? #6ee7b7 : #047857; font-size: 11px; vertical-alignment: center; horizontal-alignment: center; }
+        }
+        // ── Operation progress (upload / download) ──
+        if op-active: Rectangle {
+            height: 40px; background: surf;
+            Rectangle { x: 0; y: parent.height - 1px; width: 100%; height: 1px; background: hair; }
+            HorizontalLayout {
+                padding-left: 28px; padding-right: 28px; spacing: 14px;
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Text { text: op-label; color: ink; font-size: 12px; font-weight: 600; vertical-alignment: center; } }
+                VerticalLayout { alignment: center; horizontal-stretch: 1;
+                    Rectangle { height: 8px; border-radius: 4px; background: field;
+                        Rectangle { x: 0; y: 0; height: parent.height; border-radius: 4px;
+                            width: parent.width * op-frac; background: @linear-gradient(90deg, #0ea5e9, #14b8a6); } } }
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Text { text: Math.round(op-frac * 100) + "%"; color: ink2; font-size: 12px; font-weight: 700; vertical-alignment: center; } }
+            }
         }
 
-        HorizontalLayout {
-            // Left rail — remotes list.
+        // ── FILES MODE ──
+        if !tools-open: VerticalLayout {
+            vertical-stretch: 1; spacing: 0px;
+            // Row 2
             Rectangle {
-                width: 230px; horizontal-stretch: 0; vertical-stretch: 1; background: #f3f2f1;
-                border-width: 1px; border-color: #edebe9;
-                VerticalLayout {
-                    padding: 12px; spacing: 4px; alignment: start;
-                    Text { text: "REMOTES"; color: #8a8886; font-size: 10px; font-weight: 700; }
-                    if remotes.length == 0: Text { text: "None connected"; color: #a19f9d; font-size: 12px; }
-                    for r[i] in remotes: Rectangle {
-                        height: 44px; border-radius: 4px;
-                        background: r.name == active-remote ? #deecf9 : (rta.has-hover ? #eef6fc : transparent);
-                        rta := TouchArea { mouse-cursor: pointer; clicked => { root.remote-open(r.name); } }
-                        HorizontalLayout {
-                            padding-left: 10px; padding-right: 6px; spacing: 8px;
-                            AppIcon { source: Icons.cloud; tint: #0078d4; width: 18px; height: 18px; }
-                            VerticalLayout {
-                                alignment: center; horizontal-stretch: 1;
-                                Text { text: r.name; color: #1b1a19; font-size: 13px; font-weight: 600; overflow: elide; }
-                                Text { text: r.backend; color: #8a8886; font-size: 10px; }
+                height: 56px; horizontal-stretch: 1; background: surf;
+                Rectangle { x: 0; y: parent.height - 1px; width: 100%; height: 1px; background: hair; }
+                HorizontalLayout {
+                    padding-left: 28px; padding-right: 28px; spacing: 10px; alignment: start;
+                    if active-remote != "": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        IconBtn { icon: Icons.home; clicked => { root.go-home(); } } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        HorizontalLayout { spacing: 7px; alignment: start;
+                            Text { text: active-remote == "" ? "My remotes" : active-remote; color: #14b8a6; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                            if path != "": AppIcon { source: Icons.chevron-right; tint: ink3; width: 14px; height: 14px; }
+                            if path != "": Text { text: path; color: ink2; font-size: 13px; vertical-alignment: center; }
+                        }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    if active-remote != "": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Text { text: entries.length + " items"; color: ink3; font-size: 12px; vertical-alignment: center; } }
+                    if active-remote != "": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Rectangle { height: 42px; border-radius: 21px; background: field; border-width: 1px; border-color: hair;
+                            HorizontalLayout { padding: 4px; spacing: 3px;
+                                Pill { icon: Icons.menu; label: ""; height: 34px; min-width: 42px; active: root.view == "list"; clicked => { root.view = "list"; } }
+                                Pill { icon: Icons.layout-grid; label: ""; height: 34px; min-width: 42px; active: root.view == "grid"; clicked => { root.view = "grid"; } }
                             }
-                            Rectangle {
-                                width: 24px; height: 24px; border-radius: 4px; y: (parent.height - self.height)/2;
-                                background: dta.has-hover ? #f3d6d8 : transparent;
-                                dta := TouchArea { mouse-cursor: pointer; clicked => { root.remote-delete(r.name); } }
-                                AppIcon { source: Icons.trash; width: 12px; height: 12px; }
+                        }
+                    }
+                    if active-remote != "": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        GradButton { icon: Icons.upload; label: "Upload"; min-width: 108px; clicked => { root.upload-open = true; } } }
+                    if active-remote != "": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        GradButton { icon: Icons.lock; label: "Encrypt"; min-width: 108px; clicked => { root.crypt-open-dialog(); } } }
+                    // Mount ↔ Unmount toggle
+                    if active-remote != "" && !active-mounted: VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        GradButton { icon: Icons.save; label: "Mount"; min-width: 104px; clicked => { root.mountopts-open-dialog(root.active-remote); } } }
+                    if active-remote != "" && active-mounted: VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        GradButton { icon: Icons.x; label: "Unmount"; danger: true; min-width: 116px; clicked => { root.unmount-confirm-open = true; } } }
+                    if active-remote != "": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        GradButton { icon: Icons.chevron-left; label: "Up"; min-width: 84px; clicked => { root.browse-up(); } } }
+                }
+            }
+
+            HorizontalLayout {
+                spacing: 0px;
+                // Left rail
+                Rectangle {
+                    width: 248px; horizontal-stretch: 0; vertical-stretch: 1; background: surf2;
+                    Rectangle { x: parent.width - 1px; y: 0; width: 1px; height: 100%; background: hair; }
+                    VerticalLayout {
+                        padding: 14px; spacing: 8px;
+                        Text { text: "REMOTES"; color: ink3; font-size: 10px; font-weight: 800; }
+                        if remotes.length == 0: Text { text: "None connected"; color: ink3; font-size: 12px; }
+                        Flickable {
+                            vertical-stretch: 1;
+                            viewport-height: rail.preferred-height;
+                            rail := VerticalLayout {
+                                spacing: 6px; alignment: start;
+                                for r[i] in remotes: Rectangle {
+                                    height: 54px; border-radius: 12px;
+                                    background: r.name == active-remote ? surf : (rta.has-hover ? hover : transparent);
+                                    drop-shadow-blur: r.name == active-remote ? 14px : 0px;
+                                    drop-shadow-color: r.name == active-remote ? #0d948822 : #00000000;
+                                    drop-shadow-offset-y: r.name == active-remote ? 3px : 0px;
+                                    rta := TouchArea { mouse-cursor: pointer; clicked => { root.remote-open(r.name); } }
+                                    Rectangle { x: 0; y: 8px; width: 4px; height: parent.height - 16px; border-radius: 2px;
+                                        background: @linear-gradient(180deg, #0ea5e9, #14b8a6); visible: r.name == active-remote; }
+                                    HorizontalLayout {
+                                        padding-left: 14px; padding-right: 8px; spacing: 10px;
+                                        VerticalLayout { alignment: center;
+                                            Rectangle { width: 34px; height: 34px; border-radius: 10px;
+                                                background: r.name == active-remote ? @linear-gradient(135deg, #0ea5e9, #14b8a6) : (dk ? #1c2a3e : #dbe7ec);
+                                                AppIcon { source: Icons.cloud; tint: r.name == active-remote ? #ffffff : #14b8a6; width: 18px; height: 18px; } } }
+                                        VerticalLayout {
+                                            alignment: center; horizontal-stretch: 1;
+                                            HorizontalLayout { spacing: 6px;
+                                                Text { text: r.name; color: ink; font-size: 13px; font-weight: 700; overflow: elide; }
+                                                // green dot = mounted
+                                                if r.mounted: VerticalLayout { alignment: center;
+                                                    Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #22c55e;
+                                                        drop-shadow-blur: 6px; drop-shadow-color: #22c55eaa; } }
+                                            }
+                                            Text { text: r.mounted ? (r.backend + " · mounted") : r.backend; color: r.mounted ? #16a34a : ink3; font-size: 10px; }
+                                        }
+                                        VerticalLayout { alignment: center;
+                                            Rectangle { width: 30px; height: 30px; border-radius: 9px;
+                                                background: dta.has-hover ? (dk ? #3a1a22 : #ffe4e6) : transparent;
+                                                dta := TouchArea { mouse-cursor: pointer;
+                                                    clicked => { root.confirm-remote = r.name; root.confirm-open = true; } }
+                                                AppIcon { source: Icons.trash; tint: dta.has-hover ? #e11d48 : ink3; width: 14px; height: 14px; } } }
+                                    }
+                                }
                             }
                         }
                     }
                 }
-            }
 
-            // Main file pane.
-            VerticalLayout {
-                horizontal-stretch: 1; spacing: 0px;
-                // table header
+                // Main pane
                 Rectangle {
-                    height: 34px; horizontal-stretch: 1; background: transparent;
-                    border-width: 1px; border-color: #edebe9;
-                    HorizontalLayout {
-                        padding-left: 16px; padding-right: 16px;
-                        Text { text: "Name"; color: #605e5c; font-size: 12px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
-                        Text { text: "Modified"; color: #605e5c; font-size: 12px; font-weight: 700; vertical-alignment: center; width: 130px; }
-                        Text { text: "Size"; color: #605e5c; font-size: 12px; font-weight: 700; vertical-alignment: center; width: 90px; }
-                    }
-                }
-                // body
-                Rectangle {
-                    vertical-stretch: 1; horizontal-stretch: 1; background: #ffffff;
-                    border-width: 1px; border-color: #edebe9;
+                    horizontal-stretch: 1; vertical-stretch: 1; background: canvas;
 
                     if active-remote == "": VerticalLayout {
-                        alignment: center; spacing: 12px;
+                        alignment: center; spacing: 14px;
                         HorizontalLayout { alignment: center;
-                            Rectangle { width: 88px; height: 88px; border-radius: 12px; background: #deecf9;
-                                AppIcon { source: Icons.cloud; tint: #0078d4; width: 40px; height: 40px; } } }
-                        Text { text: remotes.length == 0 ? "No remotes connected" : "Pick a remote"; color: #1b1a19; font-size: 19px; font-weight: 700; horizontal-alignment: center; }
-                        Text { text: "Connect Google Drive, Dropbox, S3 and 70+ more via rclone — then browse, mount, sync and stream."; color: #605e5c; font-size: 13px; horizontal-alignment: center; wrap: word-wrap; }
-                        HorizontalLayout { alignment: center; CmdButton { label: "+ Connect remote"; primary: true; clicked => { root.connect-open-dialog(); } } }
+                            Rectangle { width: 104px; height: 104px; border-radius: 28px;
+                                background: @linear-gradient(135deg, #0ea5e9, #14b8a6);
+                                drop-shadow-blur: 30px; drop-shadow-color: #0d948855; drop-shadow-offset-y: 10px;
+                                AppIcon { source: Icons.cloud; tint: #ffffff; width: 48px; height: 48px; } } }
+                        Text { text: remotes.length == 0 ? "No remotes connected" : "Pick a remote"; color: ink; font-size: 21px; font-weight: 700; horizontal-alignment: center; }
+                        Text { text: "Connect Google Drive, Dropbox, S3 and 70+ more via rclone — then browse, mount, sync and stream."; color: ink2; font-size: 13px; horizontal-alignment: center; wrap: word-wrap; max-width: 420px; }
+                        HorizontalLayout { alignment: center; GradButton { icon: Icons.plus; label: "Connect remote"; primary: true; clicked => { root.connect-open-dialog(); } } }
                     }
 
-                    if active-remote != "": ScrollView {
-                        VerticalLayout {
-                            alignment: start;
+                    // LIST VIEW
+                    if active-remote != "" && root.view == "list": VerticalLayout {
+                        padding: 18px; spacing: 0px;
+                        Rectangle {
+                            vertical-stretch: 1; border-radius: 16px; background: surf;
+                            border-width: dk ? 1px : 0px; border-color: #243349;
+                            drop-shadow-blur: 24px; drop-shadow-color: dk ? #00000055 : #1e293b12; drop-shadow-offset-y: 6px;
+                            clip: true;
+                            VerticalLayout {
+                                spacing: 0px;
+                                Rectangle {
+                                    height: 40px; background: surf2;
+                                    Rectangle { x: 0; y: parent.height - 1px; width: 100%; height: 1px; background: hair; }
+                                    HorizontalLayout {
+                                        padding-left: 18px; padding-right: 22px;
+                                        Text { text: "Name"; color: ink2; font-size: 11px; font-weight: 800; vertical-alignment: center; horizontal-stretch: 1; }
+                                        Text { text: "Size"; color: ink2; font-size: 11px; font-weight: 800; vertical-alignment: center; width: 100px; }
+                                        Text { text: "Modified"; color: ink2; font-size: 11px; font-weight: 800; vertical-alignment: center; width: 140px; }
+                                    }
+                                }
+                                Flickable {
+                                    vertical-stretch: 1;
+                                    viewport-height: listcol.preferred-height;
+                                    listcol := VerticalLayout {
+                                        alignment: start;
+                                        for e[i] in entries: Rectangle {
+                                            height: 44px;
+                                            background: eta.has-hover ? (dk ? #16233a : #f1f9f7) : transparent;
+                                            eta := TouchArea { mouse-cursor: pointer;
+                                                clicked => { root.entry-activate(e.index); }
+                                                pointer-event(ev) => {
+                                                    if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
+                                                        root.ctx-index = e.index; root.ctx-is-dir = e.is_dir; root.ctx-name = e.name;
+                                                        root.ctx-x = self.absolute-position.x + self.mouse-x - root.absolute-position.x;
+                                                        root.ctx-y = self.absolute-position.y + self.mouse-y - root.absolute-position.y;
+                                                        root.ctx-open = true;
+                                                    }
+                                                }
+                                            }
+                                            HorizontalLayout {
+                                                padding-left: 18px; padding-right: 22px; spacing: 0px;
+                                                HorizontalLayout {
+                                                    horizontal-stretch: 1; spacing: 11px;
+                                                    VerticalLayout { alignment: center;
+                                                        Rectangle { width: 30px; height: 30px; border-radius: 9px;
+                                                            background: root.kind-tint(e.kind).with-alpha(dk ? 0.22 : 0.14);
+                                                            AppIcon { source: root.kind-icon(e.kind); tint: root.kind-tint(e.kind); width: 16px; height: 16px; } } }
+                                                    Text { text: e.name; color: ink; font-size: 13px; font-weight: 500; vertical-alignment: center; overflow: elide; }
+                                                }
+                                                Text { text: e.size; color: ink2; font-size: 12px; vertical-alignment: center; width: 100px; }
+                                                Text { text: e.modified; color: ink3; font-size: 12px; vertical-alignment: center; width: 140px; }
+                                            }
+                                            Rectangle { x: 18px; y: parent.height - 1px; width: parent.width - 40px; height: 1px; background: hair; }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // THUMB GRID VIEW
+                    if active-remote != "" && root.view == "grid": gp := Rectangle {
+                        property <length> pad: 18px;
+                        property <length> cellw: 162px;
+                        property <length> cellh: 186px;
+                        property <int> cols: Math.max(1, Math.floor((self.width - 2 * self.pad) / self.cellw));
+                        Flickable {
+                            viewport-width: self.width;
+                            viewport-height: gp.pad * 2 + Math.ceil(entries.length / gp.cols) * gp.cellh;
                             for e[i] in entries: Rectangle {
-                                height: 38px;
-                                background: eta.has-hover ? #f3f9fd : transparent;
-                                eta := TouchArea { mouse-cursor: pointer;
+                                x: gp.pad + Math.mod(i, gp.cols) * gp.cellw;
+                                y: gp.pad + Math.floor(i / gp.cols) * gp.cellh;
+                                width: gp.cellw - 14px; height: gp.cellh - 14px;
+                                border-radius: 14px; background: gta.has-hover ? surf : (dk ? #111a2a : #fbfcfd);
+                                border-width: 1px; border-color: hair;
+                                drop-shadow-blur: gta.has-hover ? 20px : 0px;
+                                drop-shadow-color: gta.has-hover ? (dk ? #00000066 : #1e293b1f) : #00000000;
+                                drop-shadow-offset-y: gta.has-hover ? 6px : 0px;
+                                animate drop-shadow-blur { duration: 120ms; }
+                                gta := TouchArea { mouse-cursor: pointer;
                                     clicked => { root.entry-activate(e.index); }
                                     pointer-event(ev) => {
                                         if (ev.button == PointerEventButton.right && ev.kind == PointerEventKind.down) {
-                                            root.ctx-index = e.index;
-                                            root.ctx-is-dir = e.is_dir;
+                                            root.ctx-index = e.index; root.ctx-is-dir = e.is_dir; root.ctx-name = e.name;
                                             root.ctx-x = self.absolute-position.x + self.mouse-x - root.absolute-position.x;
                                             root.ctx-y = self.absolute-position.y + self.mouse-y - root.absolute-position.y;
                                             root.ctx-open = true;
                                         }
                                     }
                                 }
-                                HorizontalLayout {
-                                    padding-left: 16px; padding-right: 16px; spacing: 0px;
-                                    HorizontalLayout {
-                                        horizontal-stretch: 1; spacing: 8px;
-                                        AppIcon { source: e.is_dir ? Icons.folder : Icons.file-text; width: 15px; height: 15px; }
-                                        Text { text: e.name; color: #1b1a19; font-size: 13px; vertical-alignment: center; overflow: elide; }
+                                VerticalLayout {
+                                    padding: 12px; spacing: 10px;
+                                    Rectangle {
+                                        vertical-stretch: 1; border-radius: 11px;
+                                        background: root.kind-tint(e.kind).with-alpha(dk ? 0.20 : 0.12);
+                                        AppIcon { source: root.kind-icon(e.kind); tint: root.kind-tint(e.kind); width: 40px; height: 40px; }
                                     }
-                                    Text { text: e.modified; color: #605e5c; font-size: 12px; vertical-alignment: center; width: 130px; }
-                                    Text { text: e.size; color: #605e5c; font-size: 12px; vertical-alignment: center; width: 90px; }
+                                    VerticalLayout { spacing: 1px;
+                                        Text { text: e.name; color: ink; font-size: 12px; font-weight: 600; overflow: elide; }
+                                        Text { text: e.is_dir ? "Folder" : e.size; color: ink3; font-size: 10px; }
+                                    }
                                 }
-                                Rectangle { x: 0; y: parent.height - 1px; width: parent.width; height: 1px; background: #f3f2f1; }
                             }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── SYNC & TOOLS MODE ──
+        if tools-open: VerticalLayout {
+            vertical-stretch: 1; spacing: 0px;
+            Rectangle {
+                height: 64px; background: surf;
+                Rectangle { x: 0; y: parent.height - 2px; width: 100%; height: 2px;
+                    background: @linear-gradient(90deg, #0ea5e900 0%, #0ea5e9 20%, #14b8a6 80%, #14b8a600 100%); }
+                HorizontalLayout {
+                    padding-left: 24px; padding-right: 24px; spacing: 10px; alignment: start;
+                    VerticalLayout { alignment: center; GradButton { icon: Icons.chevron-left; label: "Back to files"; clicked => { root.tools-toggle(); } } }
+                    Rectangle { width: 6px; }
+                    VerticalLayout { alignment: center; Pill { icon: Icons.refresh-cw; label: "Sync"; active: root.tools-tab == "sync"; clicked => { root.tools-tab = "sync"; } } }
+                    VerticalLayout { alignment: center; Pill { icon: Icons.upload; label: "Copy"; active: root.tools-tab == "copy"; clicked => { root.tools-tab = "copy"; } } }
+                    VerticalLayout { alignment: center; Pill { icon: Icons.check; label: "Integrity"; active: root.tools-tab == "integrity"; clicked => { root.tools-tab = "integrity"; } } }
+                    VerticalLayout { alignment: center; Pill { icon: Icons.disc; label: "Usage"; active: root.tools-tab == "usage"; clicked => { root.tools-tab = "usage"; root.refresh-usage(); } } }
+                    VerticalLayout { alignment: center; Pill { icon: Icons.clock; label: "Transfers"; active: root.tools-tab == "transfers"; clicked => { root.tools-tab = "transfers"; root.reload-xfers(); } } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+            }
+            Flickable {
+                vertical-stretch: 1;
+                viewport-height: toolcol.preferred-height;
+                HorizontalLayout {
+                    alignment: center;
+                    toolcol := VerticalLayout {
+                        width: 760px; padding-top: 22px; padding-bottom: 40px; padding-left: 20px; padding-right: 20px; spacing: 18px;
+
+                        if root.tools-tab == "sync": ToolCard {
+                            title: "Sync"; subtitle: "One-way mirror or two-way bisync between a remote and a local path";
+                            HorizontalLayout { spacing: 12px;
+                                RemotePathField { remotes: root.remotes; label: "Source"; placeholder: "Backup/2026"; horizontal-stretch: 1; value-changed(v) => { root.sync-src = v; } }
+                                RemotePathField { remotes: root.remotes; label: "Destination"; placeholder: "Backup"; horizontal-stretch: 1; value-changed(v) => { root.sync-dst = v; } }
+                            }
+                            // Mode + conflict policy on their own row (CyclePills align together,
+                            // not mixed with the labelled Fields which sit taller).
+                            HorizontalLayout { spacing: 12px;
+                                CyclePill { label: "Mode"; value: root.sync-direction; horizontal-stretch: 1;
+                                    clicked => { root.sync-direction = root.sync-direction == "oneway" ? "bisync" : "oneway"; } }
+                                if root.sync-direction == "bisync": CyclePill { label: "On conflict"; value: root.sync-conflict; horizontal-stretch: 1;
+                                    clicked => { root.sync-conflict = root.sync-conflict == "newer" ? "larger" : (root.sync-conflict == "larger" ? "both" : "newer"); } }
+                            }
+                            HorizontalLayout { spacing: 12px;
+                                Field { label: "Bandwidth"; placeholder: "off / 2M"; text <=> root.sync-bwlimit; horizontal-stretch: 1; }
+                                Field { label: "Transfers"; placeholder: "4"; text <=> root.sync-transfers; horizontal-stretch: 1; }
+                            }
+                            HorizontalLayout { spacing: 12px;
+                                Field { label: "Include patterns"; placeholder: "*.jpg, *.png"; text <=> root.sync-includes; horizontal-stretch: 1; }
+                                Field { label: "Exclude patterns"; placeholder: "*.tmp, .cache/**"; text <=> root.sync-excludes; horizontal-stretch: 1; }
+                            }
+                            HorizontalLayout { spacing: 12px;
+                                Field { label: "Max size"; placeholder: "100M"; text <=> root.sync-maxsize; horizontal-stretch: 1; }
+                                Field { label: "Min age"; placeholder: "7d"; text <=> root.sync-minage; horizontal-stretch: 1; }
+                            }
+                            // Schedule on its own row (CyclePill — aligned away from the Fields above).
+                            HorizontalLayout { spacing: 12px;
+                                CyclePill { label: "Schedule"; value: root.sync-interval; horizontal-stretch: 1;
+                                    clicked => { root.sync-interval =
+                                        root.sync-interval == "manual" ? "15m" :
+                                        (root.sync-interval == "15m" ? "1h" :
+                                        (root.sync-interval == "1h" ? "6h" :
+                                        (root.sync-interval == "6h" ? "daily" : "manual"))); } }
+                            }
+                            HorizontalLayout { spacing: 10px; alignment: end;
+                                GradButton { icon: Icons.save; label: "Save job"; clicked => { root.save-job(); } }
+                                GradButton { icon: Icons.play; label: "Run now"; primary: true; clicked => { root.run-sync(); } }
+                            }
+                        }
+                        if root.tools-tab == "sync" && jobs.length > 0: ToolCard {
+                            title: "Scheduled jobs";
+                            for j[i] in jobs: Rectangle {
+                                height: 52px; border-radius: 12px; background: surf2; border-width: 1px; border-color: hair;
+                                HorizontalLayout {
+                                    padding-left: 14px; padding-right: 8px; spacing: 8px;
+                                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                        Text { text: j.label; color: ink; font-size: 13px; font-weight: 700; overflow: elide; }
+                                        Text { text: j.schedule + (j.enabled ? "" : " · paused"); color: ink3; font-size: 10px; } }
+                                    Rectangle { width: 34px; height: 34px; border-radius: 10px; y: (parent.height - self.height)/2;
+                                        background: rb.has-hover ? hover : transparent;
+                                        rb := TouchArea { mouse-cursor: pointer; clicked => { root.job-run(j.id); } }
+                                        AppIcon { source: Icons.play; tint: #14b8a6; width: 15px; height: 15px; } }
+                                    Rectangle { width: 34px; height: 34px; border-radius: 10px; y: (parent.height - self.height)/2;
+                                        background: tb.has-hover ? hover : transparent;
+                                        tb := TouchArea { mouse-cursor: pointer; clicked => { root.job-toggle(j.id); } }
+                                        AppIcon { source: j.enabled ? Icons.pause : Icons.check; tint: ink2; width: 15px; height: 15px; } }
+                                    Rectangle { width: 34px; height: 34px; border-radius: 10px; y: (parent.height - self.height)/2;
+                                        background: jdb.has-hover ? (dk ? #3a1a22 : #ffe4e6) : transparent;
+                                        jdb := TouchArea { mouse-cursor: pointer; clicked => { root.job-delete(j.id); } }
+                                        AppIcon { source: Icons.trash; tint: #e11d48; width: 14px; height: 14px; } }
+                                }
+                            }
+                        }
+
+                        if root.tools-tab == "copy": ToolCard {
+                            title: "Remote copy / move"; subtitle: "Server-side transfer between remotes — no local round-trip";
+                            HorizontalLayout { spacing: 12px;
+                                RemotePathField { remotes: root.remotes; label: "Source"; placeholder: "Photos"; horizontal-stretch: 1; value-changed(v) => { root.copy-src = v; } }
+                                RemotePathField { remotes: root.remotes; label: "Destination"; placeholder: "Photos"; horizontal-stretch: 1; value-changed(v) => { root.copy-dst = v; } }
+                            }
+                            CheckRow { label: "Move (delete source after transfer)"; checked <=> root.copy-move; }
+                            CheckRow { label: "Server-side (copy directly between remotes)"; checked <=> root.copy-serverside; }
+                            HorizontalLayout { alignment: end;
+                                GradButton { icon: Icons.upload; label: "Run copy"; primary: true; clicked => { root.run-copy(); } }
+                            }
+                        }
+
+                        if root.tools-tab == "integrity": ToolCard {
+                            title: "Checksum verify"; subtitle: "Hash-compare two trees after a transfer";
+                            HorizontalLayout { spacing: 12px;
+                                RemotePathField { remotes: root.remotes; label: "Source"; placeholder: "Backup"; horizontal-stretch: 1; value-changed(v) => { root.verify-src = v; } }
+                                RemotePathField { remotes: root.remotes; label: "Against"; placeholder: "Backup"; horizontal-stretch: 1; value-changed(v) => { root.verify-dst = v; } }
+                            }
+                            HorizontalLayout { alignment: end;
+                                GradButton { icon: Icons.check; label: "Verify"; primary: true; clicked => { root.run-verify(); } }
+                            }
+                        }
+                        if root.tools-tab == "integrity": ToolCard {
+                            title: "Deduplicate"; subtitle: "Find and resolve duplicate-named objects on a remote";
+                            RemotePathField { remotes: root.remotes; label: "Target"; placeholder: "Photos"; value-changed(v) => { root.dedupe-target = v; } }
+                            HorizontalLayout { spacing: 12px; alignment: space-between;
+                                CyclePill { label: "Keep"; value: root.dedupe-mode; horizontal-stretch: 1;
+                                    clicked => { root.dedupe-mode =
+                                        root.dedupe-mode == "newest" ? "oldest" :
+                                        (root.dedupe-mode == "oldest" ? "largest" :
+                                        (root.dedupe-mode == "largest" ? "smallest" :
+                                        (root.dedupe-mode == "smallest" ? "first" :
+                                        (root.dedupe-mode == "first" ? "rename" :
+                                        (root.dedupe-mode == "rename" ? "skip" : "newest"))))); } }
+                                GradButton { icon: Icons.disc; label: "Dedupe"; clicked => { root.run-dedupe(); } }
+                            }
+                        }
+
+                        if root.tools-tab == "usage": ToolCard {
+                            title: "Storage usage"; subtitle: "Per-remote used / total (rclone about)";
+                            has-action: true; action-label: "Refresh"; action-icon: Icons.refresh-cw;
+                            action => { root.refresh-usage(); }
+                            if usage-rows.length == 0: Text { text: "Refresh to query per-remote storage."; color: ink3; font-size: 12px; }
+                            for u[i] in usage-rows: VerticalLayout {
+                                spacing: 5px;
+                                HorizontalLayout {
+                                    Text { text: u.remote; color: ink; font-size: 13px; font-weight: 700; horizontal-stretch: 1; }
+                                    Text { text: u.has_quota ? (u.used + " / " + u.total) : u.used; color: ink2; font-size: 12px; }
+                                }
+                                if u.has_quota: Rectangle {
+                                    height: 8px; border-radius: 4px; background: field;
+                                    Rectangle { x: 0; y: 0; height: parent.height; border-radius: 4px;
+                                        width: parent.width * u.fraction; background: @linear-gradient(90deg, #0ea5e9, #14b8a6); }
+                                }
+                            }
+                        }
+                        if root.tools-tab == "transfers": ToolCard {
+                            title: "Recent transfers"; subtitle: "Sync / copy / move history — retry or clear";
+                            has-action: xfer-rows.length > 0; action-label: "Clear all"; action-icon: Icons.trash; action-danger: true;
+                            action => { root.xfer-clearall-open = true; }
+                            if xfer-rows.length == 0: Text { text: "No transfers yet."; color: ink3; font-size: 12px; }
+                            for x[i] in xfer-rows: XferRow { xfer: x;
+                                retry => { root.xfer-retry(x.id); }
+                                clear => { root.xfer-clear-id = x.id; root.xfer-clear-detail = x.detail; root.xfer-clear-open = true; } }
                         }
                     }
                 }
@@ -231,34 +941,211 @@ export component CloudPage inherits Rectangle {
     }
 
     // ── Connect-remote modal ──
-    if connect-open: Rectangle {
-        background: #00000055;
-        TouchArea { clicked => { /* swallow */ } }
+    if connect-open: ModalScrim {
+        close => { root.connect-cancel(); }
         Rectangle {
-            width: 460px; height: 420px; border-radius: 10px; background: #ffffff;
-            drop-shadow-blur: 30px; drop-shadow-color: #00000055;
+            width: 480px; height: 440px; border-radius: 18px; background: surf;
+            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            TouchArea {}
             VerticalLayout {
-                padding: 24px; spacing: 14px;
-                Text { text: "Connect a remote"; color: #1b1a19; font-size: 18px; font-weight: 700; }
-                Text { text: "Shells `rclone config create`. OAuth backends (drive/dropbox) need a token — paste `token={...}` below or run `rclone authorize` first.";
-                    color: #605e5c; font-size: 11px; wrap: word-wrap; }
-
-                Text { text: "Name"; color: #323130; font-size: 12px; font-weight: 600; }
-                LineEdit { placeholder-text: "gdrive"; text <=> root.form-name; }
-
-                Text { text: "Backend"; color: #323130; font-size: 12px; font-weight: 600; }
-                LineEdit { placeholder-text: "drive / s3 / dropbox / webdav / sftp …"; text <=> root.form-backend; }
-
-                Text { text: "Options (key=value per line)"; color: #323130; font-size: 12px; font-weight: 600; }
+                padding: 26px; spacing: 14px;
+                Text { text: "Connect a remote"; color: ink; font-size: 19px; font-weight: 700; }
+                Text { text: "Shells rclone config create. OAuth backends (drive/dropbox) need a token — paste token={...} below or run rclone authorize first.";
+                    color: ink2; font-size: 11px; wrap: word-wrap; }
+                Field { label: "Name"; placeholder: "gdrive"; text <=> root.form-name; }
+                Field { label: "Backend"; placeholder: "drive / s3 / dropbox / webdav / sftp …"; text <=> root.form-backend; }
+                Text { text: "Options (key=value per line)"; color: ink2; font-size: 11px; font-weight: 700; }
                 Rectangle {
-                    vertical-stretch: 1; border-radius: 4px; border-width: 1px; border-color: #d2d0ce;
+                    vertical-stretch: 1; border-radius: 10px; border-width: 1px; border-color: hair; clip: true; background: field;
                     TextEdit { width: 100%; height: 100%; text <=> root.form-opts; }
                 }
-
                 HorizontalLayout {
                     spacing: 10px; alignment: end;
-                    CmdButton { label: "Cancel"; clicked => { root.connect-cancel(); } }
-                    CmdButton { label: "Connect"; primary: true; clicked => { root.connect-submit(); } }
+                    GradButton { label: "Cancel"; clicked => { root.connect-cancel(); } }
+                    GradButton { icon: Icons.plus; label: "Connect"; primary: true; clicked => { root.connect-submit(); } }
+                }
+            }
+        }
+    }
+
+    // ── Upload picker modal ── (Esc / scrim-click close; title + remote location)
+    if upload-open: ModalScrim {
+        close => { root.upload-open = false; }
+        Rectangle {
+            width: 460px; height: 262px; border-radius: 18px; background: surf;
+            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            TouchArea {}
+            VerticalLayout {
+                padding: 26px; spacing: 12px;
+                Text { text: "Upload to " + root.active-remote; color: ink; font-size: 19px; font-weight: 700; overflow: elide; }
+                Text { text: "Location: " + (root.path != "" ? ("/" + root.path) : "/ (remote root)"); color: #14b8a6; font-size: 12px; font-weight: 600; overflow: elide; }
+                Text { text: "Pick files (any type, incl. zips) or a whole folder to upload here, with a live progress bar.";
+                    color: ink2; font-size: 11px; wrap: word-wrap; }
+                CheckRow { label: "Multi-threaded (parallel transfers — faster on many/large files)"; checked <=> root.upload-multi; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    GradButton { label: "Cancel"; clicked => { root.upload-open = false; } }
+                    GradButton { icon: Icons.folder; label: "Choose folder"; clicked => { root.upload-open = false; root.upload-pick("folder"); } }
+                    GradButton { icon: Icons.file-text; label: "Choose files"; primary: true; clicked => { root.upload-open = false; root.upload-pick("files"); } }
+                }
+            }
+        }
+    }
+
+    // ── Remote-remove confirmation ──
+    if confirm-open: ModalScrim {
+        close => { root.confirm-open = false; }
+        Rectangle {
+            width: 420px; height: 230px; border-radius: 18px; background: surf;
+            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            TouchArea {}
+            VerticalLayout {
+                padding: 26px; spacing: 12px;
+                HorizontalLayout { spacing: 12px;
+                    Rectangle { width: 44px; height: 44px; border-radius: 13px; background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
+                        AppIcon { source: Icons.trash; tint: #e11d48; width: 22px; height: 22px; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        Text { text: "Remove remote?"; color: ink; font-size: 18px; font-weight: 700; } }
+                }
+                Text { text: "“" + root.confirm-remote + "” will be removed from your rclone config. Your cloud files are not deleted, but you'll need to reconnect (and re-authorize OAuth remotes) to use it again.";
+                    color: ink2; font-size: 12px; wrap: word-wrap; vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    GradButton { label: "Cancel"; clicked => { root.confirm-open = false; } }
+                    GradButton { icon: Icons.trash; label: "Remove"; primary: true; danger: true;
+                        clicked => { root.remote-delete(root.confirm-remote); root.confirm-open = false; } }
+                }
+            }
+        }
+    }
+
+    // ── Unmount confirmation ──
+    if unmount-confirm-open: ModalScrim {
+        close => { root.unmount-confirm-open = false; }
+        Rectangle {
+            width: 420px; height: 220px; border-radius: 18px; background: surf;
+            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            TouchArea {}
+            VerticalLayout {
+                padding: 26px; spacing: 12px;
+                HorizontalLayout { spacing: 12px;
+                    Rectangle { width: 44px; height: 44px; border-radius: 13px; background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
+                        AppIcon { source: Icons.x; tint: #e11d48; width: 22px; height: 22px; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        Text { text: "Unmount remote?"; color: ink; font-size: 18px; font-weight: 700; } }
+                }
+                Text { text: "“" + root.active-remote + "” will be unmounted from your system. Any apps using the mount path should be closed first.";
+                    color: ink2; font-size: 12px; wrap: word-wrap; vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    GradButton { label: "Cancel"; clicked => { root.unmount-confirm-open = false; } }
+                    GradButton { icon: Icons.x; label: "Unmount"; primary: true; danger: true;
+                        clicked => { root.unmount-remote(root.active-remote); root.unmount-confirm-open = false; } }
+                }
+            }
+        }
+    }
+
+    // ── Delete-entry confirmation (cloud file/folder) ──
+    if delete-confirm-open: ModalScrim {
+        close => { root.delete-confirm-open = false; }
+        Rectangle {
+            width: 420px; height: 224px; border-radius: 18px; background: surf;
+            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            TouchArea {}
+            VerticalLayout {
+                padding: 26px; spacing: 12px;
+                HorizontalLayout { spacing: 12px;
+                    Rectangle { width: 44px; height: 44px; border-radius: 13px; background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
+                        AppIcon { source: Icons.trash; tint: #e11d48; width: 22px; height: 22px; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        Text { text: root.ctx-is-dir ? "Delete folder?" : "Delete file?"; color: ink; font-size: 18px; font-weight: 700; } }
+                }
+                Text { text: "“" + root.ctx-name + "” will be permanently deleted from the remote. This can't be undone.";
+                    color: ink2; font-size: 12px; wrap: word-wrap; vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    GradButton { label: "Cancel"; clicked => { root.delete-confirm-open = false; } }
+                    GradButton { icon: Icons.trash; label: "Delete"; primary: true; danger: true;
+                        clicked => { root.delete-confirm-open = false; root.ctx-action(root.ctx-index, "delete"); } }
+                }
+            }
+        }
+    }
+
+    // ── Recent-transfers popup (opened from the files-mode header) ──
+    if xfer-popup-open: ModalScrim {
+        close => { root.xfer-popup-open = false; }
+        Rectangle {
+            width: 580px; height: 440px; border-radius: 18px; background: surf;
+            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            TouchArea {}
+            VerticalLayout {
+                padding: 24px; spacing: 14px;
+                HorizontalLayout { spacing: 12px;
+                    VerticalLayout { spacing: 2px; horizontal-stretch: 1;
+                        Text { text: "Recent transfers"; color: ink; font-size: 18px; font-weight: 700; }
+                        Text { text: "Sync / copy / move history — retry or clear"; color: ink2; font-size: 11px; } }
+                    if xfer-rows.length > 0: VerticalLayout { alignment: center;
+                        GradButton { icon: Icons.trash; label: "Clear all"; danger: true; clicked => { root.xfer-clearall-open = true; } } }
+                }
+                if xfer-rows.length == 0: Text { text: "No transfers yet."; color: ink3; font-size: 12px; }
+                Flickable {
+                    vertical-stretch: 1;
+                    viewport-height: xpcol.preferred-height;
+                    xpcol := VerticalLayout { alignment: start; spacing: 4px;
+                        for x[i] in xfer-rows: XferRow { xfer: x;
+                            retry => { root.xfer-retry(x.id); }
+                            clear => { root.xfer-clear-id = x.id; root.xfer-clear-detail = x.detail; root.xfer-clear-open = true; } }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Clear-one transfer confirmation ──
+    if xfer-clear-open: ModalScrim {
+        close => { root.xfer-clear-open = false; }
+        Rectangle {
+            width: 420px; height: 210px; border-radius: 18px; background: surf;
+            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            TouchArea {}
+            VerticalLayout {
+                padding: 26px; spacing: 12px;
+                HorizontalLayout { spacing: 12px;
+                    Rectangle { width: 44px; height: 44px; border-radius: 13px; background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
+                        AppIcon { source: Icons.trash; tint: #e11d48; width: 22px; height: 22px; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        Text { text: "Clear this transfer?"; color: ink; font-size: 18px; font-weight: 700; } }
+                }
+                Text { text: "“" + root.xfer-clear-detail + "” will be removed from the transfer history.";
+                    color: ink2; font-size: 12px; wrap: word-wrap; vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    GradButton { label: "Cancel"; clicked => { root.xfer-clear-open = false; } }
+                    GradButton { icon: Icons.trash; label: "Clear"; primary: true; danger: true;
+                        clicked => { root.xfer-clear-open = false; root.xfer-clear(root.xfer-clear-id); } }
+                }
+            }
+        }
+    }
+
+    // ── Clear-all transfers confirmation ──
+    if xfer-clearall-open: ModalScrim {
+        close => { root.xfer-clearall-open = false; }
+        Rectangle {
+            width: 420px; height: 210px; border-radius: 18px; background: surf;
+            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            TouchArea {}
+            VerticalLayout {
+                padding: 26px; spacing: 12px;
+                HorizontalLayout { spacing: 12px;
+                    Rectangle { width: 44px; height: 44px; border-radius: 13px; background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
+                        AppIcon { source: Icons.trash; tint: #e11d48; width: 22px; height: 22px; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        Text { text: "Clear all transfers?"; color: ink; font-size: 18px; font-weight: 700; } }
+                }
+                Text { text: "Your entire cloud transfer history will be permanently cleared.";
+                    color: ink2; font-size: 12px; wrap: word-wrap; vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    GradButton { label: "Cancel"; clicked => { root.xfer-clearall-open = false; } }
+                    GradButton { icon: Icons.trash; label: "Clear all"; primary: true; danger: true;
+                        clicked => { root.xfer-clearall-open = false; root.xfer-clear-all(); } }
                 }
             }
         }
@@ -266,7 +1153,6 @@ export component CloudPage inherits Rectangle {
 
     // ── Right-click context menu ──
     if ctx-open: Rectangle {
-        // Full-page catcher to dismiss on outside click / right-click.
         TouchArea {
             mouse-cursor: default;
             clicked => { root.ctx-open = false; }
@@ -275,20 +1161,74 @@ export component CloudPage inherits Rectangle {
         Rectangle {
             x: min(root.ctx-x, root.width - self.width - 8px);
             y: min(root.ctx-y, root.height - self.height - 8px);
-            width: 210px;
+            width: 218px;
             height: menu.preferred-height + 12px;
-            border-radius: 8px; background: #ffffff;
-            border-width: 1px; border-color: #e1dfdd;
-            drop-shadow-blur: 24px; drop-shadow-color: #00000040;
+            border-radius: 12px; background: surf;
+            border-width: dk ? 1px : 0px; border-color: #2a3a54;
+            drop-shadow-blur: 28px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 8px;
             menu := VerticalLayout {
-                padding: 6px; spacing: 0px;
+                padding: 6px; spacing: 1px;
                 CtxItem { label: root.ctx-is-dir ? "Open" : "Open / Play"; clicked => { root.ctx-open = false; root.ctx-action(root.ctx-index, "open"); } }
                 if !root.ctx-is-dir: CtxItem { label: "Open with default app"; clicked => { root.ctx-open = false; root.ctx-action(root.ctx-index, "openwith"); } }
                 CtxItem { label: "Reveal in file manager"; clicked => { root.ctx-open = false; root.ctx-action(root.ctx-index, "reveal"); } }
+                if !root.ctx-is-dir: CtxItem { label: "Quick preview"; clicked => { root.ctx-open = false; root.ctx-action(root.ctx-index, "preview"); } }
                 if !root.ctx-is-dir: CtxItem { label: "Download a copy"; clicked => { root.ctx-open = false; root.ctx-action(root.ctx-index, "download"); } }
+                CtxItem { label: "Import into library"; clicked => { root.ctx-open = false; root.ctx-action(root.ctx-index, "import"); } }
+                CtxItem { label: "Copy share link"; clicked => { root.ctx-open = false; root.ctx-action(root.ctx-index, "sharelink"); } }
                 CtxItem { label: "Copy path"; clicked => { root.ctx-open = false; root.ctx-action(root.ctx-index, "copypath"); } }
-                Rectangle { height: 1px; background: #edebe9; }
-                CtxItem { label: "Delete"; danger: true; clicked => { root.ctx-open = false; root.ctx-action(root.ctx-index, "delete"); } }
+                Rectangle { height: 1px; background: hair; }
+                CtxItem { label: "Delete"; danger: true; clicked => { root.ctx-open = false; root.delete-confirm-open = true; } }
+            }
+        }
+    }
+
+    // ── Crypt wizard modal ── (taller so the button row clears the four fields)
+    if crypt-open: ModalScrim {
+        close => { root.crypt-cancel(); }
+        Rectangle {
+            width: 480px; height: 486px; border-radius: 18px; background: surf;
+            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            TouchArea {}
+            VerticalLayout {
+                padding: 26px; spacing: 13px;
+                Text { text: "Encrypt a remote (crypt)"; color: ink; font-size: 19px; font-weight: 700; }
+                Text { text: "Wraps an existing remote path in an rclone crypt remote — filenames and contents are AES-encrypted. The password is also saved to your OS keychain.";
+                    color: ink2; font-size: 11px; wrap: word-wrap; }
+                Field { label: "New crypt remote name"; placeholder: "vault"; text <=> root.crypt-name; }
+                Field { label: "Wrap this remote:path"; placeholder: "gdrive:Secret"; text <=> root.crypt-wrapped; }
+                Field { label: "Password"; placeholder: "strong passphrase"; text <=> root.crypt-pass; }
+                Field { label: "Salt / password2 (optional)"; placeholder: ""; text <=> root.crypt-pass2; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    GradButton { label: "Cancel"; clicked => { root.crypt-cancel(); } }
+                    GradButton { icon: Icons.lock; label: "Create"; primary: true; clicked => { root.crypt-submit(); } }
+                }
+            }
+        }
+    }
+
+    // ── Mount options modal ──
+    if mountopts-open: ModalScrim {
+        close => { root.mountopts-cancel(); }
+        Rectangle {
+            width: 460px; height: 330px; border-radius: 18px; background: surf;
+            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            TouchArea {}
+            VerticalLayout {
+                padding: 26px; spacing: 14px;
+                Text { text: "Mount options — " + root.mountopts-remote; color: ink; font-size: 19px; font-weight: 700; }
+                CheckRow { label: "Mount automatically on app startup"; checked <=> root.mountopts-auto; }
+                CyclePill { label: "VFS cache mode"; value: root.mountopts-cache;
+                    clicked => { root.mountopts-cache =
+                        root.mountopts-cache == "off" ? "minimal" :
+                        (root.mountopts-cache == "minimal" ? "writes" :
+                        (root.mountopts-cache == "writes" ? "full" : "off")); } }
+                Field { label: "Cache max-age (cleanup)"; placeholder: "1h / 24h"; text <=> root.mountopts-maxage; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    GradButton { label: "Cancel"; clicked => { root.mountopts-cancel(); } }
+                    GradButton { icon: Icons.save; label: "Apply & mount"; primary: true; clicked => { root.mountopts-submit(); } }
+                }
             }
         }
     }

@@ -13,6 +13,9 @@ pub struct Entry {
     #[serde(rename = "Size", default)] pub size: i64,
     #[serde(rename = "IsDir", default)] pub is_dir: bool,
     #[serde(rename = "ModTime", default)] pub mod_time: String,
+    // Populated by `--recursive` listings: path relative to the lsjson root.
+    // Empty for single-level listings (rclone omits it without `--recursive`).
+    #[serde(rename = "Path", default)] pub path: String,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq)]
@@ -21,6 +24,12 @@ pub enum SortKey { Name, Size, Date }
 /// `rclone lsjson remote:path` argv — one level only (no `--recursive`).
 pub fn lsjson_args(remote: &str, path: &str) -> Vec<String> {
     vec!["lsjson".into(), format!("{remote}:{path}")]
+}
+
+/// `rclone lsjson --recursive remote:path` argv — every object under the path,
+/// each carrying a `Path` relative to `remote:path`. Backs whole-remote search.
+pub fn lsjson_recursive_args(remote: &str, path: &str) -> Vec<String> {
+    vec!["lsjson".into(), "--recursive".into(), format!("{remote}:{path}")]
 }
 
 pub fn parse_lsjson(json: &str) -> Result<Vec<Entry>> {

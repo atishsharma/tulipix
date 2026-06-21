@@ -3,6 +3,8 @@
 import { PhotoTile } from "section_page.slint";
 import { ScrollView } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
+import { HdrChip } from "section_header.slint";
+import { Theme } from "tokens.slint";
 
 // One date group in the timeline (e.g. "May 2026" + that month's tiles).
 export struct PhotoGroup { label: string, tiles: [PhotoTile] }
@@ -30,13 +32,13 @@ component GPhotoChip inherits Rectangle {
     horizontal-stretch: 0; vertical-stretch: 0;
     border-radius: 17px;
     clip: true;
-    background: active ? #1a73e8 : (touch.has-hover ? #e8eaed : #f1f3f4);
+    background: active ? #1a73e8 : (touch.has-hover ? Theme.n-tile : Theme.n-chip);
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout { alignment: center; spacing: 6px;
-        if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: active ? #ffffff : #3c4043; width: 15px; height: 15px; } }
+        if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: active ? #ffffff : Theme.n-ink3; width: 15px; height: 15px; } }
         Text {
             text: label; font-size: 13px; font-weight: 500;
-            color: active ? #ffffff : #3c4043;
+            color: active ? #ffffff : Theme.n-ink3;
             vertical-alignment: center;
         }
     }
@@ -81,7 +83,7 @@ component PhotoCell inherits Rectangle {
         ? #1a73e8
         : (hovered
             ? @linear-gradient(135deg, #4285f4 0%, #a142f4 50%, #ea4335 100%)
-            : #e8eaed);
+            : Theme.n-tile);
     Image {
         source: tile.thumb; image-fit: cover;
         // Selected photos inset further (8px) so the blue frame reads clearly.
@@ -236,7 +238,7 @@ component PersonCardView inherits Rectangle {
             alignment: center;
             Rectangle {
                 width: 116px; height: 116px; border-radius: 58px; clip: true;
-                background: av.has-hover ? #d2e3fc : #e8eaed;
+                background: av.has-hover ? Theme.n-hover : Theme.n-tile;
                 av := TouchArea { mouse-cursor: pointer; clicked => { root.open(p.id); } }
                 if p.cover.width > 0: Image { source: p.cover; image-fit: cover; width: 100%; height: 100%; }
                 if p.cover.width == 0: AppIcon { source: Icons.user; width: 46px; height: 46px; }
@@ -245,21 +247,21 @@ component PersonCardView inherits Rectangle {
         // Inline rename — type a name and press Enter to label the cluster.
         Rectangle {
             height: 28px; border-radius: 8px;
-            background: ni.has-focus ? #ffffff : #f1f3f4;
+            background: ni.has-focus ? Theme.n-hover : Theme.n-chip;
             border-width: 1px; border-color: ni.has-focus ? #1a73e8 : transparent;
             ni := TextInput {
                 width: 100%; height: 100%;
                 text: p.named ? p.name : "";
-                color: #202124; font-size: 13px; font-weight: 600;
+                color: Theme.n-ink; font-size: 13px; font-weight: 600;
                 horizontal-alignment: center; vertical-alignment: center; single-line: true;
                 accepted => { root.rename(p.id, self.text); }
             }
             if !p.named && !ni.has-focus: Text {
-                text: "+ Add name"; color: #5f6368; font-size: 13px;
+                text: "+ Add name"; color: Theme.n-ink2; font-size: 13px;
                 width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center;
             }
         }
-        Text { text: p.count + (p.count == 1 ? " photo" : " photos"); color: #5f6368; font-size: 11px;
+        Text { text: p.count + (p.count == 1 ? " photo" : " photos"); color: Theme.n-ink2; font-size: 11px;
             horizontal-alignment: center; }
     }
 }
@@ -274,7 +276,7 @@ component AlbumCardView inherits Rectangle {
         padding: 8px; spacing: 6px; alignment: start;
         Rectangle {
             height: 150px; border-radius: 12px; clip: true;
-            background: cov.has-hover ? #d2e3fc : #e8eaed;
+            background: cov.has-hover ? Theme.n-hover : Theme.n-tile;
             cov := TouchArea { mouse-cursor: pointer; clicked => { root.open(a.id); } }
             if a.cover.width > 0: Image { source: a.cover; image-fit: cover; width: 100%; height: 100%; }
             if a.cover.width == 0: AppIcon { source: Icons.image; width: 46px; height: 46px; }
@@ -288,16 +290,16 @@ component AlbumCardView inherits Rectangle {
         }
         Rectangle {
             height: 28px; border-radius: 8px;
-            background: ai.has-focus ? #ffffff : #f1f3f4;
+            background: ai.has-focus ? Theme.n-hover : Theme.n-chip;
             border-width: 1px; border-color: ai.has-focus ? #1a73e8 : transparent;
             ai := TextInput {
                 width: 100%; height: 100%; text: a.name;
-                color: #202124; font-size: 13px; font-weight: 600;
+                color: Theme.n-ink; font-size: 13px; font-weight: 600;
                 horizontal-alignment: center; vertical-alignment: center; single-line: true;
                 accepted => { root.rename(a.id, self.text); }
             }
         }
-        Text { text: a.count + (a.count == 1 ? " photo" : " photos"); color: #5f6368; font-size: 11px;
+        Text { text: a.count + (a.count == 1 ? " photo" : " photos"); color: Theme.n-ink2; font-size: 11px;
             horizontal-alignment: center; }
     }
 }
@@ -389,7 +391,7 @@ export component PhotosPage inherits Rectangle {
     property <int> cols: 6;
     property <length> gap: 4px;
 
-    background: #ffffff;
+    background: Theme.n-canvas;
 
     VerticalLayout {
         padding: 0px;
@@ -397,12 +399,17 @@ export component PhotosPage inherits Rectangle {
         // Top app bar — title · search · add · count pill.
         Rectangle {
             height: 72px; horizontal-stretch: 1;
-            background: #ffffff;
+            background: Theme.n-canvas;
             HorizontalLayout {
                 padding-left: 28px; padding-right: 28px; spacing: 14px;
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Rectangle { width: 34px; height: 34px; border-radius: 10px;
+                        background: Theme.sec-photos.with-alpha(0.16);
+                        AppIcon { source: Icons.image; tint: Theme.sec-photos; width: 18px; height: 18px;
+                            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
                 VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
-                    Text { text: "Photos"; color: #202124; font-size: 22px; font-weight: 600; }
+                    Text { text: "Photos"; color: Theme.n-ink; font-size: 22px; font-weight: 600; }
                 }
 
                 // Spacer pushes the big search + add-folder + count pill to the right edge.
@@ -412,21 +419,21 @@ export component PhotosPage inherits Rectangle {
                 VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
                     Rectangle {
-                        width: 560px; height: 44px; border-radius: 22px; background: #f1f3f4;
+                        width: 560px; height: 44px; border-radius: 22px; background: Theme.n-chip;
                         HorizontalLayout {
                             padding-left: 18px; padding-right: 10px; spacing: 8px;
-                            AppIcon { source: Icons.search; tint: #5f6368; width: 15px; height: 15px; }
+                            AppIcon { source: Icons.search; tint: Theme.n-ink2; width: 15px; height: 15px; }
                             Rectangle {
                                 horizontal-stretch: 1;
                                 qi := TextInput {
                                     width: 100%; height: 100%;
                                     text <=> root.query;
-                                    color: #202124; font-size: 14px;
+                                    color: Theme.n-ink; font-size: 14px;
                                     vertical-alignment: center; single-line: true;
                                     edited => { root.search(self.text); }
                                 }
                                 if root.query == "": Text {
-                                    text: "Search your photos"; color: #5f6368; font-size: 14px;
+                                    text: "Search your photos"; color: Theme.n-ink2; font-size: 14px;
                                     vertical-alignment: center; height: 100%;
                                     visible: !qi.has-focus;
                                 }
@@ -436,12 +443,12 @@ export component PhotosPage inherits Rectangle {
                                 width: 28px; height: 28px; border-radius: 14px;
                                 horizontal-stretch: 0; vertical-stretch: 0;
                                 y: (parent.height - self.height) / 2;
-                                background: clearx.has-hover ? #d7dadd : #e3e6e8;
+                                background: clearx.has-hover ? Theme.n-hover : Theme.n-chip;
                                 clearx := TouchArea {
                                     mouse-cursor: pointer;
                                     clicked => { root.query = ""; root.search(""); }
                                 }
-                                AppIcon { source: Icons.x; tint: #3c4043; width: 12px; height: 12px; }
+                                AppIcon { source: Icons.x; tint: Theme.n-ink3; width: 12px; height: 12px; }
                             }
                         }
                     }
@@ -469,35 +476,40 @@ export component PhotosPage inherits Rectangle {
             }
         }
 
-        // Tab row — Timeline · Starred · Archive · Library · Trash.
+        // Tab row — collapsible colored-gradient chips (icon-only at rest, expand
+        // to icon + label on hover/active), with a gradient underline. Mirrors the
+        // My Music sub-tab row.
         Rectangle {
-            height: 54px; horizontal-stretch: 1; background: #ffffff;
+            // 57px = 54px content + 3px for the gradient underline.
+            height: 57px; horizontal-stretch: 1; background: Theme.n-canvas;
+            Rectangle { x: 0; y: parent.height - 2px; width: 100%; height: 2px;
+                background: @linear-gradient(90deg, #8b5cf600 0%, #8b5cf6 22%, #ec4899 78%, #ec489900 100%); }
             HorizontalLayout {
                 padding-left: 28px; padding-right: 28px; spacing: 8px; alignment: start;
-                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.clock; label: "Timeline"; min-width: 97px; active: root.category == "timeline";
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.clock; label: "Timeline"; collapsible: true; min-width: self.revealed ? 104px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; light-theme: !Theme.dark; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.category == "timeline";
                     clicked => { root.category = "timeline"; root.set-category("timeline"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.folder; label: "Library"; min-width: 97px; active: root.category == "library" || root.category == "folder";
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.folder; label: "Library"; collapsible: true; min-width: self.revealed ? 100px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; light-theme: !Theme.dark; tint: #6366f1; grad: @linear-gradient(120deg, #6366f1, #3b82f6); active: root.category == "library" || root.category == "folder";
                     clicked => { root.category = "library"; root.set-category("library"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.star-filled; label: "Starred"; min-width: 97px; active: root.category == "starred";
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.star-filled; label: "Starred"; collapsible: true; min-width: self.revealed ? 100px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; light-theme: !Theme.dark; tint: #f59e0b; grad: @linear-gradient(120deg, #f59e0b, #f97316); active: root.category == "starred";
                     blink: root.blink-tab == "starred";
                     clicked => { root.category = "starred"; root.set-category("starred"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.archive; label: "Archive"; min-width: 97px; active: root.category == "archive";
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.archive; label: "Archive"; collapsible: true; min-width: self.revealed ? 100px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; light-theme: !Theme.dark; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #0ea5e9); active: root.category == "archive";
                     blink: root.blink-tab == "archive";
                     clicked => { root.category = "archive"; root.set-category("archive"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.trash; label: "Trash"; min-width: 97px; active: root.category == "trash";
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.trash; label: "Trash"; collapsible: true; min-width: self.revealed ? 96px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; light-theme: !Theme.dark; tint: #f43f5e; grad: @linear-gradient(120deg, #f43f5e, #e11d48); active: root.category == "trash";
                     blink: root.blink-tab == "trash";
                     clicked => { root.category = "trash"; root.set-category("trash"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.user; label: "People"; min-width: 97px; active: root.category == "people" || root.category == "facephotos";
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.user; label: "People"; collapsible: true; min-width: self.revealed ? 98px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; light-theme: !Theme.dark; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.category == "people" || root.category == "facephotos";
                     clicked => { root.category = "people"; root.set-category("people"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.tag; label: "Things"; min-width: 97px; active: root.category == "things" || root.category == "tagphotos";
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.tag; label: "Things"; collapsible: true; min-width: self.revealed ? 96px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; light-theme: !Theme.dark; tint: #22c55e; grad: @linear-gradient(120deg, #22c55e, #14b8a6); active: root.category == "things" || root.category == "tagphotos";
                     clicked => { root.category = "things"; root.set-category("things"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.book-open; label: "Albums"; min-width: 97px; active: root.category == "albums" || root.category == "albumphotos";
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.book-open; label: "Albums"; collapsible: true; min-width: self.revealed ? 100px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; light-theme: !Theme.dark; tint: #a855f7; grad: @linear-gradient(120deg, #a855f7, #8b5cf6); active: root.category == "albums" || root.category == "albumphotos";
                     clicked => { root.category = "albums"; root.set-category("albums"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.film; label: "Memories"; min-width: 97px; active: root.category == "memories";
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.film; label: "Memories"; collapsible: true; min-width: self.revealed ? 112px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; light-theme: !Theme.dark; tint: #f97316; grad: @linear-gradient(120deg, #f97316, #ec4899); active: root.category == "memories";
                     clicked => { root.category = "memories"; root.set-category("memories"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.map-pin; label: "Places"; min-width: 97px; active: root.category == "places";
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.map-pin; label: "Places"; collapsible: true; min-width: self.revealed ? 96px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; light-theme: !Theme.dark; tint: #06b6d4; grad: @linear-gradient(120deg, #06b6d4, #3b82f6); active: root.category == "places";
                     clicked => { root.category = "places"; root.set-category("places"); } } }
-                VerticalLayout { alignment: center; GPhotoChip { icon: Icons.repeat; label: "Dedupe"; min-width: 97px; active: root.category == "dedupe";
+                VerticalLayout { alignment: center; HdrChip { icon: Icons.repeat; label: "Dedupe"; collapsible: true; min-width: self.revealed ? 100px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; light-theme: !Theme.dark; tint: #84cc16; grad: @linear-gradient(120deg, #84cc16, #22c55e); active: root.category == "dedupe";
                     clicked => { root.category = "dedupe"; root.set-category("dedupe"); } } }
                 Rectangle { horizontal-stretch: 1; }
             }
@@ -520,7 +532,7 @@ export component PhotosPage inherits Rectangle {
                     spacing: 14px;
                     for grp[gi] in root.groups: VerticalLayout {
                         spacing: 8px;
-                        Text { text: grp.label; color: #202124; font-size: 15px; font-weight: 600; }
+                        Text { text: grp.label; color: Theme.n-ink; font-size: 15px; font-weight: 600; }
                         TileGrid {
                             tiles: grp.tiles; cols: root.cols; gap: root.gap;
                             selecting: root.selecting;
@@ -548,7 +560,7 @@ export component PhotosPage inherits Rectangle {
                 for m[i] in root.groups: Rectangle {
                     x: 10px; width: 10px; height: 2px; border-radius: 1px;
                     y: (parent.height - 8px) * (i / max(1, root.groups.length - 1)) + 4px;
-                    background: #bdc1c6;
+                    background: Theme.n-ink2;
                 }
                 // Floating month pill at the cursor.
                 if scrub.has-hover: Rectangle {
@@ -593,12 +605,12 @@ export component PhotosPage inherits Rectangle {
                                 : root.category == "memories" ? "On this day"
                                 : root.category == "places" ? "Places"
                                 : root.category == "archive" ? "Archive" : "Trash";
-                            color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center;
+                            color: Theme.n-ink; font-size: 15px; font-weight: 600; vertical-alignment: center;
                         }
                     }
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        Text { text: "Sort"; color: #5f6368; font-size: 12px; vertical-alignment: center; } }
+                        Text { text: "Sort"; color: Theme.n-ink2; font-size: 12px; vertical-alignment: center; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
                         label: "Date";
                         height: 36px; min-width: 96px;
@@ -635,20 +647,20 @@ export component PhotosPage inherits Rectangle {
                 HorizontalLayout {
                     spacing: 8px;
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        Text { text: "On This Day"; color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
+                        Text { text: "On This Day"; color: Theme.n-ink; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
                         GPhotoChip { icon: Icons.refresh-cw; label: "Refresh"; height: 36px; min-width: 100px; clicked => { root.memories-refresh(); } } }
                 }
                 if root.memory-rails.length == 0: VerticalLayout {
                     alignment: center; spacing: 10px;
-                    Text { text: "No memories for today yet."; color: #5f6368; font-size: 13px; horizontal-alignment: center; }
+                    Text { text: "No memories for today yet."; color: Theme.n-ink2; font-size: 13px; horizontal-alignment: center; }
                 }
                 for rail[ri] in root.memory-rails: VerticalLayout {
                     spacing: 8px;
                     HorizontalLayout {
                         spacing: 8px;
-                        Text { text: rail.ago + " · " + rail.tiles.length + " photos"; color: #202124; font-size: 14px; font-weight: 600; vertical-alignment: center; }
+                        Text { text: rail.ago + " · " + rail.tiles.length + " photos"; color: Theme.n-ink; font-size: 14px; font-weight: 600; vertical-alignment: center; }
                     }
                     ScrollView {
                         height: 156px;
@@ -682,12 +694,12 @@ export component PhotosPage inherits Rectangle {
                     spacing: 8px;
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
                         Text { text: "Places · " + root.map-clusters.length + " clusters";
-                            color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
+                            color: Theme.n-ink; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
                         GPhotoChip { icon: Icons.refresh-cw; label: "Refresh"; height: 36px; min-width: 100px; clicked => { root.places-refresh(); } } }
                 }
-                if root.map-clusters.length == 0: Text { text: "No geotagged photos found."; color: #5f6368; font-size: 13px; }
+                if root.map-clusters.length == 0: Text { text: "No geotagged photos found."; color: Theme.n-ink2; font-size: 13px; }
                 pclusgrid := Rectangle {
                     horizontal-stretch: 1;
                     property <int> pccols: Math.max(2, Math.floor(self.width / 180px));
@@ -701,7 +713,7 @@ export component PhotosPage inherits Rectangle {
                             padding: 6px; spacing: 4px; alignment: start;
                             Rectangle {
                                 height: 140px; border-radius: 10px; clip: true;
-                                background: #e8eaed;
+                                background: Theme.n-tile;
                                 if cl.cover.width > 0: Image { source: cl.cover; image-fit: cover; width: 100%; height: 100%; }
                                 // Count badge overlay
                                 Rectangle {
@@ -712,7 +724,7 @@ export component PhotosPage inherits Rectangle {
                                         width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
                                 }
                             }
-                            Text { text: cl.label; color: #3c4043; font-size: 12px; overflow: elide; }
+                            Text { text: cl.label; color: Theme.n-ink3; font-size: 12px; overflow: elide; }
                         }
                     }
                 }
@@ -730,7 +742,7 @@ export component PhotosPage inherits Rectangle {
                     spacing: 8px;
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
                         Text { text: "Duplicates · " + root.dedupe-groups.length + " pairs";
-                            color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
+                            color: Theme.n-ink; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
                         GPhotoChip { icon: root.dedupe-scanning ? @image-url("../resources/icons/search.svg") : Icons.search; label: root.dedupe-scanning ? "Scanning…" : "Scan"; active: root.dedupe-scanning;
@@ -739,10 +751,10 @@ export component PhotosPage inherits Rectangle {
                 }
                 if !root.dedupe-scanning && root.dedupe-groups.length == 0: Text {
                     text: "No duplicates found. Click Scan to search for duplicates.";
-                    color: #5f6368; font-size: 13px; }
+                    color: Theme.n-ink2; font-size: 13px; }
                 for dg[di] in root.dedupe-groups: Rectangle {
                     horizontal-stretch: 1; height: 220px;
-                    border-radius: 12px; background: #f8f9fa; border-width: 1px; border-color: #e8eaed;
+                    border-radius: 12px; background: Theme.n-card; border-width: 1px; border-color: Theme.n-hair;
                     VerticalLayout {
                         padding: 12px; spacing: 8px;
                         HorizontalLayout {
@@ -761,17 +773,17 @@ export component PhotosPage inherits Rectangle {
                             spacing: 12px;
                             VerticalLayout { alignment: start; spacing: 4px; horizontal-stretch: 1;
                                 Rectangle {
-                                    height: 130px; border-radius: 8px; clip: true; background: #e8eaed;
+                                    height: 130px; border-radius: 8px; clip: true; background: Theme.n-tile;
                                     if dg.left-thumb.width > 0: Image { source: dg.left-thumb; image-fit: cover; width: 100%; height: 100%; }
                                 }
-                                Text { text: dg.left-label; color: #5f6368; font-size: 11px; overflow: elide; }
+                                Text { text: dg.left-label; color: Theme.n-ink2; font-size: 11px; overflow: elide; }
                             }
                             VerticalLayout { alignment: start; spacing: 4px; horizontal-stretch: 1;
                                 Rectangle {
-                                    height: 130px; border-radius: 8px; clip: true; background: #e8eaed;
+                                    height: 130px; border-radius: 8px; clip: true; background: Theme.n-tile;
                                     if dg.right-thumb.width > 0: Image { source: dg.right-thumb; image-fit: cover; width: 100%; height: 100%; }
                                 }
-                                Text { text: dg.right-label; color: #5f6368; font-size: 11px; overflow: elide; }
+                                Text { text: dg.right-label; color: Theme.n-ink2; font-size: 11px; overflow: elide; }
                             }
                             VerticalLayout { alignment: center; spacing: 8px; horizontal-stretch: 0; min-width: 110px;
                                 GPhotoChip { icon: Icons.arrow-left; label: "Keep Left"; height: 34px; min-width: 108px;
@@ -797,10 +809,10 @@ export component PhotosPage inherits Rectangle {
                 HorizontalLayout {
                     spacing: 8px;
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        Text { text: "Library folders"; color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
+                        Text { text: "Library folders"; color: Theme.n-ink; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        Text { text: "Sort"; color: #5f6368; font-size: 12px; vertical-alignment: center; } }
+                        Text { text: "Sort"; color: Theme.n-ink2; font-size: 12px; vertical-alignment: center; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
                         label: "Name";
                         height: 36px; min-width: 92px;
@@ -813,8 +825,8 @@ export component PhotosPage inherits Rectangle {
                 for f[i] in root.folders: Rectangle {
                     height: 72px; horizontal-stretch: 1;
                     border-radius: 10px;
-                    background: frow.has-hover ? #f1f3f4 : #f8f9fa;
-                    border-width: 1px; border-color: #e8eaed;
+                    background: frow.has-hover ? Theme.n-chip : Theme.n-card;
+                    border-width: 1px; border-color: Theme.n-hair;
                     frow := TouchArea { mouse-cursor: pointer; clicked => { root.folder-open(f.path); } }
                     HorizontalLayout {
                         padding: 12px; spacing: 14px;
@@ -822,17 +834,17 @@ export component PhotosPage inherits Rectangle {
                             width: 48px; height: 48px; border-radius: 8px; clip: true;
                             horizontal-stretch: 0; vertical-stretch: 0;
                             y: (parent.height - self.height) / 2;
-                            background: #e8eaed;
+                            background: Theme.n-tile;
                             Image { source: f.cover; image-fit: cover; width: 100%; height: 100%; }
                         }
                         VerticalLayout {
                             alignment: center; spacing: 2px; horizontal-stretch: 1;
-                            Text { text: f.name; color: #202124; font-size: 14px; font-weight: 600; overflow: elide; }
-                            Text { text: f.path; color: #5f6368; font-size: 11px; overflow: elide; }
+                            Text { text: f.name; color: Theme.n-ink; font-size: 14px; font-weight: 600; overflow: elide; }
+                            Text { text: f.path; color: Theme.n-ink2; font-size: 11px; overflow: elide; }
                         }
                         VerticalLayout {
                             alignment: center; horizontal-stretch: 0;
-                            Text { text: f.count + " photos"; color: #3c4043; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+                            Text { text: f.count + " photos"; color: Theme.n-ink3; font-size: 12px; font-weight: 600; vertical-alignment: center; }
                         }
                     }
                 }
@@ -846,7 +858,7 @@ export component PhotosPage inherits Rectangle {
             VerticalLayout {
                 // Folder header: breadcrumb box (Library › folder) · sort chips (right edge).
                 Rectangle {
-                    height: 52px; horizontal-stretch: 1; background: #ffffff;
+                    height: 52px; horizontal-stretch: 1; background: Theme.n-canvas;
                     HorizontalLayout {
                         padding-left: 28px; padding-right: 28px; spacing: 10px;
                         // Breadcrumb box — signals you're inside a library folder.
@@ -854,26 +866,26 @@ export component PhotosPage inherits Rectangle {
                             Rectangle {
                                 horizontal-stretch: 0;
                                 height: 36px; border-radius: 10px;
-                                background: #f1f3f4; border-width: 1px; border-color: #dadce0;
+                                background: Theme.n-chip; border-width: 1px; border-color: Theme.n-hair;
                                 HorizontalLayout {
                                     padding-left: 12px; padding-right: 14px; spacing: 8px;
                                     Rectangle {
                                         horizontal-stretch: 0; vertical-stretch: 0;
                                         y: (parent.height - self.height) / 2;
                                         width: lib-bc.preferred-width; height: 24px; border-radius: 6px;
-                                        background: back.has-hover ? #e0e3e6 : transparent;
+                                        background: back.has-hover ? Theme.n-hover : transparent;
                                         back := TouchArea { mouse-cursor: pointer; clicked => { root.category = "library"; root.set-category("library"); } }
                                         lib-bc := HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.chevron-left; tint: #1a73e8; width: 13px; height: 13px; } } Text { text: "Library"; color: #1a73e8; font-size: 13px; font-weight: 600; vertical-alignment: center; } }
                                     }
-                                    AppIcon { source: Icons.chevron-right; tint: #9aa0a6; width: 14px; height: 14px; }
+                                    AppIcon { source: Icons.chevron-right; tint: Theme.n-ink2; width: 14px; height: 14px; }
                                     AppIcon { source: Icons.folder; width: 13px; height: 13px; }
-                                    Text { text: root.folder-name; color: #202124; font-size: 14px; font-weight: 700; vertical-alignment: center; }
+                                    Text { text: root.folder-name; color: Theme.n-ink; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                 }
                             }
                         }
                         Rectangle { horizontal-stretch: 1; }
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
-                            Text { text: "Sort"; color: #5f6368; font-size: 12px; vertical-alignment: center; } }
+                            Text { text: "Sort"; color: Theme.n-ink2; font-size: 12px; vertical-alignment: center; } }
                         VerticalLayout { alignment: center; horizontal-stretch: 0; GPhotoChip {
                             label: "Date taken";
                             height: 40px; min-width: 128px;
@@ -899,7 +911,7 @@ export component PhotosPage inherits Rectangle {
                             spacing: 14px;
                             for grp[gi] in root.groups: VerticalLayout {
                                 spacing: 8px;
-                                Text { text: grp.label; color: #202124; font-size: 15px; font-weight: 600; }
+                                Text { text: grp.label; color: Theme.n-ink; font-size: 15px; font-weight: 600; }
                                 TileGrid {
                                     tiles: grp.tiles; cols: root.cols; gap: root.gap;
                                     selecting: root.selecting;
@@ -922,7 +934,7 @@ export component PhotosPage inherits Rectangle {
                 alignment: start;
                 padding-left: 28px; padding-right: 28px; padding-top: 8px; padding-bottom: 28px;
                 spacing: 10px;
-                Text { text: "People"; color: #202124; font-size: 15px; font-weight: 600; }
+                Text { text: "People"; color: Theme.n-ink; font-size: 15px; font-weight: 600; }
                 pgrid := Rectangle {
                     horizontal-stretch: 1;
                     property <int> pcols: Math.max(2, Math.floor(self.width / 164px));
@@ -947,20 +959,20 @@ export component PhotosPage inherits Rectangle {
                 alignment: start;
                 padding-left: 28px; padding-right: 28px; padding-top: 8px; padding-bottom: 28px;
                 spacing: 8px;
-                Text { text: "Things"; color: #202124; font-size: 15px; font-weight: 600; }
+                Text { text: "Things"; color: Theme.n-ink; font-size: 15px; font-weight: 600; }
                 for t[i] in root.things: Rectangle {
                     height: 56px; horizontal-stretch: 1; border-radius: 10px;
-                    background: trow.has-hover ? #f1f3f4 : #f8f9fa;
-                    border-width: 1px; border-color: #e8eaed;
+                    background: trow.has-hover ? Theme.n-chip : Theme.n-card;
+                    border-width: 1px; border-color: Theme.n-hair;
                     trow := TouchArea { mouse-cursor: pointer; clicked => { root.thing-open(t.label); } }
                     HorizontalLayout {
                         padding-left: 16px; padding-right: 16px; spacing: 12px;
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
                             AppIcon { source: Icons.tag; width: 16px; height: 16px; } }
                         VerticalLayout { alignment: center; horizontal-stretch: 1;
-                            Text { text: t.label; color: #202124; font-size: 14px; font-weight: 600; vertical-alignment: center; } }
+                            Text { text: t.label; color: Theme.n-ink; font-size: 14px; font-weight: 600; vertical-alignment: center; } }
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
-                            Text { text: t.count + " photos"; color: #3c4043; font-size: 12px; font-weight: 600; vertical-alignment: center; } }
+                            Text { text: t.count + " photos"; color: Theme.n-ink3; font-size: 12px; font-weight: 600; vertical-alignment: center; } }
                     }
                 }
             }
@@ -976,7 +988,7 @@ export component PhotosPage inherits Rectangle {
                 HorizontalLayout {
                     spacing: 8px;
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        Text { text: "Albums"; color: #202124; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
+                        Text { text: "Albums"; color: Theme.n-ink; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
                         GPhotoChip { icon: Icons.plus; label: "New album"; active: true; height: 36px; min-width: 124px; clicked => { root.album-new(); } } }
@@ -1000,60 +1012,60 @@ export component PhotosPage inherits Rectangle {
                     }
                 }
                 if root.albums.length == 0: Text { text: "No albums yet — make one, then select photos and “+ Album”.";
-                    color: #5f6368; font-size: 13px; }
+                    color: Theme.n-ink2; font-size: 13px; }
             }
         }
 
         // ── Empty states. ──
         if root.category == "library" && root.folders.length == 0: Rectangle {
-            vertical-stretch: 1; horizontal-stretch: 1; background: #ffffff;
+            vertical-stretch: 1; horizontal-stretch: 1; background: Theme.n-canvas;
             VerticalLayout {
                 alignment: center; spacing: 14px;
                 HorizontalLayout {
                     alignment: center;
-                    Rectangle { width: 96px; height: 96px; border-radius: 48px; background: #e8f0fe;
+                    Rectangle { width: 96px; height: 96px; border-radius: 48px; background: Theme.n-accent-soft;
                         AppIcon { source: Icons.folder; width: 40px; height: 40px; } }
                 }
-                Text { text: "No folders yet"; color: #202124; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
-                Text { text: "Add a watched folder to build your photo library."; color: #5f6368; font-size: 13px; horizontal-alignment: center; }
+                Text { text: "No folders yet"; color: Theme.n-ink; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
+                Text { text: "Add a watched folder to build your photo library."; color: Theme.n-ink2; font-size: 13px; horizontal-alignment: center; }
                 HorizontalLayout { alignment: center; GPhotoChip { label: "+ Add folder"; active: true; clicked => { root.add-folder(); } } }
             }
         }
 
         if root.category == "timeline" && root.groups.length == 0: Rectangle {
-            vertical-stretch: 1; horizontal-stretch: 1; background: #ffffff;
+            vertical-stretch: 1; horizontal-stretch: 1; background: Theme.n-canvas;
             VerticalLayout {
                 alignment: center; spacing: 14px;
                 HorizontalLayout {
                     alignment: center;
-                    Rectangle { width: 96px; height: 96px; border-radius: 48px; background: #e8f0fe;
-                        AppIcon { source: root.query == "" ? Icons.image : Icons.search; tint: #5f6368; width: 40px; height: 40px; } }
+                    Rectangle { width: 96px; height: 96px; border-radius: 48px; background: Theme.n-accent-soft;
+                        AppIcon { source: root.query == "" ? Icons.image : Icons.search; tint: Theme.n-ink2; width: 40px; height: 40px; } }
                 }
                 Text { text: root.query == "" ? "Your photos live here" : "No photos match “" + root.query + "”";
-                    color: #202124; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
+                    color: Theme.n-ink; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
                 Text { text: root.query == "" ? "Add a watched folder to see your library as a beautiful grid." : "Try a different search.";
-                    color: #5f6368; font-size: 13px; horizontal-alignment: center; }
+                    color: Theme.n-ink2; font-size: 13px; horizontal-alignment: center; }
                 if root.query == "": HorizontalLayout { alignment: center; GPhotoChip { label: "+ Add folder"; active: true; clicked => { root.add-folder(); } } }
             }
         }
 
         if (root.category == "starred" || root.category == "archive" || root.category == "trash") && root.tiles.length == 0: Rectangle {
-            vertical-stretch: 1; horizontal-stretch: 1; background: #ffffff;
+            vertical-stretch: 1; horizontal-stretch: 1; background: Theme.n-canvas;
             VerticalLayout {
                 alignment: center; spacing: 12px;
                 HorizontalLayout {
                     alignment: center;
-                    Rectangle { width: 96px; height: 96px; border-radius: 48px; background: #e8f0fe;
+                    Rectangle { width: 96px; height: 96px; border-radius: 48px; background: Theme.n-accent-soft;
                         AppIcon { source: root.category == "starred" ? Icons.star-filled : root.category == "archive" ? Icons.archive : Icons.trash;
-                            tint: #5f6368; width: 40px; height: 40px; } }
+                            tint: Theme.n-ink2; width: 40px; height: 40px; } }
                 }
                 Text { text: root.category == "starred" ? "Starred" : root.category == "archive" ? "Archive" : "Trash";
-                    color: #202124; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
+                    color: Theme.n-ink; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
                 Text {
                     text: root.category == "starred"  ? "No starred photos. Right-click a photo - Star to pin it here."
                         : root.category == "archive"  ? "Archive is empty. Right-click a photo - Archive to hide it from the grid."
                         :                               "Trash is empty. Deleted photos rest here for 30 days before purge.";
-                    color: #5f6368; font-size: 13px; horizontal-alignment: center; wrap: word-wrap;
+                    color: Theme.n-ink2; font-size: 13px; horizontal-alignment: center; wrap: word-wrap;
                 }
             }
         }
@@ -1061,22 +1073,22 @@ export component PhotosPage inherits Rectangle {
         // People / Things empty states — honest about the opt-in AI model.
         if (root.category == "people" && root.people.length == 0)
             || (root.category == "things" && root.things.length == 0): Rectangle {
-            vertical-stretch: 1; horizontal-stretch: 1; background: #ffffff;
+            vertical-stretch: 1; horizontal-stretch: 1; background: Theme.n-canvas;
             VerticalLayout {
                 alignment: center; spacing: 12px;
                 HorizontalLayout {
                     alignment: center;
-                    Rectangle { width: 96px; height: 96px; border-radius: 48px; background: #e8f0fe;
+                    Rectangle { width: 96px; height: 96px; border-radius: 48px; background: Theme.n-accent-soft;
                         Text { text: root.category == "people" ? "" : "";
                             font-size: 40px; horizontal-alignment: center; vertical-alignment: center; } }
                 }
                 Text { text: root.category == "people" ? "No people yet" : "No things tagged yet";
-                    color: #202124; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
+                    color: Theme.n-ink; font-size: 20px; font-weight: 600; horizontal-alignment: center; }
                 Text {
                     text: root.category == "people"
                         ? "Install a face-detection model in Settings - AI Models, then run the background indexer to group faces into people."
                         : "Install an object-detection model in Settings - AI Models, then run the background indexer to tag objects in your photos.";
-                    color: #5f6368; font-size: 13px; horizontal-alignment: center; wrap: word-wrap;
+                    color: Theme.n-ink2; font-size: 13px; horizontal-alignment: center; wrap: word-wrap;
                     max-width: 420px;
                 }
             }
@@ -1125,14 +1137,14 @@ export component PhotosPage inherits Rectangle {
         background: #00000066;
         TouchArea { clicked => { root.album-picker-open = false; } }
         Rectangle {
-            width: 420px; height: 460px; border-radius: 14px; background: #ffffff;
+            width: 420px; height: 460px; border-radius: 14px; background: Theme.n-canvas;
             drop-shadow-blur: 30px; drop-shadow-color: #00000055;
             TouchArea {}  // swallow clicks inside the card
             VerticalLayout {
                 padding: 20px; spacing: 12px;
-                Text { text: "Add " + root.select-count + " to album"; color: #202124; font-size: 17px; font-weight: 700; }
+                Text { text: "Add " + root.select-count + " to album"; color: Theme.n-ink; font-size: 17px; font-weight: 700; }
                 Rectangle {
-                    height: 44px; border-radius: 10px; background: nan.has-hover ? #e8f0fe : #f1f3f4;
+                    height: 44px; border-radius: 10px; background: nan.has-hover ? Theme.n-accent-soft : Theme.n-chip;
                     nan := TouchArea { mouse-cursor: pointer; clicked => { root.album-add-new(); } }
                     HorizontalLayout { padding-left: 14px; spacing: 10px;
                         AppIcon { source: Icons.plus; tint: #1a73e8; width: 18px; height: 18px; }
@@ -1144,20 +1156,20 @@ export component PhotosPage inherits Rectangle {
                         alignment: start; spacing: 6px;
                         for a[i] in root.picker-albums: Rectangle {
                             height: 52px; border-radius: 10px;
-                            background: pr.has-hover ? #f1f3f4 : #f8f9fa; border-width: 1px; border-color: #e8eaed;
+                            background: pr.has-hover ? Theme.n-chip : Theme.n-card; border-width: 1px; border-color: Theme.n-hair;
                             pr := TouchArea { mouse-cursor: pointer; clicked => { root.album-add(a.id); } }
                             HorizontalLayout {
                                 padding-left: 10px; padding-right: 14px; spacing: 12px;
                                 Rectangle { width: 36px; height: 36px; border-radius: 6px; clip: true;
-                                    y: (parent.height - self.height)/2; horizontal-stretch: 0; background: #e8eaed;
+                                    y: (parent.height - self.height)/2; horizontal-stretch: 0; background: Theme.n-tile;
                                     if a.cover.width > 0: Image { source: a.cover; image-fit: cover; width: 100%; height: 100%; } }
                                 VerticalLayout { alignment: center; horizontal-stretch: 1;
-                                    Text { text: a.name; color: #202124; font-size: 14px; font-weight: 600; overflow: elide; } }
+                                    Text { text: a.name; color: Theme.n-ink; font-size: 14px; font-weight: 600; overflow: elide; } }
                                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                                    Text { text: a.count + ""; color: #5f6368; font-size: 12px; vertical-alignment: center; } }
+                                    Text { text: a.count + ""; color: Theme.n-ink2; font-size: 12px; vertical-alignment: center; } }
                             }
                         }
-                        if root.picker-albums.length == 0: Text { text: "No albums — create one above."; color: #5f6368; font-size: 13px; }
+                        if root.picker-albums.length == 0: Text { text: "No albums — create one above."; color: Theme.n-ink2; font-size: 13px; }
                     }
                 }
                 HorizontalLayout { alignment: end;
@@ -1171,26 +1183,26 @@ export component PhotosPage inherits Rectangle {
         background: #00000066;
         TouchArea { clicked => { root.slideshow-dialog-open = false; } }
         Rectangle {
-            width: 420px; height: 240px; border-radius: 14px; background: #ffffff;
+            width: 420px; height: 240px; border-radius: 14px; background: Theme.n-canvas;
             drop-shadow-blur: 30px; drop-shadow-color: #00000055;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             TouchArea {}
             VerticalLayout {
                 padding: 20px; spacing: 12px;
-                Text { text: "Export Slideshow"; color: #202124; font-size: 17px; font-weight: 700; }
-                Text { text: "Output path (MP4):"; color: #5f6368; font-size: 13px; }
+                Text { text: "Export Slideshow"; color: Theme.n-ink; font-size: 17px; font-weight: 700; }
+                Text { text: "Output path (MP4):"; color: Theme.n-ink2; font-size: 13px; }
                 Rectangle {
-                    height: 40px; border-radius: 8px; background: #f1f3f4;
+                    height: 40px; border-radius: 8px; background: Theme.n-chip;
                     border-width: 1px; border-color: sli.has-focus ? #1a73e8 : transparent;
                     sli := TextInput {
                         width: 100%; height: 100%;
                         text: "/tmp/slideshow.mp4";
-                        color: #202124; font-size: 13px;
+                        color: Theme.n-ink; font-size: 13px;
                         horizontal-alignment: left; vertical-alignment: center; single-line: true;
                     }
                 }
-                if root.slideshow-status != "": Text { text: root.slideshow-status; color: #5f6368; font-size: 12px; }
+                if root.slideshow-status != "": Text { text: root.slideshow-status; color: Theme.n-ink2; font-size: 12px; }
                 HorizontalLayout { alignment: end; spacing: 8px;
                     GPhotoChip { label: "Cancel"; height: 38px; min-width: 90px;
                         clicked => { root.slideshow-dialog-open = false; } }
@@ -1206,22 +1218,22 @@ export component PhotosPage inherits Rectangle {
         background: #00000066;
         TouchArea { clicked => { root.smart-rule-open = false; } }
         Rectangle {
-            width: 460px; height: 280px; border-radius: 14px; background: #ffffff;
+            width: 460px; height: 280px; border-radius: 14px; background: Theme.n-canvas;
             drop-shadow-blur: 30px; drop-shadow-color: #00000055;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             TouchArea {}
             VerticalLayout {
                 padding: 20px; spacing: 12px;
-                Text { text: "Smart Album"; color: #202124; font-size: 17px; font-weight: 700; }
-                Text { text: "Rule JSON (e.g. {\"starred\": true} or {\"year\": {\">=\": 2024}}):"; color: #5f6368; font-size: 12px; }
+                Text { text: "Smart Album"; color: Theme.n-ink; font-size: 17px; font-weight: 700; }
+                Text { text: "Rule JSON (e.g. {\"starred\": true} or {\"year\": {\">=\": 2024}}):"; color: Theme.n-ink2; font-size: 12px; }
                 Rectangle {
-                    height: 60px; border-radius: 8px; background: #f1f3f4;
+                    height: 60px; border-radius: 8px; background: Theme.n-chip;
                     border-width: 1px; border-color: sri.has-focus ? #1a73e8 : transparent;
                     sri := TextInput {
                         width: 100%; height: 100%;
                         text: "{\"starred\": true}";
-                        color: #202124; font-size: 13px;
+                        color: Theme.n-ink; font-size: 13px;
                         horizontal-alignment: left; vertical-alignment: top; single-line: false;
                         wrap: word-wrap;
                     }

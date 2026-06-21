@@ -17,6 +17,13 @@ pub fn can_share(provider_online: bool) -> bool {
     provider_online
 }
 
+/// `np.p5.cloud.share-link` — `rclone link <remote:path>` argv. Mints a
+/// provider-native public link where the backend supports it.
+pub fn link_args(remote: &str, path: &str) -> Vec<String> {
+    let target = if path.is_empty() { format!("{remote}:") } else { format!("{remote}:{path}") };
+    vec!["link".into(), target]
+}
+
 /// Persist an issued share link (URL comes back from `rclone link`).
 pub async fn issue(pool: &SqlitePool, remote_id: i64, path: &str, url: &str) -> Result<i64> {
     Ok(sqlx::query_scalar(
@@ -46,6 +53,12 @@ mod tests {
     fn offline_disables_share() {
         assert!(can_share(true));
         assert!(!can_share(false));
+    }
+
+    #[test]
+    fn link_argv() {
+        assert_eq!(link_args("gdrive", "a/b.jpg"), ["link", "gdrive:a/b.jpg"]);
+        assert_eq!(link_args("gdrive", ""), ["link", "gdrive:"]);
     }
 
     #[tokio::test]

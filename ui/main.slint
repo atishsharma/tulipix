@@ -14,7 +14,7 @@ import { MusicPage, MusicFullscreen, MusicMini, PodcastMini } from "page_music.s
 import { MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
 import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow, AuthorRow, CollectionRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
-import { CloudPage, CloudRemote, CloudEntry } from "page_cloud.slint";
+import { CloudPage, CloudRemote, CloudEntry, CloudJob, CloudUsage, CloudXfer } from "page_cloud.slint";
 import { ToolsPage, ToolOpRow, ToolField, QueueJob, ToolStatus, DownloadItem, ToolInfoRow, ToolDiffRow, TrimSeg } from "page_tools.slint";
 import { ThemePicker, ThemeChoice } from "theme_picker.slint";
 import { UserState } from "user_card.slint";
@@ -216,6 +216,11 @@ component SettingsPage inherits Rectangle {
                 background: Accent.color;
                 horizontal-stretch: 0;
             }
+            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                Rectangle { width: 38px; height: 38px; border-radius: 11px;
+                    background: Accent.color.with-alpha(0.16);
+                    AppIcon { source: Icons.settings; tint: Accent.color; width: 20px; height: 20px;
+                        x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
             VerticalLayout {
                 spacing: 2px;
                 Text { text: "Settings"; color: Theme.text; font-size: 26px; font-weight: 700; }
@@ -674,11 +679,75 @@ export component MainWindow inherits Window {
     callback cloud-connect-submit();
     callback cloud-connect-cancel();
     callback cloud-remote-open(string);
+callback cloud-go-home();
     callback cloud-remote-delete(string);
     callback cloud-entry-activate(int);
     callback cloud-ctx-action(int, string);
     callback cloud-browse-up();
     callback cloud-search(string);
+    callback cloud-search-deep();
+    callback cloud-xfer-retry(int);
+    callback cloud-xfer-clear(int);
+    callback cloud-xfer-clear-all();
+    // Cloud Sync & Tools drawer state (np.p5.cloud.*).
+    in-out property <bool> cloud-tools-open: false;
+    in-out property <string> cloud-sync-src: "";
+    in-out property <string> cloud-sync-dst: "";
+    in-out property <string> cloud-sync-direction: "oneway";
+    in-out property <string> cloud-sync-conflict: "newer";
+    in-out property <string> cloud-sync-bwlimit: "";
+    in-out property <string> cloud-sync-transfers: "4";
+    in-out property <string> cloud-sync-includes: "";
+    in-out property <string> cloud-sync-excludes: "";
+    in-out property <string> cloud-sync-maxsize: "";
+    in-out property <string> cloud-sync-minage: "";
+    in-out property <string> cloud-sync-interval: "manual";
+    in-out property <[CloudJob]> cloud-jobs: [];
+    in-out property <string> cloud-copy-src: "";
+    in-out property <string> cloud-copy-dst: "";
+    in-out property <bool> cloud-copy-move: false;
+    in-out property <bool> cloud-copy-serverside: true;
+    in-out property <string> cloud-verify-src: "";
+    in-out property <string> cloud-verify-dst: "";
+    in-out property <string> cloud-dedupe-target: "";
+    in-out property <string> cloud-dedupe-mode: "newest";
+    in-out property <[CloudUsage]> cloud-usage-rows: [];
+    in-out property <[CloudXfer]> cloud-xfer-rows: [];
+    in-out property <bool> cloud-crypt-open: false;
+    in-out property <string> cloud-crypt-name: "";
+    in-out property <string> cloud-crypt-wrapped: "";
+    in-out property <string> cloud-crypt-pass: "";
+    in-out property <string> cloud-crypt-pass2: "";
+    in-out property <bool> cloud-mountopts-open: false;
+    in-out property <string> cloud-mountopts-remote: "";
+    in-out property <bool> cloud-mountopts-auto: false;
+    in-out property <string> cloud-mountopts-cache: "full";
+    in-out property <string> cloud-mountopts-maxage: "1h";
+    in-out property <bool> cloud-active-mounted: false;
+    in-out property <bool> cloud-refreshing: false;
+    in-out property <bool> cloud-op-active: false;
+    in-out property <string> cloud-op-label: "";
+    in-out property <float> cloud-op-frac: 0;
+    in-out property <bool> cloud-upload-multi: true;
+    callback cloud-unmount-remote(string);
+    callback cloud-upload-pick(string);
+    callback cloud-tools-toggle();
+    callback cloud-run-sync();
+    callback cloud-save-job();
+    callback cloud-job-toggle(int);
+    callback cloud-job-delete(int);
+    callback cloud-job-run(int);
+    callback cloud-run-copy();
+    callback cloud-run-verify();
+    callback cloud-run-dedupe();
+    callback cloud-refresh-usage();
+    callback cloud-reload-xfers();
+    callback cloud-crypt-open-dialog();
+    callback cloud-crypt-submit();
+    callback cloud-crypt-cancel();
+    callback cloud-mountopts-open-dialog(string);
+    callback cloud-mountopts-submit();
+    callback cloud-mountopts-cancel();
     // Tools state.
     in-out property <string> tools-category: "fileops";
     in-out property <string> tools-query: "";
@@ -2208,26 +2277,89 @@ export component MainWindow inherits Window {
                 width: parent.width; height: parent.height;
                 remotes: root.cloud-remotes;
                 active-remote: root.cloud-active-remote;
+                active-mounted: root.cloud-active-mounted;
                 path: root.cloud-path;
                 query <=> root.cloud-query;
                 entries: root.cloud-entries;
                 rclone-ok: root.cloud-rclone-ok;
                 status: root.cloud-status;
+                refreshing: root.cloud-refreshing;
+                op-active: root.cloud-op-active;
+                op-label: root.cloud-op-label;
+                op-frac: root.cloud-op-frac;
+                upload-multi <=> root.cloud-upload-multi;
                 connect-open <=> root.cloud-connect-open;
                 form-name <=> root.cloud-form-name;
                 form-backend <=> root.cloud-form-backend;
                 form-opts <=> root.cloud-form-opts;
+                tools-open <=> root.cloud-tools-open;
+                sync-src <=> root.cloud-sync-src;
+                sync-dst <=> root.cloud-sync-dst;
+                sync-direction <=> root.cloud-sync-direction;
+                sync-conflict <=> root.cloud-sync-conflict;
+                sync-bwlimit <=> root.cloud-sync-bwlimit;
+                sync-transfers <=> root.cloud-sync-transfers;
+                sync-includes <=> root.cloud-sync-includes;
+                sync-excludes <=> root.cloud-sync-excludes;
+                sync-maxsize <=> root.cloud-sync-maxsize;
+                sync-minage <=> root.cloud-sync-minage;
+                sync-interval <=> root.cloud-sync-interval;
+                jobs: root.cloud-jobs;
+                copy-src <=> root.cloud-copy-src;
+                copy-dst <=> root.cloud-copy-dst;
+                copy-move <=> root.cloud-copy-move;
+                copy-serverside <=> root.cloud-copy-serverside;
+                verify-src <=> root.cloud-verify-src;
+                verify-dst <=> root.cloud-verify-dst;
+                dedupe-target <=> root.cloud-dedupe-target;
+                dedupe-mode <=> root.cloud-dedupe-mode;
+                usage-rows: root.cloud-usage-rows;
+                xfer-rows: root.cloud-xfer-rows;
+                crypt-open <=> root.cloud-crypt-open;
+                crypt-name <=> root.cloud-crypt-name;
+                crypt-wrapped <=> root.cloud-crypt-wrapped;
+                crypt-pass <=> root.cloud-crypt-pass;
+                crypt-pass2 <=> root.cloud-crypt-pass2;
+                mountopts-open <=> root.cloud-mountopts-open;
+                mountopts-remote <=> root.cloud-mountopts-remote;
+                mountopts-auto <=> root.cloud-mountopts-auto;
+                mountopts-cache <=> root.cloud-mountopts-cache;
+                mountopts-maxage <=> root.cloud-mountopts-maxage;
                 init => { root.cloud-refresh(); }
                 refresh => { root.cloud-refresh(); }
                 connect-open-dialog => { root.cloud-connect-open-dialog(); }
                 connect-submit => { root.cloud-connect-submit(); }
                 connect-cancel => { root.cloud-connect-cancel(); }
                 remote-open(n) => { root.cloud-remote-open(n); }
+                go-home => { root.cloud-go-home(); }
                 remote-delete(n) => { root.cloud-remote-delete(n); }
                 search(q) => { root.cloud-search(q); }
+                search-deep => { root.cloud-search-deep(); }
+                xfer-retry(i) => { root.cloud-xfer-retry(i); }
+                xfer-clear(i) => { root.cloud-xfer-clear(i); }
+                xfer-clear-all => { root.cloud-xfer-clear-all(); }
                 entry-activate(i) => { root.cloud-entry-activate(i); }
                 ctx-action(i, a) => { root.cloud-ctx-action(i, a); }
                 browse-up => { root.cloud-browse-up(); }
+                tools-toggle => { root.cloud-tools-toggle(); }
+                run-sync => { root.cloud-run-sync(); }
+                save-job => { root.cloud-save-job(); }
+                job-toggle(i) => { root.cloud-job-toggle(i); }
+                job-delete(i) => { root.cloud-job-delete(i); }
+                job-run(i) => { root.cloud-job-run(i); }
+                run-copy => { root.cloud-run-copy(); }
+                run-verify => { root.cloud-run-verify(); }
+                run-dedupe => { root.cloud-run-dedupe(); }
+                refresh-usage => { root.cloud-refresh-usage(); }
+                reload-xfers => { root.cloud-reload-xfers(); }
+                crypt-open-dialog => { root.cloud-crypt-open-dialog(); }
+                crypt-submit => { root.cloud-crypt-submit(); }
+                crypt-cancel => { root.cloud-crypt-cancel(); }
+                mountopts-open-dialog(n) => { root.cloud-mountopts-open-dialog(n); }
+                mountopts-submit => { root.cloud-mountopts-submit(); }
+                mountopts-cancel => { root.cloud-mountopts-cancel(); }
+                unmount-remote(n) => { root.cloud-unmount-remote(n); }
+                upload-pick(k) => { root.cloud-upload-pick(k); }
             }
             if active-section == "tools":    ToolsPage  {
                 width: parent.width; height: parent.height;
