@@ -5379,6 +5379,58 @@ fn main() -> Result<()> {
         });
     });
 
+    // Feature 6: Dedupe trash — soft-delete both photos, then drop the cluster
+    let w = window.as_weak();
+    window.on_dedupe_trash(move |cluster_id| {
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("photos").await else { return; };
+            let members: Vec<(i64,)> = sqlx::query_as(
+                "SELECT item_id FROM dedup_members WHERE cluster_id = ? LIMIT 2"
+            ).bind(cluster_id as i64).fetch_all(&pool).await.unwrap_or_default();
+            let ids: Vec<i64> = members.into_iter().map(|m| m.0).collect();
+            if !ids.is_empty() {
+                let _ = tulipix_photos::trash::soft_delete(&pool, &ids).await;
+            }
+            let _ = sqlx::query("DELETE FROM dedup_clusters WHERE id = ?")
+                .bind(cluster_id as i64).execute(&pool).await;
+            let group_data = load_dedupe_groups(&pool).await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                use slint::{ModelRc, VecModel};
+                let groups = dedupe_groups_from_paths(group_data);
+                w.set_photo_dedupe_groups(ModelRc::new(VecModel::from(groups)));
+            });
+        });
+    });
+
+    // Dedupe: click a pair photo → open it in the viewer (edit=false) or the
+    // editor (edit=true). Members aren't in the active grid list, so resolve the
+    // abs path straight from the DB and open it standalone.
+    let w = window.as_weak();
+    window.on_dedupe_open(move |cluster_id, left, edit| {
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("photos").await else { return; };
+            let members: Vec<(i64,)> = sqlx::query_as(
+                "SELECT item_id FROM dedup_members WHERE cluster_id = ? ORDER BY item_id LIMIT 2"
+            ).bind(cluster_id as i64).fetch_all(&pool).await.unwrap_or_default();
+            let idx = if left { 0 } else { 1 };
+            let Some(m) = members.get(idx) else { return; };
+            let path: Option<String> = sqlx::query_scalar("SELECT abs_path FROM items WHERE id = ?")
+                .bind(m.0).fetch_optional(&pool).await.ok().flatten();
+            let Some(path) = path else { return; };
+            let pathbuf = std::path::PathBuf::from(path);
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                if edit {
+                    open_editor(w.as_weak(), 0, &pathbuf);
+                } else {
+                    show_photo_path(&w, &pathbuf);
+                    w.set_viewer_open(true);
+                }
+            });
+        });
+    });
+
     // Feature 7: Slideshow export
     let w = window.as_weak();
     window.on_slideshow_export(move |output_path| {

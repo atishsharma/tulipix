@@ -1635,6 +1635,8 @@ callback cloud-go-home();
     callback dedupe-scan();
     callback dedupe-keep(int, bool);
     callback dedupe-both(int);
+    callback dedupe-trash(int);
+    callback dedupe-open(int, bool, bool);
     callback slideshow-export(string);
     callback smart-rule-test(string);
     callback smart-rule-save(int, string);
@@ -1881,6 +1883,8 @@ callback cloud-go-home();
                 dedupe-scan => { root.dedupe-scan(); }
                 dedupe-keep(cid, kl) => { root.dedupe-keep(cid, kl); }
                 dedupe-both(cid) => { root.dedupe-both(cid); }
+                dedupe-trash(cid) => { root.dedupe-trash(cid); }
+                dedupe-open(cid, l, e) => { root.dedupe-open(cid, l, e); }
                 slideshow-export(p) => { root.slideshow-export(p); }
                 smart-rule-test(j) => { root.smart-rule-test(j); }
                 smart-rule-save(aid, j) => { root.smart-rule-save(aid, j); } }

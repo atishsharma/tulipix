@@ -1378,6 +1378,22 @@ pub fn show_photo_at(w: &MainWindow, idx: i32) {
     w.set_viewer_histogram(histogram_image(&path));
 }
 
+/// Open an arbitrary path in the viewer as a standalone photo (total=1) — used
+/// by the Dedupe cards, whose members aren't part of the active grid list.
+pub fn show_photo_path(w: &MainWindow, path: &std::path::Path) {
+    let img = slint::Image::load_from_path(path).unwrap_or_default();
+    let sz = img.size();
+    w.set_viewer_image(img);
+    w.set_viewer_nat_w(sz.width as i32);
+    w.set_viewer_nat_h(sz.height as i32);
+    w.set_viewer_label(path.file_name().and_then(|s| s.to_str()).unwrap_or("").into());
+    w.set_viewer_index(0);
+    w.set_viewer_total(1);
+    w.set_viewer_zoom(1.0);
+    w.set_viewer_exif(format_exif(path).into());
+    w.set_viewer_histogram(histogram_image(path));
+}
+
 /// Render a 256×100 RGB histogram for `path` into a Slint image. Channels are
 /// drawn additively so overlapping bins brighten — the usual histogram look.
 /// A decode failure yields a transparent image (the panel just shows empty).

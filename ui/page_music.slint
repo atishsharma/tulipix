@@ -1385,6 +1385,9 @@ component YtPlaylistCard inherits Rectangle {
 }
 
 export component MusicPage inherits Rectangle {
+    // Half-window guard: below this the 5 section tabs collapse to icon-only
+    // (expand on hover); at full width they keep their labels and stretch-fill.
+    property <bool> tabs-compact: root.width < 1000px;
     in property <int> item-count: 0;
     in property <bool> home-connect: false;       // gradient-outline the Home blocks
     in property <bool> yt-home-connect: true;     // gradient-outline the YouTube Home rails (default on)
@@ -2147,25 +2150,34 @@ export component MusicPage inherits Rectangle {
                             y: (parent.height - self.height) / 2 - (root.vis-bars.length > 0 ? 5px * root.vis-bars[0] : 0px); } } } }
                 // 5 sections fill the width up to the search bar, each with an icon.
                 VerticalLayout { alignment: center; horizontal-stretch: 1; HorizontalLayout { spacing: 8px;
-                    LiveTabRing { live: root.playing && root.player-mode == "music" && !root.yt-now-video; tint: #ec4899;
-                        MusicTab { horizontal-stretch: 1; icon: Icons.music; label: "My Music";   has-grad: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.view == "mymusic";    clicked => { root.set-view("mymusic"); } } }
-                    LiveTabRing { live: root.playing && root.player-mode == "podcast"; tint: #8b5cf6;
-                        MusicTab { horizontal-stretch: 1; icon: Icons.mic; label: "Podcasts";   has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.view == "podcasts";   clicked => { root.set-view("podcasts"); } } }
-                    LiveTabRing { live: root.playing && root.player-mode == "book"; tint: #3b82f6;
-                        MusicTab { horizontal-stretch: 1; icon: Icons.book-open; label: "Audiobooks"; has-grad: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.view == "audiobooks"; clicked => { root.set-view("audiobooks"); } } }
-                    LiveTabRing { live: root.playing && root.player-mode == "radio"; tint: #14b8a6;
-                        MusicTab { horizontal-stretch: 1; icon: Icons.radio; label: "Radio";      has-grad: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.view == "radio";      clicked => { root.set-view("radio"); } } }
-                    LiveTabRing { live: root.playing && root.yt-now-video; tint: #ef4444;
-                        MusicTab { horizontal-stretch: 1; icon: Icons.play; label: "YouTube";    has-grad: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b); active: root.view == "youtube";    clicked => { root.set-view("youtube"); } } }
+                    LiveTabRing { live: root.playing && root.player-mode == "music" && !root.yt-now-video; tint: #ec4899; horizontal-stretch: root.tabs-compact ? 0 : 1;
+                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 116px : 44px) : 116px; animate min-width { duration: 200ms; easing: ease-out; } icon: Icons.music; label: "My Music";   has-grad: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.view == "mymusic";    clicked => { root.set-view("mymusic"); } } }
+                    LiveTabRing { live: root.playing && root.player-mode == "podcast"; tint: #8b5cf6; horizontal-stretch: root.tabs-compact ? 0 : 1;
+                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 112px : 44px) : 112px; animate min-width { duration: 200ms; easing: ease-out; } icon: Icons.mic; label: "Podcasts";   has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.view == "podcasts";   clicked => { root.set-view("podcasts"); } } }
+                    LiveTabRing { live: root.playing && root.player-mode == "book"; tint: #3b82f6; horizontal-stretch: root.tabs-compact ? 0 : 1;
+                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 124px : 44px) : 124px; animate min-width { duration: 200ms; easing: ease-out; } icon: Icons.book-open; label: "Audiobooks"; has-grad: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.view == "audiobooks"; clicked => { root.set-view("audiobooks"); } } }
+                    LiveTabRing { live: root.playing && root.player-mode == "radio"; tint: #14b8a6; horizontal-stretch: root.tabs-compact ? 0 : 1;
+                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 96px : 44px) : 96px; animate min-width { duration: 200ms; easing: ease-out; } icon: Icons.radio; label: "Radio";      has-grad: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.view == "radio";      clicked => { root.set-view("radio"); } } }
+                    LiveTabRing { live: root.playing && root.yt-now-video; tint: #ef4444; horizontal-stretch: root.tabs-compact ? 0 : 1;
+                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 112px : 44px) : 112px; animate min-width { duration: 200ms; easing: ease-out; } icon: Icons.play; label: "YouTube";    has-grad: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b); active: root.view == "youtube";    clicked => { root.set-view("youtube"); } } }
                 } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     // Gradient-outlined search pill — 1.5px gradient ring over a
                     // clean white interior (both themes); dark ink for contrast.
-                    Rectangle { width: 340px; height: 44px; border-radius: 22px;
+                    spill := Rectangle {
+                        // Below 1000px the pill collapses to a 44px search icon and
+                        // re-expands on hover, focus, or while a query is present —
+                        // works for every section (one shared search box).
+                        property <bool> search-open: !root.tabs-compact || shover.has-hover || mq.has-focus || root.query != "";
+                        width: search-open ? 340px : 44px; height: 44px; border-radius: 22px;
+                        clip: true;
+                        animate width { duration: 200ms; easing: ease-out; }
                         background: @linear-gradient(120deg, #ec4899, #8b5cf6 50%, #06b6d4);
                         Rectangle { x: 1.5px; y: 1.5px; width: parent.width - 3px; height: parent.height - 3px;
                             border-radius: 20.5px; background: #ffffff; }
-                        HorizontalLayout { padding-left: 16px; padding-right: 8px; spacing: 8px;
+                        // Hover/click target — opens the pill and focuses the input.
+                        shover := TouchArea { mouse-cursor: text; clicked => { mq.focus(); } }
+                        HorizontalLayout { padding-left: 14px; padding-right: 8px; spacing: 8px;
                             VerticalLayout { alignment: center; horizontal-stretch: 0;
                                 AppIcon { source: Icons.search; tint: #6b6b74; width: 15px; height: 15px; } }
                             Rectangle { horizontal-stretch: 1;
@@ -2192,7 +2204,7 @@ export component MusicPage inherits Rectangle {
                                         }
                                     } }
                                 if root.query == "": Text { text: root.view == "podcasts" ? "Search podcasts" : (root.view == "radio" ? "Search radio stations" : (root.view == "youtube" ? (root.yt-channel-open ? "Search this channel" : (root.yt-playlist-open ? "Search this playlist" : (root.yt-tab == "subscriptions" ? "Search channels" : (root.yt-tab == "playlists" ? "Search playlists" : (root.yt-tab == "cached" ? "Search cached" : (root.yt-tab == "downloads" ? "Search downloads" : "Search YouTube")))))) : "Search music")); color: #8a8a92; font-size: 14px;
-                                    vertical-alignment: center; height: 100%; visible: !mq.has-focus; }
+                                    vertical-alignment: center; height: 100%; visible: !mq.has-focus && spill.search-open; }
                             }
                             // Clear button — appears once there is a query.
                             if root.query != "": VerticalLayout { alignment: center; horizontal-stretch: 0;

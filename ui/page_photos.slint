@@ -57,6 +57,28 @@ component GPhotoChip inherits Rectangle {
     }
 }
 
+// Colored action pill for the Dedupe cards — faint tint at rest, solid fill on
+// hover/active, icon + label flip to white. Mirrors the trash button look so the
+// whole action row reads as one coloured set (different hue per action).
+component DedupeBtn inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <color> tint: #1a73e8;
+    in property <bool> active: false;
+    callback clicked();
+    height: 34px; min-width: 80px; horizontal-stretch: 1;
+    border-radius: self.height / 2; clip: true;
+    background: (dbta.has-hover || active) ? tint : tint.with-alpha(0.16);
+    animate background { duration: 140ms; easing: ease-out; }
+    dbta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout { alignment: center; spacing: 6px; padding-left: 10px; padding-right: 10px;
+        if root.icon.width > 0: VerticalLayout { alignment: center;
+            AppIcon { source: root.icon; tint: (dbta.has-hover || active) ? #ffffff : root.tint; width: 15px; height: 15px; } }
+        Text { text: root.label; font-size: 13px; font-weight: 600;
+            color: (dbta.has-hover || active) ? #ffffff : root.tint; vertical-alignment: center; }
+    }
+}
+
 // A single photo tile (thumb + hover + open/context). `tile.index` is the
 // global index into the section's path list so grouped views still address
 // the right photo.
@@ -377,6 +399,9 @@ export component PhotosPage inherits Rectangle {
     callback dedupe-scan();
     callback dedupe-keep(int, bool);     // cluster_id, true=keep_left
     callback dedupe-both(int);           // cluster_id = keep both
+    callback dedupe-trash(int);          // cluster_id = trash both photos
+    in-out property <int> dedupe-trash-id: -1;   // >=0 = trash-confirm dialog open for this cluster
+    callback dedupe-open(int, bool, bool);       // cluster_id, left?, edit? (edit=false → viewer)
     // Phase 6 — Slideshow export (Feature 7).
     in-out property <bool> slideshow-dialog-open: false;
     in property <string> slideshow-status: "";
@@ -422,7 +447,8 @@ export component PhotosPage inherits Rectangle {
                         width: 560px; height: 44px; border-radius: 22px; background: Theme.n-chip;
                         HorizontalLayout {
                             padding-left: 18px; padding-right: 10px; spacing: 8px;
-                            AppIcon { source: Icons.search; tint: Theme.n-ink2; width: 15px; height: 15px; }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                AppIcon { source: Icons.search; tint: Theme.n-ink2; width: 15px; height: 15px; } }
                             Rectangle {
                                 horizontal-stretch: 1;
                                 qi := TextInput {
@@ -745,18 +771,40 @@ export component PhotosPage inherits Rectangle {
                             color: Theme.n-ink; font-size: 15px; font-weight: 600; vertical-alignment: center; } }
                     Rectangle { horizontal-stretch: 1; }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        GPhotoChip { icon: root.dedupe-scanning ? @image-url("../resources/icons/search.svg") : Icons.search; label: root.dedupe-scanning ? "Scanning…" : "Scan"; active: root.dedupe-scanning;
-                            height: 36px; min-width: 110px;
+                        DedupeBtn { icon: Icons.search; label: root.dedupe-scanning ? "Scanning…" : "Scan";
+                            tint: #84cc16; active: root.dedupe-scanning;
+                            height: 36px; min-width: 120px; horizontal-stretch: 0;
                             clicked => { if (!root.dedupe-scanning) { root.dedupe-scan(); } } } }
                 }
                 if !root.dedupe-scanning && root.dedupe-groups.length == 0: Text {
                     text: "No duplicates found. Click Scan to search for duplicates.";
                     color: Theme.n-ink2; font-size: 13px; }
-                for dg[di] in root.dedupe-groups: Rectangle {
-                    horizontal-stretch: 1; height: 220px;
-                    border-radius: 12px; background: Theme.n-card; border-width: 1px; border-color: Theme.n-hair;
+                // 2-up grid — keeps each card (and its square thumbs) compact
+                // instead of stretching one pair across the full page width.
+                dgrid := Rectangle {
+                    horizontal-stretch: 1;
+                    property <int> cols: self.width < 560px ? 1 : 2;
+                    property <length> gap: 14px;
+                    property <length> cardw: (self.width - (cols - 1) * gap) / cols;
+                    // Square thumb side: card inner width = cardw - pad(24) - thumb-spacing(12).
+                    property <length> sqcell: (cardw - 24px - 12px) / 2;
+                    // pad(24) + badge(20) + sp(10) + thumb(sqcell) + sp(4) + label(16)
+                    //  + sp(10) + btnrow(34) + sp(10) + btnrow(34)
+                    property <length> cardh: sqcell + 162px;
+                    height: Math.ceil(root.dedupe-groups.length / cols) * (cardh + gap);
+                    for dg[di] in root.dedupe-groups: Rectangle {
+                    x: Math.mod(di, dgrid.cols) * (dgrid.cardw + dgrid.gap);
+                    y: Math.floor(di / dgrid.cols) * (dgrid.cardh + dgrid.gap);
+                    width: dgrid.cardw; height: dgrid.cardh;
+                    // Gradient ring: vivid outer rect, content card inset 1.5px.
+                    border-radius: 12px; clip: true;
+                    background: @linear-gradient(135deg, #ec4899, #8b5cf6 50%, #06b6d4);
+                    Rectangle {
+                    x: 1.5px; y: 1.5px; width: parent.width - 3px; height: parent.height - 3px;
+                    border-radius: 10.5px; clip: true; background: Theme.n-card;
                     VerticalLayout {
-                        padding: 12px; spacing: 8px;
+                        alignment: start;
+                        padding: 12px; spacing: 10px;
                         HorizontalLayout {
                             spacing: 6px;
                             // Kind badge
@@ -769,31 +817,63 @@ export component PhotosPage inherits Rectangle {
                             }
                             Rectangle { horizontal-stretch: 1; }
                         }
+                        // Two square thumbs side by side — fixed square so every card
+                        // matches; the photo auto-fits inside (contain). Click opens
+                        // the viewer; the hover pencil opens the editor.
                         HorizontalLayout {
                             spacing: 12px;
                             VerticalLayout { alignment: start; spacing: 4px; horizontal-stretch: 1;
                                 Rectangle {
-                                    height: 130px; border-radius: 8px; clip: true; background: Theme.n-tile;
-                                    if dg.left-thumb.width > 0: Image { source: dg.left-thumb; image-fit: cover; width: 100%; height: 100%; }
+                                    width: dgrid.sqcell; height: dgrid.sqcell;
+                                    border-radius: 8px; clip: true; background: Theme.n-tile;
+                                    if dg.left-thumb.width > 0: Image { source: dg.left-thumb; image-fit: contain; width: 100%; height: 100%; }
+                                    lta := TouchArea { mouse-cursor: pointer; clicked => { root.dedupe-open(dg.cluster-id, true, false); } }
+                                    Rectangle {
+                                        x: parent.width - self.width - 6px; y: 6px;
+                                        width: 28px; height: 28px; border-radius: 14px;
+                                        visible: lta.has-hover || led.has-hover;
+                                        background: led.has-hover ? #1a73e8 : #000000a8;
+                                        led := TouchArea { mouse-cursor: pointer; clicked => { root.dedupe-open(dg.cluster-id, true, true); } }
+                                        AppIcon { source: Icons.pencil; tint: #ffffff; width: 14px; height: 14px;
+                                            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+                                    }
                                 }
                                 Text { text: dg.left-label; color: Theme.n-ink2; font-size: 11px; overflow: elide; }
                             }
                             VerticalLayout { alignment: start; spacing: 4px; horizontal-stretch: 1;
                                 Rectangle {
-                                    height: 130px; border-radius: 8px; clip: true; background: Theme.n-tile;
-                                    if dg.right-thumb.width > 0: Image { source: dg.right-thumb; image-fit: cover; width: 100%; height: 100%; }
+                                    width: dgrid.sqcell; height: dgrid.sqcell;
+                                    border-radius: 8px; clip: true; background: Theme.n-tile;
+                                    if dg.right-thumb.width > 0: Image { source: dg.right-thumb; image-fit: contain; width: 100%; height: 100%; }
+                                    rta := TouchArea { mouse-cursor: pointer; clicked => { root.dedupe-open(dg.cluster-id, false, false); } }
+                                    Rectangle {
+                                        x: parent.width - self.width - 6px; y: 6px;
+                                        width: 28px; height: 28px; border-radius: 14px;
+                                        visible: rta.has-hover || red.has-hover;
+                                        background: red.has-hover ? #1a73e8 : #000000a8;
+                                        red := TouchArea { mouse-cursor: pointer; clicked => { root.dedupe-open(dg.cluster-id, false, true); } }
+                                        AppIcon { source: Icons.pencil; tint: #ffffff; width: 14px; height: 14px;
+                                            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+                                    }
                                 }
                                 Text { text: dg.right-label; color: Theme.n-ink2; font-size: 11px; overflow: elide; }
                             }
-                            VerticalLayout { alignment: center; spacing: 8px; horizontal-stretch: 0; min-width: 110px;
-                                GPhotoChip { icon: Icons.arrow-left; label: "Keep Left"; height: 34px; min-width: 108px;
-                                    clicked => { root.dedupe-keep(dg.cluster-id, true); } }
-                                GPhotoChip { label: "Keep Right"; height: 34px; min-width: 108px;
-                                    clicked => { root.dedupe-keep(dg.cluster-id, false); } }
-                                GPhotoChip { label: "Both"; height: 34px; min-width: 108px;
-                                    clicked => { root.dedupe-both(dg.cluster-id); } }
-                            }
                         }
+                        // Action buttons — 2×2 grid under the photos; one hue each, Trash last.
+                        HorizontalLayout { spacing: 8px;
+                            DedupeBtn { icon: Icons.arrow-left; label: "Keep Left"; tint: #1a73e8;
+                                clicked => { root.dedupe-keep(dg.cluster-id, true); } }
+                            DedupeBtn { icon: Icons.arrow-right; label: "Keep Right"; tint: #34a853;
+                                clicked => { root.dedupe-keep(dg.cluster-id, false); } }
+                        }
+                        HorizontalLayout { spacing: 8px;
+                            DedupeBtn { icon: Icons.check; label: "Keep Both"; tint: #f59e0b;
+                                clicked => { root.dedupe-both(dg.cluster-id); } }
+                            DedupeBtn { icon: Icons.trash; label: "Trash"; tint: #ea4335;
+                                clicked => { root.dedupe-trash-id = dg.cluster-id; } }
+                        }
+                    }
+                    }
                     }
                 }
             }
@@ -877,8 +957,10 @@ export component PhotosPage inherits Rectangle {
                                         back := TouchArea { mouse-cursor: pointer; clicked => { root.category = "library"; root.set-category("library"); } }
                                         lib-bc := HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.chevron-left; tint: #1a73e8; width: 13px; height: 13px; } } Text { text: "Library"; color: #1a73e8; font-size: 13px; font-weight: 600; vertical-alignment: center; } }
                                     }
-                                    AppIcon { source: Icons.chevron-right; tint: Theme.n-ink2; width: 14px; height: 14px; }
-                                    AppIcon { source: Icons.folder; width: 13px; height: 13px; }
+                                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                        AppIcon { source: Icons.chevron-right; tint: Theme.n-ink2; width: 14px; height: 14px; } }
+                                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                        AppIcon { source: Icons.folder; width: 13px; height: 13px; } }
                                     Text { text: root.folder-name; color: Theme.n-ink; font-size: 14px; font-weight: 700; vertical-alignment: center; }
                                 }
                             }
@@ -1248,6 +1330,48 @@ export component PhotosPage inherits Rectangle {
                         clicked => { root.smart-rule-test(sri.text); } }
                     GPhotoChip { label: "Save"; active: true; height: 38px; min-width: 80px;
                         clicked => { root.smart-rule-save(root.smart-rule-album-id, sri.text); root.smart-rule-open = false; } }
+                }
+            }
+        }
+    }
+
+    // ── Dedupe Trash confirmation (irreversible-ish: both photos go to Trash). ──
+    if root.dedupe-trash-id >= 0: Rectangle {
+        background: #00000066;
+        TouchArea { clicked => { root.dedupe-trash-id = -1; } }
+        Rectangle {
+            width: 440px; height: 220px; border-radius: 14px; background: Theme.n-canvas;
+            drop-shadow-blur: 30px; drop-shadow-color: #00000055;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            TouchArea {}  // swallow clicks inside the card
+            VerticalLayout {
+                padding: 22px; spacing: 12px;
+                HorizontalLayout { spacing: 10px;
+                    Rectangle { width: 34px; height: 34px; border-radius: 10px; background: #ea433522;
+                        horizontal-stretch: 0;
+                        AppIcon { source: Icons.trash; tint: #ea4335; width: 18px; height: 18px;
+                            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        Text { text: "Move both photos to Trash?"; color: Theme.n-ink; font-size: 17px; font-weight: 700; } }
+                }
+                Text {
+                    text: "Both copies in this duplicate pair will be moved to Trash and removed from this list. They stay recoverable from the Trash tab until you empty it.";
+                    color: Theme.n-ink2; font-size: 13px; wrap: word-wrap; vertical-stretch: 1;
+                }
+                HorizontalLayout { alignment: end; spacing: 8px;
+                    GPhotoChip { label: "Cancel"; height: 38px; min-width: 90px;
+                        clicked => { root.dedupe-trash-id = -1; } }
+                    Rectangle {
+                        height: 38px; min-width: 130px; border-radius: 19px; clip: true; horizontal-stretch: 0;
+                        background: cfm.has-hover ? #c5221f : #ea4335;
+                        cfm := TouchArea { mouse-cursor: pointer;
+                            clicked => { root.dedupe-trash(root.dedupe-trash-id); root.dedupe-trash-id = -1; } }
+                        HorizontalLayout { alignment: center; spacing: 6px; padding-left: 12px; padding-right: 12px;
+                            VerticalLayout { alignment: center; AppIcon { source: Icons.trash; tint: #ffffff; width: 15px; height: 15px; } }
+                            Text { text: "Trash both"; color: #ffffff; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                        }
+                    }
                 }
             }
         }
