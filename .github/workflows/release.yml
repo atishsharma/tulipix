@@ -25,14 +25,17 @@ jobs:
       - name: System deps (libmpv link + skia/gl build deps + mpv to bundle)
         run: |
           sudo apt-get update
-          # mold: the committed .cargo/config.toml links Linux builds with it
+          # mold: the committed .cargo/config.toml links Linux builds with it.
+          # libgtk-3-dev: rfd file dialogs (pulls cairo/pango/gdk).
           sudo apt-get install -y --no-install-recommends \
-            libmpv-dev mpv mold cmake ninja-build \
+            libmpv-dev mpv mold cmake ninja-build libgtk-3-dev \
             libfontconfig1-dev libfreetype6-dev libgl1-mesa-dev libegl1-mesa-dev \
             libxkbcommon-dev libwayland-dev
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: Resolve version
         run: |
@@ -110,6 +113,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
       # lib.exe (import-lib generator) on PATH
       - uses: ilammy/msvc-dev-cmd@v1
 
@@ -180,6 +185,8 @@ jobs:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
 
       - name: System deps (libmpv to link/bundle + bundler)
         run: brew install mpv dylibbundler ninja
