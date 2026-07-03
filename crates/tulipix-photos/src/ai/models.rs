@@ -29,7 +29,10 @@ pub fn install_dir(entry: &ModelEntry) -> Option<PathBuf> {
 }
 
 pub fn local_path(entry: &ModelEntry) -> Option<PathBuf> {
-    install_dir(entry).map(|d| d.join(format!("{}.onnx", entry.name)))
+    // Extension follows the blob type: ggml whisper models are .bin, the
+    // photo-editing models are .onnx.
+    let ext = if entry.url.ends_with(".bin") { "bin" } else { "onnx" };
+    install_dir(entry).map(|d| d.join(format!("{}.{ext}", entry.name)))
 }
 
 pub fn is_installed(entry: &ModelEntry) -> bool {
@@ -38,9 +41,16 @@ pub fn is_installed(entry: &ModelEntry) -> bool {
 
 /// Download + verify one model. Returns the local path on success.
 pub async fn download(entry: &ModelEntry) -> Result<PathBuf> {
+    download_with_progress(entry, |_| {}).await
+}
+
+/// Download + verify with a progress callback (0..1, based on the manifest
+/// size estimate — clamped so it only hits 1.0 when the stream ends).
+pub async fn download_with_progress(entry: &ModelEntry, mut on_progress: impl FnMut(f32)) -> Result<PathBuf> {
     let dir = install_dir(entry).ok_or_else(|| anyhow!("no data dir"))?;
     let out = local_path(entry).unwrap();
     if out.exists() && verify(&out, &entry.sha256).await.is_ok() {
+        on_progress(1.0);
         return Ok(out);
     }
     tokio::fs::create_dir_all(&dir).await?;
@@ -55,17 +65,23 @@ pub async fn download(entry: &ModelEntry) -> Result<PathBuf> {
     if !resp.status().is_success() {
         anyhow::bail!("model fetch returned {}", resp.status());
     }
+    // Prefer the server's real length over the manifest estimate.
+    let total = resp.content_length().unwrap_or(entry.size_bytes).max(1);
 
     let mut file = tokio::fs::File::create(&tmp).await?;
     let mut hasher = Sha256::new();
     let mut stream = resp.bytes_stream();
+    let mut got: u64 = 0;
     while let Some(chunk) = stream.next().await {
         let chunk = chunk?;
         hasher.update(&chunk);
         file.write_all(&chunk).await?;
+        got += chunk.len() as u64;
+        on_progress((got as f32 / total as f32).min(0.99));
     }
     file.flush().await?;
     drop(file);
+    on_progress(1.0);
 
     let digest = hex(&hasher.finalize());
     if entry.sha256.eq_ignore_ascii_case(TOFU) {

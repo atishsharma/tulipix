@@ -3,6 +3,7 @@
 import { PhotoTile } from "section_page.slint";
 import { ScrollView, ComboBox } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
+import { MicBtn } from "voice.slint";
 import { HdrChip, CountPill } from "section_header.slint";
 import { MusicTheme } from "theme.slint";
 import { MusicSongRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
@@ -2222,7 +2223,13 @@ export component MusicPage inherits Rectangle {
                                             else { root.yt-search(""); }
                                         }
                                         else { root.search(""); } } }
-                                    AppIcon { source: Icons.x; tint: clrb.has-hover ? #ffffff : #ec4899; width: 12px; height: 12px; } } }
+                                    AppIcon { source: Icons.x; tint: clrb.has-hover ? #ffffff : #ec4899; width: 12px; height: 12px;
+                                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                MicBtn { dark: false;
+                                    target: root.view == "podcasts" ? "podcasts"
+                                        : (root.view == "radio" ? "radio"
+                                        : (root.view == "youtube" ? "youtube" : "music")); } }
                         }
                     }
                 }

@@ -375,6 +375,7 @@ export component ToolsPage inherits Rectangle {
                                     vertical-alignment: center; min-width: 12px; horizontal-alignment: center; } } } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     HdrSearch { width: 320px; dark: Theme.dark; outline: true; placeholder: "Find a tool";
+                        mic-target: "tools";
                         query <=> root.query; edited(q) => { root.search(q); } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     CountPill { accent: root.accent; text-color: #ffffff; seg1: "" + root.queue-status; } }

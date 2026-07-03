@@ -184,6 +184,52 @@ impl AutoUpdatePolicy {
     pub fn should_download_now(&self) -> bool { matches!(self.mode, AutoUpdateMode::Auto) }
 }
 
+// ─── Per-task whisper model resolution ───────────────────────────────────
+
+/// Resolve the whisper ggml model file for a task ("voice" = mic search,
+/// "transcribe" = Tools transcriber + video subtitles). The per-task choice
+/// lives in settings key `ai.model.<task>`: "tiny" (bundled default) ·
+/// "base" · "small" · "turbo". A downloaded choice falls back to the bundled
+/// tiny model until its file actually exists.
+pub fn whisper_model_for(task: &str) -> Option<std::path::PathBuf> {
+    let choice = crate::settings::Settings::load().ok()
+        .map(|s| s.text(&format!("ai.model.{task}")))
+        .filter(|c| !c.is_empty())
+        .unwrap_or_else(|| "tiny".into());
+    let name = match choice.as_str() {
+        "base"  => Some("whisper-base-q5"),
+        "small" => Some("whisper-small-q5"),
+        "turbo" => Some("whisper-turbo-q5"),
+        _ => None,
+    };
+    if let Some(n) = name {
+        if let Some(root) = crate::paths::data_dir().map(|d| d.join("models")) {
+            // Versioned install dir — scan by prefix so a manifest version
+            // bump doesn't strand the setting.
+            if let Ok(rd) = std::fs::read_dir(&root) {
+                for e in rd.flatten() {
+                    let dirname = e.file_name().to_string_lossy().into_owned();
+                    if dirname.starts_with(&format!("{n}-")) {
+                        let p = e.path().join(format!("{n}.bin"));
+                        if p.exists() { return Some(p); }
+                    }
+                }
+            }
+        }
+    }
+    // Bundled tiny fallback: user tools dir first, then the shipped copy.
+    const TINY: &str = "ggml-tiny-1.0.bin";
+    if let Ok(s) = crate::settings::Settings::load() {
+        let dir = s.text("tools.bin-dir");
+        let dir = dir.trim();
+        if !dir.is_empty() {
+            let cand = std::path::Path::new(dir).join(TINY);
+            if cand.exists() { return Some(cand); }
+        }
+    }
+    crate::thumbs::bundled_file(TINY)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

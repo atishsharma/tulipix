@@ -6,12 +6,14 @@ import { ScrollView } from "std-widgets.slint";
 
 export struct SettingItem {
     key: string,
-    kind: string,     // "toggle" | "text" | "status" | "action" | "header"
+    kind: string,     // "toggle" | "text" | "status" | "action" | "header" | "status-action" | "model-choice"
     label: string,
     desc: string,
-    value: string,    // text value · status value · action button label
+    value: string,    // text value · status value · action button label · chosen model key
     on: bool,         // toggle state
-    state: string,    // status tint: "ok" | "warn" | "error" | "muted"
+    state: string,    // status tint: "ok" | "warn" | "error" | "muted" | "busy"
+    btn: string,      // status-action: trailing button label
+    frac: float,      // busy rows: 0..1 determinate progress (<=0 = sweep)
 }
 
 component PillToggle inherits Rectangle {
@@ -88,15 +90,110 @@ component Row inherits Rectangle {
             on: item.on;
             toggled(v) => { root.toggle(v); }
         }
-        if item.kind == "action": Btn {
+        if item.kind == "action" && item.state != "busy": Btn {
             label: item.value == "" ? "Run" : item.value;
             clicked => { root.action(); }
+        }
+        // Busy action: the button becomes a pill with a sweeping progress
+        // stripe (indeterminate) until the task re-seeds the row.
+        if item.kind == "action" && item.state == "busy": Rectangle {
+            height: 30px; min-width: 110px;
+            horizontal-stretch: 0; vertical-stretch: 0;
+            border-radius: 8px; clip: true;
+            background: Theme.panel;
+            border-color: Accent.color.with-alpha(0.6); border-width: 1px;
+            property <float> ph: Math.mod(animation-tick() / 1ms, 1100) / 1100;
+            Rectangle {
+                width: 44%; height: 100%;
+                border-radius: 8px;
+                background: Accent.color.with-alpha(0.30);
+                x: (parent.width - self.width) * (ph < 0.5 ? ph * 2 : (1 - ph) * 2);
+            }
+            Text {
+                text: "Working…"; color: Theme.text;
+                font-size: 11px; font-weight: 600;
+                width: 100%; height: 100%;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
         }
         if item.kind == "status": HorizontalLayout {
             spacing: 8px; alignment: end;
             horizontal-stretch: 0; vertical-stretch: 0;
             StatusDot { state: item.state; y: (parent.height - self.height) / 2; }
             Text { text: item.value; color: Theme.text-dim; font-size: 12px; vertical-alignment: center; }
+        }
+        // Status + trailing button in ONE row (model downloads: state + a
+        // Download / Verify button used to live on two separate rows).
+        if item.kind == "status-action" && item.state != "busy": HorizontalLayout {
+            spacing: 10px; alignment: end;
+            horizontal-stretch: 0; vertical-stretch: 0;
+            StatusDot { state: item.state; y: (parent.height - self.height) / 2; }
+            Text { text: item.value; color: Theme.text-dim; font-size: 12px; vertical-alignment: center; }
+            Btn { label: item.btn == "" ? "Run" : item.btn; clicked => { root.action(); } }
+        }
+        // Downloading: the button becomes a determinate progress pill.
+        if item.kind == "status-action" && item.state == "busy": HorizontalLayout {
+            spacing: 10px; alignment: end;
+            horizontal-stretch: 0; vertical-stretch: 0;
+            Text { text: item.value; color: Theme.text-dim; font-size: 12px; vertical-alignment: center; }
+            Rectangle {
+                height: 30px; min-width: 110px;
+                horizontal-stretch: 0; vertical-stretch: 0;
+                border-radius: 8px; clip: true;
+                background: Theme.panel;
+                border-color: Accent.color.with-alpha(0.6); border-width: 1px;
+                Rectangle {
+                    x: 0; width: parent.width * Math.max(0.02, Math.min(1, item.frac));
+                    height: 100%;
+                    background: Accent.color.with-alpha(0.35);
+                }
+                Text {
+                    text: Math.round(Math.max(0, Math.min(1, item.frac)) * 100) + "%";
+                    color: Theme.text; font-size: 11px; font-weight: 700;
+                    width: 100%; height: 100%;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+            }
+        }
+        // Spoken-language picker for voice search.
+        if item.kind == "lang-choice": HorizontalLayout {
+            spacing: 5px; alignment: end;
+            horizontal-stretch: 0; vertical-stretch: 0;
+            for opt in [
+                { k: "en",   label: "English" },
+                { k: "hi",   label: "हिंदी" },
+                { k: "pa",   label: "ਪੰਜਾਬੀ" },
+                { k: "auto", label: "Auto" },
+            ]: Rectangle {
+                width: 66px; height: 30px; border-radius: 8px;
+                property <bool> sel: item.value == opt.k || (item.value == "" && opt.k == "en");
+                background: sel ? Accent.color : Theme.panel;
+                border-color: sel ? Accent.color : Theme.outline; border-width: 1px;
+                TouchArea { mouse-cursor: pointer; clicked => { root.text-edited(opt.k); } }
+                Text { text: opt.label; color: sel ? #ffffff : Theme.text;
+                    font-size: 11px; font-weight: sel ? 700 : 500;
+                    horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+        // Segmented whisper-model picker: tiny · base · small · turbo.
+        if item.kind == "model-choice": HorizontalLayout {
+            spacing: 5px; alignment: end;
+            horizontal-stretch: 0; vertical-stretch: 0;
+            for opt in [
+                { k: "tiny",  label: "Tiny" },
+                { k: "base",  label: "Base" },
+                { k: "small", label: "Small" },
+                { k: "turbo", label: "Turbo" },
+            ]: Rectangle {
+                width: 62px; height: 30px; border-radius: 8px;
+                property <bool> sel: item.value == opt.k || (item.value == "" && opt.k == "tiny");
+                background: sel ? Accent.color : Theme.panel;
+                border-color: sel ? Accent.color : Theme.outline; border-width: 1px;
+                TouchArea { mouse-cursor: pointer; clicked => { root.text-edited(opt.k); } }
+                Text { text: opt.label; color: sel ? #ffffff : Theme.text;
+                    font-size: 11px; font-weight: sel ? 700 : 500;
+                    horizontal-alignment: center; vertical-alignment: center; }
+            }
         }
         if item.kind == "text": Rectangle {
             width: 280px; height: 34px;

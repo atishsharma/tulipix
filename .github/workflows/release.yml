@@ -93,11 +93,29 @@ jobs:
             || mv tulipix-*.AppImage "dist/tulipix-${VERSION}-linux-x86_64.AppImage"
 
       - name: Package tar.gz (opt layout)
+        env:
+          # Flip to "1" to also bundle the mpv player + the shared libs the
+          # AppImage step already collected (linuxdeploy resolved libmpv and
+          # friends into AppDir). Adds ~90 MB; off by default because deb/rpm
+          # declare an mpv dependency and most tar.gz users (Arch) have mpv.
+          BUNDLE_MPV_IN_TARBALL: "0"
         run: |
           mkdir -p stage/tulipix/resources/bin
           cp target/release/tulipix stage/tulipix/
           cp -r resources/bin/linux-x86_64 stage/tulipix/resources/bin/
           cp packaging/linux/tulipix.desktop resources/icons/tulipix-256.png stage/tulipix/
+          if [ "$BUNDLE_MPV_IN_TARBALL" = "1" ] && [ -d AppDir/usr/lib ]; then
+            # mpv beside the other tools (tool_bin finds it), its .so deps in
+            # lib/, and a launcher that points the loader at them.
+            cp AppDir/usr/bin/mpv stage/tulipix/resources/bin/linux-x86_64/
+            mkdir -p stage/tulipix/lib
+            cp -a AppDir/usr/lib/. stage/tulipix/lib/
+            printf '%s\n' '#!/bin/sh' \
+              'DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)' \
+              'export LD_LIBRARY_PATH="$DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
+              'exec "$DIR/tulipix" "$@"' > stage/tulipix/tulipix.sh
+            chmod +x stage/tulipix/tulipix.sh
+          fi
           tar -C stage -czf dist/tulipix-${VERSION}-linux-x86_64.tar.gz tulipix
           ls -la dist/
 

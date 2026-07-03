@@ -56,7 +56,7 @@ component ModeBtn inherits Rectangle {
     mt := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     VerticalLayout {
         alignment: center; spacing: 3px;
-        VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: #ffffff; width: 18px; height: 18px; } }
+        HorizontalLayout { alignment: center; AppIcon { source: root.icon; tint: #ffffff; width: 18px; height: 18px; } }
         Text { text: root.label; color: #cfd2d6; font-size: 9px; horizontal-alignment: center; }
     }
 }
@@ -80,7 +80,7 @@ component HoldBtn inherits Rectangle {
     }
     VerticalLayout {
         alignment: center; spacing: 3px;
-        VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: #ffffff; width: 18px; height: 18px; } }
+        HorizontalLayout { alignment: center; AppIcon { source: root.icon; tint: #ffffff; width: 18px; height: 18px; } }
         Text { text: root.label; color: #cfd2d6; font-size: 9px; horizontal-alignment: center; }
     }
 }
@@ -298,7 +298,8 @@ export component PhotoEditor inherits Rectangle {
                             width: 30px; height: 30px; border-radius: 15px;
                             x: (parent.width - self.width) / 2; y: (stage.height - self.height) / 2;
                             background: #1a73e8; border-width: 2px; border-color: #ffffff;
-                            AppIcon { source: Icons.flip-horizontal; tint: #ffffff; width: 14px; height: 14px; }
+                            AppIcon { source: Icons.flip-horizontal; tint: #ffffff; width: 14px; height: 14px;
+                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
                         }
                     }
                     if root.split-compare: Rectangle {

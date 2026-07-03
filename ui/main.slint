@@ -36,8 +36,10 @@ import { Gated, GateMode } from "gated.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
 import { AppIcon, Icons } from "icons.slint";
+import { VoiceSearch } from "voice.slint";
 
 export {
+    VoiceSearch,
     ApiKeyRow,
     LibraryRow,
     ScanLibraryRow,
@@ -159,8 +161,67 @@ component ContentSurface inherits Rectangle {
     clip: true;
 }
 
+// Left-rail nav entry for the Settings page — icon + label, grouped under
+// small captions so ten flat tabs collapse into a scannable outline.
+component SettingsNavItem inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> active;
+    callback clicked();
+    height: 38px;
+    border-radius: 10px;
+    background: active ? Accent.color.with-alpha(0.16) : (touch.has-hover ? Theme.panel : transparent);
+    animate background { duration: 120ms; easing: ease-out; }
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px; spacing: 10px;
+        VerticalLayout { alignment: center;
+            AppIcon { source: root.icon; tint: active ? Accent.color : Theme.text-dim; width: 16px; height: 16px; } }
+        Text {
+            text: label; color: active ? Theme.text : Theme.text-dim;
+            font-size: 12.5px; font-weight: active ? 600 : 500;
+            vertical-alignment: center; horizontal-stretch: 1; overflow: elide;
+        }
+    }
+}
+
+component SettingsNavCaption inherits Text {
+    color: Theme.text-dim.with-alpha(0.75);
+    font-size: 10px; font-weight: 700; letter-spacing: 1px;
+    height: 26px; vertical-alignment: bottom;
+}
+
+// Emoji chip for the profile avatar picker.
+component EmojiChip inherits Rectangle {
+    in property <string> emoji;
+    in property <bool> selected;
+    callback clicked();
+    width: 40px; height: 40px; border-radius: 12px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    background: selected ? Accent.color.with-alpha(0.22) : (touch.has-hover ? Theme.panel : Theme.panel-2);
+    border-width: selected ? 2px : 1px;
+    border-color: selected ? Accent.color : Theme.outline;
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    if root.emoji != "": Text { text: root.emoji; font-size: 19px;
+        horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
+    if root.emoji == "": AppIcon { source: Icons.user; tint: Theme.text-dim; width: 17px; height: 17px;
+        x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+}
+
 component SettingsPage inherits Rectangle {
     in-out property <string> active-tab: "appearance";
+    // Old deep-link keys (palette history, muscle memory) land on the merged
+    // sections instead of dead tabs.
+    property <string> tab:
+        active-tab == "schedule" ? "libraries" :
+        (active-tab == "api-keys" || active-tab == "endpoints") ? "services" :
+        active-tab == "system" ? "advanced" :
+        active-tab == "appearance" ? "profile" :
+        active-tab;
+    // Sub-views inside merged sections. Bindings pre-select the right half
+    // when arriving via an old deep-link; first click takes over.
+    property <string> lib-view: active-tab == "schedule" ? "scanning" : "locations";
+    property <string> svc-view: active-tab == "endpoints" ? "endpoints" : "keys";
 
     in-out property <ThemeChoice> theme-choice;
     in-out property <bool> reduce-motion;
@@ -174,11 +235,12 @@ component SettingsPage inherits Rectangle {
     in property <[ScanLibraryRow]> scan-rows;
     in property <string> default-cadence;
 
-    // Data-driven panels (AI · Endpoints · Security · Data · System).
+    // Data-driven panels (AI · Endpoints · Security · Data · Playback · Advanced).
     in property <[SettingItem]> ai-rows;
     in property <[SettingItem]> endpoint-rows;
     in property <[SettingItem]> security-rows;
     in property <[SettingItem]> data-rows;
+    in property <[SettingItem]> playback-rows;
     in property <[SettingItem]> system-rows;
     callback setting-toggle(string, bool);
     callback setting-text(string, string);
@@ -186,8 +248,14 @@ component SettingsPage inherits Rectangle {
 
     callback theme-changed(ThemeChoice);
     callback user-action(string);
+    callback profile-save(string /*display name*/, string /*avatar emoji*/);
+    in property <string> app-version: "dev";
+    callback open-url(string);
     callback api-row-toggle(int);
     callback api-row-edit(int);
+    callback api-row-key-save(int, string);
+    callback api-row-edit-cancel(int);
+    callback api-row-key-remove(int);
     callback api-row-test(int);
     callback lib-add();
     callback lib-rescan-all();
@@ -204,195 +272,182 @@ component SettingsPage inherits Rectangle {
 
     background: transparent;
 
-    VerticalLayout {
-        padding: 28px; spacing: 18px;
+    HorizontalLayout {
+        padding: 24px; spacing: 24px;
 
-        // Header
-        HorizontalLayout {
-            spacing: 12px; alignment: start;
-            Rectangle {
-                width: 6px; height: 36px;
-                border-radius: 3px;
-                background: Accent.color;
-                horizontal-stretch: 0;
-            }
-            VerticalLayout { alignment: center; horizontal-stretch: 0;
-                Rectangle { width: 38px; height: 38px; border-radius: 11px;
+        // ── Left rail: grouped navigation ──────────────────────────────────
+        VerticalLayout {
+            width: 218px; spacing: 3px;
+            HorizontalLayout {
+                spacing: 10px; alignment: start; height: 52px;
+                Rectangle { width: 36px; height: 36px; border-radius: 11px;
+                    y: 2px;
                     background: Accent.color.with-alpha(0.16);
-                    AppIcon { source: Icons.settings; tint: Accent.color; width: 20px; height: 20px;
-                        x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
-            VerticalLayout {
-                spacing: 2px;
-                Text { text: "Settings"; color: Theme.text; font-size: 26px; font-weight: 700; }
-                Text { text: "Appearance · Libraries · Schedule · API Keys · Profile"; color: Theme.text-dim; font-size: 12px; }
+                    AppIcon { source: Icons.settings; tint: Accent.color; width: 19px; height: 19px;
+                        x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } }
+                Text { text: "Settings"; color: Theme.text; font-size: 24px; font-weight: 700;
+                    vertical-alignment: center; }
             }
-            Rectangle { horizontal-stretch: 1; }
+
+            SettingsNavCaption { text: "PERSONAL"; }
+            SettingsNavItem { label: "Profile & Style"; icon: Icons.user; active: root.tab == "profile"; clicked => { root.active-tab = "profile"; } }
+
+            SettingsNavCaption { text: "MEDIA"; }
+            SettingsNavItem { label: "Libraries"; icon: Icons.folder;       active: root.tab == "libraries"; clicked => { root.active-tab = "libraries"; } }
+            SettingsNavItem { label: "Playback";  icon: Icons.monitor-play; active: root.tab == "playback";  clicked => { root.active-tab = "playback"; } }
+
+            SettingsNavCaption { text: "CONNECTIONS"; }
+            SettingsNavItem { label: "Services & Keys"; icon: Icons.zap;      active: root.tab == "services"; clicked => { root.active-tab = "services"; } }
+            SettingsNavItem { label: "AI Features";     icon: Icons.sparkles; active: root.tab == "ai";       clicked => { root.active-tab = "ai"; } }
+
+            SettingsNavCaption { text: "PRIVACY & DATA"; }
+            SettingsNavItem { label: "Security";      icon: Icons.lock;    active: root.tab == "security"; clicked => { root.active-tab = "security"; } }
+            SettingsNavItem { label: "Backup & Data"; icon: Icons.archive; active: root.tab == "data";     clicked => { root.active-tab = "data"; } }
+
+            SettingsNavCaption { text: "SYSTEM"; }
+            SettingsNavItem { label: "Advanced"; icon: Icons.wrench; active: root.tab == "advanced"; clicked => { root.active-tab = "advanced"; } }
+
+            Rectangle { vertical-stretch: 1; }
         }
 
-        // Tab strip
-        HorizontalLayout {
-            spacing: 8px; alignment: start;
-            SettingsTab { label: "Appearance"; active: root.active-tab == "appearance"; clicked => { root.active-tab = "appearance"; } }
-            SettingsTab { label: "Libraries";  active: root.active-tab == "libraries";  clicked => { root.active-tab = "libraries"; } }
-            SettingsTab { label: "Schedule";   active: root.active-tab == "schedule";   clicked => { root.active-tab = "schedule"; } }
-            SettingsTab { label: "API Keys";   active: root.active-tab == "api-keys";   clicked => { root.active-tab = "api-keys"; } }
-            SettingsTab { label: "AI Models";  active: root.active-tab == "ai";          clicked => { root.active-tab = "ai"; } }
-            SettingsTab { label: "Endpoints";  active: root.active-tab == "endpoints";   clicked => { root.active-tab = "endpoints"; } }
-            SettingsTab { label: "Security";   active: root.active-tab == "security";    clicked => { root.active-tab = "security"; } }
-            SettingsTab { label: "Data";       active: root.active-tab == "data";        clicked => { root.active-tab = "data"; } }
-            SettingsTab { label: "System";     active: root.active-tab == "system";      clicked => { root.active-tab = "system"; } }
-            SettingsTab { label: "Profile";    active: root.active-tab == "profile";     clicked => { root.active-tab = "profile"; } }
-            Rectangle { horizontal-stretch: 1; }
-        }
+        // Thin divider between rail and content.
+        Rectangle { width: 1px; background: Theme.outline; }
 
-        // Content stage — exactly one child visible at a time, wrapped in
-        // a Rectangle that forces full-stage geometry.
+        // ── Content stage — exactly one child visible at a time ────────────
         Rectangle {
             background: transparent;
             vertical-stretch: 1;
             horizontal-stretch: 1;
 
-            if active-tab == "appearance": Rectangle {
+            // Libraries — watched locations + scanning cadence in one place
+            // (was two separate tabs: Libraries and Schedule).
+            if tab == "libraries": Rectangle {
                 width: parent.width; height: parent.height;
                 background: transparent;
                 VerticalLayout {
-                    spacing: 14px; padding: 4px;
-                    Text { text: "Theme"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
-                    ThemePicker {
-                        choice <=> root.theme-choice;
-                        changed(c) => { root.theme-changed(c); }
+                    spacing: 14px;
+                    HorizontalLayout {
+                        spacing: 8px; alignment: start;
+                        SettingsTab { label: "Watched folders"; active: root.lib-view == "locations"; clicked => { root.lib-view = "locations"; } }
+                        SettingsTab { label: "Auto-rescan";     active: root.lib-view == "scanning";  clicked => { root.lib-view = "scanning"; } }
+                        Rectangle { horizontal-stretch: 1; }
                     }
-
-                    Rectangle { height: 14px; }
-                    Text { text: "Motion"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
                     Rectangle {
-                        height: 60px;
-                        border-radius: Theme.radius-md;
-                        background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
-                        HorizontalLayout {
-                            padding: 14px; spacing: 14px; alignment: stretch;
-                            VerticalLayout {
-                                alignment: center; spacing: 3px; horizontal-stretch: 1;
-                                Text { text: "Reduce motion"; color: Theme.text; font-size: 13px; font-weight: 600; }
-                                Text { text: "Skip ripple waves, orb drift, and screensaver fades."; color: Theme.text-dim; font-size: 11px; }
-                            }
-                            // Pill toggle.
-                            Rectangle {
-                                width: 52px; height: 28px;
-                                horizontal-stretch: 0; vertical-stretch: 0;
-                                y: (parent.height - self.height) / 2;
-                                border-radius: 14px;
-                                background: root.reduce-motion ? Accent.color : Theme.outline;
-                                animate background { duration: 140ms; easing: ease-out; }
-                                TouchArea { mouse-cursor: pointer; clicked => { root.reduce-motion-changed(!root.reduce-motion); } }
-                                Rectangle {
-                                    width: 22px; height: 22px; border-radius: 11px;
-                                    background: #ffffff;
-                                    x: root.reduce-motion ? parent.width - self.width - 3px : 3px;
-                                    y: (parent.height - self.height) / 2;
-                                    animate x { duration: 140ms; easing: ease-out; }
-                                }
-                            }
+                        vertical-stretch: 1; background: transparent;
+                        if root.lib-view == "locations": SettingsLibraries {
+                            width: parent.width; height: parent.height;
+                            rows: root.library-rows;
+                            busy-task: root.lib-busy-task;
+                            busy-frac: root.lib-busy-frac;
+                            add-location => { root.lib-add(); }
+                            rescan-all => { root.lib-rescan-all(); }
+                            clear-thumb-cache => { root.lib-clear-thumb-cache(); }
+                            rebuild-fts => { root.lib-rebuild-fts(); }
+                            reset-app => { root.lib-reset-app(); }
+                            row-rescan(i) => { root.lib-row-rescan(i); }
+                            row-rethumb(i) => { root.lib-row-rethumb(i); }
+                            row-edit-exclude(i) => { root.lib-row-edit-exclude(i); }
+                            row-remove(i) => { root.lib-row-remove(i); }
+                            row-save-section(i, s) => { root.lib-row-save-section(i, s); }
+                        }
+                        if root.lib-view == "scanning": SettingsScanSchedule {
+                            width: parent.width; height: parent.height;
+                            default-cadence: root.default-cadence;
+                            rows: root.scan-rows;
+                            set-default-cadence(c) => { root.set-default-cadence(c); }
+                            set-override(id, c) => { root.set-cadence-override(id, c); }
                         }
                     }
-                    Rectangle { vertical-stretch: 1; }
                 }
             }
 
-            if active-tab == "libraries": Rectangle {
+            // Services & Keys — API keys and endpoint overrides merged
+            // (was two separate tabs: API Keys and Endpoints).
+            if tab == "services": Rectangle {
                 width: parent.width; height: parent.height;
                 background: transparent;
-                SettingsLibraries {
-                    width: parent.width; height: parent.height;
-                    rows: root.library-rows;
-                    busy-task: root.lib-busy-task;
-                    busy-frac: root.lib-busy-frac;
-                    add-location => { root.lib-add(); }
-                    rescan-all => { root.lib-rescan-all(); }
-                    clear-thumb-cache => { root.lib-clear-thumb-cache(); }
-                    rebuild-fts => { root.lib-rebuild-fts(); }
-                    reset-app => { root.lib-reset-app(); }
-                    row-rescan(i) => { root.lib-row-rescan(i); }
-                    row-rethumb(i) => { root.lib-row-rethumb(i); }
-                    row-edit-exclude(i) => { root.lib-row-edit-exclude(i); }
-                    row-remove(i) => { root.lib-row-remove(i); }
-                    row-save-section(i, s) => { root.lib-row-save-section(i, s); }
+                VerticalLayout {
+                    spacing: 14px;
+                    HorizontalLayout {
+                        spacing: 8px; alignment: start;
+                        SettingsTab { label: "Service keys"; active: root.svc-view == "keys";      clicked => { root.svc-view = "keys"; } }
+                        SettingsTab { label: "Servers & sources"; active: root.svc-view == "endpoints"; clicked => { root.svc-view = "endpoints"; } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    Rectangle {
+                        vertical-stretch: 1; background: transparent;
+                        if root.svc-view == "keys": SettingsApiKeys {
+                            width: parent.width; height: parent.height;
+                            rows: root.api-rows;
+                            row-toggle(i) => { root.api-row-toggle(i); }
+                            row-edit(i)   => { root.api-row-edit(i); }
+                            row-key-save(i, k) => { root.api-row-key-save(i, k); }
+                            row-edit-cancel(i) => { root.api-row-edit-cancel(i); }
+                            row-key-remove(i)  => { root.api-row-key-remove(i); }
+                            row-test(i)   => { root.api-row-test(i); }
+                        }
+                        if root.svc-view == "endpoints": SettingsList {
+                            width: parent.width; height: parent.height;
+                            title: "Servers & sources";
+                            blurb: "Optional keys for richer search, extra metadata sources, and server overrides for self-hosters. Everything here works fine left at its default.";
+                            rows: root.endpoint-rows;
+                            toggle(k, v) => { root.setting-toggle(k, v); }
+                            text-edited(k, s) => { root.setting-text(k, s); }
+                            action(k) => { root.setting-action(k); }
+                        }
+                    }
                 }
             }
 
-            if active-tab == "schedule": Rectangle {
-                width: parent.width; height: parent.height;
-                background: transparent;
-                SettingsScanSchedule {
-                    width: parent.width; height: parent.height;
-                    default-cadence: root.default-cadence;
-                    rows: root.scan-rows;
-                    set-default-cadence(c) => { root.set-default-cadence(c); }
-                    set-override(id, c) => { root.set-cadence-override(id, c); }
-                }
-            }
-
-            if active-tab == "api-keys": Rectangle {
-                width: parent.width; height: parent.height;
-                background: transparent;
-                SettingsApiKeys {
-                    width: parent.width; height: parent.height;
-                    rows: root.api-rows;
-                    row-toggle(i) => { root.api-row-toggle(i); }
-                    row-edit(i)   => { root.api-row-edit(i); }
-                    row-test(i)   => { root.api-row-test(i); }
-                }
-            }
-
-            if active-tab == "ai": Rectangle {
+            if tab == "playback": Rectangle {
                 width: parent.width; height: parent.height; background: transparent;
                 SettingsList {
                     width: parent.width; height: parent.height;
-                    title: "AI Models"; blurb: "On-device models, auto-captioning, voice search, and optional cloud offload. Models download on demand.";
+                    title: "Playback"; blurb: "Subtitles, audio output, video quality, and the music equalizer.";
+                    rows: root.playback-rows;
+                    toggle(k, v) => { root.setting-toggle(k, v); }
+                    text-edited(k, s) => { root.setting-text(k, s); }
+                    action(k) => { root.setting-action(k); }
+                }
+            }
+            if tab == "ai": Rectangle {
+                width: parent.width; height: parent.height; background: transparent;
+                SettingsList {
+                    width: parent.width; height: parent.height;
+                    title: "AI Features"; blurb: "Everything runs on this device. Models download once, on demand — nothing leaves your computer unless you turn on cloud offload.";
                     rows: root.ai-rows;
                     toggle(k, v) => { root.setting-toggle(k, v); }
                     text-edited(k, s) => { root.setting-text(k, s); }
                     action(k) => { root.setting-action(k); }
                 }
             }
-            if active-tab == "endpoints": Rectangle {
+            if tab == "security": Rectangle {
                 width: parent.width; height: parent.height; background: transparent;
                 SettingsList {
                     width: parent.width; height: parent.height;
-                    title: "Endpoints & Providers"; blurb: "Override default service URLs (self-host / mirror) and toggle optional metadata providers.";
-                    rows: root.endpoint-rows;
-                    toggle(k, v) => { root.setting-toggle(k, v); }
-                    text-edited(k, s) => { root.setting-text(k, s); }
-                    action(k) => { root.setting-action(k); }
-                }
-            }
-            if active-tab == "security": Rectangle {
-                width: parent.width; height: parent.height; background: transparent;
-                SettingsList {
-                    width: parent.width; height: parent.height;
-                    title: "Security"; blurb: "Idle auto-lock, passkey unlock, encryption at rest, and OS sandbox status.";
+                    title: "Security"; blurb: "Lock the app when you step away, unlock with a passkey, and encrypt the library databases.";
                     rows: root.security-rows;
                     toggle(k, v) => { root.setting-toggle(k, v); }
                     text-edited(k, s) => { root.setting-text(k, s); }
                     action(k) => { root.setting-action(k); }
                 }
             }
-            if active-tab == "data": Rectangle {
+            if tab == "data": Rectangle {
                 width: parent.width; height: parent.height; background: transparent;
                 SettingsList {
                     width: parent.width; height: parent.height;
-                    title: "Data & Tools"; blurb: "Backup / restore, portable export, migration import, and bug reports.";
+                    title: "Backup & Data"; blurb: "Back up your settings, export the library, import from other apps, and report problems.";
                     rows: root.data-rows;
                     toggle(k, v) => { root.setting-toggle(k, v); }
                     text-edited(k, s) => { root.setting-text(k, s); }
                     action(k) => { root.setting-action(k); }
                 }
             }
-            if active-tab == "system": Rectangle {
+            if tab == "advanced": Rectangle {
                 width: parent.width; height: parent.height; background: transparent;
                 SettingsList {
                     width: parent.width; height: parent.height;
-                    title: "System & Performance"; blurb: "Live diagnostics, bundled tools, platform integrations, notifications, and plugins.";
+                    title: "Advanced"; blurb: "Live diagnostics, bundled command-line tools, and platform integration status. Safe to ignore day-to-day.";
                     rows: root.system-rows;
                     toggle(k, v) => { root.setting-toggle(k, v); }
                     text-edited(k, s) => { root.setting-text(k, s); }
@@ -400,67 +455,195 @@ component SettingsPage inherits Rectangle {
                 }
             }
 
-            if active-tab == "profile": Rectangle {
+            // Profile & Style — one centred card column (identity + avatar +
+            // appearance + privacy), not edge-to-edge rows.
+            if tab == "profile": Rectangle {
                 width: parent.width; height: parent.height;
                 background: transparent;
+                // Avatar choice being edited; starts from the saved value.
+                property <string> sel-emoji: user.avatar-emoji;
                 ScrollView {
                   width: parent.width; height: parent.height;
-                  VerticalLayout {
-                    spacing: 16px; padding: 4px;
+                  HorizontalLayout {
+                    alignment: center;
+                    VerticalLayout {
+                      width: min(540px, root.width - 40px);
+                      spacing: 18px; padding-top: 10px; padding-bottom: 24px;
 
-                    // ── Profile (scaffold) ─────────────────────────────────
-                    Text { text: "Profile"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
-                    Rectangle {
-                        height: 92px; border-radius: Theme.radius-md;
+                      // ── Portfolio card: banner, overlapping avatar, name,
+                      // version + project links, avatar picker, save ─────────
+                      Rectangle {
+                        height: 574px;
+                        border-radius: 20px; clip: true;
                         background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
-                        HorizontalLayout {
-                            padding: 16px; spacing: 14px;
+                        drop-shadow-blur: 28px; drop-shadow-color: #00000038;
+
+                        // Banner — layered gradients for depth.
+                        Rectangle {
+                            x: 0; y: 0; width: 100%; height: 104px;
+                            background: @linear-gradient(120deg, Theme.brand, Theme.brand-2, Accent.color);
+                            Rectangle { // soft highlight orb
+                                x: parent.width - 150px; y: -55px; width: 190px; height: 190px;
+                                border-radius: 95px; background: #ffffff2a;
+                            }
                             Rectangle {
-                                width: 56px; height: 56px; border-radius: 28px;
-                                background: @linear-gradient(135deg, Theme.brand, Theme.brand-2);
-                                y: (parent.height - self.height) / 2; horizontal-stretch: 0;
-                                if user.avatar-emoji == "": AppIcon { source: Icons.user; tint: #ffffff; width: 26px; height: 26px; }
-                                Text { text: user.avatar-emoji; visible: user.avatar-emoji != ""; font-size: 26px;
-                                    horizontal-alignment: center; vertical-alignment: center; }
+                                x: -40px; y: 44px; width: 130px; height: 130px;
+                                border-radius: 65px; background: #00000022;
                             }
+                        }
+
+                        // Avatar — overlaps the banner edge, ring matches card.
+                        Rectangle {
+                            width: 96px; height: 96px; border-radius: 48px;
+                            x: (parent.width - self.width) / 2; y: 104px - 48px;
+                            background: @linear-gradient(135deg, Theme.brand, Theme.brand-2);
+                            border-width: 4px; border-color: Theme.panel-2;
+                            drop-shadow-blur: 16px; drop-shadow-color: #00000055;
+                            if sel-emoji == "": AppIcon { source: Icons.user; tint: #ffffff; width: 40px; height: 40px;
+                                x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+                            if sel-emoji != "": Text { text: sel-emoji; font-size: 44px;
+                                width: 100%; height: 100%;
+                                horizontal-alignment: center; vertical-alignment: center; }
+                        }
+
+                        VerticalLayout {
+                            x: 0; y: 160px; width: parent.width;
+                            spacing: 12px;
+                            padding-left: 28px; padding-right: 28px;
+
+                            // Name — borderless centred field, accent underline on focus.
                             VerticalLayout {
-                                alignment: center; spacing: 3px; horizontal-stretch: 1;
-                                Text { text: user.display-name == "" ? "Local user" : user.display-name; color: Theme.text; font-size: 15px; font-weight: 700; }
-                                Text { text: user.secondary; color: Theme.text-dim; font-size: 11px; }
+                                spacing: 4px;
+                                name-ti := TextInput {
+                                    text: user.display-name;
+                                    color: Theme.text; font-size: 21px; font-weight: 700;
+                                    horizontal-alignment: center; single-line: true;
+                                    height: 30px;
+                                }
+                                if name-ti.text == "" && !name-ti.has-focus: Text {
+                                    text: "Click to set your name"; color: Theme.text-dim; font-size: 12px;
+                                    horizontal-alignment: center;
+                                }
+                                Rectangle {
+                                    height: 2px; width: 180px; border-radius: 1px;
+                                    x: (parent.width - self.width) / 2;
+                                    background: name-ti.has-focus ? Accent.color : Theme.outline;
+                                    animate background { duration: 140ms; easing: ease-out; }
+                                }
                             }
-                            VerticalLayout { alignment: center; horizontal-stretch: 0; spacing: 6px;
-                                AcctBtn { label: "Edit Profile"; clicked => { root.user-action("edit-profile"); } }
+
+                            // Version chip + project links.
+                            HorizontalLayout {
+                                spacing: 8px; alignment: center;
+                                Rectangle {
+                                    height: 28px; border-radius: 14px;
+                                    horizontal-stretch: 0; vertical-stretch: 0;
+                                    background: Accent.color.with-alpha(0.16);
+                                    border-width: 1px; border-color: Accent.color.with-alpha(0.5);
+                                    HorizontalLayout { padding-left: 12px; padding-right: 12px;
+                                        Text { text: "Tulipix v" + root.app-version; color: Accent.color;
+                                            font-size: 11px; font-weight: 700; vertical-alignment: center; } }
+                                }
+                                Rectangle {
+                                    height: 28px; border-radius: 14px;
+                                    horizontal-stretch: 0; vertical-stretch: 0;
+                                    background: gh-t.has-hover ? Theme.panel : transparent;
+                                    border-width: 1px; border-color: Theme.outline;
+                                    gh-t := TouchArea { mouse-cursor: pointer;
+                                        clicked => { root.open-url("https://github.com/atishsharma/tulipix"); } }
+                                    HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 6px;
+                                        VerticalLayout { alignment: center;
+                                            AppIcon { source: Icons.command; tint: Theme.text-dim; width: 12px; height: 12px; } }
+                                        Text { text: "GitHub"; color: Theme.text; font-size: 11px; font-weight: 600; vertical-alignment: center; } }
+                                }
+                                Rectangle {
+                                    height: 28px; border-radius: 14px;
+                                    horizontal-stretch: 0; vertical-stretch: 0;
+                                    background: rel-t.has-hover ? Theme.panel : transparent;
+                                    border-width: 1px; border-color: Theme.outline;
+                                    rel-t := TouchArea { mouse-cursor: pointer;
+                                        clicked => { root.open-url("https://github.com/atishsharma/tulipix/releases"); } }
+                                    HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 6px;
+                                        VerticalLayout { alignment: center;
+                                            AppIcon { source: Icons.download; tint: Theme.text-dim; width: 12px; height: 12px; } }
+                                        Text { text: "Releases"; color: Theme.text; font-size: 11px; font-weight: 600; vertical-alignment: center; } }
+                                }
+                            }
+
+                            Rectangle { height: 2px; }
+
+                            // Avatar picker — two tight rows.
+                            HorizontalLayout {
+                                spacing: 8px; alignment: center;
+                                EmojiChip { emoji: "";   selected: sel-emoji == "";   clicked => { sel-emoji = ""; } }
+                                EmojiChip { emoji: "🙂"; selected: sel-emoji == "🙂"; clicked => { sel-emoji = "🙂"; } }
+                                EmojiChip { emoji: "😎"; selected: sel-emoji == "😎"; clicked => { sel-emoji = "😎"; } }
+                                EmojiChip { emoji: "🦊"; selected: sel-emoji == "🦊"; clicked => { sel-emoji = "🦊"; } }
+                                EmojiChip { emoji: "🐼"; selected: sel-emoji == "🐼"; clicked => { sel-emoji = "🐼"; } }
+                                EmojiChip { emoji: "🌸"; selected: sel-emoji == "🌸"; clicked => { sel-emoji = "🌸"; } }
+                            }
+                            HorizontalLayout {
+                                spacing: 8px; alignment: center;
+                                EmojiChip { emoji: "⚡"; selected: sel-emoji == "⚡"; clicked => { sel-emoji = "⚡"; } }
+                                EmojiChip { emoji: "🎧"; selected: sel-emoji == "🎧"; clicked => { sel-emoji = "🎧"; } }
+                                EmojiChip { emoji: "📷"; selected: sel-emoji == "📷"; clicked => { sel-emoji = "📷"; } }
+                                EmojiChip { emoji: "🎬"; selected: sel-emoji == "🎬"; clicked => { sel-emoji = "🎬"; } }
+                                EmojiChip { emoji: "🚀"; selected: sel-emoji == "🚀"; clicked => { sel-emoji = "🚀"; } }
+                                EmojiChip { emoji: "🌙"; selected: sel-emoji == "🌙"; clicked => { sel-emoji = "🌙"; } }
+                            }
+
+                            // Save — wide accent pill.
+                            HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 180px; height: 36px; border-radius: 18px;
+                                    horizontal-stretch: 0; vertical-stretch: 0;
+                                    background: save-t.has-hover ? Accent.color.with-alpha(0.85) : Accent.color;
+                                    animate background { duration: 120ms; easing: ease-out; }
+                                    save-t := TouchArea { mouse-cursor: pointer;
+                                        clicked => { root.profile-save(name-ti.text, sel-emoji); } }
+                                    Text { text: "Save profile"; color: #ffffff; font-size: 12px; font-weight: 700;
+                                        width: 100%; height: 100%;
+                                        horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                            }
+                            // ── Appearance — same card, hairline divider ────
+                            Rectangle { height: 1px; background: Theme.outline; }
+                            Text { text: "APPEARANCE"; color: Theme.text-dim; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+                            ThemePicker {
+                                choice <=> root.theme-choice;
+                                changed(c) => { root.theme-changed(c); }
+                            }
+                            HorizontalLayout {
+                                spacing: 12px;
+                                VerticalLayout {
+                                    alignment: center; spacing: 2px; horizontal-stretch: 1;
+                                    Text { text: "Reduce motion"; color: Theme.text; font-size: 13px; font-weight: 600; }
+                                    Text { text: "Calmer UI — skips ripples, drifts, and fades"; color: Theme.text-dim; font-size: 11px; }
+                                }
+                                Rectangle {
+                                    width: 52px; height: 28px;
+                                    horizontal-stretch: 0; vertical-stretch: 0;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: 14px;
+                                    background: root.reduce-motion ? Accent.color : Theme.outline;
+                                    animate background { duration: 140ms; easing: ease-out; }
+                                    TouchArea { mouse-cursor: pointer; clicked => { root.reduce-motion-changed(!root.reduce-motion); } }
+                                    Rectangle {
+                                        width: 22px; height: 22px; border-radius: 11px;
+                                        background: #ffffff;
+                                        x: root.reduce-motion ? parent.width - self.width - 3px : 3px;
+                                        y: (parent.height - self.height) / 2;
+                                        animate x { duration: 140ms; easing: ease-out; }
+                                    }
+                                }
                             }
                         }
-                    }
+                      }
 
-                    // ── Local-only — no account mode, no sign-in ───────────
-                    Text { text: "Privacy"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
-                    Rectangle {
-                        height: 64px; border-radius: Theme.radius-md;
-                        background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
-                        HorizontalLayout {
-                            padding: 14px; spacing: 12px;
-                            HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.home; tint: Theme.text; width: 13px; height: 13px; } } Text { text: " This app is local at heart — everything stays on this device. No accounts, no servers, full access."; color: Theme.text; font-size: 13px; vertical-alignment: center; } }
-                            VerticalLayout { alignment: center; horizontal-stretch: 0;
-                                ModePill { mode: user.mode; } }
-                        }
+                      // Spacer stops the card stretching into leftover height.
+                      Rectangle { vertical-stretch: 1; }
                     }
-
-                    // ── Managed profiles (scaffold) ────────────────────────
-                    Text { text: "Profiles"; color: Theme.text-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.7px; }
-                    Rectangle {
-                        height: 56px; border-radius: Theme.radius-md;
-                        background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
-                        HorizontalLayout {
-                            padding: 14px; spacing: 10px;
-                            Text { text: (user.display-name == "" ? "Local user" : user.display-name) + "  ·  Owner";
-                                color: Theme.text; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; }
-                            VerticalLayout { alignment: center; AcctBtn { label: "Add profile"; clicked => { root.user-action("profiles"); } } }
-                        }
-                    }
-
-                    Rectangle { vertical-stretch: 1; min-height: 12px; }
                   }
                 }
             }
@@ -502,10 +685,14 @@ export component MainWindow inherits Window {
     in-out property <[SettingItem]> endpoint-rows: [];
     in-out property <[SettingItem]> security-rows: [];
     in-out property <[SettingItem]> data-rows: [];
+    in-out property <[SettingItem]> playback-rows: [];
     in-out property <[SettingItem]> system-rows: [];
     callback setting-toggle(string, bool);
     callback setting-text(string, string);
     callback setting-action(string);
+    callback profile-save(string, string);
+    in-out property <string> app-version: "dev";
+    callback open-url(string);
     in-out property <[PhotoTile]> photo-tiles: [];
     in-out property <[VideoTile]> video-tiles: [];
     // Videos library tab (np.p3.star-archive-trash / last-accessed / watch-progress).
@@ -1704,6 +1891,9 @@ callback cloud-go-home();
 
     callback api-row-toggle(int);
     callback api-row-edit(int);
+    callback api-row-key-save(int, string);
+    callback api-row-edit-cancel(int);
+    callback api-row-key-remove(int);
     callback api-row-test(int);
 
     callback lib-add();
@@ -2444,6 +2634,7 @@ callback cloud-go-home();
                 endpoint-rows: root.endpoint-rows;
                 security-rows: root.security-rows;
                 data-rows: root.data-rows;
+                playback-rows: root.playback-rows;
                 system-rows: root.system-rows;
                 default-cadence: root.default-cadence;
                 setting-toggle(k, v) => { root.setting-toggle(k, v); }
@@ -2451,8 +2642,14 @@ callback cloud-go-home();
                 setting-action(k) => { root.setting-action(k); }
                 theme-changed(c) => { root.theme-changed(c); }
                 user-action(a) => { root.user-action(a); }
+                profile-save(n, e) => { root.profile-save(n, e); }
+                app-version: root.app-version;
+                open-url(u) => { root.open-url(u); }
                 api-row-toggle(i) => { root.api-row-toggle(i); }
                 api-row-edit(i)   => { root.api-row-edit(i); }
+                api-row-key-save(i, k) => { root.api-row-key-save(i, k); }
+                api-row-edit-cancel(i) => { root.api-row-edit-cancel(i); }
+                api-row-key-remove(i)  => { root.api-row-key-remove(i); }
                 api-row-test(i)   => { root.api-row-test(i); }
                 lib-add => { root.lib-add(); }
                 lib-rescan-all => { root.lib-rescan-all(); }
