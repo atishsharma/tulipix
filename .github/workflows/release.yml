@@ -144,9 +144,18 @@ jobs:
           # bundle the standalone player next to the other tools
           Copy-Item mpv-pkg\mpv.exe resources\bin\windows-x86_64\
           if (Test-Path mpv-pkg\mpv.com) { Copy-Item mpv-pkg\mpv.com resources\bin\windows-x86_64\ }
-          # import lib for the embedded-mpv link
-          $def = Get-ChildItem -Recurse mpv-dev -Filter *.def | Select-Object -First 1
-          lib.exe /def:$($def.FullName) /machine:x64 /out:mpv-dev\mpv.lib
+          # Import lib for the embedded-mpv link. The dev package ships no .def
+          # (only a GNU libmpv.dll.a, useless to MSVC), so build the .def from
+          # the DLL's real export table — a stale bundled def once missed
+          # mpv_render_context_free and broke the final link.
+          $dll = Get-ChildItem -Recurse mpv-dev -Filter "*mpv*.dll" | Select-Object -First 1
+          $lines = dumpbin /exports $dll.FullName
+          $names = $lines | Select-String '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]{8}\s+(\S+)' |
+            ForEach-Object { $_.Matches[0].Groups[1].Value }
+          if ($names.Count -lt 50) { throw "export parse failed: $($names.Count) symbols" }
+          Set-Content mpv-dev\mpv.def -Encoding ascii -Value ("LIBRARY $($dll.Name)`nEXPORTS")
+          Add-Content mpv-dev\mpv.def -Encoding ascii -Value $names
+          lib.exe /def:mpv-dev\mpv.def /machine:x64 /out:mpv-dev\mpv.lib
           echo "TULIPIX_MPV_LIB_DIR=$PWD\mpv-dev" >> $env:GITHUB_ENV
 
       - name: "Build (full: embedded-mpv + skia)"
