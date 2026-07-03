@@ -92,7 +92,12 @@ fn main() -> Result<()> {
         tracing::info!(name=%bin.name, version=%bin.version, url=%src.url, latest=src.latest, "fetch");
         if dry_run { continue; }
 
-        let bytes = reqwest::blocking::get(&src.url)?.error_for_status()?.bytes()?;
+        // Real UA — SourceForge/CDNs 403 the default reqwest agent from CI IPs.
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("Mozilla/5.0 (X11; Linux x86_64) tulipix-fetch/1.0")
+            .timeout(std::time::Duration::from_secs(600))
+            .build()?;
+        let bytes = client.get(&src.url).send()?.error_for_status()?.bytes()?;
         if !src.latest {
             let mut h = Sha256::new();
             h.update(&bytes);

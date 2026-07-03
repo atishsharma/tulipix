@@ -177,22 +177,8 @@ archive = "zip"
 extract = ["bin/ffmpeg.exe", "bin/ffprobe.exe"]
 latest = true
 
-# mpv — WINDOWS ONLY (Linux/macOS use system mpv or the Tools-directory setting).
-# Bundles the standalone player `mpv.exe` (spawned for video playback). The
-# SourceForge "64bit/latest" link always redirects to the newest shinchiro .7z;
-# `mpv.com` (the console wrapper) comes along too. NOTE: this is the player, not
-# `libmpv` — the embedded audio path still needs mpv-2.dll (mpv-dev) at runtime.
-[[binary]]
-name = "mpv"
-version = "latest"
-[[binary.sources]]
-os = "windows"
-arch = "x86_64"
-url = "https://sourceforge.net/projects/mpv-player-windows/files/64bit/latest/download"
-sha256 = "latest"
-archive = "7z"
-extract = ["mpv.exe", "mpv.com"]
-latest = true
+# mpv (Windows player + libmpv dev) is fetched in the release workflow from the
+# GitHub-hosted zhongfly/mpv-winbuild mirror — SourceForge 403s CI runner IPs.
 
 # rclone — powers Cloud section
 [[binary]]
@@ -263,17 +249,17 @@ extract = ["exiftool(-k).exe", "exiftool_files/"]
 [[binary.sources]]
 os = "macos"
 arch = "x86_64"
-url = "https://downloads.sourceforge.net/project/exiftool/ExifTool-13.59.pkg"
-sha256 = "b7c366eaa6ede74451177128b28e28c8df9ed0505e27ce4492cf5d05b4cc6618"
-archive = "pkg"
-extract = ["exiftool"]
+url = "https://downloads.sourceforge.net/project/exiftool/Image-ExifTool-13.59.tar.gz"
+sha256 = "668ea3acececb7235fbd0f4900e72d5f12c9b07e5c778fd36cb1e9b5828fd65a"
+archive = "tar.gz"
+extract = ["exiftool", "lib/"]
 [[binary.sources]]
 os = "macos"
 arch = "aarch64"
-url = "https://downloads.sourceforge.net/project/exiftool/ExifTool-13.59.pkg"
-sha256 = "b7c366eaa6ede74451177128b28e28c8df9ed0505e27ce4492cf5d05b4cc6618"
-archive = "pkg"
-extract = ["exiftool"]
+url = "https://downloads.sourceforge.net/project/exiftool/Image-ExifTool-13.59.tar.gz"
+sha256 = "668ea3acececb7235fbd0f4900e72d5f12c9b07e5c778fd36cb1e9b5828fd65a"
+archive = "tar.gz"
+extract = ["exiftool", "lib/"]
 
 # ffprobe for macOS — martin-riedl ships it as its own zip (Linux/Windows get
 # ffprobe from the ffmpeg archive above).

@@ -25,8 +25,9 @@ jobs:
       - name: System deps (libmpv link + skia/gl build deps + mpv to bundle)
         run: |
           sudo apt-get update
+          # mold: the committed .cargo/config.toml links Linux builds with it
           sudo apt-get install -y --no-install-recommends \
-            libmpv-dev mpv cmake ninja-build \
+            libmpv-dev mpv mold cmake ninja-build \
             libfontconfig1-dev libfreetype6-dev libgl1-mesa-dev libegl1-mesa-dev \
             libxkbcommon-dev libwayland-dev
 
@@ -122,12 +123,23 @@ jobs:
       - name: Fetch bundled tools (ffmpeg, yt-dlp, mpv.exe, whisper, exiftool, rclone, model)
         run: cargo run -p fetch-resources
 
-      - name: libmpv dev (mpv.lib for the embedded player + runtime DLL)
+      - name: mpv player + libmpv dev (GitHub mirror — SourceForge 403s CI IPs)
         shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          curl.exe -sSfL -o mpv-dev.7z "https://sourceforge.net/projects/mpv-player-windows/files/libmpv/latest/download"
+          $rel = gh api repos/zhongfly/mpv-winbuild/releases/latest | ConvertFrom-Json
+          $mpv = $rel.assets | Where-Object name -match '^mpv-x86_64-\d'     | Select-Object -First 1
+          $dev = $rel.assets | Where-Object name -match '^mpv-dev-x86_64-\d' | Select-Object -First 1
+          Write-Host "player: $($mpv.name)`ndev: $($dev.name)"
+          curl.exe -sSfL -o mpv.7z $mpv.browser_download_url
+          curl.exe -sSfL -o mpv-dev.7z $dev.browser_download_url
+          7z x -ompv-pkg mpv.7z
           7z x -ompv-dev mpv-dev.7z
-          Get-ChildItem -Recurse mpv-dev | Select-Object -ExpandProperty FullName
+          # bundle the standalone player next to the other tools
+          Copy-Item mpv-pkg\mpv.exe resources\bin\windows-x86_64\
+          if (Test-Path mpv-pkg\mpv.com) { Copy-Item mpv-pkg\mpv.com resources\bin\windows-x86_64\ }
+          # import lib for the embedded-mpv link
           $def = Get-ChildItem -Recurse mpv-dev -Filter *.def | Select-Object -First 1
           lib.exe /def:$($def.FullName) /machine:x64 /out:mpv-dev\mpv.lib
           echo "TULIPIX_MPV_LIB_DIR=$PWD\mpv-dev" >> $env:GITHUB_ENV
