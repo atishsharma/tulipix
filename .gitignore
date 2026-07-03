@@ -52,6 +52,7 @@ QODER.md
 docs/
 target/
 target-dev/
+target-dev-lite/
 .rtk/
 .windsurfrules
 tulipix_plan.html

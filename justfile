@@ -48,6 +48,22 @@ run-dev:
       nice -n 15 ionice -c3 \
       cargo +nightly {{fast}} run -j 1 -p tulipix-app --features dev-reload
 
+# Fast cold-build dev loop — drops embedded-mpv (so NO skia-bindings C++ build,
+# the single biggest compile cost) and renders with the lean femtovg backend.
+# Trade-off: the in-app Videos player goes inert; music/podcast/radio/YouTube
+# still play via out-of-process mpv. Uses a SEPARATE target dir so it never
+# invalidates the skia-cached `run-dev` artifacts (switching renderer feature
+# would otherwise force a full rebuild back and forth). Same .slint hot-reload.
+run-dev-lite:
+    systemd-run --user --scope --unit=tulipix-run-dev-lite \
+      -p MemoryHigh=5800M -p MemoryMax=6400M -p MemorySwapMax=infinity \
+      --setenv=CARGO_PROFILE_DEV_DEBUG=0 \
+      --setenv=SLINT_LIVE_PREVIEW=1 \
+      --setenv=CARGO_TARGET_DIR=target-dev-lite \
+      nice -n 15 ionice -c3 \
+      cargo +nightly {{fast}} run -j 1 -p tulipix-app \
+        --no-default-features --features renderer-femtovg,alloc-mimalloc,dev-reload
+
 # Sub-2s error feedback loop: `bacon` runs `cargo check` on every save (no
 # codegen, no link, incremental) in the dev-reload feature set + target-dev dir,
 # so it shares cache with `run-dev` and never fights it. Pair it with a live

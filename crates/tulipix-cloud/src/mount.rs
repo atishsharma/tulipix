@@ -52,20 +52,59 @@ impl VfsCache {
 /// `rclone mount` argv with an explicit VFS cache mode and a cache-cleanup
 /// max-age (`--vfs-cache-max-age`, e.g. "1h", "24h"; empty = rclone default).
 /// `mount_args` is the always-full convenience wrapper over this.
+///
+/// Streaming/playback tuning baked in:
+/// - `--vfs-cache-max-size 10G` bounds the disk the full-mode cache can eat
+///   (uncapped, a few movie nights fill the drive);
+/// - `--vfs-read-ahead 256M` keeps video playback fed past the mpv demuxer;
+/// - `--vfs-read-chunk-size 32M` (+ 2G limit) makes seeks cheap at the start
+///   and sequential reads cheap later;
+/// - `--buffer-size 32M` per-file kernel-side buffer;
+/// - `--vfs-fast-fingerprint` skips slow hash fingerprints on backends where
+///   size+modtime is enough (Drive/OneDrive), speeding cache revalidation.
 pub fn mount_args_cached(remote: &str, mount_path: &str, kind: FsKind, cache: VfsCache, max_age: &str) -> Vec<String> {
     let mut a = vec![
         "mount".into(),
         format!("{remote}:"),
         mount_path.into(),
         "--vfs-cache-mode".into(), cache.as_str().into(),
-        "--dir-cache-time".into(), "30s".into(),
+        "--dir-cache-time".into(), "60s".into(),
+        "--vfs-read-chunk-size".into(), "32M".into(),
+        "--vfs-read-chunk-size-limit".into(), "2G".into(),
+        "--buffer-size".into(), "32M".into(),
+        "--vfs-fast-fingerprint".into(),
     ];
-    let ma = max_age.trim();
-    if cache != VfsCache::Off && !ma.is_empty() {
-        a.push("--vfs-cache-max-age".into()); a.push(ma.to_string());
+    if cache != VfsCache::Off {
+        a.push("--vfs-cache-max-size".into()); a.push("10G".into());
+        a.push("--vfs-cache-poll-interval".into()); a.push("1m".into());
+        a.push("--vfs-read-ahead".into()); a.push("256M".into());
+        let ma = max_age.trim();
+        if !ma.is_empty() {
+            a.push("--vfs-cache-max-age".into()); a.push(ma.to_string());
+        }
     }
     if kind == FsKind::WinFsp { a.push("--network-mode".into()); }
     a
+}
+
+/// Persist a remote's VFS cache preference (mode + max-age) so it survives
+/// restarts — the mount-options dialog used to keep it in process memory only,
+/// and every startup mount silently fell back to the defaults.
+pub async fn set_vfs(pool: &SqlitePool, remote_id: i64, mount_path: &str, kind: FsKind, cache: &str, max_age: &str) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO mounts (remote_id, mount_path, fs_kind, status, vfs_cache, vfs_max_age)
+         VALUES (?,?,?,'unmounted',?,?)
+         ON CONFLICT(remote_id) DO UPDATE SET vfs_cache = excluded.vfs_cache, vfs_max_age = excluded.vfs_max_age",
+    ).bind(remote_id).bind(mount_path).bind(kind.as_str()).bind(cache).bind(max_age).execute(pool).await?;
+    Ok(())
+}
+
+/// Every persisted VFS preference: (remote name, cache mode, max age).
+pub async fn vfs_prefs(pool: &SqlitePool) -> Result<Vec<(String, String, String)>> {
+    Ok(sqlx::query_as(
+        "SELECT r.name, COALESCE(m.vfs_cache, 'full'), COALESCE(m.vfs_max_age, '')
+         FROM mounts m JOIN remotes r ON r.id = m.remote_id",
+    ).fetch_all(pool).await?)
 }
 
 /// Mounts flagged to auto-mount on app startup (`auto_remount = 1`).

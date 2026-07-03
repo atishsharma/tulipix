@@ -83,6 +83,15 @@ pub fn wire(window: &MainWindow) {
     });
     let w = window.as_weak();
     window.on_cloud_search_deep(move || { cloud_deep_search(w.clone()); });
+    // Sort key/direction changed: re-render whichever list is on screen from
+    // its cache (no rclone round-trip).
+    let w = window.as_weak();
+    window.on_cloud_sort_changed(move || {
+        if let Some(w0) = w.upgrade() {
+            cloud_push_remotes(&w0);
+            if !w0.get_cloud_active_remote().to_string().is_empty() { cloud_set_filtered(&w0); }
+        }
+    });
 
     // ── Cloud: Sync & Tools drawer (np.p5.cloud.*) ──
     let w = window.as_weak();
@@ -150,6 +159,92 @@ pub fn wire(window: &MainWindow) {
     let w = window.as_weak();
     window.on_cloud_upload_pick(move |kind| { cloud_upload_pick(w.clone(), kind.to_string()); });
     cloud_refresh_remotes(window.as_weak());
+    cloud_start_background(window.as_weak());
+}
+
+/// One-time background machinery: stale-mount sweep, persisted VFS prefs,
+/// the mount watchdog and the saved-job scheduler.
+fn cloud_start_background(weak: slint::Weak<MainWindow>) {
+    let handle = tokio::runtime::Handle::current();
+    handle.spawn(async move {
+        // 1. Sweep mounts left behind by a crashed session — a still-mounted
+        //    FUSE dir would make the next `rclone mount` on it fail.
+        let _ = tokio::task::spawn_blocking(cloud_sweep_stale_mounts).await;
+        // 2. Load persisted VFS cache prefs so startup mounts honor them.
+        if let Ok(pool) = pool_for("cloud").await {
+            if let Ok(prefs) = tulipix_cloud::mount::vfs_prefs(&pool).await {
+                if let Ok(mut g) = cloud_vfs().lock() {
+                    for (name, cache, age) in prefs { g.insert(name, (cache, age)); }
+                }
+            }
+        }
+        // 3. Watchdog: a dropped mount (network blip, rclone crash) remounts
+        //    itself; the sidebar badge follows reality.
+        {
+            let weak2 = weak.clone();
+            tokio::spawn(async move {
+                let mut fails: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(30)).await;
+                    let stale: Vec<String> = cloud_mounts().lock().map(|mut g| {
+                        g.iter_mut()
+                            .filter_map(|(name, (mp, child))| {
+                                let dead = child.try_wait().ok().flatten().is_some() || !cloud_is_mounted(mp);
+                                dead.then(|| name.clone())
+                            })
+                            .collect()
+                    }).unwrap_or_default();
+                    if stale.is_empty() { fails.clear(); continue; }
+                    for name in stale {
+                        let n = fails.entry(name.clone()).or_insert(0);
+                        *n += 1;
+                        let backoff = tulipix_cloud::mount::remount_backoff_s(*n);
+                        tokio::time::sleep(std::time::Duration::from_secs(backoff)).await;
+                        let name2 = name.clone();
+                        let ok = matches!(tokio::task::spawn_blocking(move || cloud_mount_ensure(&name2)).await, Ok(Ok(_)));
+                        if ok { fails.remove(&name); }
+                        let msg = if ok { format!("Remounted '{name}' after it dropped") }
+                                  else { format!("Mount '{name}' dropped — remount failed, retrying") };
+                        let _ = weak2.upgrade_in_event_loop(move |w| {
+                            w.set_cloud_status(msg.into());
+                            cloud_refresh_remotes(w.as_weak());
+                        });
+                    }
+                }
+            });
+        }
+        // 4. Scheduler: saved sync jobs with an interval actually run on it
+        //    (`due_jobs` existed but nothing ever polled it).
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(60)).await;
+                let Ok(pool) = pool_for("cloud").await else { continue; };
+                let now = tulipix_core::util::unix_secs_i64();
+                let due = tulipix_cloud::jobs::due_jobs(&pool, now).await.unwrap_or_default();
+                for job in due {
+                    // Mark first so a long sync isn't re-queued by the next tick.
+                    let _ = tulipix_cloud::jobs::mark_ran(&pool, job.id).await;
+                    cloud_run_saved_job(weak.clone(), job).await;
+                }
+            }
+        });
+    });
+}
+
+/// Unmount any leftover FUSE mount under the app's mounts dir that no live
+/// child of THIS process owns (fresh process ⇒ none are ours).
+fn cloud_sweep_stale_mounts() {
+    let Some(base) = tulipix_core::paths::data_dir().map(|d| d.join("mounts")) else { return; };
+    for entry in std::fs::read_dir(&base).into_iter().flatten().flatten() {
+        let mp = entry.path();
+        if mp.is_dir() && cloud_is_mounted(&mp) {
+            #[cfg(target_os = "linux")]
+            { let _ = std::process::Command::new("fusermount").args(["-uz"]).arg(&mp).status(); }
+            #[cfg(target_os = "macos")]
+            { let _ = std::process::Command::new("umount").arg(&mp).status(); }
+            let _ = &mp;
+        }
+    }
 }
 
 static CLOUD_REMOTE: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
@@ -160,10 +255,27 @@ static CLOUD_PATH: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::On
 fn cloud_path() -> &'static std::sync::Mutex<String> {
     CLOUD_PATH.get_or_init(|| std::sync::Mutex::new(String::new()))
 }
-// Full (unfiltered) listing of the current folder: (name, is_dir, size, modified, kind).
-static CLOUD_ALL: std::sync::OnceLock<std::sync::Mutex<Vec<(String, bool, String, String, String)>>> = std::sync::OnceLock::new();
-fn cloud_all() -> &'static std::sync::Mutex<Vec<(String, bool, String, String, String)>> {
+/// One cached listing row — display strings plus the raw fields sorting needs.
+#[derive(Clone)]
+struct CloudRow {
+    name: String,
+    is_dir: bool,
+    size_str: String,
+    mod_str: String,
+    kind: String,
+    size_raw: i64,
+    mod_raw: String, // full ISO timestamp — lexicographic == chronological
+}
+// Full (unfiltered) listing of the current folder.
+static CLOUD_ALL: std::sync::OnceLock<std::sync::Mutex<Vec<CloudRow>>> = std::sync::OnceLock::new();
+fn cloud_all() -> &'static std::sync::Mutex<Vec<CloudRow>> {
     CLOUD_ALL.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+// Remote list mirror (name, backend) so sort changes re-render without
+// re-running `rclone config dump`.
+static CLOUD_REMOTES_CACHE: std::sync::OnceLock<std::sync::Mutex<Vec<(String, String)>>> = std::sync::OnceLock::new();
+fn cloud_remotes_cache() -> &'static std::sync::Mutex<Vec<(String, String)>> {
+    CLOUD_REMOTES_CACHE.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
 /// Classify a cloud entry into a thumb-tile kind by extension.
@@ -179,28 +291,61 @@ fn cloud_entry_kind(name: &str, is_dir: bool) -> &'static str {
 }
 
 /// Rebuild the visible `cloud-entries` model from the cached full listing,
-/// applying the header search filter (case-insensitive name match). The `index`
-/// is re-enumerated to match the filtered model so entry-activate stays correct.
+/// applying the header search filter (case-insensitive name match) and the
+/// header sort (key + direction; folders always group first). The `index` is
+/// re-enumerated to match the filtered model so entry-activate stays correct.
 fn cloud_set_filtered(w: &MainWindow) {
     let q = w.get_cloud_query().to_string().trim().to_lowercase();
-    let rows: Vec<CloudEntry> = cloud_all()
+    let key = w.get_cloud_sort_key().to_string();
+    let asc = w.get_cloud_sort_asc();
+    let mut rows: Vec<CloudRow> = cloud_all()
         .lock()
-        .map(|g| {
-            g.iter()
-                .filter(|(name, _, _, _, _)| q.is_empty() || name.to_lowercase().contains(&q))
-                .enumerate()
-                .map(|(i, (name, is_dir, size, modified, kind))| CloudEntry {
-                    name: name.clone().into(),
-                    is_dir: *is_dir,
-                    size: size.clone().into(),
-                    modified: modified.clone().into(),
-                    index: i as i32,
-                    kind: kind.clone().into(),
-                })
-                .collect()
-        })
+        .map(|g| g.iter()
+            .filter(|r| q.is_empty() || r.name.to_lowercase().contains(&q))
+            .cloned().collect())
         .unwrap_or_default();
+    rows.sort_by(|a, b| {
+        let by_key = match key.as_str() {
+            "size" => a.size_raw.cmp(&b.size_raw),
+            "modified" => a.mod_raw.cmp(&b.mod_raw),
+            "kind" => a.kind.cmp(&b.kind).then_with(|| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+            _ => a.name.to_lowercase().cmp(&b.name.to_lowercase()),
+        };
+        // Folders stay on top regardless of direction; only the key flips.
+        b.is_dir.cmp(&a.is_dir).then(if asc { by_key } else { by_key.reverse() })
+    });
+    let rows: Vec<CloudEntry> = rows.into_iter().enumerate()
+        .map(|(i, r)| CloudEntry {
+            name: r.name.into(),
+            is_dir: r.is_dir,
+            size: r.size_str.into(),
+            modified: r.mod_str.into(),
+            index: i as i32,
+            kind: r.kind.into(),
+        })
+        .collect();
     w.set_cloud_entries(slint::ModelRc::new(slint::VecModel::from(rows)));
+}
+
+/// Rebuild the remotes model from the cached mirror, sorted by the header sort
+/// ("kind" sorts by backend; everything else by name) in either direction.
+fn cloud_push_remotes(w: &MainWindow) {
+    let key = w.get_cloud_sort_key().to_string();
+    let asc = w.get_cloud_sort_asc();
+    let mut list = cloud_remotes_cache().lock().map(|g| g.clone()).unwrap_or_default();
+    list.sort_by(|a, b| {
+        let by_key = if key == "kind" {
+            a.1.cmp(&b.1).then_with(|| a.0.to_lowercase().cmp(&b.0.to_lowercase()))
+        } else {
+            a.0.to_lowercase().cmp(&b.0.to_lowercase())
+        };
+        if asc { by_key } else { by_key.reverse() }
+    });
+    let rows: Vec<CloudRemote> = list.into_iter().map(|(name, backend)| CloudRemote {
+        mounted: cloud_remote_mounted(&name),
+        name: name.into(), backend: backend.into(),
+    }).collect();
+    w.set_cloud_remotes(slint::ModelRc::new(slint::VecModel::from(rows)));
 }
 
 
@@ -229,11 +374,8 @@ fn cloud_refresh_remotes(weak: slint::Weak<MainWindow>) {
         }
         let _ = weak.upgrade_in_event_loop(move |w| {
             w.set_cloud_rclone_ok(ok);
-            let rows: Vec<CloudRemote> = parsed.into_iter().map(|(name, backend)| CloudRemote {
-                mounted: cloud_remote_mounted(&name),
-                name: name.into(), backend: backend.into(),
-            }).collect();
-            w.set_cloud_remotes(slint::ModelRc::new(slint::VecModel::from(rows)));
+            if let Ok(mut g) = cloud_remotes_cache().lock() { *g = parsed; }
+            cloud_push_remotes(&w);
             // keep the active remote's mount badge in sync
             let active = w.get_cloud_active_remote().to_string();
             if !active.is_empty() { w.set_cloud_active_mounted(cloud_remote_mounted(&active)); }
@@ -329,19 +471,20 @@ fn cloud_browse(weak: slint::Weak<MainWindow>) {
         let _ = weak.upgrade_in_event_loop(move |w| {
             match out {
                 Ok(json) => {
-                    let mut entries = tulipix_cloud::browse::parse_lsjson(&json).unwrap_or_default();
-                    tulipix_cloud::browse::sort_entries(&mut entries, tulipix_cloud::browse::SortKey::Name);
-                    // Cache the full listing so the header search can filter it
-                    // in place without re-hitting rclone.
-                    let all: Vec<(String, bool, String, String, String)> = entries.into_iter().map(|e| {
+                    let entries = tulipix_cloud::browse::parse_lsjson(&json).unwrap_or_default();
+                    // Cache the full listing (with raw size/mtime) so the header
+                    // search + sort re-render in place without re-hitting rclone.
+                    let all: Vec<CloudRow> = entries.into_iter().map(|e| {
                         let kind = cloud_entry_kind(&e.name, e.is_dir).to_string();
-                        (
-                            e.name,
-                            e.is_dir,
-                            if e.is_dir { "—".to_string() } else { cloud_human_size(e.size.max(0) as u64) },
-                            e.mod_time.chars().take(10).collect::<String>(),
+                        CloudRow {
+                            size_str: if e.is_dir { "—".to_string() } else { cloud_human_size(e.size.max(0) as u64) },
+                            mod_str: e.mod_time.chars().take(10).collect::<String>(),
+                            size_raw: e.size.max(0),
+                            mod_raw: e.mod_time,
+                            name: e.name,
+                            is_dir: e.is_dir,
                             kind,
-                        )
+                        }
                     }).collect();
                     if let Ok(mut g) = cloud_all().lock() { *g = all; }
                     cloud_set_filtered(&w);
@@ -498,9 +641,13 @@ fn cloud_mounts() -> &'static std::sync::Mutex<std::collections::HashMap<String,
 fn cloud_is_mounted(mp: &std::path::Path) -> bool {
     #[cfg(target_os = "linux")]
     {
+        // mountinfo octal-escapes space/tab/newline/backslash in paths.
+        fn unescape(s: &str) -> String {
+            s.replace("\\040", " ").replace("\\011", "\t").replace("\\012", "\n").replace("\\134", "\\")
+        }
         let want = mp.to_string_lossy();
         std::fs::read_to_string("/proc/self/mountinfo")
-            .map(|s| s.lines().any(|l| l.split(' ').nth(4) == Some(want.as_ref())))
+            .map(|s| s.lines().any(|l| l.split(' ').nth(4).map(unescape).as_deref() == Some(want.as_ref())))
             .unwrap_or(false)
     }
     #[cfg(not(target_os = "linux"))]
@@ -883,13 +1030,17 @@ fn cloud_run_sync(weak: slint::Weak<MainWindow>) {
     w.set_cloud_status(format!("Syncing {src} → {dst}…").into());
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
-        let res = tokio::task::spawn_blocking(move || cloud::run(&args)).await
-            .unwrap_or_else(|e| Err(anyhow::anyhow!(e)));
-        let ok = res.is_ok();
         let detail = format!("{src} → {dst}");
+        let _ = weak.upgrade_in_event_loop(|w| w.set_cloud_op_active(true));
+        let res = cloud_run_streamed(weak.clone(), args, format!("Syncing {detail}")).await;
+        let ok = res.is_ok();
         cloud_log(if bisync { "bisync" } else { "sync" }, &detail, ok).await;
         let msg = match res { Ok(_) => format!("Sync complete: {detail}"), Err(e) => format!("Sync failed: {e}") };
-        let _ = weak.upgrade_in_event_loop(move |w| { w.set_cloud_status(msg.into()); cloud_refresh_usage(w.as_weak()); });
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_cloud_op_active(false);
+            w.set_cloud_status(msg.into());
+            cloud_refresh_usage(w.as_weak());
+        });
     });
 }
 
@@ -958,6 +1109,26 @@ fn cloud_job_delete(weak: slint::Weak<MainWindow>, id: i32) {
     });
 }
 
+/// Run one saved job with a streamed progress bar. Shared by the manual Run
+/// button and the interval scheduler.
+async fn cloud_run_saved_job(weak: slint::Weak<MainWindow>, job: tulipix_cloud::jobs::SyncJob) {
+    let bisync = job.direction == "bisync";
+    let args = cloud_build_sync_args(
+        &job.src, &job.dst, bisync, "newer", job.bwlimit.as_deref().unwrap_or(""),
+        "4", "", "", "", "");
+    let detail = format!("{} → {}", job.src, job.dst);
+    let _ = weak.upgrade_in_event_loop(|w| w.set_cloud_op_active(true));
+    let res = cloud_run_streamed(weak.clone(), args, format!("Job: {detail}")).await;
+    let ok = res.is_ok();
+    cloud_log(if bisync { "bisync" } else { "sync" }, &detail, ok).await;
+    let msg = match res { Ok(_) => format!("Job complete: {detail}"), Err(e) => format!("Job failed: {e}") };
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        w.set_cloud_op_active(false);
+        w.set_cloud_status(msg.into());
+        cloud_refresh_jobs(w.as_weak());
+    });
+}
+
 fn cloud_job_run(weak: slint::Weak<MainWindow>, id: i32) {
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
@@ -967,22 +1138,9 @@ fn cloud_job_run(weak: slint::Weak<MainWindow>, id: i32) {
             Err(_) => None,
         };
         let Some(job) = job else { return; };
-        let bisync = job.direction == "bisync";
-        let args = cloud_build_sync_args(
-            &job.src, &job.dst, bisync, "newer", job.bwlimit.as_deref().unwrap_or(""),
-            "4", "", "", "", "");
-        let detail = format!("{} → {}", job.src, job.dst);
-        let _ = weak.upgrade_in_event_loop({
-            let detail = detail.clone();
-            move |w| w.set_cloud_status(format!("Running job: {detail}…").into())
-        });
-        let res = tokio::task::spawn_blocking(move || cloud::run(&args)).await
-            .unwrap_or_else(|e| Err(anyhow::anyhow!(e)));
-        let ok = res.is_ok();
-        cloud_log(if bisync { "bisync" } else { "sync" }, &detail, ok).await;
-        if let Ok(pool) = pool_for("cloud").await { let _ = tulipix_cloud::jobs::mark_ran(&pool, job.id).await; }
-        let msg = match res { Ok(_) => format!("Job complete: {detail}"), Err(e) => format!("Job failed: {e}") };
-        let _ = weak.upgrade_in_event_loop(move |w| { w.set_cloud_status(msg.into()); cloud_refresh_jobs(w.as_weak()); });
+        let job_id = job.id;
+        cloud_run_saved_job(weak, job).await;
+        if let Ok(pool) = pool_for("cloud").await { let _ = tulipix_cloud::jobs::mark_ran(&pool, job_id).await; }
     });
 }
 
@@ -1000,13 +1158,18 @@ fn cloud_run_copy(weak: slint::Weak<MainWindow>) {
     w.set_cloud_status(format!("{} {src} → {dst}…", if move_files { "Moving" } else { "Copying" }).into());
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
-        let res = tokio::task::spawn_blocking(move || cloud::run(&args)).await
-            .unwrap_or_else(|e| Err(anyhow::anyhow!(e)));
-        let ok = res.is_ok();
         let detail = format!("{src} → {dst}");
+        let verb = if move_files { "Moving" } else { "Copying" };
+        let _ = weak.upgrade_in_event_loop(|w| w.set_cloud_op_active(true));
+        let res = cloud_run_streamed(weak.clone(), args, format!("{verb} {detail}")).await;
+        let ok = res.is_ok();
         cloud_log(if move_files { "move" } else { "copy" }, &detail, ok).await;
         let msg = match res { Ok(_) => format!("Done: {detail}"), Err(e) => format!("Failed: {e}") };
-        let _ = weak.upgrade_in_event_loop(move |w| { w.set_cloud_status(msg.into()); cloud_refresh_usage(w.as_weak()); });
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_cloud_op_active(false);
+            w.set_cloud_status(msg.into());
+            cloud_refresh_usage(w.as_weak());
+        });
     });
 }
 
@@ -1249,6 +1412,9 @@ fn cloud_mountopts_submit(weak: slint::Weak<MainWindow>) {
             if let Ok(Some(id)) = tulipix_cloud::remotes::id_of(&pool, &remote).await {
                 let kind = tulipix_cloud::mount::FsKind::for_os(std::env::consts::OS);
                 let _ = tulipix_cloud::mount::set_auto(&pool, id, &base, kind, auto).await;
+                // Persist the VFS prefs — they used to live only in process
+                // memory and reset to defaults on every app start.
+                let _ = tulipix_cloud::mount::set_vfs(&pool, id, &base, kind, &cache, &max_age).await;
             }
         }
         // Remount now to apply the new cache mode (best-effort).

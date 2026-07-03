@@ -7,13 +7,27 @@
 
 use anyhow::Result;
 use sqlx::SqlitePool;
-
-fn now() -> i64 {
-    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
-}
+use tulipix_core::util::unix_secs_i64 as now;
 
 pub const WORKERS_KEY: &str = "worker_slots";
 pub const DEFAULT_WORKERS: i64 = 2;
+
+/// Re-queue jobs left 'running' by a crash/quit. Without this they occupy
+/// worker slots forever and the queue silently stalls. Call once at startup,
+/// before the drainer starts.
+pub async fn recover_stale(pool: &SqlitePool) -> Result<u64> {
+    let r = sqlx::query("UPDATE jobs SET state = 'queued', progress = 0.0, updated = ? WHERE state = 'running'")
+        .bind(now()).execute(pool).await?;
+    Ok(r.rows_affected())
+}
+
+/// Is an identical job already queued or running? (double-click Run guard)
+pub async fn has_active_duplicate(pool: &SqlitePool, kind: &str, spec_json: &str) -> Result<bool> {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM jobs WHERE kind = ? AND spec_json = ? AND state IN ('queued','running')",
+    ).bind(kind).bind(spec_json).fetch_one(pool).await?;
+    Ok(n > 0)
+}
 
 /// Submit a job; returns its id.
 pub async fn submit(pool: &SqlitePool, kind: &str, spec_json: &str, priority: i64) -> Result<i64> {
@@ -71,10 +85,19 @@ pub async fn set_progress(pool: &SqlitePool, id: i64, progress: f64, message: Op
     Ok(())
 }
 
-/// Transition helpers. Pause/resume only affect queued/running; cancel is
-/// terminal; retry re-queues a failed job.
-pub async fn pause(pool: &SqlitePool, id: i64) -> Result<()> { transition(pool, id, "running", "paused").await }
-pub async fn resume(pool: &SqlitePool, id: i64) -> Result<()> { transition(pool, id, "paused", "queued").await }
+/// Transition helpers. Pause affects queued/running (a running job's process
+/// is stopped by the app; resume re-runs it from the start); cancel is
+/// terminal; retry re-queues a failed or canceled job.
+pub async fn pause(pool: &SqlitePool, id: i64) -> Result<()> {
+    sqlx::query("UPDATE jobs SET state = 'paused', updated = ? WHERE id = ? AND state IN ('queued','running')")
+        .bind(now()).bind(id).execute(pool).await?;
+    Ok(())
+}
+pub async fn resume(pool: &SqlitePool, id: i64) -> Result<()> {
+    sqlx::query("UPDATE jobs SET state = 'queued', progress = 0.0, updated = ? WHERE id = ? AND state = 'paused'")
+        .bind(now()).bind(id).execute(pool).await?;
+    Ok(())
+}
 
 pub async fn cancel(pool: &SqlitePool, id: i64) -> Result<()> {
     sqlx::query("UPDATE jobs SET state = 'canceled', updated = ? WHERE id = ? AND state IN ('queued','running','paused')")
@@ -82,15 +105,17 @@ pub async fn cancel(pool: &SqlitePool, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Only completes a job still 'running' — a cancel/pause that landed while the
+/// process was being stopped must not be overwritten back to done/error.
 pub async fn complete(pool: &SqlitePool, id: i64, ok: bool, message: Option<&str>) -> Result<()> {
-    sqlx::query("UPDATE jobs SET state = ?, progress = ?, message = COALESCE(?, message), updated = ? WHERE id = ?")
+    sqlx::query("UPDATE jobs SET state = ?, progress = ?, message = COALESCE(?, message), updated = ? WHERE id = ? AND state = 'running'")
         .bind(if ok { "done" } else { "error" }).bind(if ok { 1.0 } else { 0.0 }).bind(message).bind(now()).bind(id)
         .execute(pool).await?;
     Ok(())
 }
 
 pub async fn retry(pool: &SqlitePool, id: i64) -> Result<()> {
-    sqlx::query("UPDATE jobs SET state = 'queued', progress = 0.0, updated = ? WHERE id = ? AND state = 'error'")
+    sqlx::query("UPDATE jobs SET state = 'queued', progress = 0.0, updated = ? WHERE id = ? AND state IN ('error','canceled')")
         .bind(now()).bind(id).execute(pool).await?;
     Ok(())
 }
@@ -126,12 +151,6 @@ pub async fn reorder(pool: &SqlitePool, id: i64, up: bool) -> Result<()> {
     Ok(())
 }
 
-async fn transition(pool: &SqlitePool, id: i64, from: &str, to: &str) -> Result<()> {
-    sqlx::query("UPDATE jobs SET state = ?, updated = ? WHERE id = ? AND state = ?")
-        .bind(to).bind(now()).bind(id).bind(from).execute(pool).await?;
-    Ok(())
-}
-
 pub async fn state_of(pool: &SqlitePool, id: i64) -> Result<Option<String>> {
     Ok(sqlx::query_scalar("SELECT state FROM jobs WHERE id = ?").bind(id).fetch_optional(pool).await?)
 }
@@ -139,6 +158,36 @@ pub async fn state_of(pool: &SqlitePool, id: i64) -> Result<Option<String>> {
 /// The job's stored spec JSON — used to resolve its output path (Open button).
 pub async fn job_spec(pool: &SqlitePool, id: i64) -> Result<Option<String>> {
     Ok(sqlx::query_scalar("SELECT spec_json FROM jobs WHERE id = ?").bind(id).fetch_optional(pool).await?)
+}
+
+// ── Downloaded-files registry ────────────────────────────────────────────────
+// Only files the download tools wrote — the source of truth for the
+// "Downloaded" list (a random file in ~/Downloads must not show up there).
+
+/// Record one file a download job produced (re-download refreshes the row).
+pub async fn record_download(pool: &SqlitePool, job_id: i64, path: &str) -> Result<()> {
+    sqlx::query("INSERT INTO downloads (job_id, path, created) VALUES (?,?,?) \
+                 ON CONFLICT(path) DO UPDATE SET job_id = excluded.job_id, created = excluded.created")
+        .bind(job_id).bind(path).bind(now()).execute(pool).await?;
+    Ok(())
+}
+
+/// App-downloaded file paths, newest first.
+pub async fn downloads_list(pool: &SqlitePool, limit: i64) -> Result<Vec<String>> {
+    Ok(sqlx::query_scalar("SELECT path FROM downloads ORDER BY created DESC, id DESC LIMIT ?")
+        .bind(limit).fetch_all(pool).await?)
+}
+
+/// The newest file a specific job downloaded (queue-row Open → play the file).
+pub async fn download_for_job(pool: &SqlitePool, job_id: i64) -> Result<Option<String>> {
+    Ok(sqlx::query_scalar("SELECT path FROM downloads WHERE job_id = ? ORDER BY id DESC LIMIT 1")
+        .bind(job_id).fetch_optional(pool).await?)
+}
+
+/// Drop a path from the registry (file removed, or found missing on listing).
+pub async fn forget_download(pool: &SqlitePool, path: &str) -> Result<()> {
+    sqlx::query("DELETE FROM downloads WHERE path = ?").bind(path).execute(pool).await?;
+    Ok(())
 }
 
 #[cfg(test)]

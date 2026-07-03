@@ -166,6 +166,10 @@ component QueueRow inherits Rectangle {
         job.state == "done"    ? Theme.ok :
         job.state == "error"   ? Theme.error :
         job.state == "paused"  ? Theme.warn : Theme.text-dim;
+    // Whole-row click opens the job's output (downloads: the file, in the
+    // system player). The action buttons sit later in z-order, so they still
+    // win their own clicks.
+    TouchArea { mouse-cursor: pointer; clicked => { root.action(job.id, "open"); } }
     VerticalLayout {
         padding: 12px; spacing: 7px;
         HorizontalLayout {
@@ -287,6 +291,7 @@ export component ToolsPage inherits Rectangle {
     callback reset();
     callback close-detail();
     callback queue-action(int, string);
+    callback open-folder();          // reveal the tool's save/source folder
     callback set-workers(int);
     callback update-tool(string);
     callback list-downloads();
@@ -510,6 +515,9 @@ export component ToolsPage inherits Rectangle {
                                     VerticalLayout { alignment: center;
                                         ActBtn { label: "Clear all"; tint: Theme.error;
                                             clicked => { root.ask(-1, "clear", "Clear all jobs from the queue?"); } } }
+                                    VerticalLayout { alignment: center;
+                                        ActBtn { label: "Open folder"; tint: root.accent; min-width: 92px;
+                                            clicked => { root.open-folder(); } } }
                                 }
                                 for job in root.queue-jobs: QueueRow { job: job;
                                     action(i, a) => { root.queue-action(i, a); }

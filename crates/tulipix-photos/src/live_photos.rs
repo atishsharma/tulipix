@@ -17,6 +17,7 @@ use sqlx::SqlitePool;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tulipix_core::thumbs::tool_bin;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -37,21 +38,6 @@ pub struct LivePhoto {
     pub kind: LiveKind,
     /// Byte offset of the MP4 trailer inside `still_path` (EmbeddedMp4 only).
     pub video_offset: Option<u64>,
-}
-
-fn bundled_bin(name: &str) -> PathBuf {
-    let exe = std::env::current_exe().ok();
-    let dir = exe.as_ref().and_then(|p| p.parent()).and_then(|p| p.parent());
-    let os_arch =
-        if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") { "linux-aarch64" }
-        else if cfg!(target_os = "linux") { "linux-x86_64" }
-        else if cfg!(target_os = "windows") { "windows-x86_64" }
-        else if cfg!(target_arch = "aarch64") { "macos-aarch64" }
-        else { "macos-x86_64" };
-    let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
-    dir.map(|d| d.join("resources").join("bin").join(os_arch).join(format!("{name}{ext}")))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from(name))
 }
 
 /// Probe one file path. Returns `Some(LivePhoto)` if it is a live photo of any
@@ -173,7 +159,7 @@ pub fn export_gif(lp: &LivePhoto, out_dir: &Path, width: u32, fps: u32) -> Resul
         LiveKind::SiblingPair => lp.video_path.clone(),
         LiveKind::EmbeddedMp4 => export_video(lp, out_dir)?,
     };
-    let ff = bundled_bin("ffmpeg");
+    let ff = tool_bin("ffmpeg");
     let filter = format!(
         "fps={fps},scale={w}:-2:flags=lanczos,split [a][b];[a]palettegen[p];[b][p]paletteuse",
         w = width.max(64)

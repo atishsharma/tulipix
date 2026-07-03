@@ -21,8 +21,10 @@ use crate::{
 #[derive(Debug, Clone, PartialEq)]
 pub enum Step {
     /// ffmpeg op. `args` is the operation argv (no `-progress`/`-y` — the worker
-    /// adds those). `duration_input` is the file whose duration scales progress.
-    Ffmpeg { args: Vec<String>, duration_input: Option<String> },
+    /// adds those). `duration_input` is the file whose duration scales progress;
+    /// `duration_s`, when set, overrides it with a known output duration (trim
+    /// writes `end-start` seconds, not the whole input).
+    Ffmpeg { args: Vec<String>, duration_input: Option<String>, duration_s: Option<f64> },
     /// yt-dlp op. Progress parsed from `[download]  NN.N%`.
     YtDlp { args: Vec<String> },
     /// In-process op the worker implements directly (some shell out to ffmpeg).
@@ -62,7 +64,7 @@ fn boolean(v: &Value, k: &str) -> bool {
 
 /// Plan the steps for a job kind + its JSON spec.
 pub fn plan(kind: &str, spec: &Value) -> Result<Vec<Step>> {
-    let one = |args: Vec<String>, dur: Option<String>| vec![Step::Ffmpeg { args, duration_input: dur }];
+    let one = |args: Vec<String>, dur: Option<String>| vec![Step::Ffmpeg { args, duration_input: dur, duration_s: None }];
     match kind {
         "compress_video" => {
             let input = req(spec, "input")?;
@@ -119,21 +121,23 @@ pub fn plan(kind: &str, spec: &Value) -> Result<Vec<Step>> {
             } else {
                 trim::precise_args(&input, start, end, &out)
             };
-            Ok(one(args, Some(input)))
+            // Progress must scale by the cut's length — ffmpeg's out_time only
+            // reaches end-start, never the full input duration.
+            Ok(vec![Step::Ffmpeg { args, duration_input: None, duration_s: Some((end - start).max(0.001)) }])
         }
         "resize" => {
             let input = req(spec, "input")?;
             let out = req(spec, "output")?;
-            // The form supplies the resolved target dims directly (it knows the
-            // mode + source size); fall back to a longest-edge cap.
-            let (w, h) = match (num(spec, "w"), num(spec, "h")) {
-                (Some(w), Some(h)) if w > 0.0 && h > 0.0 => (w as u32, h as u32),
-                _ => {
-                    let edge = num(spec, "edge").unwrap_or(1920.0) as u32;
-                    resize::target_dims(edge, edge, resize::ResizeMode::LongestEdge(edge))
-                }
+            let w = num(spec, "w").unwrap_or(1920.0).max(1.0) as u32;
+            let h = num(spec, "h").unwrap_or(1080.0).max(1.0) as u32;
+            // "fit" keeps aspect inside the W×H box (default); "exact" may
+            // distort; width/height scale one edge, the other follows (even).
+            let vf = match s(spec, "mode").as_deref() {
+                Some("exact") => resize::scale_filter(w, h),
+                Some("width") => format!("scale={w}:-2"),
+                Some("height") => format!("scale=-2:{h}"),
+                _ => format!("scale={w}:{h}:force_original_aspect_ratio=decrease:force_divisible_by=2"),
             };
-            let vf = resize::scale_filter(w, h);
             Ok(one(vec!["-i".into(), input, "-vf".into(), vf, out], None))
         }
         "thumbnail" => {
@@ -159,7 +163,9 @@ pub fn plan(kind: &str, spec: &Value) -> Result<Vec<Step>> {
             let out = req(spec, "output")?;
             let lufs = num(spec, "lufs").unwrap_or(-23.0);
             let filter = normalize::loudnorm_measure_filter(lufs); // single-pass loudnorm
-            Ok(one(vec!["-i".into(), input.clone(), "-af".into(), filter, out], Some(input)))
+            // Copy the video stream (incl. mp3 cover art) — only audio changes;
+            // without this ffmpeg silently re-encoded the whole video track.
+            Ok(one(vec!["-i".into(), input.clone(), "-af".into(), filter, "-c:v".into(), "copy".into(), out], Some(input)))
         }
         "watermark" => {
             let input = req(spec, "input")?;
@@ -189,7 +195,13 @@ pub fn plan(kind: &str, spec: &Value) -> Result<Vec<Step>> {
             let out_template = s(spec, "out_template").unwrap_or_else(|| "%(title)s.%(ext)s".into());
             let dl = download_spec(spec, url, out_template);
             let mut args = dl.args();
-            if kind == "download_live" { args.insert(0, "--live-from-start".into()); }
+            match kind {
+                "download_live" => args.insert(0, "--live-from-start".into()),
+                // A watch?v=…&list=… URL must not pull the whole playlist in the
+                // single-video tool — and must pull all of it in the playlist tool.
+                "download_playlist" => args.insert(0, "--yes-playlist".into()),
+                _ => args.insert(0, "--no-playlist".into()),
+            }
             Ok(vec![Step::YtDlp { args }])
         }
         "hash" => {
@@ -270,6 +282,74 @@ pub fn parse_ytdlp_progress(line: &str) -> Option<f64> {
     pct.parse::<f64>().ok().map(|p| (p / 100.0).clamp(0.0, 1.0))
 }
 
+/// Everything a yt-dlp progress line carries: fraction done, total size, speed.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct YtdlpStats {
+    pub frac: f64,
+    pub total_bytes: Option<u64>,
+    pub bytes_per_s: Option<u64>,
+}
+
+/// Parse a size token like `10.51MiB` / `~1.2GiB` / `831.15KiB` → bytes.
+fn parse_ytdlp_size(s: &str) -> Option<u64> {
+    let s = s.trim_start_matches('~');
+    for (unit, mul) in [("GiB", 1u64 << 30), ("MiB", 1u64 << 20), ("KiB", 1u64 << 10), ("B", 1)] {
+        if let Some(n) = s.strip_suffix(unit) {
+            return n.parse::<f64>().ok().map(|v| (v * mul as f64) as u64);
+        }
+    }
+    None
+}
+
+/// Parse a full yt-dlp progress line
+/// (`[download]  42.7% of ~10.51MiB at 2.11MiB/s ETA 00:05`) → stats.
+pub fn parse_ytdlp_stats(line: &str) -> Option<YtdlpStats> {
+    let rest = line.trim().strip_prefix("[download]")?.trim_start();
+    let toks: Vec<&str> = rest.split_whitespace().collect();
+    let mut frac = None;
+    let mut total = None;
+    let mut speed = None;
+    for (i, t) in toks.iter().enumerate() {
+        if let Some(p) = t.strip_suffix('%') {
+            frac = p.parse::<f64>().ok().map(|v| (v / 100.0).clamp(0.0, 1.0));
+        } else if *t == "of" {
+            total = toks.get(i + 1).and_then(|s| parse_ytdlp_size(s));
+        } else if *t == "at" {
+            speed = toks.get(i + 1).and_then(|s| parse_ytdlp_size(s.trim_end_matches("/s")));
+        }
+    }
+    Some(YtdlpStats { frac: frac?, total_bytes: total, bytes_per_s: speed })
+}
+
+/// Parse a yt-dlp line that names an output file. Fragments (`x.f399.mp4`)
+/// appear here too — callers keep every candidate and filter to files that
+/// still exist once the job ends (yt-dlp deletes the parts after merging).
+pub fn parse_ytdlp_dest(line: &str) -> Option<String> {
+    let l = line.trim();
+    if let Some(p) = l.strip_prefix("[download] Destination: ") { return Some(p.trim().to_string()); }
+    if let Some(p) = l.strip_prefix("[ExtractAudio] Destination: ") { return Some(p.trim().to_string()); }
+    if let Some(rest) = l.strip_prefix("[Merger] Merging formats into \"") {
+        return rest.rsplit_once('"').map(|(p, _)| p.to_string());
+    }
+    if let Some(p) = l.strip_prefix("[download] ").and_then(|r| r.strip_suffix(" has already been downloaded")) {
+        return Some(p.trim().to_string());
+    }
+    None
+}
+
+/// Parse yt-dlp's playlist item marker (`[download] Downloading item 3 of 12`)
+/// → (item, total). Lets the worker scale per-item percentages into overall
+/// playlist progress instead of stalling at the first item's 100%.
+pub fn parse_ytdlp_item(line: &str) -> Option<(u32, u32)> {
+    let rest = line.trim().strip_prefix("[download]")?.trim_start();
+    let rest = rest.strip_prefix("Downloading item")?.trim_start();
+    let mut it = rest.split_whitespace();
+    let n: u32 = it.next()?.parse().ok()?;
+    if it.next()? != "of" { return None; }
+    let m: u32 = it.next()?.parse().ok()?;
+    Some((n, m))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -279,11 +359,36 @@ mod tests {
     fn plans_compress_video() {
         let steps = plan("compress_video", &json!({"input":"a.mp4","output":"o.mkv","codec":"av1","crf":30})).unwrap();
         match &steps[0] {
-            Step::Ffmpeg { args, duration_input } => {
+            Step::Ffmpeg { args, duration_input, duration_s } => {
                 assert!(args.contains(&"libaom-av1".to_string()));
                 assert!(args.contains(&"30".to_string()));
                 assert_eq!(duration_input.as_deref(), Some("a.mp4"));
+                assert_eq!(*duration_s, None);
             }
+            _ => panic!("expected ffmpeg"),
+        }
+    }
+
+    #[test]
+    fn trim_progress_scales_by_cut_length() {
+        let steps = plan("trim", &json!({"input":"a.mp4","output":"o.mp4","start_s":10,"end_s":40})).unwrap();
+        match &steps[0] {
+            Step::Ffmpeg { duration_s, .. } => assert_eq!(*duration_s, Some(30.0)),
+            _ => panic!("expected ffmpeg"),
+        }
+    }
+
+    #[test]
+    fn resize_default_keeps_aspect() {
+        let steps = plan("resize", &json!({"input":"a.jpg","output":"o.jpg","w":1280,"h":720})).unwrap();
+        match &steps[0] {
+            Step::Ffmpeg { args, .. } =>
+                assert!(args.iter().any(|a| a.contains("force_original_aspect_ratio=decrease"))),
+            _ => panic!("expected ffmpeg"),
+        }
+        let exact = plan("resize", &json!({"input":"a.jpg","output":"o.jpg","w":100,"h":100,"mode":"exact"})).unwrap();
+        match &exact[0] {
+            Step::Ffmpeg { args, .. } => assert!(args.contains(&"scale=100:100".to_string())),
             _ => panic!("expected ffmpeg"),
         }
     }
@@ -309,5 +414,38 @@ mod tests {
         assert_eq!(parse_ffmpeg_progress("bitrate=N/A", 10.0), None);
         assert_eq!(parse_ytdlp_progress("[download]  42.0% of 10MiB"), Some(0.42));
         assert_eq!(parse_ytdlp_progress("[info] something"), None);
+        assert_eq!(parse_ytdlp_item("[download] Downloading item 3 of 12"), Some((3, 12)));
+        assert_eq!(parse_ytdlp_item("[download]  42.0% of 10MiB"), None);
+    }
+
+    #[test]
+    fn ytdlp_stats_full_line() {
+        let s = parse_ytdlp_stats("[download]  42.7% of ~10.51MiB at 2.00MiB/s ETA 00:05").unwrap();
+        assert!((s.frac - 0.427).abs() < 1e-9);
+        assert_eq!(s.total_bytes, Some((10.51 * 1048576.0) as u64));
+        assert_eq!(s.bytes_per_s, Some(2 * 1048576));
+        // terminal form: "100% of 10.51MiB in 00:05"
+        let done = parse_ytdlp_stats("[download] 100% of 10.51MiB in 00:05").unwrap();
+        assert_eq!(done.frac, 1.0);
+        assert!(parse_ytdlp_stats("[info] whatever").is_none());
+    }
+
+    #[test]
+    fn ytdlp_dest_lines() {
+        assert_eq!(parse_ytdlp_dest("[download] Destination: /d/x.f399.mp4").as_deref(), Some("/d/x.f399.mp4"));
+        assert_eq!(parse_ytdlp_dest("[Merger] Merging formats into \"/d/x.mp4\"").as_deref(), Some("/d/x.mp4"));
+        assert_eq!(parse_ytdlp_dest("[ExtractAudio] Destination: /d/x.opus").as_deref(), Some("/d/x.opus"));
+        assert_eq!(parse_ytdlp_dest("[download] /d/x.mp4 has already been downloaded").as_deref(), Some("/d/x.mp4"));
+        assert_eq!(parse_ytdlp_dest("[download]  42.0% of 10MiB"), None);
+    }
+
+    #[test]
+    fn download_playlist_flags() {
+        let single = plan("download", &json!({"url":"https://x/y"})).unwrap();
+        assert!(matches!(&single[0], Step::YtDlp { args } if args[0] == "--no-playlist"));
+        let pl = plan("download_playlist", &json!({"url":"https://x/pl"})).unwrap();
+        assert!(matches!(&pl[0], Step::YtDlp { args } if args[0] == "--yes-playlist"));
+        let live = plan("download_live", &json!({"url":"https://x/l"})).unwrap();
+        assert!(matches!(&live[0], Step::YtDlp { args } if args[0] == "--live-from-start"));
     }
 }

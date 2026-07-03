@@ -6,6 +6,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use tulipix_core::util::unix_secs_i64 as now;
 
 #[derive(Debug, Clone, PartialEq, Default, Serialize, Deserialize)]
 pub struct CollectionMeta {
@@ -123,13 +124,6 @@ CREATE INDEX IF NOT EXISTS collection_members_release_idx
 pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(COLLECTIONS_SCHEMA).execute(pool).await?;
     Ok(())
-}
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 pub async fn upsert(pool: &SqlitePool, meta: &CollectionMeta, members: &[CollectionMember]) -> Result<()> {

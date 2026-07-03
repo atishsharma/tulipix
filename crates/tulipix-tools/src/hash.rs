@@ -20,6 +20,31 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     Sha256::digest(bytes).iter().map(|b| format!("{b:02x}")).collect()
 }
 
+/// Streaming SHA-256 of a file — constant memory, so multi-GB media never gets
+/// slurped into RAM. `should_stop` is polled between chunks; returning `true`
+/// aborts and yields `Ok(None)` (canceled).
+pub fn sha256_file_hex_with(
+    path: &str,
+    mut should_stop: impl FnMut() -> bool,
+) -> std::io::Result<Option<String>> {
+    use std::io::Read;
+    let mut f = std::fs::File::open(path)?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 4 * 1024 * 1024];
+    loop {
+        if should_stop() { return Ok(None); }
+        let n = f.read(&mut buf)?;
+        if n == 0 { break; }
+        h.update(&buf[..n]);
+    }
+    Ok(Some(h.finalize().iter().map(|b| format!("{b:02x}")).collect()))
+}
+
+/// Streaming SHA-256 of a file (no cancellation).
+pub fn sha256_file_hex(path: &str) -> std::io::Result<String> {
+    Ok(sha256_file_hex_with(path, || false)?.expect("no cancel"))
+}
+
 /// CRC-32 (IEEE) for SFV manifests.
 pub fn crc32(bytes: &[u8]) -> u32 {
     let mut crc: u32 = 0xFFFF_FFFF;

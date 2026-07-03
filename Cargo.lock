@@ -7453,6 +7453,7 @@ name = "tulipix-sec-tools"
 version = "0.3.0"
 dependencies = [
  "anyhow",
+ "libc",
  "rfd",
  "serde_json",
  "slint",

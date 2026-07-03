@@ -138,18 +138,30 @@ pub fn tool_bin(name: &str) -> PathBuf {
 /// `<install>/resources/...`) and the dev tree (`target/debug/tulipix` →
 /// `<repo>/resources/...`) resolve.
 fn bundled_bin(name: &str) -> Option<PathBuf> {
+    let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
+    walk_bundled(&format!("{name}{ext}")).filter(|p| is_native_executable(p))
+}
+
+/// Path to any bundled per-OS file (e.g. the whisper model) — same walk as
+/// `bundled_bin` but without the native-executable check, and no `.exe` suffix.
+/// Works in both the installed layout and the dev tree, unlike the
+/// compile-time `CARGO_MANIFEST_DIR` path in tulipix-common.
+pub fn bundled_file(name: &str) -> Option<PathBuf> {
+    walk_bundled(name)
+}
+
+fn walk_bundled(file: &str) -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let os_arch = if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") { "linux-aarch64" }
         else if cfg!(target_os = "linux") { "linux-x86_64" }
         else if cfg!(target_os = "windows") { "windows-x86_64" }
         else if cfg!(target_arch = "aarch64") { "macos-aarch64" }
         else { "macos-x86_64" };
-    let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
-    let tail = std::path::Path::new("resources").join("bin").join(os_arch).join(format!("{name}{ext}"));
+    let tail = std::path::Path::new("resources").join("bin").join(os_arch).join(file);
     let mut cursor = exe.parent();
     while let Some(dir) = cursor {
         let cand = dir.join(&tail);
-        if cand.exists() && is_native_executable(&cand) { return Some(cand); }
+        if cand.exists() { return Some(cand); }
         cursor = dir.parent();
     }
     None

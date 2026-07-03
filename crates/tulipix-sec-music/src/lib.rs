@@ -1968,52 +1968,36 @@ pub fn play_music_url(w: &MainWindow, url: &str, title: &str) {
     if let Ok(mut g) = music_proc().lock() {
         if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
     }
-    let sock = mpv_ipc::endpoint("tulipix-music");
-    mpv_ipc::cleanup(&sock);
-    let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
-    cmd.no_window();
-    cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
-        .arg(format!("--input-ipc-server={}", sock.display()))
-        .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
-    // Carry the mute state across track changes (each track is a fresh mpv).
-    if w.get_music_muted() { cmd.arg("--mute=yes"); }
-    cmd.arg(format!("--af={}", music_full_af(&music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10])))));
-    stop_video(); // music takes over the universal stream from any video
-    mpv_die_with_parent(&mut cmd);
-    match cmd.arg(url).spawn() {
-        Ok(child) => { if let Ok(mut g) = music_proc().lock() { *g = Some(child); } }
-        Err(e) => { tracing::error!(error = %e, "mpv stream launch failed"); return; }
-    }
-    if let Ok(mut g) = music_sock().lock() { *g = Some(sock.clone()); }
+    let mut pre_args = vec![format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32)];
+    if w.get_music_muted() { pre_args.push("--mute=yes".into()); }
+    pre_args.push(format!("--af={}", music_full_af(&music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10])))));
     let weak = w.as_weak();
-    std::thread::spawn(move || {
-        use std::io::{BufRead, BufReader, Write};
-        if let Ok(mut stream) = mpv_ipc::connect(&sock) {
-            let _ = stream.write_all(concat!(
-                "{\"command\":[\"observe_property\",1,\"time-pos\"]}\n",
-                "{\"command\":[\"observe_property\",2,\"duration\"]}\n",
-                "{\"command\":[\"observe_property\",3,\"pause\"]}\n").as_bytes());
-            let rd = BufReader::new(stream);
-            for line in rd.lines().map_while(Result::ok) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
-                if v["event"] != "property-change" { continue; }
-                let name = v["name"].as_str().unwrap_or("").to_string();
-                let wk = weak.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    let Some(w) = wk.upgrade() else { return; };
-                    match name.as_str() {
-                        "time-pos" => if let Some(d) = v["data"].as_f64() { w.set_music_pos(d as f32); w.set_music_pos_label(fmt_clock(d).into()); }
-                        "duration" => if let Some(d) = v["data"].as_f64() { w.set_music_dur(d as f32); w.set_music_dur_label(fmt_clock(d).into()); }
-                        "pause" => if let Some(p) = v["data"].as_bool() { w.set_music_playing(!p); }
-                        _ => {}
-                    }
-                });
+    let on_prop = move |name: &str, data: &serde_json::Value| {
+        let name = name.to_string();
+        let data = data.clone();
+        let wk = weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(w) = wk.upgrade() else { return; };
+            match name.as_str() {
+                "time-pos" => if let Some(d) = data.as_f64() { w.set_music_pos(d as f32); w.set_music_pos_label(fmt_clock(d).into()); }
+                "duration" => if let Some(d) = data.as_f64() { w.set_music_dur(d as f32); w.set_music_dur_label(fmt_clock(d).into()); }
+                "pause" => if let Some(p) = data.as_bool() { w.set_music_playing(!p); }
+                _ => {}
             }
-        }
-        if MUSIC_GEN.load(std::sync::atomic::Ordering::SeqCst) == my_gen {
-            let _ = weak.upgrade_in_event_loop(|w| w.set_music_playing(false));
-        }
-    });
+        });
+    };
+    let eof_weak = w.as_weak();
+    let on_eof = move || { let _ = eof_weak.upgrade_in_event_loop(|w| w.set_music_playing(false)); };
+    if let Err(e) = player::spawn_audio(player::AudioLaunch {
+        prefix: "tulipix-music",
+        mpv_bin: tulipix_core::thumbs::tool_bin("mpv"),
+        src: std::path::Path::new(url),
+        pre_args,
+        observe: &[(1, "time-pos"), (2, "duration"), (3, "pause")],
+        generation: my_gen,
+    }, on_prop, on_eof) {
+        tracing::error!(error = %e, "mpv stream launch failed"); return;
+    }
     w.set_music_np_title(title.into());
     w.set_music_np_sub("Podcast".into());
     w.set_music_np_album("".into());      // no stale artist·album on the second line
@@ -2354,72 +2338,59 @@ pub fn play_radio(w: &MainWindow, st: &tulipix_music::radio::Station) {
     if let Ok(mut g) = music_proc().lock() {
         if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
     }
-    let sock = mpv_ipc::endpoint("tulipix-music");
-    mpv_ipc::cleanup(&sock);
-    let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
-    cmd.no_window();
-    cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
-        .arg(format!("--input-ipc-server={}", sock.display()))
-        .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
-    if w.get_music_muted() { cmd.arg("--mute=yes"); }
-    cmd.arg(format!("--af={}", music_full_af(&music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10])))));
+    let mut pre_args = vec![format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32)];
+    if w.get_music_muted() { pre_args.push("--mute=yes".into()); }
+    pre_args.push(format!("--af={}", music_full_af(&music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10])))));
     // Live cushion: buffer ~10s before starting so transient network dips eat
     // the cache instead of stuttering (we run ~10s behind the live edge).
-    cmd.arg("--cache=yes").arg("--cache-secs=30")
-        .arg("--cache-pause-initial=yes").arg("--cache-pause-wait=10")
-        .arg("--demuxer-readahead-secs=30");
-    stop_video();
-    mpv_die_with_parent(&mut cmd);
-    match cmd.arg(&st.url).spawn() {
-        Ok(child) => { if let Ok(mut g) = music_proc().lock() { *g = Some(child); } }
-        Err(e) => { tracing::error!(error = %e, "mpv radio launch failed"); return; }
-    }
-    if let Ok(mut g) = music_sock().lock() { *g = Some(sock.clone()); }
+    pre_args.extend([
+        "--cache=yes".into(), "--cache-secs=30".into(),
+        "--cache-pause-initial=yes".into(), "--cache-pause-wait=10".into(),
+        "--demuxer-readahead-secs=30".into(),
+    ]);
     let station_name = st.name.trim().to_string();
     let stream_url = st.url.clone();
     let weak = w.as_weak();
-    std::thread::spawn(move || {
-        use std::io::{BufRead, BufReader, Write};
-        if let Ok(mut stream) = mpv_ipc::connect(&sock) {
-            let _ = stream.write_all(concat!(
-                "{\"command\":[\"observe_property\",1,\"time-pos\"]}\n",
-                "{\"command\":[\"observe_property\",3,\"pause\"]}\n",
-                "{\"command\":[\"observe_property\",5,\"media-title\"]}\n").as_bytes());
-            let rd = BufReader::new(stream);
-            for line in rd.lines().map_while(Result::ok) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
-                if v["event"] != "property-change" { continue; }
-                let name = v["name"].as_str().unwrap_or("").to_string();
-                let wk = weak.clone();
-                let su = stream_url.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    let Some(w) = wk.upgrade() else { return; };
-                    match name.as_str() {
-                        // Live stream: no duration — the position label shows time on air.
-                        "time-pos" => if let Some(d) = v["data"].as_f64() { w.set_music_pos(d as f32); w.set_music_pos_label(fmt_clock(d).into()); }
-                        "pause" => if let Some(p) = v["data"].as_bool() { w.set_music_playing(!p); }
-                        "media-title" => if let Some(t) = v["data"].as_str() {
-                            let t = t.trim();
-                            // The title stays the STATION name (from the channel list) so it's
-                            // static across the bottom + zen players. The ICY now-playing track
-                            // (when present) rides the second line instead. mpv reports the URL
-                            // until the first ICY update — ignore those.
-                            if !t.is_empty() && t != su && !t.starts_with("http") {
-                                w.set_music_np_sub(t.into());
-                            }
-                        }
-                        _ => {}
+    let on_prop = move |name: &str, data: &serde_json::Value| {
+        let name = name.to_string();
+        let data = data.clone();
+        let wk = weak.clone();
+        let su = stream_url.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(w) = wk.upgrade() else { return; };
+            match name.as_str() {
+                // Live stream: no duration — the position label shows time on air.
+                "time-pos" => if let Some(d) = data.as_f64() { w.set_music_pos(d as f32); w.set_music_pos_label(fmt_clock(d).into()); }
+                "pause" => if let Some(p) = data.as_bool() { w.set_music_playing(!p); }
+                "media-title" => if let Some(t) = data.as_str() {
+                    let t = t.trim();
+                    // The title stays the STATION name (from the channel list) so it's
+                    // static across the bottom + zen players. The ICY now-playing track
+                    // (when present) rides the second line instead. mpv reports the URL
+                    // until the first ICY update — ignore those.
+                    if !t.is_empty() && t != su && !t.starts_with("http") {
+                        w.set_music_np_sub(t.into());
                     }
-                });
+                }
+                _ => {}
             }
-        }
-        if MUSIC_GEN.load(std::sync::atomic::Ordering::SeqCst) == my_gen {
-            let _ = weak.upgrade_in_event_loop(|w| {
-                w.set_music_playing(false);
-                w.set_music_radio_np_uuid("".into());
-            });
-        }
-    });
+        });
+    };
+    let eof_weak = w.as_weak();
+    let on_eof = move || { let _ = eof_weak.upgrade_in_event_loop(|w| {
+        w.set_music_playing(false);
+        w.set_music_radio_np_uuid("".into());
+    }); };
+    if let Err(e) = player::spawn_audio(player::AudioLaunch {
+        prefix: "tulipix-music",
+        mpv_bin: tulipix_core::thumbs::tool_bin("mpv"),
+        src: std::path::Path::new(&st.url),
+        pre_args,
+        observe: &[(1, "time-pos"), (3, "pause"), (5, "media-title")],
+        generation: my_gen,
+    }, on_prop, on_eof) {
+        tracing::error!(error = %e, "mpv radio launch failed"); return;
+    }
     w.set_music_player_mode("radio".into());
     w.set_music_radio_np_uuid(st.stationuuid.clone().into());
     w.set_music_radio_np_initial(station_name.chars().next()
@@ -3747,30 +3718,58 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
     if let Ok(mut g) = music_proc().lock() {
         if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
     }
-    let sock = mpv_ipc::endpoint("tulipix-music");
-    mpv_ipc::cleanup(&sock);
-    let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
-    cmd.no_window();
-    cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
-        .arg(format!("--input-ipc-server={}", sock.display()))
-        .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
-    // Carry the mute state across track changes (each track is a fresh mpv).
-    if w.get_music_muted() { cmd.arg("--mute=yes"); }
-    stop_video(); // music takes over the universal stream from any video
-    mpv_die_with_parent(&mut cmd);
     let s = tulipix_core::settings::Settings::load().unwrap_or_default();
-    // Always attach the ebur128 meter (+ EQ if any) so the visualizer pulses to
-    // the real audio loudness (np.p5.music.visualizer — beat sync).
+    // Section-built mpv flags: volume/mute carried across tracks, the ebur128
+    // meter (+ EQ) so the visualizer pulses to real loudness, then persisted
+    // audio config (device / exclusive / gapless / replaygain).
     let eq_af = music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10]));
-    cmd.arg(format!("--af={}", music_full_af(&eq_af)));
-    // Apply persisted audio config: device / exclusive / gapless / replaygain
-    // (np.p5.music.output / .gapless / .replaygain).
-    for a in music_audio_args(&s) { cmd.arg(a); }
-    match cmd.arg(&path).spawn() {
-        Ok(child) => { if let Ok(mut g) = music_proc().lock() { *g = Some(child); } }
-        Err(e) => { tracing::error!(error = %e, "mpv audio launch failed"); return; }
+    let mut pre_args = vec![format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32)];
+    if w.get_music_muted() { pre_args.push("--mute=yes".into()); }
+    pre_args.push(format!("--af={}", music_full_af(&eq_af)));
+    pre_args.extend(music_audio_args(&s));
+
+    // Reader-thread handler — loudness stays in-thread (atomic, no per-frame
+    // event-loop hop); everything else drives the now-playing bar.
+    let weak = w.as_weak();
+    let on_prop = move |name: &str, data: &serde_json::Value| {
+        if name == "af-metadata/vis/lavfi.r128.M" {
+            if let Some(l) = data.as_str().and_then(|s| s.parse::<f64>().ok()) {
+                MUSIC_LOUDNESS.store((loudness_to_amp(l) * 1000.0) as i32, std::sync::atomic::Ordering::Relaxed);
+            }
+            return;
+        }
+        let name = name.to_string();
+        let data = data.clone();
+        let wk = weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(w) = wk.upgrade() else { return; };
+            match name.as_str() {
+                "time-pos" => if let Some(d) = data.as_f64() {
+                    w.set_music_pos(d as f32); w.set_music_pos_label(fmt_clock(d).into());
+                    update_lyrics_active(&w); }
+                "duration" => if let Some(d) = data.as_f64() {
+                    w.set_music_dur(d as f32); w.set_music_dur_label(fmt_clock(d).into()); }
+                "pause"  => if let Some(p) = data.as_bool() { w.set_music_playing(!p); media_set_playing(!p); }
+                "volume" => if let Some(d) = data.as_f64() { w.set_music_volume(d as f32); }
+                "mute"   => if let Some(m) = data.as_bool() { w.set_music_muted(m); }
+                _ => {}
+            }
+        });
+    };
+    let eof_weak = w.as_weak();
+    let on_eof = move || { let _ = eof_weak.upgrade_in_event_loop(|w| advance_music(&w)); };
+
+    if let Err(e) = player::spawn_audio(player::AudioLaunch {
+        prefix: "tulipix-music",
+        mpv_bin: tulipix_core::thumbs::tool_bin("mpv"),
+        src: &path,
+        pre_args,
+        observe: &[(1, "time-pos"), (2, "duration"), (3, "pause"),
+                   (4, "volume"), (5, "mute"), (6, "af-metadata/vis/lavfi.r128.M")],
+        generation: my_gen,
+    }, on_prop, on_eof) {
+        tracing::error!(error = %e, "mpv audio launch failed"); return;
     }
-    if let Ok(mut g) = music_sock().lock() { *g = Some(sock.clone()); }
 
     // Untagged-file ReplayGain (np.p5.music.replaygain): mpv only honours RG
     // tags inside the file; feed the DB-computed gain through
@@ -3790,55 +3789,6 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
             });
         }
     }
-
-    // Reader thread: observe properties → UI; on socket close (mpv exited),
-    // auto-advance if this track is still current.
-    let weak = w.as_weak();
-    std::thread::spawn(move || {
-        use std::io::{BufRead, BufReader, Write};
-        if let Ok(mut stream) = mpv_ipc::connect(&sock) {
-            let _ = stream.write_all(concat!(
-                "{\"command\":[\"observe_property\",1,\"time-pos\"]}\n",
-                "{\"command\":[\"observe_property\",2,\"duration\"]}\n",
-                "{\"command\":[\"observe_property\",3,\"pause\"]}\n",
-                "{\"command\":[\"observe_property\",4,\"volume\"]}\n",
-                "{\"command\":[\"observe_property\",5,\"mute\"]}\n",
-                "{\"command\":[\"observe_property\",6,\"af-metadata/vis/lavfi.r128.M\"]}\n").as_bytes());
-            let rd = BufReader::new(stream);
-            for line in rd.lines().map_while(Result::ok) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
-                if v["event"] != "property-change" { continue; }
-                let name = v["name"].as_str().unwrap_or("").to_string();
-                // Real loudness → atomic (handled in-thread, no event-loop hop per frame).
-                if name == "af-metadata/vis/lavfi.r128.M" {
-                    if let Some(l) = v["data"].as_str().and_then(|s| s.parse::<f64>().ok()) {
-                        MUSIC_LOUDNESS.store((loudness_to_amp(l) * 1000.0) as i32, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    continue;
-                }
-                let wk = weak.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    let Some(w) = wk.upgrade() else { return; };
-                    match name.as_str() {
-                        "time-pos" => if let Some(d) = v["data"].as_f64() {
-                            w.set_music_pos(d as f32); w.set_music_pos_label(fmt_clock(d).into());
-                            update_lyrics_active(&w); }
-                        "duration" => if let Some(d) = v["data"].as_f64() {
-                            w.set_music_dur(d as f32); w.set_music_dur_label(fmt_clock(d).into()); }
-                        "pause"  => if let Some(p) = v["data"].as_bool() { w.set_music_playing(!p); media_set_playing(!p); }
-                        "volume" => if let Some(d) = v["data"].as_f64() { w.set_music_volume(d as f32); }
-                        "mute"   => if let Some(m) = v["data"].as_bool() { w.set_music_muted(m); }
-                        _ => {}
-                    }
-                });
-            }
-        }
-        // Socket closed = track ended (or was replaced). Auto-advance only if
-        // this is still the active generation (natural EOF, not user action).
-        if MUSIC_GEN.load(std::sync::atomic::Ordering::SeqCst) == my_gen {
-            let _ = weak.upgrade_in_event_loop(|w| advance_music(&w));
-        }
-    });
 
     // Now-playing metadata — prefer real tags from the Songs store.
     let (title, artist) = music_songs().lock().ok()
@@ -5311,72 +5261,55 @@ pub fn yt_play_inapp(w: &MainWindow, id: String, path: String, title: String, su
     if let Ok(mut g) = music_proc().lock() {
         if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
     }
-    let sock = mpv_ipc::endpoint("tulipix-music");
-    mpv_ipc::cleanup(&sock);
-    let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
-    cmd.no_window();
-    cmd.arg("--no-video").arg("--force-window=no").arg("--idle=no")
-        .arg(format!("--input-ipc-server={}", sock.display()))
-        .arg(format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32));
-    if start > 1.0 { cmd.arg(format!("--start={}", start as i64)); }
-    if w.get_music_muted() { cmd.arg("--mute=yes"); }
-    stop_video();
-    mpv_die_with_parent(&mut cmd);
+    let mut pre_args = vec![format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32)];
+    if start > 1.0 { pre_args.push(format!("--start={}", start as i64)); }
+    if w.get_music_muted() { pre_args.push("--mute=yes".into()); }
     let eq_af = music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10]));
-    cmd.arg(format!("--af={}", music_full_af(&eq_af)));
-    match cmd.arg(&path).spawn() {
-        Ok(child) => { if let Ok(mut g) = music_proc().lock() { *g = Some(child); } }
-        Err(e) => { tracing::error!(error = %e, "yt mpv launch failed"); return; }
-    }
-    if let Ok(mut g) = music_sock().lock() { *g = Some(sock.clone()); }
-    // Property reader → transport UI; on EOF just stop (no library auto-advance).
+    pre_args.push(format!("--af={}", music_full_af(&eq_af)));
+    // Property reader → transport UI; on EOF advance the play-queue or stop.
     let weak = w.as_weak();
-    std::thread::spawn(move || {
-        use std::io::{BufRead, BufReader, Write};
-        if let Ok(mut stream) = mpv_ipc::connect(&sock) {
-            let _ = stream.write_all(concat!(
-                "{\"command\":[\"observe_property\",1,\"time-pos\"]}\n",
-                "{\"command\":[\"observe_property\",2,\"duration\"]}\n",
-                "{\"command\":[\"observe_property\",3,\"pause\"]}\n",
-                "{\"command\":[\"observe_property\",4,\"volume\"]}\n",
-                "{\"command\":[\"observe_property\",5,\"mute\"]}\n",
-                "{\"command\":[\"observe_property\",6,\"af-metadata/vis/lavfi.r128.M\"]}\n").as_bytes());
-            let rd = BufReader::new(stream);
-            for line in rd.lines().map_while(Result::ok) {
-                let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
-                if v["event"] != "property-change" { continue; }
-                let name = v["name"].as_str().unwrap_or("").to_string();
-                // Real loudness → visualizer atomic (YouTube audio also pulses).
-                if name == "af-metadata/vis/lavfi.r128.M" {
-                    if let Some(l) = v["data"].as_str().and_then(|s| s.parse::<f64>().ok()) {
-                        MUSIC_LOUDNESS.store((loudness_to_amp(l) * 1000.0) as i32, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    continue;
-                }
-                let wk = weak.clone();
-                let _ = slint::invoke_from_event_loop(move || {
-                    let Some(w) = wk.upgrade() else { return; };
-                    match name.as_str() {
-                        "time-pos" => if let Some(d) = v["data"].as_f64() { w.set_music_pos(d as f32); w.set_music_pos_label(fmt_clock(d).into()); }
-                        "duration" => if let Some(d) = v["data"].as_f64() { w.set_music_dur(d as f32); w.set_music_dur_label(fmt_clock(d).into()); }
-                        "pause"  => if let Some(p) = v["data"].as_bool() { w.set_music_playing(!p); }
-                        "volume" => if let Some(d) = v["data"].as_f64() { w.set_music_volume(d as f32); }
-                        "mute"   => if let Some(m) = v["data"].as_bool() { w.set_music_muted(m); }
-                        _ => {}
-                    }
-                });
+    let on_prop = move |name: &str, data: &serde_json::Value| {
+        if name == "af-metadata/vis/lavfi.r128.M" {
+            if let Some(l) = data.as_str().and_then(|s| s.parse::<f64>().ok()) {
+                MUSIC_LOUDNESS.store((loudness_to_amp(l) * 1000.0) as i32, std::sync::atomic::Ordering::Relaxed);
             }
+            return;
         }
-        if MUSIC_GEN.load(std::sync::atomic::Ordering::SeqCst) == my_gen {
-            // EOF on this track: advance the play-queue if one is active, else stop.
-            let wk = weak.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                if !yt_queue_advance(wk.clone()) {
-                    if let Some(w) = wk.upgrade() { w.set_music_playing(false); }
-                }
-            });
-        }
-    });
+        let name = name.to_string();
+        let data = data.clone();
+        let wk = weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            let Some(w) = wk.upgrade() else { return; };
+            match name.as_str() {
+                "time-pos" => if let Some(d) = data.as_f64() { w.set_music_pos(d as f32); w.set_music_pos_label(fmt_clock(d).into()); }
+                "duration" => if let Some(d) = data.as_f64() { w.set_music_dur(d as f32); w.set_music_dur_label(fmt_clock(d).into()); }
+                "pause"  => if let Some(p) = data.as_bool() { w.set_music_playing(!p); }
+                "volume" => if let Some(d) = data.as_f64() { w.set_music_volume(d as f32); }
+                "mute"   => if let Some(m) = data.as_bool() { w.set_music_muted(m); }
+                _ => {}
+            }
+        });
+    };
+    let eof_weak = w.as_weak();
+    let on_eof = move || {
+        let wk = eof_weak.clone();
+        let _ = slint::invoke_from_event_loop(move || {
+            if !yt_queue_advance(wk.clone()) {
+                if let Some(w) = wk.upgrade() { w.set_music_playing(false); }
+            }
+        });
+    };
+    if let Err(e) = player::spawn_audio(player::AudioLaunch {
+        prefix: "tulipix-music",
+        mpv_bin: tulipix_core::thumbs::tool_bin("mpv"),
+        src: std::path::Path::new(&path),
+        pre_args,
+        observe: &[(1, "time-pos"), (2, "duration"), (3, "pause"),
+                   (4, "volume"), (5, "mute"), (6, "af-metadata/vis/lavfi.r128.M")],
+        generation: my_gen,
+    }, on_prop, on_eof) {
+        tracing::error!(error = %e, "yt mpv launch failed"); return;
+    }
     w.set_music_np_accent(thumb.is_empty().then(|| slint::Color::from_rgb_u8(0xef, 0x44, 0x44))
         .unwrap_or_else(|| dominant_color(std::path::Path::new(&thumb)).unwrap_or(slint::Color::from_rgb_u8(0xef, 0x44, 0x44))));
     w.set_music_np_title(title.into());

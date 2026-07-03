@@ -6,6 +6,7 @@
 
 use anyhow::Result;
 pub mod mpv_ipc;
+pub mod player;
 use tulipix_core::proc::NoWindow;
 use std::path::PathBuf;
 use std::sync::OnceLock;

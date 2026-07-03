@@ -10,8 +10,9 @@ use crate::libraries::{LibrariesConfig, Library, Section};
 use anyhow::Result;
 use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::UNIX_EPOCH;
 use walkdir::WalkDir;
+use crate::util::unix_secs_i64 as now_secs;
 
 pub const DEFAULT_EXCLUDES: &[&str] = &[
     "*/.git/*",
@@ -29,10 +30,6 @@ pub struct PopulateStats {
     pub updated: u64,
     pub missing: u64,
     pub excluded: u64,
-}
-
-fn now_secs() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
 }
 
 fn excluded(path: &Path, lib_globs: &[String]) -> bool {

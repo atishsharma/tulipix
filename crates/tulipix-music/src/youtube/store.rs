@@ -2,6 +2,7 @@
 
 use anyhow::Result;
 use sqlx::SqlitePool;
+use tulipix_core::util::unix_secs_i64 as now;
 
 pub const YOUTUBE_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS yt_subs (
@@ -160,13 +161,6 @@ pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
 }
 
 use crate::youtube::subscriptions::ImportedSub;
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct Sub {

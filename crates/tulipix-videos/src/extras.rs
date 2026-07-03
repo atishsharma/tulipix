@@ -6,6 +6,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use tulipix_core::util::unix_secs_i64 as now;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum ExtraKind {
@@ -144,13 +145,6 @@ CREATE INDEX IF NOT EXISTS extras_lookup_idx ON extras(tmdb_id, media, kind);
 pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(EXTRAS_SCHEMA).execute(pool).await?;
     Ok(())
-}
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 pub async fn cache(pool: &SqlitePool, media: &str, videos: &[ExtraVideo]) -> Result<()> {

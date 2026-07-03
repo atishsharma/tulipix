@@ -9,7 +9,7 @@ use crate::logging;
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::util::unix_secs as now_unix;
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
 pub struct SystemInfo {
@@ -154,10 +154,6 @@ fn stem_to_unix(stem: &str) -> Option<u64> {
     let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
     let days = era * 146097 + doe - 719468;
     Some((days * 86_400) as u64)
-}
-
-fn now_unix() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 #[cfg(test)]

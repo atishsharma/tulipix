@@ -7,8 +7,9 @@
 
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
+use tulipix_core::thumbs::tool_bin;
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct VideoFacts {
@@ -27,25 +28,10 @@ pub struct VideoFacts {
     pub audio_sample_hz: Option<i64>,
 }
 
-fn bundled_bin(name: &str) -> PathBuf {
-    let exe = std::env::current_exe().ok();
-    let dir = exe.as_ref().and_then(|p| p.parent()).and_then(|p| p.parent());
-    let os_arch =
-        if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") { "linux-aarch64" }
-        else if cfg!(target_os = "linux") { "linux-x86_64" }
-        else if cfg!(target_os = "windows") { "windows-x86_64" }
-        else if cfg!(target_arch = "aarch64") { "macos-aarch64" }
-        else { "macos-x86_64" };
-    let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
-    dir.map(|d| d.join("resources").join("bin").join(os_arch).join(format!("{name}{ext}")))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from(name))
-}
-
 /// Run `ffprobe` on `path` and return parsed facts. Returns default-empty
 /// facts (rather than erroring) on non-zero exit so the indexer keeps going.
 pub fn probe(path: &Path) -> Result<VideoFacts> {
-    let bin = bundled_bin("ffprobe");
+    let bin = tool_bin("ffprobe");
     let out = Command::new(&bin)
         .args([
             "-loglevel", "error",

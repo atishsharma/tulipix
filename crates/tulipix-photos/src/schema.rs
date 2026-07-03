@@ -170,6 +170,16 @@ pub(crate) mod tests {
         (tmp, pool)
     }
 
+    /// Insert an item + photo_meta row; shared by the stacks / HDR tests.
+    pub(crate) async fn seed_photo(pool: &SqlitePool, path: &str, taken: i64, cam: &str) -> i64 {
+        sqlx::query("INSERT INTO items (abs_path, inode, size, mtime, section, added, updated) VALUES (?, 0, 1, 0, 'photos', 0, 0)")
+            .bind(path).execute(pool).await.unwrap();
+        let id: i64 = sqlx::query_scalar("SELECT id FROM items WHERE abs_path = ?").bind(path).fetch_one(pool).await.unwrap();
+        sqlx::query("INSERT INTO photo_meta (item_id, taken_at, camera_make, camera_model) VALUES (?, ?, ?, ?)")
+            .bind(id).bind(taken).bind("Tulip").bind(cam).execute(pool).await.unwrap();
+        id
+    }
+
     #[tokio::test]
     async fn schema_applies_idempotently() {
         let (_t, pool) = open_pool().await;

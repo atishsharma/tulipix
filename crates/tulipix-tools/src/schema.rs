@@ -26,6 +26,15 @@ CREATE TABLE IF NOT EXISTS queue_settings (
     key   TEXT PRIMARY KEY,
     value TEXT
 );
+
+-- Files the download tools actually wrote (the "Downloaded" list shows ONLY
+-- these — not everything that happens to sit in ~/Downloads).
+CREATE TABLE IF NOT EXISTS downloads (
+    id      INTEGER PRIMARY KEY AUTOINCREMENT,
+    job_id  INTEGER,
+    path    TEXT    NOT NULL UNIQUE,
+    created INTEGER NOT NULL
+);
 "#;
 
 pub async fn apply(pool: &SqlitePool) -> Result<()> {

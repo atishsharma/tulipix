@@ -40,4 +40,5 @@ pub mod settings;
 pub mod thumbs;
 pub mod thumbs_queue;
 pub mod updater;
+pub mod util;
 pub mod watcher;

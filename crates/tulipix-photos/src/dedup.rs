@@ -3,8 +3,11 @@
 //! Two stages:
 //!  * SHA-256 — identifies byte-identical duplicates. Cheap, exact, but
 //!    misses re-encodes/format-converts.
-//!  * pHash (perceptual) — 64-bit DCT-based hash from a 32×32 luma reduction.
-//!    Clusters by Hamming distance ≤ `PHASH_RADIUS`.
+//!  * pHash (perceptual) — 64-bit DCT-II hash. 32×32 luma → 2-D DCT → keep the
+//!    low-frequency top-left 8×8 block → bit = coefficient > median (DC term
+//!    excluded from the median). A new photo joins an existing pHash cluster
+//!    only if it is within `PHASH_RADIUS` Hamming of *every* member (no greedy
+//!    chaining, so A~B + B~C can't drag unrelated A and C into one pile).
 //!
 //! Both stages populate `dedup_clusters` + `dedup_members` so the UI can
 //! show each cluster as a single row with a Keep/Drop picker.
@@ -16,7 +19,10 @@ use sqlx::SqlitePool;
 use std::io::Read;
 use std::path::Path;
 
-pub const PHASH_RADIUS: u32 = 6;
+// 64-bit DCT pHash: near-duplicates land at distance 0–6, genuinely different
+// photos almost always exceed 16. 8 keeps re-encodes/crops together while the
+// all-members join rule (below) blocks chain-merges of dissimilar shots.
+pub const PHASH_RADIUS: u32 = 8;
 
 pub fn sha256_file(path: &Path) -> Result<String> {
     let mut f = std::fs::File::open(path).with_context(|| format!("open {}", path.display()))?;
@@ -42,33 +48,60 @@ pub fn phash_file(path: &Path) -> Result<String> {
     Ok(hex(&phash_bytes(&img.to_luma8(), img.width(), img.height())))
 }
 
-fn phash_bytes(luma: &image::GrayImage, _w: u32, _h: u32) -> [u8; 8] {
-    // Resize to 32x32, take the top-left 8x8 of a DCT-II proxy.
-    let small = image::imageops::resize(luma, 32, 32, FilterType::Triangle);
-    let mut sum = 0f32;
-    let mut px = [0f32; 32 * 32];
-    for (i, p) in small.pixels().enumerate() {
-        let v = p[0] as f32;
-        px[i] = v;
-        sum += v;
+const DCT_N: usize = 32;
+
+/// 1-D DCT-II of a length-32 signal (unnormalised — scaling is irrelevant since
+/// we only threshold coefficients against their own median).
+fn dct_1d(input: &[f32; DCT_N]) -> [f32; DCT_N] {
+    let mut out = [0f32; DCT_N];
+    for (k, ok) in out.iter_mut().enumerate() {
+        let mut s = 0f32;
+        for (n, &x) in input.iter().enumerate() {
+            s += x * (std::f32::consts::PI / DCT_N as f32 * (n as f32 + 0.5) * k as f32).cos();
+        }
+        *ok = s;
     }
-    let avg = sum / (32.0 * 32.0);
-    // 64-bit hash: 8x8 block — average over 4x4 patches.
+    out
+}
+
+fn phash_bytes(luma: &image::GrayImage, _w: u32, _h: u32) -> [u8; 8] {
+    // 32×32 luma → real separable 2-D DCT-II.
+    let small = image::imageops::resize(luma, DCT_N as u32, DCT_N as u32, FilterType::Triangle);
+    let mut f = [[0f32; DCT_N]; DCT_N];
+    for y in 0..DCT_N {
+        for x in 0..DCT_N {
+            f[y][x] = small.get_pixel(x as u32, y as u32)[0] as f32;
+        }
+    }
+    // DCT over rows, then over columns.
+    let mut rows = [[0f32; DCT_N]; DCT_N];
+    for y in 0..DCT_N {
+        rows[y] = dct_1d(&f[y]);
+    }
+    let mut dct = [[0f32; DCT_N]; DCT_N];
+    for x in 0..DCT_N {
+        let col: [f32; DCT_N] = std::array::from_fn(|y| rows[y][x]);
+        let c = dct_1d(&col);
+        for y in 0..DCT_N {
+            dct[y][x] = c[y];
+        }
+    }
+    // Low-frequency top-left 8×8 block (index 0 = DC term).
+    let mut vals = [0f32; 64];
+    for v in 0..8 {
+        for u in 0..8 {
+            vals[v * 8 + u] = dct[v][u];
+        }
+    }
+    // Median of the 63 AC coefficients (exclude DC so overall brightness
+    // doesn't dominate the threshold).
+    let mut ac: [f32; 63] = std::array::from_fn(|i| vals[i + 1]);
+    ac.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median = ac[ac.len() / 2];
     let mut bits: u64 = 0;
-    for by in 0..8 {
-        for bx in 0..8 {
-            let mut s = 0f32;
-            for dy in 0..4 {
-                for dx in 0..4 {
-                    let y = by * 4 + dy;
-                    let x = bx * 4 + dx;
-                    s += px[y * 32 + x];
-                }
-            }
-            let block_avg = s / 16.0;
-            if block_avg > avg {
-                bits |= 1 << (by * 8 + bx);
-            }
+    for (i, &c) in vals.iter().enumerate() {
+        if c > median {
+            bits |= 1 << i;
         }
     }
     bits.to_be_bytes()
@@ -96,6 +129,12 @@ pub async fn build_clusters(pool: &SqlitePool) -> Result<u64> {
 
     let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0);
     let mut clusters = 0u64;
+
+    // Full rebuild on every Scan: wipe prior clusters/hashes so a hash-algorithm
+    // change (or moved/edited files) can't leave stale false-positive pairs.
+    sqlx::query("DELETE FROM dedup_members").execute(pool).await?;
+    sqlx::query("DELETE FROM dedup_clusters").execute(pool).await?;
+    sqlx::query("UPDATE photo_meta SET phash = NULL").execute(pool).await?;
 
     // SHA-256 grouping
     for (id, path) in &items {
@@ -129,13 +168,23 @@ pub async fn build_clusters(pool: &SqlitePool) -> Result<u64> {
         if let Ok(ph) = phash_file(Path::new(path)) {
             sqlx::query("UPDATE photo_meta SET phash = ? WHERE item_id = ?")
                 .bind(&ph).bind(id).execute(pool).await?;
-            // try to place into an existing pHash cluster within radius
-            let candidates: Vec<(i64, String)> = sqlx::query_as(
-                "SELECT id, key FROM dedup_clusters WHERE kind = 'phash'",
-            ).fetch_all(pool).await?;
+            // Join an existing pHash cluster only if within radius of EVERY
+            // member (not just the seed key) — kills chain-merging of dissimilar
+            // photos. Pull every member's stored phash grouped by cluster.
+            let member_rows: Vec<(i64, String)> = sqlx::query_as(
+                "SELECT dm.cluster_id, pm.phash \
+                 FROM dedup_members dm \
+                 JOIN photo_meta pm ON pm.item_id = dm.item_id \
+                 JOIN dedup_clusters dc ON dc.id = dm.cluster_id \
+                 WHERE dc.kind = 'phash' AND pm.phash IS NOT NULL AND dm.item_id <> ?",
+            ).bind(id).fetch_all(pool).await?;
+            let mut by_cluster: std::collections::BTreeMap<i64, Vec<String>> = Default::default();
+            for (cid, h) in member_rows { by_cluster.entry(cid).or_default().push(h); }
             let mut placed = false;
-            for (cluster_id, key) in candidates {
-                if hamming(&ph, &key).map(|d| d <= PHASH_RADIUS).unwrap_or(false) {
+            for (cluster_id, hashes) in &by_cluster {
+                let all_close = hashes.iter().all(|k|
+                    hamming(&ph, k).map(|d| d <= PHASH_RADIUS).unwrap_or(false));
+                if all_close {
                     sqlx::query("INSERT OR IGNORE INTO dedup_members (cluster_id, item_id) VALUES (?, ?)")
                         .bind(cluster_id).bind(id).execute(pool).await?;
                     placed = true;

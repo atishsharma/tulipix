@@ -23,13 +23,16 @@ pub fn target_video_bitrate(target_bytes: i64, duration_s: f64, audio_bps: i64) 
 
 /// CRF (quality) mode argv.
 pub fn crf_args(input: &str, codec: Codec, crf: u8, out: &str) -> Vec<String> {
-    vec![
+    let mut a = vec![
         "-i".into(), input.into(),
         "-c:v".into(), codec.encoder().into(),
         "-crf".into(), crf.min(63).to_string(),
-        "-c:a".into(), "copy".into(),
-        out.into(),
-    ]
+    ];
+    // libaom quirk: -crf alone is constrained-quality against the default
+    // 256 kbps target; -b:v 0 switches to true constant-quality mode.
+    if codec == Codec::Av1 { a.extend(["-b:v".into(), "0".into()]); }
+    a.extend(["-c:a".into(), "copy".into(), out.into()]);
+    a
 }
 
 /// Two-pass target-bitrate argv (returns both passes). Pass 1 → null muxer.

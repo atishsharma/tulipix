@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
+use tulipix_core::util::days_from_civil;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MovieMeta {
@@ -146,15 +147,6 @@ fn parse_yyyy_mm_dd(s: &str) -> Option<i64> {
     let m: i64 = std::str::from_utf8(&b[5..7]).ok()?.parse().ok()?;
     let d: i64 = std::str::from_utf8(&b[8..10]).ok()?.parse().ok()?;
     Some(days_from_civil(y, m, d) * 86_400)
-}
-
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y / 400 } else { (y - 399) / 400 };
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
 }
 
 fn now() -> i64 {

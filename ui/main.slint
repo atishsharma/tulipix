@@ -667,6 +667,9 @@ export component MainWindow inherits Window {
     in-out property <string> cloud-active-remote: "";
     in-out property <string> cloud-path: "";
     in-out property <string> cloud-query: "";
+    in-out property <string> cloud-sort-key: "name";
+    in-out property <bool> cloud-sort-asc: true;
+    callback cloud-sort-changed();
     in-out property <[CloudEntry]> cloud-entries: [];
     in-out property <bool> cloud-rclone-ok: true;
     in-out property <string> cloud-status: "";
@@ -790,6 +793,7 @@ callback cloud-go-home();
     callback tools-reset();
     callback tools-close();
     callback queue-action(int, string);
+    callback tools-open-folder();
     callback tools-set-workers(int);
     callback tools-update-tool(string);
     callback tools-list-downloads();
@@ -1635,6 +1639,8 @@ callback cloud-go-home();
     callback dedupe-scan();
     callback dedupe-keep(int, bool);
     callback dedupe-both(int);
+    callback dedupe-trash(int);
+    callback dedupe-open(int, bool, bool);
     callback slideshow-export(string);
     callback smart-rule-test(string);
     callback smart-rule-save(int, string);
@@ -1881,6 +1887,8 @@ callback cloud-go-home();
                 dedupe-scan => { root.dedupe-scan(); }
                 dedupe-keep(cid, kl) => { root.dedupe-keep(cid, kl); }
                 dedupe-both(cid) => { root.dedupe-both(cid); }
+                dedupe-trash(cid) => { root.dedupe-trash(cid); }
+                dedupe-open(cid, l, e) => { root.dedupe-open(cid, l, e); }
                 slideshow-export(p) => { root.slideshow-export(p); }
                 smart-rule-test(j) => { root.smart-rule-test(j); }
                 smart-rule-save(aid, j) => { root.smart-rule-save(aid, j); } }
@@ -2280,6 +2288,9 @@ callback cloud-go-home();
                 active-mounted: root.cloud-active-mounted;
                 path: root.cloud-path;
                 query <=> root.cloud-query;
+                sort-key <=> root.cloud-sort-key;
+                sort-asc <=> root.cloud-sort-asc;
+                sort-changed() => { root.cloud-sort-changed(); }
                 entries: root.cloud-entries;
                 rclone-ok: root.cloud-rclone-ok;
                 status: root.cloud-status;
@@ -2388,6 +2399,7 @@ callback cloud-go-home();
                 reset() => { root.tools-reset(); }
                 close-detail() => { root.tools-close(); }
                 queue-action(i, a) => { root.queue-action(i, a); }
+                open-folder() => { root.tools-open-folder(); }
                 set-workers(n) => { root.tools-set-workers(n); }
                 update-tool(n) => { root.tools-update-tool(n); }
                 list-downloads() => { root.tools-list-downloads(); }
