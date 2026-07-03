@@ -11,6 +11,7 @@ use sqlx::SqlitePool;
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tulipix_core::thumbs::tool_bin;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct FolderEntry {
@@ -48,21 +49,6 @@ pub async fn list_folders(pool: &SqlitePool) -> Result<Vec<FolderEntry>> {
     Ok(out)
 }
 
-fn bundled_bin(name: &str) -> PathBuf {
-    let exe = std::env::current_exe().ok();
-    let dir = exe.as_ref().and_then(|p| p.parent()).and_then(|p| p.parent());
-    let os_arch =
-        if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") { "linux-aarch64" }
-        else if cfg!(target_os = "linux") { "linux-x86_64" }
-        else if cfg!(target_os = "windows") { "windows-x86_64" }
-        else if cfg!(target_arch = "aarch64") { "macos-aarch64" }
-        else { "macos-x86_64" };
-    let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
-    dir.map(|d| d.join("resources").join("bin").join(os_arch).join(format!("{name}{ext}")))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from(name))
-}
-
 /// Render a per-folder cover by grabbing the cover video's 10% frame.
 /// Returns the cached cover path (`<out_dir>/<sha>.jpg`).
 pub fn render_cover(src: &Path, duration_s: Option<f64>, out_dir: &Path) -> Result<PathBuf> {
@@ -70,7 +56,7 @@ pub fn render_cover(src: &Path, duration_s: Option<f64>, out_dir: &Path) -> Resu
     let ts = duration_s.map(|d| d * 0.10).unwrap_or(5.0);
     let stem = src.file_stem().and_then(|s| s.to_str()).unwrap_or("cover");
     let out = out_dir.join(format!("{stem}.jpg"));
-    let ff = bundled_bin("ffmpeg");
+    let ff = tool_bin("ffmpeg");
     let status = Command::new(&ff)
         .args(["-y", "-loglevel", "error", "-ss", &format!("{ts:.3}"), "-i"]).arg(src)
         .args(["-vframes", "1", "-q:v", "3"]).arg(&out)

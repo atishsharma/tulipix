@@ -3,8 +3,9 @@
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::process::Command;
+use tulipix_core::thumbs::tool_bin;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct Chapter {
@@ -14,23 +15,8 @@ pub struct Chapter {
     pub end_s: Option<f64>,
 }
 
-fn bundled_bin(name: &str) -> PathBuf {
-    let exe = std::env::current_exe().ok();
-    let dir = exe.as_ref().and_then(|p| p.parent()).and_then(|p| p.parent());
-    let os_arch =
-        if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") { "linux-aarch64" }
-        else if cfg!(target_os = "linux") { "linux-x86_64" }
-        else if cfg!(target_os = "windows") { "windows-x86_64" }
-        else if cfg!(target_arch = "aarch64") { "macos-aarch64" }
-        else { "macos-x86_64" };
-    let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
-    dir.map(|d| d.join("resources").join("bin").join(os_arch).join(format!("{name}{ext}")))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from(name))
-}
-
 pub fn extract(path: &Path) -> Result<Vec<Chapter>> {
-    let bin = bundled_bin("ffprobe");
+    let bin = tool_bin("ffprobe");
     let out = Command::new(&bin)
         .args(["-loglevel", "error", "-print_format", "json", "-show_chapters"])
         .arg(path)

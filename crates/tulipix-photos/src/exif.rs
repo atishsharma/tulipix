@@ -9,6 +9,7 @@ use sqlx::SqlitePool;
 use std::fs::File;
 use std::io::BufReader;
 use std::path::Path;
+use tulipix_core::util::days_from_civil;
 
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct ExifFacts {
@@ -102,17 +103,6 @@ fn parse_datetime(exif: &exif::Exif, tag: Tag) -> Option<i64> {
 fn naive_to_unix(year: i64, month: i64, day: i64, hour: i64, min: i64, sec: i64) -> i64 {
     let days = days_from_civil(year, month, day);
     days * 86_400 + hour * 3_600 + min * 60 + sec
-}
-
-/// Howard Hinnant's days_from_civil — Unix-epoch days from y-m-d, valid for
-/// the full Gregorian range. Returns negative for dates before 1970-01-01.
-fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y / 400 } else { (y - 399) / 400 };
-    let yoe = y - era * 400;
-    let doy = (153 * (if m > 2 { m - 3 } else { m + 9 }) + 2) / 5 + d - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
 }
 
 fn parse_gps(exif: &exif::Exif) -> (Option<f64>, Option<f64>) {

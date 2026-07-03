@@ -9,6 +9,7 @@ use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tulipix_core::thumbs::tool_bin;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
@@ -49,21 +50,6 @@ pub struct EncodeReport {
     pub bytes_out: u64,
 }
 
-fn bundled_bin(name: &str) -> PathBuf {
-    let exe = std::env::current_exe().ok();
-    let dir = exe.as_ref().and_then(|p| p.parent()).and_then(|p| p.parent());
-    let os_arch =
-        if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") { "linux-aarch64" }
-        else if cfg!(target_os = "linux") { "linux-x86_64" }
-        else if cfg!(target_os = "windows") { "windows-x86_64" }
-        else if cfg!(target_arch = "aarch64") { "macos-aarch64" }
-        else { "macos-x86_64" };
-    let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
-    dir.map(|d| d.join("resources").join("bin").join(os_arch).join(format!("{name}{ext}")))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from(name))
-}
-
 pub fn encode(
     src: &Path,
     out_dir: &Path,
@@ -78,7 +64,7 @@ pub fn encode(
         anyhow::bail!("output exists: {} (set overwrite=true)", output.display());
     }
 
-    let ff = bundled_bin("ffmpeg");
+    let ff = tool_bin("ffmpeg");
     let mut c = Command::new(&ff);
     c.args(["-y", "-loglevel", "error", "-i"]);
     c.arg(src);

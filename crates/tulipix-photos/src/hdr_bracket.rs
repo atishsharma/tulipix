@@ -14,6 +14,7 @@ use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
 use std::process::Command;
+use tulipix_core::thumbs::tool_bin;
 
 pub const BRACKET_WINDOW_SECS: i64 = 4;
 pub const MIN_BRACKET_FRAMES: usize = 3;
@@ -28,21 +29,6 @@ pub struct BracketSet {
     pub item_ids: Vec<i64>,
     pub item_paths: Vec<String>,
     pub ev: Vec<f64>,
-}
-
-fn bundled_bin(name: &str) -> PathBuf {
-    let exe = std::env::current_exe().ok();
-    let dir = exe.as_ref().and_then(|p| p.parent()).and_then(|p| p.parent());
-    let os_arch =
-        if cfg!(target_os = "linux") && cfg!(target_arch = "aarch64") { "linux-aarch64" }
-        else if cfg!(target_os = "linux") { "linux-x86_64" }
-        else if cfg!(target_os = "windows") { "windows-x86_64" }
-        else if cfg!(target_arch = "aarch64") { "macos-aarch64" }
-        else { "macos-x86_64" };
-    let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
-    dir.map(|d| d.join("resources").join("bin").join(os_arch).join(format!("{name}{ext}")))
-        .filter(|p| p.exists())
-        .unwrap_or_else(|| PathBuf::from(name))
 }
 
 /// Read `ExposureBiasValue` (a signed rational) from an image file. Returns
@@ -123,7 +109,7 @@ pub fn merge(set: &BracketSet, out_dir: &Path) -> Result<PathBuf> {
     let mut order: Vec<usize> = (0..set.ev.len()).collect();
     order.sort_by(|&a, &b| set.ev[a].partial_cmp(&set.ev[b]).unwrap_or(std::cmp::Ordering::Equal));
 
-    let ff = bundled_bin("ffmpeg");
+    let ff = tool_bin("ffmpeg");
     let mut c = Command::new(&ff);
     c.args(["-y", "-loglevel", "error"]);
     for i in &order { c.arg("-i").arg(&set.item_paths[*i]); }
@@ -141,16 +127,7 @@ pub fn merge(set: &BracketSet, out_dir: &Path) -> Result<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::tests::open_pool;
-
-    async fn seed(pool: &SqlitePool, path: &str, taken: i64, cam: &str) -> i64 {
-        sqlx::query("INSERT INTO items (abs_path, inode, size, mtime, section, added, updated) VALUES (?, 0, 1, 0, 'photos', 0, 0)")
-            .bind(path).execute(pool).await.unwrap();
-        let id: i64 = sqlx::query_scalar("SELECT id FROM items WHERE abs_path = ?").bind(path).fetch_one(pool).await.unwrap();
-        sqlx::query("INSERT INTO photo_meta (item_id, taken_at, camera_make, camera_model) VALUES (?, ?, ?, ?)")
-            .bind(id).bind(taken).bind("Tulip").bind(cam).execute(pool).await.unwrap();
-        id
-    }
+    use crate::schema::tests::{open_pool, seed_photo as seed};
 
     #[test]
     fn qualifies_rejects_uniform_ev() {

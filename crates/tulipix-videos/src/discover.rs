@@ -12,6 +12,7 @@ use anyhow::Result;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use tulipix_core::util::unix_secs_i64 as now;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum DiscoverKind {
@@ -177,13 +178,6 @@ CREATE INDEX IF NOT EXISTS discover_feed_kind_idx ON discover_feed(kind, positio
 pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(DISCOVER_SCHEMA).execute(pool).await?;
     Ok(())
-}
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 /// Replace the cached rows for a single feed kind. Discover lists are

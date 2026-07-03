@@ -8,6 +8,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use tulipix_core::util::unix_secs_i64 as now;
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct IntroMarker {
@@ -97,13 +98,6 @@ fn matches_prefix(head: &[u32], ep: &[u32], tolerance: usize) -> bool {
         }
     }
     true
-}
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 pub async fn save_marker(

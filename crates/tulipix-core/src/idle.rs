@@ -8,7 +8,8 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
+use crate::util::unix_secs as now_secs;
 
 const DEFAULT_IDLE_SECS: u64 = 600; // 10 min
 
@@ -20,10 +21,6 @@ type IdleListener = Box<dyn Fn(bool) + Send + Sync>;
 static LISTENERS: OnceLock<RwLock<Vec<IdleListener>>> = OnceLock::new();
 fn listeners() -> &'static RwLock<Vec<IdleListener>> {
     LISTENERS.get_or_init(|| RwLock::new(Vec::new()))
-}
-
-fn now_secs() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
 pub fn set_threshold(secs: u64) {

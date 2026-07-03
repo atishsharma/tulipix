@@ -10,6 +10,7 @@
 use anyhow::Result;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+use tulipix_core::util::unix_secs_i64 as now;
 
 pub const CAST_SCHEMA: &str = r#"
 CREATE TABLE IF NOT EXISTS people (
@@ -72,13 +73,6 @@ pub struct PersonDeepLink {
     /// Photos-section bridge — face-cluster ids that the user (or AI) mapped
     /// to this TMDB person. Empty when no mapping exists yet.
     pub photo_clusters: Vec<i64>,
-}
-
-fn now() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
 }
 
 pub async fn upsert_person(pool: &SqlitePool, p: &PersonRef) -> Result<()> {

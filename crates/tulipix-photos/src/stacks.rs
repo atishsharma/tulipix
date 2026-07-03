@@ -204,16 +204,7 @@ pub async fn hidden_ids(pool: &SqlitePool) -> Result<HashSet<i64>> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::schema::tests::open_pool;
-
-    async fn seed(pool: &SqlitePool, path: &str, taken: i64, cam: &str) -> i64 {
-        sqlx::query("INSERT INTO items (abs_path, inode, size, mtime, section, added, updated) VALUES (?, 0, 1, 0, 'photos', 0, 0)")
-            .bind(path).execute(pool).await.unwrap();
-        let id: i64 = sqlx::query_scalar("SELECT id FROM items WHERE abs_path = ?").bind(path).fetch_one(pool).await.unwrap();
-        sqlx::query("INSERT INTO photo_meta (item_id, taken_at, camera_make, camera_model) VALUES (?, ?, ?, ?)")
-            .bind(id).bind(taken).bind("Tulip").bind(cam).execute(pool).await.unwrap();
-        id
-    }
+    use crate::schema::tests::{open_pool, seed_photo as seed};
 
     #[tokio::test]
     async fn rebuild_creates_a_burst_stack() {

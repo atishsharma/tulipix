@@ -7,6 +7,7 @@
 use anyhow::Result;
 use serde::Deserialize;
 use sqlx::SqlitePool;
+use tulipix_core::util::url_encode as enc;
 
 pub const RB_BASE: &str = "https://de1.api.radio-browser.info/json";
 
@@ -106,14 +107,6 @@ pub fn search_url(name: &str, limit: u32) -> String {
 /// radio-browser asks clients to POST a "click" when a station is played, for
 /// popularity stats.
 pub fn click_url(uuid: &str) -> String { format!("{RB_BASE}/url/{uuid}") }
-
-fn enc(s: &str) -> String {
-    s.bytes().map(|b| match b {
-        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
-        b' ' => "%20".to_string(),
-        _ => format!("%{b:02X}"),
-    }).collect()
-}
 
 /// mpv options to record the live stream to `out` while playing.
 pub fn record_options(out: &str) -> Vec<String> {
