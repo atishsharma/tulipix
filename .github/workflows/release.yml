@@ -52,7 +52,7 @@ jobs:
           cmake --build /tmp/whisper.cpp/build --target whisper-cli
           install -m755 /tmp/whisper.cpp/build/bin/whisper-cli resources/bin/linux-x86_64/whisper-cli
 
-      - name: Build (full: embedded-mpv + skia)
+      - name: "Build (full: embedded-mpv + skia)"
         run: cargo build --release --locked -p tulipix-app
 
       - name: Strip
@@ -132,7 +132,7 @@ jobs:
           lib.exe /def:$($def.FullName) /machine:x64 /out:mpv-dev\mpv.lib
           echo "TULIPIX_MPV_LIB_DIR=$PWD\mpv-dev" >> $env:GITHUB_ENV
 
-      - name: Build (full: embedded-mpv + skia)
+      - name: "Build (full: embedded-mpv + skia)"
         run: cargo build --release --locked -p tulipix-app
 
       - name: Assemble dist
@@ -192,7 +192,7 @@ jobs:
           cmake --build /tmp/whisper.cpp/build --target whisper-cli
           install -m755 /tmp/whisper.cpp/build/bin/whisper-cli resources/bin/macos-aarch64/whisper-cli
 
-      - name: Build (full: embedded-mpv + skia)
+      - name: "Build (full: embedded-mpv + skia)"
         run: |
           export TULIPIX_MPV_LIB_DIR="$(brew --prefix mpv)/lib"
           cargo build --release --locked -p tulipix-app
