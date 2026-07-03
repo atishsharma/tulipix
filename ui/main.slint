@@ -667,6 +667,9 @@ export component MainWindow inherits Window {
     in-out property <string> cloud-active-remote: "";
     in-out property <string> cloud-path: "";
     in-out property <string> cloud-query: "";
+    in-out property <string> cloud-sort-key: "name";
+    in-out property <bool> cloud-sort-asc: true;
+    callback cloud-sort-changed();
     in-out property <[CloudEntry]> cloud-entries: [];
     in-out property <bool> cloud-rclone-ok: true;
     in-out property <string> cloud-status: "";
@@ -2285,6 +2288,9 @@ callback cloud-go-home();
                 active-mounted: root.cloud-active-mounted;
                 path: root.cloud-path;
                 query <=> root.cloud-query;
+                sort-key <=> root.cloud-sort-key;
+                sort-asc <=> root.cloud-sort-asc;
+                sort-changed() => { root.cloud-sort-changed(); }
                 entries: root.cloud-entries;
                 rclone-ok: root.cloud-rclone-ok;
                 status: root.cloud-status;

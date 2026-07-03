@@ -348,6 +348,10 @@ export component CloudPage inherits Rectangle {
     in-out property <string> ctx-name: "";
     callback ctx-action(int, string);
     in-out property <string> query: "";
+    // Sort state: key = name | size | modified | kind; asc toggles direction.
+    in-out property <string> sort-key: "name";
+    in-out property <bool> sort-asc: true;
+    callback sort-changed();
     in property <bool> rclone-ok: true;
     in property <string> status: "";
     in-out property <bool> connect-open: false;
@@ -575,6 +579,24 @@ export component CloudPage inherits Rectangle {
                     Rectangle { horizontal-stretch: 1; }
                     if active-remote != "": VerticalLayout { alignment: center; horizontal-stretch: 0;
                         Text { text: entries.length + " items"; color: ink3; font-size: 12px; vertical-alignment: center; } }
+                    // Sort: key pills + ▲/▼ direction. Sorts files when browsing,
+                    // the remote list at home (Type = backend there).
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Rectangle { height: 42px; border-radius: 21px; background: field; border-width: 1px; border-color: hair;
+                            HorizontalLayout { padding: 4px; spacing: 3px;
+                                Pill { label: "Name"; height: 34px; min-width: 60px; active: root.sort-key == "name";
+                                    clicked => { root.sort-key = "name"; root.sort-changed(); } }
+                                if active-remote != "": Pill { label: "Size"; height: 34px; min-width: 54px; active: root.sort-key == "size";
+                                    clicked => { root.sort-key = "size"; root.sort-changed(); } }
+                                if active-remote != "": Pill { label: "Date"; height: 34px; min-width: 54px; active: root.sort-key == "modified";
+                                    clicked => { root.sort-key = "modified"; root.sort-changed(); } }
+                                Pill { label: "Type"; height: 34px; min-width: 54px; active: root.sort-key == "kind";
+                                    clicked => { root.sort-key = "kind"; root.sort-changed(); } }
+                                Pill { icon: root.sort-asc ? Icons.arrow-up : Icons.arrow-down; label: ""; height: 34px; min-width: 42px;
+                                    clicked => { root.sort-asc = !root.sort-asc; root.sort-changed(); } }
+                            }
+                        }
+                    }
                     if active-remote != "": VerticalLayout { alignment: center; horizontal-stretch: 0;
                         Rectangle { height: 42px; border-radius: 21px; background: field; border-width: 1px; border-color: hair;
                             HorizontalLayout { padding: 4px; spacing: 3px;

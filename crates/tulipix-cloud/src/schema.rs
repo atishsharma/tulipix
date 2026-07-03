@@ -104,6 +104,10 @@ CREATE INDEX IF NOT EXISTS transfer_log_time_idx ON transfer_log(at DESC);
 
 pub async fn apply(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(CLOUD_SCHEMA).execute(pool).await?;
+    // np.p5.cloud.mount-cache persistence — additive migration for existing DBs
+    // (errors mean the column already exists).
+    let _ = sqlx::query("ALTER TABLE mounts ADD COLUMN vfs_cache TEXT NOT NULL DEFAULT 'full'").execute(pool).await;
+    let _ = sqlx::query("ALTER TABLE mounts ADD COLUMN vfs_max_age TEXT NOT NULL DEFAULT ''").execute(pool).await;
     Ok(())
 }
 
