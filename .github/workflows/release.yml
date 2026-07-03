@@ -1,0 +1,249 @@
+# Full self-contained release builds: Linux (deb / rpm / AppImage / tar.gz),
+# Windows (installer + portable zip), macOS (dmg). Every external tool the app
+# shells out to (ffmpeg, ffprobe, yt-dlp, rclone, whisper-cli + model, exiftool,
+# mpv) is bundled — nothing resolves from the target machine's PATH.
+#
+# Trigger: version tags (v*) publish a GitHub Release; manual dispatch builds
+# artifacts without publishing.
+
+name: release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  # ── Linux ──────────────────────────────────────────────────────────────────
+  linux:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: System deps (libmpv link + skia/gl build deps + mpv to bundle)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libmpv-dev mpv cmake ninja-build \
+            libfontconfig1-dev libfreetype6-dev libgl1-mesa-dev libegl1-mesa-dev \
+            libxkbcommon-dev libwayland-dev
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Resolve version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF#refs/tags/v}";
+          else V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2); fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+          mkdir -p dist
+
+      - name: Fetch bundled tools (manifest-pinned)
+        run: cargo run -p fetch-resources
+
+      - name: Build whisper-cli (static, pinned v1.9.1)
+        run: |
+          git clone --depth 1 --branch v1.9.1 https://github.com/ggml-org/whisper.cpp /tmp/whisper.cpp
+          cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+            -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON
+          cmake --build /tmp/whisper.cpp/build --target whisper-cli
+          install -m755 /tmp/whisper.cpp/build/bin/whisper-cli resources/bin/linux-x86_64/whisper-cli
+
+      - name: Build (full: embedded-mpv + skia)
+        run: cargo build --release --locked -p tulipix-app
+
+      - name: Strip
+        run: strip target/release/tulipix
+
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-deb,cargo-generate-rpm
+
+      - name: Package .deb
+        run: cargo deb -p tulipix-app --no-build --no-strip -o dist/tulipix-${VERSION}-linux-x86_64.deb
+
+      - name: Package .rpm
+        run: |
+          cargo generate-rpm -p crates/tulipix-app -o dist/tulipix-${VERSION}-linux-x86_64.rpm
+
+      - name: Package AppImage (bundles libmpv + mpv player)
+        env:
+          APPIMAGE_EXTRACT_AND_RUN: "1"
+        run: |
+          mkdir -p AppDir/usr/bin AppDir/usr/resources/bin/linux-x86_64
+          cp target/release/tulipix AppDir/usr/bin/
+          cp /usr/bin/mpv AppDir/usr/bin/
+          cp -r resources/bin/linux-x86_64/. AppDir/usr/resources/bin/linux-x86_64/
+          curl -sSfL -o linuxdeploy https://github.com/linuxdeploy/linuxdeploy/releases/download/continuous/linuxdeploy-x86_64.AppImage
+          chmod +x linuxdeploy
+          export VERSION
+          ./linuxdeploy --appdir AppDir \
+            -e AppDir/usr/bin/tulipix -e AppDir/usr/bin/mpv \
+            -d packaging/linux/tulipix.desktop \
+            -i resources/icons/tulipix-256.png --icon-filename tulipix \
+            --output appimage
+          mv Tulipix-*.AppImage "dist/tulipix-${VERSION}-linux-x86_64.AppImage" 2>/dev/null \
+            || mv tulipix-*.AppImage "dist/tulipix-${VERSION}-linux-x86_64.AppImage"
+
+      - name: Package tar.gz (opt layout)
+        run: |
+          mkdir -p stage/tulipix/resources/bin
+          cp target/release/tulipix stage/tulipix/
+          cp -r resources/bin/linux-x86_64 stage/tulipix/resources/bin/
+          cp packaging/linux/tulipix.desktop resources/icons/tulipix-256.png stage/tulipix/
+          tar -C stage -czf dist/tulipix-${VERSION}-linux-x86_64.tar.gz tulipix
+          ls -la dist/
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: linux-x86_64
+          path: dist/*
+
+  # ── Windows ────────────────────────────────────────────────────────────────
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      # lib.exe (import-lib generator) on PATH
+      - uses: ilammy/msvc-dev-cmd@v1
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF#refs/tags/v}";
+          else V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2); fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+
+      - name: Fetch bundled tools (ffmpeg, yt-dlp, mpv.exe, whisper, exiftool, rclone, model)
+        run: cargo run -p fetch-resources
+
+      - name: libmpv dev (mpv.lib for the embedded player + runtime DLL)
+        shell: pwsh
+        run: |
+          curl.exe -sSfL -o mpv-dev.7z "https://sourceforge.net/projects/mpv-player-windows/files/libmpv/latest/download"
+          7z x -ompv-dev mpv-dev.7z
+          Get-ChildItem -Recurse mpv-dev | Select-Object -ExpandProperty FullName
+          $def = Get-ChildItem -Recurse mpv-dev -Filter *.def | Select-Object -First 1
+          lib.exe /def:$($def.FullName) /machine:x64 /out:mpv-dev\mpv.lib
+          echo "TULIPIX_MPV_LIB_DIR=$PWD\mpv-dev" >> $env:GITHUB_ENV
+
+      - name: Build (full: embedded-mpv + skia)
+        run: cargo build --release --locked -p tulipix-app
+
+      - name: Assemble dist
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist\app\resources\bin | Out-Null
+          Copy-Item target\release\tulipix.exe dist\app\
+          Copy-Item -Recurse resources\bin\windows-x86_64 dist\app\resources\bin\windows-x86_64
+          # runtime libmpv DLL next to the exe
+          Get-ChildItem -Recurse mpv-dev -Filter *mpv*.dll | ForEach-Object { Copy-Item $_.FullName dist\app\ }
+
+      - name: Portable zip
+        shell: pwsh
+        run: Compress-Archive -Path dist\app\* -DestinationPath "dist\tulipix-$env:VERSION-windows-x86_64-portable.zip"
+
+      - name: Installer (Inno Setup)
+        shell: pwsh
+        run: |
+          iscc /DAppVersion=$env:VERSION /DDistDir=$PWD\dist\app packaging\windows\tulipix.iss
+          Move-Item packaging\windows\Output\*.exe dist\
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: windows-x86_64
+          path: |
+            dist/*.zip
+            dist/*.exe
+
+  # ── macOS (Apple Silicon) ──────────────────────────────────────────────────
+  macos:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: System deps (libmpv to link/bundle + bundler)
+        run: brew install mpv dylibbundler ninja
+
+      - name: Resolve version
+        run: |
+          if [[ "$GITHUB_REF" == refs/tags/v* ]]; then V="${GITHUB_REF#refs/tags/v}";
+          else V=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2); fi
+          echo "VERSION=$V" >> "$GITHUB_ENV"
+
+      - name: Fetch bundled tools
+        run: |
+          mkdir -p dist
+          cargo run -p fetch-resources
+
+      - name: Build whisper-cli (static, pinned v1.9.1)
+        run: |
+          git clone --depth 1 --branch v1.9.1 https://github.com/ggml-org/whisper.cpp /tmp/whisper.cpp
+          cmake -S /tmp/whisper.cpp -B /tmp/whisper.cpp/build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF \
+            -DWHISPER_BUILD_TESTS=OFF -DWHISPER_BUILD_EXAMPLES=ON
+          cmake --build /tmp/whisper.cpp/build --target whisper-cli
+          install -m755 /tmp/whisper.cpp/build/bin/whisper-cli resources/bin/macos-aarch64/whisper-cli
+
+      - name: Build (full: embedded-mpv + skia)
+        run: |
+          export TULIPIX_MPV_LIB_DIR="$(brew --prefix mpv)/lib"
+          cargo build --release --locked -p tulipix-app
+
+      - name: Assemble Tulipix.app
+        run: |
+          APP=Tulipix.app
+          mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources" "$APP/Contents/resources/bin"
+          cp target/release/tulipix "$APP/Contents/MacOS/"
+          cp -R resources/bin/macos-aarch64 "$APP/Contents/resources/bin/macos-aarch64"
+          # bundle the mpv player binary for out-of-process playback
+          cp "$(brew --prefix mpv)/bin/mpv" "$APP/Contents/MacOS/mpv"
+          sed "s/APP_VERSION/${VERSION}/g" packaging/macos/Info.plist > "$APP/Contents/Info.plist"
+          # icon: png → icns
+          mkdir tulipix.iconset
+          for s in 16 32 64 128 256; do
+            sips -z $s $s resources/icons/tulipix-256.png --out "tulipix.iconset/icon_${s}x${s}.png" >/dev/null
+          done
+          iconutil -c icns tulipix.iconset -o "$APP/Contents/Resources/tulipix.icns"
+          # pull libmpv + its dylib tree into the bundle, rewrite install names
+          dylibbundler -od -b -x "$APP/Contents/MacOS/tulipix" \
+            -d "$APP/Contents/libs" -p @executable_path/../libs/
+          dylibbundler -od -b -x "$APP/Contents/MacOS/mpv" \
+            -d "$APP/Contents/libs" -p @executable_path/../libs/
+          # ad-hoc sign so Apple Silicon runs it at all (unsigned arm64 won't launch)
+          codesign --force --deep -s - "$APP"
+
+      - name: Package dmg
+        run: |
+          mkdir -p dist
+          hdiutil create -volname Tulipix -srcfolder Tulipix.app -ov -format UDZO \
+            "dist/tulipix-${VERSION}-macos-aarch64.dmg"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-aarch64
+          path: dist/*
+
+  # ── Publish (tags only) ────────────────────────────────────────────────────
+  publish:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: [linux, windows, macos]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/**
+          generate_release_notes: true

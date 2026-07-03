@@ -1,0 +1,9 @@
+[Desktop Entry]
+Type=Application
+Name=Tulipix
+Comment=Local-first media suite — photos, videos, music, books, tools, cloud
+Exec=tulipix
+Icon=tulipix
+Categories=AudioVideo;Player;Graphics;Utility;
+Terminal=false
+StartupWMClass=tulipix

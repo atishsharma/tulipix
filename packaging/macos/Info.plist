@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>CFBundleExecutable</key>      <string>tulipix</string>
+    <key>CFBundleIdentifier</key>      <string>app.tulipix.Tulipix</string>
+    <key>CFBundleName</key>            <string>Tulipix</string>
+    <key>CFBundleDisplayName</key>     <string>Tulipix</string>
+    <key>CFBundlePackageType</key>     <string>APPL</string>
+    <key>CFBundleShortVersionString</key> <string>APP_VERSION</string>
+    <key>CFBundleVersion</key>         <string>APP_VERSION</string>
+    <key>CFBundleIconFile</key>        <string>tulipix</string>
+    <key>NSHighResolutionCapable</key> <true/>
+    <key>LSMinimumSystemVersion</key>  <string>12.0</string>
+    <key>NSMicrophoneUsageDescription</key> <string>Tulipix transcribes media audio locally with Whisper.</string>
+</dict>
+</plist>

@@ -143,3 +143,35 @@ raw-window-handle = "0.6"
 # the window/taskbar) carries the Tulipix icon.
 [target.'cfg(target_os = "windows")'.build-dependencies]
 embed-resource = "3"
+
+# ── Linux packaging (CI release builds) ──────────────────────────────────────
+# Layout: real binary + bundled tools under /opt/tulipix (tool_bin() walks up
+# from the executable to find resources/bin/<os-arch>/), thin /usr/bin shim.
+[package.metadata.deb]
+name = "tulipix"
+extended-description = "Local-first media suite: photos, videos, music, books, tools and rclone cloud in one app. Bundles ffmpeg, yt-dlp, whisper, rclone and exiftool."
+# $auto resolves shared-lib deps (libmpv, GL, …) from the built binary.
+depends = "$auto, mpv, fuse3, perl"
+assets = [
+  ["target/release/tulipix", "opt/tulipix/tulipix", "755"],
+  ["../../resources/bin/linux-x86_64/**/*", "opt/tulipix/resources/bin/linux-x86_64/", "755"],
+  ["../../packaging/linux/tulipix-launcher", "usr/bin/tulipix", "755"],
+  ["../../packaging/linux/tulipix.desktop", "usr/share/applications/tulipix.desktop", "644"],
+  ["../../resources/icons/tulipix-256.png", "usr/share/icons/hicolor/256x256/apps/tulipix.png", "644"],
+]
+
+[package.metadata.generate-rpm]
+name = "tulipix"
+# Built on an Ubuntu runner — no rpm find-requires there; declare by hand.
+auto-req = "no"
+assets = [
+  { source = "target/release/tulipix", dest = "/opt/tulipix/tulipix", mode = "755" },
+  { source = "resources/bin/linux-x86_64/**/*", dest = "/opt/tulipix/resources/bin/linux-x86_64/", mode = "755" },
+  { source = "packaging/linux/tulipix-launcher", dest = "/usr/bin/tulipix", mode = "755" },
+  { source = "packaging/linux/tulipix.desktop", dest = "/usr/share/applications/tulipix.desktop", mode = "644" },
+  { source = "resources/icons/tulipix-256.png", dest = "/usr/share/icons/hicolor/256x256/apps/tulipix.png", mode = "644" },
+]
+[package.metadata.generate-rpm.requires]
+mpv = "*"
+fuse3 = "*"
+perl = "*"
