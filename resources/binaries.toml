@@ -14,43 +14,48 @@
 # during installer-prep (see scripts/build-whisper.sh).
 [[binary]]
 name = "whisper-cli"
-version = "1.8.4"
+version = "1.9.1"
 [[binary.sources]]
 os = "linux"
 arch = "x86_64"
-url = "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.8.4.tar.gz"
-sha256 = "b26f30e52c095ccb75da40b168437736605eb280de57381887bf9e2b65f31e66"
+url = "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.1.tar.gz"
+sha256 = "147267177eef7b22ec3d2476dd514d1b12e160e176230b740e3d1bd600118447"
 archive = "tar.gz"
 build = "make"
 extract = ["main"]
 [[binary.sources]]
 os = "linux"
 arch = "aarch64"
-url = "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.8.4.tar.gz"
-sha256 = "b26f30e52c095ccb75da40b168437736605eb280de57381887bf9e2b65f31e66"
+url = "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.1.tar.gz"
+sha256 = "147267177eef7b22ec3d2476dd514d1b12e160e176230b740e3d1bd600118447"
 archive = "tar.gz"
 build = "make"
 extract = ["main"]
 [[binary.sources]]
 os = "windows"
 arch = "x86_64"
-url = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.8.4/whisper-bin-x64.zip"
-sha256 = "74f973345cb52ef5ba3ec9e7e7af8e48cc8c71722d1528603b80588a11f82e3e"
+url = "https://github.com/ggml-org/whisper.cpp/releases/download/v1.9.1/whisper-bin-x64.zip"
+sha256 = "7d8be46ecd31828e1eb7a2ecdd0d6b314feafd82163038ab6092594b0a063539"
 archive = "zip"
-extract = ["main.exe"]
+extract = [
+  "whisper-cli.exe", "whisper.dll", "ggml.dll", "ggml-base.dll", "parakeet.dll",
+  "ggml-cpu-alderlake.dll", "ggml-cpu-cannonlake.dll", "ggml-cpu-cascadelake.dll",
+  "ggml-cpu-haswell.dll", "ggml-cpu-icelake.dll", "ggml-cpu-sandybridge.dll",
+  "ggml-cpu-skylakex.dll", "ggml-cpu-sse42.dll", "ggml-cpu-x64.dll",
+]
 [[binary.sources]]
 os = "macos"
 arch = "x86_64"
-url = "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.8.4.tar.gz"
-sha256 = "b26f30e52c095ccb75da40b168437736605eb280de57381887bf9e2b65f31e66"
+url = "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.1.tar.gz"
+sha256 = "147267177eef7b22ec3d2476dd514d1b12e160e176230b740e3d1bd600118447"
 archive = "tar.gz"
 build = "make"
 extract = ["main"]
 [[binary.sources]]
 os = "macos"
 arch = "aarch64"
-url = "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.8.4.tar.gz"
-sha256 = "b26f30e52c095ccb75da40b168437736605eb280de57381887bf9e2b65f31e66"
+url = "https://github.com/ggml-org/whisper.cpp/archive/refs/tags/v1.9.1.tar.gz"
+sha256 = "147267177eef7b22ec3d2476dd514d1b12e160e176230b740e3d1bd600118447"
 archive = "tar.gz"
 build = "make"
 extract = ["main"]
@@ -133,115 +138,146 @@ sha256 = "latest"
 archive = "none"
 latest = true
 
-# ffmpeg + ffprobe — WINDOWS ONLY (Linux/macOS resolve from system PATH or the
-# Tools-directory setting). BtbN rolling "latest" GPL zip; both exes live under
-# `bin/` in the archive and are flattened to resources/bin/windows-x86_64/.
+# ffmpeg + ffprobe — bundled on every OS for the self-contained release build.
+# johnvansickle (Linux) + gyan.dev (Windows) rolling stable URLs; martin-riedl.de static
+# builds for macOS (ffmpeg/ffprobe ship as separate zips there — see the
+# `ffprobe` binary block below). Archives keep exes under `bin/`; they are
+# flattened to resources/bin/<os-arch>/.
 [[binary]]
 name = "ffmpeg"
 version = "latest"
 [[binary.sources]]
+os = "linux"
+arch = "x86_64"
+url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+sha256 = "latest"
+archive = "tar.xz"
+extract = ["ffmpeg", "ffprobe"]
+latest = true
+[[binary.sources]]
+os = "macos"
+arch = "aarch64"
+url = "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffmpeg.zip"
+sha256 = "latest"
+archive = "zip"
+latest = true
+[[binary.sources]]
+os = "macos"
+arch = "x86_64"
+url = "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffmpeg.zip"
+sha256 = "latest"
+archive = "zip"
+latest = true
+[[binary.sources]]
 os = "windows"
 arch = "x86_64"
-url = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
+url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
 sha256 = "latest"
 archive = "zip"
 extract = ["bin/ffmpeg.exe", "bin/ffprobe.exe"]
 latest = true
 
-# mpv — WINDOWS ONLY (Linux/macOS use system mpv or the Tools-directory setting).
-# Bundles the standalone player `mpv.exe` (spawned for video playback). The
-# SourceForge "64bit/latest" link always redirects to the newest shinchiro .7z;
-# `mpv.com` (the console wrapper) comes along too. NOTE: this is the player, not
-# `libmpv` — the embedded audio path still needs mpv-2.dll (mpv-dev) at runtime.
-[[binary]]
-name = "mpv"
-version = "latest"
-[[binary.sources]]
-os = "windows"
-arch = "x86_64"
-url = "https://sourceforge.net/projects/mpv-player-windows/files/64bit/latest/download"
-sha256 = "latest"
-archive = "7z"
-extract = ["mpv.exe", "mpv.com"]
-latest = true
+# mpv (Windows player + libmpv dev) is fetched in the release workflow from the
+# GitHub-hosted zhongfly/mpv-winbuild mirror — SourceForge 403s CI runner IPs.
 
 # rclone — powers Cloud section
 [[binary]]
 name = "rclone"
-version = "1.68.2"
+version = "1.74.3"
 [[binary.sources]]
 os = "linux"
 arch = "x86_64"
-url = "https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-linux-amd64.zip"
-sha256 = "0e6fa18051e67fc600d803a2dcb10ddedb092247fc6eee61be97f64ec080a13c"
+url = "https://downloads.rclone.org/v1.74.3/rclone-v1.74.3-linux-amd64.zip"
+sha256 = "dbee7ccd7a5d617e4ed4cd4555c16669b511abfe8d31164f61be35ac9e999bd2"
 archive = "zip"
 extract = ["rclone"]
 [[binary.sources]]
 os = "linux"
 arch = "aarch64"
-url = "https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-linux-arm64.zip"
-sha256 = "c6e9d4cf9c88b279f6ad80cd5675daebc068e404890fa7e191412c1bc7a4ac5f"
+url = "https://downloads.rclone.org/v1.74.3/rclone-v1.74.3-linux-arm64.zip"
+sha256 = "8f8d47446e061f80c3256659fe8e21f56d72d96aaefe1275d088ea5eb6b42aa7"
 archive = "zip"
 extract = ["rclone"]
 [[binary.sources]]
 os = "windows"
 arch = "x86_64"
-url = "https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-windows-amd64.zip"
-sha256 = "812bf76cc02c04cf6327f3683f3d5a88e47d36c39db84c1a745777496be7d993"
+url = "https://downloads.rclone.org/v1.74.3/rclone-v1.74.3-windows-amd64.zip"
+sha256 = "ecb0ed9006e0d1a693757007716a11dab6c2cde6dac3f2fd87da962eaa73d11d"
 archive = "zip"
 extract = ["rclone.exe"]
 [[binary.sources]]
 os = "macos"
 arch = "x86_64"
-url = "https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-osx-amd64.zip"
-sha256 = "cdc685e16abbf35b6f47c95b2a5b4ad73a73921ff6842e5f4136c8b461756188"
+url = "https://downloads.rclone.org/v1.74.3/rclone-v1.74.3-osx-amd64.zip"
+sha256 = "417cabd402d57806d597bd0ba8fb33a434ca8c2a1a5aa98de5a0bd4b52b39202"
 archive = "zip"
 extract = ["rclone"]
 [[binary.sources]]
 os = "macos"
 arch = "aarch64"
-url = "https://downloads.rclone.org/v1.68.2/rclone-v1.68.2-osx-arm64.zip"
-sha256 = "323f387b32bcf9ddfc3874f01879a0b2689dbd91309beb8c3a4410db04d0c41f"
+url = "https://downloads.rclone.org/v1.74.3/rclone-v1.74.3-osx-arm64.zip"
+sha256 = "33a435ab17023b686918ce9a3975aceb75fe1796c694f38f1993024be1f063f5"
 archive = "zip"
 extract = ["rclone"]
 
-# exiftool — Perl source tarball on Unix (run via system perl or bundled);
-# Windows uses standalone exe zip; macOS uses upstream pkg installer.
+# exiftool — Perl source (GitHub mirror; exiftool.org+SourceForge 403 CI IPs)
+# on Unix/macOS, run via system perl; Windows uses the standalone exe zip
+# cached on this repo's `tooling-cache` release.
 [[binary]]
 name = "exiftool"
-version = "13.58"
+version = "13.59"
 [[binary.sources]]
 os = "linux"
 arch = "x86_64"
-url = "https://exiftool.org/Image-ExifTool-13.58.tar.gz"
-sha256 = "c84fb6b613a480a638225d44979bf44cd2f91c92b79f4d2aa43773c89fa4199e"
+url = "https://github.com/exiftool/exiftool/archive/refs/tags/13.59.tar.gz"
+sha256 = "87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac"
 archive = "tar.gz"
 extract = ["exiftool", "lib/"]
 [[binary.sources]]
 os = "linux"
 arch = "aarch64"
-url = "https://exiftool.org/Image-ExifTool-13.58.tar.gz"
-sha256 = "c84fb6b613a480a638225d44979bf44cd2f91c92b79f4d2aa43773c89fa4199e"
+url = "https://github.com/exiftool/exiftool/archive/refs/tags/13.59.tar.gz"
+sha256 = "87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac"
 archive = "tar.gz"
 extract = ["exiftool", "lib/"]
 [[binary.sources]]
 os = "windows"
 arch = "x86_64"
-url = "https://exiftool.org/exiftool-13.58_64.zip"
-sha256 = "fd3b407a01e6ffc6160f2d5fde5ff0c003f6c4c2ba85eee1ce8928ccb51fa3e6"
+url = "https://github.com/atishsharma/tulipix/releases/download/tooling-cache/exiftool-13.59_64.zip"
+sha256 = "44b512b25af500724ba579d0a53c8fc5851628b692dd5e5d94ae4a15c2cba9ec"
 archive = "zip"
-extract = ["exiftool(-k).exe"]
+extract = ["exiftool(-k).exe", "exiftool_files/"]
 [[binary.sources]]
 os = "macos"
 arch = "x86_64"
-url = "https://exiftool.org/ExifTool-13.58.pkg"
-sha256 = "02a796aedaaed57dd954cb7a14456487dea3b7c6ee1cacb614a272ce584dd4f8"
-archive = "pkg"
-extract = ["exiftool"]
+url = "https://github.com/exiftool/exiftool/archive/refs/tags/13.59.tar.gz"
+sha256 = "87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac"
+archive = "tar.gz"
+extract = ["exiftool", "lib/"]
 [[binary.sources]]
 os = "macos"
 arch = "aarch64"
-url = "https://exiftool.org/ExifTool-13.58.pkg"
-sha256 = "02a796aedaaed57dd954cb7a14456487dea3b7c6ee1cacb614a272ce584dd4f8"
-archive = "pkg"
-extract = ["exiftool"]
+url = "https://github.com/exiftool/exiftool/archive/refs/tags/13.59.tar.gz"
+sha256 = "87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac"
+archive = "tar.gz"
+extract = ["exiftool", "lib/"]
+
+# ffprobe for macOS — martin-riedl ships it as its own zip (Linux/Windows get
+# ffprobe from the ffmpeg archive above).
+[[binary]]
+name = "ffprobe"
+version = "latest"
+[[binary.sources]]
+os = "macos"
+arch = "aarch64"
+url = "https://ffmpeg.martin-riedl.de/redirect/latest/macos/arm64/release/ffprobe.zip"
+sha256 = "latest"
+archive = "zip"
+latest = true
+[[binary.sources]]
+os = "macos"
+arch = "x86_64"
+url = "https://ffmpeg.martin-riedl.de/redirect/latest/macos/amd64/release/ffprobe.zip"
+sha256 = "latest"
+archive = "zip"
+latest = true

@@ -1,0 +1,5 @@
+#!/bin/sh
+# /usr/bin shim — the real binary lives in /opt/tulipix so tool_bin() finds the
+# bundled tools at /opt/tulipix/resources/bin/<os-arch>/ by walking up from the
+# executable.
+exec /opt/tulipix/tulipix "$@"

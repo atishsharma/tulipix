@@ -92,7 +92,12 @@ fn main() -> Result<()> {
         tracing::info!(name=%bin.name, version=%bin.version, url=%src.url, latest=src.latest, "fetch");
         if dry_run { continue; }
 
-        let bytes = reqwest::blocking::get(&src.url)?.error_for_status()?.bytes()?;
+        // Real UA — SourceForge/CDNs 403 the default reqwest agent from CI IPs.
+        let client = reqwest::blocking::Client::builder()
+            .user_agent("Mozilla/5.0 (X11; Linux x86_64) tulipix-fetch/1.0")
+            .timeout(std::time::Duration::from_secs(600))
+            .build()?;
+        let bytes = client.get(&src.url).send()?.error_for_status()?.bytes()?;
         if !src.latest {
             let mut h = Sha256::new();
             h.update(&bytes);
@@ -108,13 +113,29 @@ fn main() -> Result<()> {
         match src.archive.as_deref() {
             Some("tar.gz") => { extract_targz(&bytes, &out_dir, &src.extract)?;
                 tracing::info!(name=%bin.name, "extracted tar.gz"); }
+            Some("tar.xz") => { extract_tarxz(&bytes, &out_dir, &src.extract)?;
+                tracing::info!(name=%bin.name, "extracted tar.xz"); }
             Some("zip") => { extract_zip(&bytes, &out_dir, &src.extract)?;
                 tracing::info!(name=%bin.name, "extracted zip"); }
             Some("7z") => { extract_7z(&bytes, &out_dir, &src.extract)?;
                 tracing::info!(name=%bin.name, "extracted 7z"); }
             _ => {
-                let raw_path = out_dir.join(format!("{}-{}.bin", bin.name, bin.version));
+                // Executables keep the tool's bare name so tool_bin() finds them
+                // (`yt-dlp-latest.bin` was invisible to the app). Models keep the
+                // versioned `<name>-<version>.bin` the loaders look up.
+                let raw_path = if bin.name.starts_with("ggml") {
+                    out_dir.join(format!("{}-{}.bin", bin.name, bin.version))
+                } else if src.url.ends_with(".exe") {
+                    out_dir.join(format!("{}.exe", bin.name))
+                } else {
+                    out_dir.join(&bin.name)
+                };
                 fs::write(&raw_path, &bytes)?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    let _ = fs::set_permissions(&raw_path, fs::Permissions::from_mode(0o755));
+                }
                 tracing::info!(name=%bin.name, archive=?src.archive, "saved raw (no extractor)");
             }
         }
@@ -155,8 +176,15 @@ fn out_name(rel: &str) -> String {
 }
 
 fn extract_targz(bytes: &[u8], out_dir: &std::path::Path, extract: &[String]) -> Result<()> {
-    let gz = flate2::read::GzDecoder::new(bytes);
-    let mut ar = tar::Archive::new(gz);
+    extract_tar(flate2::read::GzDecoder::new(bytes), out_dir, extract)
+}
+
+fn extract_tarxz(bytes: &[u8], out_dir: &std::path::Path, extract: &[String]) -> Result<()> {
+    extract_tar(xz2::read::XzDecoder::new(bytes), out_dir, extract)
+}
+
+fn extract_tar(reader: impl Read, out_dir: &std::path::Path, extract: &[String]) -> Result<()> {
+    let mut ar = tar::Archive::new(reader);
     for entry in ar.entries()? {
         let mut e = entry?;
         let path = e.path()?.to_string_lossy().into_owned();
@@ -212,6 +240,14 @@ fn extract_zip(bytes: &[u8], out_dir: &std::path::Path, extract: &[String]) -> R
         if let Some(p) = dest.parent() { fs::create_dir_all(p)?; }
         let mut out = fs::File::create(&dest).with_context(|| format!("create {}", dest.display()))?;
         std::io::copy(&mut f, &mut out)?;
+        // Preserve the exec bit — zip extraction dropped it and the bundled
+        // rclone came out non-executable.
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = f.unix_mode().unwrap_or(0o755);
+            let _ = fs::set_permissions(&dest, fs::Permissions::from_mode(if mode & 0o111 != 0 || f.unix_mode().is_none() { 0o755 } else { mode }));
+        }
     }
     Ok(())
 }
