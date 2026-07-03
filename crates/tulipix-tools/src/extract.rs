@@ -8,12 +8,6 @@
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Kind { Audio, Subtitle, Attachment }
 
-impl Kind {
-    fn map_letter(self) -> &'static str {
-        match self { Kind::Audio => "a", Kind::Subtitle => "s", Kind::Attachment => "t" }
-    }
-}
-
 /// argv to extract stream #`index` of `kind` from `input` to `out`.
 pub fn extract_stream_args(input: &str, kind: Kind, index: u32, out: &str) -> Vec<String> {
     match kind {
@@ -21,10 +15,17 @@ pub fn extract_stream_args(input: &str, kind: Kind, index: u32, out: &str) -> Ve
             "-dump_attachment:t".into(), out.into(),
             "-i".into(), input.into(),
         ],
-        _ => vec![
+        // Audio: stream-copy (lossless). Subtitles: re-encode — `-c copy` of an
+        // ass/mov_text stream into a .srt output fails; text subs convert fine.
+        Kind::Audio => vec![
             "-i".into(), input.into(),
-            "-map".into(), format!("0:{}:{index}", kind.map_letter()),
+            "-map".into(), format!("0:a:{index}"),
             "-c".into(), "copy".into(),
+            out.into(),
+        ],
+        Kind::Subtitle => vec![
+            "-i".into(), input.into(),
+            "-map".into(), format!("0:s:{index}"),
             out.into(),
         ],
     }

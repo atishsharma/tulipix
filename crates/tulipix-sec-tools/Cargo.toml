@@ -26,3 +26,7 @@ tulipix-common = { path = "../tulipix-common" }
 tulipix-core = { path = "../tulipix-core" }
 tulipix-platform = { path = "../tulipix-platform" }
 tulipix-tools = { path = "../tulipix-tools" }
+
+[target.'cfg(unix)'.dependencies]
+# SIGINT for graceful job cancel (lets yt-dlp/ffmpeg finalize output files).
+libc = "0.2"

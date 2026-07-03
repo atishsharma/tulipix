@@ -5,7 +5,7 @@
 use slint::ComponentHandle;
 use std::sync::OnceLock;
 use tulipix_ui::*;
-use tulipix_common::{bundled_bin_dir, bundled_present, dirs_default, on_path, pool_for};
+use tulipix_common::{on_path, pool_for};
 // Static Tools catalog: (key, title, icon, ops). Each op is (label, kind) where
 // `kind` is the job kind the executor + form bridge dispatch on. The detail
 // body + search read from here.
@@ -18,7 +18,8 @@ const TOOLS_CATALOG: &[(&str, &str, &str, &[ToolOp])] = &[
     ("video",   "Video",     "🎬", &[
         ("Compress video", "compress_video"), ("Trim", "trim"), ("Convert", "convert"),
         ("Thumbnail", "thumbnail"), ("Contact sheet", "contact_sheet"),
-        ("Download", "download"), ("Live record", "download_live")]),
+        ("Download", "download"), ("Playlist download", "download_playlist"),
+        ("Live record", "download_live")]),
     ("audio",   "Audio",     "🎵", &[
         ("Compress audio", "compress_audio"), ("Normalise (R128)", "normalize"),
         ("Extract audio", "extract")]),
@@ -66,6 +67,64 @@ fn tools_form() -> &'static std::sync::Mutex<(String, std::collections::HashMap<
     TOOLS_FORM.get_or_init(|| std::sync::Mutex::new((String::new(), std::collections::HashMap::new())))
 }
 
+// ── Per-job stop control ─────────────────────────────────────────────────────
+// Cancel/Pause must actually stop the job's process, not just flip the DB row.
+// Each running job registers a JobCtl; the queue actions fire it, the worker's
+// child-wait selects on it (kills the process), and native loops poll it.
+
+struct JobCtl { stop: std::sync::atomic::AtomicBool, notify: tokio::sync::Notify }
+static JOB_CTLS: OnceLock<std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<JobCtl>>>> = OnceLock::new();
+fn job_ctls() -> &'static std::sync::Mutex<std::collections::HashMap<i64, std::sync::Arc<JobCtl>>> {
+    JOB_CTLS.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+/// The job's control handle (created on first use).
+fn job_ctl(id: i64) -> std::sync::Arc<JobCtl> {
+    job_ctls().lock().unwrap().entry(id).or_insert_with(|| std::sync::Arc::new(JobCtl {
+        stop: std::sync::atomic::AtomicBool::new(false),
+        notify: tokio::sync::Notify::new(),
+    })).clone()
+}
+/// Signal the job to stop (kills its process, aborts native loops).
+fn job_ctl_fire(id: i64) {
+    let ctl = job_ctl(id);
+    ctl.stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    ctl.notify.notify_waiters();
+}
+fn job_stopped(id: i64) -> bool {
+    job_ctl(id).stop.load(std::sync::atomic::Ordering::Relaxed)
+}
+/// Drop the handle once the job task ends (fresh flag for a retry).
+fn job_ctl_done(id: i64) { job_ctls().lock().unwrap().remove(&id); }
+
+/// Stop a child gracefully: SIGINT first on unix (yt-dlp/ffmpeg finalize their
+/// output files on it — a live recording stays playable), hard kill after 5 s
+/// or on other platforms.
+async fn graceful_kill(child: &mut tokio::process::Child) {
+    #[cfg(unix)]
+    if let Some(pid) = child.id() {
+        unsafe { libc::kill(pid as i32, libc::SIGINT); }
+        if tokio::time::timeout(std::time::Duration::from_secs(5), child.wait()).await.is_ok() {
+            return;
+        }
+    }
+    let _ = child.kill().await;
+}
+
+/// Wait for a child process, racing the job's stop signal. On stop the process
+/// is terminated and the step errors with "stopped" (queue state was already
+/// set to canceled/paused by the action — `complete` won't overwrite it).
+async fn wait_child(id: i64, child: &mut tokio::process::Child) -> anyhow::Result<std::process::ExitStatus> {
+    let ctl = job_ctl(id);
+    if ctl.stop.load(std::sync::atomic::Ordering::Relaxed) {
+        graceful_kill(child).await;
+        anyhow::bail!("stopped");
+    }
+    tokio::select! {
+        st = child.wait() => Ok(st?),
+        _ = ctl.notify.notified() => { graceful_kill(child).await; anyhow::bail!("stopped"); }
+    }
+}
+
 /// Human label for a job kind (queue rows + recent strip).
 fn tool_label(kind: &str) -> &'static str {
     match kind {
@@ -76,7 +135,7 @@ fn tool_label(kind: &str) -> &'static str {
         "burn_subs" => "Burn subtitles", "split" => "Split", "merge" => "Merge",
         "download" => "Download", "download_playlist" => "Playlist download",
         "download_live" => "Live record", "hash" => "Hash", "folder_diff" => "Folder diff",
-        "rename" => "Rename", "transcribe" => "Transcribe", "pdf" => "PDF",
+        "rename" => "Rename", "transcribe" => "Transcribe",
         "mediainfo" => "Media info", "contact_sheet" => "Contact sheet", "cache_clean" => "Clean cache",
         _ => "Job",
     }
@@ -100,24 +159,24 @@ fn human_bytes(n: u64) -> String {
     else { format!("{n} B") }
 }
 
-/// List media files in the downloads dir, newest first, as (name, abs, meta).
-fn list_downloaded() -> Vec<(String, String, String)> {
-    let dir = tools_download_dir();
-    let mut items: Vec<(std::time::SystemTime, String, String, String)> = std::fs::read_dir(&dir)
-        .into_iter().flatten().flatten()
-        .filter_map(|e| {
-            let p = e.path();
-            if !p.is_file() { return None; }
-            // Skip yt-dlp partials.
-            let name = p.file_name()?.to_str()?.to_string();
-            if name.ends_with(".part") || name.ends_with(".ytdl") { return None; }
-            let md = e.metadata().ok()?;
-            let mtime = md.modified().unwrap_or(std::time::UNIX_EPOCH);
-            Some((mtime, name, p.to_string_lossy().into_owned(), human_bytes(md.len())))
-        })
-        .collect();
-    items.sort_by(|a, b| b.0.cmp(&a.0));
-    items.into_iter().take(200).map(|(_, n, p, sz)| (n, p, sz)).collect()
+/// The "Downloaded" list: ONLY files the app's download tools wrote (from the
+/// tools.db `downloads` registry — a random file sitting in ~/Downloads must
+/// not appear). Rows whose file vanished are pruned from the registry.
+async fn list_downloaded() -> Vec<(String, String, String)> {
+    let Ok(pool) = pool_for("tools").await else { return vec![]; };
+    let paths = tulipix_tools::queue::downloads_list(&pool, 200).await.unwrap_or_default();
+    let mut rows = Vec::new();
+    for p in paths {
+        let pb = std::path::PathBuf::from(&p);
+        match std::fs::metadata(&pb) {
+            Ok(md) if md.is_file() => {
+                let name = pb.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_else(|| p.clone());
+                rows.push((name, p, human_bytes(md.len())));
+            }
+            _ => { let _ = tulipix_tools::queue::forget_download(&pool, &p).await; }
+        }
+    }
+    rows
 }
 
 /// One-paragraph "what it does + how to use it" blurb shown in the tool's info
@@ -139,12 +198,11 @@ fn tool_info(kind: &str) -> &'static str {
         "merge" => "Joins several media files of the same type into one. Add the files in order, then Run to concatenate them.",
         "download" => "Downloads a single video/audio from a URL via yt-dlp. Paste the link, pick a format, then Run.",
         "download_playlist" => "Downloads an entire playlist via yt-dlp. Paste the playlist URL, choose a format, then Run — items queue up one by one.",
-        "download_live" => "Records a live stream to disk via yt-dlp until you stop it. Paste the stream URL, then Run.",
+        "download_live" => "Records a live stream to disk via yt-dlp. Paste the stream URL, then Run; press Cancel on the queue row to stop — the recording is finalized and kept.",
         "hash" => "Computes checksums (e.g. SHA-256) for a file so you can verify its integrity. Pick the file, then Run; the digest shows in the queue row.",
         "folder_diff" => "Compares two folders and reports which files are added, removed, or changed between them. Choose folder A and folder B, then Run — the differences are listed in the result.",
         "rename" => "Batch-renames files in a folder using a pattern. Pick the folder, set the naming pattern, then Run.",
         "transcribe" => "Transcribes speech in an audio/video file to an SRT subtitle using Whisper. Leave language on auto-detect or pick one; flip \"Translate to English\" to turn any language straight into English subtitles. Pick the file, then Run.",
-        "pdf" => "Runs a PDF operation (merge/split/compress). Pick the PDF(s), choose the action, then Run.",
         "mediainfo" => "Reports detailed technical metadata (codecs, bitrate, streams, duration) for a media file. Pick the file, then Run — the report appears in the queue row.",
         "contact_sheet" => "Builds a grid of thumbnails sampled across a video (a contact sheet). Pick the video, set the grid size, then Run.",
         "cache_clean" => "Clears Tulipix's thumbnail cache to reclaim disk space. Thumbnails regenerate on demand the next time you browse. Just Run.",
@@ -181,8 +239,23 @@ fn tools_start_worker() {
                 Ok(p) => p,
                 Err(_) => { tokio::time::sleep(std::time::Duration::from_secs(2)).await; continue; }
             };
+            // A job canceled/paused outside the UI (CLI, direct DB edit) must
+            // still stop its live process: fire the ctl of any registered job
+            // whose row left 'running'.
+            if let Ok(gone) = sqlx::query_scalar::<_, i64>(
+                "SELECT id FROM jobs WHERE state IN ('canceled','paused')").fetch_all(&pool).await
+            {
+                let live: Vec<i64> = {
+                    let g = job_ctls().lock().unwrap();
+                    gone.iter().copied().filter(|id| g.contains_key(id)).collect()
+                };
+                for id in live { job_ctl_fire(id); }
+            }
             match tulipix_tools::queue::claim_next(&pool).await {
                 Ok(Some(id)) => {
+                    // Fresh stop flag for this run — a cancel fired while the
+                    // job sat queued must not poison a later retry.
+                    job_ctl_done(id);
                     let pool2 = pool.clone();
                     tokio::spawn(async move {
                         let row: Option<(String, String)> =
@@ -190,10 +263,15 @@ fn tools_start_worker() {
                                 .bind(id).fetch_optional(&pool2).await.ok().flatten();
                         let Some((kind, spec)) = row else { return; };
                         let res = tools_run_job(&pool2, id, &kind, &spec).await;
+                        // `complete` only touches rows still 'running', so a job
+                        // canceled/paused mid-run keeps that state. On success the
+                        // message is left alone — it holds the hash digest / diff
+                        // summary / download title ("Completed" used to clobber it).
                         let _ = match res {
-                            Ok(msg) => tulipix_tools::queue::complete(&pool2, id, true, Some(msg.as_str())).await,
+                            Ok(())  => tulipix_tools::queue::complete(&pool2, id, true, None).await,
                             Err(e)  => tulipix_tools::queue::complete(&pool2, id, false, Some(truncate_msg(&e.to_string()).as_str())).await,
                         };
+                        job_ctl_done(id);
                     });
                     // Let claim_next see the new 'running' count before retrying.
                     tokio::time::sleep(std::time::Duration::from_millis(80)).await;
@@ -205,15 +283,20 @@ fn tools_start_worker() {
 }
 
 /// Run a job: plan its steps and execute them in order, scaling progress.
-async fn tools_run_job(pool: &sqlx::SqlitePool, id: i64, kind: &str, spec_json: &str) -> anyhow::Result<String> {
-    tools_log_reset(&format!("$ {kind}  (job #{id})"));
+async fn tools_run_job(pool: &sqlx::SqlitePool, id: i64, kind: &str, spec_json: &str) -> anyhow::Result<()> {
+    // Only take over the shared console when no other job is mid-run —
+    // resetting it would wipe a concurrent job's live output (workers ≥ 2).
+    let running: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM jobs WHERE state = 'running'")
+        .fetch_one(pool).await.unwrap_or(1);
+    if running <= 1 { tools_log_reset(&format!("$ {kind}  (job #{id})")); }
+    else { tools_log_push(&format!("$ {kind}  (job #{id})")); }
     let spec: serde_json::Value = serde_json::from_str(spec_json).unwrap_or_else(|_| serde_json::json!({}));
     let steps = tulipix_tools::exec::plan(kind, &spec)?;
     let n = steps.len().max(1);
     for (i, step) in steps.into_iter().enumerate() {
         tools_run_step(pool, id, step, i as f64 / n as f64, 1.0 / n as f64).await?;
     }
-    Ok("Completed".into())
+    Ok(())
 }
 
 /// Configure a Command to spawn silently on Windows (no console window).
@@ -332,24 +415,33 @@ fn diff_thumb_path(p: &std::path::Path) -> Option<std::path::PathBuf> {
     tulipix_core::thumbs::os_icon_for(p)
 }
 
-/// Re-diff folders A/B and build (kind, rel-path, full-path, thumb) rows. Thumb
-/// resolution runs off the async runtime (decodes media). Capped per bucket.
-async fn folderdiff_rows(a: &str, b: &str) -> Vec<(String, String, String, Option<std::path::PathBuf>)> {
-    let ma = folder_hash_map(a).await;
-    let mb = folder_hash_map(b).await;
-    let d = tulipix_tools::folder_diff::diff(&ma, &mb);
-    let (a, b) = (a.to_string(), b.to_string());
+/// Rows for the folder-diff result popup: the cached triples from the job run
+/// when available (no re-hash), else a fresh diff (job from a past session).
+/// Thumb resolution runs off the async runtime (decodes media).
+async fn folderdiff_rows(job_id: i64, a: &str, b: &str) -> Vec<(String, String, String, Option<std::path::PathBuf>)> {
+    let cached = diff_cache().lock().unwrap().get(&job_id).cloned();
+    let triples: Vec<(String, String, String)> = match cached {
+        Some(t) => t,
+        None => {
+            let ma = folder_hash_map(a).await;
+            let mb = folder_hash_map(b).await;
+            let d = tulipix_tools::folder_diff::diff(&ma, &mb);
+            let mut out = Vec::new();
+            let push = |out: &mut Vec<(String, String, String)>, kind: &str, rel: &str, root: &str| {
+                let full = std::path::Path::new(root).join(rel);
+                out.push((kind.to_string(), rel.to_string(), full.to_string_lossy().into_owned()));
+            };
+            for rel in d.only_in_b.iter().take(120) { push(&mut out, "only-b", rel, b); }
+            for rel in d.modified.iter().take(120) { push(&mut out, "modified", rel, b); }
+            for rel in d.only_in_a.iter().take(120) { push(&mut out, "only-a", rel, a); }
+            out
+        }
+    };
     tokio::task::spawn_blocking(move || {
-        let mut out: Vec<(String, String, String, Option<std::path::PathBuf>)> = Vec::new();
-        let mut add = |kind: &str, rel: &str, root: &str, out: &mut Vec<(String, String, String, Option<std::path::PathBuf>)>| {
-            let full = std::path::Path::new(root).join(rel);
-            let thumb = diff_thumb_path(&full);
-            out.push((kind.into(), rel.into(), full.to_string_lossy().into(), thumb));
-        };
-        for rel in d.only_in_b.iter().take(120) { add("only-b", rel, &b, &mut out); }
-        for rel in d.modified.iter().take(120) { add("modified", rel, &b, &mut out); }
-        for rel in d.only_in_a.iter().take(120) { add("only-a", rel, &a, &mut out); }
-        out
+        triples.into_iter().map(|(kind, rel, full)| {
+            let thumb = diff_thumb_path(std::path::Path::new(&full));
+            (kind, rel, full, thumb)
+        }).collect()
     }).await.unwrap_or_default()
 }
 
@@ -424,10 +516,18 @@ fn trim_join_run(input: &str, segs: &[(f32, f32)], output: &str) -> Result<(), S
     if st.success() { Ok(()) } else { Err("concat failed".into()) }
 }
 
-/// Open a job's output file in the system default app. Reads the job's spec to
-/// find its `output` path and opens it if present — so a halted/partial job
-/// (e.g. an aborted transcribe with a half-written .srt) is still openable.
+/// Open a job's output file in the system default app. Download jobs open the
+/// actual downloaded FILE (system player), not the save folder; other tools
+/// read the spec's `output` path — so a halted/partial job (e.g. an aborted
+/// transcribe with a half-written .srt) is still openable.
 async fn tools_open_job_output(pool: &sqlx::SqlitePool, id: i64) {
+    if let Ok(Some(p)) = tulipix_tools::queue::download_for_job(pool, id).await {
+        let pb = std::path::PathBuf::from(&p);
+        if pb.is_file() {
+            std::thread::spawn(move || { let _ = tulipix_platform::fm::open_default(&pb); });
+            return;
+        }
+    }
     let Ok(Some(spec)) = tulipix_tools::queue::job_spec(pool, id).await else { return; };
     let Ok(v) = serde_json::from_str::<serde_json::Value>(&spec) else { return; };
     if let Some(out) = v.get("output").and_then(|x| x.as_str()) {
@@ -457,13 +557,41 @@ fn spawn_stderr_log_drain(child: &mut tokio::process::Child) -> tokio::task::Joi
     })
 }
 
+/// Stream a child's stdout through `parse`, writing scaled progress to the job
+/// row. Monotonic — yt-dlp's audio phase restarts its percentage at 0, which
+/// used to make the bar jump backwards mid-download.
+fn spawn_stdout_progress(
+    child: &mut tokio::process::Child,
+    pool: sqlx::SqlitePool,
+    id: i64, base: f64, span: f64,
+    mut parse: impl FnMut(&str) -> Option<f64> + Send + 'static,
+) -> tokio::task::JoinHandle<()> {
+    let stdout = child.stdout.take();
+    tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt;
+        let Some(so) = stdout else { return; };
+        let mut lines = tokio::io::BufReader::new(so).lines();
+        let mut last = 0.0f64;
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(f) = parse(&line) {
+                if f > last {
+                    last = f;
+                    let _ = tulipix_tools::queue::set_progress(&pool, id, base + f * span, None).await;
+                }
+            }
+        }
+    })
+}
+
 async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::exec::Step, base: f64, span: f64) -> anyhow::Result<()> {
-    use tokio::io::AsyncBufReadExt;
     use tulipix_tools::exec::Step;
     match step {
-        Step::Ffmpeg { args, duration_input } => {
+        Step::Ffmpeg { args, duration_input, duration_s } => {
             let bin = tulipix_core::thumbs::tool_bin("ffmpeg");
-            let dur = match &duration_input { Some(p) => ffprobe_duration(p).await, None => 0.0 };
+            let dur = match duration_s {
+                Some(d) => d,
+                None => match &duration_input { Some(p) => ffprobe_duration(p).await, None => 0.0 },
+            };
             let mut cmd = quiet_cmd(&bin);
             cmd.arg("-y").arg("-nostdin");
             cmd.args(&args);
@@ -471,15 +599,9 @@ async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::e
             cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
             let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("ffmpeg not found ({e}) — set Tools directory in Settings"))?;
             let err_task = spawn_stderr_log_drain(&mut child);
-            if let Some(stdout) = child.stdout.take() {
-                let mut lines = tokio::io::BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if let Some(f) = tulipix_tools::exec::parse_ffmpeg_progress(&line, dur) {
-                        let _ = tulipix_tools::queue::set_progress(pool, id, base + f * span, None).await;
-                    }
-                }
-            }
-            let status = child.wait().await?;
+            spawn_stdout_progress(&mut child, pool.clone(), id, base, span,
+                move |l| tulipix_tools::exec::parse_ffmpeg_progress(l, dur));
+            let status = wait_child(id, &mut child).await?;
             let err = err_task.await.unwrap_or_default();
             if !status.success() { anyhow::bail!("ffmpeg failed: {}", truncate_msg(&err)); }
         }
@@ -489,6 +611,7 @@ async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::e
             // Best-effort: resolve the video title up front so the queue row
             // names the actual video (not just "Download"). The URL is the last
             // argv element (DownloadSpec pushes it last).
+            let mut title = String::new();
             if let Some(url) = args.last() {
                 if let Ok(out) = quiet_cmd(&bin)
                     .args(["--no-warnings", "--skip-download", "--playlist-items", "1",
@@ -496,10 +619,11 @@ async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::e
                     .output().await
                 {
                     if out.status.success() {
-                        let title = String::from_utf8_lossy(&out.stdout)
+                        let t = String::from_utf8_lossy(&out.stdout)
                             .lines().next().unwrap_or("").trim().to_string();
-                        if !title.is_empty() {
-                            let _ = tulipix_tools::queue::set_message(pool, id, &title).await;
+                        if !t.is_empty() {
+                            let _ = tulipix_tools::queue::set_message(pool, id, &t).await;
+                            title = t;
                         }
                     }
                 }
@@ -518,17 +642,69 @@ async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::e
             cmd.stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
             let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("yt-dlp not found ({e}) — set Tools directory in Settings"))?;
             let err_task = spawn_stderr_log_drain(&mut child);
-            if let Some(stdout) = child.stdout.take() {
-                let mut lines = tokio::io::BufReader::new(stdout).lines();
-                while let Ok(Some(line)) = lines.next_line().await {
-                    if let Some(f) = tulipix_tools::exec::parse_ytdlp_progress(&line) {
-                        let _ = tulipix_tools::queue::set_progress(pool, id, base + f * span, None).await;
+            // Rich live progress: overall % (playlist-aware — each item's 0–100%
+            // scales into its slice of the batch), downloaded / total size, and
+            // speed, written into the job message so the queue row + header show
+            // real numbers instead of a 0→100 jump.
+            let dests: std::sync::Arc<std::sync::Mutex<Vec<String>>> = Default::default();
+            {
+                let stdout = child.stdout.take();
+                let (pool2, title2, dests2) = (pool.clone(), title.clone(), dests.clone());
+                tokio::spawn(async move {
+                    use tokio::io::AsyncBufReadExt;
+                    let Some(so) = stdout else { return; };
+                    let mut lines = tokio::io::BufReader::new(so).lines();
+                    let (mut item, mut items_total) = (0u32, 1u32);
+                    let mut last_frac = 0.0f64;
+                    let mut last_write = std::time::Instant::now() - std::time::Duration::from_secs(2);
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        if let Some(p) = tulipix_tools::exec::parse_ytdlp_dest(&line) {
+                            if let Ok(mut g) = dests2.lock() { g.push(p); }
+                            continue;
+                        }
+                        if let Some((n, m)) = tulipix_tools::exec::parse_ytdlp_item(&line) {
+                            item = n; items_total = m.max(1);
+                            continue;
+                        }
+                        let Some(st) = tulipix_tools::exec::parse_ytdlp_stats(&line) else { continue; };
+                        let overall = (item.saturating_sub(1) as f64 + st.frac) / items_total as f64;
+                        // Throttle DB writes; always let a forward jump through.
+                        let due = last_write.elapsed().as_millis() >= 250;
+                        if overall < last_frac || (!due && overall == last_frac) { continue; }
+                        last_frac = overall;
+                        last_write = std::time::Instant::now();
+                        let mut parts = vec![format!("{:.0}%", overall * 100.0)];
+                        if items_total > 1 { parts.push(format!("item {item}/{items_total}")); }
+                        if let Some(t) = st.total_bytes {
+                            parts.push(format!("{} / {}", human_bytes((st.frac * t as f64) as u64), human_bytes(t)));
+                        }
+                        if let Some(sp) = st.bytes_per_s { parts.push(format!("{}/s", human_bytes(sp))); }
+                        let mut msg = parts.join(" · ");
+                        if !title2.is_empty() { msg.push_str(" — "); msg.push_str(&title2); }
+                        let _ = tulipix_tools::queue::set_progress(&pool2, id, base + overall * span, Some(&msg)).await;
+                    }
+                });
+            }
+            let status = wait_child(id, &mut child).await?;
+            let err = err_task.await.unwrap_or_default();
+            // A stopped live recording is success from the user's side: yt-dlp
+            // exits non-zero on SIGINT but the finalized file is on disk.
+            if !status.success() { anyhow::bail!("yt-dlp failed: {}", truncate_msg(&err)); }
+            // Register the files this job wrote. Every Destination/Merger path was
+            // collected; fragments were deleted by yt-dlp after the merge, so
+            // "still on disk" filters the list down to the final outputs.
+            {
+                let mut seen = std::collections::HashSet::new();
+                let paths: Vec<String> = dests.lock().map(|g| g.clone()).unwrap_or_default();
+                for p in paths.into_iter().rev() { // newest mention first
+                    if seen.insert(p.clone()) && std::path::Path::new(&p).is_file() {
+                        let _ = tulipix_tools::queue::record_download(pool, id, &p).await;
                     }
                 }
             }
-            let status = child.wait().await?;
-            let err = err_task.await.unwrap_or_default();
-            if !status.success() { anyhow::bail!("yt-dlp failed: {}", truncate_msg(&err)); }
+            // Settle the row message back to the plain title — a stale
+            // "97% · … · MB/s" reads wrong on a finished job.
+            if !title.is_empty() { let _ = tulipix_tools::queue::set_message(pool, id, &title).await; }
         }
         Step::Native(n) => tools_run_native(pool, id, n, base, span).await?,
     }
@@ -538,14 +714,19 @@ async fn tools_run_step(pool: &sqlx::SqlitePool, id: i64, step: tulipix_tools::e
 
 async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::exec::Native, base: f64, span: f64) -> anyhow::Result<()> {
     use tulipix_tools::exec::Native;
-    use tulipix_tools::hash::{manifest_line, sha256_hex, Algo};
+    use tulipix_tools::hash::{manifest_line, sha256_file_hex_with, Algo};
     match n {
         Native::Hash { files, manifest, .. } => {
             let total = files.len().max(1);
             let mut lines = Vec::new();
             for (i, f) in files.iter().enumerate() {
-                let bytes = tokio::fs::read(f).await.map_err(|e| anyhow::anyhow!("read {f}: {e}"))?;
-                let hex = sha256_hex(&bytes);
+                // Streaming hash off the async runtime — constant memory even
+                // for multi-GB files, and cancelable between chunks.
+                let f2 = f.clone();
+                let hex = tokio::task::spawn_blocking(move || {
+                    sha256_file_hex_with(&f2, || job_stopped(id))
+                }).await?.map_err(|e| anyhow::anyhow!("read {f}: {e}"))?;
+                let Some(hex) = hex else { anyhow::bail!("stopped"); };
                 lines.push(manifest_line(Algo::Sha256, &hex, f));
                 let _ = tulipix_tools::queue::set_progress(pool, id, base + ((i + 1) as f64 / total as f64) * span, None).await;
             }
@@ -553,9 +734,20 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
             else { let _ = tulipix_tools::queue::set_progress(pool, id, base + span, Some(lines.join(" · ").as_str())).await; }
         }
         Native::FolderDiff { a, b } => {
-            let ma = folder_hash_map(&a).await;
-            let mb = folder_hash_map(&b).await;
+            let ma = folder_hash_map_prog(&a, pool, id, base, span * 0.5).await?;
+            let mb = folder_hash_map_prog(&b, pool, id, base + span * 0.5, span * 0.5).await?;
             let d = tulipix_tools::folder_diff::diff(&ma, &mb);
+            // Cache the row triples so the result popup doesn't re-hash both
+            // folders from scratch just to display them.
+            let mut rows: Vec<(String, String, String)> = Vec::new();
+            let push = |rows: &mut Vec<(String, String, String)>, kind: &str, rel: &str, root: &str| {
+                let full = std::path::Path::new(root).join(rel);
+                rows.push((kind.into(), rel.into(), full.to_string_lossy().into_owned()));
+            };
+            for rel in d.only_in_b.iter().take(120) { push(&mut rows, "only-b", rel, &b); }
+            for rel in d.modified.iter().take(120) { push(&mut rows, "modified", rel, &b); }
+            for rel in d.only_in_a.iter().take(120) { push(&mut rows, "only-a", rel, &a); }
+            diff_cache().lock().unwrap().insert(id, rows);
             let msg = format!("only-in-A {} · only-in-B {} · modified {} · same {}",
                 d.only_in_a.len(), d.only_in_b.len(), d.modified.len(), d.identical.len());
             let _ = tulipix_tools::queue::set_progress(pool, id, base + span, Some(msg.as_str())).await;
@@ -566,14 +758,21 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
                 .filter_map(|e| e.ok().map(|e| e.path()))
                 .filter(|p| p.is_file()).collect();
             entries.sort();
-            let empty = std::collections::HashMap::new();
             let total = entries.len().max(1);
             for (i, src) in entries.iter().enumerate() {
+                if job_stopped(id) { anyhow::bail!("stopped"); }
                 let src_s = src.to_string_lossy().to_string();
-                let newname = tulipix_tools::rename::expand(&pattern, &empty, start + i, &src_s);
+                // `{name}` = the original stem — the default pattern uses it, and
+                // an empty tag map used to rename everything to "001_.mp4".
+                let mut tags = std::collections::HashMap::new();
+                if let Some(stem) = src.file_stem().and_then(|s| s.to_str()) {
+                    tags.insert("name".to_string(), stem.to_string());
+                }
+                let newname = tulipix_tools::rename::expand(&pattern, &tags, start + i, &src_s);
                 if let Some(parent) = src.parent() {
                     let dst = parent.join(&newname);
-                    if dst != *src { let _ = std::fs::rename(src, &dst); }
+                    // Never clobber: renaming onto an existing file destroys it.
+                    if dst != *src && !dst.exists() { let _ = std::fs::rename(src, &dst); }
                 }
                 let _ = tulipix_tools::queue::set_progress(pool, id, base + ((i + 1) as f64 / total as f64) * span, None).await;
             }
@@ -591,7 +790,7 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
             cmd.stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
             let mut child = cmd.spawn().map_err(|e| anyhow::anyhow!("ffmpeg not found ({e})"))?;
             let err_task = spawn_stderr_log_drain(&mut child);
-            let status = child.wait().await?;
+            let status = wait_child(id, &mut child).await?;
             let err = err_task.await.unwrap_or_default();
             let _ = tokio::fs::remove_file(&tmp).await;
             if !status.success() { anyhow::bail!("merge failed: {}", truncate_msg(&err)); }
@@ -599,22 +798,21 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
         Native::Transcribe { input, output, translate, language } => {
             // 1. Extract 16 kHz mono PCM wav (what whisper.cpp expects).
             let ff = tulipix_core::thumbs::tool_bin("ffmpeg");
+            let media_dur = ffprobe_duration(&input).await; // for whisper progress
             let wav = std::env::temp_dir().join(format!("tulipix-whisper-{id}.wav"));
             let mut c = quiet_cmd(&ff);
             c.arg("-y").args(["-i", &input, "-ar", "16000", "-ac", "1", "-c:a", "pcm_s16le"]);
             c.arg(&wav).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
             let mut child = c.spawn().map_err(|e| anyhow::anyhow!("ffmpeg not found ({e})"))?;
             let err_task = spawn_stderr_log_drain(&mut child);
-            let status = child.wait().await?;
+            let status = wait_child(id, &mut child).await?;
             let err = err_task.await.unwrap_or_default();
             if !status.success() { anyhow::bail!("audio extract failed: {}", truncate_msg(&err)); }
-            let _ = tulipix_tools::queue::set_progress(pool, id, base + span * 0.4, None).await;
+            let _ = tulipix_tools::queue::set_progress(pool, id, base + span * 0.2, None).await;
             // 2. whisper.cpp → SRT.
-            let model = bundled_bin_dir().join("ggml-tiny-1.0.bin");
-            if !model.exists() {
-                let _ = tokio::fs::remove_file(&wav).await;
-                anyhow::bail!("whisper model missing at {} — run `just fetch` to download it", model.display());
-            }
+            let model = whisper_model().ok_or_else(|| anyhow::anyhow!(
+                "whisper model (ggml-tiny-1.0.bin) not found — run `just fetch`, \
+                 or drop it in the Tools directory set in Settings"))?;
             let whisper = whisper_bin().ok_or_else(|| { anyhow::anyhow!(
                 "whisper.cpp CLI not found — install whisper.cpp (provides `whisper-cli`), \
                  or drop the binary in the Tools directory set in Settings") })?;
@@ -623,20 +821,30 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
             let mut c = quiet_cmd(&whisper);
             c.args(&args).stdout(std::process::Stdio::piped()).stderr(std::process::Stdio::piped());
             let mut child = c.spawn().map_err(|e| anyhow::anyhow!("whisper failed to start ({e})"))?;
-            // whisper.cpp prints the transcribed segments to stdout — stream them
-            // into the console log so the user watches the transcription appear.
+            // whisper.cpp prints transcribed segments to stdout — stream them to
+            // the console log AND turn their timestamps into live progress (the
+            // bar used to sit frozen for the whole transcription).
             if let Some(out) = child.stdout.take() {
+                let (pool2, prog_base, prog_span) = (pool.clone(), base + span * 0.2, span * 0.8);
                 tokio::spawn(async move {
                     use tokio::io::AsyncBufReadExt;
                     let mut lines = tokio::io::BufReader::new(out).lines();
-                    while let Ok(Some(line)) = lines.next_line().await { tools_log_push(&line); }
+                    while let Ok(Some(line)) = lines.next_line().await {
+                        tools_log_push(&line);
+                        if media_dur > 0.0 {
+                            if let Some(ts) = parse_whisper_ts(&line) {
+                                let f = (ts / media_dur).clamp(0.0, 1.0);
+                                let _ = tulipix_tools::queue::set_progress(&pool2, id, prog_base + f * prog_span, None).await;
+                            }
+                        }
+                    }
                 });
             }
             let err_task = spawn_stderr_log_drain(&mut child);
-            let status = child.wait().await?;
+            let status = wait_child(id, &mut child).await;
             let err = err_task.await.unwrap_or_default();
             let _ = tokio::fs::remove_file(&wav).await;
-            if !status.success() { anyhow::bail!("whisper failed: {}", truncate_msg(&err)); }
+            if !status?.success() { anyhow::bail!("whisper failed: {}", truncate_msg(&err)); }
         }
         Native::MediaInfo { input, output } => {
             let bin = tulipix_core::thumbs::tool_bin("ffprobe");
@@ -665,7 +873,7 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
             c.arg(&output).stdout(std::process::Stdio::null()).stderr(std::process::Stdio::piped());
             let mut child = c.spawn().map_err(|e| anyhow::anyhow!("ffmpeg not found ({e})"))?;
             let err_task = spawn_stderr_log_drain(&mut child);
-            let status = child.wait().await?;
+            let status = wait_child(id, &mut child).await?;
             let err = err_task.await.unwrap_or_default();
             if !status.success() { anyhow::bail!("contact sheet failed: {}", truncate_msg(&err)); }
         }
@@ -694,7 +902,16 @@ async fn tools_run_native(pool: &sqlx::SqlitePool, id: i64, n: tulipix_tools::ex
     Ok(())
 }
 
-/// Build a `rel_path → sha256` map for a folder (recursive), for folder-diff.
+/// `[00:01:23.400 --> …]` whisper segment line → seconds of the segment start.
+fn parse_whisper_ts(line: &str) -> Option<f64> {
+    let rest = line.trim_start().strip_prefix('[')?;
+    let (h, rest) = rest.split_once(':')?;
+    let (m, rest) = rest.split_once(':')?;
+    let s: f64 = rest.split([' ', ']']).next()?.parse().ok()?;
+    Some(h.trim().parse::<f64>().ok()? * 3600.0 + m.parse::<f64>().ok()? * 60.0 + s)
+}
+
+/// Build a `rel_path → sha256` map for a folder (recursive, streaming hashes).
 async fn folder_hash_map(root: &str) -> std::collections::BTreeMap<String, String> {
     let root = root.to_string();
     tokio::task::spawn_blocking(move || {
@@ -704,12 +921,53 @@ async fn folder_hash_map(root: &str) -> std::collections::BTreeMap<String, Strin
             if !entry.file_type().is_file() { continue; }
             let p = entry.path();
             let rel = p.strip_prefix(base).unwrap_or(p).to_string_lossy().to_string();
-            if let Ok(bytes) = std::fs::read(p) {
-                m.insert(rel, tulipix_tools::hash::sha256_hex(&bytes));
+            if let Ok(Some(hex)) = tulipix_tools::hash::sha256_file_hex_with(&p.to_string_lossy(), || false) {
+                m.insert(rel, hex);
             }
         }
         m
     }).await.unwrap_or_default()
+}
+
+/// Like `folder_hash_map`, but reports progress into the job row (folder-diff
+/// used to sit at 0% for the whole multi-GB hash) and aborts on job stop.
+async fn folder_hash_map_prog(
+    root: &str, pool: &sqlx::SqlitePool, id: i64, base: f64, span: f64,
+) -> anyhow::Result<std::collections::BTreeMap<String, String>> {
+    let root = root.to_string();
+    let pool = pool.clone();
+    let handle = tokio::runtime::Handle::current();
+    tokio::task::spawn_blocking(move || {
+        let base_p = std::path::Path::new(&root);
+        let files: Vec<std::path::PathBuf> = walkdir::WalkDir::new(base_p).into_iter()
+            .filter_map(|e| e.ok()).filter(|e| e.file_type().is_file())
+            .map(|e| e.into_path()).collect();
+        let total = files.len().max(1);
+        let mut m = std::collections::BTreeMap::new();
+        let mut last_report = std::time::Instant::now();
+        for (i, p) in files.iter().enumerate() {
+            if job_stopped(id) { anyhow::bail!("stopped"); }
+            let rel = p.strip_prefix(base_p).unwrap_or(p).to_string_lossy().to_string();
+            match tulipix_tools::hash::sha256_file_hex_with(&p.to_string_lossy(), || job_stopped(id)) {
+                Ok(Some(hex)) => { m.insert(rel, hex); }
+                Ok(None) => anyhow::bail!("stopped"),
+                Err(_) => {} // unreadable file — skip, like the diff always has
+            }
+            if last_report.elapsed().as_millis() >= 300 {
+                last_report = std::time::Instant::now();
+                let f = base + ((i + 1) as f64 / total as f64) * span;
+                let _ = handle.block_on(tulipix_tools::queue::set_progress(&pool, id, f, None));
+            }
+        }
+        Ok(m)
+    }).await?
+}
+
+/// Folder-diff result rows cached at run time, keyed by job id, so the result
+/// popup doesn't re-hash both folders just to render the list.
+fn diff_cache() -> &'static std::sync::Mutex<std::collections::HashMap<i64, Vec<(String, String, String)>>> {
+    static C: OnceLock<std::sync::Mutex<std::collections::HashMap<i64, Vec<(String, String, String)>>>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
 }
 
 /// Read tools.db jobs into the Queue model (newest activity first).
@@ -734,8 +992,14 @@ async fn tools_refresh_queue(weak: slint::Weak<MainWindow>) {
         let header = if !active.is_empty() {
             let label = w.get_tools_active_label().to_string();
             match rows.iter().find(|(_, k, ..)| *k == active) {
-                Some((_, _, state, progress, _)) if state == "running" =>
-                    format!("{label} · {}%", (progress * 100.0).round() as i32),
+                // Downloads write "42% · 4.4 MB / 10.5 MB · 2.1 MB/s — title"
+                // into the message — the pill shows only the stats before the
+                // " — " (title stays on the queue row); else plain percent.
+                Some((_, _, state, progress, msg)) if state == "running" =>
+                    match msg.as_deref().map(str::trim).filter(|m| !m.is_empty()) {
+                        Some(m) => format!("{label} · {}", m.split(" — ").next().unwrap_or(m).trim()),
+                        None => format!("{label} · {}%", (progress * 100.0).round() as i32),
+                    },
                 Some((_, _, state, ..)) => format!("{label} · {state}"),
                 None => label,
             }
@@ -805,7 +1069,10 @@ fn tool_fields(kind: &str) -> Vec<ToolField> {
             out(),
         ],
         "resize" => vec![
-            file("input", "Source image"),
+            file("input", "Source image/video"),
+            mk_field("mode", "Aspect", "dropdown", "fit", false,
+                "fit = keep aspect inside W×H · exact may distort · width/height scale one edge",
+                &["fit", "exact", "width", "height"], 0.0, 0.0),
             mk_field("w", "Width (px)", "number", "1920", true, "", &[], 0.0, 0.0),
             mk_field("h", "Height (px)", "number", "1080", true, "", &[], 0.0, 0.0),
             out(),
@@ -846,13 +1113,14 @@ fn tool_fields(kind: &str) -> Vec<ToolField> {
             mk_field("inputs", "Source files (pick several)", "files", "", true, "", &[], 0.0, 0.0),
             mk_field("output", "Output file", "text", "", true, "", &[], 0.0, 0.0),
         ],
-        "download" | "download_live" => vec![
+        "download" | "download_playlist" | "download_live" => vec![
             mk_field("url", "URL", "text", "", true, "YouTube / Vimeo / 1800+ sites", &[], 0.0, 0.0),
             mk_field("audio_only", "Audio only", "toggle", "false", false, "extract audio", &[], 0.0, 0.0),
             mk_field("max_height", "Resolution", "dropdown", "1080",
                 false, "“Best” grabs the highest available",
                 &["Best", "2160", "1440", "1080", "720", "480", "360", "240"], 0.0, 0.0),
             mk_field("embed_subs", "Embed subtitles", "toggle", "false", false, "", &[], 0.0, 0.0),
+            mk_field("embed_thumbnail", "Embed thumbnail", "toggle", "false", false, "cover art from the video thumbnail", &[], 0.0, 0.0),
             mk_field("output", "Save folder (blank = Downloads)", "folder", "", false, "", &[], 0.0, 0.0),
         ],
         "transcribe" => vec![
@@ -875,7 +1143,7 @@ fn tool_fields(kind: &str) -> Vec<ToolField> {
         ],
         "rename" => vec![
             mk_field("dir", "Folder", "folder", "", true, "", &[], 0.0, 0.0),
-            mk_field("pattern", "Pattern", "text", "{n:03}_{name}", true, "{n}, {n:03} = sequence", &[], 0.0, 0.0),
+            mk_field("pattern", "Pattern", "text", "{n:03}_{name}", true, "{n}, {n:03} = sequence · {name} = original name", &[], 0.0, 0.0),
             mk_field("start", "Start number", "number", "1", false, "", &[], 0.0, 0.0),
         ],
         "mediainfo" => vec![
@@ -899,12 +1167,14 @@ fn ext_of(path: &str) -> String {
         .map(|e| e.to_ascii_lowercase()).unwrap_or_else(|| "out".into())
 }
 
-/// `dir/stem.suffix.ext` next to `input`.
+/// `dir/stem.suffix.ext` next to `input` (`dir/stem.ext` for an empty suffix —
+/// transcribe used to produce "movie..srt").
 fn beside_source(input: &str, suffix: &str, ext: &str) -> String {
     let p = std::path::Path::new(input);
     let stem = p.file_stem().and_then(|s| s.to_str()).unwrap_or("output");
     let parent = p.parent().map(|x| x.to_path_buf()).unwrap_or_default();
-    parent.join(format!("{stem}.{suffix}.{ext}")).to_string_lossy().to_string()
+    let name = if suffix.is_empty() { format!("{stem}.{ext}") } else { format!("{stem}.{suffix}.{ext}") };
+    parent.join(name).to_string_lossy().to_string()
 }
 
 /// Convert the active form's string map into a typed JSON spec, filling the
@@ -954,7 +1224,12 @@ fn tools_build_spec(kind: &str, map: &std::collections::HashMap<String, String>)
             "thumbnail" => set_out(&mut o, beside_source(&input, "thumb", "jpg")),
             "mediainfo" => set_out(&mut o, beside_source(&input, "info", "txt")),
             "contact_sheet" => set_out(&mut o, beside_source(&input, "sheet", "jpg")),
-            "extract" => set_out(&mut o, beside_source(&input, "track", "m4a")),
+            // .mka holds any audio codec losslessly (-c copy); .m4a rejected
+            // opus/ac3/dts tracks. Subtitles land as .srt (re-encoded).
+            "extract" => {
+                let ext = if map.get("stream").map(|s| s.as_str()) == Some("subtitle") { "srt" } else { "mka" };
+                set_out(&mut o, beside_source(&input, "track", ext));
+            }
             "transcribe" => set_out(&mut o, beside_source(&input, "", "srt")),
             "split" => {
                 let p = std::path::Path::new(&input);
@@ -967,14 +1242,22 @@ fn tools_build_spec(kind: &str, map: &std::collections::HashMap<String, String>)
             _ => {}
         }
     }
-    // download: blank "output" folder → into the user's Downloads.
-    if kind == "download" || kind == "download_live" {
+    // downloads: blank "output" folder → into the user's ~/Downloads (the same
+    // dir the "Downloaded" list reads — dirs_default() is the app CONFIG dir,
+    // and files written there were invisible to the user). Playlists get their
+    // own subfolder so 50 items don't flood the folder root.
+    if matches!(kind, "download" | "download_playlist" | "download_live") {
         let folder = o.get("output").and_then(|v| v.as_str()).unwrap_or("").trim().to_string();
-        let base = if folder.is_empty() {
-            dirs_default().map(|d| d.join("Downloads")).unwrap_or_else(|| std::path::PathBuf::from("."))
-        } else { std::path::PathBuf::from(&folder) };
-        let tmpl = base.join("%(title)s.%(ext)s").to_string_lossy().to_string();
-        o.insert("out_template".into(), serde_json::Value::String(tmpl));
+        let base = if folder.is_empty() { tools_download_dir() } else { std::path::PathBuf::from(&folder) };
+        let tmpl = if kind == "download_playlist" {
+            base.join("%(playlist_title)s").join("%(title)s.%(ext)s")
+        } else {
+            base.join("%(title)s.%(ext)s")
+        };
+        // Resolved folder into "output" so the queue row's Open button works
+        // (it opens the spec's `output` path — blank meant a dead button).
+        o.insert("output".into(), serde_json::Value::String(base.to_string_lossy().to_string()));
+        o.insert("out_template".into(), serde_json::Value::String(tmpl.to_string_lossy().to_string()));
     }
     serde_json::Value::Object(o)
 }
@@ -1001,6 +1284,23 @@ fn whisper_bin() -> Option<std::path::PathBuf> {
     None
 }
 
+/// Resolve the whisper model at runtime: user Tools dir first, then the
+/// bundled copy found by walking up from the executable — works in both the
+/// installed layout and the dev tree (the old compile-time CARGO_MANIFEST_DIR
+/// path only existed on the build machine).
+fn whisper_model() -> Option<std::path::PathBuf> {
+    const MODEL: &str = "ggml-tiny-1.0.bin";
+    if let Ok(s) = tulipix_core::settings::Settings::load() {
+        let dir = s.text("tools.bin-dir");
+        let dir = dir.trim();
+        if !dir.is_empty() {
+            let cand = std::path::Path::new(dir).join(MODEL);
+            if cand.exists() { return Some(cand); }
+        }
+    }
+    tulipix_core::thumbs::bundled_file(MODEL)
+}
+
 /// Where a tool binary resolves from, for the Settings tab.
 fn tool_source(name: &str) -> &'static str {
     // Mirror the main Settings page (tool_row): user Tools dir → bundled → PATH.
@@ -1012,7 +1312,7 @@ fn tool_source(name: &str) -> &'static str {
         .map(|d| std::path::Path::new(d.trim()).join(format!("{name}{ext}")).exists())
         .unwrap_or(false);
     if in_tools_dir { "Tools dir" }
-    else if bundled_present(name) || bundled_present(&format!("{name}{ext}")) { "Bundled" }
+    else if tulipix_core::thumbs::bundled_file(&format!("{name}{ext}")).is_some() { "Bundled" }
     else if on_path(name) || on_path(&format!("{name}{ext}")) { "System PATH" }
     else { "Missing" }
 }
@@ -1059,8 +1359,8 @@ async fn tools_refresh_status(weak: slint::Weak<MainWindow>) {
             updatable: *name == "yt-dlp" && source != "Missing",
         });
     }
-    // Bundled AI model (not a binary).
-    let have_model = bundled_present("ggml-tiny-1.0.bin");
+    // Bundled AI model (not a binary) — resolved at runtime like the job does.
+    let have_model = whisper_model().is_some();
     rows.push(ToolStatus {
         name: "ggml-tiny (whisper model)".into(),
         source: if have_model { "Bundled".into() } else { "Missing".into() },
@@ -1141,17 +1441,61 @@ pub fn wire(window: &MainWindow) {
         let Some(w0) = w.upgrade() else { return; };
         let (kind, map) = { let g = tools_form().lock().unwrap(); (g.0.clone(), g.1.clone()) };
         if kind.is_empty() { return; }
+        // Validate up front — a typo'd path used to fail minutes later with a
+        // raw ffmpeg stderr blob, and "abc" in a number field was silently
+        // swapped for the default.
         for f in tool_fields(&kind) {
-            if f.required && map.get(f.key.as_str()).map(|v| v.trim().is_empty()).unwrap_or(true) {
+            let val = map.get(f.key.as_str()).map(|v| v.trim().to_string()).unwrap_or_default();
+            if f.required && val.is_empty() {
                 w0.set_tools_error(format!("{} is required", f.label).into());
+                return;
+            }
+            if val.is_empty() { continue; }
+            match f.kind.as_str() {
+                "number" | "slider" => if val.parse::<f64>().is_err() {
+                    w0.set_tools_error(format!("{} must be a number", f.label).into());
+                    return;
+                },
+                "file" | "folder" => if !std::path::Path::new(&val).exists() {
+                    w0.set_tools_error(format!("{}: not found — {}", f.label, val).into());
+                    return;
+                },
+                "files" => for line in val.lines().map(str::trim).filter(|s| !s.is_empty()) {
+                    if !std::path::Path::new(line).exists() {
+                        w0.set_tools_error(format!("File not found — {line}").into());
+                        return;
+                    }
+                },
+                _ => {}
+            }
+        }
+        let spec_v = tools_build_spec(&kind, &map);
+        // The worker runs ffmpeg with -y; an output equal to a source would
+        // silently destroy the original file.
+        if let Some(out) = spec_v.get("output").and_then(|v| v.as_str()) {
+            let same = |i: &str| !i.is_empty() && std::path::Path::new(i) == std::path::Path::new(out);
+            let clash = spec_v.get("input").and_then(|v| v.as_str()).map(same).unwrap_or(false)
+                || spec_v.get("sub").and_then(|v| v.as_str()).map(same).unwrap_or(false)
+                || spec_v.get("inputs").and_then(|v| v.as_array())
+                    .map(|a| a.iter().filter_map(|x| x.as_str()).any(same)).unwrap_or(false);
+            if clash {
+                w0.set_tools_error("Output path equals the source — pick a different output.".into());
                 return;
             }
         }
         w0.set_tools_error("".into());
-        let spec = tools_build_spec(&kind, &map).to_string();
+        let spec = spec_v.to_string();
         let weak = w0.as_weak();
         tokio::runtime::Handle::current().spawn(async move {
             if let Ok(pool) = pool_for("tools").await {
+                // Double-click Run guard: with 2 workers, twin jobs would write
+                // the same output file concurrently.
+                if let Ok(true) = tulipix_tools::queue::has_active_duplicate(&pool, &kind, &spec).await {
+                    let _ = weak.upgrade_in_event_loop(|w| {
+                        w.set_tools_error("This exact job is already queued or running.".into());
+                    });
+                    return;
+                }
                 let _ = tulipix_tools::queue::submit(&pool, &kind, &spec, 0).await;
                 tools_refresh_queue(weak).await;
             }
@@ -1196,26 +1540,51 @@ pub fn wire(window: &MainWindow) {
         });
     });
     // Download tool: list finished downloads + open one in the OS default app.
+    fn push_downloads(weak: slint::Weak<MainWindow>) {
+        tokio::runtime::Handle::current().spawn(async move {
+            let rows = list_downloaded().await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                let model: Vec<DownloadItem> = rows.into_iter()
+                    .map(|(name, path, meta)| DownloadItem { name: name.into(), path: path.into(), meta: meta.into() })
+                    .collect();
+                w.set_tools_downloads(slint::ModelRc::new(slint::VecModel::from(model)));
+            });
+        });
+    }
     let w = window.as_weak();
-    window.on_tools_list_downloads(move || {
-        let Some(w0) = w.upgrade() else { return; };
-        let rows: Vec<DownloadItem> = list_downloaded().into_iter()
-            .map(|(name, path, meta)| DownloadItem { name: name.into(), path: path.into(), meta: meta.into() })
-            .collect();
-        w0.set_tools_downloads(slint::ModelRc::new(slint::VecModel::from(rows)));
-    });
+    window.on_tools_list_downloads(move || { push_downloads(w.clone()); });
     window.on_tools_open_download(move |path| {
         let p = std::path::PathBuf::from(path.to_string());
         std::thread::spawn(move || { let _ = tulipix_platform::fm::open_default(&p); });
     });
     let w = window.as_weak();
     window.on_tools_remove_download(move |path| {
-        let Some(w0) = w.upgrade() else { return; };
-        let _ = std::fs::remove_file(std::path::PathBuf::from(path.to_string()));
-        let rows: Vec<DownloadItem> = list_downloaded().into_iter()
-            .map(|(name, path, meta)| DownloadItem { name: name.into(), path: path.into(), meta: meta.into() })
-            .collect();
-        w0.set_tools_downloads(slint::ModelRc::new(slint::VecModel::from(rows)));
+        let weak = w.clone();
+        let path = path.to_string();
+        tokio::runtime::Handle::current().spawn(async move {
+            let _ = std::fs::remove_file(std::path::PathBuf::from(&path));
+            if let Ok(pool) = pool_for("tools").await {
+                let _ = tulipix_tools::queue::forget_download(&pool, &path).await;
+            }
+            push_downloads(weak);
+        });
+    });
+    // "Open folder" next to Clear all: the tool's save/source folder on disk.
+    window.on_tools_open_folder(move || {
+        let (kind, map) = { let g = tools_form().lock().unwrap(); (g.0.clone(), g.1.clone()) };
+        let custom = map.get("output").map(|s| s.trim().to_string()).unwrap_or_default();
+        let dir = if !custom.is_empty() && std::path::Path::new(&custom).is_dir() {
+            std::path::PathBuf::from(custom)
+        } else if matches!(kind.as_str(), "download" | "download_playlist" | "download_live") {
+            tools_download_dir()
+        } else {
+            // Other tools: the source file's folder (outputs land beside it).
+            map.get("input").map(|i| std::path::Path::new(i.trim()).parent()
+                    .map(|p| p.to_path_buf()).unwrap_or_default())
+                .filter(|p| p.is_dir())
+                .unwrap_or_else(tools_download_dir)
+        };
+        std::thread::spawn(move || { let _ = tulipix_platform::fm::open_default(&dir); });
     });
     // Queue row actions + worker-slot slider.
     let w = window.as_weak();
@@ -1225,10 +1594,20 @@ pub fn wire(window: &MainWindow) {
         let (id, act) = (id as i64, act.to_string());
         tokio::runtime::Handle::current().spawn(async move {
             if let Ok(pool) = pool_for("tools").await {
+                // Mark the state first (so the worker's `complete` can't
+                // overwrite it), then stop the live process.
                 let _ = match act.as_str() {
-                    "pause"  => tulipix_tools::queue::pause(&pool, id).await,
+                    "pause"  => {
+                        let r = tulipix_tools::queue::pause(&pool, id).await;
+                        job_ctl_fire(id);
+                        r
+                    }
                     "resume" => tulipix_tools::queue::resume(&pool, id).await,
-                    "cancel" => tulipix_tools::queue::cancel(&pool, id).await,
+                    "cancel" => {
+                        let r = tulipix_tools::queue::cancel(&pool, id).await;
+                        job_ctl_fire(id);
+                        r
+                    }
                     "retry"  => tulipix_tools::queue::retry(&pool, id).await,
                     "remove" => tulipix_tools::queue::remove(&pool, id).await,
                     "clear"  => tulipix_tools::queue::clear_all(&pool).await,
@@ -1286,7 +1665,7 @@ pub fn wire(window: &MainWindow) {
                 } else if kind == "folder_diff" {
                     let a = v.get("a").and_then(|x| x.as_str()).unwrap_or("").to_string();
                     let b = v.get("b").and_then(|x| x.as_str()).unwrap_or("").to_string();
-                    let rows = folderdiff_rows(&a, &b).await;
+                    let rows = folderdiff_rows(id, &a, &b).await;
                     let title = format!("Folder diff · {} changes", rows.len());
                     let _ = weak.upgrade_in_event_loop(move |w| {
                         let model: Vec<ToolDiffRow> = rows.into_iter().map(|(kind, path, detail, thumb)| ToolDiffRow {
@@ -1388,16 +1767,19 @@ pub fn wire(window: &MainWindow) {
         }
     });
     tools_refresh(window);
-    // Load persisted worker-slot count + start the queue drainer.
+    // Load persisted worker-slot count + start the queue drainer. Jobs left
+    // 'running' by a crash/quit are re-queued first — they'd otherwise occupy
+    // worker slots forever and silently stall the queue.
     {
         let weak = window.as_weak();
         tokio::runtime::Handle::current().spawn(async move {
             if let Ok(pool) = pool_for("tools").await {
+                let _ = tulipix_tools::queue::recover_stale(&pool).await;
                 let n = tulipix_tools::queue::worker_slots(&pool).await.unwrap_or(2);
                 let _ = weak.upgrade_in_event_loop(move |w| w.set_tools_worker_slots(n as i32));
             }
+            tools_start_worker();
         });
-        tools_start_worker();
     }
     // Poll tools.db into the Queue model (also catches CLI-submitted jobs).
     {

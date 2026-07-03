@@ -790,6 +790,7 @@ callback cloud-go-home();
     callback tools-reset();
     callback tools-close();
     callback queue-action(int, string);
+    callback tools-open-folder();
     callback tools-set-workers(int);
     callback tools-update-tool(string);
     callback tools-list-downloads();
@@ -2392,6 +2393,7 @@ callback cloud-go-home();
                 reset() => { root.tools-reset(); }
                 close-detail() => { root.tools-close(); }
                 queue-action(i, a) => { root.queue-action(i, a); }
+                open-folder() => { root.tools-open-folder(); }
                 set-workers(n) => { root.tools-set-workers(n); }
                 update-tool(n) => { root.tools-update-tool(n); }
                 list-downloads() => { root.tools-list-downloads(); }
