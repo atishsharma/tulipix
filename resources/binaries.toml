@@ -220,44 +220,45 @@ sha256 = "33a435ab17023b686918ce9a3975aceb75fe1796c694f38f1993024be1f063f5"
 archive = "zip"
 extract = ["rclone"]
 
-# exiftool — Perl source tarball on Unix (run via system perl or bundled);
-# Windows uses standalone exe zip; macOS uses upstream pkg installer.
+# exiftool — Perl source (GitHub mirror; exiftool.org+SourceForge 403 CI IPs)
+# on Unix/macOS, run via system perl; Windows uses the standalone exe zip
+# cached on this repo's `tooling-cache` release.
 [[binary]]
 name = "exiftool"
 version = "13.59"
 [[binary.sources]]
 os = "linux"
 arch = "x86_64"
-url = "https://downloads.sourceforge.net/project/exiftool/Image-ExifTool-13.59.tar.gz"
-sha256 = "668ea3acececb7235fbd0f4900e72d5f12c9b07e5c778fd36cb1e9b5828fd65a"
+url = "https://github.com/exiftool/exiftool/archive/refs/tags/13.59.tar.gz"
+sha256 = "87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac"
 archive = "tar.gz"
 extract = ["exiftool", "lib/"]
 [[binary.sources]]
 os = "linux"
 arch = "aarch64"
-url = "https://downloads.sourceforge.net/project/exiftool/Image-ExifTool-13.59.tar.gz"
-sha256 = "668ea3acececb7235fbd0f4900e72d5f12c9b07e5c778fd36cb1e9b5828fd65a"
+url = "https://github.com/exiftool/exiftool/archive/refs/tags/13.59.tar.gz"
+sha256 = "87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac"
 archive = "tar.gz"
 extract = ["exiftool", "lib/"]
 [[binary.sources]]
 os = "windows"
 arch = "x86_64"
-url = "https://downloads.sourceforge.net/project/exiftool/exiftool-13.59_64.zip"
+url = "https://github.com/atishsharma/tulipix/releases/download/tooling-cache/exiftool-13.59_64.zip"
 sha256 = "44b512b25af500724ba579d0a53c8fc5851628b692dd5e5d94ae4a15c2cba9ec"
 archive = "zip"
 extract = ["exiftool(-k).exe", "exiftool_files/"]
 [[binary.sources]]
 os = "macos"
 arch = "x86_64"
-url = "https://downloads.sourceforge.net/project/exiftool/Image-ExifTool-13.59.tar.gz"
-sha256 = "668ea3acececb7235fbd0f4900e72d5f12c9b07e5c778fd36cb1e9b5828fd65a"
+url = "https://github.com/exiftool/exiftool/archive/refs/tags/13.59.tar.gz"
+sha256 = "87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac"
 archive = "tar.gz"
 extract = ["exiftool", "lib/"]
 [[binary.sources]]
 os = "macos"
 arch = "aarch64"
-url = "https://downloads.sourceforge.net/project/exiftool/Image-ExifTool-13.59.tar.gz"
-sha256 = "668ea3acececb7235fbd0f4900e72d5f12c9b07e5c778fd36cb1e9b5828fd65a"
+url = "https://github.com/exiftool/exiftool/archive/refs/tags/13.59.tar.gz"
+sha256 = "87d3317882fdae9cb4dcfe57a96a378d0132ffc02c731315bf128b19ddcf7aac"
 archive = "tar.gz"
 extract = ["exiftool", "lib/"]
 
