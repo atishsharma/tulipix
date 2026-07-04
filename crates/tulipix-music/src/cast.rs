@@ -92,6 +92,12 @@ pub fn soap_stop(instance_id: u32) -> String {
     soap_envelope("Stop", &inner)
 }
 
+/// DLNA AVTransport `Pause` body.
+pub fn soap_pause(instance_id: u32) -> String {
+    let inner = format!("<InstanceID>{instance_id}</InstanceID>");
+    soap_envelope("Pause", &inner)
+}
+
 /// Value for the HTTP `SOAPACTION` header (double-quoted).
 pub fn soap_action_header(action: &str) -> String {
     format!("\"urn:schemas-upnp-org:service:AVTransport:1#{action}\"")

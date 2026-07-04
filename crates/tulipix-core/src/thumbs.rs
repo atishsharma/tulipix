@@ -73,7 +73,8 @@ pub fn kind_for(ext: &str) -> ThumbKind {
         | "rw2" | "orf" | "pef" => ThumbKind::Photo,
         "mp4" | "mkv" | "mov" | "avi" | "webm" | "m4v" | "mpg" | "mpeg" | "ts" | "m2ts"
         | "wmv" | "flv" | "3gp" | "ogv" => ThumbKind::Video,
-        "mp3" | "flac" | "m4a" | "ogg" | "opus" | "wav" | "aiff" | "wma" | "ape" => ThumbKind::Audio,
+        "mp3" | "flac" | "m4a" | "aac" | "ogg" | "opus" | "wav" | "aiff" | "wma" | "ape"
+        | "wv" | "mka" | "mpc" | "tta" | "dsf" | "dff" => ThumbKind::Audio,
         "epub" | "mobi" | "azw" | "azw3" | "cbz" | "cbr" | "fb2" => ThumbKind::Book,
         "srt" | "vtt" | "ass" | "ssa" | "sub" => ThumbKind::Subtitle,
         "m3u" | "m3u8" | "pls" | "xspf" => ThumbKind::Playlist,

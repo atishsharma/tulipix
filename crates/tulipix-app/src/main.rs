@@ -1188,12 +1188,10 @@ fn main() -> Result<()> {
         }
         let total = w.get_music_np_total();
         if total <= 0 { return; }
-        // Shuffle → random next; else sequential wrap.
+        // Shuffle → next from the shuffled bag (no repeats per cycle); else
+        // sequential wrap.
         let next = if w.get_music_shuffle() && total > 1 {
-            let mut n = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos()).unwrap_or(0) as i32).rem_euclid(total);
-            if n == w.get_music_np_index() { n = (n + 1).rem_euclid(total); }
-            n
+            shuffle_next(total, w.get_music_np_index())
         } else {
             (w.get_music_np_index() + 1).rem_euclid(total)
         };
@@ -1209,6 +1207,19 @@ fn main() -> Result<()> {
         }
         let total = w.get_music_np_total();
         if total <= 0 { return; }
+        // A few seconds in, Prev restarts the current track (player convention);
+        // right at the start it goes to the previous one.
+        if w.get_music_pos() > 3.0 {
+            music_ipc(&["seek", "0", "absolute"]);
+            return;
+        }
+        // Under shuffle, walk the real played order back instead of index−1.
+        if w.get_music_shuffle() {
+            if let Some(prev) = shuffle_prev_index(total) {
+                play_music_at(&w, prev);
+                return;
+            }
+        }
         play_music_at(&w, (w.get_music_np_index() - 1).rem_euclid(total));
     });
     let w = window.as_weak();
@@ -1514,22 +1525,29 @@ fn main() -> Result<()> {
         w0.set_music_props_genre("".into());
         w0.set_music_props_release("".into());
         w0.set_music_props_credits("".into());
+        w0.set_music_props_analysis("".into());
         w0.set_music_song_props_open(true);
-        // Fill genre / release date / credits from the DB asynchronously.
+        // Fill genre / release date / credits + analysis from the DB asynchronously.
         if item_id >= 0 {
             let weak = w.clone();
             tokio::runtime::Handle::current().spawn(async move {
                 let Ok(pool) = pool_for("music").await else { return; };
                 let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN release_date TEXT").execute(&pool).await;
                 let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN credits TEXT").execute(&pool).await;
-                let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-                    "SELECT genre, release_date, credits FROM track_meta WHERE item_id = ?")
+                let row: Option<(Option<String>, Option<String>, Option<String>, Option<f64>, Option<String>, Option<f64>)> = sqlx::query_as(
+                    "SELECT genre, release_date, credits, bpm, music_key, dr_score FROM track_meta WHERE item_id = ?")
                     .bind(item_id).fetch_optional(&pool).await.ok().flatten();
-                if let Some((g, rd, cr)) = row {
+                if let Some((g, rd, cr, bpm, key, dr)) = row {
+                    let mut parts: Vec<String> = Vec::new();
+                    if let Some(b) = bpm { parts.push(format!("{b:.0} BPM")); }
+                    if let Some(k) = key { parts.push(k); }
+                    if let Some(d) = dr { parts.push(format!("DR {d:.0}")); }
+                    let analysis = parts.join(" · ");
                     let _ = weak.upgrade_in_event_loop(move |w| {
                         w.set_music_props_genre(g.unwrap_or_default().into());
                         w.set_music_props_release(rd.unwrap_or_default().into());
                         w.set_music_props_credits(cr.unwrap_or_default().into());
+                        w.set_music_props_analysis(analysis.into());
                     });
                 }
             });
@@ -1545,6 +1563,8 @@ fn main() -> Result<()> {
         w0.set_music_tag_artist(m.artist.clone().into());
         w0.set_music_tag_album(m.album.clone().into());
         w0.set_music_tag_album_artist("".into());
+        w0.set_music_tag_track("".into());
+        w0.set_music_tag_disc("".into());
         w0.set_music_tag_date("".into());
         w0.set_music_tag_genre("".into());
         w0.set_music_tag_credits("".into());
@@ -1555,7 +1575,112 @@ fn main() -> Result<()> {
         w0.set_music_tag_open(true);
         prefill_tag_editor(&w, m.item_id);
     });
-    // Context menu — Delete: remove the file from disk AND the library, then refresh.
+    // Context menu — music-video link (np.p4.music.video-link): pick a video
+    // file for this song; playback goes through the windowed mpv player. The
+    // videos-library item id is stored when the file is inside that library,
+    // plus the absolute path (playback key) in a sibling column.
+    let w = window.as_weak();
+    window.on_music_song_link_video(move |pos| {
+        let Some(m) = music_songs().lock().ok().and_then(|g| g.iter().find(|s| s.pos == pos).cloned()) else { return; };
+        let weak = w.clone();
+        let rt = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            let Some(file) = rfd::FileDialog::new().set_title("Pick the music video for this song")
+                .add_filter("Videos", &["mp4", "mkv", "mov", "webm", "avi", "m4v"]).pick_file() else { return; };
+            let path = file.display().to_string();
+            let title = m.title.clone();
+            rt.spawn(async move {
+                let Ok(pool) = pool_for("music").await else { return; };
+                let _ = sqlx::query("ALTER TABLE music_video_link ADD COLUMN video_path TEXT").execute(&pool).await;
+                // Resolve the videos-library id when the picked file is indexed there.
+                let vid: i64 = match pool_for("videos").await {
+                    Ok(vp) => sqlx::query_scalar("SELECT id FROM items WHERE abs_path = ?")
+                        .bind(&path).fetch_optional(&vp).await.ok().flatten().unwrap_or(0),
+                    Err(_) => 0,
+                };
+                let _ = tulipix_music::video_link::link(&pool, m.item_id, vid).await;
+                let _ = sqlx::query("UPDATE music_video_link SET video_path = ? WHERE item_id = ?")
+                    .bind(&path).bind(m.item_id).execute(&pool).await;
+                let _ = weak.upgrade_in_event_loop(move |w| w.set_caps_nudge(
+                    format!("Linked music video to “{title}”.").into()));
+            });
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_song_play_video(move |pos| {
+        let Some(m) = music_songs().lock().ok().and_then(|g| g.iter().find(|s| s.pos == pos).cloned()) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query("ALTER TABLE music_video_link ADD COLUMN video_path TEXT").execute(&pool).await;
+            let path: Option<String> = sqlx::query_scalar(
+                "SELECT video_path FROM music_video_link WHERE item_id = ? AND video_path IS NOT NULL")
+                .bind(m.item_id).fetch_optional(&pool).await.ok().flatten();
+            match path.filter(|p| std::path::Path::new(p).exists()) {
+                Some(p) => yt_play_local_video(weak, p),
+                None => { let _ = weak.upgrade_in_event_loop(|w| w.set_caps_nudge(
+                    "No music video linked — use “Link music video…” first.".into())); }
+            }
+        });
+    });
+
+    // Context menu — Analyze: BPM + musical key + DR on a worker thread
+    // (np.p4.music.bpm-key / .dr-meter); result lands in the nudge line and
+    // on track_meta for the Properties dialog.
+    let w = window.as_weak();
+    window.on_music_song_analyze(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(m) = music_songs().lock().ok().and_then(|g| g.iter().find(|s| s.pos == pos).cloned()) else { return; };
+        let Some(path) = music_paths().lock().ok().and_then(|g| g.get(pos as usize).cloned()) else { return; };
+        w0.set_caps_nudge(format!("Analyzing “{}”…", m.title).into());
+        let weak = w.clone();
+        let rt = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            let Some(a) = tulipix_sec_music::analysis::analyze_file(&path) else {
+                let _ = weak.upgrade_in_event_loop(|w| w.set_caps_nudge("Analysis failed — could not decode the file.".into()));
+                return;
+            };
+            let key = a.key_pc.and_then(|(pc, maj)| tulipix_music::bpm_key::key_label(pc, maj));
+            let camelot = a.key_pc.and_then(|(pc, maj)| tulipix_music::bpm_key::camelot(pc, maj));
+            let (bpm, dr, id) = (a.bpm, a.dr, m.item_id);
+            let key_db = key.clone();
+            rt.spawn(async move {
+                if let Ok(pool) = pool_for("music").await {
+                    let _ = tulipix_music::bpm_key::store(&pool, id, bpm, key_db.as_deref()).await;
+                    if let Some(dr) = dr { let _ = tulipix_music::dr_meter::store(&pool, id, dr).await; }
+                }
+            });
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(b) = bpm { parts.push(format!("{b:.0} BPM")); }
+            match (key, camelot) {
+                (Some(k), Some(c)) => parts.push(format!("{k} ({c})")),
+                (Some(k), None) => parts.push(k),
+                _ => {}
+            }
+            if let Some(d) = dr { parts.push(format!("DR {d:.0}")); }
+            let msg = if parts.is_empty() { format!("“{}” — nothing detectable.", m.title) }
+                      else { format!("“{}” — {}.", m.title, parts.join(" · ")) };
+            let _ = weak.upgrade_in_event_loop(move |w| w.set_caps_nudge(msg.into()));
+        });
+    });
+    // Sonic similar (np.p4.music.embeddings) — DSP-embedding nearest-neighbour
+    // queue + the whole-library indexer chip in Music settings.
+    let w = window.as_weak();
+    window.on_music_song_sonic(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        sonic_similar_queue(&w0, pos);
+    });
+    let w = window.as_weak();
+    window.on_music_sonic_index(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        sonic_index_all(&w0);
+    });
+    // Karaoke (np.p4.music.stem, DSP tier) — live centre-vocal cancellation.
+    let w = window.as_weak();
+    window.on_music_toggle_karaoke(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        karaoke_toggle(&w0);
+    });
     let w = window.as_weak();
     window.on_music_song_delete(move |pos| {
         let Some(w0) = w.upgrade() else { return; };
@@ -2053,7 +2178,10 @@ fn main() -> Result<()> {
     // Shuffle toggle (affects Next).
     let w = window.as_weak();
     window.on_music_toggle_shuffle(move || {
-        if let Some(w) = w.upgrade() { w.set_music_shuffle(!w.get_music_shuffle()); }
+        if let Some(w) = w.upgrade() {
+            w.set_music_shuffle(!w.get_music_shuffle());
+            shuffle_reset(); // fresh order + history on every toggle
+        }
     });
     // AT parity — live thumbnail-size slider (np.p5.atmusic.thumb-slider).
     let w = window.as_weak();
@@ -2345,27 +2473,7 @@ fn main() -> Result<()> {
     });
     // Player redesign — sleep timer set to a chosen interval (np.p4.music.sleep-timer).
     let w = window.as_weak();
-    window.on_music_set_sleep(move |min| {
-        use std::sync::atomic::Ordering;
-        let Some(w0) = w.upgrade() else { return; };
-        let min = min.max(0);
-        w0.set_music_sleep_min(min);
-        let tok = SLEEP_GEN.fetch_add(1, Ordering::SeqCst) + 1; // cancels any prior timer
-        if min > 0 {
-            let weak = w.clone();
-            tokio::runtime::Handle::current().spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(min as u64 * 60)).await;
-                if SLEEP_GEN.load(Ordering::SeqCst) != tok { return; } // superseded
-                let _ = weak.upgrade_in_event_loop(|w| {
-                    if let Ok(mut g) = music_proc().lock() {
-                        if let Some(mut c) = g.take() { let _ = c.kill(); let _ = c.wait(); }
-                    }
-                    w.set_music_playing(false);
-                    w.set_music_sleep_min(0);
-                });
-            });
-        }
-    });
+    window.on_music_set_sleep(move |min| { arm_sleep_timer(&w, min); });
     // Zen player — true OS fullscreen (no title bar) on enter, restore on exit.
     let w = window.as_weak();
     window.on_music_enter_zen(move || { if let Some(w) = w.upgrade() { w.window().set_fullscreen(true); } });
@@ -2631,31 +2739,12 @@ fn main() -> Result<()> {
             });
         });
     });
-    // Sleep timer (np.p4.music.sleep-timer) — cycle Off→15→30→60→Off; a fresh
-    // cycle bumps SLEEP_GEN so the previous timer no-ops when it fires.
+    // Sleep timer (np.p4.music.sleep-timer) — cycle Off→10→15→30→60→track-end→Off.
     let w = window.as_weak();
     window.on_music_cycle_sleep(move || {
-        use std::sync::atomic::Ordering;
         let Some(w0) = w.upgrade() else { return; };
-        let next = match w0.get_music_sleep_min() { 0 => 10, 10 => 15, 15 => 30, 30 => 60, _ => 0 };
-        w0.set_music_sleep_min(next);
-        let tok = SLEEP_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-        if next > 0 {
-            let weak = w.clone();
-            let handle = tokio::runtime::Handle::current();
-            handle.spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(next as u64 * 60)).await;
-                if SLEEP_GEN.load(Ordering::SeqCst) != tok { return; } // superseded
-                let _ = weak.upgrade_in_event_loop(|w| {
-                    if let Ok(mut g) = music_proc().lock() {
-                        if let Some(mut c) = g.take() { let _ = c.kill(); let _ = c.wait(); }
-                    }
-                    w.set_music_playing(false);
-                    w.set_music_sleep_min(0);
-                    tracing::info!("music sleep timer fired");
-                });
-            });
-        }
+        let next = match w0.get_music_sleep_min() { 0 => 10, 10 => 15, 15 => 30, 30 => 60, 60 => -1, _ => 0 };
+        arm_sleep_timer(&w, next);
     });
 
     // ── Phase 5 music — synced lyrics / audio output / visualizer / cast / tags ──
@@ -2721,6 +2810,52 @@ fn main() -> Result<()> {
         let v = (v as f64).clamp(0.0, 12.0);
         w.set_music_crossfade(v as f32);
         save_music_pref("music.crossfade", &format!("{v:.0}"));
+    });
+    // Headphone EQ (np.p4.music.headphone-eq) — AutoEq preset auto-matched to
+    // the output device name; correction rides the af chain of every spawn.
+    let w = window.as_weak();
+    window.on_music_hp_match(move |query| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_hp_status("Matching…".into());
+        let weak = w.clone();
+        let device = w0.get_music_device().to_string();
+        let query = query.to_string();
+        tokio::runtime::Handle::current().spawn(async move {
+            let client = reqwest::Client::new();
+            let index = hp_index(&client).await;
+            if index.is_empty() {
+                let _ = weak.upgrade_in_event_loop(|w| w.set_music_hp_status(
+                    "Could not load the AutoEq preset index (network / api.autoeq mirror).".into()));
+                return;
+            }
+            let keys: Vec<String> = index.iter().map(|(n, _)| n.clone()).collect();
+            // Explicit search text wins; otherwise match the output device name(s).
+            let hit: Option<String> = if !query.trim().is_empty() {
+                tulipix_music::headphone_eq::match_device(&query, &keys).cloned()
+            } else {
+                let mut names = vec![device.clone()];
+                names.extend(enumerate_audio_devices().into_iter().map(|d| d.name));
+                names.iter().filter(|n| n.as_str() != "auto" && !n.is_empty())
+                    .find_map(|n| tulipix_music::headphone_eq::match_device(n, &keys)).cloned()
+            };
+            match hit.and_then(|k| index.iter().find(|(n, _)| *n == k).cloned()) {
+                Some(p) => hp_apply(weak, Some(p)),
+                None => { let _ = weak.upgrade_in_event_loop(|w| w.set_music_hp_status(
+                    "No AutoEq match — type your headphone model and press Enter.".into())); }
+            }
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_hp_off(move || { hp_apply(w.clone(), None); });
+
+    // Preamp (extra dB on top of ReplayGain) — live + persisted.
+    let w = window.as_weak();
+    window.on_music_set_preamp(move |v| {
+        let Some(w) = w.upgrade() else { return; };
+        let v = (v as f64).clamp(-12.0, 12.0);
+        w.set_music_preamp_db(v as f32);
+        save_music_pref("music.preamp", &format!("{v:.0}"));
+        music_ipc(&["set_property", "replaygain-preamp", &format!("{v:.0}")]);
     });
     // ReplayGain (np.p5.music.replaygain) — off | track | album, live + persisted.
     let w = window.as_weak();
@@ -2871,6 +3006,18 @@ fn main() -> Result<()> {
         w0.set_music_cast_target(c.clone());
         if !c.is_empty() { cast_current_track(&w0, c.as_str()); }
     });
+    // Cast session transport (np.b2.music.cast-v2) — SOAP Pause/Play/Stop at
+    // the renderer picked above.
+    let w = window.as_weak();
+    window.on_music_cast_pause(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        cast_pause_toggle(&w0);
+    });
+    let w = window.as_weak();
+    window.on_music_cast_stop(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        cast_stop(&w0);
+    });
     // Instant mix / auto-DJ (np.p5.music.instant-mix) — build an "Up next" from
     // tracks sharing the current track's artist or genre (tag similarity).
     let w = window.as_weak();
@@ -2906,6 +3053,8 @@ fn main() -> Result<()> {
         w.set_music_tag_artist(if sub == "Playing from your library" { "".into() } else { sub });
         w.set_music_tag_album("".into());
         w.set_music_tag_album_artist("".into());
+        w.set_music_tag_track("".into());
+        w.set_music_tag_disc("".into());
         w.set_music_tag_date("".into());
         w.set_music_tag_genre("".into());
         w.set_music_tag_credits("".into());
@@ -3016,6 +3165,8 @@ fn main() -> Result<()> {
         let release_date = w0.get_music_tag_date().to_string();
         let genre = w0.get_music_tag_genre().to_string();
         let credits = w0.get_music_tag_credits().to_string();
+        let track_no: Option<i64> = w0.get_music_tag_track().trim().parse().ok().filter(|n| *n > 0);
+        let disc_no: Option<i64> = w0.get_music_tag_disc().trim().parse().ok().filter(|n| *n > 0);
         // Reflect immediately in the now-playing bar only when editing it.
         if target.is_none() || target == current_music_id(&w0) {
             if !title.is_empty() { w0.set_music_np_title(title.clone().into()); }
@@ -3040,6 +3191,7 @@ fn main() -> Result<()> {
                 "UPDATE track_meta SET title = ?, artist_id = COALESCE(?, artist_id),
                     album_id = COALESCE(?, album_id), album_artist = ?,
                     release_date = ?, genre = ?, credits = ?, year = COALESCE(?, year),
+                    track_no = COALESCE(?, track_no), disc_no = COALESCE(?, disc_no),
                     user_locked = 1
                  WHERE item_id = ?")
                 .bind(if title.is_empty() { None } else { Some(title.clone()) })
@@ -3049,6 +3201,7 @@ fn main() -> Result<()> {
                 .bind(if genre.trim().is_empty() { None } else { Some(genre.trim().to_string()) })
                 .bind(if credits.trim().is_empty() { None } else { Some(credits.trim().to_string()) })
                 .bind(year)
+                .bind(track_no).bind(disc_no)
                 .bind(id).execute(&pool).await;
             // Write the tags back into the file itself via ffmpeg (np.p5.music.tag-editor),
             // so the metadata survives a re-scan / shows in other players.
@@ -3056,7 +3209,12 @@ fn main() -> Result<()> {
                 .bind(id).fetch_optional(&pool).await.ok().flatten();
             if let Some(path) = path {
                 let (title, artist, album) = (title.clone(), artist.clone(), album.clone());
-                let _ = tokio::task::spawn_blocking(move || write_audio_tags(&path, &title, &artist, &album)).await;
+                let (album_artist, genre, date) = (album_artist.clone(), genre.clone(), release_date.clone());
+                let _ = tokio::task::spawn_blocking(move || write_audio_tags(&path, &FileTags {
+                    title: &title, artist: &artist, album: &album,
+                    album_artist: &album_artist, genre: &genre, date: &date,
+                    track_no, disc_no,
+                })).await;
             }
             // Refresh every surface: library lists + browse tiles, and the open
             // album/artist/genre detail overlay if one is showing.
@@ -3065,6 +3223,61 @@ fn main() -> Result<()> {
     });
 
     // ── Phase 5 music — podcasts / audiobooks / artist bio ──────────────────
+    // OPML import: pick a file, subscribe to every feed in it (skipping ones
+    // already subscribed); progress lands in the Add-podcast status line.
+    let w = window.as_weak();
+    window.on_music_podcast_opml_import(move || {
+        let weak = w.clone();
+        let rt = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            let Some(path) = rfd::FileDialog::new().set_title("Import podcast subscriptions (OPML)")
+                .add_filter("OPML", &["opml", "xml"]).pick_file() else { return; };
+            let Ok(xml) = std::fs::read_to_string(&path) else { return; };
+            let feeds = tulipix_music::podcasts::parse_opml(&xml);
+            if feeds.is_empty() {
+                let _ = weak.upgrade_in_event_loop(|w| w.set_music_podcast_add_status("No feeds found in that OPML file.".into()));
+                return;
+            }
+            rt.spawn(async move {
+                let existing: std::collections::HashSet<String> = match pool_for("podcasts").await {
+                    Ok(pool) => sqlx::query_scalar::<_, String>("SELECT feed_url FROM podcasts")
+                        .fetch_all(&pool).await.unwrap_or_default().into_iter().collect(),
+                    Err(_) => Default::default(),
+                };
+                let fresh: Vec<String> = feeds.into_iter()
+                    .filter(|(_, u)| !existing.contains(u)).map(|(_, u)| u).collect();
+                let n = fresh.len();
+                let _ = weak.clone().upgrade_in_event_loop(move |w| {
+                    w.set_music_podcast_add_status(
+                        if n == 0 { "All feeds in that OPML are already subscribed.".to_string() }
+                        else { format!("Importing {n} feed(s)…") }.into());
+                });
+                for url in fresh {
+                    subscribe_feed_with_progress(weak.clone(), url);
+                }
+            });
+        });
+    });
+    // OPML export: dump every subscription (title + feed URL) to a picked file.
+    let w = window.as_weak();
+    window.on_music_podcast_opml_export(move || {
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let subs: Vec<(String, String)> = sqlx::query_as(
+                "SELECT COALESCE(title, ''), feed_url FROM podcasts ORDER BY title")
+                .fetch_all(&pool).await.unwrap_or_default();
+            let n = subs.len();
+            std::thread::spawn(move || {
+                let Some(file) = rfd::FileDialog::new().set_title("Export podcast subscriptions (OPML)")
+                    .set_file_name("tulipix-podcasts.opml")
+                    .add_filter("OPML", &["opml"]).save_file() else { return; };
+                let ok = std::fs::write(&file, tulipix_music::podcasts::to_opml(&subs)).is_ok();
+                let _ = weak.upgrade_in_event_loop(move |w| w.set_music_podcast_add_status(
+                    if ok { format!("Exported {n} subscription(s).") } else { "Export failed — could not write the file.".to_string() }.into()));
+            });
+        });
+    });
     // Subscribe to a podcast RSS feed (np.p5.music.podcast-feeds) — fetch + parse.
     let w = window.as_weak();
     window.on_music_podcast_subscribe(move || {
@@ -5082,6 +5295,13 @@ fn main() -> Result<()> {
         // Mini-player bold outline defaults ON when unset.
         window.set_music_mini_outline(s.advanced.get("music.mini_outline").map(|v| v == "1").unwrap_or(true));
         window.set_music_crossfade(s.advanced.get("music.crossfade").and_then(|v| v.parse().ok()).unwrap_or(0.0));
+        window.set_music_preamp_db(s.advanced.get("music.preamp").and_then(|v| v.parse().ok()).unwrap_or(0.0));
+        // Saved headphone-EQ correction — restore the af chunk + status line.
+        if let Some(af) = s.advanced.get("music.hp_af").filter(|a| !a.is_empty()) {
+            if let Ok(mut g) = headphone_af().lock() { *g = af.clone(); }
+            let name = s.advanced.get("music.hp_preset").cloned().unwrap_or_default();
+            window.set_music_hp_status(format!("Headphone EQ: {name}.").into());
+        }
         window.set_music_replaygain(s.advanced.get("music.replaygain").cloned().unwrap_or_else(|| "off".into()).into());
         window.set_music_grid_density(s.advanced.get("music.grid_density")
             .and_then(|v| v.parse::<f64>().ok())
@@ -5596,9 +5816,48 @@ fn main() -> Result<()> {
         }
     });
 
+    // Profile card: live app version + browser links.
+    window.set_app_version(env!("CARGO_PKG_VERSION").into());
+    window.on_open_url(move |url| {
+        let url = url.to_string();
+        #[cfg(target_os = "windows")]
+        let r = std::process::Command::new("cmd").args(["/C", "start", "", &url]).spawn();
+        #[cfg(target_os = "macos")]
+        let r = std::process::Command::new("open").arg(&url).spawn();
+        #[cfg(all(unix, not(target_os = "macos")))]
+        let r = std::process::Command::new("xdg-open").arg(&url).spawn();
+        if let Err(e) = r { tracing::warn!(error = %e, %url, "open url"); }
+    });
+
+    // Profile editor (Settings → Profile) — persist name + avatar emoji into
+    // the generic settings KV and reflect them in the sidebar user card.
+    let w = window.as_weak();
+    window.on_profile_save(move |name, emoji| {
+        let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
+        let name = name.trim().to_string();
+        if name.is_empty() { s.advanced.remove("profile.name"); }
+        else { s.advanced.insert("profile.name".into(), name.clone()); }
+        if emoji.is_empty() { s.advanced.remove("profile.emoji"); }
+        else { s.advanced.insert("profile.emoji".into(), emoji.to_string()); }
+        if let Err(e) = s.save() { tracing::warn!(error = %e, "save settings (profile)"); }
+        if let Some(w) = w.upgrade() {
+            let mut u = w.get_user();
+            u.display_name = name.into();
+            u.avatar_emoji = emoji;
+            w.set_user(u);
+        }
+    });
+
     // ── Settings panels: load persisted settings, seed the UI models ───────
     {
         let s = tulipix_core::settings::Settings::load().unwrap_or_default();
+        // Restore the saved profile identity into the sidebar user card.
+        {
+            let mut u = window.get_user();
+            u.display_name = s.text("profile.name").into();
+            u.avatar_emoji = s.text("profile.emoji").into();
+            window.set_user(u);
+        }
         // Restore the last-used app theme and keep it until the user changes it.
         let choice = match s.theme.as_str() {
             "extra-dark" => ThemeChoice::ExtraDark,
@@ -6412,7 +6671,12 @@ fn main() -> Result<()> {
             tulipix_core::thumbs::set_tool_dir(s.advanced.get("tools.bin-dir").map(|v| v.as_str()));
         }
         tracing::info!(%key, "setting text edited");
-        let _ = &w; // panels not re-seeded on every keystroke
+        // Segmented pickers (whisper model choice) need a re-seed so the
+        // selected pill updates; free-text fields must NOT re-seed per
+        // keystroke or the field would lose focus.
+        if key.starts_with("ai.model.") || key == "ai.voice-lang" {
+            if let Some(w) = w.upgrade() { seed_settings_panels(&w); }
+        }
     });
     let w = window.as_weak();
     window.on_setting_action(move |key| {
@@ -6461,10 +6725,23 @@ fn main() -> Result<()> {
                     let applied = if matches!(kind, tulipix_core::migration::SourceKind::Picasa) {
                         apply_picasa_stars(&path, &rt)
                     } else { 0 };
+                    // iTunes Library.xml: actually merge play counts + star
+                    // ratings into matching music tracks (by absolute path) —
+                    // not just a dry-run count (np.p4.music.import).
+                    let merged: u64 = if matches!(kind, tulipix_core::migration::SourceKind::ITunesXml) {
+                        std::fs::read_to_string(&path).ok().map(|xml| {
+                            let tracks = tulipix_music::import::parse_itunes(&xml);
+                            rt.block_on(async {
+                                let Ok(pool) = pool_for("music").await else { return 0 };
+                                tulipix_music::import::merge(&pool, &tracks).await.unwrap_or(0)
+                            })
+                        }).unwrap_or(0)
+                    } else { 0 };
                     let msg = format!(
-                        "{kind:?} import — {} photos · {} tracks · {} playlists · {} ratings{}{}",
+                        "{kind:?} import — {} photos · {} tracks · {} playlists · {} ratings{}{}{}",
                         plan.photos, plan.music_tracks, plan.playlists, plan.ratings,
                         if applied > 0 { format!(" · {applied} stars applied") } else { String::new() },
+                        if merged > 0 { format!(" · {merged} tracks updated (plays + stars)") } else { String::new() },
                         if plan.warnings.is_empty() { String::new() } else { format!(" · {} warning(s) in logs", plan.warnings.len()) });
                     for warn in &plan.warnings { tracing::warn!(%warn, "migration"); }
                     let _ = weak.upgrade_in_event_loop(move |w| w.set_caps_nudge(msg.into()));
@@ -6483,10 +6760,17 @@ fn main() -> Result<()> {
             // Real update check (np.p1.ai.update-prompt): manifest vs installed
             // versions on disk; older-versioned installs surface as updates.
             "ai-update-check" => {
+                // Sweep-progress pill inside the button while the check runs.
+                AI_CHECK_BUSY.store(true, std::sync::atomic::Ordering::Relaxed);
+                seed_settings_panels(&w);
                 let weak = w.as_weak();
                 tokio::runtime::Handle::current().spawn(async move {
                     let msg = ai_update_summary();
-                    let _ = weak.upgrade_in_event_loop(move |w| w.set_caps_nudge(msg.into()));
+                    AI_CHECK_BUSY.store(false, std::sync::atomic::Ordering::Relaxed);
+                    let _ = weak.upgrade_in_event_loop(move |w| {
+                        w.set_caps_nudge(msg.into());
+                        seed_settings_panels(&w);
+                    });
                 });
             }
             "clear-thumb-cache" => { let _ = tulipix_core::thumbs::clear_cache(); }
@@ -6494,12 +6778,26 @@ fn main() -> Result<()> {
             k if k.starts_with("ai-dl-") => {
                 let name = k.trim_start_matches("ai-dl-").to_string();
                 let Some(entry) = ai_manifest().find(&name).cloned() else { return; };
+                // Ignore re-clicks while this model is already downloading.
+                if ai_dl_progress().lock().map(|g| g.contains_key(&name)).unwrap_or(false) { return; }
+                if let Ok(mut g) = ai_dl_progress().lock() { g.insert(name.clone(), 0.0); }
+                seed_settings_panels(&w);
                 let weak = w.as_weak();
-                let mb = entry.size_bytes / 1_000_000;
-                w.set_caps_nudge(format!("Downloading {name} (~{mb} MB)…").into());
                 tokio::runtime::Handle::current().spawn(async move {
-                    let msg = match tulipix_photos::ai::models::download(&entry).await {
-                        Ok(p) => format!("{name} ready · {}", p.display()),
+                    // Repaint the row's progress pill on every ≥1% step.
+                    let mut last = -1.0f32;
+                    let prog_name = name.clone();
+                    let prog_weak = weak.clone();
+                    let res = tulipix_photos::ai::models::download_with_progress(&entry, move |f| {
+                        if f - last >= 0.01 || f >= 1.0 {
+                            last = f;
+                            if let Ok(mut g) = ai_dl_progress().lock() { g.insert(prog_name.clone(), f); }
+                            let _ = prog_weak.upgrade_in_event_loop(|w| seed_settings_panels(&w));
+                        }
+                    }).await;
+                    if let Ok(mut g) = ai_dl_progress().lock() { g.remove(&name); }
+                    let msg = match res {
+                        Ok(_) => format!("{name} installed and ready"),
                         Err(e) => format!("{name} download failed: {e}"),
                     };
                     let _ = weak.upgrade_in_event_loop(move |w| {
@@ -6563,6 +6861,12 @@ fn main() -> Result<()> {
         let model = w.get_api_rows();
         let Some(mut row) = model.row_data(i as usize) else { return; };
         let service = row.service.to_string();
+        // Switching to "my key" without one stored → open the editor instead.
+        if row.use_app_default && !row.user_key_set {
+            row.editing = true;
+            model.set_row_data(i as usize, row);
+            return;
+        }
         row.use_app_default = !row.use_app_default;
         // Re-read quota for the new source.
         let source = if row.use_app_default {
@@ -6593,10 +6897,52 @@ fn main() -> Result<()> {
         model.set_row_data(i as usize, row);
         tracing::info!(%service, ok, "api key tested");
     });
-    // Edit = clear any stored custom key (full key entry needs a secure text
-    // dialog, tracked separately); clearing falls the service back to app-default.
+    // Edit = open the row's inline key editor.
     let w = window.as_weak();
     window.on_api_row_edit(move |i| {
+        let Some(w) = w.upgrade() else { return; };
+        let model = w.get_api_rows();
+        let Some(mut row) = model.row_data(i as usize) else { return; };
+        row.editing = true;
+        model.set_row_data(i as usize, row);
+    });
+    let w = window.as_weak();
+    window.on_api_row_edit_cancel(move |i| {
+        let Some(w) = w.upgrade() else { return; };
+        let model = w.get_api_rows();
+        let Some(mut row) = model.row_data(i as usize) else { return; };
+        row.editing = false;
+        model.set_row_data(i as usize, row);
+    });
+    // Save the typed key into the OS keychain and switch the row to it.
+    let w = window.as_weak();
+    window.on_api_row_key_save(move |i, key| {
+        let Some(w) = w.upgrade() else { return; };
+        let model = w.get_api_rows();
+        let Some(mut row) = model.row_data(i as usize) else { return; };
+        let service = row.service.to_string();
+        let key = key.trim().to_string();
+        if key.is_empty() { return; }
+        match tulipix_core::api_keys::store(&service, &key) {
+            Ok(()) => {
+                row.user_key_set = true;
+                row.use_app_default = false;
+                row.editing = false;
+                let q = tulipix_core::api_keys::quota_state(&service, tulipix_core::api_keys::KeySource::UserKey);
+                row.quota_used = q.used as i32;
+                row.quota_limit = q.limit as i32;
+                model.set_row_data(i as usize, row);
+                tracing::info!(%service, "custom api key stored");
+            }
+            Err(e) => {
+                w.set_caps_nudge(format!("Couldn't store the key: {e}").into());
+                tracing::warn!(%service, error = %e, "api key store failed");
+            }
+        }
+    });
+    // Remove the stored key — back to the built-in app key.
+    let w = window.as_weak();
+    window.on_api_row_key_remove(move |i| {
         let Some(w) = w.upgrade() else { return; };
         let model = w.get_api_rows();
         let Some(mut row) = model.row_data(i as usize) else { return; };
@@ -6604,8 +6950,12 @@ fn main() -> Result<()> {
         let _ = tulipix_core::api_keys::delete(&service);
         row.user_key_set = false;
         row.use_app_default = true;
+        row.editing = false;
+        let q = tulipix_core::api_keys::quota_state(&service, tulipix_core::api_keys::KeySource::AppDefault);
+        row.quota_used = q.used as i32;
+        row.quota_limit = q.limit as i32;
         model.set_row_data(i as usize, row);
-        tracing::info!(%service, "custom api key cleared");
+        tracing::info!(%service, "custom api key removed");
     });
 
     // ── Scan schedule handlers ─────────────────────────────────────────────
@@ -6694,6 +7044,14 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_lib_reset_app(move || {
         let Some(w) = w.upgrade() else { return; };
+        // Destructive — confirm before wiping every library DB + cache.
+        let yes = rfd::MessageDialog::new()
+            .set_level(rfd::MessageLevel::Warning)
+            .set_title("Reset Tulipix?")
+            .set_description("This erases the entire library index, watched folders, tags, and thumbnails. Your actual media files are NOT touched. This cannot be undone.")
+            .set_buttons(rfd::MessageButtons::OkCancelCustom("Reset everything".into(), "Cancel".into()))
+            .show();
+        if !matches!(yes, rfd::MessageDialogResult::Custom(ref s) if s == "Reset everything") { return; }
         set_lib_busy(&w.as_weak(), "Clearing all data — starting fresh…", -1.0);
         // Forget persisted lists.
         if let Some(p) = watched_folders_path() { let _ = std::fs::remove_file(p); }
@@ -6839,6 +7197,59 @@ fn main() -> Result<()> {
         }
         w.set_palette_query("".into());
     });
+
+    // ── Voice search (np.voice) — mic button in every search bar ───────────
+    // start(target): record ~5 s from the default mic with the bundled ffmpeg,
+    // transcribe with the whisper model picked for the "voice" task, then
+    // drop the text into `target`'s search box and fire its search callback.
+    {
+        let w = window.as_weak();
+        window.global::<VoiceSearch>().on_start(move |target| {
+            let Some(win) = w.upgrade() else { return; };
+            if !tulipix_core::settings::Settings::load().map(|s| s.flag("ai.voice", true)).unwrap_or(true) {
+                win.set_caps_nudge("Voice search is turned off — enable it in Settings → AI Features".into());
+                return;
+            }
+            let g = win.global::<VoiceSearch>();
+            g.set_target(target.clone());
+            g.set_state("listening".into());
+            let session = VOICE_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+            let weak = w.clone();
+            let target = target.to_string();
+            tokio::runtime::Handle::current().spawn(async move {
+                let listened = voice_record().await;
+                if VOICE_GEN.load(std::sync::atomic::Ordering::SeqCst) != session { return; }
+                let wk = weak.clone();
+                let _ = wk.upgrade_in_event_loop(|w| {
+                    w.global::<VoiceSearch>().set_state("busy".into());
+                });
+                let res = match listened {
+                    Ok(wav) => voice_transcribe(&wav).await,
+                    Err(e) => Err(e),
+                };
+                if VOICE_GEN.load(std::sync::atomic::Ordering::SeqCst) != session { return; }
+                let _ = weak.upgrade_in_event_loop(move |w| {
+                    match res {
+                        Ok(text) if !text.trim().is_empty() => voice_route(&w, &target, text.trim()),
+                        Ok(_) => w.set_caps_nudge("Didn't catch that — try again closer to the microphone".into()),
+                        Err(e) => w.set_caps_nudge(format!("Voice search failed: {e}").into()),
+                    }
+                    let g = w.global::<VoiceSearch>();
+                    g.set_state("idle".into());
+                    g.set_target("".into());
+                });
+            });
+        });
+        let w = window.as_weak();
+        window.global::<VoiceSearch>().on_stop(move || {
+            VOICE_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst); // discard in-flight
+            if let Some(w) = w.upgrade() {
+                let g = w.global::<VoiceSearch>();
+                g.set_state("idle".into());
+                g.set_target("".into());
+            }
+        });
+    }
 
     // ── Error boundary actions ─────────────────────────────────────────────
     window.on_error_open_logs(move || {
@@ -7967,9 +8378,16 @@ fn cadence_from_str(s: &str) -> Option<ScanCadence> {
 
 /// Seed the API-Keys panel: one row per known service, with the live
 /// app-default quota and whether a custom key is stored in the keychain.
+/// Services where a personal API key actually exists / helps. The rest of
+/// api_keys::SERVICES are keyless public APIs (MusicBrainz, Cover Art,
+/// LRCLIB) or not keys at all (OAuth flows, cookies) — hidden from the panel.
+const KEYED_SERVICES: &[&str] = &["tmdb", "tvdb", "opensubtitles", "lastfm", "libretranslate"];
+
 fn seed_api_rows(w: &MainWindow) {
     use tulipix_core::api_keys::{self, KeySource};
-    let rows: Vec<ApiKeyRow> = api_keys::SERVICES.iter().map(|svc| {
+    let rows: Vec<ApiKeyRow> = api_keys::SERVICES.iter()
+        .filter(|svc| KEYED_SERVICES.contains(*svc))
+        .map(|svc| {
         let user_set = api_keys::fetch(svc).ok().flatten().is_some();
         let source = if user_set { KeySource::UserKey } else { KeySource::AppDefault };
         let q = api_keys::quota_state(svc, source);
@@ -7981,6 +8399,7 @@ fn seed_api_rows(w: &MainWindow) {
             quota_used: q.used as i32,
             quota_limit: q.limit as i32,
             status: "unknown".into(),
+            editing: false,
         }
     }).collect();
     w.set_api_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
@@ -8070,11 +8489,15 @@ fn build_palette_rows(query: &str) -> Vec<PaletteRow> {
         ("go:cloud",    "Cloud",    "Jump to section",  "Section"),
         ("go:tools",    "Tools",    "Jump to section",  "Section"),
         ("go:settings", "Settings", "Open settings",    "Section"),
+        ("go:settings:profile",    "Profile",    "Settings → Profile",    "Settings"),
         ("go:settings:appearance", "Appearance", "Settings → Appearance", "Settings"),
         ("go:settings:libraries",  "Libraries",  "Settings → Libraries",  "Settings"),
-        ("go:settings:schedule",   "Schedule",   "Settings → Schedule",   "Settings"),
-        ("go:settings:api-keys",   "API Keys",   "Settings → API Keys",   "Settings"),
-        ("go:settings:profile",    "Profile",    "Settings → Profile",    "Settings"),
+        ("go:settings:playback",   "Playback",   "Settings → Playback",   "Settings"),
+        ("go:settings:services",   "Services & Keys", "Settings → Services & Keys", "Settings"),
+        ("go:settings:ai",         "AI Features", "Settings → AI Features", "Settings"),
+        ("go:settings:security",   "Security",   "Settings → Security",   "Settings"),
+        ("go:settings:data",       "Backup & Data", "Settings → Backup & Data", "Settings"),
+        ("go:settings:advanced",   "Advanced",   "Settings → Advanced",   "Settings"),
         ("rescan",    "Rescan libraries", "Re-scan every watched folder", "Command"),
         ("lock",      "Lock now",         "Lock the app + show screensaver", "Command"),
         ("shortcuts", "Keyboard shortcuts", "Show the shortcut help", "Command"),
@@ -8300,9 +8723,20 @@ fn si(key: &str, kind: &str, label: &str, desc: &str, value: &str, on: bool, sta
     SettingItem {
         key: key.into(), kind: kind.into(), label: label.into(),
         desc: desc.into(), value: value.into(), on, state: state.into(),
+        btn: "".into(), frac: 0.0,
     }
 }
 fn hdr(label: &str) -> SettingItem { si("", "header", label, "", "", false, "") }
+/// Status + trailing action button in a single row.
+fn statact(key: &str, label: &str, desc: &str, value: &str, state: &str, btn: &str) -> SettingItem {
+    let mut r = si(key, "status-action", label, desc, value, false, state);
+    r.btn = btn.into();
+    r
+}
+/// Whisper-model segmented picker row (tiny · base · small · turbo).
+fn model_choice(s: &tulipix_core::settings::Settings, key: &str, label: &str, desc: &str) -> SettingItem {
+    si(key, "model-choice", label, desc, &s.text(key), false, "")
+}
 fn tog(s: &tulipix_core::settings::Settings, key: &str, def: bool, label: &str, desc: &str) -> SettingItem {
     si(key, "toggle", label, desc, "", s.flag(key, def), "")
 }
@@ -8318,55 +8752,70 @@ fn seed_settings_panels(w: &MainWindow) {
     use slint::{ModelRc, VecModel};
     let s = tulipix_core::settings::Settings::load().unwrap_or_default();
 
-    // AI Models — np.p1.llm.*, np.p1.ai.update-*, np.p1.onboarding.ai-models.
-    // Manifest-driven: one status row + Download/Update action per model.
+    // AI Features — np.p1.llm.*, np.p1.ai.update-*, np.p1.onboarding.ai-models.
+    // Manifest-driven: ONE row per model — status dot + Download/Verify button
+    // together (they used to be two separate rows).
     let mut ai = vec![hdr("ON-DEVICE MODELS")];
     for m in &ai_manifest().models {
         let installed = tulipix_photos::ai::models::is_installed(m);
         let mb = m.size_bytes / 1_000_000;
-        ai.push(stat(&format!("{} v{} ({})", m.name, m.version, m.quant),
-            &if installed { format!("Installed · {mb} MB") } else { format!("Not downloaded · {mb} MB") },
-            if installed { "ok" } else { "muted" }));
-        ai.push(act(&format!("ai-dl-{}", m.name),
-            &format!("{} {}", if installed { "Re-verify / update" } else { "Download" }, m.name),
-            &format!("Fetch + SHA-256 pin from {}", m.url.split('/').take(3).collect::<Vec<_>>().join("/")),
-            if installed { "Verify" } else { "Download" }));
+        let (nice, purpose) = model_display(&m.name, &m.cap);
+        let dl = ai_dl_progress().lock().ok().and_then(|g| g.get(m.name.as_str()).copied());
+        let mut row = statact(&format!("ai-dl-{}", m.name),
+            &format!("{nice} · {mb} MB"), purpose,
+            if dl.is_some() { "Downloading" } else if installed { "Installed" } else { "Not downloaded" },
+            if dl.is_some() { "busy" } else if installed { "ok" } else { "muted" },
+            if installed { "Verify" } else { "Download" });
+        if let Some(f) = dl { row.frac = f; }
+        ai.push(row);
+    }
+    {
+        let mut chk = act("ai-update-check", "Check for model updates", "Compare installed models against the latest versions", "Check");
+        if AI_CHECK_BUSY.load(std::sync::atomic::Ordering::Relaxed) { chk.state = "busy".into(); }
+        ai.push(chk);
     }
     ai.extend([
-        stat("Local LLM (Phi-3-mini-Q4)", "Not downloaded", "muted"),
-        stat("CLIP ViT-B/32 (captions)", "Not downloaded", "muted"),
-        act("ai-update-check", "Check for model updates", "Compare installed versions against the latest manifest", "Check"),
+        hdr("VOICE RECOGNITION MODEL"),
+        si("ai.voice-lang", "lang-choice", "Spoken language",
+            "What the mic listens for — pinning a language beats auto-detect on short clips",
+            &{ let v = s.text("ai.voice-lang"); if v.is_empty() { "en".into() } else { v } }, false, ""),
+        model_choice(&s, "ai.model.voice", "Voice search",
+            "Used by the mic button in search fields — Tiny answers fastest"),
+        model_choice(&s, "ai.model.transcribe", "Transcribe & subtitles",
+            "Used by the Tools transcriber and video subtitles — bigger models catch more words"),
+        stat("Model sizes", "Tiny bundled · Base 60 MB · Small 190 MB · Turbo 574 MB — download above", "muted"),
     ]);
     ai.extend([
-        tog(&s, "ai.captions", false, "Auto-captioning & alt-text", "CLIP + LLM fill captions on import"),
-        tog(&s, "ai.voice", false, "Voice search / dictation", "Whisper streaming mic capture → query"),
-        tog(&s, "ai.chat", false, "Chat assistant overlay (Cmd/Ctrl+J)", "Grounded, tool-calling library assistant"),
+        tog(&s, "ai.captions", false, "Describe photos automatically", "Writes captions and alt-text for new photos as they are added"),
+        tog(&s, "ai.voice", true, "Voice search", "The mic button in search bars — speak instead of typing"),
+        tog(&s, "ai.chat", false, "Chat assistant (Ctrl+J)", "Ask questions about your library in plain language"),
         hdr("CLOUD"),
-        tog(&s, "ai.cloud-offload", false, "Allow cloud-LLM offload", "Send selected queries to Anthropic / OpenAI / Gemini"),
+        tog(&s, "ai.cloud-offload", false, "Allow cloud AI help", "Send selected questions to a cloud AI service. Off = everything stays on-device"),
     ]);
     w.set_ai_rows(ModelRc::new(VecModel::from(ai)));
 
-    // Endpoints & providers — np.p1.api.*.
+    // Servers & sources — np.p1.api.*. Plain-language copy: optional keys
+    // first, provider toggles second, self-host overrides last.
     let ep = vec![
-        hdr("CUSTOM ENDPOINTS"),
-        txt(&s, "api.update-channel", "Update / appcast URL", "Air-gapped or mirror manifest"),
-        txt(&s, "api.sentry", "Sentry DSN", "Use your own crash service"),
-        txt(&s, "api.nominatim", "Nominatim URL", "Self-hosted reverse-geocoding"),
-        txt(&s, "api.radio-browser", "radio-browser mirror", "DNS-SRV health-pick by default"),
-        txt(&s, "api.autoeq", "AutoEq DB URL", "Fork / mirror; default = upstream"),
-        txt(&s, "api.tmdb-image-base", "TMDB image base URL", "CDN mirror for poster art"),
-        hdr("MUSIC DISCOVERY KEYS"),
-        txt(&s, "api.spotify-id", "Spotify client ID", "Optional — richer search / recommendations (np.p5.atmusic.discovery-keys)"),
-        txt(&s, "api.spotify-secret", "Spotify client secret", "Paired with the client ID"),
-        txt(&s, "api.youtube-data", "YouTube Data API key", "Optional — richer in-app YouTube search / metadata"),
-        txt(&s, "api.piped-instance", "Piped instance URL", "YouTube browsing backend — default https://pipedapi.kavin.rocks"),
-        hdr("OPTIONAL PROVIDERS"),
-        tog(&s, "api.discogs", false, "Discogs (music metadata)", "Fallback when MusicBrainz misses"),
-        tog(&s, "api.anidb", false, "AniDB (anime)", "Titles / episodes / ratings"),
-        tog(&s, "api.anilist", false, "AniList (anime)", "GraphQL alternate source"),
-        tog(&s, "api.subscene", false, "Subscene / Addic7ed (subtitles)", "When OpenSubtitles is rate-limited"),
-        tog(&s, "api.trakt", false, "Trakt.tv watch tracking", "Alternative to local-only history"),
-        tog(&s, "api.listenbrainz", false, "ListenBrainz scrobble", "Open-data Last.fm alternative"),
+        hdr("OPTIONAL SERVICE KEYS"),
+        txt(&s, "api.spotify-id", "Spotify client ID", "Better music search and recommendations. Free key from developer.spotify.com"),
+        txt(&s, "api.spotify-secret", "Spotify client secret", "Goes together with the client ID above"),
+        txt(&s, "api.youtube-data", "YouTube API key", "Richer YouTube search results and video details"),
+        txt(&s, "api.piped-instance", "YouTube backend server (Piped)", "The server used to browse YouTube. Leave blank for the default"),
+        hdr("EXTRA METADATA SOURCES"),
+        tog(&s, "api.discogs", false, "Discogs", "Extra music metadata when MusicBrainz has no match"),
+        tog(&s, "api.anidb", false, "AniDB", "Anime titles, episodes, and ratings"),
+        tog(&s, "api.anilist", false, "AniList", "A second anime source when AniDB misses"),
+        tog(&s, "api.subscene", false, "Subscene / Addic7ed", "Backup subtitle sources when OpenSubtitles is busy"),
+        tog(&s, "api.trakt", false, "Trakt.tv", "Track what you watch with a Trakt account"),
+        tog(&s, "api.listenbrainz", false, "ListenBrainz", "Scrobble played music — the open Last.fm alternative"),
+        hdr("SELF-HOSTED SERVERS (ADVANCED)"),
+        txt(&s, "api.update-channel", "Update server", "Only needed for mirrors or offline networks"),
+        txt(&s, "api.sentry", "Crash-report server", "Send crash reports to your own Sentry server"),
+        txt(&s, "api.nominatim", "Place-name server", "Turns photo GPS coordinates into place names"),
+        txt(&s, "api.radio-browser", "Radio station server", "Mirror for the internet-radio directory"),
+        txt(&s, "api.autoeq", "Headphone EQ database", "Mirror for AutoEq headphone profiles"),
+        txt(&s, "api.tmdb-image-base", "Poster artwork server", "Mirror for movie and show artwork"),
     ];
     w.set_endpoint_rows(ModelRc::new(VecModel::from(ep)));
 
@@ -8374,12 +8823,12 @@ fn seed_settings_panels(w: &MainWindow) {
     let idle_secs_val = if s.idle_lock_secs > 0 { s.idle_lock_secs.to_string() } else { String::new() };
     let sec = vec![
         hdr("LOCK"),
-        tog(&s, "autolock", false, "Auto-lock when idle", "Lock + show the screensaver after the timeout"),
-        si("idle_lock_secs", "text", "Idle timeout (seconds)", "0 or blank = use the ambient default", &idle_secs_val, false, ""),
-        hdr("AUTHENTICATION"),
-        tog(&s, "passkey", false, "Passkey / FIDO2 unlock", "WebAuthn — YubiKey, Titan, platform authenticator"),
-        hdr("DATA AT REST"),
-        tog(&s, "db-encrypt", false, "Encrypt databases at rest", "SQLCipher-equivalent wrap (applies on next open)"),
+        tog(&s, "autolock", false, "Auto-lock when idle", "Lock the app and show the screensaver after a period of no activity"),
+        si("idle_lock_secs", "text", "Idle timeout (seconds)", "How long before auto-lock kicks in — blank uses the default", &idle_secs_val, false, ""),
+        hdr("UNLOCK"),
+        tog(&s, "passkey", false, "Unlock with a passkey", "Use a security key or fingerprint instead of a password"),
+        hdr("ENCRYPTION"),
+        tog(&s, "db-encrypt", false, "Encrypt the library database", "Protects your library index if the disk is stolen — applies on next launch"),
         stat("OS sandbox", "Not applicable on Linux", "muted"),
     ];
     w.set_security_rows(ModelRc::new(VecModel::from(sec)));
@@ -8387,17 +8836,42 @@ fn seed_settings_panels(w: &MainWindow) {
     // Data & tools — backup/restore, export, migration, bug-report, multi-user.
     let data = vec![
         hdr("BACKUP"),
-        act("backup", "Back up Tulipix data", "Copy settings + watched folders into the data dir", "Back up"),
-        act("export", "Export library to JSON", "Portable per-section dump of rows + edits", "Export"),
+        act("backup", "Back up settings", "Saves your settings and folder list so you can restore them later", "Back up"),
+        act("export", "Export library", "Writes your whole library (lists, edits, tags) to portable JSON files", "Export"),
         hdr("IMPORT"),
-        act("migration", "Migration import wizard", "Import from Plex (libraries.db) or Picasa (.pmp)", "Import"),
-        hdr("DIAGNOSTICS"),
-        act("bug-report", "Bug report with logs", "Reveal the last logs + system info to attach", "Open"),
-        tog(&s, "multi-user", false, "Multiple local users", "Separate Tulipix profiles per OS account"),
+        act("migration", "Import from another app", "Bring over a library from Plex or Picasa", "Import"),
+        hdr("PROBLEMS"),
+        act("bug-report", "Report a problem", "Opens the log folder with system info ready to attach", "Open"),
+        tog(&s, "multi-user", false, "Separate library per computer user", "Each OS account gets its own Tulipix library"),
     ];
     w.set_data_rows(ModelRc::new(VecModel::from(data)));
 
-    // System & performance — live diagnostics + bundled tools + platform.
+    // Playback — its own Settings section (was buried inside System).
+    let pb = vec![
+        hdr("SUBTITLES"),
+        txt(&s, "playback.sub-size", "Subtitle size", "In pixels — 28 if left blank"),
+        txt(&s, "playback.sub-color", "Subtitle colour", "A colour code like #ffffff — applies on the next play"),
+        stat("Subtitles next to the video", "Loaded automatically (.srt / .vtt / .ass)", "ok"),
+        hdr("VIDEO"),
+        tog(&s, "playback.interpolation", false, "Smoother motion", "Frame interpolation — can be heavy on laptop graphics"),
+        tog(&s, "playback.upscale", false, "Upscale shaders (Anime4K)", "Sharper upscaling — drop .glsl shader files in the folder below"),
+        stat("Upscale shader folder", &{
+                 let dir = crate::dirs_default().map(|d| d.join("shaders").display().to_string())
+                     .unwrap_or_else(|| "<config>/shaders".into());
+                 match anime4k_shader_args() {
+                     Some((_, n)) => format!("{n} shader(s) in {dir}"),
+                     None => format!("Empty — put Anime4K .glsl files in {dir}"),
+                 }
+             },
+             if anime4k_shader_args().is_some() { "ok" } else { "muted" }),
+        stat("Keep display awake", "While a video plays", "ok"),
+        hdr("AUDIO & MUSIC"),
+        tog(&s, "playback.audio-exclusive", false, "Exclusive audio output", "Bit-perfect output straight to the audio device — silences other apps"),
+        txt(&s, "music.eq-preset", "Music equalizer preset", "flat · rock · pop · jazz · bass · treble — applies on the next track"),
+    ];
+    w.set_playback_rows(ModelRc::new(VecModel::from(pb)));
+
+    // Advanced — live diagnostics + bundled tools + platform status.
     let cache_mb = tulipix_core::thumbs::cache_size().map(|b| b / (1024 * 1024)).unwrap_or(0);
     let mut sys = vec![
         hdr("PERFORMANCE (LIVE)"),
@@ -8410,25 +8884,7 @@ fn seed_settings_panels(w: &MainWindow) {
         stat("Disk-IO throttle", "Auto (rotational detect)", "ok"),
         stat("Viewport prefetch", "Velocity-aware", "ok"),
         stat("120 Hz / VRR", "Frame budget 8.3 ms", "ok"),
-        tog(&s, "power-aware", true, "Battery / network aware", "Pause indexer + transcoder on battery / metered"),
-        hdr("PLAYBACK"),
-        txt(&s, "playback.sub-size", "Subtitle size (px)", "Embedded-player subtitle font size · default 28"),
-        txt(&s, "playback.sub-color", "Subtitle colour", "#RRGGBB · default white · applies on next play"),
-        tog(&s, "playback.audio-exclusive", false, "Exclusive audio output", "Bit-perfect device-exclusive output (ALSA hw / WASAPI / CoreAudio)"),
-        tog(&s, "playback.interpolation", false, "Motion interpolation", "Smooth-motion frame interpolation — heavy on integrated GPUs"),
-        tog(&s, "playback.upscale", false, "GLSL upscale shaders (Anime4K)", "Applies .glsl shaders on the next play — drop shader files in the folder below"),
-        stat("Upscale shader folder", &{
-                 let dir = crate::dirs_default().map(|d| d.join("shaders").display().to_string())
-                     .unwrap_or_else(|| "<config>/shaders".into());
-                 match anime4k_shader_args() {
-                     Some((_, n)) => format!("{n} shader(s) in {dir}"),
-                     None => format!("Empty — put Anime4K .glsl files in {dir}"),
-                 }
-             },
-             if anime4k_shader_args().is_some() { "ok" } else { "muted" }),
-        stat("Keep display awake", "While a video plays", "ok"),
-        stat("Sibling subtitle auto-load", "On (.srt/.vtt/.ass next to video)", "ok"),
-        txt(&s, "music.eq-preset", "Music equalizer", "flat · rock · pop · jazz · bass · treble · applies on next track"),
+        tog(&s, "power-aware", true, "Battery / network aware", "Pause background scanning on battery or metered connections"),
         hdr("BUNDLED TOOLS"),
         // Universal override — look for mpv / yt-dlp / ffmpeg / ffprobe / etc. in
         // this folder first (before the bundled copy and PATH). One setting for
@@ -8479,6 +8935,12 @@ fn seed_settings_panels(w: &MainWindow) {
         stat("RTL layout", "Auto-mirror per locale", "ok"),
         stat("Adaptive layout", "Desktop breakpoints", "ok"),
         stat("Player embedding", "Out-of-process mpv — isolation by design (embedded GL parked: froze Intel iGPUs)", "ok"),
+        // Format-support audit (np.p4.music.formats) — the claim table.
+        stat("Audio formats", &{
+                 let all: Vec<&str> = tulipix_music::formats::FORMATS.iter().map(|f| f.ext).collect();
+                 let gaps = tulipix_music::formats::gapless_gaps();
+                 format!("{} — gapless unverified: {}", all.join(" · "), gaps.join(", "))
+             }, "ok"),
         hdr("PLUGINS"),
         stat("Plugin engine (WASM / Lua)",
              if cfg!(feature = "lazy-plugins") { "ABI v0 — runtimes compiled, load on first use" } else { "ABI v0 ready — rebuild with --features lazy-plugins to load" },
@@ -8487,6 +8949,168 @@ fn seed_settings_panels(w: &MainWindow) {
     ];
     sys.shrink_to_fit();
     w.set_system_rows(ModelRc::new(VecModel::from(sys)));
+}
+
+/// Voice-session generation counter — bumping it discards in-flight results
+/// (stop button, or a new session superseding an old one).
+static VOICE_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+/// "Check for model updates" in flight — renders the button as a progress pill.
+static AI_CHECK_BUSY: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+/// Live model-download progress (model name → 0..1) — drives the determinate
+/// progress pill in the AI Features rows.
+fn ai_dl_progress() -> &'static std::sync::Mutex<std::collections::HashMap<String, f32>> {
+    static M: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, f32>>> = std::sync::OnceLock::new();
+    M.get_or_init(Default::default)
+}
+
+/// Resolve a CLI tool for voice capture: user tools dir / bundled first, PATH second.
+fn voice_tool(name: &str) -> Option<std::path::PathBuf> {
+    let p = tulipix_core::thumbs::tool_bin(name);
+    if p.is_absolute() && p.exists() { return Some(p); }
+    if on_path(name) { return Some(std::path::PathBuf::from(name)); }
+    None
+}
+
+/// Record ~5 s of 16 kHz mono audio from the default microphone. Returns the
+/// temp wav path.
+///
+/// Linux: the bundled static ffmpeg has NO pulse/alsa input devices compiled
+/// in, so try the native recorders every desktop ships instead — arecord
+/// (self-terminating, clean header), then parecord / pw-record (stopped with
+/// SIGINT via coreutils `timeout` so they finalise the wav), then a system
+/// ffmpeg if one exists.
+async fn voice_record() -> anyhow::Result<std::path::PathBuf> {
+    let wav = std::env::temp_dir().join(format!("tulipix-voice-{}.wav", std::process::id()));
+    let _ = tokio::fs::remove_file(&wav).await;
+
+    #[cfg(target_os = "linux")]
+    {
+        let w = wav.to_string_lossy().into_owned();
+        let attempts: &[&[&str]] = &[
+            &["arecord", "-q", "-d", "5", "-f", "S16_LE", "-r", "16000", "-c", "1", &w],
+            &["timeout", "-s", "INT", "5", "parecord", "--rate=16000", "--channels=1",
+              "--format=s16le", "--file-format=wav", &w],
+            &["timeout", "-s", "INT", "5", "pw-record", "--rate", "16000", "--channels", "1", &w],
+            &["ffmpeg", "-hide_banner", "-f", "pulse", "-i", "default",
+              "-t", "5", "-ac", "1", "-ar", "16000", "-y", &w],
+        ];
+        for cmd in attempts {
+            if !on_path(cmd[0]) { continue; }
+            let _ = tokio::fs::remove_file(&wav).await;
+            let st = tokio::process::Command::new(cmd[0]).args(&cmd[1..])
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status().await;
+            // `timeout -s INT` exits 124 when the window elapses — that IS the
+            // success path for the run-forever recorders.
+            let ran = matches!(st, Ok(s) if s.success() || s.code() == Some(124));
+            let got = tokio::fs::metadata(&wav).await.map(|m| m.len() > 44).unwrap_or(false);
+            if ran && got { return Ok(wav); }
+        }
+        anyhow::bail!("microphone capture failed — tried arecord, parecord, pw-record, ffmpeg. \
+                       Is a microphone connected?");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    {
+        // Windows (gyan.dev) and macOS (martin-riedl) ffmpeg builds ship with
+        // dshow / avfoundation input devices — capture directly.
+        let ffmpeg = voice_tool("ffmpeg")
+            .ok_or_else(|| anyhow::anyhow!("ffmpeg not found (bundled copy missing?)"))?;
+        let mut c = tokio::process::Command::new(&ffmpeg);
+        #[cfg(target_os = "macos")]
+        c.args(["-f", "avfoundation", "-i", ":0"]);
+        #[cfg(target_os = "windows")]
+        {
+            let dev = windows_default_mic(&ffmpeg).await
+                .ok_or_else(|| anyhow::anyhow!("no microphone found"))?;
+            c.args(["-f", "dshow", "-i", &dev]);
+        }
+        c.args(["-t", "5", "-ac", "1", "-ar", "16000", "-y"]).arg(&wav);
+        c.stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null());
+        let st = c.status().await?;
+        if !st.success() || !wav.exists() {
+            anyhow::bail!("microphone capture failed — is a mic connected and allowed?");
+        }
+        Ok(wav)
+    }
+}
+
+/// First dshow audio-capture device name (Windows) via ffmpeg enumeration.
+#[cfg(target_os = "windows")]
+async fn windows_default_mic(ffmpeg: &std::path::Path) -> Option<String> {
+    let out = tokio::process::Command::new(ffmpeg)
+        .args(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
+        .output().await.ok()?;
+    let s = String::from_utf8_lossy(&out.stderr);
+    for line in s.lines() {
+        if line.contains("(audio)") {
+            let a = line.find('"')?;
+            let rest = &line[a + 1..];
+            let b = rest.find('"')?;
+            return Some(format!("audio={}", &rest[..b]));
+        }
+    }
+    None
+}
+
+/// Transcribe a wav with whisper-cli using the "voice" task's chosen model.
+async fn voice_transcribe(wav: &std::path::Path) -> anyhow::Result<String> {
+    let model = tulipix_core::ai_models::whisper_model_for("voice")
+        .ok_or_else(|| anyhow::anyhow!("no whisper model — check Settings → AI Features"))?;
+    let whisper = voice_tool("whisper-cli")
+        .ok_or_else(|| anyhow::anyhow!("whisper-cli not found (bundled copy missing?)"))?;
+    // Language: constrained to what the user actually speaks (Settings → AI
+    // Features). Whisper's auto-detect on short clips loves to guess wrong
+    // exotic languages; pinning the language fixes most mis-hearings.
+    let lang = tulipix_core::settings::Settings::load().ok()
+        .map(|s| s.text("ai.voice-lang")).filter(|l| !l.is_empty())
+        .unwrap_or_else(|| "en".into());
+    let out = tokio::process::Command::new(&whisper)
+        .arg("-m").arg(&model)
+        .arg("-f").arg(wav)
+        .args(["-nt", "-l", &lang])
+        .output().await?;
+    let _ = tokio::fs::remove_file(wav).await;
+    if !out.status.success() {
+        anyhow::bail!("transcription failed ({})", out.status);
+    }
+    let text = String::from_utf8_lossy(&out.stdout);
+    Ok(text.lines().map(str::trim).filter(|l| !l.is_empty()).collect::<Vec<_>>().join(" "))
+}
+
+/// Put transcribed text into `target`'s search box and fire its search.
+fn voice_route(w: &MainWindow, target: &str, text: &str) {
+    let t: slint::SharedString = text.into();
+    match target {
+        "photos"   => { w.set_photos_query(t.clone()); w.invoke_photo_search(t); }
+        "videos"   => { w.set_video_query(t.clone());  w.invoke_video_search(t); }
+        "books"    => { w.set_book_query(t.clone());   w.invoke_book_search(t); }
+        "cloud"    => { w.set_cloud_query(t.clone());  w.invoke_cloud_search(t); }
+        "tools"    => { w.set_tools_query(t.clone());  w.invoke_tools_search(t); }
+        "music"    => { w.set_music_query(t.clone());  w.invoke_music_search(t); }
+        "podcasts" => { w.set_music_query(t.clone());  w.invoke_music_podcast_search(t); }
+        "radio"    => { w.set_music_query(t.clone());  w.invoke_music_radio_search(t); }
+        "youtube"  => { w.set_music_query(t.clone());  w.invoke_music_yt_search(t); }
+        _ => tracing::warn!(%target, "voice route: unknown target"),
+    }
+}
+
+/// Human name + purpose line for a manifest model, keyed off its capability
+/// gate so the Settings row says what the model DOES, not its filename.
+fn model_display<'a>(name: &'a str, cap: &str) -> (&'a str, &'static str) {
+    match cap {
+        "photos.ai.faces" => ("Face detection", "Finds faces in photos so people can be grouped"),
+        "photos.ai.heal" => ("Magic eraser", "Removes unwanted objects in the photo editor"),
+        "photos.ai.sky" => ("Smart select", "Selects sky / objects for one-tap edits"),
+        "voice.balanced" => ("Whisper Base (balanced)", "Good accuracy at near-instant speed — best all-rounder"),
+        "voice.accurate" => ("Whisper Small (accurate)", "Catches names and accents — great for subtitles"),
+        "voice.best" => ("Whisper Turbo (best)", "Top accuracy for dictation-grade transcription"),
+        _ => (name, ""),
+    }
 }
 
 /// Tray init result (np.p1.tray) — System row shows the real outcome.
@@ -8699,10 +9323,26 @@ fn flush_progress(weak: &slint::Weak<MainWindow>) {
             }
         }
         let any_active = rows.iter().any(|r| r.active);
+        // Auto-dismiss: once every section finished, keep the popup up for
+        // 5 s (so the final counts are readable) then hide it.
+        let all_done = !rows.is_empty()
+            && rows.iter().all(|r| r.total > 0 && r.added + r.failed >= r.total);
         w.set_scan_progress(slint::ModelRc::new(slint::VecModel::from(rows)));
         w.set_scan_active(any_active);
+        use std::sync::atomic::Ordering::Relaxed;
+        if all_done && w.get_scan_active() && !SCAN_HIDE_SCHEDULED.swap(true, Relaxed) {
+            let weak = w.as_weak();
+            slint::Timer::single_shot(std::time::Duration::from_secs(5), move || {
+                if let Some(w) = weak.upgrade() { w.set_scan_active(false); }
+            });
+        }
+        if !all_done { SCAN_HIDE_SCHEDULED.store(false, Relaxed); }
     });
 }
+
+/// One pending auto-hide per finished scan session (reset when a new scan
+/// starts producing unfinished rows again).
+static SCAN_HIDE_SCHEDULED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Spawn the singleton flush ticker — coalesces atomic counters into one UI
 /// post per ~80 ms regardless of file throughput.

@@ -3,6 +3,7 @@
 import { PhotoTile } from "section_page.slint";
 import { ScrollView } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
+import { MicBtn } from "voice.slint";
 import { HdrChip } from "section_header.slint";
 import { Theme } from "tokens.slint";
 
@@ -474,8 +475,11 @@ export component PhotosPage inherits Rectangle {
                                     mouse-cursor: pointer;
                                     clicked => { root.query = ""; root.search(""); }
                                 }
-                                AppIcon { source: Icons.x; tint: Theme.n-ink3; width: 12px; height: 12px; }
+                                AppIcon { source: Icons.x; tint: Theme.n-ink3; width: 12px; height: 12px;
+                                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
                             }
+                            VerticalLayout { alignment: center;
+                                MicBtn { target: "photos"; dark: Theme.dark; } }
                         }
                     }
                 }

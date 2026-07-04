@@ -1,0 +1,45 @@
+// Voice search (np.voice) — one shared mic pipeline for every search box.
+// A search bar drops a `MicBtn { target: "photos"; }` on its right side; the
+// button drives the app-wide `VoiceSearch` global. Rust listens on `start`,
+// records the mic with the bundled ffmpeg, transcribes with the whisper model
+// chosen in Settings → AI Features, then writes the text into the right
+// section's query + fires that section's search.
+import { AppIcon, Icons } from "icons.slint";
+
+export global VoiceSearch {
+    // "idle" | "listening" | "busy" (transcribing)
+    in-out property <string> state: "idle";
+    // Which search box owns the current session ("photos", "videos", …).
+    in-out property <string> target: "";
+    callback start(string /*target*/);
+    callback stop();
+}
+
+// Round mic button for search pills. Red while its own session is live;
+// callers wrap it in a `VerticalLayout { alignment: center; }` like the
+// clear-✕ buttons.
+export component MicBtn inherits Rectangle {
+    in property <string> target;
+    in property <bool> dark: true;
+    property <bool> live: VoiceSearch.target == root.target && VoiceSearch.state != "idle";
+    width: 28px; height: 28px; border-radius: 14px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    background: live
+        ? (VoiceSearch.state == "busy" ? #b45309 : #dc2626)
+        : (mt.has-hover ? (dark ? #ffffff2b : #d7dadd) : transparent);
+    animate background { duration: 140ms; easing: ease-out; }
+    mt := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            if (root.live) { VoiceSearch.stop(); }
+            else { VoiceSearch.start(root.target); }
+        }
+    }
+    AppIcon {
+        source: Icons.mic;
+        tint: live ? #ffffff : (dark ? #9a9aa2 : #5f6368);
+        width: 14px; height: 14px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}

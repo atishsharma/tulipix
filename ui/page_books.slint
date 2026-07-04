@@ -96,6 +96,7 @@ export component BooksPage inherits Rectangle {
                 Rectangle { horizontal-stretch: 1; }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     HdrSearch { width: 420px; dark: Theme.dark; placeholder: "Search your books";
+                        mic-target: "books";
                         query <=> root.query; edited(q) => { root.search(q); } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     HdrChip { label: "+ Add books"; accent: root.accent; dark: Theme.dark; active: true; height: 44px; min-width: 140px;

@@ -1,4 +1,4 @@
-import { Theme } from "tokens.slint";
+import { Theme, Accent } from "tokens.slint";
 import { ScrollView } from "std-widgets.slint";
 
 export struct ApiKeyRow {
@@ -9,6 +9,7 @@ export struct ApiKeyRow {
     quota-used: int,
     quota-limit: int,  // -1 unlimited
     status: string,    // "ok" | "warn" | "error" | "unknown"
+    editing: bool,     // inline key editor open
 }
 
 component QuotaMeter inherits Rectangle {
@@ -35,71 +36,114 @@ component QuotaMeter inherits Rectangle {
 component Btn inherits Rectangle {
     in property <string> label;
     in property <bool> primary: false;
+    in property <bool> danger: false;
     callback clicked();
-    width: 90px; height: 30px;
+    min-width: 90px; height: 30px;
+    horizontal-stretch: 0; vertical-stretch: 0;
     border-radius: 8px;
     background: touch.has-hover
-        ? (primary ? #6d28d9 : Theme.panel-2)
-        : (primary ? Theme.brand : Theme.panel);
-    border-color: Theme.outline; border-width: 1px;
-    touch := TouchArea { clicked => { root.clicked(); } }
-    Text {
-        text: label;
-        color: primary ? #ffffff : Theme.text;
-        font-size: 11px; font-weight: 600;
-        horizontal-alignment: center; vertical-alignment: center;
+        ? (danger ? #b91c1c : (primary ? #6d28d9 : Theme.panel-2))
+        : (danger ? #7f1d1d : (primary ? Theme.brand : Theme.panel));
+    border-color: danger ? #b91c1c : Theme.outline; border-width: 1px;
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 10px;
+        Text {
+            text: label;
+            color: (primary || danger) ? #ffffff : Theme.text;
+            font-size: 11px; font-weight: 600;
+            horizontal-alignment: center; vertical-alignment: center;
+        }
     }
 }
 
 component KeyRow inherits Rectangle {
     in property <ApiKeyRow> data;
     callback toggle-source();
-    callback edit-key();
+    callback edit-key();        // open the inline editor
+    callback key-save(string);  // store the typed key
+    callback edit-cancel();
+    callback key-remove();      // delete stored key, back to app default
     callback test-connection();
-    height: 72px;
+    height: data.editing ? 118px : 72px;
     border-radius: Theme.radius-md;
     background: Theme.panel-2;
-    border-color: Theme.outline;
+    border-color: data.editing ? Accent.color.with-alpha(0.55) : Theme.outline;
     border-width: 1px;
+    animate height { duration: 140ms; easing: ease-out; }
 
-    HorizontalLayout {
-        padding: 14px; spacing: 14px; alignment: stretch;
+    VerticalLayout {
+        padding: 14px; spacing: 10px;
+        HorizontalLayout {
+            spacing: 14px; alignment: stretch;
 
-        VerticalLayout {
-            alignment: center; spacing: 3px;
-            width: 220px;
-            Text { text: data.label; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
-            Text {
-                text: data.use-app-default
-                    ? "App default key"
-                    : (data.user-key-set ? "Custom key" : "Custom key (not set)");
-                color: Theme.text-dim; font-size: 11px;
+            VerticalLayout {
+                alignment: center; spacing: 3px;
+                width: 220px;
+                Text { text: data.label; color: Theme.text; font-size: 13px; font-weight: 600; overflow: elide; }
+                Text {
+                    text: data.use-app-default
+                        ? "Built-in key (shared daily limit)"
+                        : "Your own key";
+                    color: Theme.text-dim; font-size: 11px;
+                }
+            }
+
+            VerticalLayout {
+                alignment: center; spacing: 6px;
+                horizontal-stretch: 1;
+                Text {
+                    text: data.quota-limit < 0
+                        ? "Unlimited"
+                        : (data.quota-used + " / " + data.quota-limit + " today");
+                    color: Theme.text-dim; font-size: 11px;
+                }
+                QuotaMeter { used: data.quota-used; limit: data.quota-limit; }
+            }
+
+            VerticalLayout {
+                alignment: center;
+                Btn {
+                    label: data.use-app-default
+                        ? (data.user-key-set ? "Use my key" : "Add my key")
+                        : "My key ✓";
+                    primary: !data.use-app-default;
+                    clicked => {
+                        if (data.use-app-default && !data.user-key-set) { root.edit-key(); }
+                        else { root.toggle-source(); }
+                    }
+                }
+            }
+            if data.user-key-set: VerticalLayout {
+                alignment: center;
+                Btn { label: "Change"; clicked => { root.edit-key(); } }
+            }
+            VerticalLayout {
+                alignment: center;
+                Btn { label: "Test"; clicked => { root.test-connection(); } }
             }
         }
 
-        VerticalLayout {
-            alignment: center; spacing: 6px;
-            horizontal-stretch: 1;
-            Text {
-                text: data.quota-limit < 0
-                    ? "Unlimited"
-                    : (data.quota-used + " / " + data.quota-limit + " today");
-                color: Theme.text-dim; font-size: 11px;
+        // Inline key editor.
+        if data.editing: HorizontalLayout {
+            spacing: 8px;
+            Rectangle {
+                height: 34px; border-radius: 9px; horizontal-stretch: 1;
+                background: Theme.panel;
+                border-color: key-ti.has-focus ? Accent.color : Theme.outline; border-width: 1px;
+                key-ti := TextInput {
+                    x: 12px; width: parent.width - 24px; height: parent.height;
+                    color: Theme.text; font-size: 12px;
+                    vertical-alignment: center; single-line: true;
+                }
+                if key-ti.text == "" && !key-ti.has-focus: Text {
+                    x: 12px; text: "Paste your API key"; color: Theme.text-dim; font-size: 12px;
+                    vertical-alignment: center; height: 100%;
+                }
             }
-            QuotaMeter { used: data.quota-used; limit: data.quota-limit; }
-        }
-
-        VerticalLayout {
-            alignment: center;
-            Btn {
-                label: data.use-app-default ? "App key" : "My key";
-                primary: data.use-app-default;
-                clicked => { root.toggle-source(); }
-            }
-        }
-        VerticalLayout {
-            alignment: center;
-            Btn { label: "Test"; clicked => { root.test-connection(); } }
+            Btn { label: "Save key"; primary: true; clicked => { root.key-save(key-ti.text); } }
+            Btn { label: "Cancel"; clicked => { root.edit-cancel(); } }
+            if data.user-key-set: Btn { label: "Remove"; danger: true; clicked => { root.key-remove(); } }
         }
     }
 }
@@ -108,14 +152,17 @@ export component SettingsApiKeys inherits Rectangle {
     in property <[ApiKeyRow]> rows;
     callback row-toggle(int);
     callback row-edit(int);
+    callback row-key-save(int, string);
+    callback row-edit-cancel(int);
+    callback row-key-remove(int);
     callback row-test(int);
     background: transparent;
 
     VerticalLayout {
         spacing: 12px; padding: 0;
-        Text { text: "API Keys"; color: Theme.text; font-size: 20px; font-weight: 700; }
+        Text { text: "Service keys"; color: Theme.text; font-size: 20px; font-weight: 700; }
         Text {
-            text: "Toggle between Tulipix-supplied keys (rate-limited per tier) and your own keys (stored in OS keychain).";
+            text: "Services that fetch artwork, subtitles, and metadata. The built-in keys work out of the box with a shared daily limit — add your own free key to remove it. Keys are stored in the system keychain, never in plain files.";
             color: Theme.text-dim; font-size: 12px; wrap: word-wrap;
         }
 
@@ -127,6 +174,9 @@ export component SettingsApiKeys inherits Rectangle {
                     data: r;
                     toggle-source => { root.row-toggle(i); }
                     edit-key => { root.row-edit(i); }
+                    key-save(k) => { root.row-key-save(i, k); }
+                    edit-cancel => { root.row-edit-cancel(i); }
+                    key-remove => { root.row-key-remove(i); }
                     test-connection => { root.row-test(i); }
                 }
                 Rectangle { vertical-stretch: 1; }

@@ -70,6 +70,50 @@ pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     Ok(())
 }
 
+/// One attribute value out of an XML tag body (naive, double quotes required —
+/// what every OPML exporter emits).
+fn xml_attr(tag: &str, name: &str) -> Option<String> {
+    let k = format!("{name}=\"");
+    let s = tag.find(&k)? + k.len();
+    let e = tag[s..].find('"')? + s;
+    Some(tag[s..e]
+        .replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
+        .replace("&quot;", "\"").replace("&#39;", "'"))
+}
+
+/// `(title, feed_url)` pairs out of an OPML file — every `<outline>` carrying
+/// an `xmlUrl` attribute, any nesting depth (np.p5.music.podcast-opml).
+pub fn parse_opml(xml: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let mut rest = xml;
+    while let Some(s) = rest.find("<outline") {
+        let tag_end = rest[s..].find('>').map(|e| s + e).unwrap_or(rest.len());
+        let tag = &rest[s..tag_end];
+        if let Some(url) = xml_attr(tag, "xmlUrl") {
+            let title = xml_attr(tag, "title").or_else(|| xml_attr(tag, "text")).unwrap_or_default();
+            if !url.trim().is_empty() { out.push((title, url)); }
+        }
+        rest = &rest[tag_end..];
+    }
+    out
+}
+
+fn xml_escape(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;").replace('"', "&quot;")
+}
+
+/// Serialize `(title, feed_url)` subscriptions to OPML 2.0 for export.
+pub fn to_opml(subs: &[(String, String)]) -> String {
+    let mut s = String::from("<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<opml version=\"2.0\">\n  <head><title>Tulipix podcast subscriptions</title></head>\n  <body>\n");
+    for (title, url) in subs {
+        s.push_str(&format!(
+            "    <outline type=\"rss\" text=\"{t}\" title=\"{t}\" xmlUrl=\"{u}\"/>\n",
+            t = xml_escape(title), u = xml_escape(url)));
+    }
+    s.push_str("  </body>\n</opml>\n");
+    s
+}
+
 #[derive(Debug, Clone, PartialEq)]
 pub struct ParsedEpisode {
     pub guid: String,
@@ -372,5 +416,19 @@ mod tests {
         subscribe(&pool, "https://x/feed.xml", &f).await.unwrap();
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM podcast_episodes WHERE podcast_id = ?").bind(pid).fetch_one(&pool).await.unwrap();
         assert_eq!(n, 2);
+    }
+
+    #[test]
+    fn opml_roundtrip() {
+        let subs = vec![
+            ("My Show".to_string(), "https://x/feed.xml".to_string()),
+            ("A & B <news>".to_string(), "https://y/f?a=1&b=2".to_string()),
+        ];
+        let xml = to_opml(&subs);
+        assert_eq!(parse_opml(&xml), subs);
+        // Nested folders + text-only outlines are tolerated.
+        let foreign = r#"<opml><body><outline text="folder">
+          <outline type="rss" text="Z" xmlUrl="https://z/rss"/></outline></body></opml>"#;
+        assert_eq!(parse_opml(foreign), vec![("Z".to_string(), "https://z/rss".to_string())]);
     }
 }

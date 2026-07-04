@@ -73,9 +73,9 @@ export component SettingsScanSchedule inherits Rectangle {
 
     VerticalLayout {
         spacing: 12px;
-        Text { text: "Auto-rescan cadence"; color: Theme.text; font-size: 20px; font-weight: 700; }
+        Text { text: "Auto-rescan"; color: Theme.text; font-size: 20px; font-weight: 700; }
         Text {
-            text: "Realtime watch is always on. Periodic full rescans cover NFS/SMB and sleep edge cases.";
+            text: "New files are picked up instantly while the app is open. A periodic full rescan catches anything that changed while it was closed or on network drives.";
             color: Theme.text-dim; font-size: 12px; wrap: word-wrap;
         }
 

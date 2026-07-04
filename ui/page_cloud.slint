@@ -5,6 +5,7 @@
 // mount / upload, and confirm remote removal + unmount.
 import { TextEdit } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
+import { MicBtn } from "voice.slint";
 import { Theme } from "tokens.slint";
 
 export struct CloudRemote { name: string, backend: string, mounted: bool }
@@ -516,7 +517,10 @@ export component CloudPage inherits Rectangle {
                             if root.query != "": Rectangle { width: 26px; height: 26px; border-radius: 13px; y: (parent.height - self.height)/2;
                                 background: cx.has-hover ? hover : transparent;
                                 cx := TouchArea { mouse-cursor: pointer; clicked => { root.query = ""; root.search(""); } }
-                                AppIcon { source: Icons.x; tint: ink2; width: 12px; height: 12px; } }
+                                AppIcon { source: Icons.x; tint: ink2; width: 12px; height: 12px;
+                                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } }
+                            VerticalLayout { alignment: center;
+                                MicBtn { target: "cloud"; dark: Theme.dark; } }
                         }
                     }
                 }

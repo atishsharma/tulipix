@@ -1284,21 +1284,11 @@ fn whisper_bin() -> Option<std::path::PathBuf> {
     None
 }
 
-/// Resolve the whisper model at runtime: user Tools dir first, then the
-/// bundled copy found by walking up from the executable — works in both the
-/// installed layout and the dev tree (the old compile-time CARGO_MANIFEST_DIR
-/// path only existed on the build machine).
+/// Resolve the whisper model at runtime, honouring the per-task model choice
+/// in Settings → AI Features (`ai.model.transcribe`): a downloaded base /
+/// small / turbo model when present, else the bundled tiny model.
 fn whisper_model() -> Option<std::path::PathBuf> {
-    const MODEL: &str = "ggml-tiny-1.0.bin";
-    if let Ok(s) = tulipix_core::settings::Settings::load() {
-        let dir = s.text("tools.bin-dir");
-        let dir = dir.trim();
-        if !dir.is_empty() {
-            let cand = std::path::Path::new(dir).join(MODEL);
-            if cand.exists() { return Some(cand); }
-        }
-    }
-    tulipix_core::thumbs::bundled_file(MODEL)
+    tulipix_core::ai_models::whisper_model_for("transcribe")
 }
 
 /// Where a tool binary resolves from, for the Settings tab.

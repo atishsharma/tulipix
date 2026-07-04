@@ -34,13 +34,15 @@ pub async fn store(pool: &SqlitePool, item_id: i64, model: &str, vec: &[f32]) ->
 }
 
 /// Top-`k` most sonically-similar tracks to `seed`, excluding the seed itself.
+/// Only compares embeddings from the seed's own `model` — cosine across
+/// different embedding spaces (dsp-v1 vs CLAP) is meaningless.
 pub async fn similar(pool: &SqlitePool, seed: i64, k: usize) -> Result<Vec<(i64, f32)>> {
-    let seed_vec: Option<Vec<u8>> = sqlx::query_scalar("SELECT vec FROM track_embeddings WHERE item_id = ?")
+    let seed_row: Option<(Vec<u8>, String)> = sqlx::query_as("SELECT vec, model FROM track_embeddings WHERE item_id = ?")
         .bind(seed).fetch_optional(pool).await?;
-    let Some(seed_bytes) = seed_vec else { return Ok(vec![]); };
+    let Some((seed_bytes, model)) = seed_row else { return Ok(vec![]); };
     let seed = (seed, from_bytes(&seed_bytes));
-    let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as("SELECT item_id, vec FROM track_embeddings WHERE item_id != ?")
-        .bind(seed.0).fetch_all(pool).await?;
+    let rows: Vec<(i64, Vec<u8>)> = sqlx::query_as("SELECT item_id, vec FROM track_embeddings WHERE item_id != ? AND model = ?")
+        .bind(seed.0).bind(&model).fetch_all(pool).await?;
     let mut scored: Vec<(i64, f32)> = rows.into_iter()
         .map(|(id, b)| (id, cosine(&seed.1, &from_bytes(&b)))).collect();
     scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());

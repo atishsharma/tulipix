@@ -8,11 +8,13 @@
 # download is pinned beside the file and enforced from then on. Replace with
 # the real hash when one is published/audited.
 
+# immich's production face detector (SCRFD-500M inside buffalo_s) — the old
+# yakhyo/scrfd-onnx repo went 401 (gated).
 [[models]]
-name = "scrfd-2.5g"
+name = "face-det-500m"
 version = "1.0.0"
 sha256 = "tofu"
-url = "https://huggingface.co/yakhyo/scrfd-onnx/resolve/main/scrfd_2.5g.onnx"
+url = "https://huggingface.co/immich-app/buffalo_s/resolve/main/detection/model.onnx"
 size_bytes = 3300000
 quant = "fp32"
 min_vram_mb = 512
@@ -32,7 +34,8 @@ cap = "photos.ai.heal"
 name = "mobile-sam"
 version = "1.0.0"
 sha256 = "tofu"
-url = "https://huggingface.co/vietanhdev/segment-anything-onnx-models/resolve/main/mobile_sam.encoder.onnx"
+# Acly (Krita AI) mirror — vietanhdev's file was moved/404.
+url = "https://huggingface.co/Acly/MobileSAM/resolve/main/mobile_sam_image_encoder.onnx"
 size_bytes = 28000000
 quant = "fp32"
 min_vram_mb = 512
@@ -42,8 +45,71 @@ cap = "photos.ai.sky"
 name = "realesrgan-x4"
 version = "1.0.0"
 sha256 = "tofu"
-url = "https://huggingface.co/qualcomm/Real-ESRGAN-x4plus/resolve/main/Real-ESRGAN-x4plus.onnx"
-size_bytes = 67000000
-quant = "fp32"
+# fp16 export — qualcomm's repo pulled the raw onnx (404).
+url = "https://huggingface.co/tamnvcc/RealESRGAN-onnx/resolve/main/onnx/RealESRGAN_x4plus.fp16.onnx"
+size_bytes = 33000000
+quant = "fp16"
 min_vram_mb = 1024
 cap = "photos.ai.upscale"
+
+# ── Whisper speech models (voice search · transcribe · subtitles) ──────────
+# Quantised ggml builds from the official whisper.cpp repo — half the size and
+# RAM of the fp16 files with near-identical accuracy. The bundled ggml-tiny
+# stays the zero-download default; these are optional upgrades the user picks
+# per task in Settings → AI Features.
+
+[[models]]
+name = "whisper-base-q5"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-base-q5_1.bin"
+size_bytes = 60000000
+quant = "q5_1"
+min_vram_mb = 0
+cap = "voice.balanced"
+
+[[models]]
+name = "whisper-small-q5"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-small-q5_1.bin"
+size_bytes = 190000000
+quant = "q5_1"
+min_vram_mb = 0
+cap = "voice.accurate"
+
+[[models]]
+name = "whisper-turbo-q5"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/ggerganov/whisper.cpp/resolve/main/ggml-large-v3-turbo-q5_0.bin"
+size_bytes = 574000000
+quant = "q5_0"
+min_vram_mb = 0
+cap = "voice.best"
+
+# ── Music AI (np.p4.music.embeddings / np.p4.music.stem) ───────────────────
+
+# CLAP audio encoder (transformers.js ONNX export) — upgrades Sonic Similar
+# from the built-in DSP descriptor to learned audio embeddings. Optional:
+# Sonic Similar works without it (dsp-v1).
+[[models]]
+name = "clap-audio"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/Xenova/clap-htsat-unfused/resolve/main/onnx/audio_model.onnx"
+size_bytes = 120000000
+quant = "fp32"
+min_vram_mb = 1024
+cap = "music.ai.embeddings"
+
+# MDX-Net vocal isolation (UVR's Kim_Vocal_2) — powers Karaoke / stem export.
+[[models]]
+name = "mdx-vocal"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/seanghay/uvr_models/resolve/main/Kim_Vocal_2.onnx"
+size_bytes = 66000000
+quant = "fp32"
+min_vram_mb = 1024
+cap = "music.ai.stems"

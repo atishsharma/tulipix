@@ -3,6 +3,7 @@
 import { PhotoTile } from "section_page.slint";
 import { ScrollView, ComboBox } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
+import { MicBtn } from "voice.slint";
 import { HdrChip, CountPill } from "section_header.slint";
 import { MusicTheme } from "theme.slint";
 import { MusicSongRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
@@ -571,6 +572,98 @@ component BrowseChip inherits Rectangle {
         if root.on: VerticalLayout { alignment: center; Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #ec4899; } }
         if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: MusicTheme.fg2; width: 14px; height: 14px; } }
         Text { text: label; color: MusicTheme.fg2; font-size: 13px; font-weight: 600; vertical-alignment: center; } }
+}
+
+// ── Music settings cards (np.b3.music.settings-cards) ─────────────────────
+// The settings page groups controls into cards: neutral cards for
+// section-wide audio/casting, and one accent card per tab whose icon + top
+// rail reuse that tab's gradient identity from the tab bar — settings look
+// like the tab they govern.
+component SetCard inherits Rectangle {
+    in property <string> title;
+    in property <string> sub;
+    in property <image> icon;
+    in property <color> tint: #ec4899;
+    in property <brush> grad: @linear-gradient(120deg, #ec4899, #f43f5e);
+    in property <bool> accent: false;      // per-tab cards get the gradient top rail
+    border-radius: 16px; background: MusicTheme.surf00;
+    border-width: 1px; border-color: MusicTheme.line;
+    clip: true; vertical-stretch: 0;
+    if root.accent: Rectangle { x: 0; y: 0; width: parent.width; height: 3px; background: root.grad; }
+    VerticalLayout { padding: 18px; spacing: 12px; alignment: start;
+        HorizontalLayout { spacing: 11px;
+            VerticalLayout { alignment: center;
+                Rectangle { width: 34px; height: 34px; border-radius: 10px; background: root.tint.with-alpha(0.14);
+                    AppIcon { source: root.icon; tint: root.tint; width: 17px; height: 17px;
+                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } }
+            VerticalLayout { alignment: center; spacing: 2px; horizontal-stretch: 1;
+                Text { text: root.title; color: MusicTheme.fg; font-size: 15px; font-weight: 800; overflow: elide; }
+                if root.sub != "": Text { text: root.sub; color: MusicTheme.fg-mute; font-size: 11px; overflow: elide; } } }
+        @children
+    }
+}
+
+// In-card toggle row: label left, pill switch right. Rows hover as one target.
+component SetToggle inherits Rectangle {
+    in property <string> label;
+    in property <bool> on: false;
+    in property <color> tint: #ec4899;
+    callback clicked();
+    height: 36px; border-radius: 10px;
+    background: stt.has-hover ? MusicTheme.hov : transparent;
+    stt := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout { padding-left: 8px; padding-right: 8px; spacing: 10px;
+        Text { text: root.label; color: MusicTheme.fg2; font-size: 13px; font-weight: 600;
+            vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        VerticalLayout { alignment: center;
+            Rectangle { width: 38px; height: 22px; border-radius: 11px;
+                background: root.on ? root.tint : MusicTheme.surf1;
+                border-width: 1px; border-color: root.on ? transparent : MusicTheme.line;
+                Rectangle { width: 16px; height: 16px; border-radius: 8px; background: #ffffff;
+                    y: (parent.height - self.height) / 2;
+                    x: root.on ? parent.width - self.width - 3px : 3px;
+                    animate x { duration: 140ms; easing: ease-out; } } } } }
+}
+
+// Compact action/choice chip for card bodies (denser than BrowseChip).
+component SetChip inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> on: false;
+    in property <color> tint: #ec4899;
+    callback clicked();
+    height: 32px; horizontal-stretch: 0; vertical-stretch: 0; border-radius: 16px;
+    background: root.on ? root.tint.with-alpha(0.16) : (stc.has-hover ? MusicTheme.hov2 : MusicTheme.hov);
+    border-width: 1px; border-color: root.on ? root.tint.with-alpha(0.6) : MusicTheme.line;
+    stc := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout { padding-left: 13px; padding-right: 13px; spacing: 7px; alignment: center;
+        if root.icon.width > 0: VerticalLayout { alignment: center;
+            AppIcon { source: root.icon; tint: root.on ? root.tint : MusicTheme.fg2; width: 13px; height: 13px; } }
+        Text { text: root.label; color: root.on ? root.tint : MusicTheme.fg2; font-size: 12px; font-weight: 700;
+            vertical-alignment: center; overflow: elide; } }
+}
+
+// Labeled slider that fills the card width; the live value sits at the right.
+component SetSlider inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value-label;
+    in property <float> value;
+    in property <float> maximum: 1.0;
+    in property <color> fill: #ec4899;
+    callback changed(float);
+    spacing: 7px;
+    HorizontalLayout { padding-left: 8px; padding-right: 8px;
+        Text { text: root.label; color: MusicTheme.fg3; font-size: 12.5px; font-weight: 600; horizontal-stretch: 1; overflow: elide; }
+        Text { text: root.value-label; color: MusicTheme.fg-dim; font-size: 12px; } }
+    HorizontalLayout { padding-left: 8px; padding-right: 8px;
+        Rectangle { height: 20px; horizontal-stretch: 1;
+            Scrubber { y: (parent.height - self.height) / 2; width: parent.width; value: root.value;
+                maximum: root.maximum; fill-color: root.fill; changed(v) => { root.changed(v); } } } }
+}
+
+// Muted helper line inside a card — wraps instead of overflowing.
+component SetHint inherits Text {
+    color: MusicTheme.fg-mute; font-size: 11px; wrap: word-wrap;
 }
 
 // Gradient sidebar chip — distinct accent per panel (queue/lyrics/find).
@@ -1472,6 +1565,14 @@ export component MusicPage inherits Rectangle {
     callback song-view-artist(int);              // jump to the track's artist detail
     callback song-properties(int);               // show the media-info dialog
     callback song-edit-media(int);               // edit tags stored in the library
+    callback song-analyze(int);                  // BPM / musical key / DR analysis
+    callback song-sonic(int);                    // Sonic similar — embeddings queue
+    callback sonic-index();                      // build embeddings for the whole library
+    in property <string> sonic-status: "";       // indexer progress / result line
+    in property <bool> karaoke-on: false;        // live centre-vocal cancellation
+    callback toggle-karaoke();
+    callback song-play-video(int);               // play the linked music video
+    callback song-link-video(int);               // pick + link a video file to this song
     callback song-delete(int);                   // delete the file from disk + library
     // Media-info / Properties dialog (np.p5.atmusic.song-properties).
     in-out property <bool> song-props-open: false;
@@ -1481,6 +1582,7 @@ export component MusicPage inherits Rectangle {
     in property <string> props-genre: "";
     in property <string> props-release: "";
     in property <string> props-credits: "";
+    in property <string> props-analysis: "";     // "128 BPM · Am · DR 9" from the analyzer
     in property <string> props-duration: "";
     in property <string> props-path: "";
     in property <string> props-format: "";
@@ -1601,24 +1703,33 @@ export component MusicPage inherits Rectangle {
     in-out property <bool> exclusive: false;
     in-out property <bool> gapless: true;
     in-out property <float> crossfade: 0;         // seconds, 0..12
+    in-out property <float> preamp-db: 0;         // extra gain on top of RG, -12..+12 dB
     in-out property <string> replaygain: "off";   // off | track | album
     in property <float> rg-scan-progress: 0;      // np.p5.music.replaygain loudness scan
     in property <string> rg-scan-status: "";
     callback set-device(string);
     callback toggle-exclusive();
+    in property <string> hp-status: "";           // headphone-EQ status line
+    callback hp-match(string);                    // "" = auto-match the output device
+    callback hp-off();
     callback toggle-gapless();
     callback toggle-home-connect();
     callback toggle-yt-home-connect();
     callback toggle-mini-outline();
     callback set-crossfade(float);
+    callback set-preamp(float);
     callback set-replaygain(string);
     callback rg-scan();                           // compute gains for untagged files
     // Cast targets (np.p5.music.cast) — DLNA/UPnP renderers on the LAN.
     in property <[string]> cast-devices: [];
     in-out property <string> cast-target: "";
     in property <string> cast-status: "";   // handoff feedback (np.p5.music.cast)
+    in property <bool> cast-active: false;  // renderer session live (np.b2.music.cast-v2)
+    in property <bool> cast-paused: false;
     callback scan-cast();
     callback set-cast(string);
+    callback cast-pause();                  // pause ⇄ resume the renderer
+    callback cast-stop();
     // Audio visualizer (np.p5.music.visualizer) — 0..1 bar heights.
     in property <[float]> vis-bars: [];
     in-out property <int> vis-style: 0;          // 0 Bars · 1 Mirror · 2 Dots · 3 Levels · 4 Line
@@ -1640,6 +1751,8 @@ export component MusicPage inherits Rectangle {
     in-out property <string> tag-artist: "";
     in-out property <string> tag-album: "";
     in-out property <string> tag-album-artist: "";
+    in-out property <string> tag-track: "";       // track number within the disc ("" = unset)
+    in-out property <string> tag-disc: "";        // disc number ("" = unset)
     in-out property <string> tag-date: "";       // release date YYYY-MM-DD (null/empty by default)
     in-out property <string> tag-genre: "";       // genre of the track being edited
     in-out property <string> tag-credits: "";     // performer credits (fetched / editable)
@@ -1741,6 +1854,8 @@ export component MusicPage inherits Rectangle {
     callback podcast-dl-set-sort(string);
     callback podcast-dl-set-page(int);
     callback podcast-subscribe();
+    callback podcast-opml-import();   // pick an .opml file → subscribe to every feed in it
+    callback podcast-opml-export();   // save current subscriptions as .opml
     callback podcast-set-cat(string);
     callback podcast-open(int);            // open feed by podcast id
     callback podcast-fetch(int);           // re-fetch one feed (by id)
@@ -2118,7 +2233,7 @@ export component MusicPage inherits Rectangle {
         v == "podcasts" ? "Subscribe to RSS feeds and manage episodes — needs network." :
         v == "audiobooks" ? "Chapter nav + position-remember for long-form audio — coming next." :
         v == "radio" ? "Internet radio (Shoutcast/Icecast + radio-browser) — needs network." :
-        v == "youtube" ? "In-app YouTube/SoundCloud search via yt-dlp — needs network." :
+        v == "youtube" ? "In-app YouTube search, subscriptions and downloads — needs network." :
         v == "folders" ? "Browse your music by on-disk folder hierarchy — coming next." :
         "Add a music folder to fill your home feed.";
     }
@@ -2222,7 +2337,13 @@ export component MusicPage inherits Rectangle {
                                             else { root.yt-search(""); }
                                         }
                                         else { root.search(""); } } }
-                                    AppIcon { source: Icons.x; tint: clrb.has-hover ? #ffffff : #ec4899; width: 12px; height: 12px; } } }
+                                    AppIcon { source: Icons.x; tint: clrb.has-hover ? #ffffff : #ec4899; width: 12px; height: 12px;
+                                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                MicBtn { dark: false;
+                                    target: root.view == "podcasts" ? "podcasts"
+                                        : (root.view == "radio" ? "radio"
+                                        : (root.view == "youtube" ? "youtube" : "music")); } }
                         }
                     }
                 }
@@ -4437,17 +4558,17 @@ export component MusicPage inherits Rectangle {
                     if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { icon: Icons.list-plus; isz: 17px; clicked => { root.add-to-playlist(); } } }
                     // Sleep — anchored interval popup above the bar.
                     VerticalLayout { alignment: center; Rectangle { width: 38px; height: 38px;
-                        PlayerBtn { icon: Icons.timer; isz: 17px; active: root.sleep-min > 0; clicked => { sleeppop.show(); } }
-                        sleeppop := PopupWindow { x: -200px; y: -330px; width: 240px; height: 322px; close-policy: close-on-click-outside;
+                        PlayerBtn { icon: Icons.timer; isz: 17px; active: root.sleep-min != 0; clicked => { sleeppop.show(); } }
+                        sleeppop := PopupWindow { x: -200px; y: -366px; width: 240px; height: 358px; close-policy: close-on-click-outside;
                             Rectangle { width: 100%; height: 100%; border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
                                 drop-shadow-blur: 40px; drop-shadow-color: #000000e6;
                                 VerticalLayout { padding: 14px; spacing: 4px;
                                     Text { text: "Sleep timer"; color: MusicTheme.fg; font-size: 15px; font-weight: 700; }
-                                    for m[i] in [0, 10, 15, 30, 45, 60, 90]: Rectangle { height: 36px; border-radius: 8px;
+                                    for m[i] in [0, 10, 15, 30, 45, 60, 90, -1]: Rectangle { height: 36px; border-radius: 8px;
                                         background: root.sleep-min == m ? #ec489933 : (sm.has-hover ? MusicTheme.surf1 : transparent);
                                         sm := TouchArea { mouse-cursor: pointer; clicked => { root.set-sleep(m); sleeppop.close(); } }
                                         HorizontalLayout { padding-left: 12px; padding-right: 12px;
-                                            Text { text: m == 0 ? "Off" : m + " minutes"; color: root.sleep-min == m ? #ec4899 : MusicTheme.fg2; font-size: 13px; vertical-alignment: center; }
+                                            Text { text: m == 0 ? "Off" : m == -1 ? "After current track" : m + " minutes"; color: root.sleep-min == m ? #ec4899 : MusicTheme.fg2; font-size: 13px; vertical-alignment: center; }
                                             Rectangle { horizontal-stretch: 1; }
                                             if root.sleep-min == m: AppIcon { source: Icons.check; tint: #ec4899; width: 13px; height: 13px; } } } } } } } }
                     VerticalLayout { alignment: center; PlayerBtn { icon: Icons.pip; isz: 17px; active: root.mini-active; clicked => { root.open-mini(); } } }
@@ -4909,82 +5030,139 @@ export component MusicPage inherits Rectangle {
                     VerticalLayout { alignment: center; Text { text: "Music settings"; color: MusicTheme.fg; font-size: 22px; font-weight: 800; } }
                     Rectangle { horizontal-stretch: 1; } } }
             ScrollView { vertical-stretch: 1;
-                VerticalLayout { padding: 36px; spacing: 26px; alignment: start;
-                    // Output.
-                    VerticalLayout { spacing: 12px;
-                        Text { text: "OUTPUT"; color: #ec4899; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
-                        Text { text: "Device"; color: MusicTheme.fg; font-size: 14px; font-weight: 600; }
-                        HorizontalLayout { alignment: start;
-                            VerticalLayout { width: 360px; ComboBox { model: root.devices; current-value: root.device; selected(v) => { root.set-device(v); } } } }
-                        BrowseChip { icon: root.exclusive ? Icons.square-check : Icons.square; label: root.exclusive ? "Exclusive / bit-perfect output" : "Exclusive / bit-perfect output"; clicked => { root.toggle-exclusive(); } }
-                    }
-                    Rectangle { height: 1px; background: MusicTheme.surf1; }
-                    // Playback.
-                    VerticalLayout { spacing: 12px;
-                        Text { text: "PLAYBACK"; color: #ec4899; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
-                        HorizontalLayout { spacing: 8px; alignment: start;
-                            BrowseChip { icon: root.gapless ? Icons.square-check : Icons.square; label: root.gapless ? "Gapless" : "Gapless"; clicked => { root.toggle-gapless(); } } }
-                        HorizontalLayout { spacing: 12px;
-                            VerticalLayout { alignment: center; Text { text: "Crossfade  " + root.crossfade + "s"; color: MusicTheme.fg3; font-size: 13px; width: 130px; } }
-                            VerticalLayout { alignment: center; Rectangle { width: 240px; height: 28px;
-                                Scrubber { y: (parent.height - self.height)/2; width: 240px; value: root.crossfade; maximum: 12.0; fill-color: #ec4899; changed(v) => { root.set-crossfade(v); } } } } }
-                        Text { text: "ReplayGain (volume normalization)"; color: MusicTheme.fg-dim; font-size: 12px; }
-                        HorizontalLayout { spacing: 8px; alignment: start;
-                            for p[i] in ["off", "track", "album"]: BrowseChip { on: p == root.replaygain; label: p; clicked => { root.set-replaygain(p); } }
-                            // np.p5.music.replaygain — compute gains for untagged files
-                            // (ffmpeg ebur128 loudness scan, progress-fill like Lyrics).
-                            Rectangle { width: 130px; height: 30px; border-radius: 15px; clip: true;
-                                background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
-                                Rectangle { x: 0; width: parent.width * Math.clamp(root.rg-scan-progress, 0, 1); height: 100%;
-                                    background: @linear-gradient(90deg, #ec4899, #8b5cf6); animate width { duration: 200ms; } }
-                                TouchArea { mouse-cursor: pointer; clicked => { root.rg-scan(); } }
-                                Text { text: root.rg-scan-status != "" ? root.rg-scan-status : "Scan gains";
-                                    color: root.rg-scan-progress > 0.5 ? #ffffff : MusicTheme.fg; font-size: 11px; font-weight: 600;
-                                    horizontal-alignment: center; vertical-alignment: center; } } }
-                    }
-                    Rectangle { height: 1px; background: MusicTheme.surf1; }
-                    // Sleep timer default.
-                    VerticalLayout { spacing: 12px;
-                        Text { text: "SLEEP TIMER"; color: #ec4899; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
-                        HorizontalLayout { spacing: 8px; alignment: start;
-                            for m[i] in [0, 10, 15, 30, 45, 60, 90]: BrowseChip {
-                                on: root.sleep-min == m; label: m == 0 ? "Off" : m + "m";
-                                clicked => { root.set-sleep(m); } } }
-                    }
-                    Rectangle { height: 1px; background: MusicTheme.surf1; }
-                    // Current track.
-                    VerticalLayout { spacing: 12px;
-                        Text { text: "CURRENT TRACK"; color: #ec4899; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
-                        HorizontalLayout { spacing: 8px; alignment: start;
-                            BrowseChip { icon: Icons.pencil; label: "Edit tags"; clicked => { root.tag-edit(); root.music-settings-open = false; } }
-                            BrowseChip { icon: Icons.sparkles; label: "Instant mix (auto-DJ)"; clicked => { root.instant-mix(); root.music-settings-open = false; } } }
-                    }
-                    Rectangle { height: 1px; background: MusicTheme.surf1; }
-                    // Home dashboard.
-                    VerticalLayout { spacing: 12px;
-                        Text { text: "HOME"; color: #ec4899; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
-                        BrowseChip { icon: root.home-connect ? Icons.square-check : Icons.square; label: root.home-connect ? "Gradient outline connecting the home blocks" : "Gradient outline connecting the home blocks"; clicked => { root.toggle-home-connect(); } }
-                        BrowseChip { icon: root.yt-home-connect ? Icons.square-check : Icons.square; label: "Gradient outline on the YouTube home rails"; clicked => { root.toggle-yt-home-connect(); } }
-                        BrowseChip { icon: root.mini-outline ? Icons.square-check : Icons.square; label: "Bold gradient outline on the mini players"; clicked => { root.toggle-mini-outline(); } }
-                    }
-                    Rectangle { height: 1px; background: MusicTheme.surf1; }
-                    // Connect.
-                    VerticalLayout { spacing: 12px;
-                        Text { text: "CONNECT"; color: #ec4899; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
-                        BrowseChip { icon: root.scrobble-on ? Icons.square-check : Icons.square; label: root.scrobble-on ? "Scrobble (Last.fm / ListenBrainz)" : "Scrobble (Last.fm / ListenBrainz)"; clicked => { root.toggle-scrobble(); } }
-                        // np.p5.music.scrobble — Last.fm signed session-key auth flow.
-                        // Step 1 fetches a token + opens the authorize page; step 2
-                        // trades the approved token for a session key (keychain).
-                        HorizontalLayout { spacing: 8px; alignment: start;
-                            BrowseChip { label: root.lastfm-stage == "pending" ? "Finish Last.fm connect" : "Connect Last.fm…";
-                                clicked => { root.lastfm-connect(); } } }
-                        if root.lastfm-status != "": Text { text: root.lastfm-status; color: MusicTheme.fg-mute; font-size: 12px; }
-                        HorizontalLayout { spacing: 8px; alignment: start;
-                            BrowseChip { icon: Icons.refresh-cw; label: "Scan for cast devices"; clicked => { root.scan-cast(); } }
-                            for c[i] in root.cast-devices: BrowseChip { on: c == root.cast-target; label: c; clicked => { root.set-cast(c); } } }
-                        if root.cast-devices.length == 0: Text { text: "No DLNA renderers found yet — scan looks for LAN MediaRenderers."; color: MusicTheme.fg-mute; font-size: 12px; }
-                        if root.cast-status != "": Text { text: root.cast-status; color: MusicTheme.fg-mute; font-size: 12px; }
-                    }
+                // Card layout (np.b3.music.settings-cards): a centered, capped
+                // column — nothing stretches across the whole window. Two
+                // groups: section-wide cards, then one accent card per tab.
+                VerticalLayout { padding-top: 26px; padding-bottom: 44px; alignment: start;
+                    HorizontalLayout { alignment: center;
+                        VerticalLayout { spacing: 14px; alignment: start;
+                            width: Math.min(root.width - 56px, 960px);
+
+                            // ── Section-wide ─────────────────────────────
+                            Text { text: "EVERYWHERE IN MUSIC"; color: #ec4899; font-size: 12px; font-weight: 800; letter-spacing: 1.2px; }
+                            SetHint { text: "Sound and casting — these apply across all five tabs."; }
+                            HorizontalLayout { spacing: 14px;
+                                // Output.
+                                SetCard { horizontal-stretch: 1; icon: Icons.volume; tint: #ec4899;
+                                    title: "Output"; sub: "Where the sound goes";
+                                    VerticalLayout { spacing: 6px;
+                                        SetHint { text: "Device"; }
+                                        ComboBox { model: root.devices; current-value: root.device; selected(v) => { root.set-device(v); } } }
+                                    SetToggle { label: "Exclusive / bit-perfect output"; on: root.exclusive; clicked => { root.toggle-exclusive(); } }
+                                    VerticalLayout { spacing: 6px;
+                                        SetHint { text: "Headphone EQ — AutoEq correction for your model"; }
+                                        HorizontalLayout { spacing: 8px;
+                                            Rectangle { horizontal-stretch: 1; height: 32px; border-radius: 9px; background: MusicTheme.surf0;
+                                                border-width: 1px; border-color: hpq.has-focus ? #ec4899 : MusicTheme.line; clip: true;
+                                                HorizontalLayout { padding-left: 12px; padding-right: 12px;
+                                                    hpq := TextInput { color: MusicTheme.fg; font-size: 13px; vertical-alignment: center; single-line: true;
+                                                        accepted => { root.hp-match(self.text); } } }
+                                                if hpq.text == "": Text { text: "Headphone model (blank = match device)"; color: MusicTheme.fg-mute;
+                                                    font-size: 12px; x: 12px; width: parent.width - 24px; overflow: elide; height: 100%; vertical-alignment: center; visible: !hpq.has-focus; } }
+                                            SetChip { label: "Match"; clicked => { root.hp-match(hpq.text); } }
+                                            SetChip { label: "Off"; clicked => { root.hp-off(); } } }
+                                        if root.hp-status != "": SetHint { text: root.hp-status; } } }
+                                // Playback.
+                                SetCard { horizontal-stretch: 1; icon: Icons.sliders; tint: #8b5cf6;
+                                    title: "Playback"; sub: "Transitions and loudness";
+                                    SetToggle { label: "Gapless playback"; on: root.gapless; tint: #8b5cf6; clicked => { root.toggle-gapless(); } }
+                                    SetToggle { label: "Karaoke — reduce centre vocals"; on: root.karaoke-on; tint: #8b5cf6; clicked => { root.toggle-karaoke(); } }
+                                    SetSlider { label: "Fade tracks into each other"; value-label: root.crossfade + "s";
+                                        value: root.crossfade; maximum: 12.0; fill: #ec4899; changed(v) => { root.set-crossfade(v); } }
+                                    SetSlider { label: "Preamp"; value-label: root.preamp-db + " dB";
+                                        value: root.preamp-db + 12; maximum: 24.0; fill: #8b5cf6; changed(v) => { root.set-preamp(Math.round(v - 12)); } }
+                                    VerticalLayout { spacing: 6px;
+                                        SetHint { text: "ReplayGain — plays every track at the same loudness"; }
+                                        HorizontalLayout { spacing: 8px; alignment: start;
+                                            for p[i] in ["off", "track", "album"]: SetChip { on: p == root.replaygain; tint: #8b5cf6; label: p; clicked => { root.set-replaygain(p); } }
+                                            // Gain scan for untagged files (ffmpeg ebur128), progress fills the pill.
+                                            Rectangle { width: 116px; height: 32px; border-radius: 16px; clip: true;
+                                                background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                                                Rectangle { x: 0; width: parent.width * Math.clamp(root.rg-scan-progress, 0, 1); height: 100%;
+                                                    background: @linear-gradient(90deg, #ec4899, #8b5cf6); animate width { duration: 200ms; } }
+                                                TouchArea { mouse-cursor: pointer; clicked => { root.rg-scan(); } }
+                                                Text { text: root.rg-scan-status != "" ? root.rg-scan-status : "Scan gains";
+                                                    color: root.rg-scan-progress > 0.5 ? #ffffff : MusicTheme.fg; font-size: 11px; font-weight: 600;
+                                                    width: parent.width - 12px; x: 6px; overflow: elide;
+                                                    horizontal-alignment: center; vertical-alignment: center; } } } } } }
+                            HorizontalLayout { spacing: 14px;
+                                // Casting.
+                                SetCard { horizontal-stretch: 1; icon: Icons.tv; tint: #14b8a6;
+                                    title: "Casting"; sub: "Send the current track to a LAN renderer";
+                                    HorizontalLayout { alignment: start;
+                                        SetChip { icon: Icons.refresh-cw; tint: #14b8a6; label: "Scan for devices"; clicked => { root.scan-cast(); } } }
+                                    for c[i] in root.cast-devices: SetChip { horizontal-stretch: 1; on: c == root.cast-target; tint: #14b8a6; label: c; clicked => { root.set-cast(c); } }
+                                    if root.cast-devices.length == 0: SetHint { text: "No DLNA renderers found yet — scan looks for LAN MediaRenderers."; }
+                                    // Live cast session transport (np.b2.music.cast-v2).
+                                    if root.cast-active: HorizontalLayout { spacing: 8px; alignment: start;
+                                        SetChip { icon: root.cast-paused ? Icons.play : Icons.pause; tint: #14b8a6; label: root.cast-paused ? "Resume" : "Pause"; clicked => { root.cast-pause(); } }
+                                        SetChip { icon: Icons.square; tint: #14b8a6; label: "Stop casting"; clicked => { root.cast-stop(); } } }
+                                    if root.cast-status != "": SetHint { text: root.cast-status; } }
+                                // Appearance.
+                                SetCard { horizontal-stretch: 1; icon: Icons.sparkles; tint: #f59e0b;
+                                    title: "Appearance"; sub: "Little touches across the section";
+                                    SetToggle { label: "Bold gradient outline on the mini players"; on: root.mini-outline; tint: #f59e0b; clicked => { root.toggle-mini-outline(); } }
+                                    SetHint { text: "Theme (light / dark / OLED) cycles from the moon button on the player bar."; } } }
+
+                            // ── Per tab ──────────────────────────────────
+                            Rectangle { height: 10px; }
+                            Text { text: "PER TAB"; color: #ec4899; font-size: 12px; font-weight: 800; letter-spacing: 1.2px; }
+                            SetHint { text: "Each card matches a tab in the bar above."; }
+                            HorizontalLayout { spacing: 14px;
+                                // My Music.
+                                SetCard { horizontal-stretch: 1; accent: true; icon: Icons.music;
+                                    tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e);
+                                    title: "My Music"; sub: "Your library and scrobbling";
+                                    HorizontalLayout { spacing: 8px; alignment: start;
+                                        SetChip { icon: Icons.pencil; label: "Edit tags"; clicked => { root.tag-edit(); root.music-settings-open = false; } }
+                                        SetChip { icon: Icons.sparkles; label: "Instant mix (auto-DJ)"; clicked => { root.instant-mix(); root.music-settings-open = false; } } }
+                                    SetToggle { label: "Scrobble (Last.fm / ListenBrainz)"; on: root.scrobble-on; clicked => { root.toggle-scrobble(); } }
+                                    // np.p5.music.scrobble — Last.fm signed session-key auth flow.
+                                    HorizontalLayout { alignment: start;
+                                        SetChip { label: root.lastfm-stage == "pending" ? "Finish Last.fm connect" : "Connect Last.fm…"; clicked => { root.lastfm-connect(); } } }
+                                    if root.lastfm-status != "": SetHint { text: root.lastfm-status; }
+                                    SetToggle { label: "Gradient outline connecting the Home blocks"; on: root.home-connect; clicked => { root.toggle-home-connect(); } }
+                                    // Sonic Similar index (np.p4.music.embeddings) — analyzes
+                                    // every track once so "Sonic similar" can rank the library.
+                                    HorizontalLayout { alignment: start;
+                                        SetChip { icon: Icons.waveform; label: "Build sonic index"; clicked => { root.sonic-index(); } } }
+                                    if root.sonic-status != "": SetHint { text: root.sonic-status; } }
+                                // Podcasts.
+                                SetCard { horizontal-stretch: 1; accent: true; icon: Icons.mic;
+                                    tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1);
+                                    title: "Podcasts"; sub: "Move subscriptions in and out";
+                                    HorizontalLayout { spacing: 8px; alignment: start;
+                                        SetChip { icon: Icons.download; tint: #8b5cf6; label: "Import OPML"; clicked => { root.podcast-opml-import(); } }
+                                        SetChip { icon: Icons.upload; tint: #8b5cf6; label: "Export OPML"; clicked => { root.podcast-opml-export(); } } }
+                                    SetHint { text: "OPML is the standard subscription list — it moves your shows between podcast apps."; } } }
+                            HorizontalLayout { spacing: 14px;
+                                // Audiobooks.
+                                SetCard { horizontal-stretch: 1; accent: true; icon: Icons.book-open;
+                                    tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4);
+                                    title: "Audiobooks"; sub: "For late-night chapters";
+                                    VerticalLayout { spacing: 6px;
+                                        SetHint { text: "Sleep timer — stops any playback after"; }
+                                        HorizontalLayout { spacing: 7px; alignment: start;
+                                            for m[i] in [0, 10, 15, 30, 45, 60, 90]: SetChip {
+                                                on: root.sleep-min == m; tint: #3b82f6; label: m == 0 ? "Off" : m + "m";
+                                                clicked => { root.set-sleep(m); } } } }
+                                    SetHint { text: "Chapters resume where you stopped; End of track mode lives on the timer itself."; } }
+                                // Radio.
+                                SetCard { horizontal-stretch: 1; accent: true; icon: Icons.radio;
+                                    tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e);
+                                    title: "Radio"; sub: "Live stations";
+                                    HorizontalLayout { alignment: start;
+                                        SetChip { icon: Icons.refresh-cw; tint: #14b8a6; label: "Clear recently played"; clicked => { root.radio-clear-recent(); } } }
+                                    SetHint { text: "Removes the stations under Recent — favorites stay put."; } } }
+                            HorizontalLayout { spacing: 14px;
+                                // YouTube.
+                                SetCard { horizontal-stretch: 1; accent: true; icon: Icons.play;
+                                    tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b);
+                                    title: "YouTube"; sub: "Home rails";
+                                    SetToggle { label: "Gradient outline on the Home rails"; on: root.yt-home-connect; tint: #ef4444; clicked => { root.toggle-yt-home-connect(); } }
+                                    SetHint { text: "The Piped instance and download folder live in the app-wide Settings page."; } }
+                                Rectangle { horizontal-stretch: 1; } }
+                        } }
                 }
             }
         }
@@ -5115,6 +5293,11 @@ export component MusicPage inherits Rectangle {
                         TagField { label: "Title";       text <=> root.tag-title; }
                         TagField { label: "Song artist"; text <=> root.tag-artist; }
                         TagField { label: "Album";       text <=> root.tag-album; }
+                        TagField { label: "Album artist (compilations / various-artist albums)"; text <=> root.tag-album-artist; }
+                        HorizontalLayout { spacing: 10px;
+                            TagField { label: "Track #"; text <=> root.tag-track; }
+                            TagField { label: "Disc #";  text <=> root.tag-disc; }
+                        }
                         TagField { label: "Credits (writer · singer · producer)"; text <=> root.tag-credits; }
                         // Genre — dropdown of distinct library genres.
                         VerticalLayout { spacing: 4px;
@@ -5272,7 +5455,7 @@ export component MusicPage inherits Rectangle {
         Rectangle {
             x: Math.min(root.trk-ctx-x, root.width - self.width - 8px);
             y: Math.min(root.trk-ctx-y, root.height - self.height - 8px);
-            width: 256px; height: 248px; border-radius: 12px; background: MusicTheme.surf-pop;
+            width: 256px; height: 350px; border-radius: 12px; background: MusicTheme.surf-pop;
             border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: 36px; drop-shadow-color: #000000e6;
             VerticalLayout { padding: 6px; spacing: 1px;
                 MusicMenuRow { icon: Icons.play; label: "Play"; clicked => { root.trk-ctx-open = false; root.detail-play-track(root.trk-ctx-idx); } }
@@ -5282,6 +5465,10 @@ export component MusicPage inherits Rectangle {
                 Rectangle { height: 7px; Rectangle { y: 3px; height: 1px; background: MusicTheme.line; } }
                 MusicMenuRow { icon: Icons.info; label: "Properties"; clicked => { root.trk-ctx-open = false; root.song-properties(root.trk-ctx-idx); } }
                 MusicMenuRow { icon: Icons.pencil; label: "Edit media info for library"; clicked => { root.trk-ctx-open = false; root.song-edit-media(root.trk-ctx-idx); } }
+                MusicMenuRow { icon: Icons.waveform; label: "Analyze BPM · key · dynamics"; clicked => { root.trk-ctx-open = false; root.song-analyze(root.trk-ctx-idx); } }
+                MusicMenuRow { icon: Icons.sparkles; label: "Sonic similar — queue tracks that sound like this"; clicked => { root.trk-ctx-open = false; root.song-sonic(root.trk-ctx-idx); } }
+                MusicMenuRow { icon: Icons.play; label: "Play music video"; clicked => { root.trk-ctx-open = false; root.song-play-video(root.trk-ctx-idx); } }
+                MusicMenuRow { icon: Icons.pencil; label: "Link music video…"; clicked => { root.trk-ctx-open = false; root.song-link-video(root.trk-ctx-idx); } }
                 MusicMenuRow { icon: Icons.trash; label: "Delete song (from system)"; txt: #ef4444; clicked => { root.trk-ctx-open = false; root.del-confirm-idx = root.trk-ctx-idx; root.del-confirm-open = true; } }
             }
         }
@@ -5315,6 +5502,7 @@ export component MusicPage inherits Rectangle {
                     { k: "Genre",    v: root.props-genre },
                     { k: "Released", v: root.props-release },
                     { k: "Credits",  v: root.props-credits },
+                    { k: "Analysis", v: root.props-analysis },
                     { k: "Duration", v: root.props-duration },
                     { k: "Format",   v: root.props-format },
                     { k: "Size",     v: root.props-size },
@@ -5388,6 +5576,16 @@ export component MusicPage inherits Rectangle {
                             border-radius: 4px; background: @linear-gradient(90deg, #8b5cf6, #6366f1); animate width { duration: 120ms; } } }
                     Text { text: root.podcast-add-status == "" ? "Fetching episodes…" : root.podcast-add-status; color: MusicTheme.fg-mute; font-size: 11px; } }
                 HorizontalLayout { spacing: 10px; alignment: end;
+                    // OPML import/export — bring subscriptions from other apps / take them out.
+                    Rectangle { width: 116px; height: 40px; border-radius: 20px; background: opi.has-hover ? MusicTheme.hov2 : MusicTheme.surf1;
+                        border-width: 1px; border-color: MusicTheme.line;
+                        opi := TouchArea { mouse-cursor: pointer; clicked => { if (!root.podcast-add-busy) { root.podcast-opml-import(); } } }
+                        Text { text: "Import OPML"; color: MusicTheme.fg; font-size: 12px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                    Rectangle { width: 116px; height: 40px; border-radius: 20px; background: ope.has-hover ? MusicTheme.hov2 : MusicTheme.surf1;
+                        border-width: 1px; border-color: MusicTheme.line;
+                        ope := TouchArea { mouse-cursor: pointer; clicked => { if (!root.podcast-add-busy) { root.podcast-opml-export(); } } }
+                        Text { text: "Export OPML"; color: MusicTheme.fg; font-size: 12px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
+                    Rectangle { horizontal-stretch: 1; }
                     Rectangle { width: 100px; height: 40px; border-radius: 20px; background: cnb.has-hover ? MusicTheme.hov2 : MusicTheme.surf1;
                         border-width: 1px; border-color: MusicTheme.line;
                         cnb := TouchArea { mouse-cursor: pointer; clicked => { if (!root.podcast-add-busy) { root.podcast-add-open = false; } } }

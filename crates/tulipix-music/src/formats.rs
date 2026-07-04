@@ -24,6 +24,12 @@ pub const FORMATS: &[FormatInfo] = &[
     FormatInfo { ext: "aiff", lossless: true,  gapless_verified: true,  note: "PCM" },
     FormatInfo { ext: "dsf",  lossless: true,  gapless_verified: false, note: "DSD via DoP" },
     FormatInfo { ext: "dff",  lossless: true,  gapless_verified: false, note: "DSD via DoP" },
+    FormatInfo { ext: "wv",   lossless: true,  gapless_verified: false, note: "WavPack" },
+    FormatInfo { ext: "ape",  lossless: true,  gapless_verified: false, note: "Monkey's Audio" },
+    FormatInfo { ext: "wma",  lossless: false, gapless_verified: false, note: "legacy Windows Media" },
+    FormatInfo { ext: "mka",  lossless: false, gapless_verified: false, note: "Matroska audio, codec varies" },
+    FormatInfo { ext: "mpc",  lossless: false, gapless_verified: false, note: "Musepack" },
+    FormatInfo { ext: "tta",  lossless: true,  gapless_verified: false, note: "True Audio" },
 ];
 
 pub fn lookup(ext: &str) -> Option<&'static FormatInfo> {
