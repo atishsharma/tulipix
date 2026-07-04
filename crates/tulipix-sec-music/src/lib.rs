@@ -8,6 +8,8 @@
 
 #![allow(clippy::too_many_arguments)]
 
+pub mod analysis;
+
 use std::sync::OnceLock;
 use std::path::PathBuf;
 use anyhow::Result;
@@ -38,6 +40,7 @@ pub fn music_full() -> &'static std::sync::Mutex<Vec<(String, PathBuf, PathBuf)>
 /// model, which drops every track under a folder assigned to a non-"My Music"
 /// section — audiobooks live in their own tab, not in the song grid.
 pub fn rebuild_music_tiles(w: &MainWindow) {
+    shuffle_reset(); // playback indices shift with the tiles — stale order dies here
     let full = music_full().lock().map(|g| g.clone()).unwrap_or_default();
     let sections = load_folder_sections();
     let excluded: Vec<PathBuf> = sections.iter()
@@ -525,16 +528,16 @@ static FAV_IDS: std::sync::OnceLock<std::sync::Mutex<Vec<i64>>> = std::sync::Onc
 pub fn fav_ids() -> &'static std::sync::Mutex<Vec<i64>> {
     FAV_IDS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
-/// Filter item_ids by the current search query (title/artist substring),
+/// Filter item_ids by the current search query (title/artist/album substring),
 /// resolving each via the cached `music_songs` metadata. Empty query = all.
 pub fn filter_ids_by_query(ids: &[i64]) -> Vec<i64> {
     let q = music_query_filter().lock().map(|s| s.trim().to_lowercase()).unwrap_or_default();
     if q.is_empty() { return ids.to_vec(); }
-    let by_id: std::collections::HashMap<i64, (String, String)> = music_songs().lock()
-        .map(|g| g.iter().map(|s| (s.item_id, (s.title.to_lowercase(), s.artist.to_lowercase()))).collect())
+    let by_id: std::collections::HashMap<i64, (String, String, String)> = music_songs().lock()
+        .map(|g| g.iter().map(|s| (s.item_id, (s.title.to_lowercase(), s.artist.to_lowercase(), s.album.to_lowercase()))).collect())
         .unwrap_or_default();
     ids.iter().copied().filter(|id| by_id.get(id)
-        .map(|(t, a)| t.contains(&q) || a.contains(&q)).unwrap_or(false)).collect()
+        .map(|(t, a, al)| t.contains(&q) || a.contains(&q) || al.contains(&q)).unwrap_or(false)).collect()
 }
 /// Publish one 20-track page of favorites + the page count.
 pub fn rebuild_fav_page(w: &MainWindow) {
@@ -1971,6 +1974,7 @@ pub fn play_music_url(w: &MainWindow, url: &str, title: &str) {
     let mut pre_args = vec![format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32)];
     if w.get_music_muted() { pre_args.push("--mute=yes".into()); }
     pre_args.push(format!("--af={}", music_full_af(&music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10])))));
+    pre_args.extend(music_device_args());
     let weak = w.as_weak();
     let on_prop = move |name: &str, data: &serde_json::Value| {
         let name = name.to_string();
@@ -2341,6 +2345,7 @@ pub fn play_radio(w: &MainWindow, st: &tulipix_music::radio::Station) {
     let mut pre_args = vec![format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32)];
     if w.get_music_muted() { pre_args.push("--mute=yes".into()); }
     pre_args.push(format!("--af={}", music_full_af(&music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10])))));
+    pre_args.extend(music_device_args());
     // Live cushion: buffer ~10s before starting so transient network dips eat
     // the cache instead of stuttering (we run ~10s behind the live edge).
     pre_args.extend([
@@ -2628,6 +2633,9 @@ pub fn prefill_tag_editor(weak: &slint::Weak<MainWindow>, id: i64) {
         let row: Option<(Option<String>, Option<String>, Option<String>, Option<String>, i64)> = sqlx::query_as(
             "SELECT release_date, genre, album_artist, credits, COALESCE(user_locked,0) FROM track_meta WHERE item_id = ?")
             .bind(id).fetch_optional(&pool).await.ok().flatten();
+        let nums: Option<(Option<i64>, Option<i64>)> = sqlx::query_as(
+            "SELECT track_no, disc_no FROM track_meta WHERE item_id = ?")
+            .bind(id).fetch_optional(&pool).await.ok().flatten();
         let opts: Vec<String> = sqlx::query_scalar(
             "SELECT DISTINCT genre FROM track_meta WHERE genre IS NOT NULL AND genre != '' ORDER BY genre")
             .fetch_all(&pool).await.unwrap_or_default();
@@ -2638,6 +2646,10 @@ pub fn prefill_tag_editor(weak: &slint::Weak<MainWindow>, id: i64) {
                 if let Some(aa) = aa { w.set_music_tag_album_artist(aa.into()); }
                 if let Some(cr) = cr { w.set_music_tag_credits(cr.into()); }
                 w.set_music_tag_locked(lk != 0);
+            }
+            if let Some((tn, dn)) = nums {
+                w.set_music_tag_track(tn.map(|n| n.to_string()).unwrap_or_default().into());
+                w.set_music_tag_disc(dn.map(|n| n.to_string()).unwrap_or_default().into());
             }
             let opts: Vec<slint::SharedString> = opts.into_iter().map(|s| s.into()).collect();
             w.set_music_genre_options(slint::ModelRc::new(slint::VecModel::from(opts)));
@@ -2663,6 +2675,16 @@ pub fn update_lyrics_active(w: &MainWindow) {
 
 /// mpv `--key=value` args for the persisted audio config (device / exclusive /
 /// gapless / replaygain). Applied at launch in `play_music_at`.
+/// Output-device flags (device + exclusive) shared by every audio spawn path —
+/// streams (radio / podcasts / YT audio) honour the chosen output device too,
+/// not just library playback.
+pub fn music_device_args() -> Vec<String> {
+    let s = tulipix_core::settings::Settings::load().unwrap_or_default();
+    let device = s.advanced.get("music.device").cloned().unwrap_or_else(|| "auto".into());
+    let exclusive = s.advanced.get("music.exclusive").map(|v| v == "1").unwrap_or(false);
+    tulipix_music::output_device::device_options(&device, exclusive)
+}
+
 pub fn music_audio_args(s: &tulipix_core::settings::Settings) -> Vec<String> {
     use tulipix_music::player::{AudioConfig, ReplayGainMode};
     let cfg = AudioConfig {
@@ -2673,7 +2695,7 @@ pub fn music_audio_args(s: &tulipix_core::settings::Settings) -> Vec<String> {
             Some("album") => ReplayGainMode::Album,
             _ => ReplayGainMode::Off,
         },
-        preamp_db: 0.0,
+        preamp_db: s.advanced.get("music.preamp").and_then(|v| v.parse::<f64>().ok()).unwrap_or(0.0).clamp(-12.0, 12.0),
     };
     let mut args = cfg.mpv_options();
     let device = s.advanced.get("music.device").cloned().unwrap_or_else(|| "auto".into());
@@ -3161,12 +3183,13 @@ pub fn sort_music_songs(sort: &str, dir: &str) {
 pub fn rebuild_music_songs_page(w: &MainWindow) {
     let g = match music_songs().lock() { Ok(g) => g, Err(_) => return };
     let q = music_query_filter().lock().map(|s| s.to_lowercase()).unwrap_or_default();
-    // Filter by the search box (title/artist substring) before paginating.
+    // Filter by the search box (title/artist/album substring) before paginating.
     // Audiobook-flagged tracks are excluded — they live in the Audiobooks
     // section, not the My Music Songs list (np.p5.music.audiobook-detect).
     let view: Vec<&SongMeta> = g.iter().filter(|s| {
         !s.is_audiobook
-            && (q.is_empty() || s.title.to_lowercase().contains(&q) || s.artist.to_lowercase().contains(&q))
+            && (q.is_empty() || s.title.to_lowercase().contains(&q) || s.artist.to_lowercase().contains(&q)
+                || s.album.to_lowercase().contains(&q))
     }).collect();
     let total = view.len();
     // Smaller pages while searching so songs stay above the artists/albums rows.
@@ -3251,7 +3274,18 @@ pub fn ffprobe_tags(path: &std::path::Path) -> tulipix_music::tags::TrackTags {
 /// ffmpeg (np.p5.music.tag-editor). Stream-copies to a sibling temp file, then
 /// atomically renames over the original — so a decode failure leaves the source
 /// untouched. Empty fields are left as-is on the file.
-pub fn write_audio_tags(path: &str, title: &str, artist: &str, album: &str) {
+pub struct FileTags<'a> {
+    pub title: &'a str,
+    pub artist: &'a str,
+    pub album: &'a str,
+    pub album_artist: &'a str,
+    pub genre: &'a str,
+    pub date: &'a str,
+    pub track_no: Option<i64>,
+    pub disc_no: Option<i64>,
+}
+
+pub fn write_audio_tags(path: &str, tags: &FileTags) {
     let src = std::path::Path::new(path);
     let Some(ext) = src.extension().and_then(|e| e.to_str()) else { return; };
     let tmp = src.with_extension(format!("tulipix-tmp.{ext}"));
@@ -3260,9 +3294,14 @@ pub fn write_audio_tags(path: &str, title: &str, artist: &str, album: &str) {
     cmd.no_window();
     cmd.arg("-v").arg("error").arg("-y").arg("-i").arg(src)
         .arg("-map_metadata").arg("0").arg("-c").arg("copy");
-    if !title.is_empty()  { cmd.arg("-metadata").arg(format!("title={title}")); }
-    if !artist.is_empty() { cmd.arg("-metadata").arg(format!("artist={artist}")); }
-    if !album.is_empty()  { cmd.arg("-metadata").arg(format!("album={album}")); }
+    for (key, val) in [
+        ("title", tags.title), ("artist", tags.artist), ("album", tags.album),
+        ("album_artist", tags.album_artist), ("genre", tags.genre), ("date", tags.date),
+    ] {
+        if !val.is_empty() { cmd.arg("-metadata").arg(format!("{key}={val}")); }
+    }
+    if let Some(n) = tags.track_no { cmd.arg("-metadata").arg(format!("track={n}")); }
+    if let Some(n) = tags.disc_no  { cmd.arg("-metadata").arg(format!("disc={n}")); }
     cmd.arg(&tmp);
     match cmd.status() {
         Ok(st) if st.success() && tmp.exists() && std::fs::metadata(&tmp).map(|m| m.len() > 0).unwrap_or(false) => {
@@ -3578,8 +3617,41 @@ pub fn populate_music_views(weak: slint::Weak<MainWindow>) {
             sort_music_songs(&w.get_music_song_sort(), &w.get_music_song_dir());
             w.set_music_song_page(0);
             rebuild_music_songs_page(&w);
+
+            // Cold-start resume (np.p5.music.resume): point the transport at the
+            // last-played track; the saved position applies on the next play.
+            if music_warm_once("resume") {
+                if let Some((rid, rpos)) = load_music_pref("music.resume")
+                    .and_then(|v| v.split_once(',').and_then(|(a, b)| Some((a.parse::<i64>().ok()?, b.parse::<f64>().ok()?)))) {
+                    let pos = music_songs().lock().ok()
+                        .and_then(|g| g.iter().find(|s| s.item_id == rid).map(|s| s.pos));
+                    if let Some(p) = pos.filter(|p| *p >= 0) {
+                        w.set_music_np_index(p);
+                        w.set_music_np_total(music_ids().lock().map(|g| g.len() as i32).unwrap_or(0));
+                        if let Ok(mut g) = resume_pending().lock() { *g = Some((rid, rpos)); }
+                    }
+                }
+            }
         });
     });
+}
+
+/// Pending "resume here" request — consumed by the next `play_music_at` spawn
+/// of the matching track (applied as mpv `--start`).
+static RESUME_PENDING: std::sync::OnceLock<std::sync::Mutex<Option<(i64, f64)>>> = std::sync::OnceLock::new();
+pub fn resume_pending() -> &'static std::sync::Mutex<Option<(i64, f64)>> {
+    RESUME_PENDING.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Throttle stamp for the periodic now-playing position save.
+static RESUME_SAVED_AT: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> = std::sync::OnceLock::new();
+pub fn resume_maybe_save(w: &MainWindow, pos_s: f64) {
+    let stamp = RESUME_SAVED_AT.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(60)));
+    let due = stamp.lock().map(|g| g.elapsed().as_secs() >= 15).unwrap_or(false);
+    if !due || pos_s < 5.0 { return; }
+    let Some(id) = current_music_id(w) else { return; };
+    if let Ok(mut g) = stamp.lock() { *g = std::time::Instant::now(); }
+    save_music_pref("music.resume", &format!("{id},{pos_s:.0}"));
 }
 
 // Single audio player instance — replacing it on each play avoids stacking
@@ -3588,6 +3660,70 @@ pub fn populate_music_views(weak: slint::Weak<MainWindow>) {
 /// Generation counter for the music sleep timer; bumped on each cycle so a
 /// pending timer task knows it was superseded.
 pub static SLEEP_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Volume-fade flags. While any is set, mpv "volume" property-change events
+/// are NOT mirrored into the UI slider — the fades move mpv's volume, the
+/// user's chosen volume stays put and is restored afterwards.
+pub static FADE_TAIL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static FADE_IN: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub static FADE_SLEEP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+pub fn fade_active() -> bool {
+    use std::sync::atomic::Ordering::Relaxed;
+    FADE_TAIL.load(Relaxed) || FADE_IN.load(Relaxed) || FADE_SLEEP.load(Relaxed)
+}
+
+/// Arm (or clear) the sleep timer. `min > 0` = stop after N minutes with a
+/// 10-second volume fade-out at the tail (tulipix_music::sleep_timer's ramp);
+/// `min == -1` = stop when the current track ends; `min == 0` = off.
+pub fn arm_sleep_timer(weak: &slint::Weak<MainWindow>, min: i32) {
+    use std::sync::atomic::Ordering;
+    let Some(w) = weak.upgrade() else { return; };
+    w.set_music_sleep_min(min);
+    let tok = SLEEP_GEN.fetch_add(1, Ordering::SeqCst) + 1; // cancels any prior timer
+    SLEEP_STOP_EOT.store(min == -1, Ordering::SeqCst);
+    if min <= 0 {
+        // Off (or EoT, which needs no task): make sure a mid-fade cancel
+        // doesn't leave the live track quiet.
+        FADE_SLEEP.store(false, Ordering::Relaxed);
+        let vol = w.get_music_volume().clamp(0.0, 130.0);
+        music_ipc(&["set_property", "volume", &format!("{}", vol as i32)]);
+        return;
+    }
+    const FADE_S: f64 = 10.0;
+    let timer = tulipix_music::sleep_timer::SleepTimer {
+        mode: tulipix_music::sleep_timer::SleepMode::Timed { after_s: min as f64 * 60.0, fade_s: FADE_S },
+        armed_at_s: 0.0,
+    };
+    let weak = weak.clone();
+    tokio::runtime::Handle::current().spawn(async move {
+        let t0 = std::time::Instant::now();
+        let head = (min as u64 * 60).saturating_sub(FADE_S as u64);
+        tokio::time::sleep(std::time::Duration::from_secs(head)).await;
+        if SLEEP_GEN.load(Ordering::SeqCst) != tok { return; } // superseded
+        // Snapshot the user's volume once, then ramp it down over the tail.
+        let (txv, rxv) = std::sync::mpsc::channel();
+        let _ = weak.upgrade_in_event_loop(move |w| { let _ = txv.send(w.get_music_volume()); });
+        let base = rxv.recv_timeout(std::time::Duration::from_secs(1)).unwrap_or(100.0).clamp(0.0, 130.0) as f64;
+        FADE_SLEEP.store(true, Ordering::Relaxed);
+        loop {
+            let now = t0.elapsed().as_secs_f64();
+            if SLEEP_GEN.load(Ordering::SeqCst) != tok { FADE_SLEEP.store(false, Ordering::Relaxed); return; }
+            if timer.should_stop(now, false) { break; }
+            let v = base * timer.volume_at(now);
+            music_ipc(&["set_property", "volume", &format!("{}", v as i32)]);
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        }
+        FADE_SLEEP.store(false, Ordering::Relaxed);
+        let _ = weak.upgrade_in_event_loop(|w| {
+            if let Ok(mut g) = music_proc().lock() {
+                if let Some(mut c) = g.take() { let _ = c.kill(); let _ = c.wait(); }
+            }
+            w.set_music_playing(false);
+            w.set_music_sleep_min(0);
+            tracing::info!("music sleep timer fired (faded)");
+        });
+    });
+}
 // MUSIC_SOCK / music_sock / MUSIC_GEN moved to tulipix_common.
 /// Live 10-band equalizer gains (dB), shared by presets + per-band drags.
 static MUSIC_EQ: std::sync::OnceLock<std::sync::Mutex<[f64; 10]>> = std::sync::OnceLock::new();
@@ -3613,11 +3749,129 @@ pub fn music_eq_af(gains: &[f64; 10]) -> String {
 pub static MUSIC_LOUDNESS: std::sync::atomic::AtomicI32 = std::sync::atomic::AtomicI32::new(0);
 /// LUFS → 0..1 envelope (≈ -45 dB silence .. -6 dB loud).
 pub fn loudness_to_amp(lufs: f64) -> f32 { (((lufs + 45.0) / 39.0).clamp(0.0, 1.0)) as f32 }
-/// Append the ebur128 metering filter (labelled `vis`) to the EQ `af` so we can
-/// read real loudness. Empty EQ → just the meter.
+/// Headphone-correction af chunk (AutoEq preset → anequalizer + preamp),
+/// empty when off. Composed into every audio spawn via `music_full_af`.
+static HEADPHONE_AF: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
+pub fn headphone_af() -> &'static std::sync::Mutex<String> {
+    HEADPHONE_AF.get_or_init(|| std::sync::Mutex::new(String::new()))
+}
+
+/// AutoEq ParametricEQ → mpv `af` chunk: one stereo anequalizer with every PK
+/// filter (bandwidth ≈ fc/Q) plus a preamp volume stage so boosts don't clip.
+pub fn hp_af_from_eq(eq: &tulipix_music::headphone_eq::ParametricEq) -> String {
+    if eq.filters.is_empty() { return String::new(); }
+    let entries = eq.filters.iter().map(|f| {
+        let w = (f.fc_hz / f.q.max(0.1)).max(1.0) as u32;
+        let (fc, g) = (f.fc_hz as u32, f.gain_db);
+        format!("c0 f={fc} w={w} g={g:.1}|c1 f={fc} w={w} g={g:.1}")
+    }).collect::<Vec<_>>().join("|");
+    let aneq = format!("anequalizer=params=%{}%{}", entries.len(), entries);
+    if eq.preamp_db.abs() > 0.05 { format!("{aneq},volume={:.1}", eq.preamp_db) } else { aneq }
+}
+
+/// Append the headphone-correction chain + the ebur128 metering filter
+/// (labelled `vis`) to the EQ `af`. Empty EQ → hp + meter (or just the meter).
 pub fn music_full_af(eq_af: &str) -> String {
     const VIS: &str = "@vis:ebur128=metadata=1:video=0";
-    if eq_af.is_empty() { VIS.to_string() } else { format!("{eq_af},{VIS}") }
+    let hp = headphone_af().lock().map(|g| g.clone()).unwrap_or_default();
+    let mut parts: Vec<&str> = Vec::new();
+    if !eq_af.is_empty() { parts.push(eq_af); }
+    if !hp.is_empty() { parts.push(&hp); }
+    parts.push(VIS);
+    parts.join(",")
+}
+
+/// Default AutoEq mirror (overridable via the `api.autoeq` setting).
+pub const AUTOEQ_DEFAULT: &str = "https://raw.githubusercontent.com/jaakkopasanen/AutoEq/master/results";
+
+pub fn autoeq_base() -> String {
+    let s = tulipix_core::settings::Settings::load().unwrap_or_default();
+    s.advanced.get("api.autoeq").cloned().filter(|v| !v.trim().is_empty())
+        .unwrap_or_else(|| AUTOEQ_DEFAULT.to_string())
+        .trim_end_matches('/').to_string()
+}
+
+/// `(name, relpath)` preset index parsed out of AutoEq's INDEX.md — markdown
+/// link lines like `- [Sony WH-1000XM4](./oratory1990/over-ear/Sony WH-1000XM4)`.
+/// Cached on disk for a week; the file is ~1 MB.
+pub fn hp_parse_index(md: &str) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    for line in md.lines() {
+        let Some(s) = line.find("[") else { continue };
+        let Some(m) = line[s..].find("](") else { continue };
+        let name = &line[s + 1..s + m];
+        let rest = &line[s + m + 2..];
+        let Some(e) = rest.find(')') else { continue };
+        let rel = rest[..e].trim_start_matches("./").to_string();
+        if !name.is_empty() && !rel.is_empty() && !rel.starts_with("http") {
+            out.push((name.to_string(), rel));
+        }
+    }
+    out
+}
+
+fn hp_index_cache_path() -> Option<std::path::PathBuf> {
+    tulipix_core::paths::data_dir().map(|d| d.join("autoeq_index.md"))
+}
+
+/// Fetch (or reuse) the AutoEq index; ~7-day disk cache next to the DBs.
+pub async fn hp_index(client: &reqwest::Client) -> Vec<(String, String)> {
+    if let Some(p) = hp_index_cache_path() {
+        let fresh = std::fs::metadata(&p).and_then(|m| m.modified()).ok()
+            .and_then(|t| t.elapsed().ok()).map(|e| e.as_secs() < 7 * 86_400).unwrap_or(false);
+        if fresh {
+            if let Ok(md) = std::fs::read_to_string(&p) { return hp_parse_index(&md); }
+        }
+    }
+    let url = format!("{}/INDEX.md", autoeq_base());
+    let Ok(resp) = client.get(&url)
+        .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
+        .send().await else { return Vec::new(); };
+    let Ok(md) = resp.text().await else { return Vec::new(); };
+    if let Some(p) = hp_index_cache_path() { let _ = std::fs::write(&p, &md); }
+    hp_parse_index(&md)
+}
+
+/// Apply (or clear, with `None`) the headphone preset: fetch the ParametricEQ
+/// file, convert, store, persist, and hot-swap the live mpv `af`.
+pub fn hp_apply(weak: slint::Weak<MainWindow>, preset: Option<(String, String)>) {
+    tokio::runtime::Handle::current().spawn(async move {
+        let status: String;
+        match preset {
+            None => {
+                if let Ok(mut g) = headphone_af().lock() { g.clear(); }
+                save_music_pref("music.hp_preset", "");
+                save_music_pref("music.hp_af", "");
+                status = "Headphone EQ off.".into();
+            }
+            Some((name, rel)) => {
+                let client = reqwest::Client::new();
+                // AutoEq file layout: {rel}/{basename} ParametricEQ.txt
+                let base = rel.rsplit('/').next().unwrap_or(&rel).to_string();
+                let url = format!("{}/{}/{} ParametricEQ.txt", autoeq_base(), rel, base);
+                let txt = match client.get(&url)
+                    .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
+                    .send().await {
+                    Ok(r) if r.status().is_success() => r.text().await.unwrap_or_default(),
+                    _ => String::new(),
+                };
+                let eq = tulipix_music::headphone_eq::parse_autoeq(&txt);
+                if eq.filters.is_empty() {
+                    status = format!("No AutoEq profile found for {name}.");
+                } else {
+                    let af = hp_af_from_eq(&eq);
+                    if let Ok(mut g) = headphone_af().lock() { *g = af.clone(); }
+                    save_music_pref("music.hp_preset", &name);
+                    save_music_pref("music.hp_af", &af);
+                    status = format!("Headphone EQ: {name} ({} filters).", eq.filters.len());
+                }
+            }
+        }
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_music_hp_status(status.into());
+            apply_music_eq(&w); // hot-swap the live af chain
+        });
+    });
 }
 
 /// Apply the current EQ gains to the live track + reflect them in the UI bands.
@@ -3651,7 +3905,22 @@ pub fn populate_eq_customs(w: &MainWindow) {
 /// or a persisted/manual queue), follow it — pop the front and play it; only
 /// fall back to sequential/shuffle/repeat order when the queue is empty
 /// (np.p5.music.instant-mix follow + np.p5.music.queue-persist).
+/// Sleep-timer "stop after current track" flag — armed from the sleep popup,
+/// consumed (one-shot) by the auto-advance paths on natural EOF.
+pub static SLEEP_STOP_EOT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// One-shot check: if the end-of-track sleep timer is armed, stop instead of
+/// advancing. Returns true when playback was stopped.
+pub fn sleep_eot_fired(w: &MainWindow) -> bool {
+    if !SLEEP_STOP_EOT.swap(false, std::sync::atomic::Ordering::SeqCst) { return false; }
+    w.set_music_playing(false);
+    w.set_music_sleep_min(0);
+    tracing::info!("music sleep timer: stopped at track end");
+    true
+}
+
 pub fn advance_music(w: &MainWindow) {
+    if sleep_eot_fired(w) { return; }
     // "Repeat one" always re-plays the current track, ignoring the queue.
     if w.get_music_repeat() == "one" { advance_sequential(w); return; }
     // Shuffle overrides the sequential auto-queue — pick a random next track.
@@ -3676,6 +3945,53 @@ pub fn advance_music(w: &MainWindow) {
     });
 }
 
+/// Shuffle order state: upcoming indices in shuffled order (`bag`, drained one
+/// per advance and refilled with a fresh permutation once empty — every track
+/// plays exactly once per cycle) + the indices we came from (`hist`, so Prev
+/// under shuffle walks the real played order).
+static SHUFFLE_STATE: std::sync::OnceLock<std::sync::Mutex<(Vec<i32>, Vec<i32>)>> = std::sync::OnceLock::new();
+pub fn shuffle_state() -> &'static std::sync::Mutex<(Vec<i32>, Vec<i32>)> {
+    SHUFFLE_STATE.get_or_init(|| std::sync::Mutex::new((Vec::new(), Vec::new())))
+}
+
+/// Next shuffled index. Pushes `cur` onto the history, pops the bag (refilling
+/// it with a Fisher–Yates permutation of the library minus `cur` when empty).
+pub fn shuffle_next(total: i32, cur: i32) -> i32 {
+    let Ok(mut g) = shuffle_state().lock() else { return rand_index(total) };
+    let (bag, hist) = &mut *g;
+    hist.push(cur);
+    if hist.len() > 500 { hist.remove(0); }
+    // A stale bag (library shrank / re-sorted) is rebuilt from scratch.
+    if bag.iter().any(|i| *i >= total) { bag.clear(); }
+    if bag.is_empty() {
+        let mut v: Vec<i32> = (0..total).filter(|i| *i != cur).collect();
+        let mut x = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH).map(|d| d.as_nanos() as u64).unwrap_or(1) | 1;
+        for i in (1..v.len()).rev() {
+            x ^= x << 13; x ^= x >> 7; x ^= x << 17;
+            let j = (x % (i as u64 + 1)) as usize;
+            v.swap(i, j);
+        }
+        *bag = v;
+    }
+    bag.pop().unwrap_or(cur)
+}
+
+/// The previously played index under shuffle (true played order), if any.
+pub fn shuffle_prev_index(total: i32) -> Option<i32> {
+    shuffle_state().lock().ok().and_then(|mut g| {
+        while let Some(i) = g.1.pop() {
+            if i >= 0 && i < total { return Some(i); }
+        }
+        None
+    })
+}
+
+/// Reset shuffle order + history (shuffle toggled, or the library rebuilt).
+pub fn shuffle_reset() {
+    if let Ok(mut g) = shuffle_state().lock() { g.0.clear(); g.1.clear(); }
+}
+
 /// Sequential / shuffle / repeat advance over the library list (the fallback
 /// when no queue is active).
 pub fn advance_sequential(w: &MainWindow) {
@@ -3684,12 +4000,7 @@ pub fn advance_sequential(w: &MainWindow) {
     let idx = w.get_music_np_index();
     let next = match w.get_music_repeat().as_str() {
         "one" => idx,
-        _ if w.get_music_shuffle() && total > 1 => {
-            let mut n = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos()).unwrap_or(0) as i32).rem_euclid(total);
-            if n == idx { n = (n + 1).rem_euclid(total); }
-            n
-        }
+        _ if w.get_music_shuffle() && total > 1 => shuffle_next(total, idx),
         "all" => (idx + 1).rem_euclid(total),
         _ => { // off: stop at the end of the list
             if idx + 1 >= total { w.set_music_playing(false); return; }
@@ -3723,10 +4034,22 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
     // meter (+ EQ) so the visualizer pulses to real loudness, then persisted
     // audio config (device / exclusive / gapless / replaygain).
     let eq_af = music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10]));
-    let mut pre_args = vec![format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32)];
+    let fade_s = w.get_music_crossfade().clamp(0.0, 12.0) as f64;
+    let user_vol = w.get_music_volume().clamp(0.0, 130.0) as f64;
+    // Fade-tracks: launch silent and ramp up below; otherwise start at volume.
+    let mut pre_args = vec![format!("--volume={}", if fade_s > 0.0 { 0 } else { user_vol as i32 })];
     if w.get_music_muted() { pre_args.push("--mute=yes".into()); }
     pre_args.push(format!("--af={}", music_full_af(&eq_af)));
     pre_args.extend(music_audio_args(&s));
+    // Cold-start resume: this exact track was mid-play last session → pick up
+    // where it left off (one-shot; any other track clears the request).
+    let this_id = music_songs().lock().ok()
+        .and_then(|g| g.iter().find(|s| s.pos == idx).map(|s| s.item_id));
+    if let Some((rid, rpos)) = resume_pending().lock().ok().and_then(|mut g| g.take()) {
+        if this_id == Some(rid) && rpos > 5.0 {
+            pre_args.push(format!("--start={rpos:.0}"));
+        }
+    }
 
     // Reader-thread handler — loudness stays in-thread (atomic, no per-frame
     // event-loop hop); everything else drives the now-playing bar.
@@ -3746,11 +4069,32 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
             match name.as_str() {
                 "time-pos" => if let Some(d) = data.as_f64() {
                     w.set_music_pos(d as f32); w.set_music_pos_label(fmt_clock(d).into());
-                    update_lyrics_active(&w); }
+                    update_lyrics_active(&w);
+                    resume_maybe_save(&w, d); // ~15s cadence, np.p5.music.resume
+                    // Fade-tracks tail (np.p5.music.fade-tracks): inside the last
+                    // `crossfade` seconds ramp mpv's volume to zero; the next
+                    // track fades back in, so the transition is smooth even
+                    // with one mpv process per track.
+                    let cf = w.get_music_crossfade() as f64;
+                    let dur = w.get_music_dur() as f64;
+                    if cf > 0.0 && dur > cf {
+                        use std::sync::atomic::Ordering::Relaxed;
+                        let rem = dur - d;
+                        if (0.0..=cf).contains(&rem) {
+                            FADE_TAIL.store(true, Relaxed);
+                            let v = w.get_music_volume().clamp(0.0, 130.0) as f64 * (rem / cf);
+                            music_ipc(&["set_property", "volume", &format!("{}", v as i32)]);
+                        } else if FADE_TAIL.swap(false, Relaxed) {
+                            // Seeked back out of the tail — restore the user volume.
+                            let v = w.get_music_volume().clamp(0.0, 130.0) as i32;
+                            music_ipc(&["set_property", "volume", &v.to_string()]);
+                        }
+                    } }
                 "duration" => if let Some(d) = data.as_f64() {
                     w.set_music_dur(d as f32); w.set_music_dur_label(fmt_clock(d).into()); }
                 "pause"  => if let Some(p) = data.as_bool() { w.set_music_playing(!p); media_set_playing(!p); }
-                "volume" => if let Some(d) = data.as_f64() { w.set_music_volume(d as f32); }
+                "volume" => if let Some(d) = data.as_f64() {
+                    if !fade_active() { w.set_music_volume(d as f32); } }
                 "mute"   => if let Some(m) = data.as_bool() { w.set_music_muted(m); }
                 _ => {}
             }
@@ -3769,6 +4113,27 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
         generation: my_gen,
     }, on_prop, on_eof) {
         tracing::error!(error = %e, "mpv audio launch failed"); return;
+    }
+
+    // Fade-tracks head: ramp 0 → user volume over the configured seconds
+    // (np.p5.music.fade-tracks). Gen-checked so a quick skip cancels the ramp.
+    if fade_s > 0.0 {
+        use std::sync::atomic::Ordering::Relaxed;
+        FADE_TAIL.store(false, Relaxed);
+        FADE_IN.store(true, Relaxed);
+        let fade_gen = my_gen;
+        tokio::runtime::Handle::current().spawn(async move {
+            const STEPS: u32 = 20;
+            let step_ms = ((fade_s * 1000.0) / STEPS as f64) as u64;
+            for i in 1..=STEPS {
+                if MUSIC_GEN.load(std::sync::atomic::Ordering::SeqCst) != fade_gen { FADE_IN.store(false, Relaxed); return; }
+                let v = user_vol * (i as f64 / STEPS as f64);
+                music_ipc(&["set_property", "volume", &format!("{}", v as i32)]);
+                tokio::time::sleep(std::time::Duration::from_millis(step_ms)).await;
+            }
+            music_ipc(&["set_property", "volume", &format!("{}", user_vol as i32)]);
+            FADE_IN.store(false, Relaxed);
+        });
     }
 
     // Untagged-file ReplayGain (np.p5.music.replaygain): mpv only honours RG
@@ -5134,6 +5499,9 @@ pub fn yt_queue_jump(weak: slint::Weak<MainWindow>, forward: bool, shuffle: bool
 /// repeat-all (wrap); repeat-one is handled by mpv `loop-file` so EOF never
 /// fires there. Returns false (→ stop) only at a hard end with repeat off.
 pub fn yt_queue_advance(weak: slint::Weak<MainWindow>) -> bool {
+    if let Some(w) = weak.upgrade() {
+        if sleep_eot_fired(&w) { return false; }
+    }
     let (shuffle, repeat) = weak.upgrade()
         .map(|w| (w.get_music_shuffle(), w.get_music_repeat().to_string()))
         .unwrap_or((false, "off".to_string()));
@@ -5266,6 +5634,7 @@ pub fn yt_play_inapp(w: &MainWindow, id: String, path: String, title: String, su
     if w.get_music_muted() { pre_args.push("--mute=yes".into()); }
     let eq_af = music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10]));
     pre_args.push(format!("--af={}", music_full_af(&eq_af)));
+    pre_args.extend(music_device_args());
     // Property reader → transport UI; on EOF advance the play-queue or stop.
     let weak = w.as_weak();
     let on_prop = move |name: &str, data: &serde_json::Value| {

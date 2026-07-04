@@ -470,10 +470,13 @@ component SettingsPage inherits Rectangle {
                       width: min(540px, root.width - 40px);
                       spacing: 18px; padding-top: 10px; padding-bottom: 24px;
 
+                      // Centre the card vertically when the page is taller.
+                      Rectangle { vertical-stretch: 1; }
+
                       // ── Portfolio card: banner, overlapping avatar, name,
                       // version + project links, avatar picker, save ─────────
                       Rectangle {
-                        height: 574px;
+                        height: 656px;
                         border-radius: 20px; clip: true;
                         background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
                         drop-shadow-blur: 28px; drop-shadow-color: #00000038;
@@ -508,8 +511,10 @@ component SettingsPage inherits Rectangle {
 
                         VerticalLayout {
                             x: 0; y: 160px; width: parent.width;
+                            height: parent.height - 160px;
                             spacing: 12px;
                             padding-left: 28px; padding-right: 28px;
+                            padding-bottom: 20px;
 
                             // Name — borderless centred field, accent underline on focus.
                             VerticalLayout {
@@ -638,6 +643,8 @@ component SettingsPage inherits Rectangle {
                                     }
                                 }
                             }
+                            // Pack content to the top of the constrained layout.
+                            Rectangle { vertical-stretch: 1; }
                         }
                       }
 
@@ -1150,6 +1157,9 @@ callback cloud-go-home();
     callback music-song-play-default(int);
     callback music-song-properties(int);
     callback music-song-edit-media(int);
+    callback music-song-analyze(int);
+    callback music-song-play-video(int);
+    callback music-song-link-video(int);
     callback music-song-delete(int);
     // Media-info / Properties dialog.
     in-out property <bool> music-song-props-open: false;
@@ -1160,6 +1170,7 @@ callback cloud-go-home();
     in-out property <string> music-props-genre: "";
     in-out property <string> music-props-release: "";
     in-out property <string> music-props-credits: "";
+    in-out property <string> music-props-analysis: "";
     in-out property <string> music-props-duration: "";
     in-out property <string> music-props-path: "";
     in-out property <string> music-props-format: "";
@@ -1251,6 +1262,7 @@ callback cloud-go-home();
     in-out property <bool> music-yt-home-connect: true;
     in-out property <bool> music-mini-outline: true;
     in-out property <float> music-crossfade: 0;
+    in-out property <float> music-preamp-db: 0;
     in-out property <string> music-replaygain: "off";
     callback music-set-device(string);
     callback music-toggle-exclusive();
@@ -1259,6 +1271,10 @@ callback cloud-go-home();
     callback music-toggle-yt-home-connect();
     callback music-toggle-mini-outline();
     callback music-set-crossfade(float);
+    callback music-set-preamp(float);
+    in-out property <string> music-hp-status: "";
+    callback music-hp-match(string);
+    callback music-hp-off();
     callback music-set-replaygain(string);
     callback music-rg-scan(); // np.p5.music.replaygain loudness scan
     in-out property <float> music-rg-scan-progress: 0;
@@ -1280,6 +1296,8 @@ callback cloud-go-home();
     in-out property <string> music-tag-artist: "";
     in-out property <string> music-tag-album: "";
     in-out property <string> music-tag-album-artist: "";
+    in-out property <string> music-tag-track: "";
+    in-out property <string> music-tag-disc: "";
     in-out property <string> music-tag-date: "";
     in-out property <string> music-tag-genre: "";
     in-out property <string> music-tag-credits: "";
@@ -1509,6 +1527,8 @@ callback cloud-go-home();
     callback music-podcast-dl-set-sort(string);
     callback music-podcast-dl-set-page(int);
     callback music-podcast-subscribe();
+    callback music-podcast-opml-import();
+    callback music-podcast-opml-export();
     callback music-podcast-set-cat(string);
     callback music-podcast-open(int);
     callback music-podcast-fetch(int);
@@ -2138,9 +2158,13 @@ callback cloud-go-home();
                 song-play-default(i) => { root.music-song-play-default(i); } song-view-album(i) => { root.music-album-open(i); }
                 song-view-artist(i) => { root.music-artist-open(i); } song-properties(i) => { root.music-song-properties(i); }
                 song-edit-media(i) => { root.music-song-edit-media(i); }
+                song-analyze(i) => { root.music-song-analyze(i); }
+                song-play-video(i) => { root.music-song-play-video(i); }
+                song-link-video(i) => { root.music-song-link-video(i); }
                 song-delete(i) => { root.music-song-delete(i); }
                 song-props-open <=> root.music-song-props-open; props-pos <=> root.music-props-pos; props-title: root.music-props-title; props-artist: root.music-props-artist;
                 props-album: root.music-props-album; props-genre: root.music-props-genre; props-duration: root.music-props-duration;
+                props-analysis: root.music-props-analysis;
                 props-release: root.music-props-release; props-credits: root.music-props-credits;
                 props-path: root.music-props-path; props-format: root.music-props-format; props-size: root.music-props-size;
                 sync-all-lyrics => { root.music-sync-all-lyrics(); } lyrics-sync-status: root.music-lyrics-sync-status; lyrics-sync-progress: root.music-lyrics-sync-progress;
@@ -2183,6 +2207,8 @@ callback cloud-go-home();
                 lyrics-offset(d) => { root.music-lyrics-offset(d); }
                 devices: root.music-devices; device <=> root.music-device; exclusive <=> root.music-exclusive;
                 gapless <=> root.music-gapless; crossfade <=> root.music-crossfade; replaygain <=> root.music-replaygain;
+                preamp-db <=> root.music-preamp-db; set-preamp(v) => { root.music-set-preamp(v); }
+                hp-status: root.music-hp-status; hp-match(q) => { root.music-hp-match(q); } hp-off => { root.music-hp-off(); }
                 home-connect <=> root.music-home-connect; toggle-home-connect => { root.music-toggle-home-connect(); }
                 yt-home-connect <=> root.music-yt-home-connect; toggle-yt-home-connect => { root.music-toggle-yt-home-connect(); }
                 mini-outline <=> root.music-mini-outline; toggle-mini-outline => { root.music-toggle-mini-outline(); }
@@ -2201,6 +2227,7 @@ callback cloud-go-home();
                 tag-open <=> root.music-tag-open; tag-title <=> root.music-tag-title; tag-artist <=> root.music-tag-artist; tag-album <=> root.music-tag-album; tag-date <=> root.music-tag-date;
                 tag-genre <=> root.music-tag-genre; genre-options: root.music-genre-options;
                 tag-album-artist <=> root.music-tag-album-artist; tag-credits <=> root.music-tag-credits;
+                tag-track <=> root.music-tag-track; tag-disc <=> root.music-tag-disc;
                 tag-art: root.music-tag-art; tag-locked <=> root.music-tag-locked; tag-fetch-status: root.music-tag-fetch-status;
                 tag-change-art => { root.music-tag-change-art(); } tag-fetch => { root.music-tag-fetch(); } tag-toggle-lock => { root.music-tag-toggle-lock(); }
                 tag-edit => { root.music-tag-edit(); } tag-save => { root.music-tag-save(); }
@@ -2362,6 +2389,7 @@ callback cloud-go-home();
                 podcast-dl-sort <=> root.music-podcast-dl-sort; podcast-dl-page: root.music-podcast-dl-page; podcast-dl-pages: root.music-podcast-dl-pages;
                 podcast-dl-set-sort(s) => { root.music-podcast-dl-set-sort(s); } podcast-dl-set-page(d) => { root.music-podcast-dl-set-page(d); }
                 podcast-subscribe => { root.music-podcast-subscribe(); } podcast-set-cat(c) => { root.music-podcast-set-cat(c); }
+                podcast-opml-import => { root.music-podcast-opml-import(); } podcast-opml-export => { root.music-podcast-opml-export(); }
                 podcast-open(id) => { root.music-podcast-open(id); } podcast-play(id) => { root.music-podcast-play(id); }
                 podcast-skip(s) => { root.music-podcast-skip(s); }
                 podcast-fetch(id) => { root.music-podcast-fetch(id); } podcast-unsubscribe(id) => { root.music-podcast-unsubscribe(id); }

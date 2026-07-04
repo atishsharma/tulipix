@@ -1188,12 +1188,10 @@ fn main() -> Result<()> {
         }
         let total = w.get_music_np_total();
         if total <= 0 { return; }
-        // Shuffle → random next; else sequential wrap.
+        // Shuffle → next from the shuffled bag (no repeats per cycle); else
+        // sequential wrap.
         let next = if w.get_music_shuffle() && total > 1 {
-            let mut n = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.subsec_nanos()).unwrap_or(0) as i32).rem_euclid(total);
-            if n == w.get_music_np_index() { n = (n + 1).rem_euclid(total); }
-            n
+            shuffle_next(total, w.get_music_np_index())
         } else {
             (w.get_music_np_index() + 1).rem_euclid(total)
         };
@@ -1209,6 +1207,19 @@ fn main() -> Result<()> {
         }
         let total = w.get_music_np_total();
         if total <= 0 { return; }
+        // A few seconds in, Prev restarts the current track (player convention);
+        // right at the start it goes to the previous one.
+        if w.get_music_pos() > 3.0 {
+            music_ipc(&["seek", "0", "absolute"]);
+            return;
+        }
+        // Under shuffle, walk the real played order back instead of index−1.
+        if w.get_music_shuffle() {
+            if let Some(prev) = shuffle_prev_index(total) {
+                play_music_at(&w, prev);
+                return;
+            }
+        }
         play_music_at(&w, (w.get_music_np_index() - 1).rem_euclid(total));
     });
     let w = window.as_weak();
@@ -1514,22 +1525,29 @@ fn main() -> Result<()> {
         w0.set_music_props_genre("".into());
         w0.set_music_props_release("".into());
         w0.set_music_props_credits("".into());
+        w0.set_music_props_analysis("".into());
         w0.set_music_song_props_open(true);
-        // Fill genre / release date / credits from the DB asynchronously.
+        // Fill genre / release date / credits + analysis from the DB asynchronously.
         if item_id >= 0 {
             let weak = w.clone();
             tokio::runtime::Handle::current().spawn(async move {
                 let Ok(pool) = pool_for("music").await else { return; };
                 let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN release_date TEXT").execute(&pool).await;
                 let _ = sqlx::query("ALTER TABLE track_meta ADD COLUMN credits TEXT").execute(&pool).await;
-                let row: Option<(Option<String>, Option<String>, Option<String>)> = sqlx::query_as(
-                    "SELECT genre, release_date, credits FROM track_meta WHERE item_id = ?")
+                let row: Option<(Option<String>, Option<String>, Option<String>, Option<f64>, Option<String>, Option<f64>)> = sqlx::query_as(
+                    "SELECT genre, release_date, credits, bpm, music_key, dr_score FROM track_meta WHERE item_id = ?")
                     .bind(item_id).fetch_optional(&pool).await.ok().flatten();
-                if let Some((g, rd, cr)) = row {
+                if let Some((g, rd, cr, bpm, key, dr)) = row {
+                    let mut parts: Vec<String> = Vec::new();
+                    if let Some(b) = bpm { parts.push(format!("{b:.0} BPM")); }
+                    if let Some(k) = key { parts.push(k); }
+                    if let Some(d) = dr { parts.push(format!("DR {d:.0}")); }
+                    let analysis = parts.join(" · ");
                     let _ = weak.upgrade_in_event_loop(move |w| {
                         w.set_music_props_genre(g.unwrap_or_default().into());
                         w.set_music_props_release(rd.unwrap_or_default().into());
                         w.set_music_props_credits(cr.unwrap_or_default().into());
+                        w.set_music_props_analysis(analysis.into());
                     });
                 }
             });
@@ -1545,6 +1563,8 @@ fn main() -> Result<()> {
         w0.set_music_tag_artist(m.artist.clone().into());
         w0.set_music_tag_album(m.album.clone().into());
         w0.set_music_tag_album_artist("".into());
+        w0.set_music_tag_track("".into());
+        w0.set_music_tag_disc("".into());
         w0.set_music_tag_date("".into());
         w0.set_music_tag_genre("".into());
         w0.set_music_tag_credits("".into());
@@ -1556,6 +1576,95 @@ fn main() -> Result<()> {
         prefill_tag_editor(&w, m.item_id);
     });
     // Context menu — Delete: remove the file from disk AND the library, then refresh.
+    let w = window.as_weak();
+    // Context menu — music-video link (np.p4.music.video-link): pick a video
+    // file for this song; playback goes through the windowed mpv player. The
+    // videos-library item id is stored when the file is inside that library,
+    // plus the absolute path (playback key) in a sibling column.
+    let w = window.as_weak();
+    window.on_music_song_link_video(move |pos| {
+        let Some(m) = music_songs().lock().ok().and_then(|g| g.iter().find(|s| s.pos == pos).cloned()) else { return; };
+        let weak = w.clone();
+        let rt = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            let Some(file) = rfd::FileDialog::new().set_title("Pick the music video for this song")
+                .add_filter("Videos", &["mp4", "mkv", "mov", "webm", "avi", "m4v"]).pick_file() else { return; };
+            let path = file.display().to_string();
+            let title = m.title.clone();
+            rt.spawn(async move {
+                let Ok(pool) = pool_for("music").await else { return; };
+                let _ = sqlx::query("ALTER TABLE music_video_link ADD COLUMN video_path TEXT").execute(&pool).await;
+                // Resolve the videos-library id when the picked file is indexed there.
+                let vid: i64 = match pool_for("videos").await {
+                    Ok(vp) => sqlx::query_scalar("SELECT id FROM items WHERE abs_path = ?")
+                        .bind(&path).fetch_optional(&vp).await.ok().flatten().unwrap_or(0),
+                    Err(_) => 0,
+                };
+                let _ = tulipix_music::video_link::link(&pool, m.item_id, vid).await;
+                let _ = sqlx::query("UPDATE music_video_link SET video_path = ? WHERE item_id = ?")
+                    .bind(&path).bind(m.item_id).execute(&pool).await;
+                let _ = weak.upgrade_in_event_loop(move |w| w.set_caps_nudge(
+                    format!("Linked music video to “{title}”.").into()));
+            });
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_song_play_video(move |pos| {
+        let Some(m) = music_songs().lock().ok().and_then(|g| g.iter().find(|s| s.pos == pos).cloned()) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = sqlx::query("ALTER TABLE music_video_link ADD COLUMN video_path TEXT").execute(&pool).await;
+            let path: Option<String> = sqlx::query_scalar(
+                "SELECT video_path FROM music_video_link WHERE item_id = ? AND video_path IS NOT NULL")
+                .bind(m.item_id).fetch_optional(&pool).await.ok().flatten();
+            match path.filter(|p| std::path::Path::new(p).exists()) {
+                Some(p) => yt_play_local_video(weak, p),
+                None => { let _ = weak.upgrade_in_event_loop(|w| w.set_caps_nudge(
+                    "No music video linked — use “Link music video…” first.".into())); }
+            }
+        });
+    });
+
+    // Context menu — Analyze: BPM + musical key + DR on a worker thread
+    // (np.p4.music.bpm-key / .dr-meter); result lands in the nudge line and
+    // on track_meta for the Properties dialog.
+    let w = window.as_weak();
+    window.on_music_song_analyze(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some(m) = music_songs().lock().ok().and_then(|g| g.iter().find(|s| s.pos == pos).cloned()) else { return; };
+        let Some(path) = music_paths().lock().ok().and_then(|g| g.get(pos as usize).cloned()) else { return; };
+        w0.set_caps_nudge(format!("Analyzing “{}”…", m.title).into());
+        let weak = w.clone();
+        let rt = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            let Some(a) = tulipix_sec_music::analysis::analyze_file(&path) else {
+                let _ = weak.upgrade_in_event_loop(|w| w.set_caps_nudge("Analysis failed — could not decode the file.".into()));
+                return;
+            };
+            let key = a.key_pc.and_then(|(pc, maj)| tulipix_music::bpm_key::key_label(pc, maj));
+            let camelot = a.key_pc.and_then(|(pc, maj)| tulipix_music::bpm_key::camelot(pc, maj));
+            let (bpm, dr, id) = (a.bpm, a.dr, m.item_id);
+            let key_db = key.clone();
+            rt.spawn(async move {
+                if let Ok(pool) = pool_for("music").await {
+                    let _ = tulipix_music::bpm_key::store(&pool, id, bpm, key_db.as_deref()).await;
+                    if let Some(dr) = dr { let _ = tulipix_music::dr_meter::store(&pool, id, dr).await; }
+                }
+            });
+            let mut parts: Vec<String> = Vec::new();
+            if let Some(b) = bpm { parts.push(format!("{b:.0} BPM")); }
+            match (key, camelot) {
+                (Some(k), Some(c)) => parts.push(format!("{k} ({c})")),
+                (Some(k), None) => parts.push(k),
+                _ => {}
+            }
+            if let Some(d) = dr { parts.push(format!("DR {d:.0}")); }
+            let msg = if parts.is_empty() { format!("“{}” — nothing detectable.", m.title) }
+                      else { format!("“{}” — {}.", m.title, parts.join(" · ")) };
+            let _ = weak.upgrade_in_event_loop(move |w| w.set_caps_nudge(msg.into()));
+        });
+    });
     let w = window.as_weak();
     window.on_music_song_delete(move |pos| {
         let Some(w0) = w.upgrade() else { return; };
@@ -2053,7 +2162,10 @@ fn main() -> Result<()> {
     // Shuffle toggle (affects Next).
     let w = window.as_weak();
     window.on_music_toggle_shuffle(move || {
-        if let Some(w) = w.upgrade() { w.set_music_shuffle(!w.get_music_shuffle()); }
+        if let Some(w) = w.upgrade() {
+            w.set_music_shuffle(!w.get_music_shuffle());
+            shuffle_reset(); // fresh order + history on every toggle
+        }
     });
     // AT parity — live thumbnail-size slider (np.p5.atmusic.thumb-slider).
     let w = window.as_weak();
@@ -2345,27 +2457,7 @@ fn main() -> Result<()> {
     });
     // Player redesign — sleep timer set to a chosen interval (np.p4.music.sleep-timer).
     let w = window.as_weak();
-    window.on_music_set_sleep(move |min| {
-        use std::sync::atomic::Ordering;
-        let Some(w0) = w.upgrade() else { return; };
-        let min = min.max(0);
-        w0.set_music_sleep_min(min);
-        let tok = SLEEP_GEN.fetch_add(1, Ordering::SeqCst) + 1; // cancels any prior timer
-        if min > 0 {
-            let weak = w.clone();
-            tokio::runtime::Handle::current().spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(min as u64 * 60)).await;
-                if SLEEP_GEN.load(Ordering::SeqCst) != tok { return; } // superseded
-                let _ = weak.upgrade_in_event_loop(|w| {
-                    if let Ok(mut g) = music_proc().lock() {
-                        if let Some(mut c) = g.take() { let _ = c.kill(); let _ = c.wait(); }
-                    }
-                    w.set_music_playing(false);
-                    w.set_music_sleep_min(0);
-                });
-            });
-        }
-    });
+    window.on_music_set_sleep(move |min| { arm_sleep_timer(&w, min); });
     // Zen player — true OS fullscreen (no title bar) on enter, restore on exit.
     let w = window.as_weak();
     window.on_music_enter_zen(move || { if let Some(w) = w.upgrade() { w.window().set_fullscreen(true); } });
@@ -2631,31 +2723,12 @@ fn main() -> Result<()> {
             });
         });
     });
-    // Sleep timer (np.p4.music.sleep-timer) — cycle Off→15→30→60→Off; a fresh
-    // cycle bumps SLEEP_GEN so the previous timer no-ops when it fires.
+    // Sleep timer (np.p4.music.sleep-timer) — cycle Off→10→15→30→60→track-end→Off.
     let w = window.as_weak();
     window.on_music_cycle_sleep(move || {
-        use std::sync::atomic::Ordering;
         let Some(w0) = w.upgrade() else { return; };
-        let next = match w0.get_music_sleep_min() { 0 => 10, 10 => 15, 15 => 30, 30 => 60, _ => 0 };
-        w0.set_music_sleep_min(next);
-        let tok = SLEEP_GEN.fetch_add(1, Ordering::SeqCst) + 1;
-        if next > 0 {
-            let weak = w.clone();
-            let handle = tokio::runtime::Handle::current();
-            handle.spawn(async move {
-                tokio::time::sleep(std::time::Duration::from_secs(next as u64 * 60)).await;
-                if SLEEP_GEN.load(Ordering::SeqCst) != tok { return; } // superseded
-                let _ = weak.upgrade_in_event_loop(|w| {
-                    if let Ok(mut g) = music_proc().lock() {
-                        if let Some(mut c) = g.take() { let _ = c.kill(); let _ = c.wait(); }
-                    }
-                    w.set_music_playing(false);
-                    w.set_music_sleep_min(0);
-                    tracing::info!("music sleep timer fired");
-                });
-            });
-        }
+        let next = match w0.get_music_sleep_min() { 0 => 10, 10 => 15, 15 => 30, 30 => 60, 60 => -1, _ => 0 };
+        arm_sleep_timer(&w, next);
     });
 
     // ── Phase 5 music — synced lyrics / audio output / visualizer / cast / tags ──
@@ -2721,6 +2794,52 @@ fn main() -> Result<()> {
         let v = (v as f64).clamp(0.0, 12.0);
         w.set_music_crossfade(v as f32);
         save_music_pref("music.crossfade", &format!("{v:.0}"));
+    });
+    // Headphone EQ (np.p4.music.headphone-eq) — AutoEq preset auto-matched to
+    // the output device name; correction rides the af chain of every spawn.
+    let w = window.as_weak();
+    window.on_music_hp_match(move |query| {
+        let Some(w0) = w.upgrade() else { return; };
+        w0.set_music_hp_status("Matching…".into());
+        let weak = w.clone();
+        let device = w0.get_music_device().to_string();
+        let query = query.to_string();
+        tokio::runtime::Handle::current().spawn(async move {
+            let client = reqwest::Client::new();
+            let index = hp_index(&client).await;
+            if index.is_empty() {
+                let _ = weak.upgrade_in_event_loop(|w| w.set_music_hp_status(
+                    "Could not load the AutoEq preset index (network / api.autoeq mirror).".into()));
+                return;
+            }
+            let keys: Vec<String> = index.iter().map(|(n, _)| n.clone()).collect();
+            // Explicit search text wins; otherwise match the output device name(s).
+            let hit: Option<String> = if !query.trim().is_empty() {
+                tulipix_music::headphone_eq::match_device(&query, &keys).cloned()
+            } else {
+                let mut names = vec![device.clone()];
+                names.extend(enumerate_audio_devices().into_iter().map(|d| d.name));
+                names.iter().filter(|n| n.as_str() != "auto" && !n.is_empty())
+                    .find_map(|n| tulipix_music::headphone_eq::match_device(n, &keys)).cloned()
+            };
+            match hit.and_then(|k| index.iter().find(|(n, _)| *n == k).cloned()) {
+                Some(p) => hp_apply(weak, Some(p)),
+                None => { let _ = weak.upgrade_in_event_loop(|w| w.set_music_hp_status(
+                    "No AutoEq match — type your headphone model and press Enter.".into())); }
+            }
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_hp_off(move || { hp_apply(w.clone(), None); });
+
+    // Preamp (extra dB on top of ReplayGain) — live + persisted.
+    let w = window.as_weak();
+    window.on_music_set_preamp(move |v| {
+        let Some(w) = w.upgrade() else { return; };
+        let v = (v as f64).clamp(-12.0, 12.0);
+        w.set_music_preamp_db(v as f32);
+        save_music_pref("music.preamp", &format!("{v:.0}"));
+        music_ipc(&["set_property", "replaygain-preamp", &format!("{v:.0}")]);
     });
     // ReplayGain (np.p5.music.replaygain) — off | track | album, live + persisted.
     let w = window.as_weak();
@@ -2906,6 +3025,8 @@ fn main() -> Result<()> {
         w.set_music_tag_artist(if sub == "Playing from your library" { "".into() } else { sub });
         w.set_music_tag_album("".into());
         w.set_music_tag_album_artist("".into());
+        w.set_music_tag_track("".into());
+        w.set_music_tag_disc("".into());
         w.set_music_tag_date("".into());
         w.set_music_tag_genre("".into());
         w.set_music_tag_credits("".into());
@@ -3016,6 +3137,8 @@ fn main() -> Result<()> {
         let release_date = w0.get_music_tag_date().to_string();
         let genre = w0.get_music_tag_genre().to_string();
         let credits = w0.get_music_tag_credits().to_string();
+        let track_no: Option<i64> = w0.get_music_tag_track().trim().parse().ok().filter(|n| *n > 0);
+        let disc_no: Option<i64> = w0.get_music_tag_disc().trim().parse().ok().filter(|n| *n > 0);
         // Reflect immediately in the now-playing bar only when editing it.
         if target.is_none() || target == current_music_id(&w0) {
             if !title.is_empty() { w0.set_music_np_title(title.clone().into()); }
@@ -3040,6 +3163,7 @@ fn main() -> Result<()> {
                 "UPDATE track_meta SET title = ?, artist_id = COALESCE(?, artist_id),
                     album_id = COALESCE(?, album_id), album_artist = ?,
                     release_date = ?, genre = ?, credits = ?, year = COALESCE(?, year),
+                    track_no = COALESCE(?, track_no), disc_no = COALESCE(?, disc_no),
                     user_locked = 1
                  WHERE item_id = ?")
                 .bind(if title.is_empty() { None } else { Some(title.clone()) })
@@ -3049,6 +3173,7 @@ fn main() -> Result<()> {
                 .bind(if genre.trim().is_empty() { None } else { Some(genre.trim().to_string()) })
                 .bind(if credits.trim().is_empty() { None } else { Some(credits.trim().to_string()) })
                 .bind(year)
+                .bind(track_no).bind(disc_no)
                 .bind(id).execute(&pool).await;
             // Write the tags back into the file itself via ffmpeg (np.p5.music.tag-editor),
             // so the metadata survives a re-scan / shows in other players.
@@ -3056,7 +3181,12 @@ fn main() -> Result<()> {
                 .bind(id).fetch_optional(&pool).await.ok().flatten();
             if let Some(path) = path {
                 let (title, artist, album) = (title.clone(), artist.clone(), album.clone());
-                let _ = tokio::task::spawn_blocking(move || write_audio_tags(&path, &title, &artist, &album)).await;
+                let (album_artist, genre, date) = (album_artist.clone(), genre.clone(), release_date.clone());
+                let _ = tokio::task::spawn_blocking(move || write_audio_tags(&path, &FileTags {
+                    title: &title, artist: &artist, album: &album,
+                    album_artist: &album_artist, genre: &genre, date: &date,
+                    track_no, disc_no,
+                })).await;
             }
             // Refresh every surface: library lists + browse tiles, and the open
             // album/artist/genre detail overlay if one is showing.
@@ -3065,6 +3195,61 @@ fn main() -> Result<()> {
     });
 
     // ── Phase 5 music — podcasts / audiobooks / artist bio ──────────────────
+    // OPML import: pick a file, subscribe to every feed in it (skipping ones
+    // already subscribed); progress lands in the Add-podcast status line.
+    let w = window.as_weak();
+    window.on_music_podcast_opml_import(move || {
+        let weak = w.clone();
+        let rt = tokio::runtime::Handle::current();
+        std::thread::spawn(move || {
+            let Some(path) = rfd::FileDialog::new().set_title("Import podcast subscriptions (OPML)")
+                .add_filter("OPML", &["opml", "xml"]).pick_file() else { return; };
+            let Ok(xml) = std::fs::read_to_string(&path) else { return; };
+            let feeds = tulipix_music::podcasts::parse_opml(&xml);
+            if feeds.is_empty() {
+                let _ = weak.upgrade_in_event_loop(|w| w.set_music_podcast_add_status("No feeds found in that OPML file.".into()));
+                return;
+            }
+            rt.spawn(async move {
+                let existing: std::collections::HashSet<String> = match pool_for("podcasts").await {
+                    Ok(pool) => sqlx::query_scalar::<_, String>("SELECT feed_url FROM podcasts")
+                        .fetch_all(&pool).await.unwrap_or_default().into_iter().collect(),
+                    Err(_) => Default::default(),
+                };
+                let fresh: Vec<String> = feeds.into_iter()
+                    .filter(|(_, u)| !existing.contains(u)).map(|(_, u)| u).collect();
+                let n = fresh.len();
+                let _ = weak.clone().upgrade_in_event_loop(move |w| {
+                    w.set_music_podcast_add_status(
+                        if n == 0 { "All feeds in that OPML are already subscribed.".to_string() }
+                        else { format!("Importing {n} feed(s)…") }.into());
+                });
+                for url in fresh {
+                    subscribe_feed_with_progress(weak.clone(), url);
+                }
+            });
+        });
+    });
+    // OPML export: dump every subscription (title + feed URL) to a picked file.
+    let w = window.as_weak();
+    window.on_music_podcast_opml_export(move || {
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("podcasts").await else { return; };
+            let subs: Vec<(String, String)> = sqlx::query_as(
+                "SELECT COALESCE(title, ''), feed_url FROM podcasts ORDER BY title")
+                .fetch_all(&pool).await.unwrap_or_default();
+            let n = subs.len();
+            std::thread::spawn(move || {
+                let Some(file) = rfd::FileDialog::new().set_title("Export podcast subscriptions (OPML)")
+                    .set_file_name("tulipix-podcasts.opml")
+                    .add_filter("OPML", &["opml"]).save_file() else { return; };
+                let ok = std::fs::write(&file, tulipix_music::podcasts::to_opml(&subs)).is_ok();
+                let _ = weak.upgrade_in_event_loop(move |w| w.set_music_podcast_add_status(
+                    if ok { format!("Exported {n} subscription(s).") } else { "Export failed — could not write the file.".to_string() }.into()));
+            });
+        });
+    });
     // Subscribe to a podcast RSS feed (np.p5.music.podcast-feeds) — fetch + parse.
     let w = window.as_weak();
     window.on_music_podcast_subscribe(move || {
@@ -5082,6 +5267,13 @@ fn main() -> Result<()> {
         // Mini-player bold outline defaults ON when unset.
         window.set_music_mini_outline(s.advanced.get("music.mini_outline").map(|v| v == "1").unwrap_or(true));
         window.set_music_crossfade(s.advanced.get("music.crossfade").and_then(|v| v.parse().ok()).unwrap_or(0.0));
+        window.set_music_preamp_db(s.advanced.get("music.preamp").and_then(|v| v.parse().ok()).unwrap_or(0.0));
+        // Saved headphone-EQ correction — restore the af chunk + status line.
+        if let Some(af) = s.advanced.get("music.hp_af").filter(|a| !a.is_empty()) {
+            if let Ok(mut g) = headphone_af().lock() { *g = af.clone(); }
+            let name = s.advanced.get("music.hp_preset").cloned().unwrap_or_default();
+            window.set_music_hp_status(format!("Headphone EQ: {name}.").into());
+        }
         window.set_music_replaygain(s.advanced.get("music.replaygain").cloned().unwrap_or_else(|| "off".into()).into());
         window.set_music_grid_density(s.advanced.get("music.grid_density")
             .and_then(|v| v.parse::<f64>().ok())
@@ -6505,10 +6697,23 @@ fn main() -> Result<()> {
                     let applied = if matches!(kind, tulipix_core::migration::SourceKind::Picasa) {
                         apply_picasa_stars(&path, &rt)
                     } else { 0 };
+                    // iTunes Library.xml: actually merge play counts + star
+                    // ratings into matching music tracks (by absolute path) —
+                    // not just a dry-run count (np.p4.music.import).
+                    let merged: u64 = if matches!(kind, tulipix_core::migration::SourceKind::ITunesXml) {
+                        std::fs::read_to_string(&path).ok().map(|xml| {
+                            let tracks = tulipix_music::import::parse_itunes(&xml);
+                            rt.block_on(async {
+                                let Ok(pool) = pool_for("music").await else { return 0 };
+                                tulipix_music::import::merge(&pool, &tracks).await.unwrap_or(0)
+                            })
+                        }).unwrap_or(0)
+                    } else { 0 };
                     let msg = format!(
-                        "{kind:?} import — {} photos · {} tracks · {} playlists · {} ratings{}{}",
+                        "{kind:?} import — {} photos · {} tracks · {} playlists · {} ratings{}{}{}",
                         plan.photos, plan.music_tracks, plan.playlists, plan.ratings,
                         if applied > 0 { format!(" · {applied} stars applied") } else { String::new() },
+                        if merged > 0 { format!(" · {merged} tracks updated (plays + stars)") } else { String::new() },
                         if plan.warnings.is_empty() { String::new() } else { format!(" · {} warning(s) in logs", plan.warnings.len()) });
                     for warn in &plan.warnings { tracing::warn!(%warn, "migration"); }
                     let _ = weak.upgrade_in_event_loop(move |w| w.set_caps_nudge(msg.into()));
@@ -8702,6 +8907,12 @@ fn seed_settings_panels(w: &MainWindow) {
         stat("RTL layout", "Auto-mirror per locale", "ok"),
         stat("Adaptive layout", "Desktop breakpoints", "ok"),
         stat("Player embedding", "Out-of-process mpv — isolation by design (embedded GL parked: froze Intel iGPUs)", "ok"),
+        // Format-support audit (np.p4.music.formats) — the claim table.
+        stat("Audio formats", &{
+                 let all: Vec<&str> = tulipix_music::formats::FORMATS.iter().map(|f| f.ext).collect();
+                 let gaps = tulipix_music::formats::gapless_gaps();
+                 format!("{} — gapless unverified: {}", all.join(" · "), gaps.join(", "))
+             }, "ok"),
         hdr("PLUGINS"),
         stat("Plugin engine (WASM / Lua)",
              if cfg!(feature = "lazy-plugins") { "ABI v0 — runtimes compiled, load on first use" } else { "ABI v0 ready — rebuild with --features lazy-plugins to load" },
