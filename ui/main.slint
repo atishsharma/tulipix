@@ -18,6 +18,7 @@ import { CloudPage, CloudRemote, CloudEntry, CloudJob, CloudUsage, CloudXfer } f
 import { ToolsPage, ToolOpRow, ToolField, QueueJob, ToolStatus, DownloadItem, ToolInfoRow, ToolDiffRow, TrimSeg } from "page_tools.slint";
 import { ThemePicker, ThemeChoice } from "theme_picker.slint";
 import { UserState } from "user_card.slint";
+import { CropDialog } from "crop_dialog.slint";
 import { Mode } from "mode_pill.slint";
 import { SettingsApiKeys, ApiKeyRow } from "settings_api_keys.slint";
 import { SettingsLibraries, LibraryRow } from "settings_libraries.slint";
@@ -208,6 +209,41 @@ component EmojiChip inherits Rectangle {
         x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
 }
 
+// One credit tile in the Profile page's BUILT WITH grid — vendored logo,
+// name, click opens the project link.
+export struct CreditEntry { icon: image, label: string, link: string }
+
+component CreditTile inherits Rectangle {
+    in property <CreditEntry> entry;
+    callback open();
+    background: Theme.panel-2;
+    border-width: 1px; border-color: Theme.outline;
+    border-radius: 10px;
+    height: 74px;
+    t := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
+    VerticalLayout {
+        padding: 10px; spacing: 6px; alignment: center;
+        HorizontalLayout { alignment: center;
+            Image { source: entry.icon; width: 22px; height: 22px; } }
+        Text { text: entry.label; color: Theme.text; font-size: 10px;
+            horizontal-alignment: center; overflow: elide; }
+    }
+}
+
+// Selectable sidebar-logo swatch in the Appearance card.
+component LogoChip inherits Rectangle {
+    in property <image> logo;
+    in property <bool> selected: false;
+    callback clicked();
+    width: 46px; height: 46px; border-radius: 12px;
+    clip: true;
+    background: Theme.panel;
+    border-width: selected ? 2px : 1px;
+    border-color: selected ? Accent.color : Theme.outline;
+    TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    Image { source: logo; image-fit: cover; width: 100%; height: 100%; }
+}
+
 component SettingsPage inherits Rectangle {
     in-out property <string> active-tab: "appearance";
     // Old deep-link keys (palette history, muscle memory) land on the merged
@@ -228,6 +264,25 @@ component SettingsPage inherits Rectangle {
     callback reduce-motion-changed(bool);
     in property <bool> account-sync-allowed;
     in property <UserState> user;
+    // BUILT WITH credits — static, vendored logo assets (no runtime fetch).
+    property <[CreditEntry]> credits: [
+        { icon: @image-url("../resources/icons/credits/rust.svg"),       label: "Rust",         link: "https://www.rust-lang.org" },
+        { icon: @image-url("../resources/icons/credits/slint.svg"),      label: "Slint",        link: "https://slint.dev" },
+        { icon: @image-url("../resources/icons/credits/tokio.svg"),      label: "Tokio",        link: "https://tokio.rs" },
+        { icon: @image-url("../resources/icons/credits/sqlite.svg"),     label: "SQLite",       link: "https://sqlite.org" },
+        { icon: @image-url("../resources/icons/credits/mpv.svg"),        label: "mpv",          link: "https://mpv.io" },
+        { icon: @image-url("../resources/icons/credits/ffmpeg.svg"),     label: "FFmpeg",       link: "https://ffmpeg.org" },
+        { icon: @image-url("../resources/icons/credits/rclone.svg"),     label: "rclone",       link: "https://rclone.org" },
+        { icon: @image-url("../resources/icons/credits/onnx.svg"),       label: "ONNX Runtime", link: "https://onnxruntime.ai" },
+        { icon: @image-url("../resources/icons/credits/lucide.svg"),     label: "Lucide",       link: "https://lucide.dev" },
+        { icon: @image-url("../resources/icons/credits/ytdlp.png"),      label: "yt-dlp",       link: "https://github.com/yt-dlp/yt-dlp" },
+        { icon: @image-url("../resources/icons/credits/whispercpp.png"), label: "whisper.cpp",  link: "https://github.com/ggerganov/whisper.cpp" },
+        { icon: @image-url("../resources/icons/credits/imagers.png"),    label: "image-rs",     link: "https://github.com/image-rs/image" },
+        { icon: @image-url("../resources/icons/credits/serde.png"),      label: "Serde",        link: "https://serde.rs" },
+        { icon: @image-url("../resources/icons/credits/reqwest.png"),    label: "reqwest",      link: "https://github.com/seanmonstar/reqwest" },
+        { icon: @image-url("../resources/icons/credits/muda.png"),       label: "muda",         link: "https://github.com/tauri-apps/muda" },
+        { icon: @image-url("../resources/icons/credits/exiftool.png"), label: "ExifTool", link: "https://exiftool.org" },
+    ];
     in property <[ApiKeyRow]> api-rows;
     in property <[LibraryRow]> library-rows;
     in property <string> lib-busy-task;
@@ -248,7 +303,10 @@ component SettingsPage inherits Rectangle {
 
     callback theme-changed(ThemeChoice);
     callback user-action(string);
-    callback profile-save(string /*display name*/, string /*avatar emoji*/);
+    callback profile-save(string /*display name*/, string /*avatar emoji*/, int /*sidebar logo*/);
+    in property <int> logo-choice: 0;
+    callback pick-cover-image();
+    callback pick-avatar-image();
     in property <string> app-version: "dev";
     callback open-url(string);
     callback api-row-toggle(int);
@@ -462,58 +520,57 @@ component SettingsPage inherits Rectangle {
                 background: transparent;
                 // Avatar choice being edited; starts from the saved value.
                 property <string> sel-emoji: user.avatar-emoji;
-                ScrollView {
+                // Sidebar logo being edited; starts from the saved value.
+                property <int> sel-logo: logo-choice;
+                // Save-button feedback — flips the pill to "Saved ✓" for 2s.
+                property <bool> just-saved: false;
+                sv := ScrollView {
                   width: parent.width; height: parent.height;
-                  HorizontalLayout {
-                    alignment: center;
-                    VerticalLayout {
-                      width: min(540px, root.width - 40px);
-                      spacing: 18px; padding-top: 10px; padding-bottom: 24px;
+                  VerticalLayout {
+                    width: sv.visible-width;
+                    padding-bottom: 24px;
 
-                      // Centre the card vertically when the page is taller.
-                      Rectangle { vertical-stretch: 1; }
+                    // ── Cover — full width, edge to edge (np.p1.profile.cover).
+                    // Custom image when set; layered gradient fallback.
+                    Rectangle {
+                        height: 150px; clip: true;
+                        background: @linear-gradient(120deg, Theme.brand, Theme.brand-2, Accent.color);
+                        if user.cover-image.width != 0: Image {
+                            source: user.cover-image; image-fit: cover;
+                            width: 100%; height: 100%;
+                        }
+                        if user.cover-image.width == 0: Rectangle { // soft highlight orb
+                            x: parent.width - 150px; y: -55px; width: 190px; height: 190px;
+                            border-radius: 95px; background: #ffffff2a;
+                        }
+                        if user.cover-image.width == 0: Rectangle {
+                            x: -40px; y: 44px; width: 130px; height: 130px;
+                            border-radius: 65px; background: #00000022;
+                        }
+                        Rectangle {
+                            width: 110px; height: 28px; border-radius: 8px;
+                            x: parent.width - self.width - 12px; y: parent.height - self.height - 12px;
+                            background: cov-t.has-hover ? #000000aa : #00000077;
+                            border-width: 1px; border-color: #ffffff55;
+                            cov-t := TouchArea { mouse-cursor: pointer; clicked => { root.pick-cover-image(); } }
+                            Text { text: "Change cover"; color: #ffffff; font-size: 11px; font-weight: 600;
+                                width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                        }
+                    }
 
-                      // ── Portfolio card: banner, overlapping avatar, name,
-                      // version + project links, avatar picker, save ─────────
+                    // ── Card — auto-sizes to content; avatar straddles the seam.
+                    HorizontalLayout {
+                      alignment: center;
                       Rectangle {
-                        height: 656px;
-                        border-radius: 20px; clip: true;
+                        width: min(540px, root.width - 40px);
+                        border-radius: 20px;
                         background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
                         drop-shadow-blur: 28px; drop-shadow-color: #00000038;
 
-                        // Banner — layered gradients for depth.
-                        Rectangle {
-                            x: 0; y: 0; width: 100%; height: 104px;
-                            background: @linear-gradient(120deg, Theme.brand, Theme.brand-2, Accent.color);
-                            Rectangle { // soft highlight orb
-                                x: parent.width - 150px; y: -55px; width: 190px; height: 190px;
-                                border-radius: 95px; background: #ffffff2a;
-                            }
-                            Rectangle {
-                                x: -40px; y: 44px; width: 130px; height: 130px;
-                                border-radius: 65px; background: #00000022;
-                            }
-                        }
-
-                        // Avatar — overlaps the banner edge, ring matches card.
-                        Rectangle {
-                            width: 96px; height: 96px; border-radius: 48px;
-                            x: (parent.width - self.width) / 2; y: 104px - 48px;
-                            background: @linear-gradient(135deg, Theme.brand, Theme.brand-2);
-                            border-width: 4px; border-color: Theme.panel-2;
-                            drop-shadow-blur: 16px; drop-shadow-color: #00000055;
-                            if sel-emoji == "": AppIcon { source: Icons.user; tint: #ffffff; width: 40px; height: 40px;
-                                x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
-                            if sel-emoji != "": Text { text: sel-emoji; font-size: 44px;
-                                width: 100%; height: 100%;
-                                horizontal-alignment: center; vertical-alignment: center; }
-                        }
-
                         VerticalLayout {
-                            x: 0; y: 160px; width: parent.width;
-                            height: parent.height - 160px;
                             spacing: 12px;
                             padding-left: 28px; padding-right: 28px;
+                            padding-top: 56px;
                             padding-bottom: 20px;
 
                             // Name — borderless centred field, accent underline on focus.
@@ -597,19 +654,17 @@ component SettingsPage inherits Rectangle {
                                 EmojiChip { emoji: "🌙"; selected: sel-emoji == "🌙"; clicked => { sel-emoji = "🌙"; } }
                             }
 
-                            // Save — wide accent pill.
+                            // Upload a custom avatar — takes precedence over the emoji.
                             HorizontalLayout {
                                 alignment: center;
                                 Rectangle {
-                                    width: 180px; height: 36px; border-radius: 18px;
+                                    height: 28px; border-radius: 14px;
                                     horizontal-stretch: 0; vertical-stretch: 0;
-                                    background: save-t.has-hover ? Accent.color.with-alpha(0.85) : Accent.color;
-                                    animate background { duration: 120ms; easing: ease-out; }
-                                    save-t := TouchArea { mouse-cursor: pointer;
-                                        clicked => { root.profile-save(name-ti.text, sel-emoji); } }
-                                    Text { text: "Save profile"; color: #ffffff; font-size: 12px; font-weight: 700;
-                                        width: 100%; height: 100%;
-                                        horizontal-alignment: center; vertical-alignment: center; }
+                                    background: av-t.has-hover ? Theme.panel : transparent;
+                                    border-width: 1px; border-color: Theme.outline;
+                                    av-t := TouchArea { mouse-cursor: pointer; clicked => { root.pick-avatar-image(); } }
+                                    HorizontalLayout { padding-left: 12px; padding-right: 12px;
+                                        Text { text: "Upload avatar photo"; color: Theme.text; font-size: 11px; font-weight: 600; vertical-alignment: center; } }
                                 }
                             }
                             // ── Appearance — same card, hairline divider ────
@@ -643,13 +698,105 @@ component SettingsPage inherits Rectangle {
                                     }
                                 }
                             }
-                            // Pack content to the top of the constrained layout.
-                            Rectangle { vertical-stretch: 1; }
+
+                            // Sidebar logo — pick one of the four bundled marks.
+                            VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Sidebar logo"; color: Theme.text; font-size: 13px; font-weight: 600; }
+                                Text { text: "Shown at the top of the sidebar"; color: Theme.text-dim; font-size: 11px; }
+                            }
+                            HorizontalLayout {
+                                spacing: 10px; alignment: center;
+                                LogoChip { logo: @image-url("../resources/appicons/sidebar-default.png");
+                                    selected: sel-logo == 0; clicked => { sel-logo = 0; } }
+                                LogoChip { logo: @image-url("../resources/appicons/sidebar-color.png");
+                                    selected: sel-logo == 1; clicked => { sel-logo = 1; } }
+                                LogoChip { logo: @image-url("../resources/appicons/sidebar-dark.png");
+                                    selected: sel-logo == 2; clicked => { sel-logo = 2; } }
+                                LogoChip { logo: @image-url("../resources/appicons/sidebar-white.png");
+                                    selected: sel-logo == 3; clicked => { sel-logo = 3; } }
+                            }
+
+                            // Save — below the appearance block so one click
+                            // persists identity + appearance together. Flips
+                            // to "Saved ✓" for 2s as inline feedback.
+                            HorizontalLayout {
+                                alignment: center;
+                                Rectangle {
+                                    width: 180px; height: 36px; border-radius: 18px;
+                                    horizontal-stretch: 0; vertical-stretch: 0;
+                                    background: just-saved ? #22c55e : (save-t.has-hover ? Accent.color.with-alpha(0.85) : Accent.color);
+                                    animate background { duration: 120ms; easing: ease-out; }
+                                    save-t := TouchArea { mouse-cursor: pointer;
+                                        clicked => { root.profile-save(name-ti.text, sel-emoji, sel-logo); just-saved = true; } }
+                                    Text { text: just-saved ? "Saved ✓" : "Save profile"; color: #ffffff; font-size: 12px; font-weight: 700;
+                                        width: 100%; height: 100%;
+                                        horizontal-alignment: center; vertical-alignment: center; }
+                                    Timer { interval: 2s; running: just-saved; triggered => { just-saved = false; } }
+                                }
+                            }
+                        }
+
+                        // Avatar — straddles the cover/card seam, centered.
+                        // Custom image wins; falls back to emoji, then glyph.
+                        Rectangle {
+                            width: 96px; height: 96px; border-radius: 48px;
+                            x: (parent.width - self.width) / 2; y: -48px;
+                            clip: true;
+                            background: @linear-gradient(135deg, Theme.brand, Theme.brand-2);
+                            border-width: 4px; border-color: Theme.panel-2;
+                            drop-shadow-blur: 16px; drop-shadow-color: #00000055;
+                            if user.avatar-image.width != 0: Image {
+                                source: user.avatar-image; image-fit: cover; width: 100%; height: 100%;
+                            }
+                            if user.avatar-image.width == 0 && sel-emoji == "": AppIcon { source: Icons.user; tint: #ffffff; width: 40px; height: 40px;
+                                x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+                            if user.avatar-image.width == 0 && sel-emoji != "": Text { text: sel-emoji; font-size: 44px;
+                                width: 100%; height: 100%;
+                                horizontal-alignment: center; vertical-alignment: center; }
                         }
                       }
+                    }
 
-                      // Spacer stops the card stretching into leftover height.
-                      Rectangle { vertical-stretch: 1; }
+                    Rectangle { height: 18px; }
+                    Text {
+                        text: "Tulipix © 2026 — Developed by Atish Ak Sharma";
+                        color: Theme.text-dim; font-size: 11px;
+                        horizontal-alignment: center;
+                    }
+                    Rectangle { height: 10px; }
+                    Text { text: "BUILT WITH"; color: Theme.text-dim; font-size: 10px; font-weight: 700; letter-spacing: 1px; horizontal-alignment: center; }
+                    Rectangle { height: 4px; }
+                    HorizontalLayout {
+                        alignment: center;
+                        VerticalLayout {
+                            width: min(540px, root.width - 40px);
+                            spacing: 10px;
+                            HorizontalLayout { spacing: 10px;
+                                CreditTile { entry: credits[0];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                                CreditTile { entry: credits[1];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                                CreditTile { entry: credits[2];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                                CreditTile { entry: credits[3];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                            }
+                            HorizontalLayout { spacing: 10px;
+                                CreditTile { entry: credits[4];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                                CreditTile { entry: credits[5];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                                CreditTile { entry: credits[6];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                                CreditTile { entry: credits[7];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                            }
+                            HorizontalLayout { spacing: 10px;
+                                CreditTile { entry: credits[8];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                                CreditTile { entry: credits[9];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                                CreditTile { entry: credits[10]; horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                                CreditTile { entry: credits[11]; horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                            }
+                            HorizontalLayout { spacing: 10px;
+                                CreditTile { entry: credits[12]; horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                                CreditTile { entry: credits[13]; horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                                CreditTile { entry: credits[14]; horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                                CreditTile { entry: credits[15]; horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
+                            }
+                        }
                     }
                   }
                 }
@@ -673,6 +820,17 @@ export component MainWindow inherits Window {
     callback section-changed(string);   // sidebar section click → preload that section
     in-out property <string> active-settings-tab: "appearance";
     in-out property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local };
+    // Sidebar logo pick (np.p1.profile.logo) — 0 default · 1 color · 2 dark · 3 white.
+    in-out property <int> app-logo-choice: 0;
+    // Profile cover/avatar cropper (np.p1.profile.cover).
+    in-out property <bool> crop-dialog-open: false;
+    in-out property <string> crop-dialog-mode: "cover";
+    in-out property <image> crop-dialog-image;
+    in-out property <int> crop-dialog-nat-w: 1;
+    in-out property <int> crop-dialog-nat-h: 1;
+    callback pick-cover-image();
+    callback pick-avatar-image();
+    callback crop-confirm(string, float, length, length, length, length);
     in-out property <ThemeChoice> theme-choice: ThemeChoice.system;
     in-out property <bool> dark <=> Theme.dark;
     in-out property <bool> reduce-motion <=> Theme.reduce-motion;
@@ -697,7 +855,7 @@ export component MainWindow inherits Window {
     callback setting-toggle(string, bool);
     callback setting-text(string, string);
     callback setting-action(string);
-    callback profile-save(string, string);
+    callback profile-save(string, string, int /*sidebar logo choice*/);
     in-out property <string> app-version: "dev";
     callback open-url(string);
     in-out property <[PhotoTile]> photo-tiles: [];
@@ -2027,6 +2185,7 @@ callback cloud-go-home();
             z: 1;
             active-section <=> root.active-section;
             user: root.user;
+            logo-choice: root.app-logo-choice;
             user-action(a) => { root.user-action(a); }
             section-changed(s) => { root.section-changed(s); }
         }
@@ -2685,7 +2844,10 @@ callback cloud-go-home();
                 setting-action(k) => { root.setting-action(k); }
                 theme-changed(c) => { root.theme-changed(c); }
                 user-action(a) => { root.user-action(a); }
-                profile-save(n, e) => { root.profile-save(n, e); }
+                profile-save(n, e, l) => { root.profile-save(n, e, l); }
+                logo-choice: root.app-logo-choice;
+                pick-cover-image => { root.pick-cover-image(); }
+                pick-avatar-image => { root.pick-avatar-image(); }
                 app-version: root.app-version;
                 open-url(u) => { root.open-url(u); }
                 api-row-toggle(i) => { root.api-row-toggle(i); }
@@ -3500,32 +3662,40 @@ callback cloud-go-home();
         Timer { interval: 5s; running: root.milestone != ""; triggered => { root.milestone = ""; } }
     }
 
-    // Capability-denied nudge toast (np.p1.caps.events). Auto-clears.
+    // Capability-denied / model-download-complete toast (np.p1.caps.events).
+    // Plain text, no action — auto-clears.
     if root.caps-nudge != "": Rectangle {
         x: (root.width - self.width) / 2;
         y: root.height - 96px;
-        width: 460px; height: 52px;
+        width: 420px; height: 52px;
         border-radius: Theme.radius-md;
         background: Theme.modal;
         border-color: Accent.color.with-alpha(0.6); border-width: 1px;
         drop-shadow-blur: 24px; drop-shadow-color: #00000066;
         nudge-timer := Timer {
-            interval: 4s; running: root.caps-nudge != "";
+            interval: 3s; running: root.caps-nudge != "";
             triggered => { root.caps-nudge = ""; }
         }
-        HorizontalLayout {
-            padding-left: 16px; padding-right: 12px; spacing: 12px;
-            Text { text: root.caps-nudge; color: Theme.text; font-size: 12px;
-                vertical-alignment: center; horizontal-stretch: 1; }
-            Rectangle {
-                width: 78px; height: 30px; border-radius: 8px;
-                background: @linear-gradient(135deg, Theme.brand, Theme.brand-2);
-                y: (parent.height - self.height) / 2; horizontal-stretch: 0;
-                TouchArea { clicked => { root.caps-nudge = ""; root.active-section = "settings"; root.active-settings-tab = "profile"; } }
-                Text { text: "Open"; color: #ffffff; font-size: 11px; font-weight: 600;
-                    horizontal-alignment: center; vertical-alignment: center; }
-            }
+        Text {
+            text: root.caps-nudge; color: Theme.text; font-size: 12px;
+            width: 100%; height: 100%;
+            horizontal-alignment: center; vertical-alignment: center;
+            wrap: word-wrap;
         }
+    }
+
+    // Profile cover/avatar crop overlay — above content, below onboarding.
+    if root.crop-dialog-open: CropDialog {
+        x: 0; y: 0; width: root.width; height: root.height;
+        z: 20;
+        source-image: root.crop-dialog-image;
+        mode: root.crop-dialog-mode;
+        nat-w: root.crop-dialog-nat-w;
+        nat-h: root.crop-dialog-nat-h;
+        confirm(mode, zoom, pan-x, pan-y, mask-w, mask-h) => {
+            root.crop-confirm(mode, zoom, pan-x, pan-y, mask-w, mask-h);
+        }
+        cancel => { root.crop-dialog-open = false; }
     }
 
     // First-run onboarding wizard — top-most so it gates the first session.

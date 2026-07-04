@@ -4443,13 +4443,19 @@ export component MusicPage inherits Rectangle {
                             text: root.lyrics-rows[nlyric.a + 1].text; color: MusicTheme.fg-mute; font-size: 12px; vertical-alignment: center; }
                     }
                 }
-                // Seekbar.
+                // Seekbar — volume lives here too so the controls row below
+                // keeps its width for the transport + extras icons.
                 HorizontalLayout {
-                    height: 16px; vertical-stretch: 0; spacing: 12px;
+                    height: 24px; vertical-stretch: 0; spacing: 12px;
                     VerticalLayout { alignment: center; Text { text: root.pos-label; color: MusicTheme.fg-dim; font-size: 11px; width: 42px; horizontal-alignment: right; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 1;
                         Scrubber { value: root.pos; maximum: root.dur > 0 ? root.dur : 1.0; wiggle: true; changed(v) => { root.seek(v); } } }
                     VerticalLayout { alignment: center; Text { text: root.dur-label; color: MusicTheme.fg-dim; font-size: 11px; width: 42px; } }
+                    // Volume + mute.
+                    VerticalLayout { alignment: center; PlayerBtn { icon: root.muted ? Icons.volume-x : Icons.volume; size: 24px; isz: 14px; active: root.muted; clicked => { root.toggle-mute(); } } }
+                    VerticalLayout { alignment: center; Rectangle { width: 100px; height: 24px;
+                        Scrubber { y: (parent.height - self.height)/2; width: 100px; value: root.volume; maximum: 130.0;
+                            fill-color: MusicTheme.fg3; changed(v) => { root.set-volume(v); } } } }
                 }
                 // Controls.
                 HorizontalLayout {
@@ -4518,11 +4524,7 @@ export component MusicPage inherits Rectangle {
                     VerticalLayout { alignment: center; Rectangle { width: 10px; } }
                     // Heart only — stars removed from the player.
                     if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { icon: Icons.heart; isz: 18px; active: root.np-loved; clicked => { root.love(); } } }
-                    // Volume + mute.
-                    VerticalLayout { alignment: center; PlayerBtn { icon: root.muted ? Icons.volume-x : Icons.volume; isz: 17px; active: root.muted; clicked => { root.toggle-mute(); } } }
-                    VerticalLayout { alignment: center; Rectangle { width: 84px; height: 36px;
-                        Scrubber { y: (parent.height - self.height)/2; width: 84px; value: root.volume; maximum: 130.0;
-                            fill-color: MusicTheme.fg3; changed(v) => { root.set-volume(v); } } } }
+                    // (volume + mute moved up beside the seekbar)
                     VerticalLayout { alignment: center; Rectangle { width: 1px; height: 22px; background: MusicTheme.hov2; } }
                     // Extras — queue/lyrics dock to the right sidebar; eq/sleep are anchored popups.
                     VerticalLayout { alignment: center; PlayerBtn { icon: Icons.list-music; isz: 17px; active: root.side-panel == "queue"; clicked => { root.side-panel-show(root.side-panel == "queue" ? "" : "queue"); } } }
