@@ -2150,7 +2150,7 @@ callback cloud-go-home();
                 toggle-shuffle => { root.music-toggle-shuffle(); }
                 songs-view <=> root.music-songs-view; set-songs-view(v) => { root.music-set-songs-view(v); }
                 grid-density <=> root.music-grid-density; set-grid-density(v) => { root.music-set-grid-density(v); }
-                np-loved: root.music-np-loved; np-stars: root.music-np-stars;
+                np-loved: root.music-np-loved; np-stars: root.music-np-stars; np-index: root.music-np-index;
                 pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
                 volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat;
                 player-panel <=> root.music-player-panel; queue-rows: root.music-queue-rows;
@@ -2779,7 +2779,7 @@ callback cloud-go-home();
         art: root.music-np-art; accent: root.music-np-accent; title: root.music-np-title; sub: root.music-np-sub; playing: root.music-playing;
         pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
         volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat; shuffle: root.music-shuffle;
-        np-loved: root.music-np-loved; np-stars: root.music-np-stars;
+        np-loved: root.music-np-loved; np-stars: root.music-np-stars; np-index: root.music-np-index;
         album: root.music-np-album; vis-bars: root.music-vis-bars; vis-style <=> root.music-vis-style; vis-style-changed(s) => { root.music-set-vis-style(s); }
         queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
         podcast-mode: root.music-player-mode == "podcast"; speed: root.music-podcast-speed; set-speed(v) => { root.music-podcast-set-speed(v); }
