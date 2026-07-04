@@ -2990,6 +2990,18 @@ fn main() -> Result<()> {
         w0.set_music_cast_target(c.clone());
         if !c.is_empty() { cast_current_track(&w0, c.as_str()); }
     });
+    // Cast session transport (np.b2.music.cast-v2) — SOAP Pause/Play/Stop at
+    // the renderer picked above.
+    let w = window.as_weak();
+    window.on_music_cast_pause(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        cast_pause_toggle(&w0);
+    });
+    let w = window.as_weak();
+    window.on_music_cast_stop(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        cast_stop(&w0);
+    });
     // Instant mix / auto-DJ (np.p5.music.instant-mix) — build an "Up next" from
     // tracks sharing the current track's artist or genre (tag similarity).
     let w = window.as_weak();

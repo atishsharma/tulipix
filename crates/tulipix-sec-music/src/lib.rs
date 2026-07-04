@@ -2723,7 +2723,7 @@ pub fn enumerate_audio_devices() -> Vec<tulipix_music::output_device::AudioDevic
 /// One-track HTTP server for the cast handoff: serves exactly `path` on an
 /// ephemeral port so the renderer can pull the bytes. Each cast replaces the
 /// served file; the listener thread lives for the app's lifetime. Returns the
-/// URL the renderer should fetch. No Range support — fine for play/stop v1.
+/// URL the renderer should fetch. Range requests supported (renderer seeks).
 static CAST_SERVE: std::sync::OnceLock<std::sync::Mutex<Option<(u16, std::path::PathBuf)>>> = std::sync::OnceLock::new();
 pub fn cast_serve_url(path: &std::path::Path) -> Option<String> {
     let state = CAST_SERVE.get_or_init(|| std::sync::Mutex::new(None));
@@ -2741,8 +2741,9 @@ pub fn cast_serve_url(path: &std::path::Path) -> Option<String> {
                     std::thread::spawn(move || {
                         use std::io::{Read, Write};
                         let mut req = [0u8; 1024];
-                        let _ = stream.read(&mut req);
-                        let head_only = req.starts_with(b"HEAD");
+                        let n = stream.read(&mut req).unwrap_or(0);
+                        let head = String::from_utf8_lossy(&req[..n]);
+                        let head_only = head.starts_with("HEAD");
                         let Ok(bytes) = std::fs::read(&path) else {
                             let _ = stream.write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\n\r\n");
                             return;
@@ -2752,11 +2753,49 @@ pub fn cast_serve_url(path: &std::path::Path) -> Option<String> {
                             "m4a" | "aac" => "audio/mp4", "wav" => "audio/wav", "opus" => "audio/opus",
                             _ => "application/octet-stream",
                         };
-                        let hdr = format!(
-                            "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
-                            bytes.len());
-                        let _ = stream.write_all(hdr.as_bytes());
-                        if !head_only { let _ = stream.write_all(&bytes); }
+                        // HTTP Range (np.b2.music.cast-v2): renderers seek by
+                        // re-requesting `bytes=start-[end]`; suffix form
+                        // `bytes=-N` asks for the trailing N bytes.
+                        let total = bytes.len() as u64;
+                        let range = head.lines().find_map(|l| {
+                            let (k, v) = l.split_once(':')?;
+                            if !k.trim().eq_ignore_ascii_case("range") { return None; }
+                            let (a, b) = v.trim().strip_prefix("bytes=")?.split_once('-')?;
+                            match (a.trim(), b.trim()) {
+                                ("", suf) => {
+                                    let n: u64 = suf.parse().ok()?;
+                                    Some((total.saturating_sub(n), total.saturating_sub(1)))
+                                }
+                                (st, "") => Some((st.parse().ok()?, total.saturating_sub(1))),
+                                (st, en) => Some((st.parse().ok()?, en.parse().ok()?)),
+                            }
+                        });
+                        match range {
+                            Some((start, end)) if start < total => {
+                                let end = end.min(total - 1);
+                                let hdr = format!(
+                                    "HTTP/1.1 206 Partial Content\r\nContent-Type: {mime}\r\n\
+                                     Accept-Ranges: bytes\r\nContent-Range: bytes {start}-{end}/{total}\r\n\
+                                     Content-Length: {}\r\nConnection: close\r\n\r\n",
+                                    end - start + 1);
+                                let _ = stream.write_all(hdr.as_bytes());
+                                if !head_only {
+                                    let _ = stream.write_all(&bytes[start as usize..=end as usize]);
+                                }
+                            }
+                            Some(_) => {
+                                let _ = stream.write_all(format!(
+                                    "HTTP/1.1 416 Range Not Satisfiable\r\nContent-Range: bytes */{total}\r\n\
+                                     Content-Length: 0\r\nConnection: close\r\n\r\n").as_bytes());
+                            }
+                            None => {
+                                let hdr = format!(
+                                    "HTTP/1.1 200 OK\r\nContent-Type: {mime}\r\nAccept-Ranges: bytes\r\n\
+                                     Content-Length: {total}\r\nConnection: close\r\n\r\n");
+                                let _ = stream.write_all(hdr.as_bytes());
+                                if !head_only { let _ = stream.write_all(&bytes); }
+                            }
+                        }
                     });
                 }
             }).ok()?;
@@ -2817,11 +2856,64 @@ pub fn cast_current_track(w: &MainWindow, device_name: &str) {
                 return;
             }
         }
+        // Remember the control URL so Pause/Stop chips can drive the session
+        // (np.b2.music.cast-v2).
+        if let Ok(mut g) = cast_session().lock() { *g = Some(ctl.clone()); }
         let _ = weak.upgrade_in_event_loop(move |w| {
             // Renderer owns playback now — stop the local pipeline.
             stop_music(&w);
+            w.set_music_cast_active(true);
+            w.set_music_cast_paused(false);
             w.set_music_cast_status(format!("Casting to {}.", dev.name).into());
         });
+    });
+}
+
+/// Active cast session's AVTransport control URL (np.b2.music.cast-v2).
+static CAST_SESSION: std::sync::OnceLock<std::sync::Mutex<Option<String>>> = std::sync::OnceLock::new();
+pub fn cast_session() -> &'static std::sync::Mutex<Option<String>> {
+    CAST_SESSION.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// One SOAP action at the stored control URL; `on_done(ok)` hops back to the
+/// event loop.
+fn cast_soap(w: &MainWindow, action: &'static str, body: String, on_done: impl Fn(&MainWindow, bool) + Send + 'static) {
+    let Some(ctl) = cast_session().lock().ok().and_then(|g| g.clone()) else { return; };
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let ok = reqwest::Client::new().post(&ctl)
+            .header("SOAPACTION", tulipix_music::cast::soap_action_header(action))
+            .header(reqwest::header::CONTENT_TYPE, "text/xml; charset=\"utf-8\"")
+            .body(body).send().await
+            .map(|r| r.status().is_success()).unwrap_or(false);
+        let _ = weak.upgrade_in_event_loop(move |w| on_done(&w, ok));
+    });
+}
+
+/// Pause ⇄ resume the renderer (np.b2.music.cast-v2).
+pub fn cast_pause_toggle(w: &MainWindow) {
+    let pause = !w.get_music_cast_paused();
+    let (action, body) = if pause {
+        ("Pause", tulipix_music::cast::soap_pause(0))
+    } else {
+        ("Play", tulipix_music::cast::soap_play(0))
+    };
+    cast_soap(w, action, body, move |w, ok| {
+        if ok { w.set_music_cast_paused(pause); }
+        else { w.set_music_cast_status(format!("Renderer refused {action}.").into()); }
+    });
+}
+
+/// Stop the renderer and end the cast session (np.b2.music.cast-v2).
+pub fn cast_stop(w: &MainWindow) {
+    cast_soap(w, "Stop", tulipix_music::cast::soap_stop(0), |w, _| {
+        // Even a refused Stop ends the session locally — the renderer keeps
+        // its own state; we just stop steering it.
+        if let Ok(mut g) = cast_session().lock() { *g = None; }
+        w.set_music_cast_active(false);
+        w.set_music_cast_paused(false);
+        w.set_music_cast_target("".into());
+        w.set_music_cast_status("Cast stopped.".into());
     });
 }
 
@@ -4025,29 +4117,30 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
     YT_QUEUE_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);
     w.set_music_yt_now_video(false);
     let my_gen = MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-    // Stop the previous track.
-    if let Ok(mut g) = music_proc().lock() {
-        if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
-    }
     let s = tulipix_core::settings::Settings::load().unwrap_or_default();
-    // Section-built mpv flags: volume/mute carried across tracks, the ebur128
-    // meter (+ EQ) so the visualizer pulses to real loudness, then persisted
-    // audio config (device / exclusive / gapless / replaygain).
+    // Session-level mpv flags: the ebur128 meter (+ EQ) so the visualizer
+    // pulses to real loudness, then persisted audio config (device / exclusive
+    // / gapless / replaygain). A change in any of these respawns the
+    // persistent process (np.b2.music.persistent).
     let eq_af = music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10]));
     let fade_s = w.get_music_crossfade().clamp(0.0, 12.0) as f64;
     let user_vol = w.get_music_volume().clamp(0.0, 130.0) as f64;
+    let mut session_args = vec![format!("--af={}", music_full_af(&eq_af))];
+    session_args.extend(music_audio_args(&s));
+    // Per-track knobs — IPC properties on reuse, `--flag=value` on spawn.
     // Fade-tracks: launch silent and ramp up below; otherwise start at volume.
-    let mut pre_args = vec![format!("--volume={}", if fade_s > 0.0 { 0 } else { user_vol as i32 })];
-    if w.get_music_muted() { pre_args.push("--mute=yes".into()); }
-    pre_args.push(format!("--af={}", music_full_af(&eq_af)));
-    pre_args.extend(music_audio_args(&s));
+    let load_props = vec![
+        ("volume".to_string(), format!("{}", if fade_s > 0.0 { 0 } else { user_vol as i32 })),
+        ("mute".to_string(), (if w.get_music_muted() { "yes" } else { "no" }).to_string()),
+    ];
     // Cold-start resume: this exact track was mid-play last session → pick up
     // where it left off (one-shot; any other track clears the request).
     let this_id = music_songs().lock().ok()
         .and_then(|g| g.iter().find(|s| s.pos == idx).map(|s| s.item_id));
+    let mut start_s = None;
     if let Some((rid, rpos)) = resume_pending().lock().ok().and_then(|mut g| g.take()) {
         if this_id == Some(rid) && rpos > 5.0 {
-            pre_args.push(format!("--start={rpos:.0}"));
+            start_s = Some(rpos);
         }
     }
 
@@ -4102,17 +4195,43 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
     };
     let eof_weak = w.as_weak();
     let on_eof = move || { let _ = eof_weak.upgrade_in_event_loop(|w| advance_music(&w)); };
+    const OBSERVE: &[(u64, &str)] = &[(1, "time-pos"), (2, "duration"), (3, "pause"),
+                                      (4, "volume"), (5, "mute"), (6, "af-metadata/vis/lavfi.r128.M")];
 
-    if let Err(e) = player::spawn_audio(player::AudioLaunch {
-        prefix: "tulipix-music",
-        mpv_bin: tulipix_core::thumbs::tool_bin("mpv"),
-        src: &path,
-        pre_args,
-        observe: &[(1, "time-pos"), (2, "duration"), (3, "pause"),
-                   (4, "volume"), (5, "mute"), (6, "af-metadata/vis/lavfi.r128.M")],
-        generation: my_gen,
-    }, on_prop, on_eof) {
-        tracing::error!(error = %e, "mpv audio launch failed"); return;
+    // Persistent transport (np.b2.music.persistent) — default on; set
+    // music.persistent=0 to restore spawn-per-track.
+    let persist_on = s.advanced.get("music.persistent").map(|v| v != "0").unwrap_or(true);
+    if persist_on {
+        if let Err(e) = player::play_persistent(player::PersistentLaunch {
+            prefix: "tulipix-music",
+            mpv_bin: tulipix_core::thumbs::tool_bin("mpv"),
+            src: &path,
+            session_args,
+            load_props,
+            start_s,
+            observe: OBSERVE,
+            generation: my_gen,
+        }, on_prop, on_eof) {
+            tracing::error!(error = %e, "mpv audio launch failed"); return;
+        }
+    } else {
+        // Legacy spawn-per-track: stop the previous track, spawn fresh.
+        if let Ok(mut g) = music_proc().lock() {
+            if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
+        }
+        let mut pre_args: Vec<String> = load_props.iter().map(|(k, v)| format!("--{k}={v}")).collect();
+        pre_args.extend(session_args);
+        if let Some(rp) = start_s { pre_args.push(format!("--start={rp:.0}")); }
+        if let Err(e) = player::spawn_audio(player::AudioLaunch {
+            prefix: "tulipix-music",
+            mpv_bin: tulipix_core::thumbs::tool_bin("mpv"),
+            src: &path,
+            pre_args,
+            observe: OBSERVE,
+            generation: my_gen,
+        }, on_prop, on_eof) {
+            tracing::error!(error = %e, "mpv audio launch failed"); return;
+        }
     }
 
     // Fade-tracks head: ramp 0 → user volume over the configured seconds
