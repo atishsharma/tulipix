@@ -64,6 +64,7 @@ mod mpv;
 #[path = "mpv_stub.rs"]
 mod mpv;
 mod books;
+mod profile_image;
 
 fn detect_dark() -> bool {
     // dark-light v2 reads the XDG portal color-scheme via zbus on Linux, which
@@ -5832,19 +5833,80 @@ fn main() -> Result<()> {
     // Profile editor (Settings → Profile) — persist name + avatar emoji into
     // the generic settings KV and reflect them in the sidebar user card.
     let w = window.as_weak();
-    window.on_profile_save(move |name, emoji| {
+    window.on_profile_save(move |name, emoji, logo| {
         let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
         let name = name.trim().to_string();
         if name.is_empty() { s.advanced.remove("profile.name"); }
         else { s.advanced.insert("profile.name".into(), name.clone()); }
         if emoji.is_empty() { s.advanced.remove("profile.emoji"); }
         else { s.advanced.insert("profile.emoji".into(), emoji.to_string()); }
+        // Sidebar logo choice (np.p1.profile.logo): 0 default · 1 color · 2 dark · 3 white.
+        if logo == 0 { s.advanced.remove("profile.logo"); }
+        else { s.advanced.insert("profile.logo".into(), logo.to_string()); }
         if let Err(e) = s.save() { tracing::warn!(error = %e, "save settings (profile)"); }
         if let Some(w) = w.upgrade() {
             let mut u = w.get_user();
             u.display_name = name.into();
             u.avatar_emoji = emoji;
             w.set_user(u);
+            w.set_app_logo_choice(logo);
+        }
+    });
+
+    // Cover/avatar upload — pick an image, open the crop dialog
+    // (np.p1.profile.cover). One helper serves both modes; the mode string
+    // rides the crop-dialog-mode window property and returns via crop-confirm.
+    fn open_crop_picker(w: &MainWindow, mode: &str) {
+        let title = if mode == "avatar" { "Choose avatar photo" } else { "Choose cover photo" };
+        let Some(file) = rfd::FileDialog::new().set_title(title)
+            .add_filter("Images", &["jpg", "jpeg", "png", "webp"]).pick_file() else { return; };
+        let Ok((nat_w, nat_h)) = image::image_dimensions(&file) else {
+            w.set_caps_nudge("Couldn't read that image file.".into());
+            return;
+        };
+        let Ok(img) = slint::Image::load_from_path(&file) else {
+            w.set_caps_nudge("Couldn't decode that image file.".into());
+            return;
+        };
+        *crop_source().lock().unwrap() = Some(file);
+        w.set_crop_dialog_mode(mode.into());
+        w.set_crop_dialog_nat_w(nat_w as i32);
+        w.set_crop_dialog_nat_h(nat_h as i32);
+        w.set_crop_dialog_image(img);
+        w.set_crop_dialog_open(true);
+    }
+    let w = window.as_weak();
+    window.on_pick_cover_image(move || {
+        if let Some(w) = w.upgrade() { open_crop_picker(&w, "cover"); }
+    });
+    let w = window.as_weak();
+    window.on_pick_avatar_image(move || {
+        if let Some(w) = w.upgrade() { open_crop_picker(&w, "avatar"); }
+    });
+    // Crop confirmed — crop+save the PNG from the full-res source, rebind the
+    // profile-card image. Files live at <data_dir>/profile/{cover,avatar}.png.
+    let w = window.as_weak();
+    window.on_crop_confirm(move |mode, zoom, pan_x, pan_y, mask_w, mask_h| {
+        let Some(w) = w.upgrade() else { return; };
+        w.set_crop_dialog_open(false);
+        let Some(src) = crop_source().lock().unwrap().take() else { return; };
+        let Some(dir) = tulipix_core::paths::data_dir().map(|d| d.join("profile")) else { return; };
+        let (dest, out_w, out_h) = if mode.as_str() == "avatar" {
+            (dir.join("avatar.png"), 480u32, 480u32)
+        } else {
+            (dir.join("cover.png"), 1200u32, 300u32)
+        };
+        match profile_image::save_cropped(&src, &dest, mask_w, mask_h, out_w, out_h, zoom, pan_x, pan_y) {
+            Ok(()) => {
+                let img = slint::Image::load_from_path(&dest).unwrap_or_default();
+                let mut u = w.get_user();
+                if mode.as_str() == "avatar" { u.avatar_image = img; } else { u.cover_image = img; }
+                w.set_user(u);
+            }
+            Err(e) => {
+                tracing::warn!(error = %e, "crop/save profile image");
+                w.set_caps_nudge("Couldn't save the cropped image.".into());
+            }
         }
     });
 
@@ -5856,7 +5918,17 @@ fn main() -> Result<()> {
             let mut u = window.get_user();
             u.display_name = s.text("profile.name").into();
             u.avatar_emoji = s.text("profile.emoji").into();
+            // Custom cover/avatar images persist as fixed-name PNGs.
+            let dir = tulipix_core::paths::data_dir().map(|d| d.join("profile"));
+            if let Some(p) = dir.as_ref().map(|d| d.join("cover.png")).filter(|p| p.exists()) {
+                u.cover_image = slint::Image::load_from_path(&p).unwrap_or_default();
+            }
+            if let Some(p) = dir.as_ref().map(|d| d.join("avatar.png")).filter(|p| p.exists()) {
+                u.avatar_image = slint::Image::load_from_path(&p).unwrap_or_default();
+            }
             window.set_user(u);
+            // Sidebar logo pick — 0 (default) when unset/unparsable.
+            window.set_app_logo_choice(s.text("profile.logo").parse().unwrap_or(0));
         }
         // Restore the last-used app theme and keep it until the user changes it.
         let choice = match s.theme.as_str() {
@@ -7344,6 +7416,12 @@ fn player_resume() -> &'static std::sync::Mutex<Option<f64>> {
 static PLAYER_PATH: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> = std::sync::OnceLock::new();
 fn player_path() -> &'static std::sync::Mutex<Option<PathBuf>> {
     PLAYER_PATH.get_or_init(|| std::sync::Mutex::new(None))
+}
+// Source path picked for the profile cover/avatar cropper — stashed between
+// the file-picker callback and crop-confirm (np.p1.profile.cover).
+static CROP_SOURCE: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> = std::sync::OnceLock::new();
+fn crop_source() -> &'static std::sync::Mutex<Option<PathBuf>> {
+    CROP_SOURCE.get_or_init(|| std::sync::Mutex::new(None))
 }
 static PLAYER_FS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 /// PiP state (np.p3.player.pip) — floating always-on-top mini mpv window.

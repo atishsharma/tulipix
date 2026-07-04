@@ -189,9 +189,12 @@ component GroupHeader inherits Rectangle {
     }
 }
 
-// Brand row at the top — gradient mark + wordmark.
+// Brand row at the top — logo mark + wordmark. The mark is one of the four
+// bundled Tulipix logos, picked in Settings → Profile → Appearance
+// (np.p1.profile.logo); persisted by Rust, restored on boot.
 component BrandHeader inherits Rectangle {
     in property <bool> collapsed: false;
+    in property <int> logo-choice: 0; // 0 default · 1 color · 2 dark · 3 white
     height: 48px;
     horizontal-stretch: 1;
     HorizontalLayout {
@@ -202,15 +205,16 @@ component BrandHeader inherits Rectangle {
             horizontal-stretch: 0; vertical-stretch: 0;
             y: (parent.height - self.height) / 2;
             border-radius: 10px;
-            background: @linear-gradient(135deg, Theme.brand 0%, Theme.brand-2 60%, Theme.sec-music 100%);
+            clip: true;
             drop-shadow-blur: 16px;
             drop-shadow-color: Theme.brand.with-alpha(0.45);
-            Text {
-                text: "T";
-                color: #ffffff;
-                font-size: 20px;
-                font-weight: 800;
-                horizontal-alignment: center; vertical-alignment: center;
+            Image {
+                source: root.logo-choice == 1 ? @image-url("../resources/appicons/sidebar-color.png")
+                      : root.logo-choice == 2 ? @image-url("../resources/appicons/sidebar-dark.png")
+                      : root.logo-choice == 3 ? @image-url("../resources/appicons/sidebar-white.png")
+                      :                         @image-url("../resources/appicons/sidebar-default.png");
+                image-fit: cover;
+                width: 100%; height: 100%;
             }
         }
         if !root.collapsed: VerticalLayout {
@@ -229,6 +233,7 @@ component BrandHeader inherits Rectangle {
 export component Sidebar inherits Rectangle {
     in-out property <string> active-section: "photos";
     in property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local };
+    in property <int> logo-choice: 0;
     in-out property <bool> collapsed: true;
     callback section-changed(string);
     callback user-action(string);
@@ -252,7 +257,7 @@ export component Sidebar inherits Rectangle {
         padding: root.collapsed ? 10px : 14px;
         spacing: 6px;
 
-        BrandHeader { collapsed: root.collapsed; }
+        BrandHeader { collapsed: root.collapsed; logo-choice: root.logo-choice; }
 
         Rectangle { height: 10px; horizontal-stretch: 1; background: transparent; }
         GroupHeader { label: "LIBRARY"; collapsed: root.collapsed; }
