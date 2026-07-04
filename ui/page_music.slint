@@ -1522,6 +1522,7 @@ export component MusicPage inherits Rectangle {
     in property <bool> shuffle: false;
     in property <bool> np-loved: false;          // current track loved (np.p4.music.rating)
     in property <int> np-stars: 0;               // current track 0–5 stars
+    in property <int> np-index: 0;               // current track's library position
     // Live playback state (np.p4.music.player via IPC).
     in property <float> pos: 0;                   // seconds
     in property <float> dur: 0;
@@ -4556,6 +4557,11 @@ export component MusicPage inherits Rectangle {
                                         for hz[i] in ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"]:
                                             EqBand { hz: hz; value: root.eq-bands[i]; changed(v) => { root.set-eq-band(i, v); } } } } } } } }
                     if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { icon: Icons.list-plus; isz: 17px; clicked => { root.add-to-playlist(); } } }
+                    // Karaoke — live centre-vocal cancel (np.p4.music.stem, DSP tier).
+                    if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { icon: Icons.mic; isz: 17px; active: root.karaoke-on; clicked => { root.toggle-karaoke(); } } }
+                    // Sonic similar — queue tracks that sound like the current one
+                    // (np.p4.music.embeddings); same action as the song context menu.
+                    if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { icon: Icons.sparkles; isz: 17px; clicked => { root.song-sonic(root.np-index); } } }
                     // Sleep — anchored interval popup above the bar.
                     VerticalLayout { alignment: center; Rectangle { width: 38px; height: 38px;
                         PlayerBtn { icon: Icons.timer; isz: 17px; active: root.sleep-min != 0; clicked => { sleeppop.show(); } }
@@ -6019,6 +6025,7 @@ export component MusicFullscreen inherits Rectangle {
     in property <bool> shuffle;
     in property <bool> np-loved;
     in property <int> np-stars;
+    in property <int> np-index: 0;   // current track's library position
     in property <[MusicSongRow]> queue-rows: [];
     in property <[MusicLyricLine]> lyrics-rows: [];
     in property <int> lyrics-active: -1;
