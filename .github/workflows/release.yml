@@ -57,7 +57,7 @@ jobs:
           install -m755 /tmp/whisper.cpp/build/bin/whisper-cli resources/bin/linux-x86_64/whisper-cli
 
       - name: "Build (full: embedded-mpv + skia)"
-        run: cargo build --release --locked -p tulipix-app
+        run: cargo build --release --locked -p tulipix-app --features full,ai-onnx
 
       - name: Strip
         run: strip target/release/tulipix
@@ -98,7 +98,7 @@ jobs:
           # AppImage step already collected (linuxdeploy resolved libmpv and
           # friends into AppDir). Adds ~90 MB; off by default because deb/rpm
           # declare an mpv dependency and most tar.gz users (Arch) have mpv.
-          BUNDLE_MPV_IN_TARBALL: "0"
+          BUNDLE_MPV_IN_TARBALL: "1"
         run: |
           mkdir -p stage/tulipix/resources/bin
           cp target/release/tulipix stage/tulipix/
@@ -177,7 +177,7 @@ jobs:
           echo "TULIPIX_MPV_LIB_DIR=$PWD\mpv-dev" >> $env:GITHUB_ENV
 
       - name: "Build (full: embedded-mpv + skia)"
-        run: cargo build --release --locked -p tulipix-app
+        run: cargo build --release --locked -p tulipix-app --features full,ai-onnx
 
       - name: Assemble dist
         shell: pwsh
@@ -241,7 +241,7 @@ jobs:
       - name: "Build (full: embedded-mpv + skia)"
         run: |
           export TULIPIX_MPV_LIB_DIR="$(brew --prefix mpv)/lib"
-          cargo build --release --locked -p tulipix-app
+          cargo build --release --locked -p tulipix-app --features full,ai-onnx
 
       - name: Assemble Tulipix.app
         run: |
@@ -263,7 +263,16 @@ jobs:
             -d "$APP/Contents/libs" -p @executable_path/../libs/
           dylibbundler -od -b -x "$APP/Contents/MacOS/mpv" \
             -d "$APP/Contents/libs" -p @executable_path/../libs/
-          # ad-hoc sign so Apple Silicon runs it at all (unsigned arm64 won't launch)
+          # ad-hoc sign so Apple Silicon runs it at all (unsigned arm64 won't
+          # launch). `--deep` only walks the STANDARD nested-code slots
+          # (Frameworks/PlugIns/MacOS) — the bundled tools under
+          # Contents/resources/bin are invisible to it and would be killed on
+          # exec as unsigned arm64, leaving every bundled tool unusable. Sign
+          # each one explicitly first.
+          find "$APP/Contents/resources/bin" -type f | while read -r f; do
+            file "$f" | grep -q "Mach-O" && codesign --force -s - "$f" || true
+          done
+          codesign --force -s - "$APP/Contents/MacOS/mpv"
           codesign --force --deep -s - "$APP"
 
       - name: Package dmg
