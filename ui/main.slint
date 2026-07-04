@@ -1282,6 +1282,10 @@ callback cloud-go-home();
     in-out property <[string]> music-cast-devices: [];
     in-out property <string> music-cast-target: "";
     in-out property <string> music-cast-status: ""; // np.p5.music.cast handoff feedback
+    in-out property <bool> music-cast-active: false;  // np.b2.music.cast-v2 session live
+    in-out property <bool> music-cast-paused: false;
+    callback music-cast-pause();                      // pause ⇄ resume the renderer
+    callback music-cast-stop();
     callback music-scan-cast();
     callback music-set-cast(string);
     in-out property <[float]> music-vis-bars: [];
@@ -2219,6 +2223,8 @@ callback cloud-go-home();
                 rg-scan => { root.music-rg-scan(); }
                 cast-devices: root.music-cast-devices; cast-target <=> root.music-cast-target;
                 cast-status: root.music-cast-status;
+                cast-active: root.music-cast-active; cast-paused: root.music-cast-paused;
+                cast-pause => { root.music-cast-pause(); } cast-stop => { root.music-cast-stop(); }
                 scan-cast => { root.music-scan-cast(); } set-cast(c) => { root.music-set-cast(c); }
                 vis-bars: root.music-vis-bars; vis-style <=> root.music-vis-style; vis-style-changed(s) => { root.music-set-vis-style(s); } instant-mix => { root.music-instant-mix(); }
                 scrobble-on <=> root.music-scrobble-on; toggle-scrobble => { root.music-toggle-scrobble(); }

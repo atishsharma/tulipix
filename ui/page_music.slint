@@ -574,6 +574,98 @@ component BrowseChip inherits Rectangle {
         Text { text: label; color: MusicTheme.fg2; font-size: 13px; font-weight: 600; vertical-alignment: center; } }
 }
 
+// ── Music settings cards (np.b3.music.settings-cards) ─────────────────────
+// The settings page groups controls into cards: neutral cards for
+// section-wide audio/casting, and one accent card per tab whose icon + top
+// rail reuse that tab's gradient identity from the tab bar — settings look
+// like the tab they govern.
+component SetCard inherits Rectangle {
+    in property <string> title;
+    in property <string> sub;
+    in property <image> icon;
+    in property <color> tint: #ec4899;
+    in property <brush> grad: @linear-gradient(120deg, #ec4899, #f43f5e);
+    in property <bool> accent: false;      // per-tab cards get the gradient top rail
+    border-radius: 16px; background: MusicTheme.surf00;
+    border-width: 1px; border-color: MusicTheme.line;
+    clip: true; vertical-stretch: 0;
+    if root.accent: Rectangle { x: 0; y: 0; width: parent.width; height: 3px; background: root.grad; }
+    VerticalLayout { padding: 18px; spacing: 12px; alignment: start;
+        HorizontalLayout { spacing: 11px;
+            VerticalLayout { alignment: center;
+                Rectangle { width: 34px; height: 34px; border-radius: 10px; background: root.tint.with-alpha(0.14);
+                    AppIcon { source: root.icon; tint: root.tint; width: 17px; height: 17px;
+                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } }
+            VerticalLayout { alignment: center; spacing: 2px; horizontal-stretch: 1;
+                Text { text: root.title; color: MusicTheme.fg; font-size: 15px; font-weight: 800; overflow: elide; }
+                if root.sub != "": Text { text: root.sub; color: MusicTheme.fg-mute; font-size: 11px; overflow: elide; } } }
+        @children
+    }
+}
+
+// In-card toggle row: label left, pill switch right. Rows hover as one target.
+component SetToggle inherits Rectangle {
+    in property <string> label;
+    in property <bool> on: false;
+    in property <color> tint: #ec4899;
+    callback clicked();
+    height: 36px; border-radius: 10px;
+    background: stt.has-hover ? MusicTheme.hov : transparent;
+    stt := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout { padding-left: 8px; padding-right: 8px; spacing: 10px;
+        Text { text: root.label; color: MusicTheme.fg2; font-size: 13px; font-weight: 600;
+            vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        VerticalLayout { alignment: center;
+            Rectangle { width: 38px; height: 22px; border-radius: 11px;
+                background: root.on ? root.tint : MusicTheme.surf1;
+                border-width: 1px; border-color: root.on ? transparent : MusicTheme.line;
+                Rectangle { width: 16px; height: 16px; border-radius: 8px; background: #ffffff;
+                    y: (parent.height - self.height) / 2;
+                    x: root.on ? parent.width - self.width - 3px : 3px;
+                    animate x { duration: 140ms; easing: ease-out; } } } } }
+}
+
+// Compact action/choice chip for card bodies (denser than BrowseChip).
+component SetChip inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> on: false;
+    in property <color> tint: #ec4899;
+    callback clicked();
+    height: 32px; horizontal-stretch: 0; vertical-stretch: 0; border-radius: 16px;
+    background: root.on ? root.tint.with-alpha(0.16) : (stc.has-hover ? MusicTheme.hov2 : MusicTheme.hov);
+    border-width: 1px; border-color: root.on ? root.tint.with-alpha(0.6) : MusicTheme.line;
+    stc := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout { padding-left: 13px; padding-right: 13px; spacing: 7px; alignment: center;
+        if root.icon.width > 0: VerticalLayout { alignment: center;
+            AppIcon { source: root.icon; tint: root.on ? root.tint : MusicTheme.fg2; width: 13px; height: 13px; } }
+        Text { text: root.label; color: root.on ? root.tint : MusicTheme.fg2; font-size: 12px; font-weight: 700;
+            vertical-alignment: center; overflow: elide; } }
+}
+
+// Labeled slider that fills the card width; the live value sits at the right.
+component SetSlider inherits VerticalLayout {
+    in property <string> label;
+    in property <string> value-label;
+    in property <float> value;
+    in property <float> maximum: 1.0;
+    in property <color> fill: #ec4899;
+    callback changed(float);
+    spacing: 7px;
+    HorizontalLayout { padding-left: 8px; padding-right: 8px;
+        Text { text: root.label; color: MusicTheme.fg3; font-size: 12.5px; font-weight: 600; horizontal-stretch: 1; overflow: elide; }
+        Text { text: root.value-label; color: MusicTheme.fg-dim; font-size: 12px; } }
+    HorizontalLayout { padding-left: 8px; padding-right: 8px;
+        Rectangle { height: 20px; horizontal-stretch: 1;
+            Scrubber { y: (parent.height - self.height) / 2; width: parent.width; value: root.value;
+                maximum: root.maximum; fill-color: root.fill; changed(v) => { root.changed(v); } } } }
+}
+
+// Muted helper line inside a card — wraps instead of overflowing.
+component SetHint inherits Text {
+    color: MusicTheme.fg-mute; font-size: 11px; wrap: word-wrap;
+}
+
 // Gradient sidebar chip — distinct accent per panel (queue/lyrics/find).
 component ColorChip inherits Rectangle {
     in property <string> label;
@@ -1627,8 +1719,12 @@ export component MusicPage inherits Rectangle {
     in property <[string]> cast-devices: [];
     in-out property <string> cast-target: "";
     in property <string> cast-status: "";   // handoff feedback (np.p5.music.cast)
+    in property <bool> cast-active: false;  // renderer session live (np.b2.music.cast-v2)
+    in property <bool> cast-paused: false;
     callback scan-cast();
     callback set-cast(string);
+    callback cast-pause();                  // pause ⇄ resume the renderer
+    callback cast-stop();
     // Audio visualizer (np.p5.music.visualizer) — 0..1 bar heights.
     in property <[float]> vis-bars: [];
     in-out property <int> vis-style: 0;          // 0 Bars · 1 Mirror · 2 Dots · 3 Levels · 4 Line
@@ -4929,100 +5025,133 @@ export component MusicPage inherits Rectangle {
                     VerticalLayout { alignment: center; Text { text: "Music settings"; color: MusicTheme.fg; font-size: 22px; font-weight: 800; } }
                     Rectangle { horizontal-stretch: 1; } } }
             ScrollView { vertical-stretch: 1;
-                VerticalLayout { padding: 36px; spacing: 26px; alignment: start;
-                    // Output.
-                    VerticalLayout { spacing: 12px;
-                        Text { text: "OUTPUT"; color: #ec4899; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
-                        Text { text: "Device"; color: MusicTheme.fg; font-size: 14px; font-weight: 600; }
-                        HorizontalLayout { alignment: start;
-                            VerticalLayout { width: 360px; ComboBox { model: root.devices; current-value: root.device; selected(v) => { root.set-device(v); } } } }
-                        BrowseChip { icon: root.exclusive ? Icons.square-check : Icons.square; label: root.exclusive ? "Exclusive / bit-perfect output" : "Exclusive / bit-perfect output"; clicked => { root.toggle-exclusive(); } }
-                        // Headphone correction (np.p4.music.headphone-eq) — AutoEq preset.
-                        Text { text: "Headphone EQ (AutoEq correction)"; color: MusicTheme.fg; font-size: 14px; font-weight: 600; }
-                        HorizontalLayout { spacing: 8px; alignment: start;
-                            Rectangle { width: 280px; height: 34px; border-radius: 9px; background: MusicTheme.surf0;
-                                border-width: 1px; border-color: hpq.has-focus ? #ec4899 : MusicTheme.line; clip: true;
-                                HorizontalLayout { padding-left: 12px; padding-right: 12px;
-                                    hpq := TextInput { color: MusicTheme.fg; font-size: 13px; vertical-alignment: center; single-line: true;
-                                        accepted => { root.hp-match(self.text); } } }
-                                if hpq.text == "": Text { text: "Headphone model (blank = match device)"; color: MusicTheme.fg-mute;
-                                    font-size: 12px; x: 12px; height: 100%; vertical-alignment: center; visible: !hpq.has-focus; } }
-                            BrowseChip { label: "Match"; clicked => { root.hp-match(hpq.text); } }
-                            BrowseChip { label: "Off"; clicked => { root.hp-off(); } } }
-                        if root.hp-status != "": Text { text: root.hp-status; color: MusicTheme.fg-dim; font-size: 12px; }
-                    }
-                    Rectangle { height: 1px; background: MusicTheme.surf1; }
-                    // Playback.
-                    VerticalLayout { spacing: 12px;
-                        Text { text: "PLAYBACK"; color: #ec4899; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
-                        HorizontalLayout { spacing: 8px; alignment: start;
-                            BrowseChip { icon: root.gapless ? Icons.square-check : Icons.square; label: root.gapless ? "Gapless" : "Gapless"; clicked => { root.toggle-gapless(); } } }
-                        HorizontalLayout { spacing: 12px;
-                            VerticalLayout { alignment: center; Text { text: "Fade tracks  " + root.crossfade + "s"; color: MusicTheme.fg3; font-size: 13px; width: 130px; } }
-                            VerticalLayout { alignment: center; Rectangle { width: 240px; height: 28px;
-                                Scrubber { y: (parent.height - self.height)/2; width: 240px; value: root.crossfade; maximum: 12.0; fill-color: #ec4899; changed(v) => { root.set-crossfade(v); } } } } }
-                        Text { text: "Fades the end of each track into the start of the next."; color: MusicTheme.fg-mute; font-size: 11px; }
-                        HorizontalLayout { spacing: 12px;
-                            VerticalLayout { alignment: center; Text { text: "Preamp  " + root.preamp-db + " dB"; color: MusicTheme.fg3; font-size: 13px; width: 130px; } }
-                            VerticalLayout { alignment: center; Rectangle { width: 240px; height: 28px;
-                                Scrubber { y: (parent.height - self.height)/2; width: 240px; value: root.preamp-db + 12; maximum: 24.0; fill-color: #8b5cf6; changed(v) => { root.set-preamp(Math.round(v - 12)); } } } } }
-                        Text { text: "ReplayGain (volume normalization)"; color: MusicTheme.fg-dim; font-size: 12px; }
-                        HorizontalLayout { spacing: 8px; alignment: start;
-                            for p[i] in ["off", "track", "album"]: BrowseChip { on: p == root.replaygain; label: p; clicked => { root.set-replaygain(p); } }
-                            // np.p5.music.replaygain — compute gains for untagged files
-                            // (ffmpeg ebur128 loudness scan, progress-fill like Lyrics).
-                            Rectangle { width: 130px; height: 30px; border-radius: 15px; clip: true;
-                                background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
-                                Rectangle { x: 0; width: parent.width * Math.clamp(root.rg-scan-progress, 0, 1); height: 100%;
-                                    background: @linear-gradient(90deg, #ec4899, #8b5cf6); animate width { duration: 200ms; } }
-                                TouchArea { mouse-cursor: pointer; clicked => { root.rg-scan(); } }
-                                Text { text: root.rg-scan-status != "" ? root.rg-scan-status : "Scan gains";
-                                    color: root.rg-scan-progress > 0.5 ? #ffffff : MusicTheme.fg; font-size: 11px; font-weight: 600;
-                                    horizontal-alignment: center; vertical-alignment: center; } } }
-                    }
-                    Rectangle { height: 1px; background: MusicTheme.surf1; }
-                    // Sleep timer default.
-                    VerticalLayout { spacing: 12px;
-                        Text { text: "SLEEP TIMER"; color: #ec4899; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
-                        HorizontalLayout { spacing: 8px; alignment: start;
-                            for m[i] in [0, 10, 15, 30, 45, 60, 90]: BrowseChip {
-                                on: root.sleep-min == m; label: m == 0 ? "Off" : m + "m";
-                                clicked => { root.set-sleep(m); } } }
-                    }
-                    Rectangle { height: 1px; background: MusicTheme.surf1; }
-                    // Current track.
-                    VerticalLayout { spacing: 12px;
-                        Text { text: "CURRENT TRACK"; color: #ec4899; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
-                        HorizontalLayout { spacing: 8px; alignment: start;
-                            BrowseChip { icon: Icons.pencil; label: "Edit tags"; clicked => { root.tag-edit(); root.music-settings-open = false; } }
-                            BrowseChip { icon: Icons.sparkles; label: "Instant mix (auto-DJ)"; clicked => { root.instant-mix(); root.music-settings-open = false; } } }
-                    }
-                    Rectangle { height: 1px; background: MusicTheme.surf1; }
-                    // Home dashboard.
-                    VerticalLayout { spacing: 12px;
-                        Text { text: "HOME"; color: #ec4899; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
-                        BrowseChip { icon: root.home-connect ? Icons.square-check : Icons.square; label: root.home-connect ? "Gradient outline connecting the home blocks" : "Gradient outline connecting the home blocks"; clicked => { root.toggle-home-connect(); } }
-                        BrowseChip { icon: root.yt-home-connect ? Icons.square-check : Icons.square; label: "Gradient outline on the YouTube home rails"; clicked => { root.toggle-yt-home-connect(); } }
-                        BrowseChip { icon: root.mini-outline ? Icons.square-check : Icons.square; label: "Bold gradient outline on the mini players"; clicked => { root.toggle-mini-outline(); } }
-                    }
-                    Rectangle { height: 1px; background: MusicTheme.surf1; }
-                    // Connect.
-                    VerticalLayout { spacing: 12px;
-                        Text { text: "CONNECT"; color: #ec4899; font-size: 13px; font-weight: 700; letter-spacing: 1px; }
-                        BrowseChip { icon: root.scrobble-on ? Icons.square-check : Icons.square; label: root.scrobble-on ? "Scrobble (Last.fm / ListenBrainz)" : "Scrobble (Last.fm / ListenBrainz)"; clicked => { root.toggle-scrobble(); } }
-                        // np.p5.music.scrobble — Last.fm signed session-key auth flow.
-                        // Step 1 fetches a token + opens the authorize page; step 2
-                        // trades the approved token for a session key (keychain).
-                        HorizontalLayout { spacing: 8px; alignment: start;
-                            BrowseChip { label: root.lastfm-stage == "pending" ? "Finish Last.fm connect" : "Connect Last.fm…";
-                                clicked => { root.lastfm-connect(); } } }
-                        if root.lastfm-status != "": Text { text: root.lastfm-status; color: MusicTheme.fg-mute; font-size: 12px; }
-                        HorizontalLayout { spacing: 8px; alignment: start;
-                            BrowseChip { icon: Icons.refresh-cw; label: "Scan for cast devices"; clicked => { root.scan-cast(); } }
-                            for c[i] in root.cast-devices: BrowseChip { on: c == root.cast-target; label: c; clicked => { root.set-cast(c); } } }
-                        if root.cast-devices.length == 0: Text { text: "No DLNA renderers found yet — scan looks for LAN MediaRenderers."; color: MusicTheme.fg-mute; font-size: 12px; }
-                        if root.cast-status != "": Text { text: root.cast-status; color: MusicTheme.fg-mute; font-size: 12px; }
-                    }
+                // Card layout (np.b3.music.settings-cards): a centered, capped
+                // column — nothing stretches across the whole window. Two
+                // groups: section-wide cards, then one accent card per tab.
+                VerticalLayout { padding-top: 26px; padding-bottom: 44px; alignment: start;
+                    HorizontalLayout { alignment: center;
+                        VerticalLayout { spacing: 14px; alignment: start;
+                            width: Math.min(root.width - 56px, 960px);
+
+                            // ── Section-wide ─────────────────────────────
+                            Text { text: "EVERYWHERE IN MUSIC"; color: #ec4899; font-size: 12px; font-weight: 800; letter-spacing: 1.2px; }
+                            SetHint { text: "Sound and casting — these apply across all five tabs."; }
+                            HorizontalLayout { spacing: 14px;
+                                // Output.
+                                SetCard { horizontal-stretch: 1; icon: Icons.volume; tint: #ec4899;
+                                    title: "Output"; sub: "Where the sound goes";
+                                    VerticalLayout { spacing: 6px;
+                                        SetHint { text: "Device"; }
+                                        ComboBox { model: root.devices; current-value: root.device; selected(v) => { root.set-device(v); } } }
+                                    SetToggle { label: "Exclusive / bit-perfect output"; on: root.exclusive; clicked => { root.toggle-exclusive(); } }
+                                    VerticalLayout { spacing: 6px;
+                                        SetHint { text: "Headphone EQ — AutoEq correction for your model"; }
+                                        HorizontalLayout { spacing: 8px;
+                                            Rectangle { horizontal-stretch: 1; height: 32px; border-radius: 9px; background: MusicTheme.surf0;
+                                                border-width: 1px; border-color: hpq.has-focus ? #ec4899 : MusicTheme.line; clip: true;
+                                                HorizontalLayout { padding-left: 12px; padding-right: 12px;
+                                                    hpq := TextInput { color: MusicTheme.fg; font-size: 13px; vertical-alignment: center; single-line: true;
+                                                        accepted => { root.hp-match(self.text); } } }
+                                                if hpq.text == "": Text { text: "Headphone model (blank = match device)"; color: MusicTheme.fg-mute;
+                                                    font-size: 12px; x: 12px; width: parent.width - 24px; overflow: elide; height: 100%; vertical-alignment: center; visible: !hpq.has-focus; } }
+                                            SetChip { label: "Match"; clicked => { root.hp-match(hpq.text); } }
+                                            SetChip { label: "Off"; clicked => { root.hp-off(); } } }
+                                        if root.hp-status != "": SetHint { text: root.hp-status; } } }
+                                // Playback.
+                                SetCard { horizontal-stretch: 1; icon: Icons.sliders; tint: #8b5cf6;
+                                    title: "Playback"; sub: "Transitions and loudness";
+                                    SetToggle { label: "Gapless playback"; on: root.gapless; tint: #8b5cf6; clicked => { root.toggle-gapless(); } }
+                                    SetSlider { label: "Fade tracks into each other"; value-label: root.crossfade + "s";
+                                        value: root.crossfade; maximum: 12.0; fill: #ec4899; changed(v) => { root.set-crossfade(v); } }
+                                    SetSlider { label: "Preamp"; value-label: root.preamp-db + " dB";
+                                        value: root.preamp-db + 12; maximum: 24.0; fill: #8b5cf6; changed(v) => { root.set-preamp(Math.round(v - 12)); } }
+                                    VerticalLayout { spacing: 6px;
+                                        SetHint { text: "ReplayGain — plays every track at the same loudness"; }
+                                        HorizontalLayout { spacing: 8px; alignment: start;
+                                            for p[i] in ["off", "track", "album"]: SetChip { on: p == root.replaygain; tint: #8b5cf6; label: p; clicked => { root.set-replaygain(p); } }
+                                            // Gain scan for untagged files (ffmpeg ebur128), progress fills the pill.
+                                            Rectangle { width: 116px; height: 32px; border-radius: 16px; clip: true;
+                                                background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                                                Rectangle { x: 0; width: parent.width * Math.clamp(root.rg-scan-progress, 0, 1); height: 100%;
+                                                    background: @linear-gradient(90deg, #ec4899, #8b5cf6); animate width { duration: 200ms; } }
+                                                TouchArea { mouse-cursor: pointer; clicked => { root.rg-scan(); } }
+                                                Text { text: root.rg-scan-status != "" ? root.rg-scan-status : "Scan gains";
+                                                    color: root.rg-scan-progress > 0.5 ? #ffffff : MusicTheme.fg; font-size: 11px; font-weight: 600;
+                                                    width: parent.width - 12px; x: 6px; overflow: elide;
+                                                    horizontal-alignment: center; vertical-alignment: center; } } } } } }
+                            HorizontalLayout { spacing: 14px;
+                                // Casting.
+                                SetCard { horizontal-stretch: 1; icon: Icons.tv; tint: #14b8a6;
+                                    title: "Casting"; sub: "Send the current track to a LAN renderer";
+                                    HorizontalLayout { alignment: start;
+                                        SetChip { icon: Icons.refresh-cw; tint: #14b8a6; label: "Scan for devices"; clicked => { root.scan-cast(); } } }
+                                    for c[i] in root.cast-devices: SetChip { horizontal-stretch: 1; on: c == root.cast-target; tint: #14b8a6; label: c; clicked => { root.set-cast(c); } }
+                                    if root.cast-devices.length == 0: SetHint { text: "No DLNA renderers found yet — scan looks for LAN MediaRenderers."; }
+                                    // Live cast session transport (np.b2.music.cast-v2).
+                                    if root.cast-active: HorizontalLayout { spacing: 8px; alignment: start;
+                                        SetChip { icon: root.cast-paused ? Icons.play : Icons.pause; tint: #14b8a6; label: root.cast-paused ? "Resume" : "Pause"; clicked => { root.cast-pause(); } }
+                                        SetChip { icon: Icons.square; tint: #14b8a6; label: "Stop casting"; clicked => { root.cast-stop(); } } }
+                                    if root.cast-status != "": SetHint { text: root.cast-status; } }
+                                // Appearance.
+                                SetCard { horizontal-stretch: 1; icon: Icons.sparkles; tint: #f59e0b;
+                                    title: "Appearance"; sub: "Little touches across the section";
+                                    SetToggle { label: "Bold gradient outline on the mini players"; on: root.mini-outline; tint: #f59e0b; clicked => { root.toggle-mini-outline(); } }
+                                    SetHint { text: "Theme (light / dark / OLED) cycles from the moon button on the player bar."; } } }
+
+                            // ── Per tab ──────────────────────────────────
+                            Rectangle { height: 10px; }
+                            Text { text: "PER TAB"; color: #ec4899; font-size: 12px; font-weight: 800; letter-spacing: 1.2px; }
+                            SetHint { text: "Each card matches a tab in the bar above."; }
+                            HorizontalLayout { spacing: 14px;
+                                // My Music.
+                                SetCard { horizontal-stretch: 1; accent: true; icon: Icons.music;
+                                    tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e);
+                                    title: "My Music"; sub: "Your library and scrobbling";
+                                    HorizontalLayout { spacing: 8px; alignment: start;
+                                        SetChip { icon: Icons.pencil; label: "Edit tags"; clicked => { root.tag-edit(); root.music-settings-open = false; } }
+                                        SetChip { icon: Icons.sparkles; label: "Instant mix (auto-DJ)"; clicked => { root.instant-mix(); root.music-settings-open = false; } } }
+                                    SetToggle { label: "Scrobble (Last.fm / ListenBrainz)"; on: root.scrobble-on; clicked => { root.toggle-scrobble(); } }
+                                    // np.p5.music.scrobble — Last.fm signed session-key auth flow.
+                                    HorizontalLayout { alignment: start;
+                                        SetChip { label: root.lastfm-stage == "pending" ? "Finish Last.fm connect" : "Connect Last.fm…"; clicked => { root.lastfm-connect(); } } }
+                                    if root.lastfm-status != "": SetHint { text: root.lastfm-status; }
+                                    SetToggle { label: "Gradient outline connecting the Home blocks"; on: root.home-connect; clicked => { root.toggle-home-connect(); } } }
+                                // Podcasts.
+                                SetCard { horizontal-stretch: 1; accent: true; icon: Icons.mic;
+                                    tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1);
+                                    title: "Podcasts"; sub: "Move subscriptions in and out";
+                                    HorizontalLayout { spacing: 8px; alignment: start;
+                                        SetChip { icon: Icons.download; tint: #8b5cf6; label: "Import OPML"; clicked => { root.podcast-opml-import(); } }
+                                        SetChip { icon: Icons.upload; tint: #8b5cf6; label: "Export OPML"; clicked => { root.podcast-opml-export(); } } }
+                                    SetHint { text: "OPML is the standard subscription list — it moves your shows between podcast apps."; } } }
+                            HorizontalLayout { spacing: 14px;
+                                // Audiobooks.
+                                SetCard { horizontal-stretch: 1; accent: true; icon: Icons.book-open;
+                                    tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4);
+                                    title: "Audiobooks"; sub: "For late-night chapters";
+                                    VerticalLayout { spacing: 6px;
+                                        SetHint { text: "Sleep timer — stops any playback after"; }
+                                        HorizontalLayout { spacing: 7px; alignment: start;
+                                            for m[i] in [0, 10, 15, 30, 45, 60, 90]: SetChip {
+                                                on: root.sleep-min == m; tint: #3b82f6; label: m == 0 ? "Off" : m + "m";
+                                                clicked => { root.set-sleep(m); } } } }
+                                    SetHint { text: "Chapters resume where you stopped; End of track mode lives on the timer itself."; } }
+                                // Radio.
+                                SetCard { horizontal-stretch: 1; accent: true; icon: Icons.radio;
+                                    tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e);
+                                    title: "Radio"; sub: "Live stations";
+                                    HorizontalLayout { alignment: start;
+                                        SetChip { icon: Icons.refresh-cw; tint: #14b8a6; label: "Clear recently played"; clicked => { root.radio-clear-recent(); } } }
+                                    SetHint { text: "Removes the stations under Recent — favorites stay put."; } } }
+                            HorizontalLayout { spacing: 14px;
+                                // YouTube.
+                                SetCard { horizontal-stretch: 1; accent: true; icon: Icons.play;
+                                    tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b);
+                                    title: "YouTube"; sub: "Home rails";
+                                    SetToggle { label: "Gradient outline on the Home rails"; on: root.yt-home-connect; tint: #ef4444; clicked => { root.toggle-yt-home-connect(); } }
+                                    SetHint { text: "The Piped instance and download folder live in the app-wide Settings page."; } }
+                                Rectangle { horizontal-stretch: 1; } }
+                        } }
                 }
             }
         }
