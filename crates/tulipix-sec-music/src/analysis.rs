@@ -127,10 +127,10 @@ fn pearson(a: &[f64; 12], b: &[f64; 12]) -> f64 {
     if da <= 0.0 || db <= 0.0 { 0.0 } else { num / (da * db).sqrt() }
 }
 
-/// `(pitch_class 0..11, is_major)` via a 3-octave chromagram + KS correlation.
-pub fn detect_key(samples: &[f32]) -> Option<(u8, bool)> {
+/// Peak-normalized 12-bin chromagram over 4-second windows (hop 2 s, ≤15
+/// windows) — shared by key detection and the sonic embedding.
+fn chroma12(samples: &[f32]) -> Option<[f64; 12]> {
     if samples.len() < SR as usize { return None; }
-    // Chroma accumulated over 4-second windows, hop 2s, capped at ~15 windows.
     let win = 4 * SR as usize;
     let hop = 2 * SR as usize;
     let mut chroma = [0.0f64; 12];
@@ -153,6 +153,12 @@ pub fn detect_key(samples: &[f32]) -> Option<(u8, bool)> {
     let max = chroma.iter().cloned().fold(0.0f64, f64::max);
     if max <= 0.0 { return None; }
     for c in chroma.iter_mut() { *c /= max; }
+    Some(chroma)
+}
+
+/// `(pitch_class 0..11, is_major)` via a 3-octave chromagram + KS correlation.
+pub fn detect_key(samples: &[f32]) -> Option<(u8, bool)> {
+    let chroma = chroma12(samples)?;
     // Correlate against all 24 rotated profiles.
     let mut best: (u8, bool, f64) = (0, true, f64::MIN);
     for root in 0..12usize {
@@ -185,6 +191,72 @@ pub fn detect_dr(samples: &[f32]) -> Option<f64> {
         })
         .collect();
     tulipix_music::dr_meter::dr_score(&blocks, peak_dbfs).map(|d| (d * 10.0).round() / 10.0)
+}
+
+/// `np.p4.music.embeddings` (dsp-v1) — a hand-rolled sonic descriptor for
+/// "Sonic Similar", no model download needed. 43 dims:
+///
+/// * 12 chroma (harmony) · weight 0.8
+/// * 24 log-spaced spectral band energies 55 Hz–7 kHz (timbre) · weight 1.0
+/// * 3 rhythm (BPM + onset-flux mean/std) · weight 0.6
+/// * 3 dynamics (DR, RMS, crest factor) · weight 0.5
+/// * 1 zero-crossing rate (brightness) · weight 0.5
+///
+/// Each group is unit-normalized before weighting so cosine distance mixes
+/// harmony/timbre/rhythm on comparable scales. Tracks embedded with a real
+/// CLAP/PANNs model later use a different `model` tag — the similarity query
+/// never mixes spaces.
+pub fn dsp_embedding(samples: &[f32]) -> Option<Vec<f32>> {
+    if samples.len() < 4 * SR as usize { return None; }
+
+    // Timbre: Goertzel probes at 24 log-spaced centre frequencies, averaged
+    // over up to 8 spread-out 2-second windows.
+    let win = 2 * SR as usize;
+    let n_windows = ((samples.len() - win) / win).clamp(1, 8);
+    let step = (samples.len() - win) / n_windows;
+    let mut bands = [0.0f64; 24];
+    for wi in 0..n_windows {
+        let seg = &samples[wi * step..wi * step + win];
+        for (bi, band) in bands.iter_mut().enumerate() {
+            // 55 Hz · (7000/55)^(bi/23) — log spacing across the audible core.
+            let f = 55.0 * (7000.0f64 / 55.0).powf(bi as f64 / 23.0);
+            *band += goertzel(seg, f);
+        }
+    }
+    // Log-compress (energies span orders of magnitude), then unit-normalize.
+    for b in bands.iter_mut() { *b = (*b + 1e-9).ln().max(0.0); }
+
+    let chroma = chroma12(samples)?;
+    let bpm = detect_bpm(samples);
+    let dr = detect_dr(samples);
+
+    // Onset-flux statistics (rhythmic density/steadiness).
+    let flux = onset_flux(samples, 1024, 512);
+    let fmean = if flux.is_empty() { 0.0 } else { flux.iter().sum::<f32>() / flux.len() as f32 };
+    let fstd = if flux.len() < 2 { 0.0 } else {
+        (flux.iter().map(|v| (v - fmean).powi(2)).sum::<f32>() / flux.len() as f32).sqrt()
+    };
+
+    // Dynamics + brightness.
+    let rms = (samples.iter().map(|s| (*s as f64).powi(2)).sum::<f64>() / samples.len() as f64).sqrt();
+    let peak = samples.iter().fold(0.0f32, |m, s| m.max(s.abs())) as f64;
+    let crest = if rms > 0.0 { (peak / rms).min(20.0) / 20.0 } else { 0.0 };
+    let zcr = samples.windows(2).filter(|w| (w[0] >= 0.0) != (w[1] >= 0.0)).count() as f64
+        / samples.len() as f64;
+
+    // Assemble: unit-normalize each group, then apply the group weight.
+    fn push_group(out: &mut Vec<f32>, group: &[f64], weight: f64) {
+        let norm = group.iter().map(|v| v * v).sum::<f64>().sqrt();
+        let n = if norm > 0.0 { norm } else { 1.0 };
+        for v in group { out.push((v / n * weight) as f32); }
+    }
+    let mut v = Vec::with_capacity(43);
+    push_group(&mut v, &bands, 1.0);
+    push_group(&mut v, &chroma, 0.8);
+    push_group(&mut v, &[bpm.unwrap_or(120.0) / 200.0, fmean as f64, fstd as f64], 0.6);
+    push_group(&mut v, &[dr.unwrap_or(8.0) / 20.0, rms, crest], 0.5);
+    push_group(&mut v, &[zcr], 0.5);
+    Some(v)
 }
 
 /// Full result for one track.

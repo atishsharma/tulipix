@@ -87,3 +87,29 @@ size_bytes = 574000000
 quant = "q5_0"
 min_vram_mb = 0
 cap = "voice.best"
+
+# ── Music AI (np.p4.music.embeddings / np.p4.music.stem) ───────────────────
+
+# CLAP audio encoder (transformers.js ONNX export) — upgrades Sonic Similar
+# from the built-in DSP descriptor to learned audio embeddings. Optional:
+# Sonic Similar works without it (dsp-v1).
+[[models]]
+name = "clap-audio"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/Xenova/clap-htsat-unfused/resolve/main/onnx/audio_model.onnx"
+size_bytes = 120000000
+quant = "fp32"
+min_vram_mb = 1024
+cap = "music.ai.embeddings"
+
+# MDX-Net vocal isolation (UVR's Kim_Vocal_2) — powers Karaoke / stem export.
+[[models]]
+name = "mdx-vocal"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/seanghay/uvr_models/resolve/main/Kim_Vocal_2.onnx"
+size_bytes = 66000000
+quant = "fp32"
+min_vram_mb = 1024
+cap = "music.ai.stems"

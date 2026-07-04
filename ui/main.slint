@@ -1158,6 +1158,11 @@ callback cloud-go-home();
     callback music-song-properties(int);
     callback music-song-edit-media(int);
     callback music-song-analyze(int);
+    callback music-song-sonic(int);              // Sonic similar queue (np.p4.music.embeddings)
+    callback music-sonic-index();                // build the whole-library sonic index
+    in-out property <string> music-sonic-status: "";
+    in-out property <bool> music-karaoke-on: false;  // live centre-vocal cancel
+    callback music-toggle-karaoke();
     callback music-song-play-video(int);
     callback music-song-link-video(int);
     callback music-song-delete(int);
@@ -2163,6 +2168,10 @@ callback cloud-go-home();
                 song-view-artist(i) => { root.music-artist-open(i); } song-properties(i) => { root.music-song-properties(i); }
                 song-edit-media(i) => { root.music-song-edit-media(i); }
                 song-analyze(i) => { root.music-song-analyze(i); }
+                song-sonic(i) => { root.music-song-sonic(i); }
+                sonic-index => { root.music-sonic-index(); }
+                sonic-status: root.music-sonic-status;
+                karaoke-on: root.music-karaoke-on; toggle-karaoke => { root.music-toggle-karaoke(); }
                 song-play-video(i) => { root.music-song-play-video(i); }
                 song-link-video(i) => { root.music-song-link-video(i); }
                 song-delete(i) => { root.music-song-delete(i); }

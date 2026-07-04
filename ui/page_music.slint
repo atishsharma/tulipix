@@ -1566,6 +1566,11 @@ export component MusicPage inherits Rectangle {
     callback song-properties(int);               // show the media-info dialog
     callback song-edit-media(int);               // edit tags stored in the library
     callback song-analyze(int);                  // BPM / musical key / DR analysis
+    callback song-sonic(int);                    // Sonic similar — embeddings queue
+    callback sonic-index();                      // build embeddings for the whole library
+    in property <string> sonic-status: "";       // indexer progress / result line
+    in property <bool> karaoke-on: false;        // live centre-vocal cancellation
+    callback toggle-karaoke();
     callback song-play-video(int);               // play the linked music video
     callback song-link-video(int);               // pick + link a video file to this song
     callback song-delete(int);                   // delete the file from disk + library
@@ -5061,6 +5066,7 @@ export component MusicPage inherits Rectangle {
                                 SetCard { horizontal-stretch: 1; icon: Icons.sliders; tint: #8b5cf6;
                                     title: "Playback"; sub: "Transitions and loudness";
                                     SetToggle { label: "Gapless playback"; on: root.gapless; tint: #8b5cf6; clicked => { root.toggle-gapless(); } }
+                                    SetToggle { label: "Karaoke — reduce centre vocals"; on: root.karaoke-on; tint: #8b5cf6; clicked => { root.toggle-karaoke(); } }
                                     SetSlider { label: "Fade tracks into each other"; value-label: root.crossfade + "s";
                                         value: root.crossfade; maximum: 12.0; fill: #ec4899; changed(v) => { root.set-crossfade(v); } }
                                     SetSlider { label: "Preamp"; value-label: root.preamp-db + " dB";
@@ -5115,7 +5121,12 @@ export component MusicPage inherits Rectangle {
                                     HorizontalLayout { alignment: start;
                                         SetChip { label: root.lastfm-stage == "pending" ? "Finish Last.fm connect" : "Connect Last.fm…"; clicked => { root.lastfm-connect(); } } }
                                     if root.lastfm-status != "": SetHint { text: root.lastfm-status; }
-                                    SetToggle { label: "Gradient outline connecting the Home blocks"; on: root.home-connect; clicked => { root.toggle-home-connect(); } } }
+                                    SetToggle { label: "Gradient outline connecting the Home blocks"; on: root.home-connect; clicked => { root.toggle-home-connect(); } }
+                                    // Sonic Similar index (np.p4.music.embeddings) — analyzes
+                                    // every track once so "Sonic similar" can rank the library.
+                                    HorizontalLayout { alignment: start;
+                                        SetChip { icon: Icons.waveform; label: "Build sonic index"; clicked => { root.sonic-index(); } } }
+                                    if root.sonic-status != "": SetHint { text: root.sonic-status; } }
                                 // Podcasts.
                                 SetCard { horizontal-stretch: 1; accent: true; icon: Icons.mic;
                                     tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1);
@@ -5455,6 +5466,7 @@ export component MusicPage inherits Rectangle {
                 MusicMenuRow { icon: Icons.info; label: "Properties"; clicked => { root.trk-ctx-open = false; root.song-properties(root.trk-ctx-idx); } }
                 MusicMenuRow { icon: Icons.pencil; label: "Edit media info for library"; clicked => { root.trk-ctx-open = false; root.song-edit-media(root.trk-ctx-idx); } }
                 MusicMenuRow { icon: Icons.waveform; label: "Analyze BPM · key · dynamics"; clicked => { root.trk-ctx-open = false; root.song-analyze(root.trk-ctx-idx); } }
+                MusicMenuRow { icon: Icons.sparkles; label: "Sonic similar — queue tracks that sound like this"; clicked => { root.trk-ctx-open = false; root.song-sonic(root.trk-ctx-idx); } }
                 MusicMenuRow { icon: Icons.play; label: "Play music video"; clicked => { root.trk-ctx-open = false; root.song-play-video(root.trk-ctx-idx); } }
                 MusicMenuRow { icon: Icons.pencil; label: "Link music video…"; clicked => { root.trk-ctx-open = false; root.song-link-video(root.trk-ctx-idx); } }
                 MusicMenuRow { icon: Icons.trash; label: "Delete song (from system)"; txt: #ef4444; clicked => { root.trk-ctx-open = false; root.del-confirm-idx = root.trk-ctx-idx; root.del-confirm-open = true; } }

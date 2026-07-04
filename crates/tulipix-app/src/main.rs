@@ -1575,8 +1575,6 @@ fn main() -> Result<()> {
         w0.set_music_tag_open(true);
         prefill_tag_editor(&w, m.item_id);
     });
-    // Context menu — Delete: remove the file from disk AND the library, then refresh.
-    let w = window.as_weak();
     // Context menu — music-video link (np.p4.music.video-link): pick a video
     // file for this song; playback goes through the windowed mpv player. The
     // videos-library item id is stored when the file is inside that library,
@@ -1664,6 +1662,24 @@ fn main() -> Result<()> {
                       else { format!("“{}” — {}.", m.title, parts.join(" · ")) };
             let _ = weak.upgrade_in_event_loop(move |w| w.set_caps_nudge(msg.into()));
         });
+    });
+    // Sonic similar (np.p4.music.embeddings) — DSP-embedding nearest-neighbour
+    // queue + the whole-library indexer chip in Music settings.
+    let w = window.as_weak();
+    window.on_music_song_sonic(move |pos| {
+        let Some(w0) = w.upgrade() else { return; };
+        sonic_similar_queue(&w0, pos);
+    });
+    let w = window.as_weak();
+    window.on_music_sonic_index(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        sonic_index_all(&w0);
+    });
+    // Karaoke (np.p4.music.stem, DSP tier) — live centre-vocal cancellation.
+    let w = window.as_weak();
+    window.on_music_toggle_karaoke(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        karaoke_toggle(&w0);
     });
     let w = window.as_weak();
     window.on_music_song_delete(move |pos| {

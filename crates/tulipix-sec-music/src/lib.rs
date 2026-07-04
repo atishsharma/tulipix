@@ -441,6 +441,113 @@ pub fn set_instant_mix_queue(w: &MainWindow, ids: &[i64]) {
     w.set_music_queue_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
 }
 
+// ── Sonic Similar (np.p4.music.embeddings, dsp-v1) ─────────────────────────
+// Embedding-based "more like this": each track gets a 43-dim DSP descriptor
+// (analysis::dsp_embedding — no model download needed); nearest-by-cosine
+// fills the Up-next queue. A future CLAP/PANNs ONNX path stores under its own
+// `model` tag and silently takes over (the similarity query never mixes
+// embedding spaces).
+
+/// True while the background indexer walks the library.
+pub static SONIC_INDEXING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Compute + store the dsp-v1 embedding for one track. Blocking (ffmpeg
+/// decode + DSP ~2-4 s) — call from a worker thread.
+pub fn sonic_embed_one(rt: &tokio::runtime::Handle, item_id: i64, path: &std::path::Path) -> bool {
+    let Some(samples) = analysis::decode_mono(path) else { return false; };
+    let Some(vec) = analysis::dsp_embedding(&samples) else { return false; };
+    rt.block_on(async move {
+        let Ok(pool) = pool_for("music").await else { return false; };
+        tulipix_music::embeddings::store(&pool, item_id, "dsp-v1", &vec).await.is_ok()
+    })
+}
+
+/// Context-menu "Sonic similar": ensure the seed is embedded, rank the
+/// indexed library by cosine, fill the Up-next queue. Tracks not yet indexed
+/// simply can't rank — the background indexer (below) closes that gap.
+pub fn sonic_similar_queue(w: &MainWindow, pos: i32) {
+    let Some(seed) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+    let Some(path) = music_paths().lock().ok().and_then(|g| g.get(pos as usize).cloned()) else { return; };
+    let title = music_songs().lock().ok()
+        .and_then(|g| g.iter().find(|s| s.pos == pos).map(|s| s.title.clone()))
+        .unwrap_or_else(|| "track".into());
+    w.set_caps_nudge(format!("Finding tracks that sound like “{title}”…").into());
+    let weak = w.as_weak();
+    let rt = tokio::runtime::Handle::current();
+    std::thread::spawn(move || {
+        // Seed embedding on demand (skips instantly when already stored).
+        let have = rt.block_on(async {
+            let Ok(pool) = pool_for("music").await else { return false; };
+            sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM track_embeddings WHERE item_id = ?")
+                .bind(seed).fetch_one(&pool).await.map(|n| n > 0).unwrap_or(false)
+        });
+        if !have && !sonic_embed_one(&rt, seed, &path) {
+            let _ = weak.upgrade_in_event_loop(|w| w.set_caps_nudge("Sonic similar failed — could not analyze the file.".into()));
+            return;
+        }
+        rt.block_on(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let ranked = tulipix_music::embeddings::similar(&pool, seed, 40).await.unwrap_or_default();
+            let indexed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_embeddings")
+                .fetch_one(&pool).await.unwrap_or(0);
+            let ids: Vec<i64> = ranked.into_iter().map(|(id, _)| id).collect();
+            let _ = tulipix_music::queue::clear(&pool).await;
+            for id in &ids { let _ = tulipix_music::queue::enqueue(&pool, *id, "sonic").await; }
+            let n = ids.len();
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                set_instant_mix_queue(&w, &ids);
+                w.set_music_player_panel("queue".into());
+                w.set_caps_nudge(match (n, indexed) {
+                    (0, _) => "No sonic matches yet — run “Build sonic index” in Music settings first.".to_string(),
+                    (n, i) => format!("Queued {n} sonically similar tracks ({i} indexed)."),
+                }.into());
+            });
+        });
+    });
+}
+
+/// Settings-card "Build sonic index": walk every library track without an
+/// embedding, one at a time (each ~2-4 s of ffmpeg + DSP), progress in the
+/// settings status line. Idempotent; re-run picks up only new tracks.
+pub fn sonic_index_all(w: &MainWindow) {
+    use std::sync::atomic::Ordering;
+    if SONIC_INDEXING.swap(true, Ordering::SeqCst) { return; }  // already running
+    let items: Vec<(i64, std::path::PathBuf)> = {
+        let ids = music_ids().lock().map(|g| g.clone()).unwrap_or_default();
+        let paths = music_paths().lock().map(|g| g.clone()).unwrap_or_default();
+        ids.into_iter().zip(paths).collect()
+    };
+    let weak = w.as_weak();
+    let rt = tokio::runtime::Handle::current();
+    std::thread::spawn(move || {
+        let todo: Vec<(i64, std::path::PathBuf)> = rt.block_on(async {
+            let Ok(pool) = pool_for("music").await else { return Vec::new(); };
+            let done: std::collections::HashSet<i64> =
+                sqlx::query_scalar::<_, i64>("SELECT item_id FROM track_embeddings")
+                    .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
+            items.into_iter().filter(|(id, _)| !done.contains(id)).collect()
+        });
+        let total = todo.len();
+        if total == 0 {
+            SONIC_INDEXING.store(false, Ordering::SeqCst);
+            let _ = weak.upgrade_in_event_loop(|w| w.set_music_sonic_status("Sonic index is up to date.".into()));
+            return;
+        }
+        let mut ok = 0usize;
+        for (i, (id, path)) in todo.into_iter().enumerate() {
+            if sonic_embed_one(&rt, id, &path) { ok += 1; }
+            if i % 3 == 0 || i + 1 == total {
+                let msg = format!("Indexing… {} / {total}", i + 1);
+                let _ = weak.upgrade_in_event_loop(move |w| w.set_music_sonic_status(msg.into()));
+            }
+        }
+        SONIC_INDEXING.store(false, Ordering::SeqCst);
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_music_sonic_status(format!("Sonic index ready — {ok} of {total} tracks analyzed.").into());
+        });
+    });
+}
+
 // Parsed synced-lyric lines for the current track: (ms, text), driving the
 // active-line highlight during playback (np.p5.music.lyrics-synced).
 static MUSIC_LYRICS_LINES: std::sync::OnceLock<std::sync::Mutex<Vec<(i64, String)>>> = std::sync::OnceLock::new();
@@ -3861,16 +3968,39 @@ pub fn hp_af_from_eq(eq: &tulipix_music::headphone_eq::ParametricEq) -> String {
     if eq.preamp_db.abs() > 0.05 { format!("{aneq},volume={:.1}", eq.preamp_db) } else { aneq }
 }
 
-/// Append the headphone-correction chain + the ebur128 metering filter
-/// (labelled `vis`) to the EQ `af`. Empty EQ → hp + meter (or just the meter).
+/// Karaoke mode (np.p4.music.stem, DSP tier): live centre-channel
+/// cancellation in the filter chain — removes centre-panned vocals without a
+/// model download. 0.85 (not 1.0) keeps a hint of the centre so bass/kick
+/// that's also centre-mixed doesn't fully vanish. The MDX-Net ONNX model
+/// (`mdx-vocal` in the registry) is the learned upgrade path.
+pub static KARAOKE_ON: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+const KARAOKE_AF: &str = "lavfi=[pan=stereo|c0=c0-0.85*c1|c1=c1-0.85*c0]";
+
+/// Append karaoke + the headphone-correction chain + the ebur128 metering
+/// filter (labelled `vis`) to the EQ `af`. Empty EQ → hp + meter (or meter).
 pub fn music_full_af(eq_af: &str) -> String {
     const VIS: &str = "@vis:ebur128=metadata=1:video=0";
     let hp = headphone_af().lock().map(|g| g.clone()).unwrap_or_default();
     let mut parts: Vec<&str> = Vec::new();
+    if KARAOKE_ON.load(std::sync::atomic::Ordering::Relaxed) { parts.push(KARAOKE_AF); }
     if !eq_af.is_empty() { parts.push(eq_af); }
     if !hp.is_empty() { parts.push(&hp); }
     parts.push(VIS);
     parts.join(",")
+}
+
+/// Toggle karaoke and push the rebuilt chain to the live player. The session
+/// arg on the persistent process is now stale, but the next play compares
+/// against the *newly built* af and respawns — settings still win.
+pub fn karaoke_toggle(w: &MainWindow) {
+    use std::sync::atomic::Ordering;
+    let on = !KARAOKE_ON.load(Ordering::Relaxed);
+    KARAOKE_ON.store(on, Ordering::Relaxed);
+    w.set_music_karaoke_on(on);
+    let gains = music_eq().lock().map(|g| *g).unwrap_or([0.0; 10]);
+    music_ipc(&["set_property", "af", &music_full_af(&music_eq_af(&gains))]);
+    w.set_caps_nudge(if on { "Karaoke on — centre vocals reduced (works best on centre-mixed tracks)." }
+                     else { "Karaoke off." }.into());
 }
 
 /// Default AutoEq mirror (overridable via the `api.autoeq` setting).
