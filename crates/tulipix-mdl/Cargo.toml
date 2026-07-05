@@ -1,0 +1,28 @@
+[package]
+name = "tulipix-mdl"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Native port of the `mdl` music downloader: provider metadata scrapers
+# (URL -> track list) + a download pipeline on the app's bundled yt-dlp/ffmpeg.
+# lofty / sanitize-filename / tulipix-core / tulipix-common get added with the
+# download pipeline (Task 15); the provider scrapers below need none of them.
+
+[dependencies]
+tokio = { workspace = true }
+reqwest = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+regex = "1"
+url = "2"
+async-trait = "0.1"
+# yt-dlp binary resolution (bundled tool + PATH + override dir).
+tulipix-core = { path = "../tulipix-core" }
+
+[dev-dependencies]
+tokio = { workspace = true }

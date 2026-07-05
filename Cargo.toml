@@ -13,6 +13,7 @@ members = [
     "crates/tulipix-photos",
     "crates/tulipix-videos",
     "crates/tulipix-music",
+    "crates/tulipix-mdl",
     "crates/tulipix-books",
     "crates/tulipix-cloud",
     "crates/tulipix-player",

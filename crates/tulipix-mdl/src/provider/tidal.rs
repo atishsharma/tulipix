@@ -1,0 +1,21 @@
+//! Tidal provider — stub (Task 13).
+
+use super::Provider;
+use crate::types::{Playlist, ProviderId};
+use anyhow::Result;
+use url::Url;
+
+pub struct Tidal;
+
+#[async_trait::async_trait]
+impl Provider for Tidal {
+    fn id(&self) -> ProviderId {
+        ProviderId::Tidal
+    }
+    fn matches(&self, _url: &Url) -> bool {
+        false
+    }
+    async fn fetch(&self, _client: &reqwest::Client, _url: &str) -> Result<Playlist> {
+        anyhow::bail!("Tidal not implemented yet")
+    }
+}
