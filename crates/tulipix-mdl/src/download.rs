@@ -25,24 +25,68 @@ fn ytdlp_bin() -> PathBuf {
     tulipix_core::thumbs::tool_bin("yt-dlp")
 }
 
+/// yt-dlp cookie flags from the stored `ytdlp_cookies` setting: a cookies.txt
+/// path -> `--cookies <path>`, otherwise a browser name -> `--cookies-from-browser`.
+fn cookie_args() -> Vec<String> {
+    match tulipix_core::api_keys::fetch("ytdlp_cookies") {
+        Ok(Some(v)) if !v.trim().is_empty() => {
+            let v = v.trim().to_string();
+            if std::path::Path::new(&v).is_file() {
+                vec!["--cookies".into(), v]
+            } else {
+                vec!["--cookies-from-browser".into(), v]
+            }
+        }
+        _ => Vec::new(),
+    }
+}
+
 /// Download one track's audio into `dest` as Opus. Returns the produced path.
+/// Searches YouTube for the single best match of "artist - title" (per track,
+/// never the source playlist) and extracts audio to Opus via ffmpeg.
 async fn download_audio(track: &Track, index: usize, dest: &Path) -> Result<PathBuf> {
     let stem = track_file_stem(index, track);
     let out_tmpl = dest.join(format!("{stem}.%(ext)s"));
     let query = format!("ytsearch1:{}", search_query(track));
-    let out = tokio::process::Command::new(ytdlp_bin())
-        .arg(&query)
-        .args(["-f", "bestaudio", "-x", "--audio-format", "opus"])
-        .args(["--no-playlist", "--no-warnings", "-o"])
-        .arg(&out_tmpl)
-        .output()
-        .await?;
+    let ffmpeg = tulipix_core::thumbs::tool_bin("ffmpeg");
+
+    let mut cmd = tokio::process::Command::new(ytdlp_bin());
+    cmd.arg(&query)
+        .args(["-f", "bestaudio/best", "-x", "--audio-format", "opus"])
+        .args(["--no-playlist", "--no-warnings"])
+        // Rotate player clients — helps dodge YouTube's "confirm you're not a
+        // bot" gate that hits the default web client.
+        .args(["--extractor-args", "youtube:player_client=default,tv,android"]);
+    // yt-dlp needs ffmpeg for the Opus extraction. Point it at the resolved
+    // binary so it works even when ffmpeg isn't on the app process's PATH.
+    if ffmpeg.exists() {
+        cmd.arg("--ffmpeg-location").arg(&ffmpeg);
+    }
+    // Optional cookies (Settings → "yt-dlp cookies"): a cookies.txt path or a
+    // browser name for --cookies-from-browser. The only reliable way past
+    // YouTube's bot check.
+    for a in cookie_args() {
+        cmd.arg(a);
+    }
+    cmd.arg("-o").arg(&out_tmpl);
+
+    tracing::info!(query = %query, dest = %dest.display(), ffmpeg = %ffmpeg.display(), "mdl: yt-dlp search+download");
+    let out = cmd.output().await.map_err(|e| {
+        tracing::warn!(error = %e, "mdl: yt-dlp spawn failed (is yt-dlp installed?)");
+        anyhow!("yt-dlp could not be launched: {e}")
+    })?;
     if !out.status.success() {
-        bail!("yt-dlp failed: {}", String::from_utf8_lossy(&out.stderr));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        tracing::warn!(%stderr, "mdl: yt-dlp exited non-zero");
+        if stderr.contains("confirm you") || stderr.contains("not a bot") || stderr.contains("Sign in") {
+            bail!("YouTube bot check — set browser cookies in Settings → yt-dlp cookies");
+        }
+        bail!("yt-dlp: {}", stderr.lines().last().unwrap_or("failed").trim());
     }
     let path = dest.join(format!("{stem}.opus"));
     if !path.exists() {
-        bail!("expected output file missing: {}", path.display());
+        tracing::warn!(expected = %path.display(), stdout = %String::from_utf8_lossy(&out.stdout), "mdl: expected .opus not produced");
+        bail!("no audio file produced (ffmpeg missing?)");
     }
     Ok(path)
 }
@@ -117,6 +161,7 @@ where
 {
     let on_progress = Arc::new(on_progress);
     let _ = tokio::fs::create_dir_all(&opts.dest_dir).await;
+    tracing::info!(tracks = playlist.tracks.len(), dest = %opts.dest_dir.display(), "mdl: starting playlist download");
 
     let manifest = Arc::new(Mutex::new(manifest::load(&opts.dest_dir).unwrap_or_else(
         || Manifest::new(playlist.provider, &playlist.id, &playlist.title, &playlist.source_url),

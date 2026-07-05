@@ -151,7 +151,13 @@ pub fn start_download(weak: Weak<MainWindow>, url: String, dest: PathBuf) {
             {
                 let mut r = rows().lock().unwrap();
                 if let Some(row) = r.get_mut(p.track_index.saturating_sub(1)) {
-                    row.1 = stage_label(p.stage).to_string();
+                    // Surface the failure reason inline so the user sees WHY.
+                    row.1 = if matches!(p.stage, Stage::Failed) {
+                        let msg: String = p.message.chars().take(60).collect();
+                        format!("failed — {msg}")
+                    } else {
+                        stage_label(p.stage).to_string()
+                    };
                     row.2 = p.percent;
                     if let Some(f) = &p.file_name {
                         row.3 = f.clone();
