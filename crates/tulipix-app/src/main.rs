@@ -1402,6 +1402,11 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_section_changed(move |s| {
         let Some(w0) = w.upgrade() else { return; };
+        if s.as_str() == "home" {
+            // Fresh greeting (time of day) + counts on every Home landing.
+            set_home_greeting_now(&w0);
+            kick_home_stats(&w0);
+        }
         if s.as_str() == "music" {
             // Warm each sub-page once; re-entering the section reuses loaded models.
             if music_warm_once("podcasts") { populate_podcasts(&w0); }
@@ -5930,6 +5935,9 @@ fn main() -> Result<()> {
             // Sidebar logo pick — 0 (default) when unset/unparsable.
             window.set_app_logo_choice(s.text("profile.logo").parse().unwrap_or(0));
         }
+        // Home command center (np.p6.home): greeting + date line + live stats.
+        set_home_greeting_now(&window);
+        kick_home_stats(&window);
         // Restore the last-used app theme and keep it until the user changes it.
         let choice = match s.theme.as_str() {
             "extra-dark" => ThemeChoice::ExtraDark,
@@ -8823,6 +8831,121 @@ fn txt(s: &tulipix_core::settings::Settings, key: &str, label: &str, desc: &str)
 }
 fn stat(label: &str, value: &str, state: &str) -> SettingItem { si("", "status", label, "", value, false, state) }
 fn act(key: &str, label: &str, desc: &str, btn: &str) -> SettingItem { si(key, "action", label, desc, btn, false, "") }
+
+/// Time-of-day greeting for the Home header; recomputed on each Home landing
+/// so a long-running app stays fresh across day boundaries.
+fn set_home_greeting_now(w: &MainWindow) {
+    use chrono::Timelike;
+    let name = w.get_user().display_name.to_string();
+    let who = if name.trim().is_empty() { "there".to_string() } else { name };
+    let g = match chrono::Local::now().hour() {
+        5..=11  => format!("Good morning, {who}"),
+        12..=16 => format!("Good afternoon, {who}"),
+        _       => format!("Good evening, {who}"),
+    };
+    w.set_home_greeting(g.into());
+    w.set_home_date_line(chrono::Local::now().format("%A, %B %-d").to_string().into());
+}
+
+/// Seed the Home command-center stats (np.p6.home). Cheap COUNTs per section
+/// DB; called at startup and on every landing on the Home section. Every
+/// count is best-effort — a failed query leaves 0/"", never errors.
+fn kick_home_stats(w: &MainWindow) {
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let mut s = HomeStats::default();
+        let count = |pool: sqlx::SqlitePool, q: &'static str| async move {
+            sqlx::query_scalar::<_, i64>(q).fetch_one(&pool).await.unwrap_or(0) as i32
+        };
+        if let Ok(pool) = pool_for("photos").await {
+            s.photos = count(pool.clone(), "SELECT COUNT(*) FROM items").await;
+            s.photos_albums = count(pool, "SELECT COUNT(*) FROM albums").await;
+        }
+        if let Ok(pool) = pool_for("videos").await {
+            s.videos = count(pool.clone(), "SELECT COUNT(*) FROM items").await;
+            s.videos_shows = count(pool, "SELECT COUNT(*) FROM shows").await;
+        }
+        if let Ok(pool) = pool_for("music").await {
+            s.songs = count(pool.clone(),
+                "SELECT COUNT(*) FROM track_meta WHERE is_audiobook = 0").await;
+            s.audiobooks = count(pool.clone(),
+                "SELECT COUNT(DISTINCT folder) FROM track_meta WHERE is_audiobook = 1").await;
+            // Continue card: newest in-progress audiobook (folder = the book).
+            if let Ok(Some((folder, pos))) = sqlx::query_as::<_, (String, f64)>(
+                "SELECT tm.folder, ap.position_s FROM audiobook_progress ap \
+                 JOIN track_meta tm ON tm.item_id = ap.item_id \
+                 WHERE ap.finished = 0 AND ap.position_s > 0 AND tm.folder IS NOT NULL \
+                 ORDER BY ap.updated DESC LIMIT 1")
+                .fetch_optional(&pool).await
+            {
+                let book = std::path::Path::new(&folder).file_name()
+                    .map(|f| f.to_string_lossy().into_owned()).unwrap_or(folder.clone());
+                s.continue3 = format!("🎧 {book}").into();
+                s.continue3_sub = format!("{}:{:02} in", (pos as i64) / 60, (pos as i64) % 60).into();
+            }
+        }
+        if let Ok(pool) = pool_for("podcasts").await {
+            s.podcasts = count(pool.clone(), "SELECT COUNT(*) FROM podcasts").await;
+            // Continue card: newest partially-played episode.
+            if let Ok(Some((title, pos, dur))) = sqlx::query_as::<_, (String, f64, Option<f64>)>(
+                "SELECT COALESCE(title, ''), position_s, duration_s FROM podcast_episodes \
+                 WHERE position_s > 0 AND played = 0 \
+                 ORDER BY COALESCE(downloaded_at, published) DESC LIMIT 1")
+                .fetch_optional(&pool).await
+            {
+                if !title.is_empty() {
+                    s.continue2 = format!("🎙 {title}").into();
+                    s.continue2_sub = match dur {
+                        Some(d) if d > 0.0 =>
+                            format!("{}:{:02} · {}%", (pos as i64) / 60, (pos as i64) % 60,
+                                    ((pos / d) * 100.0).round() as i64),
+                        _ => format!("{}:{:02} in", (pos as i64) / 60, (pos as i64) % 60),
+                    }.into();
+                }
+            }
+        }
+        if let Ok(pool) = pool_for("radio").await {
+            s.radio = count(pool, "SELECT COUNT(*) FROM radio_stations").await;
+        }
+        if let Ok(pool) = pool_for("books").await {
+            s.books = count(pool.clone(), "SELECT COUNT(*) FROM items").await;
+            s.books_reading = count(pool.clone(),
+                "SELECT COUNT(*) FROM reading_progress \
+                 WHERE finished = 0 AND (page > 0 OR locator IS NOT NULL)").await;
+            // Continue card: newest in-progress book.
+            if let Ok(Some((title, path, page, total))) = sqlx::query_as::<_, (String, String, i64, Option<i64>)>(
+                "SELECT COALESCE(NULLIF(bm.title, ''), ''), i.abs_path, rp.page, rp.total_pages \
+                 FROM reading_progress rp \
+                 JOIN items i ON i.id = rp.item_id \
+                 LEFT JOIN book_meta bm ON bm.item_id = rp.item_id \
+                 WHERE rp.finished = 0 AND (rp.page > 0 OR rp.locator IS NOT NULL) \
+                 ORDER BY rp.updated DESC LIMIT 1")
+                .fetch_optional(&pool).await
+            {
+                let name = if title.is_empty() {
+                    std::path::Path::new(&path).file_stem()
+                        .map(|f| f.to_string_lossy().into_owned()).unwrap_or(path.clone())
+                } else { title };
+                s.continue1 = format!("📖 {name}").into();
+                s.continue1_sub = match total {
+                    Some(t) if t > 0 => format!("page {page} · {}%", (page * 100) / t),
+                    _ => format!("page {page}"),
+                }.into();
+            }
+        }
+        if let Ok(pool) = pool_for("cloud").await {
+            s.cloud_remotes = count(pool, "SELECT COUNT(*) FROM remotes").await;
+        }
+        if let Ok(pool) = pool_for("tools").await {
+            s.tools_jobs = count(pool.clone(),
+                "SELECT COUNT(*) FROM jobs WHERE state = 'running'").await;
+            let queued = count(pool,
+                "SELECT COUNT(*) FROM jobs WHERE state = 'queued'").await;
+            if queued > 0 { s.tools_note = format!("{queued} queued").into(); }
+        }
+        let _ = weak.upgrade_in_event_loop(move |w| { w.set_home_stats(s); });
+    });
+}
 
 /// Seed every data-driven Settings panel from the persisted settings + live
 /// runtime diagnostics. Cheap; re-run after any toggle/action.
