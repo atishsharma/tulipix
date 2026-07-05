@@ -816,7 +816,7 @@ export component MainWindow inherits Window {
     default-font-family: Theme.font-family;
     default-font-size: 13px;
 
-    in-out property <string> active-section: "photos";
+    in-out property <string> active-section: "home";
     callback section-changed(string);   // sidebar section click → preload that section
     in-out property <string> active-settings-tab: "appearance";
     in-out property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local };

@@ -231,7 +231,7 @@ component BrandHeader inherits Rectangle {
 }
 
 export component Sidebar inherits Rectangle {
-    in-out property <string> active-section: "photos";
+    in-out property <string> active-section: "home";
     in property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local };
     in property <int> logo-choice: 0;
     in-out property <bool> collapsed: true;
@@ -260,6 +260,11 @@ export component Sidebar inherits Rectangle {
         BrandHeader { collapsed: root.collapsed; logo-choice: root.logo-choice; }
 
         Rectangle { height: 10px; horizontal-stretch: 1; background: transparent; }
+        NavRow { icon-img: Icons.home; label: "Home"; accent: Theme.sec-home; collapsed: root.collapsed;
+            active: root.active-section == "home";
+            clicked => { root.active-section = "home"; root.section-changed("home"); }
+        }
+        Rectangle { height: 4px; horizontal-stretch: 1; background: transparent; }
         GroupHeader { label: "LIBRARY"; collapsed: root.collapsed; }
         Rectangle { height: 4px; horizontal-stretch: 1; background: transparent; }
 
