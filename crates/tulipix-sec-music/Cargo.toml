@@ -28,5 +28,6 @@ sha2 = "0.10"
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 tulipix-ui = { path = "../tulipix-ui" }
 tulipix-common = { path = "../tulipix-common" }
+tulipix-mdl = { path = "../tulipix-mdl" }
 tulipix-core = { path = "../tulipix-core" }
 tulipix-music = { path = "../tulipix-music" }

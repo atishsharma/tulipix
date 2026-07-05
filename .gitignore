@@ -63,3 +63,5 @@ target-dev/
 target-win/
 # brainstorming visual companion artifacts
 .superpowers/
+# mdl upstream source — kept locally for reference, not shipped to GitHub
+mdl/

@@ -11,6 +11,14 @@ export struct MusicSongRow {
     index: int,        // playback position into music_paths
 }
 
+// One worker row in the Downloader tab (mdl): a track being fetched.
+export struct DownloaderRow {
+    title: string,
+    stage: string,     // queued|searching|downloading|tagging|done|skipped|failed
+    percent: float,    // 0-100
+    file: string,      // produced filename once done
+}
+
 // One subscribed podcast shown as a card in the Podcasts grid
 // (np.p5.music.podcast-feeds).
 export struct PodcastCard {

@@ -6,7 +6,8 @@ import { AppIcon, Icons } from "icons.slint";
 import { MicBtn } from "voice.slint";
 import { HdrChip, CountPill } from "section_header.slint";
 import { MusicTheme } from "theme.slint";
-import { MusicSongRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
+import { Theme } from "tokens.slint";
+import { MusicSongRow, DownloaderRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
 import { LineEdit } from "std-widgets.slint";
 
 component AlbumCard inherits Rectangle {
@@ -528,7 +529,7 @@ component SongCard inherits Rectangle {
 
 // Library sub-tab chip — thin wrapper over the shared HdrChip with the
 // YT-Music pink theme baked in, matching the Photos header pill shape.
-component MusicTab inherits HdrChip {
+export component MusicTab inherits HdrChip {
     accent: #ec4899;
     dark: true;
     light-theme: MusicTheme.light;
@@ -542,7 +543,7 @@ component MusicTab inherits HdrChip {
 
 // Rotating-gradient ring around a row-1 section tab while that section is the
 // one playing (np.p5.atmusic.live-tab-ring). Transparent / zero padding when idle.
-component LiveTabRing inherits Rectangle {
+export component LiveTabRing inherits Rectangle {
     in property <bool> live: false;
     in property <color> tint: #ec4899;
     horizontal-stretch: 1;
@@ -1492,7 +1493,22 @@ export component MusicPage inherits Rectangle {
     in property <bool> playing: false;
     in-out property <string> view: "mymusic";    // top category: mymusic|podcasts|audiobooks|radio|youtube
     in property <string> player-mode: "music";  // music|podcast|book|radio — drives the live tab ring
-    in-out property <string> lib-tab: "home";    // My Music sub-tab: home|songs|albums|artists|genres|playlists|folders
+    in-out property <string> lib-tab: "home";    // My Music sub-tab: home|songs|albums|artists|genres|playlists|folders|downloader
+    // Downloader tab (mdl) — paste a streaming URL, resolve + download into the library.
+    in-out property <string> dl-url: "";
+    in-out property <string> dl-provider-badge: "";   // "" = unsupported URL
+    in-out property <string> dl-dest: "";             // download folder shown
+    in-out property <string> dl-status: "idle";       // idle|resolving|resolved|downloading|done|error:*
+    in-out property <[DownloaderRow]> dl-rows: [];
+    in-out property <int> dl-done: 0;
+    in-out property <int> dl-skipped: 0;
+    in-out property <int> dl-failed: 0;
+    callback dl-url-changed(string);
+    callback dl-pick-folder();
+    callback dl-resolve();
+    callback dl-download();
+    callback dl-cancel();
+    callback dl-refresh-library();
     in-out property <string> query: "";          // search box text
     in property <int> sleep-min: 0;              // active sleep-timer minutes (0 = off)
     // Dashboard rails (np.p4.music.dashboard) + browse groups (np.p4.music.browse).
@@ -2367,15 +2383,15 @@ export component MusicPage inherits Rectangle {
                     FancyCount {
                         num: root.view == "mymusic" ? item-count : (root.view == "podcasts" ? root.podcast-total : (root.view == "audiobooks" ? root.audiobook-cards.length : (root.view == "radio" ? root.radio-total : (root.yt-tab == "playlists" ? root.yt-playlists.length : (root.yt-tab == "cached" ? root.yt-cached.length : (root.yt-tab == "downloads" ? root.yt-downloads-count : root.yt-sub-count))))));
                         label: root.view == "mymusic" ? "Tracks" : (root.view == "podcasts" ? "Podcasts" : (root.view == "audiobooks" ? "Audiobooks" : (root.view == "radio" ? "Stations" : (root.yt-tab == "playlists" ? "Playlists" : (root.yt-tab == "cached" ? "Cached" : (root.yt-tab == "downloads" ? "Downloads" : "Channels")))))); } }
-                // Independent Music light/dark theme toggle — round outlined icon only.
+                // App theme toggle (unified) — cycles the whole app light → dark → OLED.
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     Rectangle { width: 40px; height: 40px; border-radius: 20px;
                         background: thb.has-hover ? MusicTheme.hov2 : MusicTheme.surf0;
                         border-width: 1px; border-color: MusicTheme.line;
                         thb := TouchArea { mouse-cursor: pointer; clicked => {
-                            if (MusicTheme.light) { MusicTheme.light = false; }
-                            else if (!MusicTheme.oled) { MusicTheme.oled = true; }
-                            else { MusicTheme.light = true; MusicTheme.oled = false; }
+                            if (!Theme.dark) { Theme.dark = true; Theme.oled = false; }
+                            else if (!Theme.oled) { Theme.oled = true; }
+                            else { Theme.dark = false; Theme.oled = false; }
                             root.music-theme-changed(); } }
                         AppIcon { source: MusicTheme.light ? Icons.sun : (MusicTheme.oled ? Icons.star : Icons.moon); tint: MusicTheme.fg2;
                             width: 18px; height: 18px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
@@ -2405,6 +2421,7 @@ export component MusicPage inherits Rectangle {
                     MusicTab { icon: Icons.folder; label: "Folders"; collapsible: true; min-width: self.revealed ? 104px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #f59e0b; grad: @linear-gradient(120deg, #f59e0b, #f97316); active: root.lib-tab == "folders";   clicked => { root.set-lib-tab("folders"); } }
                     MusicTab { icon: Icons.heart-filled; label: "Loved"; collapsible: true; min-width: self.revealed ? 96px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #f43f5e; grad: @linear-gradient(120deg, #f43f5e, #ec4899); active: root.lib-tab == "favorites"; clicked => { root.set-lib-tab("favorites"); } }
                     MusicTab { icon: Icons.rotate-ccw; label: "History"; collapsible: true; min-width: self.revealed ? 104px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #a855f7; grad: @linear-gradient(120deg, #a855f7, #8b5cf6); active: root.lib-tab == "history";   clicked => { root.set-lib-tab("history"); } }
+                    MusicTab { icon: Icons.download; label: "Downloader"; collapsible: true; min-width: self.revealed ? 128px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #8b5cf6); active: root.lib-tab == "downloader"; clicked => { root.set-lib-tab("downloader"); } }
                 } }
                 // Podcast sub-tabs — order: Home (Latest) · Subscribed · Downloads.
                 // Hidden while a single-podcast detail page is open.
@@ -3982,7 +3999,59 @@ export component MusicPage inherits Rectangle {
             }
         }
 
-        if root.view == "mymusic" && tiles.length > 0: libscroll := ScrollView {
+        // Downloader tab (mdl) — independent of the library tiles.
+        if root.view == "mymusic" && root.lib-tab == "downloader": ScrollView {
+            vertical-stretch: 1; horizontal-stretch: 1;
+            VerticalLayout {
+                alignment: start; padding-left: 36px; padding-right: 36px;
+                padding-top: 22px; padding-bottom: 24px; spacing: 18px;
+                // Header.
+                Text { text: "Music Downloader"; color: MusicTheme.fg; font-size: 22px; font-weight: 800; }
+                Text { text: "Paste a Spotify, Apple Music or YouTube Music URL. Tracks download into your library with metadata."; color: MusicTheme.fg-dim2; font-size: 13px; }
+                // URL row + provider badge.
+                HorizontalLayout { spacing: 10px;
+                    Rectangle { horizontal-stretch: 1; height: 44px; border-radius: 12px; background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                        HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 8px;
+                            VerticalLayout { alignment: center; AppIcon { source: Icons.clipboard; tint: MusicTheme.fg-mute; width: 15px; height: 15px; } }
+                            urlbox := TextInput { vertical-alignment: center; color: MusicTheme.fg; font-size: 14px;
+                                text <=> root.dl-url;
+                                edited => { root.dl-url-changed(self.text); }
+                                accepted => { root.dl-resolve(); } } } }
+                    if root.dl-provider-badge != "": Rectangle { min-width: 120px; height: 44px; border-radius: 12px; background: #22c55e22; border-width: 1px; border-color: #22c55e80;
+                        HorizontalLayout { alignment: center; spacing: 6px;
+                            VerticalLayout { alignment: center; AppIcon { source: Icons.check; tint: #22c55e; width: 14px; height: 14px; } }
+                            VerticalLayout { alignment: center; Text { text: root.dl-provider-badge; color: #22c55e; font-size: 13px; font-weight: 700; } } } }
+                    if root.dl-url != "" && root.dl-provider-badge == "": Rectangle { min-width: 120px; height: 44px; border-radius: 12px; background: #ef444422; border-width: 1px; border-color: #ef444480;
+                        HorizontalLayout { alignment: center; VerticalLayout { alignment: center; Text { text: "Unsupported"; color: #ef4444; font-size: 13px; font-weight: 700; } } } }
+                }
+                // Folder row.
+                HorizontalLayout { spacing: 10px;
+                    VerticalLayout { alignment: center; Text { text: "Save to"; color: MusicTheme.fg-mute; font-size: 13px; } }
+                    Rectangle { horizontal-stretch: 1; height: 38px; border-radius: 10px; background: MusicTheme.surf1;
+                        HorizontalLayout { padding-left: 12px; padding-right: 12px;
+                            VerticalLayout { alignment: center; Text { text: root.dl-dest; color: MusicTheme.fg-dim2; font-size: 12px; overflow: elide; } } } }
+                    MusicTab { icon: Icons.folder; label: "Change"; has-grad: true; tint: #f59e0b; grad: @linear-gradient(120deg, #f59e0b, #f97316); clicked => { root.dl-pick-folder(); } } }
+                // Actions.
+                HorizontalLayout { spacing: 10px; alignment: start;
+                    MusicTab { icon: Icons.search; label: "Resolve"; has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); clicked => { root.dl-resolve(); } }
+                    MusicTab { icon: Icons.download; label: "Download"; has-grad: true; tint: #22c55e; grad: @linear-gradient(120deg, #22c55e, #16a34a); clicked => { root.dl-download(); } }
+                    MusicTab { icon: Icons.x; label: "Cancel"; has-grad: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f43f5e); clicked => { root.dl-cancel(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    VerticalLayout { alignment: center; Text {
+                        text: "✓ " + root.dl-done + "   ⤼ " + root.dl-skipped + "   ✗ " + root.dl-failed + "   ·   " + root.dl-status;
+                        color: MusicTheme.fg-dim2; font-size: 12px; } } }
+                // Worker rows.
+                for row in root.dl-rows: Rectangle { height: 46px; border-radius: 10px; background: MusicTheme.surf1; clip: true;
+                    Rectangle { x: 0; y: 0; height: 100%; width: parent.width * (row.percent / 100); background: #8b5cf620; }
+                    HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 10px;
+                        VerticalLayout { alignment: center; horizontal-stretch: 1; Text { text: row.title; color: MusicTheme.fg; font-size: 13px; overflow: elide; } }
+                        VerticalLayout { alignment: center; Text { text: row.stage; color: MusicTheme.fg-mute; font-size: 12px; } }
+                        VerticalLayout { alignment: center; Text { text: Math.round(row.percent) + "%"; color: MusicTheme.fg-dim2; font-size: 12px; min-width: 40px; horizontal-alignment: right; } } } }
+                if root.dl-rows.length == 0: Text { text: "No tracks yet — resolve a URL to preview, then download."; color: MusicTheme.fg-dim2; font-size: 13px; }
+            }
+        }
+
+        if root.view == "mymusic" && root.lib-tab != "downloader" && tiles.length > 0: libscroll := ScrollView {
             vertical-stretch: 1; horizontal-stretch: 1;
             // Reset scroll to the top when the tab/page/section changes (so a short
             // page never inherits the previous page's offset and looks bottom-stuck).
@@ -4389,7 +4458,7 @@ export component MusicPage inherits Rectangle {
             }
         }
 
-        if root.view == "mymusic" && tiles.length == 0: Rectangle {
+        if root.view == "mymusic" && root.lib-tab != "downloader" && tiles.length == 0: Rectangle {
             vertical-stretch: 1; horizontal-stretch: 1;
             VerticalLayout {
                 alignment: center; spacing: 14px;
@@ -6043,6 +6112,7 @@ export component MusicFullscreen inherits Rectangle {
     in property <bool> podcast-mode: false;
     in property <float> speed: 1.0;
     callback set-speed(float);
+    callback theme-changed();   // persist the app theme after the zen theme cycle
     callback open-now-album();
     callback open-now-artist();
     callback close();
@@ -6100,15 +6170,15 @@ export component MusicFullscreen inherits Rectangle {
             Rectangle { horizontal-stretch: 1; }
             VerticalLayout { alignment: center; Text { text: MusicTheme.light ? "ZEN · LIGHT" : (MusicTheme.oled ? "ZEN · OLED" : "ZEN · DARK"); color: MusicTheme.fg-dim; font-size: 13px; font-weight: 700; letter-spacing: 3px; } }
             Rectangle { horizontal-stretch: 1; }
-            // Theme cycle — light → dark → OLED → light (np.p5.atmusic.oled).
+            // App theme cycle — light → dark → OLED → light (unified with app Theme).
             VerticalLayout { alignment: center; PlayerBtn {
                 icon: MusicTheme.light ? Icons.sun : (MusicTheme.oled ? Icons.star : Icons.moon); size: 80px; isz: 40px;
                 active: MusicTheme.oled;
                 clicked => {
-                    if (MusicTheme.light) { MusicTheme.light = false; }
-                    else if (!MusicTheme.oled) { MusicTheme.oled = true; }
-                    else { MusicTheme.light = true; MusicTheme.oled = false; }
-                } } }
+                    if (!Theme.dark) { Theme.dark = true; Theme.oled = false; }
+                    else if (!Theme.oled) { Theme.oled = true; }
+                    else { Theme.dark = false; Theme.oled = false; }
+                    root.theme-changed(); } } }
         }
         Rectangle { height: 24px; }
         // Title block — click title → album page, subtitle → artist page (the
@@ -6272,32 +6342,38 @@ export component MusicMini inherits Rectangle {
     in property <bool> book-mode: false;
     callback open-zen();                  // full-screen zen player
     in property <bool> bold-outline: true;   // thick gradient ring for visibility (toggle)
+    // Embedded mode (Home command center): renders inline inside a card, so drop
+    // the floating chrome — no close/minimise buttons, no drop-shadow, no ring.
+    in property <bool> embedded: false;
 
     width: 300px; height: 488px; border-radius: 18px;
-    background: MusicTheme.surf-player;
-    border-width: root.bold-outline ? 2px : 1px;
+    background: embedded ? transparent : MusicTheme.surf-player;
+    border-width: embedded ? 0px : (root.bold-outline ? 2px : 1px);
     border-color: root.bold-outline ? @linear-gradient(135deg, #ec4899, #8b5cf6 55%, #06b6d4) : MusicTheme.line;
-    drop-shadow-blur: 42px; drop-shadow-color: #000000e6;
+    drop-shadow-blur: embedded ? 0px : 42px; drop-shadow-color: #000000e6;
     VerticalLayout {
         // alignment:start collects any slack at the very bottom instead of
         // scattering uneven gaps between rows (np.p5.music.mini-uniform).
         padding: 14px * root.uiscale; spacing: 10px * root.uiscale; alignment: start;
         // 1. Close (left edge) · centered song title · bubble (right edge).
         HorizontalLayout { spacing: 4px * root.uiscale;
-            PlayerBtn { icon: Icons.x; size: 26px * root.uiscale; isz: 13px * root.uiscale; clicked => { root.close(); } }
+            if !root.embedded: PlayerBtn { icon: Icons.x; size: 26px * root.uiscale; isz: 13px * root.uiscale; clicked => { root.close(); } }
             VerticalLayout { alignment: center; horizontal-stretch: 1;
                 Marquee { height: 20px * root.uiscale; centered: true; text: title == "" ? "Nothing playing" : title; fg: MusicTheme.fg; font-size: 15px * root.uiscale; weight: 700; } }
-            PlayerBtn { icon: Icons.chevron-right; size: 26px * root.uiscale; isz: 14px * root.uiscale; clicked => { root.minimise(); } } }
+            if !root.embedded: PlayerBtn { icon: Icons.chevron-right; size: 26px * root.uiscale; isz: 14px * root.uiscale; clicked => { root.minimise(); } } }
         // 2. Second line by mode — music: artist · album; audiobook: book title;
-        //    radio: a gradient LIVE pill (no song metadata leaks in).
-        if root.radio-mode: HorizontalLayout { alignment: center;
-            // Pill takes the art-derived thumb fill colour; shows the playing channel + Live.
-            Rectangle { height: 18px * root.uiscale; border-radius: 9px * root.uiscale; horizontal-stretch: 0;
-                background: @linear-gradient(120deg, root.accent.brighter(0.15), root.accent.darker(0.2));
-                HorizontalLayout { padding-left: 9px * root.uiscale; padding-right: 10px * root.uiscale; spacing: 5px * root.uiscale;
-                    VerticalLayout { alignment: center; Rectangle { width: 6px * root.uiscale; height: 6px * root.uiscale; border-radius: 3px * root.uiscale; background: #ffffff; } }
-                    Text { text: (title == "" ? "Live" : title + "  ·  Live"); color: #ffffff; font-size: 10px * root.uiscale; font-weight: 800;
-                        vertical-alignment: center; overflow: elide; } } } }
+        //    radio: what's playing on the station (ICY now-playing) + a green LIVE
+        //    pill (the station name is already the title on line 1).
+        if root.radio-mode: HorizontalLayout { alignment: center; spacing: 6px * root.uiscale;
+            Text { text: sub == "" ? "On air" : sub; color: MusicTheme.fg3; font-size: 11px * root.uiscale;
+                vertical-alignment: center; overflow: elide; }
+            // Green LIVE pill with a pulsing white dot.
+            Rectangle { height: 16px * root.uiscale; border-radius: 8px * root.uiscale; horizontal-stretch: 0;
+                background: @linear-gradient(120deg, #22c55e, #16a34a);
+                HorizontalLayout { padding-left: 7px * root.uiscale; padding-right: 8px * root.uiscale; spacing: 4px * root.uiscale;
+                    VerticalLayout { alignment: center; Rectangle { width: 5px * root.uiscale; height: 5px * root.uiscale; border-radius: 2.5px * root.uiscale; background: #ffffff; } }
+                    Text { text: "LIVE"; color: #ffffff; font-size: 9px * root.uiscale; font-weight: 800;
+                        vertical-alignment: center; } } } }
         if !root.radio-mode: Text {
             text: title == "" ? "Pick a track"
                 : (root.book-mode ? sub : (album != "" ? sub + "  ·  " + album : sub));
@@ -6305,7 +6381,8 @@ export component MusicMini inherits Rectangle {
         // 3. Square art — flips to reveal the queue / 3-line lyrics panel. Radio
         //    drops the transport row below, so the art grows to fill that space
         //    and the mini keeps its exact frame size.
-        Rectangle { height: (root.radio-mode ? 272px : 230px) * root.uiscale; border-radius: 12px * root.uiscale; clip: true; background: MusicTheme.surf-pop2;
+        Rectangle { min-height: (root.radio-mode ? 272px : 230px) * root.uiscale; vertical-stretch: root.embedded ? 1 : 0;
+            border-radius: 12px * root.uiscale; clip: true; background: MusicTheme.surf-pop2;
             border-width: 1px; border-color: MusicTheme.surf1;
             // front — spinning vinyl record (art = center label) + sweeping tonearm.
             vinyl := Rectangle { width: 100%; height: 100%; visible: root.face == "";
@@ -6447,26 +6524,29 @@ export component PodcastMini inherits Rectangle {
     callback play-episode(int);
     callback open-zen();                 // full-screen zen player
     in property <bool> bold-outline: true;   // thick gradient ring for visibility (toggle)
+    // Embedded mode (Home) — inline in a card: no floating chrome.
+    in property <bool> embedded: false;
 
     width: 300px; height: 442px; border-radius: 18px;
-    background: MusicTheme.surf-player;
-    border-width: root.bold-outline ? 2px : 1px;
+    background: embedded ? transparent : MusicTheme.surf-player;
+    border-width: embedded ? 0px : (root.bold-outline ? 2px : 1px);
     border-color: root.bold-outline ? @linear-gradient(135deg, #8b5cf6, #ec4899 55%, #06b6d4) : MusicTheme.line;
-    drop-shadow-blur: 42px; drop-shadow-color: #000000e6;
+    drop-shadow-blur: embedded ? 0px : 42px; drop-shadow-color: #000000e6;
     VerticalLayout {
         padding: 14px * root.uiscale; spacing: 8px * root.uiscale;
         // 1. Close · title · minimise.
         HorizontalLayout { spacing: 4px * root.uiscale;
-            PlayerBtn { icon: Icons.x; size: 26px * root.uiscale; isz: 13px * root.uiscale; clicked => { root.close(); } }
+            if !root.embedded: PlayerBtn { icon: Icons.x; size: 26px * root.uiscale; isz: 13px * root.uiscale; clicked => { root.close(); } }
             VerticalLayout { alignment: center; horizontal-stretch: 1;
                 Marquee { height: 20px * root.uiscale; centered: true; text: title == "" ? "Nothing playing" : title; fg: MusicTheme.fg; font-size: 15px * root.uiscale; weight: 700; } }
-            PlayerBtn { icon: Icons.chevron-right; size: 26px * root.uiscale; isz: 14px * root.uiscale; clicked => { root.minimise(); } } }
+            if !root.embedded: PlayerBtn { icon: Icons.chevron-right; size: 26px * root.uiscale; isz: 14px * root.uiscale; clicked => { root.minimise(); } } }
         // 2. Show name.
         Text { text: title == "" ? "Pick an episode" : sub; color: MusicTheme.fg3; font-size: 12px * root.uiscale; overflow: elide; horizontal-alignment: center; }
         // 3. Spinning vinyl disc (podcast thumb as the centre label); flips to
         //    episodes / summary. WIDE full-width box so the episode/summary faces
         //    read well (not cramped in a small square); the vinyl stays centred.
-        Rectangle { height: 200px * root.uiscale; border-radius: 12px * root.uiscale; clip: true; background: MusicTheme.surf-pop2;
+        Rectangle { min-height: 200px * root.uiscale; vertical-stretch: root.embedded ? 1 : 0;
+            border-radius: 12px * root.uiscale; clip: true; background: MusicTheme.surf-pop2;
             border-width: 1px; border-color: MusicTheme.surf1;
             if root.face == "": Rectangle { width: 100%; height: 100%;
                 // vinyl disc

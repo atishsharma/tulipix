@@ -9,6 +9,7 @@
 #![allow(clippy::too_many_arguments)]
 
 pub mod analysis;
+pub mod mdl;
 
 use std::sync::OnceLock;
 use std::path::PathBuf;
@@ -439,6 +440,56 @@ pub fn set_instant_mix_queue(w: &MainWindow, ids: &[i64]) {
         }
     }).collect();
     w.set_music_queue_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+}
+
+/// Plain "Up next" — the following tracks in the current library order. Cheap,
+/// always available; used as the fallback when the sonic index isn't built.
+pub fn set_upnext_queue(w: &MainWindow, pos: i32) {
+    let total = music_ids().lock().map(|g| g.len() as i32).unwrap_or(0);
+    if total <= 0 { return; }
+    let by_pos: std::collections::HashMap<i32, (String, String, f64)> = music_songs().lock()
+        .map(|g| g.iter().map(|s| (s.pos, (s.title.clone(), s.artist.clone(), s.duration_s))).collect())
+        .unwrap_or_default();
+    let tiles = w.get_music_tiles();
+    let rows: Vec<MusicSongRow> = (1..=40i32).map(|k| pos + k).filter(|p| *p >= 0 && *p < total).map(|p| {
+        let (title, artist, dur) = by_pos.get(&p).cloned().unwrap_or_default();
+        MusicSongRow {
+            thumb: if (p as usize) < tiles.row_count() { tiles.row_data(p as usize).map(|t| t.thumb).unwrap_or_default() } else { slint::Image::default() },
+            title: if title.is_empty() { "Track".into() } else { title.into() },
+            artist: artist.into(),
+            duration: if dur > 0.0 { fmt_clock(dur).into() } else { "".into() },
+            index: p,
+        }
+    }).collect();
+    w.set_music_queue_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+}
+
+/// Default Up-next queue for a fresh My Music session: sonic-similar tracks when
+/// the embedding index is ready (silent — no toasts, no on-demand embedding),
+/// otherwise a plain up-next list. Keeps the queue from ever being empty.
+pub fn build_default_music_queue(w: &MainWindow, pos: i32) {
+    let Some(seed) = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied()) else { return; };
+    let weak = w.as_weak();
+    let rt = tokio::runtime::Handle::current();
+    std::thread::spawn(move || {
+        let ids: Vec<i64> = rt.block_on(async {
+            let Ok(pool) = pool_for("music").await else { return vec![]; };
+            let indexed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM track_embeddings")
+                .fetch_one(&pool).await.unwrap_or(0);
+            if indexed <= 0 { return vec![]; }
+            // Only use sonic when the seed is already embedded — never embed
+            // on-demand here (that's the slow, toast-worthy path).
+            let have = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM track_embeddings WHERE item_id = ?")
+                .bind(seed).fetch_one(&pool).await.map(|n| n > 0).unwrap_or(false);
+            if !have { return vec![]; }
+            tulipix_music::embeddings::similar(&pool, seed, 40).await
+                .unwrap_or_default().into_iter().map(|(id, _)| id).collect()
+        });
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            if ids.is_empty() { set_upnext_queue(&w, pos); }
+            else { set_instant_mix_queue(&w, &ids); }
+        });
+    });
 }
 
 // ── Sonic Similar (np.p4.music.embeddings, dsp-v1) ─────────────────────────
@@ -4488,6 +4539,15 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
     // Always refresh lyrics for the new track so the now-playing lyric line
     // (above the seekbar) syncs automatically — independent of the side panel.
     load_music_lyrics(w);
+
+    // Seed the Up-next queue for a fresh My Music session (queue currently empty
+    // — i.e. not a playlist/instant-mix/YT/audiobook queue). Sonic-similar when
+    // the embedding index is ready, else a plain up-next list. Once per session:
+    // subsequent next/prev keep the now-populated queue. My Music only — audiobook
+    // (book mode) builds its own chapter queue.
+    if w.get_music_player_mode().as_str() == "music" && w.get_music_queue_rows().row_count() == 0 {
+        build_default_music_queue(w, idx);
+    }
 }
 
 /// Load the photo at `idx` from the current library list into the viewer,

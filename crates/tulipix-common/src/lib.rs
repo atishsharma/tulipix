@@ -150,6 +150,23 @@ pub fn dirs_default_documents() -> std::path::PathBuf {
     if docs.is_dir() { docs } else { home }
 }
 
+/// The user's Music folder (best effort): `$XDG_MUSIC_DIR` on Linux, else
+/// `~/Music`; home as the final fallback. Default download destination.
+pub fn dirs_default_music() -> std::path::PathBuf {
+    if cfg!(target_os = "linux") {
+        if let Some(dir) = std::env::var_os("XDG_MUSIC_DIR").map(std::path::PathBuf::from) {
+            if dir.is_dir() {
+                return dir;
+            }
+        }
+    }
+    let home = std::env::var_os("HOME")
+        .or_else(|| std::env::var_os("USERPROFILE"))
+        .map(std::path::PathBuf::from)
+        .unwrap_or_else(std::env::temp_dir);
+    home.join("Music")
+}
+
 /// Directory holding the per-OS bundled binaries (dev layout).
 pub fn bundled_bin_dir() -> std::path::PathBuf {
     std::path::PathBuf::from(concat!(env!("CARGO_MANIFEST_DIR"), "/../../resources/bin/linux-x86_64"))
@@ -248,6 +265,34 @@ pub fn load_watched_folders() -> Vec<PathBuf> {
         .into_iter()
         .map(PathBuf::from)
         .collect()
+}
+
+/// Append `add` to `existing` unless already present (path-equality).
+pub fn merge_watched(mut existing: Vec<PathBuf>, add: &std::path::Path) -> Vec<PathBuf> {
+    if !existing.iter().any(|p| p == add) {
+        existing.push(add.to_path_buf());
+    }
+    existing
+}
+
+pub fn save_watched_folders(folders: &[PathBuf]) {
+    if let Some(p) = watched_folders_path() {
+        let list: Vec<String> = folders.iter().map(|p| p.display().to_string()).collect();
+        if let Ok(body) = serde_json::to_string_pretty(&list) {
+            let _ = std::fs::write(p, body);
+        }
+    }
+}
+
+/// Add `dir` to the watched-folders set (idempotent) and persist. Returns true
+/// if it was newly added.
+pub fn add_watched_folder(dir: &std::path::Path) -> bool {
+    let existing = load_watched_folders();
+    let had = existing.iter().any(|p| p == dir);
+    if !had {
+        save_watched_folders(&merge_watched(existing, dir));
+    }
+    !had
 }
 
 pub fn now_secs() -> i64 {
@@ -561,3 +606,17 @@ pub fn media_set_playing(playing: bool) {
     });
 }
 
+
+#[cfg(test)]
+mod watched_tests {
+    use super::merge_watched;
+    use std::path::{Path, PathBuf};
+
+    #[test]
+    fn merge_watched_dedups_and_appends() {
+        let out = merge_watched(vec![PathBuf::from("/a")], Path::new("/b"));
+        assert_eq!(out, vec![PathBuf::from("/a"), PathBuf::from("/b")]);
+        let same = merge_watched(vec![PathBuf::from("/a")], Path::new("/a"));
+        assert_eq!(same, vec![PathBuf::from("/a")]);
+    }
+}

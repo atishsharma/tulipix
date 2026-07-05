@@ -82,12 +82,16 @@ fn detect_dark() -> bool {
 }
 
 fn apply_theme_choice(window: &MainWindow, choice: ThemeChoice) {
-    let dark = match choice {
-        ThemeChoice::Light => false,
-        ThemeChoice::ExtraDark => true,
-        ThemeChoice::System => detect_dark(),
+    // OLED is the extra-dark tier (pure black surfaces); MusicTheme derives from
+    // these so the whole app + the Home MusicMini follow one theme (2026-07-05).
+    let (dark, oled) = match choice {
+        ThemeChoice::Light => (false, false),
+        ThemeChoice::ExtraDark => (true, false),
+        ThemeChoice::Oled => (true, true),
+        ThemeChoice::System => (detect_dark(), false),
     };
     window.set_dark(dark);
+    window.set_oled(oled);
 }
 
 /// Drive the Settings → Libraries maintenance progress bar. `frac` is 0..1, or
@@ -338,17 +342,19 @@ fn main() -> Result<()> {
         if let Err(e) = s.save() { tracing::warn!(error = %e, "save settings (theme)"); }
     });
 
-    // Music-section theme toggle (sun/moon/star) — persist the light/dark/OLED
-    // choice so it survives restarts (np.p5.music.theme-memory).
+    // Music-section zen theme button — theme is now unified with the app, so the
+    // button flips Theme.dark/oled directly; here we re-sync theme-choice and
+    // persist it through the app theme path (single source of truth).
     let w = window.as_weak();
     window.on_music_theme_changed(move || {
         let Some(w) = w.upgrade() else { return; };
-        let mode = if w.get_music_light() { "light" }
-                   else if w.get_music_oled() { "oled" }
-                   else { "dark" };
+        let choice = if !w.get_dark() { ThemeChoice::Light }
+                     else if w.get_oled() { ThemeChoice::Oled }
+                     else { ThemeChoice::ExtraDark };
+        w.set_theme_choice(choice);
         let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
-        s.advanced.insert("music.theme".into(), mode.to_string());
-        if let Err(e) = s.save() { tracing::warn!(error = %e, "save settings (music theme)"); }
+        s.theme = theme_choice_str(choice).to_string();
+        if let Err(e) = s.save() { tracing::warn!(error = %e, "save settings (theme)"); }
     });
 
     // Folder picker — used by every "Add a folder" / "+ Add Location"
@@ -1431,6 +1437,41 @@ fn main() -> Result<()> {
                 _ => {}
             }
         }
+    });
+
+    // Downloader tab (mdl) — resolve a streaming URL, download into the library.
+    window.set_music_dl_dest(mdl::default_music_dir().display().to_string().into());
+    window.on_music_dl_url_changed({
+        let w = window.as_weak();
+        move |url| { if let Some(win) = w.upgrade() { win.set_music_dl_provider_badge(mdl::detect(&url).into()); } }
+    });
+    window.on_music_dl_pick_folder({
+        let w = window.as_weak();
+        move || {
+            if let Some(path) = rfd::FileDialog::new().set_title("Choose download folder").pick_folder() {
+                if let Some(win) = w.upgrade() { win.set_music_dl_dest(path.display().to_string().into()); }
+            }
+        }
+    });
+    window.on_music_dl_resolve({
+        let w = window.as_weak();
+        move || { if let Some(win) = w.upgrade() { mdl::start_resolve(win.as_weak(), win.get_music_dl_url().to_string()); } }
+    });
+    window.on_music_dl_download({
+        let w = window.as_weak();
+        move || {
+            if let Some(win) = w.upgrade() {
+                let url = win.get_music_dl_url().to_string();
+                let dest_s = win.get_music_dl_dest().to_string();
+                let dest = if dest_s.is_empty() { mdl::default_music_dir() } else { std::path::PathBuf::from(dest_s) };
+                mdl::start_download(win.as_weak(), url, dest);
+            }
+        }
+    });
+    window.on_music_dl_cancel(move || { mdl::cancel(); });
+    window.on_music_dl_refresh_library({
+        let w = window.as_weak();
+        move || { if let Some(win) = w.upgrade() { refresh_library_silent(&win); } }
     });
     // Rating (np.p4.music.rating) — loved + 1–5 stars on the current track.
     let w = window.as_weak();
@@ -5942,17 +5983,12 @@ fn main() -> Result<()> {
         // Restore the last-used app theme and keep it until the user changes it.
         let choice = match s.theme.as_str() {
             "extra-dark" => ThemeChoice::ExtraDark,
+            "oled"       => ThemeChoice::Oled,
             "system"     => ThemeChoice::System,
             _             => ThemeChoice::Light,
         };
         window.set_theme_choice(choice);
         apply_theme_choice(&window, choice);
-        // Restore the last-used Music-section theme (light / dark / OLED).
-        match s.advanced.get("music.theme").map(|v| v.as_str()) {
-            Some("dark") => { window.set_music_light(false); window.set_music_oled(false); }
-            Some("oled") => { window.set_music_light(false); window.set_music_oled(true); }
-            _            => { window.set_music_light(true);  window.set_music_oled(false); }
-        }
         window.set_reduce_motion(s.reduce_motion);
         window.set_default_cadence(cadence_str(s.libraries.default_cadence).into());
         // First-run onboarding (np.p1.auth-shell) — show until completed once.
@@ -8442,6 +8478,7 @@ fn theme_choice_str(c: ThemeChoice) -> &'static str {
     match c {
         ThemeChoice::Light => "light",
         ThemeChoice::ExtraDark => "extra-dark",
+        ThemeChoice::Oled => "oled",
         ThemeChoice::System => "system",
     }
 }

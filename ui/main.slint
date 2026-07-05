@@ -11,7 +11,7 @@ import { MilestoneConfetti } from "empty_state.slint";
 import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
 import { MusicPage, MusicFullscreen, MusicMini, PodcastMini } from "page_music.slint";
-import { MusicSongRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
+import { MusicSongRow, DownloaderRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
 import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow, AuthorRow, CollectionRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry, CloudJob, CloudUsage, CloudXfer } from "page_cloud.slint";
@@ -866,12 +866,13 @@ export component MainWindow inherits Window {
     callback crop-confirm(string, float, length, length, length, length);
     in-out property <ThemeChoice> theme-choice: ThemeChoice.system;
     in-out property <bool> dark <=> Theme.dark;
+    in-out property <bool> oled <=> Theme.oled;
     in-out property <bool> reduce-motion <=> Theme.reduce-motion;
     callback reduce-motion-changed(bool);
-    // Music-section theme (light / dark / OLED) — two-way bound so Rust can
-    // restore the last-used choice on boot and persist it when it changes.
-    in-out property <bool> music-light <=> MusicTheme.light;
-    in-out property <bool> music-oled <=> MusicTheme.oled;
+    // Theme unified (2026-07-05): MusicTheme now derives from the app Theme, so
+    // the Music-section zen theme button cycles the APP theme (Theme.dark/oled).
+    // This callback fires when that button flips it, so Rust re-syncs theme-choice
+    // and persists it (reuses the app theme persistence path).
     callback music-theme-changed();
 
     in-out property <[ApiKeyRow]> api-rows: [];
@@ -1286,6 +1287,15 @@ callback cloud-go-home();
     in-out property <bool> music-playing: false;
     in-out property <string> music-view: "mymusic";    // top category
     in-out property <string> music-lib-tab: "home";    // My Music sub-tab
+    // Downloader tab (mdl).
+    in-out property <string> music-dl-url: "";
+    in-out property <string> music-dl-provider-badge: "";
+    in-out property <string> music-dl-dest: "";
+    in-out property <string> music-dl-status: "idle";
+    in-out property <[DownloaderRow]> music-dl-rows: [];
+    in-out property <int> music-dl-done: 0;
+    in-out property <int> music-dl-skipped: 0;
+    in-out property <int> music-dl-failed: 0;
     in-out property <string> music-query: "";          // search box text
     in-out property <int> music-sleep-min: 0;          // active sleep-timer minutes
     in-out property <[PhotoTile]> music-recent: [];
@@ -1432,6 +1442,12 @@ callback cloud-go-home();
     in-out property <string> music-song-dir: "asc";
     callback music-set-view(string);
     callback music-set-lib-tab(string);
+    callback music-dl-url-changed(string);
+    callback music-dl-pick-folder();
+    callback music-dl-resolve();
+    callback music-dl-download();
+    callback music-dl-cancel();
+    callback music-dl-refresh-library();
     callback music-cycle-sleep();
     callback music-love();
     callback music-rate(int);
@@ -2221,6 +2237,7 @@ callback cloud-go-home();
             logo-choice: root.app-logo-choice;
             user-action(a) => { root.user-action(a); }
             section-changed(s) => { root.section-changed(s); }
+            theme-cycled => { root.music-theme-changed(); }
         }
 
         ContentSurface {
@@ -2331,6 +2348,20 @@ callback cloud-go-home();
                 player-mode: root.music-player-mode;
                 view <=> root.music-view; sleep-min: root.music-sleep-min;
                 lib-tab <=> root.music-lib-tab;
+                dl-url <=> root.music-dl-url;
+                dl-provider-badge <=> root.music-dl-provider-badge;
+                dl-dest <=> root.music-dl-dest;
+                dl-status <=> root.music-dl-status;
+                dl-rows <=> root.music-dl-rows;
+                dl-done <=> root.music-dl-done;
+                dl-skipped <=> root.music-dl-skipped;
+                dl-failed <=> root.music-dl-failed;
+                dl-url-changed(u) => { root.music-dl-url-changed(u); }
+                dl-pick-folder() => { root.music-dl-pick-folder(); }
+                dl-resolve() => { root.music-dl-resolve(); }
+                dl-download() => { root.music-dl-download(); }
+                dl-cancel() => { root.music-dl-cancel(); }
+                dl-refresh-library() => { root.music-dl-refresh-library(); }
                 recent: root.music-recent; most: root.music-most; loved-tiles: root.music-loved;
                 fresh: root.music-fresh; albums: root.music-albums; artists: root.music-artists; genres: root.music-genres;
                 top-artists: root.music-top-artists; top-albums: root.music-top-albums;
@@ -2862,12 +2893,21 @@ callback cloud-go-home();
                 avatar-image: root.user.avatar-image;
                 avatar-emoji: root.user.avatar-emoji;
                 music-left: root.home-music-left;
-                // Mini-player feed.
-                np-title: root.music-np-title; np-sub: root.music-np-sub;
+                // Mini-player feed — full parity with the Music-section players.
+                np-title: root.music-np-title; np-sub: root.music-np-sub; np-album: root.music-np-album;
                 np-art: root.music-np-art; np-accent: root.music-np-accent;
                 playing: root.music-playing; pos: root.music-pos; dur: root.music-dur;
                 pos-label: root.music-pos-label; dur-label: root.music-dur-label;
                 shuffle: root.music-shuffle; volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat;
+                player-mode: root.music-player-mode;
+                queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
+                radio-initial: root.music-radio-np-initial; yt-now-video: root.music-yt-now-video;
+                podcast-speed: root.music-podcast-speed; podcast-episodes: root.music-podcast-d-episodes; podcast-summary: root.music-podcast-d-desc;
+                play-queue(i) => { root.music-play-queue(i); }
+                watch-video => { root.music-yt-watch-current(); }
+                podcast-skip(s) => { root.music-podcast-skip(s); }
+                podcast-set-speed(v) => { root.music-podcast-set-speed(v); }
+                podcast-play(id) => { root.music-podcast-play(id); }
                 open-section(s) => { root.active-section = s; root.section-changed(s); }
                 open-music(v) => { root.music-view = v; root.active-section = "music"; root.section-changed("music"); }
                 open-profile => { root.active-settings-tab = "profile"; root.active-section = "settings"; root.section-changed("settings"); }
@@ -3025,6 +3065,7 @@ callback cloud-go-home();
         toggle-shuffle => { root.music-toggle-shuffle(); }
         play-queue(i) => { root.music-play-queue(i); } love => { root.music-love(); } rate(n) => { root.music-rate(n); }
         open-now-album => { root.music-open-now-album(); } open-now-artist => { root.music-open-now-artist(); }
+        theme-changed => { root.music-theme-changed(); }
     }
 
     // App-wide draggable mini-player (over every section).
