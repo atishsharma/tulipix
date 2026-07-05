@@ -5936,6 +5936,7 @@ fn main() -> Result<()> {
             window.set_app_logo_choice(s.text("profile.logo").parse().unwrap_or(0));
         }
         // Home command center (np.p6.home): greeting + date line + live stats.
+        window.set_home_music_left(s.flag("home.music-left", false));
         set_home_greeting_now(&window);
         kick_home_stats(&window);
         // Restore the last-used app theme and keep it until the user changes it.
@@ -6726,6 +6727,8 @@ fn main() -> Result<()> {
                        else { IDLE_NEVER_SECS };
             tulipix_core::idle::set_threshold(secs);
         }
+        // Home music-block side — apply live so the layout flips on toggle.
+        if key == "home.music-left" { w.set_home_music_left(on); }
         tracing::info!(%key, on, "setting toggled");
         seed_settings_panels(&w);
     });

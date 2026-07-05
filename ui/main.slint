@@ -263,6 +263,7 @@ component SettingsPage inherits Rectangle {
     in-out property <ThemeChoice> theme-choice;
     in-out property <bool> reduce-motion;
     callback reduce-motion-changed(bool);
+    in property <bool> home-music-left;   // Home layout: music block on the left
     in property <bool> account-sync-allowed;
     in property <UserState> user;
     // BUILT WITH credits — static, vendored logo assets (no runtime fetch).
@@ -700,6 +701,33 @@ component SettingsPage inherits Rectangle {
                                 }
                             }
 
+                            // Home music side — swap the music block to the left,
+                            // section grid follows to the right (np.p6.home).
+                            HorizontalLayout {
+                                spacing: 12px;
+                                VerticalLayout {
+                                    alignment: center; spacing: 2px; horizontal-stretch: 1;
+                                    Text { text: "Music block on left"; color: Theme.text; font-size: 13px; font-weight: 600; }
+                                    Text { text: "Home page — put the player on the left, sections on the right"; color: Theme.text-dim; font-size: 11px; }
+                                }
+                                Rectangle {
+                                    width: 52px; height: 28px;
+                                    horizontal-stretch: 0; vertical-stretch: 0;
+                                    y: (parent.height - self.height) / 2;
+                                    border-radius: 14px;
+                                    background: root.home-music-left ? Accent.color : Theme.outline;
+                                    animate background { duration: 140ms; easing: ease-out; }
+                                    TouchArea { mouse-cursor: pointer; clicked => { root.setting-toggle("home.music-left", !root.home-music-left); } }
+                                    Rectangle {
+                                        width: 22px; height: 22px; border-radius: 11px;
+                                        background: #ffffff;
+                                        x: root.home-music-left ? parent.width - self.width - 3px : 3px;
+                                        y: (parent.height - self.height) / 2;
+                                        animate x { duration: 140ms; easing: ease-out; }
+                                    }
+                                }
+                            }
+
                             // Sidebar logo — pick one of the four bundled marks.
                             VerticalLayout {
                                 spacing: 2px;
@@ -821,6 +849,7 @@ export component MainWindow inherits Window {
     in-out property <HomeStats> home-stats;
     in-out property <string> home-greeting: "Welcome";
     in-out property <string> home-date-line: "";
+    in-out property <bool> home-music-left: false;   // music block side (Settings)
     callback section-changed(string);   // sidebar section click → preload that section
     in-out property <string> active-settings-tab: "appearance";
     in-out property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local };
@@ -2832,25 +2861,22 @@ callback cloud-go-home();
                 user-secondary: root.user.secondary;
                 avatar-image: root.user.avatar-image;
                 avatar-emoji: root.user.avatar-emoji;
-                // Mini-player feed — same bindings as the floating MusicMini.
-                np-title: root.music-np-title; np-sub: root.music-np-sub; np-album: root.music-np-album;
+                music-left: root.home-music-left;
+                // Mini-player feed.
+                np-title: root.music-np-title; np-sub: root.music-np-sub;
                 np-art: root.music-np-art; np-accent: root.music-np-accent;
                 playing: root.music-playing; pos: root.music-pos; dur: root.music-dur;
                 pos-label: root.music-pos-label; dur-label: root.music-dur-label;
                 shuffle: root.music-shuffle; volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat;
-                queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
-                radio-initial: root.music-radio-np-initial; mini-outline: root.music-mini-outline;
-                player-mode: root.music-player-mode; yt-now-video: root.music-yt-now-video;
                 open-section(s) => { root.active-section = s; root.section-changed(s); }
                 open-music(v) => { root.music-view = v; root.active-section = "music"; root.section-changed("music"); }
                 open-profile => { root.active-settings-tab = "profile"; root.active-section = "settings"; root.section-changed("settings"); }
-                playpause => { root.music-toggle-pause(); }
+                // Idle play → start a sonic mix so the queue is never empty.
+                playpause => { if (root.music-np-title == "") { root.music-shuffle-all(); } else { root.music-toggle-pause(); } }
                 next => { root.music-next(); } prev => { root.music-prev(); }
                 seek(s) => { root.music-seek(s); } set-volume(v) => { root.music-set-volume(v); }
                 toggle-mute => { root.music-toggle-mute(); } toggle-shuffle => { root.music-toggle-shuffle(); }
                 cycle-repeat => { root.music-cycle-repeat(); }
-                play-queue(i) => { root.music-play-queue(i); }
-                watch-video => { root.music-yt-watch-current(); }
                 open-zen => { root.music-fullscreen = true; }
                 open-search => { root.palette-open = true; }
                 add-folder => { root.pick-folder(); }
@@ -2863,6 +2889,7 @@ callback cloud-go-home();
                 theme-choice <=> root.theme-choice;
                 reduce-motion <=> root.reduce-motion;
                 reduce-motion-changed(v) => { root.reduce-motion-changed(v); }
+                home-music-left: root.home-music-left;
                 account-sync-allowed: root.account-sync-allowed;
                 user: root.user;
                 api-rows: root.api-rows;

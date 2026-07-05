@@ -1,12 +1,10 @@
 // Home command center (np.p6.home) — bento dashboard, default landing page.
-// Layout v2 (2026-07-05 user redesign): left = Music card embedding the
-// ORIGINAL MusicMini player + 5 name-only tab chips; right = Photos/Videos
-// row over Books/Cloud/Tools row (200% icons + big titles); below = Continue
-// + Quick Actions; 150% header with clickable avatar → Settings → Profile.
+// Layout v3 (2026-07-05): app-themed HomeMini player (follows the app Theme,
+// NOT MusicTheme), explicit-width section tiles (nested layouts wouldn't
+// distribute the leftover — only fixed widths fill), and a left/right swap for
+// the music block driven by `music-left`.
 import { Theme, Accent } from "tokens.slint";
 import { AppIcon, Icons } from "icons.slint";
-import { MusicMini } from "page_music.slint";
-import { MusicSongRow, MusicLyricLine } from "music_common.slint";
 
 export struct HomeStats {
     photos: int, photos-albums: int, photos-scan: string,
@@ -15,12 +13,12 @@ export struct HomeStats {
     books: int, books-reading: int,
     cloud-remotes: int, cloud-note: string,
     tools-jobs: int, tools-note: string,
-    continue1: string, continue1-sub: string,   // e.g. "📖 Dune" / "chapter 12 · 48%"
+    continue1: string, continue1-sub: string,
     continue2: string, continue2-sub: string,
     continue3: string, continue3-sub: string,
 }
 
-// Small uppercase section label — identical everywhere.
+// Small uppercase section label.
 component HomeCap inherits Text {
     font-size: 9px; font-weight: 800; letter-spacing: 1.2px;
     color: Theme.text-dim;
@@ -30,21 +28,130 @@ component HomeCap inherits Text {
 component HomeChip inherits Rectangle {
     in property <string> label;
     in property <bool> emphasized: false;
+    in property <bool> fill: false;              // stretch to share the row (tabs)
     in property <color> accent: Accent.color;
     callback clicked();
     height: 24px; border-radius: 12px;
-    horizontal-stretch: 0; vertical-stretch: 0;
+    horizontal-stretch: fill ? 1 : 0; vertical-stretch: 0;
     background: emphasized ? accent.with-alpha(0.17) : (ta.has-hover ? Theme.panel : Theme.panel-2);
     border-width: 1px;
     border-color: emphasized ? accent.with-alpha(0.33) : Theme.outline;
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    HorizontalLayout { padding-left: 10px; padding-right: 10px;
+    HorizontalLayout { padding-left: 8px; padding-right: 8px;
         Text { text: label; color: emphasized ? accent : Theme.text; horizontal-stretch: 1;
             font-size: 9px; font-weight: 600; vertical-alignment: center; horizontal-alignment: center; overflow: elide; } }
 }
 
-// Section tile — 80px icon chip top-left (200% v2), spring, then big
-// name+stat+footer clustered at the bottom. Whole tile clickable.
+// Round transport button — app-themed.
+component HomeXport inherits Rectangle {
+    in property <image> icon;
+    in property <length> d: 28px;
+    in property <bool> primary: false;
+    in property <bool> on: false;
+    callback clicked();
+    width: d; height: d; border-radius: d / 2;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    background: primary ? Theme.sec-music
+             : (on ? Theme.sec-music.with-alpha(0.18) : (ta.has-hover ? Theme.panel : transparent));
+    border-width: on && !primary ? 1px : 0px;
+    border-color: Theme.sec-music.with-alpha(0.4);
+    animate background { duration: 120ms; }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    AppIcon { source: icon; width: d * 0.5; height: d * 0.5;
+        tint: primary ? #ffffff : (on ? Theme.sec-music : Theme.text);
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+}
+
+// App-themed mini player for Home — uses Theme tokens so it tracks light/dark
+// with the rest of the app (the Music-section MusicMini has its own MusicTheme
+// and would not follow the app theme here).
+component HomeMini inherits Rectangle {
+    in property <image> art;
+    in property <string> title;
+    in property <string> sub;
+    in property <bool> playing;
+    in property <float> pos; in property <float> dur;
+    in property <string> pos-label; in property <string> dur-label;
+    in property <bool> shuffle; in property <string> repeat: "off";
+    in property <float> volume; in property <bool> muted;
+    callback playpause(); callback next(); callback prev();
+    callback seek(float); callback set-volume(float);
+    callback toggle-shuffle(); callback cycle-repeat(); callback toggle-mute();
+    callback open-zen();
+
+    border-radius: 16px;
+    background: Theme.panel-2;
+    border-width: 1px; border-color: Theme.outline;
+    clip: true;
+
+    VerticalLayout {
+        padding: 14px; spacing: 12px; alignment: start;
+
+        // Cover art — square-ish, fills width, spring above pushes nothing.
+        Rectangle {
+            vertical-stretch: 1; min-height: 80px;
+            border-radius: 12px; clip: true;
+            background: Theme.sec-music.with-alpha(0.10);
+            TouchArea { mouse-cursor: pointer; clicked => { root.open-zen(); } }
+            if art.width != 0: Image { source: art; image-fit: cover; width: 100%; height: 100%; }
+            if art.width == 0: AppIcon { source: Icons.music; tint: Theme.sec-music;
+                width: 48px; height: 48px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+        }
+
+        // Title + artist.
+        VerticalLayout {
+            spacing: 2px;
+            Text { text: title == "" ? "Nothing playing" : title;
+                color: Theme.text; font-size: 15px; font-weight: 700; overflow: elide; }
+            Text { text: sub == "" ? "Press play for a sonic mix" : sub;
+                color: Theme.text-dim; font-size: 11px; overflow: elide; }
+        }
+
+        // Progress — click to seek.
+        VerticalLayout {
+            spacing: 4px;
+            Rectangle {
+                height: 5px; border-radius: 3px; background: Theme.outline;
+                fill := Rectangle { x: 0; height: 100%; border-radius: 3px; background: Theme.sec-music;
+                    width: parent.width * (dur > 0 ? Math.clamp(pos / dur, 0, 1) : 0); }
+                seekta := TouchArea { mouse-cursor: pointer;
+                    clicked => { root.seek((self.mouse-x / self.width) * dur); } }
+            }
+            HorizontalLayout {
+                Text { text: pos-label == "" ? "0:00" : pos-label; color: Theme.text-dim; font-size: 9px; }
+                Rectangle { horizontal-stretch: 1; }
+                Text { text: dur-label == "" ? "0:00" : dur-label; color: Theme.text-dim; font-size: 9px; }
+            }
+        }
+
+        // Transport.
+        HorizontalLayout {
+            alignment: center; spacing: 6px;
+            HomeXport { icon: Icons.shuffle; on: shuffle; clicked => { root.toggle-shuffle(); } }
+            HomeXport { icon: Icons.skip-back; clicked => { root.prev(); } }
+            HomeXport { icon: playing ? Icons.pause : Icons.play; d: 44px; primary: true; clicked => { root.playpause(); } }
+            HomeXport { icon: Icons.skip-forward; clicked => { root.next(); } }
+            HomeXport { icon: Icons.repeat; on: repeat != "off"; clicked => { root.cycle-repeat(); } }
+        }
+
+        // Volume.
+        HorizontalLayout {
+            spacing: 8px; alignment: center;
+            HomeXport { icon: muted ? Icons.volume-x : Icons.volume; d: 24px; clicked => { root.toggle-mute(); } }
+            Rectangle {
+                horizontal-stretch: 1; height: 5px; border-radius: 3px; background: Theme.outline;
+                Rectangle { x: 0; height: 100%; border-radius: 3px; background: Theme.text-dim;
+                    width: parent.width * Math.clamp(muted ? 0 : volume, 0, 1); }
+                volta := TouchArea { mouse-cursor: pointer;
+                    clicked => { root.set-volume(Math.clamp(self.mouse-x / self.width, 0, 1)); }
+                    moved => { if (self.pressed) { root.set-volume(Math.clamp(self.mouse-x / self.width, 0, 1)); } } }
+            }
+        }
+    }
+}
+
+// Section tile — 80px icon chip top-left (200%), spring, big name/stat/footer
+// at the bottom. Width is set explicitly by the caller (grid distribution).
 component HomeTile inherits Rectangle {
     in property <image> icon;
     in property <color> accent;
@@ -67,10 +174,89 @@ component HomeTile inherits Rectangle {
             AppIcon { source: root.icon; tint: accent; width: 40px; height: 40px;
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
         }
-        Rectangle { vertical-stretch: 1; }   // spring — text cluster hugs the bottom
+        Rectangle { vertical-stretch: 1; }   // spring
         Text { text: name; color: Theme.text; font-size: 24px; font-weight: 800; overflow: elide; }
         Text { text: stat; color: Theme.text-dim; font-size: 13px; overflow: elide; }
         if footer != "": Text { text: footer; color: footer-color; font-size: 13px; overflow: elide; }
+    }
+}
+
+// Left-hand music card — MUSIC cap + HomeMini + 5 name-only tab chips.
+component HomeMusicCard inherits Rectangle {
+    in property <image> np-art;
+    in property <string> np-title; in property <string> np-sub;
+    in property <bool> playing;
+    in property <float> pos; in property <float> dur;
+    in property <string> pos-label; in property <string> dur-label;
+    in property <bool> shuffle; in property <string> repeat;
+    in property <float> volume; in property <bool> muted;
+    callback playpause(); callback next(); callback prev();
+    callback seek(float); callback set-volume(float);
+    callback toggle-shuffle(); callback cycle-repeat(); callback toggle-mute();
+    callback open-zen();
+    callback open-music(string);
+    border-radius: 14px;
+    background: Theme.sec-music.with-alpha(0.09);
+    border-width: 1px; border-color: Theme.sec-music.with-alpha(0.24);
+    VerticalLayout {
+        padding: 12px; spacing: 8px;
+        HomeCap { text: "MUSIC"; color: Theme.sec-music; }
+        HomeMini {
+            vertical-stretch: 1;
+            art: np-art; title: np-title; sub: np-sub; playing: playing;
+            pos: pos; dur: dur; pos-label: pos-label; dur-label: dur-label;
+            shuffle: shuffle; repeat: repeat; volume: volume; muted: muted;
+            playpause => { root.playpause(); }
+            next => { root.next(); } prev => { root.prev(); }
+            seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
+            toggle-shuffle => { root.toggle-shuffle(); } cycle-repeat => { root.cycle-repeat(); }
+            toggle-mute => { root.toggle-mute(); } open-zen => { root.open-zen(); }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            HomeChip { fill: true; label: "My Music"; emphasized: true; accent: Theme.sec-music; clicked => { root.open-music("mymusic"); } }
+            HomeChip { fill: true; label: "Podcasts"; clicked => { root.open-music("podcasts"); } }
+            HomeChip { fill: true; label: "Audiobooks"; clicked => { root.open-music("audiobooks"); } }
+        }
+        HorizontalLayout {
+            spacing: 6px;
+            HomeChip { fill: true; label: "Radio"; clicked => { root.open-music("radio"); } }
+            HomeChip { fill: true; label: "YouTube"; clicked => { root.open-music("youtube"); } }
+        }
+    }
+}
+
+// Right-hand section grid — Photos+Videos over Books+Cloud+Tools. Every tile
+// gets an explicit width (cell2/cell3) so the row fills; stretch factors alone
+// leave the tiles at icon width.
+component HomeSectionGrid inherits VerticalLayout {
+    in property <HomeStats> stats;
+    in property <length> cell2;
+    in property <length> cell3;
+    callback open-section(string);
+    spacing: 10px;
+    HorizontalLayout {
+        spacing: 10px; vertical-stretch: 1;
+        HomeTile { width: cell2; icon: Icons.image; accent: Theme.sec-photos; name: "Photos";
+            stat: stats.photos + " items · " + stats.photos-albums + " albums";
+            footer: stats.photos-scan; clicked => { root.open-section("photos"); } }
+        HomeTile { width: cell2; icon: Icons.film; accent: Theme.sec-videos; name: "Videos";
+            stat: stats.videos + " items · " + stats.videos-shows + " shows";
+            footer: stats.videos-note; clicked => { root.open-section("videos"); } }
+    }
+    HorizontalLayout {
+        spacing: 10px; vertical-stretch: 1;
+        HomeTile { width: cell3; icon: Icons.book-open; accent: Theme.sec-books; name: "Books";
+            stat: stats.books + " books · reading " + stats.books-reading;
+            clicked => { root.open-section("books"); } }
+        HomeTile { width: cell3; icon: Icons.cloud; accent: Theme.sec-cloud; name: "Cloud";
+            stat: stats.cloud-remotes + " remotes"; footer: stats.cloud-note;
+            clicked => { root.open-section("cloud"); } }
+        HomeTile { width: cell3; icon: Icons.wrench; accent: Theme.sec-tools; name: "Tools";
+            stat: stats.tools-jobs == 0 ? "queue idle" : "● " + stats.tools-jobs + " jobs running";
+            footer: stats.tools-note;
+            footer-color: stats.tools-jobs > 0 ? #22c55e : Theme.text-dim.with-alpha(0.7);
+            clicked => { root.open-section("tools"); } }
     }
 }
 
@@ -79,12 +265,12 @@ export component HomePage inherits Rectangle {
     in property <string> greeting: "Welcome";
     in property <string> date-line: "";
     in property <int> logo-choice: 0;
-    in property <string> user-secondary: "";       // "12,304 items · 41 GB"
+    in property <string> user-secondary: "";
     in property <image> avatar-image;
     in property <string> avatar-emoji: "";
-    // now-playing (mini-player feed — same props the floating MusicMini gets)
+    in property <bool> music-left: false;          // music block on the left vs right
+    // now-playing feed
     in property <string> np-title: ""; in property <string> np-sub: "";
-    in property <string> np-album: "";
     in property <image> np-art; in property <color> np-accent: Theme.sec-music;
     in property <bool> playing: false;
     in property <float> pos: 0; in property <float> dur: 1;
@@ -92,22 +278,14 @@ export component HomePage inherits Rectangle {
     in property <bool> shuffle: false;
     in property <float> volume: 1; in property <bool> muted: false;
     in property <string> repeat: "off";
-    in property <[MusicSongRow]> queue-rows: [];
-    in property <[MusicLyricLine]> lyrics-rows: [];
-    in property <int> lyrics-active: -1;
-    in property <string> radio-initial: "";
-    in property <bool> mini-outline: true;
-    in property <string> player-mode: "music";     // music|podcast|radio|book
-    in property <bool> yt-now-video: false;
 
-    callback open-section(string);                 // "photos"|"videos"|...|"settings"
-    callback open-music(string);                   // music-view: mymusic|podcasts|audiobooks|radio|youtube
-    callback open-profile();                       // avatar click → Settings → Profile
+    callback open-section(string);
+    callback open-music(string);
+    callback open-profile();
     callback playpause(); callback next(); callback prev();
     callback seek(float); callback set-volume(float);
     callback toggle-mute(); callback toggle-shuffle(); callback cycle-repeat();
-    callback play-queue(int);
-    callback watch-video(); callback open-zen();
+    callback open-zen();
     callback open-search();
     callback add-folder();
     callback shuffle-all();
@@ -115,27 +293,20 @@ export component HomePage inherits Rectangle {
 
     background: transparent;
 
-    // Solid grid: explicit row heights and column widths — Slint stretch
-    // factors only split LEFTOVER space after content-preferred sizes, so
-    // without these bindings content would drive every tile size.
-    property <length> grid-w: root.width - 32px;               // inside page padding
-    property <length> content-h: root.height - 32px /*pad*/ - 84px /*header*/
-        - 12px /*footer*/ - 30px /*3 row gaps*/;
+    // Grid geometry (pure, no layout feedback).
+    property <length> grid-w: root.width - 32px;
+    property <length> content-h: root.height - 32px - 84px - 12px - 30px;
     property <length> row3-h: 150px;
     property <length> bento-h: content-h - row3-h - 10px;
     property <length> music-w: 340px;
-    property <length> right-w: grid-w - music-w - 10px;
-    // Mini-player scale from PURE geometry (never the measured child height —
-    // that would form a layout binding loop through uiscale). Card chrome:
-    // 12px×2 padding + 8px×2 spacing + 14px cap + 24px tabs ≈ 78px.
-    property <length> mini-avail-h: bento-h - 78px;
-    property <float> mini-scale:
-        Math.max(0.5, Math.min(mini-avail-h / 488px, (music-w - 24px) / 300px));
+    property <length> right-area: grid-w - music-w - 10px;
+    property <length> cell2: (right-area - 10px) / 2;
+    property <length> cell3: (right-area - 20px) / 3;
 
     VerticalLayout {
         padding: 16px; spacing: 10px;
 
-        // ── Header (150%): logo · greeting · search · avatar → profile ──
+        // ── Header (150%) ──────────────────────────────────────────
         HorizontalLayout {
             spacing: 16px; height: 84px;
             Rectangle {
@@ -157,7 +328,6 @@ export component HomePage inherits Rectangle {
             }
             VerticalLayout { alignment: center;
                 HomeChip { label: "⌘K  Search"; clicked => { root.open-search(); } } }
-            // Avatar — grows on hover, click opens Settings → Profile & Style.
             Rectangle {
                 width: 64px; horizontal-stretch: 0;
                 avatar := Rectangle {
@@ -179,99 +349,47 @@ export component HomePage inherits Rectangle {
             }
         }
 
-        // ── Bento: Music card (original mini player) + section tiles ──
+        // ── Bento: music card + section grid (order follows music-left) ──
         HorizontalLayout {
             spacing: 10px; height: root.bento-h;
 
-            // Music card — MUSIC cap, embedded original MusicMini, 5 tab chips.
-            Rectangle {
-                width: root.music-w; horizontal-stretch: 0;
-                border-radius: 14px;
-                background: Theme.sec-music.with-alpha(0.09);
-                border-width: 1px; border-color: Theme.sec-music.with-alpha(0.24);
-                VerticalLayout {
-                    padding: 12px; spacing: 8px;
-                    HomeCap { text: "MUSIC"; color: Theme.sec-music; }
-                    mini-slot := Rectangle {
-                        vertical-stretch: 1; min-height: 0; clip: true;
-                        MusicMini {
-                            // Explicit scaled size + matching uiscale (same recipe
-                            // as the floating mini-player). Centered, clipped.
-                            width: 300px * root.mini-scale;
-                            height: 488px * root.mini-scale;
-                            x: (parent.width - self.width) / 2;
-                            y: (parent.height - self.height) / 2;
-                            uiscale: root.mini-scale;
-                            bold-outline: root.mini-outline;
-                            art: root.np-art; accent: root.np-accent;
-                            title: root.np-title; sub: root.np-sub; album: root.np-album;
-                            playing: root.playing;
-                            pos: root.pos; dur: root.dur;
-                            pos-label: root.pos-label; dur-label: root.dur-label;
-                            shuffle: root.shuffle; volume: root.volume; muted: root.muted; repeat: root.repeat;
-                            queue-rows: root.queue-rows; lyrics-rows: root.lyrics-rows; lyrics-active: root.lyrics-active;
-                            radio-mode: root.player-mode == "radio"; radio-initial: root.radio-initial;
-                            book-mode: root.player-mode == "book";
-                            yt-now-video: root.yt-now-video; watch-video => { root.watch-video(); }
-                            open-zen => { root.open-zen(); }
-                            cycle-repeat => { root.cycle-repeat(); }
-                            // No close/minimise in the grid — both land in Music.
-                            close => { root.open-music("mymusic"); }
-                            minimise => { root.open-music("mymusic"); }
-                            playpause => { root.playpause(); }
-                            next => { root.next(); } prev => { root.prev(); }
-                            seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
-                            toggle-mute => { root.toggle-mute(); } toggle-shuffle => { root.toggle-shuffle(); }
-                            play-queue(i) => { root.play-queue(i); }
-                        }
-                    }
-                    // 5 deep-link tabs — names only, two rows so nothing elides
-                    // in the narrow card. Each chip stretches to share its row.
-                    HorizontalLayout {
-                        spacing: 6px;
-                        HomeChip { horizontal-stretch: 1; label: "My Music"; emphasized: true; accent: Theme.sec-music;
-                            clicked => { root.open-music("mymusic"); } }
-                        HomeChip { horizontal-stretch: 1; label: "Podcasts"; clicked => { root.open-music("podcasts"); } }
-                        HomeChip { horizontal-stretch: 1; label: "Audiobooks"; clicked => { root.open-music("audiobooks"); } }
-                    }
-                    HorizontalLayout {
-                        spacing: 6px;
-                        HomeChip { horizontal-stretch: 1; label: "Radio"; clicked => { root.open-music("radio"); } }
-                        HomeChip { horizontal-stretch: 1; label: "YouTube"; clicked => { root.open-music("youtube"); } }
-                    }
-                }
+            if root.music-left: HomeMusicCard {
+                width: root.music-w;
+                np-art: root.np-art; np-title: root.np-title; np-sub: root.np-sub;
+                playing: root.playing; pos: root.pos; dur: root.dur;
+                pos-label: root.pos-label; dur-label: root.dur-label;
+                shuffle: root.shuffle; repeat: root.repeat; volume: root.volume; muted: root.muted;
+                playpause => { root.playpause(); } next => { root.next(); } prev => { root.prev(); }
+                seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
+                toggle-shuffle => { root.toggle-shuffle(); } cycle-repeat => { root.cycle-repeat(); }
+                toggle-mute => { root.toggle-mute(); } open-zen => { root.open-zen(); }
+                open-music(v) => { root.open-music(v); }
             }
-
-            // Right of the player: Photos + Videos, then Books + Cloud + Tools.
-            VerticalLayout {
-                spacing: 10px; horizontal-stretch: 1; min-width: 0;
-                HorizontalLayout {
-                    spacing: 10px; height: (root.bento-h - 10px) * 0.5;
-                    HomeTile { horizontal-stretch: 1; min-width: 0; icon: Icons.image; accent: Theme.sec-photos; name: "Photos";
-                        stat: stats.photos + " items · " + stats.photos-albums + " albums";
-                        footer: stats.photos-scan; clicked => { root.open-section("photos"); } }
-                    HomeTile { horizontal-stretch: 1; min-width: 0; icon: Icons.film; accent: Theme.sec-videos; name: "Videos";
-                        stat: stats.videos + " items · " + stats.videos-shows + " shows";
-                        footer: stats.videos-note; clicked => { root.open-section("videos"); } }
-                }
-                HorizontalLayout {
-                    spacing: 10px; vertical-stretch: 1; min-height: 0;
-                    HomeTile { horizontal-stretch: 1; min-width: 0; icon: Icons.book-open; accent: Theme.sec-books; name: "Books";
-                        stat: stats.books + " books · reading " + stats.books-reading;
-                        clicked => { root.open-section("books"); } }
-                    HomeTile { horizontal-stretch: 1; min-width: 0; icon: Icons.cloud; accent: Theme.sec-cloud; name: "Cloud";
-                        stat: stats.cloud-remotes + " remotes"; footer: stats.cloud-note;
-                        clicked => { root.open-section("cloud"); } }
-                    HomeTile { horizontal-stretch: 1; min-width: 0; icon: Icons.wrench; accent: Theme.sec-tools; name: "Tools";
-                        stat: stats.tools-jobs == 0 ? "queue idle" : "● " + stats.tools-jobs + " jobs running";
-                        footer: stats.tools-note;
-                        footer-color: stats.tools-jobs > 0 ? #22c55e : Theme.text-dim.with-alpha(0.7);
-                        clicked => { root.open-section("tools"); } }
-                }
+            if root.music-left: HomeSectionGrid {
+                horizontal-stretch: 1;
+                stats: root.stats; cell2: root.cell2; cell3: root.cell3;
+                open-section(s) => { root.open-section(s); }
+            }
+            if !root.music-left: HomeSectionGrid {
+                horizontal-stretch: 1;
+                stats: root.stats; cell2: root.cell2; cell3: root.cell3;
+                open-section(s) => { root.open-section(s); }
+            }
+            if !root.music-left: HomeMusicCard {
+                width: root.music-w;
+                np-art: root.np-art; np-title: root.np-title; np-sub: root.np-sub;
+                playing: root.playing; pos: root.pos; dur: root.dur;
+                pos-label: root.pos-label; dur-label: root.dur-label;
+                shuffle: root.shuffle; repeat: root.repeat; volume: root.volume; muted: root.muted;
+                playpause => { root.playpause(); } next => { root.next(); } prev => { root.prev(); }
+                seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
+                toggle-shuffle => { root.toggle-shuffle(); } cycle-repeat => { root.cycle-repeat(); }
+                toggle-mute => { root.toggle-mute(); } open-zen => { root.open-zen(); }
+                open-music(v) => { root.open-music(v); }
             }
         }
 
-        // ── Row 3: continue (2fr) + quick actions 2×2 ──────────────
+        // ── Row 3: continue + quick actions ────────────────────────
         HorizontalLayout {
             spacing: 10px; height: root.row3-h;
             Rectangle {
