@@ -1,7 +1,12 @@
 // Home command center (np.p6.home) — bento dashboard, default landing page.
-// Mockup: .superpowers/brainstorm/176783-1783191123/content/home-layout-v5.html
+// Layout v2 (2026-07-05 user redesign): left = Music card embedding the
+// ORIGINAL MusicMini player + 5 name-only tab chips; right = Photos/Videos
+// row over Books/Cloud/Tools row (200% icons + big titles); below = Continue
+// + Quick Actions; 150% header with clickable avatar → Settings → Profile.
 import { Theme, Accent } from "tokens.slint";
 import { AppIcon, Icons } from "icons.slint";
+import { MusicMini } from "page_music.slint";
+import { MusicSongRow, MusicLyricLine } from "music_common.slint";
 
 export struct HomeStats {
     photos: int, photos-albums: int, photos-scan: string,
@@ -15,13 +20,13 @@ export struct HomeStats {
     continue3: string, continue3-sub: string,
 }
 
-// Small uppercase section label — identical everywhere (alignment rule 3).
+// Small uppercase section label — identical everywhere.
 component HomeCap inherits Text {
     font-size: 9px; font-weight: 800; letter-spacing: 1.2px;
     color: Theme.text-dim;
 }
 
-// 24px pill chip — one size everywhere (alignment rule 4).
+// 24px pill chip — one size everywhere.
 component HomeChip inherits Rectangle {
     in property <string> label;
     in property <bool> emphasized: false;
@@ -34,12 +39,12 @@ component HomeChip inherits Rectangle {
     border-color: emphasized ? accent.with-alpha(0.33) : Theme.outline;
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout { padding-left: 10px; padding-right: 10px;
-        Text { text: label; color: emphasized ? accent : Theme.text;
-            font-size: 9px; font-weight: 600; vertical-alignment: center; overflow: elide; } }
+        Text { text: label; color: emphasized ? accent : Theme.text; horizontal-stretch: 1;
+            font-size: 9px; font-weight: 600; vertical-alignment: center; horizontal-alignment: center; overflow: elide; } }
 }
 
-// Section tile — 40px icon chip top-left, spring, then name+stat+footer
-// clustered at the bottom (v5 anatomy). Whole tile clickable.
+// Section tile — 80px icon chip top-left (200% v2), spring, then big
+// name+stat+footer clustered at the bottom. Whole tile clickable.
 component HomeTile inherits Rectangle {
     in property <image> icon;
     in property <color> accent;
@@ -54,18 +59,18 @@ component HomeTile inherits Rectangle {
     animate background { duration: 120ms; easing: ease-out; }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     VerticalLayout {
-        padding: 14px; spacing: 4px;
+        padding: 16px; spacing: 5px;
         Rectangle {
-            width: 40px; height: 40px; border-radius: 11px;
+            width: 80px; height: 80px; border-radius: 20px;
             horizontal-stretch: 0; vertical-stretch: 0;
             background: accent.with-alpha(0.15);
-            AppIcon { source: root.icon; tint: accent; width: 20px; height: 20px;
+            AppIcon { source: root.icon; tint: accent; width: 40px; height: 40px;
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
         }
         Rectangle { vertical-stretch: 1; }   // spring — text cluster hugs the bottom
-        Text { text: name; color: Theme.text; font-size: 13px; font-weight: 800; overflow: elide; }
-        Text { text: stat; color: Theme.text-dim; font-size: 10px; overflow: elide; }
-        if footer != "": Text { text: footer; color: footer-color; font-size: 10px; overflow: elide; }
+        Text { text: name; color: Theme.text; font-size: 24px; font-weight: 800; overflow: elide; }
+        Text { text: stat; color: Theme.text-dim; font-size: 13px; overflow: elide; }
+        if footer != "": Text { text: footer; color: footer-color; font-size: 13px; overflow: elide; }
     }
 }
 
@@ -77,46 +82,64 @@ export component HomePage inherits Rectangle {
     in property <string> user-secondary: "";       // "12,304 items · 41 GB"
     in property <image> avatar-image;
     in property <string> avatar-emoji: "";
-    // now-playing
+    // now-playing (mini-player feed — same props the floating MusicMini gets)
     in property <string> np-title: ""; in property <string> np-sub: "";
+    in property <string> np-album: "";
     in property <image> np-art; in property <color> np-accent: Theme.sec-music;
     in property <bool> playing: false;
     in property <float> pos: 0; in property <float> dur: 1;
+    in property <string> pos-label: ""; in property <string> dur-label: "";
+    in property <bool> shuffle: false;
+    in property <float> volume: 1; in property <bool> muted: false;
+    in property <string> repeat: "off";
+    in property <[MusicSongRow]> queue-rows: [];
+    in property <[MusicLyricLine]> lyrics-rows: [];
+    in property <int> lyrics-active: -1;
+    in property <string> radio-initial: "";
+    in property <bool> mini-outline: true;
     in property <string> player-mode: "music";     // music|podcast|radio|book
     in property <bool> yt-now-video: false;
 
     callback open-section(string);                 // "photos"|"videos"|...|"settings"
     callback open-music(string);                   // music-view: mymusic|podcasts|audiobooks|radio|youtube
+    callback open-profile();                       // avatar click → Settings → Profile
     callback playpause(); callback next(); callback prev();
+    callback seek(float); callback set-volume(float);
+    callback toggle-mute(); callback toggle-shuffle(); callback cycle-repeat();
+    callback play-queue(int);
+    callback watch-video(); callback open-zen();
     callback open-search();
     callback add-folder();
     callback shuffle-all();
     callback open-download();
 
-    // Mode badge label follows the active playback (v4 addition ②).
-    property <string> mode-label:
-        np-title == "" ? "Nothing playing" :
-        player-mode == "podcast" ? "Playing · Podcast" :
-        player-mode == "radio"   ? "Radio · Live" :
-        player-mode == "book"    ? "Playing · Audiobook" :
-        yt-now-video             ? "Playing · YouTube" :
-                                   "Playing · My Music";
-    property <string> mode-view:
-        player-mode == "podcast" ? "podcasts" :
-        player-mode == "radio"   ? "radio" :
-        player-mode == "book"    ? "audiobooks" :
-        yt-now-video             ? "youtube" : "mymusic";
-
     background: transparent;
+
+    // Solid grid: explicit row heights and column widths — Slint stretch
+    // factors only split LEFTOVER space after content-preferred sizes, so
+    // without these bindings content would drive every tile size.
+    property <length> grid-w: root.width - 32px;               // inside page padding
+    property <length> content-h: root.height - 32px /*pad*/ - 84px /*header*/
+        - 12px /*footer*/ - 30px /*3 row gaps*/;
+    property <length> row3-h: 150px;
+    property <length> bento-h: content-h - row3-h - 10px;
+    property <length> music-w: 340px;
+    property <length> right-w: grid-w - music-w - 10px;
+    // Mini-player scale from PURE geometry (never the measured child height —
+    // that would form a layout binding loop through uiscale). Card chrome:
+    // 12px×2 padding + 8px×2 spacing + 14px cap + 24px tabs ≈ 78px.
+    property <length> mini-avail-h: bento-h - 78px;
+    property <float> mini-scale:
+        Math.max(0.5, Math.min(mini-avail-h / 488px, (music-w - 24px) / 300px));
 
     VerticalLayout {
         padding: 16px; spacing: 10px;
 
-        // ── Header: logo (follows sidebar setting) · greeting · search · avatar
+        // ── Header (150%): logo · greeting · search · avatar → profile ──
         HorizontalLayout {
-            spacing: 14px;
+            spacing: 16px; height: 84px;
             Rectangle {
-                width: 56px; height: 56px; border-radius: 14px; clip: true;
+                width: 84px; height: 84px; border-radius: 20px; clip: true;
                 horizontal-stretch: 0; vertical-stretch: 0;
                 Image {
                     source: root.logo-choice == 1 ? @image-url("../resources/appicons/sidebar-color.png")
@@ -127,128 +150,132 @@ export component HomePage inherits Rectangle {
                 }
             }
             VerticalLayout {
-                alignment: center; spacing: 4px; horizontal-stretch: 1;
-                Text { text: greeting; color: Theme.text; font-size: 20px; font-weight: 800; overflow: elide; }
+                alignment: center; spacing: 5px; horizontal-stretch: 1; min-width: 0;
+                Text { text: greeting; color: Theme.text; font-size: 30px; font-weight: 800; overflow: elide; }
                 Text { text: date-line + (user-secondary == "" ? "" : " · " + user-secondary);
-                    color: Theme.text-dim; font-size: 11px; overflow: elide; }
+                    color: Theme.text-dim; font-size: 14px; overflow: elide; }
             }
             VerticalLayout { alignment: center;
                 HomeChip { label: "⌘K  Search"; clicked => { root.open-search(); } } }
+            // Avatar — grows on hover, click opens Settings → Profile & Style.
             Rectangle {
-                width: 38px; height: 38px; border-radius: 19px; clip: true;
-                horizontal-stretch: 0; vertical-stretch: 0;
-                y: (parent.height - self.height) / 2;
-                background: @linear-gradient(135deg, Theme.brand 0%, Theme.brand-2 100%);
-                if avatar-image.width != 0: Image { source: avatar-image; image-fit: cover; width: 100%; height: 100%; }
-                if avatar-image.width == 0 && avatar-emoji != "": Text { text: avatar-emoji; font-size: 18px;
-                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
-                if avatar-image.width == 0 && avatar-emoji == "": AppIcon { source: Icons.user; tint: #ffffff;
-                    width: 16px; height: 16px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+                width: 64px; horizontal-stretch: 0;
+                avatar := Rectangle {
+                    width: av.has-hover ? 62px : 56px; height: self.width;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                    border-radius: self.width / 2; clip: true;
+                    background: @linear-gradient(135deg, Theme.brand 0%, Theme.brand-2 100%);
+                    border-width: av.has-hover ? 2px : 0px;
+                    border-color: Theme.brand.with-alpha(0.6);
+                    animate width, border-width { duration: 140ms; easing: ease-out; }
+                    av := TouchArea { mouse-cursor: pointer; clicked => { root.open-profile(); } }
+                    if avatar-image.width != 0: Image { source: avatar-image; image-fit: cover; width: 100%; height: 100%; }
+                    if avatar-image.width == 0 && avatar-emoji != "": Text { text: avatar-emoji; font-size: 26px;
+                        width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                    if avatar-image.width == 0 && avatar-emoji == "": AppIcon { source: Icons.user; tint: #ffffff;
+                        width: 24px; height: 24px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+                }
             }
         }
 
-        // ── Row 1: music hero (2fr) + photos + videos ──────────────
+        // ── Bento: Music card (original mini player) + section tiles ──
         HorizontalLayout {
-            spacing: 10px; vertical-stretch: 3;
-            // music hero
+            spacing: 10px; height: root.bento-h;
+
+            // Music card — MUSIC cap, embedded original MusicMini, 5 tab chips.
             Rectangle {
-                horizontal-stretch: 2;
+                width: root.music-w; horizontal-stretch: 0;
                 border-radius: 14px;
                 background: Theme.sec-music.with-alpha(0.09);
                 border-width: 1px; border-color: Theme.sec-music.with-alpha(0.24);
                 VerticalLayout {
-                    padding: 14px; spacing: 10px;
-                    HorizontalLayout {
-                        HomeCap { text: "MUSIC"; color: Theme.sec-music; vertical-alignment: center; }
-                        Rectangle { horizontal-stretch: 1; }
-                        HomeChip { label: mode-label; emphasized: np-title != ""; accent: Theme.sec-music;
-                            clicked => { root.open-music(mode-view); } }
-                    }
-                    HorizontalLayout {
-                        spacing: 10px;
-                        Rectangle { width: 52px; height: 52px; border-radius: 9px; clip: true;
-                            horizontal-stretch: 0; vertical-stretch: 0;
-                            background: Theme.panel-2;
-                            if np-art.width != 0: Image { source: np-art; image-fit: cover; width: 100%; height: 100%; }
-                            if np-art.width == 0: AppIcon { source: Icons.music; tint: Theme.sec-music;
-                                width: 20px; height: 20px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } }
-                        VerticalLayout {
-                            alignment: center; spacing: 3px; horizontal-stretch: 1;
-                            Text { text: np-title == "" ? "Nothing playing" : np-title;
-                                color: Theme.text; font-size: 13px; font-weight: 700; overflow: elide; }
-                            Text { text: np-sub == "" ? "Pick something in Music" : np-sub;
-                                color: Theme.text-dim; font-size: 10px; overflow: elide; }
-                            Rectangle { height: 3px; border-radius: 2px; background: Theme.outline;
-                                Rectangle { height: 100%; border-radius: 2px; background: Theme.sec-music;
-                                    width: parent.width * (dur > 0 ? Math.max(0, Math.min(1, pos / dur)) : 0); x: 0; } }
-                        }
-                        HorizontalLayout {
-                            spacing: 2px; alignment: center;
-                            VerticalLayout { alignment: center; Rectangle { width: 28px; height: 28px; border-radius: 14px;
-                                background: pv.has-hover ? Theme.panel : transparent;
-                                pv := TouchArea { mouse-cursor: pointer; clicked => { root.prev(); } }
-                                AppIcon { source: Icons.skip-back; tint: Theme.text; width: 14px; height: 14px;
-                                    x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
-                            VerticalLayout { alignment: center; Rectangle { width: 32px; height: 32px; border-radius: 16px;
-                                background: pp.has-hover ? Theme.sec-music : Theme.panel-2;
-                                animate background { duration: 120ms; }
-                                pp := TouchArea { mouse-cursor: pointer; clicked => { root.playpause(); } }
-                                AppIcon { source: playing ? Icons.pause : Icons.play;
-                                    tint: pp.has-hover ? #ffffff : Theme.text; width: 15px; height: 15px;
-                                    x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
-                            VerticalLayout { alignment: center; Rectangle { width: 28px; height: 28px; border-radius: 14px;
-                                background: nx.has-hover ? Theme.panel : transparent;
-                                nx := TouchArea { mouse-cursor: pointer; clicked => { root.next(); } }
-                                AppIcon { source: Icons.skip-forward; tint: Theme.text; width: 14px; height: 14px;
-                                    x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
+                    padding: 12px; spacing: 8px;
+                    HomeCap { text: "MUSIC"; color: Theme.sec-music; }
+                    mini-slot := Rectangle {
+                        vertical-stretch: 1; min-height: 0; clip: true;
+                        MusicMini {
+                            // Explicit scaled size + matching uiscale (same recipe
+                            // as the floating mini-player). Centered, clipped.
+                            width: 300px * root.mini-scale;
+                            height: 488px * root.mini-scale;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                            uiscale: root.mini-scale;
+                            bold-outline: root.mini-outline;
+                            art: root.np-art; accent: root.np-accent;
+                            title: root.np-title; sub: root.np-sub; album: root.np-album;
+                            playing: root.playing;
+                            pos: root.pos; dur: root.dur;
+                            pos-label: root.pos-label; dur-label: root.dur-label;
+                            shuffle: root.shuffle; volume: root.volume; muted: root.muted; repeat: root.repeat;
+                            queue-rows: root.queue-rows; lyrics-rows: root.lyrics-rows; lyrics-active: root.lyrics-active;
+                            radio-mode: root.player-mode == "radio"; radio-initial: root.radio-initial;
+                            book-mode: root.player-mode == "book";
+                            yt-now-video: root.yt-now-video; watch-video => { root.watch-video(); }
+                            open-zen => { root.open-zen(); }
+                            cycle-repeat => { root.cycle-repeat(); }
+                            // No close/minimise in the grid — both land in Music.
+                            close => { root.open-music("mymusic"); }
+                            minimise => { root.open-music("mymusic"); }
+                            playpause => { root.playpause(); }
+                            next => { root.next(); } prev => { root.prev(); }
+                            seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
+                            toggle-mute => { root.toggle-mute(); } toggle-shuffle => { root.toggle-shuffle(); }
+                            play-queue(i) => { root.play-queue(i); }
                         }
                     }
-                    Rectangle { vertical-stretch: 1; }
-                    // 5 deep-link chips (spec: music's internal sections)
+                    // 5 deep-link tabs — names only, two rows so nothing elides
+                    // in the narrow card. Each chip stretches to share its row.
                     HorizontalLayout {
                         spacing: 6px;
-                        HomeChip { label: "My Music"; emphasized: true; accent: Theme.sec-music;
+                        HomeChip { horizontal-stretch: 1; label: "My Music"; emphasized: true; accent: Theme.sec-music;
                             clicked => { root.open-music("mymusic"); } }
-                        HomeChip { label: stats.podcasts == 0 ? "Podcasts" : "Podcasts  " + stats.podcasts;
-                            clicked => { root.open-music("podcasts"); } }
-                        HomeChip { label: stats.audiobooks == 0 ? "Audiobooks" : "Audiobooks  " + stats.audiobooks;
-                            clicked => { root.open-music("audiobooks"); } }
-                        HomeChip { label: stats.radio == 0 ? "Radio" : "Radio  " + stats.radio;
-                            clicked => { root.open-music("radio"); } }
-                        HomeChip { label: "YouTube"; clicked => { root.open-music("youtube"); } }
-                        Rectangle { horizontal-stretch: 1; }
+                        HomeChip { horizontal-stretch: 1; label: "Podcasts"; clicked => { root.open-music("podcasts"); } }
+                        HomeChip { horizontal-stretch: 1; label: "Audiobooks"; clicked => { root.open-music("audiobooks"); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 6px;
+                        HomeChip { horizontal-stretch: 1; label: "Radio"; clicked => { root.open-music("radio"); } }
+                        HomeChip { horizontal-stretch: 1; label: "YouTube"; clicked => { root.open-music("youtube"); } }
                     }
                 }
             }
-            HomeTile { horizontal-stretch: 1; icon: Icons.image; accent: Theme.sec-photos; name: "Photos";
-                stat: stats.photos + " items · " + stats.photos-albums + " albums";
-                footer: stats.photos-scan; clicked => { root.open-section("photos"); } }
-            HomeTile { horizontal-stretch: 1; icon: Icons.film; accent: Theme.sec-videos; name: "Videos";
-                stat: stats.videos + " items · " + stats.videos-shows + " shows";
-                footer: stats.videos-note; clicked => { root.open-section("videos"); } }
-        }
 
-        // ── Row 2: books · cloud · tools ───────────────────────────
-        HorizontalLayout {
-            spacing: 10px; vertical-stretch: 2;
-            HomeTile { horizontal-stretch: 1; icon: Icons.book-open; accent: Theme.sec-books; name: "Books";
-                stat: stats.books + " books · reading " + stats.books-reading;
-                clicked => { root.open-section("books"); } }
-            HomeTile { horizontal-stretch: 1; icon: Icons.cloud; accent: Theme.sec-cloud; name: "Cloud";
-                stat: stats.cloud-remotes + " remotes"; footer: stats.cloud-note;
-                clicked => { root.open-section("cloud"); } }
-            HomeTile { horizontal-stretch: 1; icon: Icons.wrench; accent: Theme.sec-tools; name: "Tools";
-                stat: stats.tools-jobs == 0 ? "queue idle" : "● " + stats.tools-jobs + " jobs running";
-                footer: stats.tools-note;
-                footer-color: stats.tools-jobs > 0 ? #22c55e : Theme.text-dim.with-alpha(0.7);
-                clicked => { root.open-section("tools"); } }
+            // Right of the player: Photos + Videos, then Books + Cloud + Tools.
+            VerticalLayout {
+                spacing: 10px; horizontal-stretch: 1; min-width: 0;
+                HorizontalLayout {
+                    spacing: 10px; height: (root.bento-h - 10px) * 0.5;
+                    HomeTile { horizontal-stretch: 1; min-width: 0; icon: Icons.image; accent: Theme.sec-photos; name: "Photos";
+                        stat: stats.photos + " items · " + stats.photos-albums + " albums";
+                        footer: stats.photos-scan; clicked => { root.open-section("photos"); } }
+                    HomeTile { horizontal-stretch: 1; min-width: 0; icon: Icons.film; accent: Theme.sec-videos; name: "Videos";
+                        stat: stats.videos + " items · " + stats.videos-shows + " shows";
+                        footer: stats.videos-note; clicked => { root.open-section("videos"); } }
+                }
+                HorizontalLayout {
+                    spacing: 10px; vertical-stretch: 1; min-height: 0;
+                    HomeTile { horizontal-stretch: 1; min-width: 0; icon: Icons.book-open; accent: Theme.sec-books; name: "Books";
+                        stat: stats.books + " books · reading " + stats.books-reading;
+                        clicked => { root.open-section("books"); } }
+                    HomeTile { horizontal-stretch: 1; min-width: 0; icon: Icons.cloud; accent: Theme.sec-cloud; name: "Cloud";
+                        stat: stats.cloud-remotes + " remotes"; footer: stats.cloud-note;
+                        clicked => { root.open-section("cloud"); } }
+                    HomeTile { horizontal-stretch: 1; min-width: 0; icon: Icons.wrench; accent: Theme.sec-tools; name: "Tools";
+                        stat: stats.tools-jobs == 0 ? "queue idle" : "● " + stats.tools-jobs + " jobs running";
+                        footer: stats.tools-note;
+                        footer-color: stats.tools-jobs > 0 ? #22c55e : Theme.text-dim.with-alpha(0.7);
+                        clicked => { root.open-section("tools"); } }
+                }
+            }
         }
 
         // ── Row 3: continue (2fr) + quick actions 2×2 ──────────────
         HorizontalLayout {
-            spacing: 10px; vertical-stretch: 2;
+            spacing: 10px; height: root.row3-h;
             Rectangle {
-                horizontal-stretch: 2; border-radius: 14px;
+                horizontal-stretch: 1; min-width: 0; border-radius: 14px;
                 background: Theme.panel-2; border-width: 1px; border-color: Theme.outline;
                 VerticalLayout {
                     padding: 14px; spacing: 10px;
@@ -259,22 +286,22 @@ export component HomePage inherits Rectangle {
                             text: "Nothing in progress — resume points from books, podcasts and audiobooks show up here.";
                             color: Theme.text-dim; font-size: 10px; wrap: word-wrap; }
                         if stats.continue1 != "": Rectangle { horizontal-stretch: 1; border-radius: 10px; background: Theme.panel;
-                            VerticalLayout { padding: 10px; spacing: 3px; alignment: center;
+                            VerticalLayout { padding: 10px; spacing: 3px; alignment: start;
                                 Text { text: stats.continue1; color: Theme.text; font-size: 10px; font-weight: 600; overflow: elide; }
                                 Text { text: stats.continue1-sub; color: Theme.text-dim; font-size: 9px; overflow: elide; } } }
                         if stats.continue2 != "": Rectangle { horizontal-stretch: 1; border-radius: 10px; background: Theme.panel;
-                            VerticalLayout { padding: 10px; spacing: 3px; alignment: center;
+                            VerticalLayout { padding: 10px; spacing: 3px; alignment: start;
                                 Text { text: stats.continue2; color: Theme.text; font-size: 10px; font-weight: 600; overflow: elide; }
                                 Text { text: stats.continue2-sub; color: Theme.text-dim; font-size: 9px; overflow: elide; } } }
                         if stats.continue3 != "": Rectangle { horizontal-stretch: 1; border-radius: 10px; background: Theme.panel;
-                            VerticalLayout { padding: 10px; spacing: 3px; alignment: center;
+                            VerticalLayout { padding: 10px; spacing: 3px; alignment: start;
                                 Text { text: stats.continue3; color: Theme.text; font-size: 10px; font-weight: 600; overflow: elide; }
                                 Text { text: stats.continue3-sub; color: Theme.text-dim; font-size: 9px; overflow: elide; } } }
                     }
                 }
             }
             Rectangle {
-                horizontal-stretch: 1; border-radius: 14px;
+                width: (root.grid-w - 10px) / 3; border-radius: 14px;
                 background: Theme.panel-2; border-width: 1px; border-color: Theme.outline;
                 VerticalLayout {
                     padding: 14px; spacing: 10px;

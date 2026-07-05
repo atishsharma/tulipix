@@ -59,9 +59,8 @@ export component UserCard inherits Rectangle {
     height: 64px;
 
     frost := PanelFrost {
-        accent:
-            user.mode == Mode.locked  ? #475569 :
-                                        Theme.brand;
+        // Neutral frost — no brand tint, reads the same on both themes.
+        accent: Theme.text;
         width: parent.width;
         height: parent.height;
 
@@ -90,9 +89,9 @@ export component UserCard inherits Rectangle {
                         horizontal-stretch: 0; vertical-stretch: 0;
                         y: (parent.height - self.height) / 2;
                         border-radius: 12px;
-                        background: frost.accent.with-alpha(0.18);
-                        border-width: 1px; border-color: frost.accent.with-alpha(0.45);
-                        if user.avatar-emoji == "": AppIcon { source: Icons.user; tint: frost.accent; width: root.collapsed ? 18px : 22px; height: root.collapsed ? 18px : 22px; }
+                        background: Theme.glass-strong;
+                        border-width: 1px; border-color: Theme.glass-border;
+                        if user.avatar-emoji == "": AppIcon { source: Icons.user; tint: Theme.text-dim; width: root.collapsed ? 18px : 22px; height: root.collapsed ? 18px : 22px; }
                         if user.avatar-emoji != "": Text {
                             text: user.avatar-emoji;
                             font-size: root.collapsed ? 18px : 23px;

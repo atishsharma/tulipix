@@ -29,6 +29,13 @@ export global Theme {
     out property <color> brand:   #7c3aed;
     out property <color> brand-2: #4f46e5;
 
+    // --- Frosted glass ---
+    // Neutral translucent surfaces (sidebar rows, dock buttons, chips): no
+    // accent tint, so they read cleanly on both themes.
+    out property <color> glass:        dark ? rgba(255,255,255,0.07) : rgba(26,16,64,0.05);
+    out property <color> glass-strong: dark ? rgba(255,255,255,0.14) : rgba(26,16,64,0.10);
+    out property <color> glass-border: dark ? rgba(255,255,255,0.16) : rgba(26,16,64,0.12);
+
     // --- Section accents ---
     out property <color> sec-home:     #8b5cf6; // violet — home/command-center accent
     out property <color> sec-photos:   #8b5cf6; // violet

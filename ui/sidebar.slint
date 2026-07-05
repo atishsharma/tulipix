@@ -5,11 +5,10 @@ import { Mode } from "mode_pill.slint";
 import { AppIcon, Icons } from "icons.slint";
 import { Ripple } from "ripple.slint";
 
-// Single navigation row. Modern + solid (no glass/translucency): the active row
-// is a SOLID section-accent pill with white icon + white bold label and a soft
-// accent-coloured shadow for depth. Hover is a solid neutral surface. A second
-// inset ring appears on hover and stays on the active row. High contrast in both
-// themes; press ripple stays.
+// Single navigation row. Frosted glass: the active row is a neutral translucent
+// pill (glass-strong) with a faint inner highlight; hover is a lighter glass
+// wash. No accent fills, no coloured shadows — the section accent lives only in
+// the icon glyph, so the sidebar reads cleanly on both themes.
 component NavRow inherits Rectangle {
     in property <image> icon-img;
     in property <string> label;
@@ -20,41 +19,30 @@ component NavRow inherits Rectangle {
     min-height: 44px; max-height: 44px;
     horizontal-stretch: 1;
     border-radius: Theme.radius-md;
-    // Solid fills — accent pill when active, neutral surface on hover, flat else.
-    background: active ? accent
-              : (touch.has-hover ? Theme.panel-2 : transparent);
+    background: active ? Theme.glass-strong
+              : (touch.has-hover ? Theme.glass : transparent);
     border-width: 1px;
-    border-color: active ? accent : (touch.has-hover ? accent.with-alpha(0.5) : Theme.outline);
-    // Soft coloured elevation under the active row (shadow is the element's own,
-    // unaffected by `clip`).
-    drop-shadow-blur: active ? 15px : 0px;
-    drop-shadow-color: active ? accent.with-alpha(0.5) : #00000000;
-    drop-shadow-offset-y: active ? 4px : 0px;
-    // No clip — the second outline sits OUTSIDE the row.
-    clip: false;
+    border-color: (active || touch.has-hover) ? Theme.glass-border : transparent;
     animate background { duration: 130ms; easing: ease-out; }
     animate border-color { duration: 130ms; easing: ease-out; }
-    animate drop-shadow-blur { duration: 130ms; easing: ease-out; }
 
     touch := TouchArea { clicked => { root.clicked(); } }
 
-    // Press ripple — white on the active pill, accent otherwise.
     Ripple {
         width: 100%; height: 100%;
         border-radius: parent.border-radius;
-        accent: active ? #ffffff : accent;
+        accent: root.accent;
         triggered: touch.pressed;
     }
 
-    // Second outline — OUTSET ring around the row. Appears on hover, stays on
-    // active (accent so it reads against the panel).
+    // Faint inner highlight — the frost recipe (same as PanelFrost).
     if (active || touch.has-hover): Rectangle {
-        x: -3px; y: -3px;
-        width: parent.width + 6px; height: parent.height + 6px;
-        border-radius: parent.border-radius + 3px;
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        border-radius: parent.border-radius - 1px;
         background: transparent;
-        border-width: 1.5px;
-        border-color: accent.with-alpha(active ? 0.85 : 0.5);
+        border-width: 1px;
+        border-color: Theme.highlight-inner;
     }
 
     HorizontalLayout {
@@ -66,20 +54,20 @@ component NavRow inherits Rectangle {
             horizontal-stretch: 0; vertical-stretch: 0;
             y: (parent.height - self.height) / 2;
             border-radius: 9px;
-            background: active ? #ffffff.with-alpha(0.20) : accent.with-alpha(0.14);
+            background: active ? Theme.glass-strong : (touch.has-hover ? Theme.glass : transparent);
             animate background { duration: 130ms; easing: ease-out; }
             AppIcon {
                 source: icon-img;
-                tint: active ? #ffffff : accent;
+                tint: accent;
                 width: 16px; height: 16px;
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
             }
         }
-        // Label always visible when expanded; white on active, brightens on hover.
+        // Label always visible when expanded; brightens on hover/active.
         if !root.collapsed: Text {
             text: label;
-            color: active ? #ffffff : (touch.has-hover ? Theme.text : Theme.text-dim);
+            color: (active || touch.has-hover) ? Theme.text : Theme.text-dim;
             font-size: 13px;
             font-weight: active ? 700 : 500;
             vertical-alignment: center;
@@ -98,31 +86,30 @@ component IconButton inherits Rectangle {
     min-height: 38px; max-height: 38px;
     horizontal-stretch: 0; vertical-stretch: 0;
     border-radius: 12px;
-    background: active ? accent : (touch.has-hover ? Theme.panel-2 : transparent);
+    background: active ? Theme.glass-strong : (touch.has-hover ? Theme.glass : transparent);
     border-width: 1px;
-    border-color: active ? accent : (touch.has-hover ? accent.with-alpha(0.5) : Theme.outline);
-    clip: false;
+    border-color: (active || touch.has-hover) ? Theme.glass-border : transparent;
     animate background { duration: 140ms; easing: ease-out; }
     animate border-color { duration: 140ms; easing: ease-out; }
     touch := TouchArea { clicked => { root.clicked(); } }
     Ripple {
         width: 100%; height: 100%;
         border-radius: parent.border-radius;
-        accent: active ? #ffffff : accent;
+        accent: root.accent;
         triggered: touch.pressed;
     }
-    // OUTSET double outline on hover/active (visible in both themes).
+    // Faint inner highlight — frost recipe.
     if (active || touch.has-hover): Rectangle {
-        x: -3px; y: -3px;
-        width: parent.width + 6px; height: parent.height + 6px;
-        border-radius: parent.border-radius + 3px;
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        border-radius: parent.border-radius - 1px;
         background: transparent;
-        border-width: 1.5px;
-        border-color: accent.with-alpha(active ? 0.85 : 0.5);
+        border-width: 1px;
+        border-color: Theme.highlight-inner;
     }
     AppIcon {
         source: icon-img;
-        tint: active ? #ffffff : (touch.has-hover ? Theme.text : Theme.text-dim);
+        tint: (active || touch.has-hover) ? Theme.text : Theme.text-dim;
         width: 17px; height: 17px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
@@ -139,31 +126,30 @@ component DockBtn inherits Rectangle {
     min-height: 36px; max-height: 36px;
     horizontal-stretch: 1;
     border-radius: 10px;
-    background: active ? accent : (touch.has-hover ? Theme.panel-2 : transparent);
+    background: active ? Theme.glass-strong : (touch.has-hover ? Theme.glass : transparent);
     border-width: 1px;
-    border-color: active ? accent : (touch.has-hover ? accent.with-alpha(0.5) : Theme.outline);
-    clip: false;
+    border-color: (active || touch.has-hover) ? Theme.glass-border : transparent;
     animate background { duration: 130ms; easing: ease-out; }
     animate border-color { duration: 130ms; easing: ease-out; }
     touch := TouchArea { clicked => { root.clicked(); } }
     Ripple {
         width: 100%; height: 100%;
         border-radius: parent.border-radius;
-        accent: active ? #ffffff : accent;
+        accent: root.accent;
         triggered: touch.pressed;
     }
-    // OUTSET double outline on hover/active.
+    // Faint inner highlight — frost recipe.
     if (active || touch.has-hover): Rectangle {
-        x: -3px; y: -3px;
-        width: parent.width + 6px; height: parent.height + 6px;
-        border-radius: parent.border-radius + 3px;
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        border-radius: parent.border-radius - 1px;
         background: transparent;
-        border-width: 1.5px;
-        border-color: accent.with-alpha(active ? 0.85 : 0.5);
+        border-width: 1px;
+        border-color: Theme.highlight-inner;
     }
     AppIcon {
         source: icon-img;
-        tint: active ? #ffffff : (touch.has-hover ? Theme.text : Theme.text-dim);
+        tint: (active || touch.has-hover) ? Theme.text : Theme.text-dim;
         width: 16px; height: 16px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
@@ -206,8 +192,6 @@ component BrandHeader inherits Rectangle {
             y: (parent.height - self.height) / 2;
             border-radius: 10px;
             clip: true;
-            drop-shadow-blur: 16px;
-            drop-shadow-color: Theme.brand.with-alpha(0.45);
             Image {
                 source: root.logo-choice == 1 ? @image-url("../resources/appicons/sidebar-color.png")
                       : root.logo-choice == 2 ? @image-url("../resources/appicons/sidebar-dark.png")

@@ -2832,14 +2832,26 @@ callback cloud-go-home();
                 user-secondary: root.user.secondary;
                 avatar-image: root.user.avatar-image;
                 avatar-emoji: root.user.avatar-emoji;
-                np-title: root.music-np-title; np-sub: root.music-np-sub;
+                // Mini-player feed — same bindings as the floating MusicMini.
+                np-title: root.music-np-title; np-sub: root.music-np-sub; np-album: root.music-np-album;
                 np-art: root.music-np-art; np-accent: root.music-np-accent;
                 playing: root.music-playing; pos: root.music-pos; dur: root.music-dur;
+                pos-label: root.music-pos-label; dur-label: root.music-dur-label;
+                shuffle: root.music-shuffle; volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat;
+                queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
+                radio-initial: root.music-radio-np-initial; mini-outline: root.music-mini-outline;
                 player-mode: root.music-player-mode; yt-now-video: root.music-yt-now-video;
                 open-section(s) => { root.active-section = s; root.section-changed(s); }
                 open-music(v) => { root.music-view = v; root.active-section = "music"; root.section-changed("music"); }
+                open-profile => { root.active-settings-tab = "profile"; root.active-section = "settings"; root.section-changed("settings"); }
                 playpause => { root.music-toggle-pause(); }
                 next => { root.music-next(); } prev => { root.music-prev(); }
+                seek(s) => { root.music-seek(s); } set-volume(v) => { root.music-set-volume(v); }
+                toggle-mute => { root.music-toggle-mute(); } toggle-shuffle => { root.music-toggle-shuffle(); }
+                cycle-repeat => { root.music-cycle-repeat(); }
+                play-queue(i) => { root.music-play-queue(i); }
+                watch-video => { root.music-yt-watch-current(); }
+                open-zen => { root.music-fullscreen = true; }
                 open-search => { root.palette-open = true; }
                 add-folder => { root.pick-folder(); }
                 shuffle-all => { root.music-shuffle-all(); }

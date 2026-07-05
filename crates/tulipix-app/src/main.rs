@@ -8857,15 +8857,27 @@ fn kick_home_stats(w: &MainWindow) {
         let count = |pool: sqlx::SqlitePool, q: &'static str| async move {
             sqlx::query_scalar::<_, i64>(q).fetch_one(&pool).await.unwrap_or(0) as i32
         };
+        // Running library totals for the header line ("N items · X B"): every
+        // section's `items` table carries a `size` column.
+        let mut total_items: i64 = 0;
+        let mut total_bytes: i64 = 0;
+        let sum_items = |pool: sqlx::SqlitePool| async move {
+            sqlx::query_as::<_, (i64, i64)>(
+                "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM items")
+                .fetch_one(&pool).await.unwrap_or((0, 0))
+        };
         if let Ok(pool) = pool_for("photos").await {
             s.photos = count(pool.clone(), "SELECT COUNT(*) FROM items").await;
-            s.photos_albums = count(pool, "SELECT COUNT(*) FROM albums").await;
+            s.photos_albums = count(pool.clone(), "SELECT COUNT(*) FROM albums").await;
+            let (n, b) = sum_items(pool).await; total_items += n; total_bytes += b;
         }
         if let Ok(pool) = pool_for("videos").await {
             s.videos = count(pool.clone(), "SELECT COUNT(*) FROM items").await;
-            s.videos_shows = count(pool, "SELECT COUNT(*) FROM shows").await;
+            s.videos_shows = count(pool.clone(), "SELECT COUNT(*) FROM shows").await;
+            let (n, b) = sum_items(pool).await; total_items += n; total_bytes += b;
         }
         if let Ok(pool) = pool_for("music").await {
+            let (n, b) = sum_items(pool.clone()).await; total_items += n; total_bytes += b;
             s.songs = count(pool.clone(),
                 "SELECT COUNT(*) FROM track_meta WHERE is_audiobook = 0").await;
             s.audiobooks = count(pool.clone(),
@@ -8908,6 +8920,7 @@ fn kick_home_stats(w: &MainWindow) {
             s.radio = count(pool, "SELECT COUNT(*) FROM radio_stations").await;
         }
         if let Ok(pool) = pool_for("books").await {
+            let (n, b) = sum_items(pool.clone()).await; total_items += n; total_bytes += b;
             s.books = count(pool.clone(), "SELECT COUNT(*) FROM items").await;
             s.books_reading = count(pool.clone(),
                 "SELECT COUNT(*) FROM reading_progress \
@@ -8943,7 +8956,24 @@ fn kick_home_stats(w: &MainWindow) {
                 "SELECT COUNT(*) FROM jobs WHERE state = 'queued'").await;
             if queued > 0 { s.tools_note = format!("{queued} queued").into(); }
         }
-        let _ = weak.upgrade_in_event_loop(move |w| { w.set_home_stats(s); });
+        // Header totals line — "12,304 items · 41 GB" (thousands-separated).
+        let items_str = {
+            let d = total_items.to_string();
+            let bytes = d.as_bytes();
+            let mut out = String::new();
+            for (i, c) in bytes.iter().enumerate() {
+                if i > 0 && (bytes.len() - i) % 3 == 0 { out.push(','); }
+                out.push(*c as char);
+            }
+            out
+        };
+        let secondary = format!("{items_str} items · {}", human_size(total_bytes as u64));
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_home_stats(s);
+            let mut u = w.get_user();
+            u.secondary = secondary.into();
+            w.set_user(u);
+        });
     });
 }
 
