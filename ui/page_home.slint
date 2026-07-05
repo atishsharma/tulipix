@@ -1,0 +1,70 @@
+// Home command center (np.p6.home) — bento dashboard, default landing page.
+// Mockup: .superpowers/brainstorm/176783-1783191123/content/home-layout-v5.html
+import { Theme, Accent } from "tokens.slint";
+import { AppIcon, Icons } from "icons.slint";
+
+export struct HomeStats {
+    photos: int, photos-albums: int, photos-scan: string,
+    videos: int, videos-shows: int, videos-note: string,
+    songs: int, podcasts: int, audiobooks: int, radio: int,
+    books: int, books-reading: int,
+    cloud-remotes: int, cloud-note: string,
+    tools-jobs: int, tools-note: string,
+    continue1: string, continue1-sub: string,   // e.g. "📖 Dune" / "chapter 12 · 48%"
+    continue2: string, continue2-sub: string,
+    continue3: string, continue3-sub: string,
+}
+
+// Small uppercase section label — identical everywhere (alignment rule 3).
+component HomeCap inherits Text {
+    font-size: 9px; font-weight: 800; letter-spacing: 1.2px;
+    color: Theme.text-dim;
+}
+
+// 24px pill chip — one size everywhere (alignment rule 4).
+component HomeChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> emphasized: false;
+    in property <color> accent: Accent.color;
+    callback clicked();
+    height: 24px; border-radius: 12px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    background: emphasized ? accent.with-alpha(0.17) : (ta.has-hover ? Theme.panel : Theme.panel-2);
+    border-width: 1px;
+    border-color: emphasized ? accent.with-alpha(0.33) : Theme.outline;
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout { padding-left: 10px; padding-right: 10px;
+        Text { text: label; color: emphasized ? accent : Theme.text;
+            font-size: 9px; font-weight: 600; vertical-alignment: center; overflow: elide; } }
+}
+
+// Section tile — 40px icon chip top-left, spring, then name+stat+footer
+// clustered at the bottom (v5 anatomy). Whole tile clickable.
+component HomeTile inherits Rectangle {
+    in property <image> icon;
+    in property <color> accent;
+    in property <string> name;
+    in property <string> stat;
+    in property <string> footer: "";
+    in property <color> footer-color: Theme.text-dim.with-alpha(0.7);
+    callback clicked();
+    border-radius: 14px;
+    background: accent.with-alpha(ta.has-hover ? 0.14 : 0.08);
+    border-width: 1px; border-color: accent.with-alpha(0.24);
+    animate background { duration: 120ms; easing: ease-out; }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    VerticalLayout {
+        padding: 14px; spacing: 4px;
+        Rectangle {
+            width: 40px; height: 40px; border-radius: 11px;
+            horizontal-stretch: 0; vertical-stretch: 0;
+            background: accent.with-alpha(0.15);
+            AppIcon { source: root.icon; tint: accent; width: 20px; height: 20px;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+        }
+        Rectangle { vertical-stretch: 1; }   // spring — text cluster hugs the bottom
+        Text { text: name; color: Theme.text; font-size: 13px; font-weight: 800; overflow: elide; }
+        Text { text: stat; color: Theme.text-dim; font-size: 10px; overflow: elide; }
+        if footer != "": Text { text: footer; color: footer-color; font-size: 10px; overflow: elide; }
+    }
+}
