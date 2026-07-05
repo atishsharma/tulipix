@@ -1,6 +1,6 @@
 import { Theme } from "tokens.slint";
 
-export enum ThemeChoice { system, light, extra-dark }
+export enum ThemeChoice { system, light, extra-dark, oled }
 
 export component ThemePicker inherits Rectangle {
     in-out property <ThemeChoice> choice: ThemeChoice.system;
@@ -17,7 +17,8 @@ export component ThemePicker inherits Rectangle {
         for entry in [
             { label: "System", v: ThemeChoice.system },
             { label: "Light",  v: ThemeChoice.light },
-            { label: "Extra-Dark", v: ThemeChoice.extra-dark },
+            { label: "Dark", v: ThemeChoice.extra-dark },
+            { label: "OLED", v: ThemeChoice.oled },
         ]: Rectangle {
             horizontal-stretch: 1;
             border-radius: Theme.radius-sm;

@@ -4,14 +4,14 @@
 // surfaces + white text, light uses near-white surfaces + near-black text,
 // preserving the same contrast steps so everything stays readable. The pink
 // accent (#ec4899) is shared and unchanged across both themes.
+import { Theme } from "tokens.slint";
 export global MusicTheme {
-    // Music section defaults to light (podcasts + all music pages); the zen-theme
-    // button cycles light → dark → OLED.
-    in-out property <bool> light: true;
-    // Extra-dark OLED variant of the dark theme — pure-black surfaces so true
-    // blacks switch off OLED pixels (np.p5.atmusic.oled). Only meaningful when
-    // `light` is false; the zen theme button cycles light → dark → OLED.
-    in-out property <bool> oled: false;
+    // Unified with the app Theme (2026-07-05): the Music section no longer keeps
+    // an independent theme — `light`/`oled` are now DERIVED from the app Theme so
+    // every music surface (and the embedded Home MusicMini) follows the app
+    // light/dark/OLED. The zen theme button cycles the app Theme instead.
+    out property <bool> light: !Theme.dark;
+    out property <bool> oled:  Theme.oled;
 
     // Page backdrop — flat near-white in light, near-black in dark, pure black OLED.
     out property <brush> page-bg: light ? #f3f3f6 : (oled ? #000000 : #0f0f0f);

@@ -6,13 +6,17 @@ export enum Section { photos, videos, music, books, cloud, tools, settings }
 
 export global Theme {
     in-out property <bool> dark: true;
+    // Extra-dark OLED tier — pure-black surfaces so true blacks switch off OLED
+    // pixels. Only meaningful when `dark` is true. App-wide (2026-07-05): every
+    // section's dark surfaces collapse to black; MusicTheme derives from this.
+    in-out property <bool> oled: false;
 
     // --- Surfaces ---
-    out property <color> bg:        dark ? #050614 : #ede9f8;
-    out property <color> atmosphere: dark ? #0d0f1a : #f6f3fd;
-    out property <color> panel:     dark ? #161827 : #ffffffd0;
-    out property <color> panel-2:   dark ? #1d2033 : #fbfaff;
-    out property <color> modal:     dark ? #1a1c2e : #ffffffe6;
+    out property <color> bg:        dark ? (oled ? #000000 : #050614) : #ede9f8;
+    out property <color> atmosphere: dark ? (oled ? #000000 : #0d0f1a) : #f6f3fd;
+    out property <color> panel:     dark ? (oled ? #0a0a0a : #161827) : #ffffffd0;
+    out property <color> panel-2:   dark ? (oled ? #0d0d0d : #1d2033) : #fbfaff;
+    out property <color> modal:     dark ? (oled ? #0a0a0a : #1a1c2e) : #ffffffe6;
 
     // --- Text ---
     out property <color> text:      dark ? #f8faff : #1a1040;
@@ -57,12 +61,12 @@ export global Theme {
     // (Photos, Cloud explorer) follow the app light/dark via these. Light
     // values reproduce the original hardcoded Google-Photos greys exactly so
     // light mode is unchanged; dark values give a clean neutral dark surface.
-    out property <color> n-canvas:      dark ? #141518 : #ffffff;
-    out property <color> n-card:        dark ? #1b1d22 : #f8f9fa;
-    out property <color> n-chip:        dark ? #26282e : #f1f3f4;
-    out property <color> n-tile:        dark ? #2a2d33 : #e8eaed;
-    out property <color> n-hover:       dark ? #2f3239 : #f1f3f4;
-    out property <color> n-hair:        dark ? #33363d : #e8eaed;
+    out property <color> n-canvas:      dark ? (oled ? #000000 : #141518) : #ffffff;
+    out property <color> n-card:        dark ? (oled ? #0a0a0a : #1b1d22) : #f8f9fa;
+    out property <color> n-chip:        dark ? (oled ? #131316 : #26282e) : #f1f3f4;
+    out property <color> n-tile:        dark ? (oled ? #161616 : #2a2d33) : #e8eaed;
+    out property <color> n-hover:       dark ? (oled ? #1a1a1a : #2f3239) : #f1f3f4;
+    out property <color> n-hair:        dark ? (oled ? #1f1f1f : #33363d) : #e8eaed;
     out property <color> n-ink:         dark ? #e8eaed : #202124;
     out property <color> n-ink2:        dark ? #9aa0a6 : #5f6368;
     out property <color> n-ink3:        dark ? #bdc1c6 : #3c4043;

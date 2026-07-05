@@ -1,10 +1,12 @@
 // Home command center (np.p6.home) — bento dashboard, default landing page.
-// Layout v3 (2026-07-05): app-themed HomeMini player (follows the app Theme,
-// NOT MusicTheme), explicit-width section tiles (nested layouts wouldn't
-// distribute the leftover — only fixed widths fill), and a left/right swap for
-// the music block driven by `music-left`.
+// Layout v4 (2026-07-05): embeds the ORIGINAL Music MusicMini (embedded mode)
+// now that MusicTheme derives from the app Theme, explicit-width section tiles
+// (nested layouts wouldn't distribute the leftover — only fixed widths fill),
+// and a left/right swap for the music block driven by `music-left`.
 import { Theme, Accent } from "tokens.slint";
 import { AppIcon, Icons } from "icons.slint";
+import { MusicMini, PodcastMini, MusicTab, LiveTabRing } from "page_music.slint";
+import { MusicSongRow, MusicLyricLine, PodcastEpisodeRow } from "music_common.slint";
 
 export struct HomeStats {
     photos: int, photos-albums: int, photos-scan: string,
@@ -31,123 +33,16 @@ component HomeChip inherits Rectangle {
     in property <bool> fill: false;              // stretch to share the row (tabs)
     in property <color> accent: Accent.color;
     callback clicked();
-    height: 24px; border-radius: 12px;
+    height: 30px; border-radius: 15px;
     horizontal-stretch: fill ? 1 : 0; vertical-stretch: 0;
-    background: emphasized ? accent.with-alpha(0.17) : (ta.has-hover ? Theme.panel : Theme.panel-2);
+    background: emphasized ? accent.with-alpha(0.18) : (ta.has-hover ? Theme.panel : Theme.panel-2);
     border-width: 1px;
-    border-color: emphasized ? accent.with-alpha(0.33) : Theme.outline;
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    HorizontalLayout { padding-left: 8px; padding-right: 8px;
-        Text { text: label; color: emphasized ? accent : Theme.text; horizontal-stretch: 1;
-            font-size: 9px; font-weight: 600; vertical-alignment: center; horizontal-alignment: center; overflow: elide; } }
-}
-
-// Round transport button — app-themed.
-component HomeXport inherits Rectangle {
-    in property <image> icon;
-    in property <length> d: 28px;
-    in property <bool> primary: false;
-    in property <bool> on: false;
-    callback clicked();
-    width: d; height: d; border-radius: d / 2;
-    horizontal-stretch: 0; vertical-stretch: 0;
-    background: primary ? Theme.sec-music
-             : (on ? Theme.sec-music.with-alpha(0.18) : (ta.has-hover ? Theme.panel : transparent));
-    border-width: on && !primary ? 1px : 0px;
-    border-color: Theme.sec-music.with-alpha(0.4);
+    border-color: emphasized ? accent.with-alpha(0.38) : Theme.outline;
     animate background { duration: 120ms; }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    AppIcon { source: icon; width: d * 0.5; height: d * 0.5;
-        tint: primary ? #ffffff : (on ? Theme.sec-music : Theme.text);
-        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
-}
-
-// App-themed mini player for Home — uses Theme tokens so it tracks light/dark
-// with the rest of the app (the Music-section MusicMini has its own MusicTheme
-// and would not follow the app theme here).
-component HomeMini inherits Rectangle {
-    in property <image> art;
-    in property <string> title;
-    in property <string> sub;
-    in property <bool> playing;
-    in property <float> pos; in property <float> dur;
-    in property <string> pos-label; in property <string> dur-label;
-    in property <bool> shuffle; in property <string> repeat: "off";
-    in property <float> volume; in property <bool> muted;
-    callback playpause(); callback next(); callback prev();
-    callback seek(float); callback set-volume(float);
-    callback toggle-shuffle(); callback cycle-repeat(); callback toggle-mute();
-    callback open-zen();
-
-    border-radius: 16px;
-    background: Theme.panel-2;
-    border-width: 1px; border-color: Theme.outline;
-    clip: true;
-
-    VerticalLayout {
-        padding: 14px; spacing: 12px; alignment: start;
-
-        // Cover art — square-ish, fills width, spring above pushes nothing.
-        Rectangle {
-            vertical-stretch: 1; min-height: 80px;
-            border-radius: 12px; clip: true;
-            background: Theme.sec-music.with-alpha(0.10);
-            TouchArea { mouse-cursor: pointer; clicked => { root.open-zen(); } }
-            if art.width != 0: Image { source: art; image-fit: cover; width: 100%; height: 100%; }
-            if art.width == 0: AppIcon { source: Icons.music; tint: Theme.sec-music;
-                width: 48px; height: 48px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
-        }
-
-        // Title + artist.
-        VerticalLayout {
-            spacing: 2px;
-            Text { text: title == "" ? "Nothing playing" : title;
-                color: Theme.text; font-size: 15px; font-weight: 700; overflow: elide; }
-            Text { text: sub == "" ? "Press play for a sonic mix" : sub;
-                color: Theme.text-dim; font-size: 11px; overflow: elide; }
-        }
-
-        // Progress — click to seek.
-        VerticalLayout {
-            spacing: 4px;
-            Rectangle {
-                height: 5px; border-radius: 3px; background: Theme.outline;
-                fill := Rectangle { x: 0; height: 100%; border-radius: 3px; background: Theme.sec-music;
-                    width: parent.width * (dur > 0 ? Math.clamp(pos / dur, 0, 1) : 0); }
-                seekta := TouchArea { mouse-cursor: pointer;
-                    clicked => { root.seek((self.mouse-x / self.width) * dur); } }
-            }
-            HorizontalLayout {
-                Text { text: pos-label == "" ? "0:00" : pos-label; color: Theme.text-dim; font-size: 9px; }
-                Rectangle { horizontal-stretch: 1; }
-                Text { text: dur-label == "" ? "0:00" : dur-label; color: Theme.text-dim; font-size: 9px; }
-            }
-        }
-
-        // Transport.
-        HorizontalLayout {
-            alignment: center; spacing: 6px;
-            HomeXport { icon: Icons.shuffle; on: shuffle; clicked => { root.toggle-shuffle(); } }
-            HomeXport { icon: Icons.skip-back; clicked => { root.prev(); } }
-            HomeXport { icon: playing ? Icons.pause : Icons.play; d: 44px; primary: true; clicked => { root.playpause(); } }
-            HomeXport { icon: Icons.skip-forward; clicked => { root.next(); } }
-            HomeXport { icon: Icons.repeat; on: repeat != "off"; clicked => { root.cycle-repeat(); } }
-        }
-
-        // Volume.
-        HorizontalLayout {
-            spacing: 8px; alignment: center;
-            HomeXport { icon: muted ? Icons.volume-x : Icons.volume; d: 24px; clicked => { root.toggle-mute(); } }
-            Rectangle {
-                horizontal-stretch: 1; height: 5px; border-radius: 3px; background: Theme.outline;
-                Rectangle { x: 0; height: 100%; border-radius: 3px; background: Theme.text-dim;
-                    width: parent.width * Math.clamp(muted ? 0 : volume, 0, 1); }
-                volta := TouchArea { mouse-cursor: pointer;
-                    clicked => { root.set-volume(Math.clamp(self.mouse-x / self.width, 0, 1)); }
-                    moved => { if (self.pressed) { root.set-volume(Math.clamp(self.mouse-x / self.width, 0, 1)); } } }
-            }
-        }
-    }
+    HorizontalLayout { padding-left: 14px; padding-right: 14px;
+        Text { text: label; color: emphasized ? accent : Theme.text; horizontal-stretch: 1;
+            font-size: 11px; font-weight: 600; vertical-alignment: center; horizontal-alignment: center; overflow: elide; } }
 }
 
 // Section tile — 80px icon chip top-left (200%), spring, big name/stat/footer
@@ -181,47 +76,110 @@ component HomeTile inherits Rectangle {
     }
 }
 
-// Left-hand music card — MUSIC cap + HomeMini + 5 name-only tab chips.
+// Left-hand music card — MUSIC cap + the original MusicMini (embedded) + 5
+// name-only tab chips. MusicMini now follows the app theme (MusicTheme derives
+// from Theme), so the real player renders natively here instead of a clone.
 component HomeMusicCard inherits Rectangle {
     in property <image> np-art;
-    in property <string> np-title; in property <string> np-sub;
+    in property <color> np-accent: Theme.sec-music;
+    in property <string> np-title; in property <string> np-sub; in property <string> np-album;
     in property <bool> playing;
     in property <float> pos; in property <float> dur;
     in property <string> pos-label; in property <string> dur-label;
     in property <bool> shuffle; in property <string> repeat;
     in property <float> volume; in property <bool> muted;
+    // Content-type mode so the embedded player mirrors the Music section
+    // (music | radio | book | podcast) — MusicMini for the first three, PodcastMini
+    // for podcasts, plus radio/book/yt flags on MusicMini.
+    in property <string> player-mode: "music";
+    in property <float> player-scale: 1.0;
+    in property <[MusicSongRow]> queue-rows: [];
+    in property <[MusicLyricLine]> lyrics-rows: [];
+    in property <int> lyrics-active: -1;
+    in property <string> radio-initial: "";
+    in property <bool> yt-now-video: false;
+    in property <float> podcast-speed: 1.0;
+    in property <[PodcastEpisodeRow]> podcast-episodes: [];
+    in property <string> podcast-summary: "";
     callback playpause(); callback next(); callback prev();
     callback seek(float); callback set-volume(float);
     callback toggle-shuffle(); callback cycle-repeat(); callback toggle-mute();
+    callback play-queue(int); callback watch-video();
+    callback podcast-skip(int); callback podcast-set-speed(float); callback podcast-play(int);
     callback open-zen();
     callback open-music(string);
+    // Which source is currently playing → drives the active tab + the title.
+    property <string> active-tab:
+        player-mode == "podcast" ? "podcasts"
+      : player-mode == "book" ? "audiobooks"
+      : player-mode == "radio" ? "radio"
+      : yt-now-video ? "youtube" : "mymusic";
     border-radius: 14px;
     background: Theme.sec-music.with-alpha(0.09);
     border-width: 1px; border-color: Theme.sec-music.with-alpha(0.24);
     VerticalLayout {
         padding: 12px; spacing: 8px;
-        HomeCap { text: "MUSIC"; color: Theme.sec-music; }
-        HomeMini {
+        // Big centered title that names the source currently playing.
+        Text {
+            text: root.player-mode == "podcast" ? "Podcasts"
+                : root.player-mode == "book" ? "Audiobooks"
+                : root.player-mode == "radio" ? "Radio"
+                : root.yt-now-video ? "YouTube" : "My Music";
+            color: Theme.sec-music; font-size: 22px; font-weight: 800;
+            horizontal-alignment: center; overflow: elide;
+        }
+        // Stretchy wrapper so the embedded player fills the card (its root height
+        // is fixed; height:100% here lets it grow, killing the blank gaps).
+        Rectangle {
             vertical-stretch: 1;
-            art: np-art; title: np-title; sub: np-sub; playing: playing;
-            pos: pos; dur: dur; pos-label: pos-label; dur-label: dur-label;
-            shuffle: shuffle; repeat: repeat; volume: volume; muted: muted;
-            playpause => { root.playpause(); }
-            next => { root.next(); } prev => { root.prev(); }
-            seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
-            toggle-shuffle => { root.toggle-shuffle(); } cycle-repeat => { root.cycle-repeat(); }
-            toggle-mute => { root.toggle-mute(); } open-zen => { root.open-zen(); }
+            if root.player-mode != "podcast": MusicMini {
+                embedded: true; width: 100%; height: 100%; uiscale: root.player-scale;
+                art: np-art; accent: np-accent; title: np-title; sub: np-sub; album: np-album; playing: playing;
+                pos: pos; dur: dur; pos-label: pos-label; dur-label: dur-label;
+                shuffle: shuffle; repeat: repeat; volume: volume; muted: muted;
+                queue-rows: root.queue-rows; lyrics-rows: root.lyrics-rows; lyrics-active: root.lyrics-active;
+                radio-mode: root.player-mode == "radio"; radio-initial: root.radio-initial;
+                book-mode: root.player-mode == "book";
+                yt-now-video: root.yt-now-video; watch-video => { root.watch-video(); }
+                playpause => { root.playpause(); }
+                next => { root.next(); } prev => { root.prev(); }
+                seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
+                toggle-shuffle => { root.toggle-shuffle(); } cycle-repeat => { root.cycle-repeat(); }
+                toggle-mute => { root.toggle-mute(); } play-queue(i) => { root.play-queue(i); }
+                open-zen => { root.open-zen(); }
+            }
+            if root.player-mode == "podcast": PodcastMini {
+                embedded: true; width: 100%; height: 100%; uiscale: root.player-scale;
+                art: np-art; accent: np-accent; title: np-title; sub: np-sub; playing: playing;
+                pos: pos; dur: dur; pos-label: pos-label; dur-label: dur-label;
+                speed: podcast-speed; volume: volume; muted: muted;
+                summary: podcast-summary; episodes: podcast-episodes;
+                playpause => { root.playpause(); }
+                skip(s) => { root.podcast-skip(s); } seek(s) => { root.seek(s); }
+                set-speed(v) => { root.podcast-set-speed(v); } set-volume(v) => { root.set-volume(v); }
+                toggle-mute => { root.toggle-mute(); } play-episode(id) => { root.podcast-play(id); }
+                open-zen => { root.open-zen(); }
+            }
+        }
+        // Source tabs — reuse the Music-section MusicTab (per-tab gradient colours)
+        // + LiveTabRing (rotating halo on the source that's playing). MusicTheme
+        // derives from the app Theme, so these read correctly in every theme.
+        // Row 1: 3 tabs; Row 2: 2 tabs (wider — stretch fills the row).
+        HorizontalLayout {
+            spacing: 6px;
+            LiveTabRing { live: root.active-tab == "mymusic"; tint: #ec4899;
+                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "My Music"; has-grad: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.active-tab == "mymusic"; clicked => { root.open-music("mymusic"); } } }
+            LiveTabRing { live: root.active-tab == "podcasts"; tint: #8b5cf6;
+                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "Podcasts"; has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.active-tab == "podcasts"; clicked => { root.open-music("podcasts"); } } }
+            LiveTabRing { live: root.active-tab == "audiobooks"; tint: #3b82f6;
+                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "Audiobooks"; has-grad: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.active-tab == "audiobooks"; clicked => { root.open-music("audiobooks"); } } }
         }
         HorizontalLayout {
             spacing: 6px;
-            HomeChip { fill: true; label: "My Music"; emphasized: true; accent: Theme.sec-music; clicked => { root.open-music("mymusic"); } }
-            HomeChip { fill: true; label: "Podcasts"; clicked => { root.open-music("podcasts"); } }
-            HomeChip { fill: true; label: "Audiobooks"; clicked => { root.open-music("audiobooks"); } }
-        }
-        HorizontalLayout {
-            spacing: 6px;
-            HomeChip { fill: true; label: "Radio"; clicked => { root.open-music("radio"); } }
-            HomeChip { fill: true; label: "YouTube"; clicked => { root.open-music("youtube"); } }
+            LiveTabRing { live: root.active-tab == "radio"; tint: #14b8a6;
+                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "Radio"; has-grad: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.active-tab == "radio"; clicked => { root.open-music("radio"); } } }
+            LiveTabRing { live: root.active-tab == "youtube"; tint: #ef4444;
+                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "YouTube"; has-grad: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b); active: root.active-tab == "youtube"; clicked => { root.open-music("youtube"); } } }
         }
     }
 }
@@ -270,7 +228,7 @@ export component HomePage inherits Rectangle {
     in property <string> avatar-emoji: "";
     in property <bool> music-left: false;          // music block on the left vs right
     // now-playing feed
-    in property <string> np-title: ""; in property <string> np-sub: "";
+    in property <string> np-title: ""; in property <string> np-sub: ""; in property <string> np-album: "";
     in property <image> np-art; in property <color> np-accent: Theme.sec-music;
     in property <bool> playing: false;
     in property <float> pos: 0; in property <float> dur: 1;
@@ -278,6 +236,16 @@ export component HomePage inherits Rectangle {
     in property <bool> shuffle: false;
     in property <float> volume: 1; in property <bool> muted: false;
     in property <string> repeat: "off";
+    // Content-type player switch (mirror the Music section) + queue/lyrics sync.
+    in property <string> player-mode: "music";
+    in property <[MusicSongRow]> queue-rows: [];
+    in property <[MusicLyricLine]> lyrics-rows: [];
+    in property <int> lyrics-active: -1;
+    in property <string> radio-initial: "";
+    in property <bool> yt-now-video: false;
+    in property <float> podcast-speed: 1.0;
+    in property <[PodcastEpisodeRow]> podcast-episodes: [];
+    in property <string> podcast-summary: "";
 
     callback open-section(string);
     callback open-music(string);
@@ -285,6 +253,8 @@ export component HomePage inherits Rectangle {
     callback playpause(); callback next(); callback prev();
     callback seek(float); callback set-volume(float);
     callback toggle-mute(); callback toggle-shuffle(); callback cycle-repeat();
+    callback play-queue(int); callback watch-video();
+    callback podcast-skip(int); callback podcast-set-speed(float); callback podcast-play(int);
     callback open-zen();
     callback open-search();
     callback add-folder();
@@ -296,9 +266,14 @@ export component HomePage inherits Rectangle {
     // Grid geometry (pure, no layout feedback).
     property <length> grid-w: root.width - 32px;
     property <length> content-h: root.height - 32px - 84px - 12px - 30px;
-    property <length> row3-h: 150px;
+    property <length> row3-h: 210px;
     property <length> bento-h: content-h - row3-h - 10px;
-    property <length> music-w: 340px;
+    // Scale the embedded player up to fill the music column (design = big player).
+    // ~112px of card chrome (padding + MUSIC cap + two tab rows); 488px is the
+    // player's natural height at scale 1. Bias slightly under so the art-stretch
+    // absorbs the residual instead of clipping the bottom controls.
+    property <float> player-scale: Math.clamp((bento-h - 116px) / 500px, 1.0, 1.7);
+    property <length> music-w: 300px * player-scale + 40px;
     property <length> right-area: grid-w - music-w - 10px;
     property <length> cell2: (right-area - 10px) / 2;
     property <length> cell3: (right-area - 20px) / 3;
@@ -355,14 +330,21 @@ export component HomePage inherits Rectangle {
 
             if root.music-left: HomeMusicCard {
                 width: root.music-w;
-                np-art: root.np-art; np-title: root.np-title; np-sub: root.np-sub;
+                np-art: root.np-art; np-accent: root.np-accent; np-title: root.np-title; np-sub: root.np-sub; np-album: root.np-album;
                 playing: root.playing; pos: root.pos; dur: root.dur;
                 pos-label: root.pos-label; dur-label: root.dur-label;
                 shuffle: root.shuffle; repeat: root.repeat; volume: root.volume; muted: root.muted;
+                player-mode: root.player-mode; player-scale: root.player-scale;
+                queue-rows: root.queue-rows; lyrics-rows: root.lyrics-rows; lyrics-active: root.lyrics-active;
+                radio-initial: root.radio-initial; yt-now-video: root.yt-now-video;
+                podcast-speed: root.podcast-speed; podcast-episodes: root.podcast-episodes; podcast-summary: root.podcast-summary;
                 playpause => { root.playpause(); } next => { root.next(); } prev => { root.prev(); }
                 seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
                 toggle-shuffle => { root.toggle-shuffle(); } cycle-repeat => { root.cycle-repeat(); }
                 toggle-mute => { root.toggle-mute(); } open-zen => { root.open-zen(); }
+                play-queue(i) => { root.play-queue(i); } watch-video => { root.watch-video(); }
+                podcast-skip(s) => { root.podcast-skip(s); } podcast-set-speed(v) => { root.podcast-set-speed(v); }
+                podcast-play(id) => { root.podcast-play(id); }
                 open-music(v) => { root.open-music(v); }
             }
             if root.music-left: HomeSectionGrid {
@@ -377,14 +359,21 @@ export component HomePage inherits Rectangle {
             }
             if !root.music-left: HomeMusicCard {
                 width: root.music-w;
-                np-art: root.np-art; np-title: root.np-title; np-sub: root.np-sub;
+                np-art: root.np-art; np-accent: root.np-accent; np-title: root.np-title; np-sub: root.np-sub; np-album: root.np-album;
                 playing: root.playing; pos: root.pos; dur: root.dur;
                 pos-label: root.pos-label; dur-label: root.dur-label;
                 shuffle: root.shuffle; repeat: root.repeat; volume: root.volume; muted: root.muted;
+                player-mode: root.player-mode; player-scale: root.player-scale;
+                queue-rows: root.queue-rows; lyrics-rows: root.lyrics-rows; lyrics-active: root.lyrics-active;
+                radio-initial: root.radio-initial; yt-now-video: root.yt-now-video;
+                podcast-speed: root.podcast-speed; podcast-episodes: root.podcast-episodes; podcast-summary: root.podcast-summary;
                 playpause => { root.playpause(); } next => { root.next(); } prev => { root.prev(); }
                 seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
                 toggle-shuffle => { root.toggle-shuffle(); } cycle-repeat => { root.cycle-repeat(); }
                 toggle-mute => { root.toggle-mute(); } open-zen => { root.open-zen(); }
+                play-queue(i) => { root.play-queue(i); } watch-video => { root.watch-video(); }
+                podcast-skip(s) => { root.podcast-skip(s); } podcast-set-speed(v) => { root.podcast-set-speed(v); }
+                podcast-play(id) => { root.podcast-play(id); }
                 open-music(v) => { root.open-music(v); }
             }
         }

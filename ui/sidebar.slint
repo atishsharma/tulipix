@@ -221,6 +221,15 @@ export component Sidebar inherits Rectangle {
     in-out property <bool> collapsed: true;
     callback section-changed(string);
     callback user-action(string);
+    callback theme-cycled();   // fired after the theme toggle cycles light/dark/OLED (persist)
+
+    // Cycle the app theme light → dark → OLED → light and persist it.
+    function cycle-theme() {
+        if (!Theme.dark) { Theme.dark = true; Theme.oled = false; }
+        else if (!Theme.oled) { Theme.oled = true; }
+        else { Theme.dark = false; Theme.oled = false; }
+        root.theme-cycled();
+    }
 
     property <length> w-collapsed: 68px;
     min-width: root.collapsed ? root.w-collapsed : Theme.sidebar-w * 0.66;
@@ -318,9 +327,9 @@ export component Sidebar inherits Rectangle {
             }
             Row {
                 DockBtn {
-                    icon-img: Theme.dark ? Icons.sun : Icons.moon;
+                    icon-img: !Theme.dark ? Icons.sun : (Theme.oled ? Icons.star : Icons.moon);
                     accent: #14b8a6;
-                    clicked => { Theme.dark = !Theme.dark; }
+                    clicked => { root.cycle-theme(); }
                 }
                 DockBtn {
                     icon-img: Icons.chevron-left;
@@ -343,9 +352,9 @@ export component Sidebar inherits Rectangle {
                 clicked => { root.user-action("lock"); }
             }
             IconButton {
-                icon-img: Theme.dark ? Icons.sun : Icons.moon;
+                icon-img: !Theme.dark ? Icons.sun : (Theme.oled ? Icons.star : Icons.moon);
                 accent: #14b8a6;
-                clicked => { Theme.dark = !Theme.dark; }
+                clicked => { root.cycle-theme(); }
             }
             IconButton {
                 icon-img: Icons.chevron-right;
