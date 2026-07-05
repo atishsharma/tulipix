@@ -34,6 +34,7 @@ import { PropertiesWindow, AssetProperties } from "properties.slint";
 import { SettingsList, SettingItem } from "settings_panels.slint";
 import { ChatOverlay, ChatTurn } from "chat_overlay.slint";
 import { Gated, GateMode } from "gated.slint";
+import { HomePage, HomeStats } from "page_home.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
 import { AppIcon, Icons } from "icons.slint";
@@ -817,6 +818,9 @@ export component MainWindow inherits Window {
     default-font-size: 13px;
 
     in-out property <string> active-section: "home";
+    in-out property <HomeStats> home-stats;
+    in-out property <string> home-greeting: "Welcome";
+    in-out property <string> home-date-line: "";
     callback section-changed(string);   // sidebar section click → preload that section
     in-out property <string> active-settings-tab: "appearance";
     in-out property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local };
@@ -2818,6 +2822,28 @@ callback cloud-go-home();
                 trim-del-seg(i) => { root.tools-trim-del-seg(i); }
                 trim-join() => { root.tools-trim-join(); }
                 trim-close() => { root.tools-trim-close(); }
+            }
+            if active-section == "home": HomePage {
+                width: parent.width; height: parent.height;
+                stats: root.home-stats;
+                greeting: root.home-greeting;
+                date-line: root.home-date-line;
+                logo-choice: root.app-logo-choice;
+                user-secondary: root.user.secondary;
+                avatar-image: root.user.avatar-image;
+                avatar-emoji: root.user.avatar-emoji;
+                np-title: root.music-np-title; np-sub: root.music-np-sub;
+                np-art: root.music-np-art; np-accent: root.music-np-accent;
+                playing: root.music-playing; pos: root.music-pos; dur: root.music-dur;
+                player-mode: root.music-player-mode; yt-now-video: root.music-yt-now-video;
+                open-section(s) => { root.active-section = s; root.section-changed(s); }
+                open-music(v) => { root.music-view = v; root.active-section = "music"; root.section-changed("music"); }
+                playpause => { root.music-toggle-pause(); }
+                next => { root.music-next(); } prev => { root.music-prev(); }
+                open-search => { root.palette-open = true; }
+                add-folder => { root.pick-folder(); }
+                shuffle-all => { root.music-shuffle-all(); }
+                open-download => { root.active-section = "tools"; root.section-changed("tools"); }
             }
             if active-section == "settings": SettingsPage {
                 width: parent.width; height: parent.height;
