@@ -68,3 +68,250 @@ component HomeTile inherits Rectangle {
         if footer != "": Text { text: footer; color: footer-color; font-size: 10px; overflow: elide; }
     }
 }
+
+export component HomePage inherits Rectangle {
+    in property <HomeStats> stats;
+    in property <string> greeting: "Welcome";
+    in property <string> date-line: "";
+    in property <int> logo-choice: 0;
+    in property <string> user-secondary: "";       // "12,304 items · 41 GB"
+    in property <image> avatar-image;
+    in property <string> avatar-emoji: "";
+    // now-playing
+    in property <string> np-title: ""; in property <string> np-sub: "";
+    in property <image> np-art; in property <color> np-accent: Theme.sec-music;
+    in property <bool> playing: false;
+    in property <float> pos: 0; in property <float> dur: 1;
+    in property <string> player-mode: "music";     // music|podcast|radio|book
+    in property <bool> yt-now-video: false;
+
+    callback open-section(string);                 // "photos"|"videos"|...|"settings"
+    callback open-music(string);                   // music-view: mymusic|podcasts|audiobooks|radio|youtube
+    callback playpause(); callback next(); callback prev();
+    callback open-search();
+    callback add-folder();
+    callback shuffle-all();
+    callback open-download();
+
+    // Mode badge label follows the active playback (v4 addition ②).
+    property <string> mode-label:
+        np-title == "" ? "Nothing playing" :
+        player-mode == "podcast" ? "Playing · Podcast" :
+        player-mode == "radio"   ? "Radio · Live" :
+        player-mode == "book"    ? "Playing · Audiobook" :
+        yt-now-video             ? "Playing · YouTube" :
+                                   "Playing · My Music";
+    property <string> mode-view:
+        player-mode == "podcast" ? "podcasts" :
+        player-mode == "radio"   ? "radio" :
+        player-mode == "book"    ? "audiobooks" :
+        yt-now-video             ? "youtube" : "mymusic";
+
+    background: transparent;
+
+    VerticalLayout {
+        padding: 16px; spacing: 10px;
+
+        // ── Header: logo (follows sidebar setting) · greeting · search · avatar
+        HorizontalLayout {
+            spacing: 14px;
+            Rectangle {
+                width: 56px; height: 56px; border-radius: 14px; clip: true;
+                horizontal-stretch: 0; vertical-stretch: 0;
+                Image {
+                    source: root.logo-choice == 1 ? @image-url("../resources/appicons/sidebar-color.png")
+                          : root.logo-choice == 2 ? @image-url("../resources/appicons/sidebar-dark.png")
+                          : root.logo-choice == 3 ? @image-url("../resources/appicons/sidebar-white.png")
+                          :                         @image-url("../resources/appicons/sidebar-default.png");
+                    image-fit: cover; width: 100%; height: 100%;
+                }
+            }
+            VerticalLayout {
+                alignment: center; spacing: 4px; horizontal-stretch: 1;
+                Text { text: greeting; color: Theme.text; font-size: 20px; font-weight: 800; overflow: elide; }
+                Text { text: date-line + (user-secondary == "" ? "" : " · " + user-secondary);
+                    color: Theme.text-dim; font-size: 11px; overflow: elide; }
+            }
+            VerticalLayout { alignment: center;
+                HomeChip { label: "⌘K  Search"; clicked => { root.open-search(); } } }
+            Rectangle {
+                width: 38px; height: 38px; border-radius: 19px; clip: true;
+                horizontal-stretch: 0; vertical-stretch: 0;
+                y: (parent.height - self.height) / 2;
+                background: @linear-gradient(135deg, Theme.brand 0%, Theme.brand-2 100%);
+                if avatar-image.width != 0: Image { source: avatar-image; image-fit: cover; width: 100%; height: 100%; }
+                if avatar-image.width == 0 && avatar-emoji != "": Text { text: avatar-emoji; font-size: 18px;
+                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
+                if avatar-image.width == 0 && avatar-emoji == "": AppIcon { source: Icons.user; tint: #ffffff;
+                    width: 16px; height: 16px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+            }
+        }
+
+        // ── Row 1: music hero (2fr) + photos + videos ──────────────
+        HorizontalLayout {
+            spacing: 10px; vertical-stretch: 3;
+            // music hero
+            Rectangle {
+                horizontal-stretch: 2;
+                border-radius: 14px;
+                background: Theme.sec-music.with-alpha(0.09);
+                border-width: 1px; border-color: Theme.sec-music.with-alpha(0.24);
+                VerticalLayout {
+                    padding: 14px; spacing: 10px;
+                    HorizontalLayout {
+                        HomeCap { text: "MUSIC"; color: Theme.sec-music; vertical-alignment: center; }
+                        Rectangle { horizontal-stretch: 1; }
+                        HomeChip { label: mode-label; emphasized: np-title != ""; accent: Theme.sec-music;
+                            clicked => { root.open-music(mode-view); } }
+                    }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Rectangle { width: 52px; height: 52px; border-radius: 9px; clip: true;
+                            horizontal-stretch: 0; vertical-stretch: 0;
+                            background: Theme.panel-2;
+                            if np-art.width != 0: Image { source: np-art; image-fit: cover; width: 100%; height: 100%; }
+                            if np-art.width == 0: AppIcon { source: Icons.music; tint: Theme.sec-music;
+                                width: 20px; height: 20px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } }
+                        VerticalLayout {
+                            alignment: center; spacing: 3px; horizontal-stretch: 1;
+                            Text { text: np-title == "" ? "Nothing playing" : np-title;
+                                color: Theme.text; font-size: 13px; font-weight: 700; overflow: elide; }
+                            Text { text: np-sub == "" ? "Pick something in Music" : np-sub;
+                                color: Theme.text-dim; font-size: 10px; overflow: elide; }
+                            Rectangle { height: 3px; border-radius: 2px; background: Theme.outline;
+                                Rectangle { height: 100%; border-radius: 2px; background: Theme.sec-music;
+                                    width: parent.width * (dur > 0 ? Math.max(0, Math.min(1, pos / dur)) : 0); x: 0; } }
+                        }
+                        HorizontalLayout {
+                            spacing: 2px; alignment: center;
+                            VerticalLayout { alignment: center; Rectangle { width: 28px; height: 28px; border-radius: 14px;
+                                background: pv.has-hover ? Theme.panel : transparent;
+                                pv := TouchArea { mouse-cursor: pointer; clicked => { root.prev(); } }
+                                AppIcon { source: Icons.skip-back; tint: Theme.text; width: 14px; height: 14px;
+                                    x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
+                            VerticalLayout { alignment: center; Rectangle { width: 32px; height: 32px; border-radius: 16px;
+                                background: pp.has-hover ? Theme.sec-music : Theme.panel-2;
+                                animate background { duration: 120ms; }
+                                pp := TouchArea { mouse-cursor: pointer; clicked => { root.playpause(); } }
+                                AppIcon { source: playing ? Icons.pause : Icons.play;
+                                    tint: pp.has-hover ? #ffffff : Theme.text; width: 15px; height: 15px;
+                                    x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
+                            VerticalLayout { alignment: center; Rectangle { width: 28px; height: 28px; border-radius: 14px;
+                                background: nx.has-hover ? Theme.panel : transparent;
+                                nx := TouchArea { mouse-cursor: pointer; clicked => { root.next(); } }
+                                AppIcon { source: Icons.skip-forward; tint: Theme.text; width: 14px; height: 14px;
+                                    x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
+                        }
+                    }
+                    Rectangle { vertical-stretch: 1; }
+                    // 5 deep-link chips (spec: music's internal sections)
+                    HorizontalLayout {
+                        spacing: 6px;
+                        HomeChip { label: "My Music"; emphasized: true; accent: Theme.sec-music;
+                            clicked => { root.open-music("mymusic"); } }
+                        HomeChip { label: stats.podcasts == 0 ? "Podcasts" : "Podcasts  " + stats.podcasts;
+                            clicked => { root.open-music("podcasts"); } }
+                        HomeChip { label: stats.audiobooks == 0 ? "Audiobooks" : "Audiobooks  " + stats.audiobooks;
+                            clicked => { root.open-music("audiobooks"); } }
+                        HomeChip { label: stats.radio == 0 ? "Radio" : "Radio  " + stats.radio;
+                            clicked => { root.open-music("radio"); } }
+                        HomeChip { label: "YouTube"; clicked => { root.open-music("youtube"); } }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                }
+            }
+            HomeTile { horizontal-stretch: 1; icon: Icons.image; accent: Theme.sec-photos; name: "Photos";
+                stat: stats.photos + " items · " + stats.photos-albums + " albums";
+                footer: stats.photos-scan; clicked => { root.open-section("photos"); } }
+            HomeTile { horizontal-stretch: 1; icon: Icons.film; accent: Theme.sec-videos; name: "Videos";
+                stat: stats.videos + " items · " + stats.videos-shows + " shows";
+                footer: stats.videos-note; clicked => { root.open-section("videos"); } }
+        }
+
+        // ── Row 2: books · cloud · tools ───────────────────────────
+        HorizontalLayout {
+            spacing: 10px; vertical-stretch: 2;
+            HomeTile { horizontal-stretch: 1; icon: Icons.book-open; accent: Theme.sec-books; name: "Books";
+                stat: stats.books + " books · reading " + stats.books-reading;
+                clicked => { root.open-section("books"); } }
+            HomeTile { horizontal-stretch: 1; icon: Icons.cloud; accent: Theme.sec-cloud; name: "Cloud";
+                stat: stats.cloud-remotes + " remotes"; footer: stats.cloud-note;
+                clicked => { root.open-section("cloud"); } }
+            HomeTile { horizontal-stretch: 1; icon: Icons.wrench; accent: Theme.sec-tools; name: "Tools";
+                stat: stats.tools-jobs == 0 ? "queue idle" : "● " + stats.tools-jobs + " jobs running";
+                footer: stats.tools-note;
+                footer-color: stats.tools-jobs > 0 ? #22c55e : Theme.text-dim.with-alpha(0.7);
+                clicked => { root.open-section("tools"); } }
+        }
+
+        // ── Row 3: continue (2fr) + quick actions 2×2 ──────────────
+        HorizontalLayout {
+            spacing: 10px; vertical-stretch: 2;
+            Rectangle {
+                horizontal-stretch: 2; border-radius: 14px;
+                background: Theme.panel-2; border-width: 1px; border-color: Theme.outline;
+                VerticalLayout {
+                    padding: 14px; spacing: 10px;
+                    HomeCap { text: "CONTINUE"; }
+                    HorizontalLayout {
+                        spacing: 8px; vertical-stretch: 1;
+                        if stats.continue1 == "" && stats.continue2 == "" && stats.continue3 == "": Text {
+                            text: "Nothing in progress — resume points from books, podcasts and audiobooks show up here.";
+                            color: Theme.text-dim; font-size: 10px; wrap: word-wrap; }
+                        if stats.continue1 != "": Rectangle { horizontal-stretch: 1; border-radius: 10px; background: Theme.panel;
+                            VerticalLayout { padding: 10px; spacing: 3px; alignment: center;
+                                Text { text: stats.continue1; color: Theme.text; font-size: 10px; font-weight: 600; overflow: elide; }
+                                Text { text: stats.continue1-sub; color: Theme.text-dim; font-size: 9px; overflow: elide; } } }
+                        if stats.continue2 != "": Rectangle { horizontal-stretch: 1; border-radius: 10px; background: Theme.panel;
+                            VerticalLayout { padding: 10px; spacing: 3px; alignment: center;
+                                Text { text: stats.continue2; color: Theme.text; font-size: 10px; font-weight: 600; overflow: elide; }
+                                Text { text: stats.continue2-sub; color: Theme.text-dim; font-size: 9px; overflow: elide; } } }
+                        if stats.continue3 != "": Rectangle { horizontal-stretch: 1; border-radius: 10px; background: Theme.panel;
+                            VerticalLayout { padding: 10px; spacing: 3px; alignment: center;
+                                Text { text: stats.continue3; color: Theme.text; font-size: 10px; font-weight: 600; overflow: elide; }
+                                Text { text: stats.continue3-sub; color: Theme.text-dim; font-size: 9px; overflow: elide; } } }
+                    }
+                }
+            }
+            Rectangle {
+                horizontal-stretch: 1; border-radius: 14px;
+                background: Theme.panel-2; border-width: 1px; border-color: Theme.outline;
+                VerticalLayout {
+                    padding: 14px; spacing: 10px;
+                    HomeCap { text: "QUICK ACTIONS"; }
+                    GridLayout {
+                        spacing: 6px; vertical-stretch: 1;
+                        Row {
+                            Rectangle { border-radius: 10px; background: qa1.has-hover ? Theme.panel : transparent;
+                                border-width: 1px; border-color: Theme.outline;
+                                qa1 := TouchArea { mouse-cursor: pointer; clicked => { root.add-folder(); } }
+                                Text { text: "+ Add folder"; color: Theme.text; font-size: 10px; font-weight: 600;
+                                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; } }
+                            Rectangle { border-radius: 10px; background: qa2.has-hover ? Theme.panel : transparent;
+                                border-width: 1px; border-color: Theme.outline;
+                                qa2 := TouchArea { mouse-cursor: pointer; clicked => { root.shuffle-all(); } }
+                                Text { text: "▶ Shuffle all"; color: Theme.text; font-size: 10px; font-weight: 600;
+                                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; } }
+                        }
+                        Row {
+                            Rectangle { border-radius: 10px; background: qa3.has-hover ? Theme.panel : transparent;
+                                border-width: 1px; border-color: Theme.outline;
+                                qa3 := TouchArea { mouse-cursor: pointer; clicked => { root.open-download(); } }
+                                Text { text: "⬇ Download"; color: Theme.text; font-size: 10px; font-weight: 600;
+                                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; } }
+                            Rectangle { border-radius: 10px; background: qa4.has-hover ? Theme.panel : transparent;
+                                border-width: 1px; border-color: Theme.outline;
+                                qa4 := TouchArea { mouse-cursor: pointer; clicked => { root.open-section("settings"); } }
+                                Text { text: "⚙ Settings"; color: Theme.text; font-size: 10px; font-weight: 600;
+                                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; } }
+                        }
+                    }
+                }
+            }
+        }
+
+        // ── Footer ─────────────────────────────────────────────────
+        Text { text: "Tulipix © 2026 — Developed by Atish Ak Sharma";
+            color: Theme.text-dim.with-alpha(0.7); font-size: 10px; horizontal-alignment: center; }
+    }
+}
