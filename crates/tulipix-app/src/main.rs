@@ -1468,7 +1468,8 @@ fn main() -> Result<()> {
                 let name_method = win.get_music_dl_name_method().to_string();
                 let parallel = win.get_music_dl_parallel();
                 let threads = win.get_music_dl_threads();
-                mdl::start_download(win.as_weak(), url, dest, format, name_method, parallel, threads);
+                let bitrate = win.get_music_dl_bitrate();
+                mdl::start_download(win.as_weak(), url, dest, format, name_method, parallel, threads, bitrate);
             }
         }
     });
@@ -1484,6 +1485,22 @@ fn main() -> Result<()> {
     window.on_music_dl_set_format({
         let w = window.as_weak();
         move |v| { if let Some(win) = w.upgrade() { win.set_music_dl_format(v); } }
+    });
+    window.on_music_dl_set_bitrate({
+        let w = window.as_weak();
+        move |v| { if let Some(win) = w.upgrade() { win.set_music_dl_bitrate(v.trim().parse::<i32>().unwrap_or(128).clamp(0, 320)); } }
+    });
+    window.on_music_dl_clear_all({
+        let w = window.as_weak();
+        move || { if let Some(win) = w.upgrade() { mdl::clear_all(win.as_weak()); } }
+    });
+    window.on_music_dl_set_queue_page({
+        let w = window.as_weak();
+        move |p| { if let Some(win) = w.upgrade() { mdl::set_queue_page(win.as_weak(), p); } }
+    });
+    window.on_music_dl_sort_by({
+        let w = window.as_weak();
+        move |k| { if let Some(win) = w.upgrade() { mdl::sort_queue(win.as_weak(), k.to_string()); } }
     });
     window.on_music_dl_set_name_method({
         let w = window.as_weak();

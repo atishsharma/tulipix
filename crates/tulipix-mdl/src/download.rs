@@ -47,11 +47,13 @@ fn cookie_args() -> Vec<String> {
 /// transient 403/network hiccups; a couple of retries clears most of them.
 const MAX_TRIES: usize = 3;
 
+#[allow(clippy::too_many_arguments)]
 async fn download_audio(
     track: &Track,
     index: usize,
     dest: &Path,
     format: &str,
+    bitrate: u32,
     method: NameMethod,
     threads: usize,
 ) -> Result<PathBuf> {
@@ -66,7 +68,13 @@ async fn download_audio(
         let mut cmd = tokio::process::Command::new(ytdlp_bin());
         cmd.arg(&query)
             .args(["-f", "bestaudio/best", "-x", "--audio-format", format])
-            .args(["--no-playlist", "--no-warnings"])
+            .args(["--no-playlist", "--no-warnings"]);
+        // Target bitrate for lossy codecs — passed to the ffmpeg re-encode.
+        // Lossless (flac/wav) ignores it, so only set for opus/m4a/mp3.
+        if bitrate > 0 && matches!(format, "opus" | "m4a" | "mp3") {
+            cmd.args(["--audio-quality", &format!("{bitrate}K")]);
+        }
+        cmd
             // Threads per download — parallel fragment downloads for this track.
             .args(["--concurrent-fragments", &threads.max(1).to_string()])
             // Rotate player clients — helps dodge YouTube's "confirm you're not a
@@ -200,6 +208,7 @@ where
     // (downloaded, skipped, failed)
     let counters = Arc::new(Mutex::new((0usize, 0usize, Vec::<(Track, String)>::new())));
     let format = opts.format.clone();
+    let bitrate = opts.bitrate;
     let method = opts.name_method;
     let threads = opts.threads_per_download.max(1);
 
@@ -262,7 +271,7 @@ where
             }
 
             emit(Stage::SearchingYoutube, 20.0, "Searching YouTube".into(), None);
-            match download_audio(&track, idx, &dest, &format, method, threads).await {
+            match download_audio(&track, idx, &dest, &format, bitrate, method, threads).await {
                 Ok(path) => {
                     emit(Stage::WritingMetadata, 90.0, "Embedding metadata".into(), None);
                     if let Err(e) = write_tags(&path, &track, &client).await {
@@ -337,7 +346,7 @@ mod tests {
             .unwrap();
             assert!(!pl.tracks.is_empty());
             let dir = std::env::temp_dir().join("mdl-e2e");
-            let opts = DownloadOptions { dest_dir: dir, parallelism: 1, threads_per_download: 2, format: "opus".into(), name_method: crate::types::NameMethod::Numbered };
+            let opts = DownloadOptions { dest_dir: dir, parallelism: 1, threads_per_download: 2, format: "opus".into(), bitrate: 128, name_method: crate::types::NameMethod::Numbered };
             let cancel = Arc::new(AtomicBool::new(false));
             let sum = download_playlist(&client, &pl, &opts, cancel, |_| {}).await;
             assert!(sum.downloaded + sum.skipped >= 1);

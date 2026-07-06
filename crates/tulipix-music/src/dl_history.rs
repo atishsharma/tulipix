@@ -15,8 +15,29 @@ use std::path::Path;
 use crate::scan;
 use crate::tags::{container_from_ext, TrackTags};
 
-/// Rows per page in the history popups.
-pub const PAGE_SIZE: i64 = 20;
+/// Rows per page in the Download-History popup.
+pub const HISTORY_PAGE_SIZE: i64 = 15;
+/// Rows per page in the Search-History popup.
+pub const SEARCH_PAGE_SIZE: i64 = 10;
+
+/// True if a track with this `title` credited to `artist` already lives in the
+/// music library (present file, not tombstoned). Drives the downloader's
+/// "In Library" skip so a track already owned isn't fetched again.
+pub async fn track_in_library(pool: &SqlitePool, title: &str, artist: &str) -> bool {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM track_meta tm
+         JOIN artists a ON a.id = tm.artist_id
+         JOIN items it ON it.id = tm.item_id
+         WHERE tm.title = ? COLLATE NOCASE AND a.name = ? COLLATE NOCASE
+           AND it.section = 'music' AND it.missing_since IS NULL",
+    )
+    .bind(title)
+    .bind(artist)
+    .fetch_one(pool)
+    .await
+    .unwrap_or(0);
+    n > 0
+}
 
 fn now() -> i64 {
     std::time::SystemTime::now()
@@ -137,14 +158,14 @@ pub async fn history_page(pool: &SqlitePool, page: i64) -> Result<(Vec<DlHistory
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dl_history")
         .fetch_one(pool)
         .await?;
-    let pages = ((total + PAGE_SIZE - 1) / PAGE_SIZE).max(1);
+    let pages = ((total + HISTORY_PAGE_SIZE - 1) / HISTORY_PAGE_SIZE).max(1);
     let page = page.clamp(0, pages - 1);
     let rows = sqlx::query_as::<_, DlHistoryRow>(
         "SELECT id, title, artists, album, provider, abs_path, downloaded_at
          FROM dl_history ORDER BY downloaded_at DESC, id DESC LIMIT ? OFFSET ?",
     )
-    .bind(PAGE_SIZE)
-    .bind(page * PAGE_SIZE)
+    .bind(HISTORY_PAGE_SIZE)
+    .bind(page * HISTORY_PAGE_SIZE)
     .fetch_all(pool)
     .await?;
     Ok((rows, pages))
@@ -196,14 +217,14 @@ pub async fn searches_page(pool: &SqlitePool, page: i64) -> Result<(Vec<DlSearch
     let total: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dl_searches")
         .fetch_one(pool)
         .await?;
-    let pages = ((total + PAGE_SIZE - 1) / PAGE_SIZE).max(1);
+    let pages = ((total + SEARCH_PAGE_SIZE - 1) / SEARCH_PAGE_SIZE).max(1);
     let page = page.clamp(0, pages - 1);
     let rows = sqlx::query_as::<_, DlSearchRow>(
         "SELECT id, url, kind, title, provider, searched_at
          FROM dl_searches ORDER BY searched_at DESC, id DESC LIMIT ? OFFSET ?",
     )
-    .bind(PAGE_SIZE)
-    .bind(page * PAGE_SIZE)
+    .bind(SEARCH_PAGE_SIZE)
+    .bind(page * SEARCH_PAGE_SIZE)
     .fetch_all(pool)
     .await?;
     Ok((rows, pages))

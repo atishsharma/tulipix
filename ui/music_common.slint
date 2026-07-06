@@ -22,6 +22,7 @@ export struct DownloaderRow {
     file: string,      // produced filename once done
     selected: bool,    // checkbox — only selected rows download
     thumb: image,      // album art preview ("" → note placeholder)
+    abs-index: int,    // position in the full queue (rows may be a page window)
 }
 
 // One row in the Downloader → Download History popup.

@@ -28,10 +28,184 @@ struct RowData {
     percent: f32,
     file: String,
     selected: bool,
+    /// Decoded cover thumbnail (RGBA8 pixels + w/h). Kept as raw bytes — not a
+    /// `slint::Image` — because `Image` is `!Send` and these rows live in a
+    /// cross-thread static; the image is rebuilt on the UI thread in `push_rows`.
+    thumb_rgba: Option<(Vec<u8>, u32, u32)>,
+}
+
+/// Bumped on every resolve so a slow background art-fetch from a previous URL
+/// can detect it's stale and stop pushing thumbs into the current queue.
+static ART_GEN: OnceLock<std::sync::atomic::AtomicU64> = OnceLock::new();
+fn art_gen() -> &'static std::sync::atomic::AtomicU64 {
+    ART_GEN.get_or_init(|| std::sync::atomic::AtomicU64::new(0))
+}
+
+/// Decode arbitrary cover bytes into a small RGBA thumbnail for a queue row.
+fn decode_thumb(bytes: &[u8]) -> Option<(Vec<u8>, u32, u32)> {
+    let img = image::load_from_memory(bytes).ok()?;
+    let small = img.thumbnail(120, 120).to_rgba8();
+    let (w, h) = small.dimensions();
+    Some((small.into_raw(), w, h))
+}
+
+// ── Persistent art cache ─────────────────────────────────────────────────────
+// Downloader queue thumbs are cached on disk so re-resolving a URL (e.g. picking
+// it again from Search history) reuses the art instead of re-downloading — and
+// for playlists reuses the resolved per-track art URL instead of re-fetching
+// each track's page. Two tiny caches under <cache>/mdl_art: `t_<hash>` = original
+// cover bytes keyed by art URL; `u_<hash>.txt` = resolved real art URL keyed by
+// the track's source URL.
+
+fn art_cache_root() -> Option<std::path::PathBuf> {
+    let d = tulipix_core::paths::cache_dir()?.join("mdl_art");
+    std::fs::create_dir_all(&d).ok()?;
+    Some(d)
+}
+
+fn art_key(s: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let mut h = Sha256::new();
+    h.update(s.as_bytes());
+    h.finalize().iter().take(12).map(|b| format!("{b:02x}")).collect()
+}
+
+/// Resolved real art URL previously cached for a track source URL.
+fn cached_art_url(src: &str) -> Option<String> {
+    let p = art_cache_root()?.join(format!("u_{}.txt", art_key(src)));
+    std::fs::read_to_string(p)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+}
+
+fn store_art_url(src: &str, url: &str) {
+    if let Some(root) = art_cache_root() {
+        let _ = std::fs::write(root.join(format!("u_{}.txt", art_key(src))), url);
+    }
+}
+
+/// Fetch a cover URL and decode it to a queue thumbnail, backed by an on-disk
+/// byte cache so the same art is never downloaded twice. Blocking IO/decode runs
+/// off the async runtime.
+async fn fetch_thumb(client: &reqwest::Client, url: &str) -> Option<(Vec<u8>, u32, u32)> {
+    // Disk hit — decode the cached original bytes, no network.
+    let u = url.to_string();
+    if let Ok(Some(t)) = tokio::task::spawn_blocking(move || {
+        let p = art_cache_root()?.join(format!("t_{}", art_key(&u)));
+        let bytes = std::fs::read(p).ok()?;
+        decode_thumb(&bytes)
+    })
+    .await
+    {
+        return Some(t);
+    }
+    // Miss — download, persist the original bytes, decode.
+    let bytes = client
+        .get(url)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .bytes()
+        .await
+        .ok()?
+        .to_vec();
+    let u = url.to_string();
+    tokio::task::spawn_blocking(move || {
+        if let Some(root) = art_cache_root() {
+            let _ = std::fs::write(root.join(format!("t_{}", art_key(&u))), &bytes);
+        }
+        decode_thumb(&bytes)
+    })
+    .await
+    .ok()?
 }
 static ROWS: OnceLock<Mutex<Vec<RowData>>> = OnceLock::new();
 fn rows() -> &'static Mutex<Vec<RowData>> {
     ROWS.get_or_init(|| Mutex::new(Vec::new()))
+}
+
+/// Per-track cards shown per queue page. Only this page's rows are pushed to the
+/// UI model (huge playlists stay responsive); `abs_index` maps a card back to
+/// its full-list row.
+const QUEUE_PAGE_SIZE: usize = 25;
+static QUEUE_PAGE: OnceLock<Mutex<usize>> = OnceLock::new();
+fn queue_page() -> &'static Mutex<usize> {
+    QUEUE_PAGE.get_or_init(|| Mutex::new(0))
+}
+
+/// Set the visible queue page (clamped in `push_rows`) and re-push.
+pub fn set_queue_page(weak: Weak<MainWindow>, page: i32) {
+    *queue_page().lock().unwrap() = page.max(0) as usize;
+    push_rows(&weak);
+}
+
+/// Current queue sort — (key, dir) where dir 1 = asc, 2 = desc.
+static SORT_STATE: OnceLock<Mutex<(String, i32)>> = OnceLock::new();
+fn sort_state() -> &'static Mutex<(String, i32)> {
+    SORT_STATE.get_or_init(|| Mutex::new((String::new(), 1)))
+}
+
+fn emit_sort(weak: &Weak<MainWindow>, key: &str, dir: i32) {
+    let key = key.to_string();
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        w.set_music_dl_sort(SharedString::from(key.as_str()));
+        w.set_music_dl_sort_dir(dir);
+    });
+}
+
+/// Sort the parsed queue by `key` (name|length|artist). Re-clicking the active
+/// key flips asc⇄desc. Reorders BOTH the UI rows and the cached playlist tracks
+/// by the same permutation so per-row indices (download / retry / art) stay
+/// aligned.
+pub fn sort_queue(weak: Weak<MainWindow>, key: String) {
+    let dir = {
+        let mut st = sort_state().lock().unwrap();
+        let d = if st.0 == key { if st.1 == 1 { 2 } else { 1 } } else { 1 };
+        *st = (key.clone(), d);
+        d
+    };
+    {
+        let mut rows_g = rows().lock().unwrap();
+        let n = rows_g.len();
+        // Durations pulled from the cached tracks, parallel to rows.
+        let durations: Vec<u64> = {
+            let r = resolved().lock().unwrap();
+            (0..n)
+                .map(|i| {
+                    r.as_ref()
+                        .and_then(|p| p.tracks.get(i))
+                        .and_then(|t| t.duration_ms)
+                        .unwrap_or(0)
+                })
+                .collect()
+        };
+        let mut idx: Vec<usize> = (0..n).collect();
+        idx.sort_by(|&a, &b| {
+            let ord = match key.as_str() {
+                "length" => durations[a].cmp(&durations[b]),
+                "artist" => rows_g[a]
+                    .main_artist
+                    .to_lowercase()
+                    .cmp(&rows_g[b].main_artist.to_lowercase()),
+                _ => rows_g[a].title.to_lowercase().cmp(&rows_g[b].title.to_lowercase()),
+            };
+            if dir == 2 { ord.reverse() } else { ord }
+        });
+        let new_rows: Vec<RowData> = idx.iter().map(|&i| rows_g[i].clone()).collect();
+        *rows_g = new_rows;
+        if let Some(pl) = resolved().lock().unwrap().as_mut() {
+            let nt: Vec<Track> = idx.iter().filter_map(|&i| pl.tracks.get(i).cloned()).collect();
+            if nt.len() == pl.tracks.len() {
+                pl.tracks = nt;
+            }
+        }
+    }
+    *queue_page().lock().unwrap() = 0;
+    emit_sort(&weak, &key, dir);
+    push_rows(&weak);
 }
 
 /// Last resolved playlist, so Download reuses it (respecting selection) instead
@@ -59,6 +233,7 @@ fn index_map() -> &'static Mutex<Vec<usize>> {
 struct DlCtx {
     dest: PathBuf,
     format: String,
+    bitrate: u32,
     method: NameMethod,
     threads: usize,
 }
@@ -133,13 +308,37 @@ fn push_rows(weak: &Weak<MainWindow>) {
             }
         }
     }
+    // Window the full queue to the current page; abs_index maps each card back.
+    let total = snapshot.len();
+    let selected = snapshot.iter().filter(|r| r.selected).count();
+    let pages = total.div_ceil(QUEUE_PAGE_SIZE).max(1);
+    let page = {
+        let mut g = queue_page().lock().unwrap();
+        *g = (*g).min(pages - 1);
+        *g
+    };
+    let start = page * QUEUE_PAGE_SIZE;
+    let end = (start + QUEUE_PAGE_SIZE).min(total);
+    let window: Vec<(usize, RowData)> = snapshot
+        .get(start..end)
+        .unwrap_or(&[])
+        .iter()
+        .cloned()
+        .enumerate()
+        .map(|(off, r)| (start + off, r))
+        .collect();
     let _ = weak.upgrade_in_event_loop(move |w| {
         w.set_music_dl_all_artists(ModelRc::new(VecModel::from(
             union.iter().map(SharedString::from).collect::<Vec<_>>(),
         )));
-        let model: Vec<DownloaderRow> = snapshot
+        w.set_music_dl_total(total as i32);
+        w.set_music_dl_selected(selected as i32);
+        w.set_music_dl_queue_page(page as i32);
+        w.set_music_dl_queue_pages(pages as i32);
+        let model: Vec<DownloaderRow> = window
             .iter()
-            .map(|r| DownloaderRow {
+            .map(|(abs, r)| DownloaderRow {
+                abs_index: *abs as i32,
                 title: SharedString::from(r.title.as_str()),
                 album: SharedString::from(r.album.as_str()),
                 artists: ModelRc::new(VecModel::from(
@@ -150,7 +349,14 @@ fn push_rows(weak: &Weak<MainWindow>) {
                 percent: r.percent,
                 file: SharedString::from(r.file.as_str()),
                 selected: r.selected,
-                thumb: slint::Image::default(),
+                thumb: r
+                    .thumb_rgba
+                    .as_ref()
+                    .map(|(px, w, h)| {
+                        let buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(px, *w, *h);
+                        slint::Image::from_rgba8(buf)
+                    })
+                    .unwrap_or_default(),
             })
             .collect();
         w.set_music_dl_rows(ModelRc::new(VecModel::from(model)));
@@ -176,6 +382,7 @@ fn seed_rows(pl: &Playlist) {
             percent: 0.0,
             file: String::new(),
             selected: true,
+            thumb_rgba: None,
         })
         .collect();
 }
@@ -259,6 +466,106 @@ fn record_search_bg(pl: &Playlist, url: String) {
     });
 }
 
+/// Push the resolved-collection kind (track|album|playlist) so the UI can
+/// enable the matching "Per Album" / "Per Playlist" bulk button.
+fn push_kind(weak: &Weak<MainWindow>, kind: &str) {
+    let kind = kind.to_string();
+    let _ = weak.upgrade_in_event_loop(move |w| w.set_music_dl_kind(SharedString::from(kind.as_str())));
+}
+
+/// Background: fetch per-track cover art after a resolve and stream the decoded
+/// thumbnails into the queue rows. A single track or an album legitimately
+/// shares one cover, so it is fetched once and reused. A playlist mixes releases,
+/// so each track's real cover is fetched by re-resolving its source URL (bounded
+/// concurrency); that real URL also replaces the row's `artwork_url` in the
+/// cached playlist so the eventual download embeds the correct art. Aborts if a
+/// newer resolve superseded this one.
+fn stream_art(weak: Weak<MainWindow>, playlist: Playlist, kind: String, generation: u64) {
+    tokio::runtime::Handle::current().spawn(async move {
+        let client = reqwest::Client::new();
+        if kind != "playlist" {
+            let url = playlist
+                .artwork_url
+                .clone()
+                .or_else(|| playlist.tracks.first().and_then(|t| t.artwork_url.clone()));
+            let Some(url) = url else { return; };
+            let Some(thumb) = fetch_thumb(&client, &url).await else { return; };
+            if art_gen().load(Ordering::Relaxed) != generation {
+                return;
+            }
+            {
+                let mut rows = rows().lock().unwrap();
+                for row in rows.iter_mut() {
+                    row.thumb_rgba = Some(thumb.clone());
+                }
+            }
+            push_rows(&weak);
+            return;
+        }
+        // Playlist — real per-track covers, bounded concurrency.
+        let sem = Arc::new(tokio::sync::Semaphore::new(4));
+        let mut handles = Vec::new();
+        for (i, track) in playlist.tracks.iter().cloned().enumerate() {
+            let sem = sem.clone();
+            let client = client.clone();
+            let weak = weak.clone();
+            handles.push(tokio::spawn(async move {
+                let _permit = match sem.acquire().await {
+                    Ok(p) => p,
+                    Err(_) => return,
+                };
+                if art_gen().load(Ordering::Relaxed) != generation {
+                    return;
+                }
+                // Real per-track cover: reuse the previously resolved art URL from
+                // the cache; otherwise re-resolve the track page once and cache it.
+                let real_url = match &track.source_url {
+                    Some(src) => match cached_art_url(src) {
+                        Some(u) => Some(u),
+                        None => {
+                            let u = tulipix_mdl::resolve_url(&client, src)
+                                .await
+                                .ok()
+                                .and_then(|pl| pl.tracks.into_iter().next())
+                                .and_then(|t| t.artwork_url);
+                            if let Some(ref uu) = u {
+                                store_art_url(src, uu);
+                            }
+                            u
+                        }
+                    },
+                    None => None,
+                };
+                let url = real_url.clone().or_else(|| track.artwork_url.clone());
+                let Some(url) = url else { return; };
+                if art_gen().load(Ordering::Relaxed) != generation {
+                    return;
+                }
+                // Persist the real per-track art into the cached playlist so the
+                // download embeds the correct cover, not the playlist thumbnail.
+                if let Some(real) = real_url {
+                    if let Some(pl) = resolved().lock().unwrap().as_mut() {
+                        if let Some(t) = pl.tracks.get_mut(i) {
+                            t.artwork_url = Some(real);
+                        }
+                    }
+                }
+                let Some(thumb) = fetch_thumb(&client, &url).await else { return; };
+                if art_gen().load(Ordering::Relaxed) != generation {
+                    return;
+                }
+                if let Some(row) = rows().lock().unwrap().get_mut(i) {
+                    row.thumb_rgba = Some(thumb);
+                }
+                push_rows(&weak);
+            }));
+        }
+        for h in handles {
+            let _ = h.await;
+        }
+    });
+}
+
 /// Resolve a URL and show the tracklist preview (all rows selected).
 pub fn start_resolve(weak: Weak<MainWindow>, url: String) {
     set_status(&weak, "resolving");
@@ -270,13 +577,46 @@ pub fn start_resolve(weak: Weak<MainWindow>, url: String) {
                 cli_push(&weak, &format!("  resolved: {} — {} track(s) [{}]", pl.title, pl.tracks.len(), pl.provider.display_name()));
                 seed_rows(&pl);
                 record_search_bg(&pl, url.clone());
-                *resolved().lock().unwrap() = Some(pl);
+                let kind = resolve_kind(&pl).to_string();
+                *resolved().lock().unwrap() = Some(pl.clone());
                 *resolved_url().lock().unwrap() = url.clone();
+                *queue_page().lock().unwrap() = 0;
+                *sort_state().lock().unwrap() = (String::new(), 1);
+                emit_sort(&weak, "", 1);
+                push_kind(&weak, &kind);
                 push_rows(&weak);
                 set_status(&weak, "resolved");
+                // Kick off background per-track art fetch for the queue thumbs.
+                let generation = art_gen().fetch_add(1, Ordering::Relaxed) + 1;
+                stream_art(weak.clone(), pl, kind, generation);
             }
             Err(e) => set_status(&weak, &format!("error: {e}")),
         }
+    });
+}
+
+/// Clear the resolved playlist + queue rows (title-row "Clear" button).
+pub fn clear_all(weak: Weak<MainWindow>) {
+    art_gen().fetch_add(1, Ordering::Relaxed); // supersede any in-flight art fetch
+    rows().lock().unwrap().clear();
+    *resolved().lock().unwrap() = None;
+    resolved_url().lock().unwrap().clear();
+    *queue_page().lock().unwrap() = 0;
+    *sort_state().lock().unwrap() = (String::new(), 1);
+    let _ = weak.upgrade_in_event_loop(|w| {
+        w.set_music_dl_rows(ModelRc::new(VecModel::from(Vec::<DownloaderRow>::new())));
+        w.set_music_dl_all_artists(ModelRc::new(VecModel::from(Vec::<SharedString>::new())));
+        w.set_music_dl_kind(SharedString::new());
+        w.set_music_dl_sort(SharedString::new());
+        w.set_music_dl_sort_dir(1);
+        w.set_music_dl_total(0);
+        w.set_music_dl_selected(0);
+        w.set_music_dl_queue_page(0);
+        w.set_music_dl_queue_pages(1);
+        w.set_music_dl_done(0);
+        w.set_music_dl_skipped(0);
+        w.set_music_dl_failed(0);
+        w.set_music_dl_status(SharedString::from("idle"));
     });
 }
 
@@ -328,6 +668,7 @@ pub fn start_download(
     name_method_label: String,
     parallel: i32,
     threads: i32,
+    bitrate: i32,
 ) {
     cancel_flag().store(false, Ordering::Relaxed);
     tulipix_common::add_watched_folder(&default_music_dir());
@@ -335,10 +676,11 @@ pub fn start_download(
     let method = NameMethod::from_label(&name_method_label);
     let parallel = parallel.clamp(1, 4) as usize;
     let threads = threads.clamp(1, 8) as usize;
+    let bitrate = bitrate.clamp(0, 320) as u32;
     // Fresh CLI log per download run.
     clear_cli(weak.clone());
     cli_push(&weak, &format!("$ mdl download → {}", dest.display()));
-    cli_push(&weak, &format!("  format={format} name=\"{name_method_label}\" parallel={parallel} threads={threads}"));
+    cli_push(&weak, &format!("  format={format} bitrate={bitrate}k name=\"{name_method_label}\" parallel={parallel} threads={threads}"));
 
     set_status(&weak, "resolving");
     let cancel = cancel_flag().clone();
@@ -396,16 +738,52 @@ pub fn start_download(
                 t
             })
             .collect();
-        let filtered = Playlist { tracks: tracks.clone(), ..playlist.clone() };
+
+        // Skip tracks already owned in the library — mark the row "in library"
+        // and never re-fetch them.
+        let pool = tulipix_common::pool_for("music").await.ok();
+        let mut keep_tracks: Vec<Track> = Vec::new();
+        let mut keep_idx: Vec<usize> = Vec::new();
+        let mut base_skipped = 0usize;
+        for (t, ri) in tracks.into_iter().zip(selected.iter().copied()) {
+            let main = t.artists.first().cloned().unwrap_or_default();
+            let in_lib = match &pool {
+                Some(p) => tulipix_music::dl_history::track_in_library(p, &t.title, &main).await,
+                None => false,
+            };
+            if in_lib {
+                base_skipped += 1;
+                if let Some(row) = rows().lock().unwrap().get_mut(ri) {
+                    row.stage = "in library".into();
+                    row.percent = 100.0;
+                    row.file = "Already in library".into();
+                }
+                cli_push(&weak, &format!("• in library ⤼ {}", t.title));
+            } else {
+                keep_tracks.push(t);
+                keep_idx.push(ri);
+            }
+        }
+        push_rows(&weak);
+        if keep_tracks.is_empty() {
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_dl_skipped(base_skipped as i32);
+            });
+            set_status(&weak, "all in library");
+            return;
+        }
+
+        let filtered = Playlist { tracks: keep_tracks.clone(), ..playlist.clone() };
         let provider = playlist.provider.display_name().to_string();
         let opts = DownloadOptions {
             dest_dir: dest.clone(),
             parallelism: parallel,
             threads_per_download: threads,
             format,
+            bitrate,
             name_method: method,
         };
-        run_download(weak, filtered, selected, tracks, provider, opts, cancel).await;
+        run_download(weak, filtered, keep_idx, keep_tracks, provider, opts, cancel, base_skipped).await;
     });
 }
 
@@ -441,13 +819,14 @@ pub fn retry_track(weak: Weak<MainWindow>, row_index: i32) {
         parallelism: 1,
         threads_per_download: ctx.threads,
         format: ctx.format.clone(),
+        bitrate: ctx.bitrate,
         name_method: ctx.method,
     };
     let filtered = Playlist { tracks: vec![track.clone()], ..playlist.clone() };
     cancel_flag().store(false, Ordering::Relaxed);
     let cancel = cancel_flag().clone();
     tokio::runtime::Handle::current().spawn(async move {
-        run_download(weak, filtered, vec![ri], vec![track], provider, opts, cancel).await;
+        run_download(weak, filtered, vec![ri], vec![track], provider, opts, cancel, 0).await;
     });
 }
 
@@ -457,6 +836,7 @@ pub fn retry_track(weak: Weak<MainWindow>, row_index: i32) {
 ///
 /// `index_map_vec[k]` is the full-list row that worker track `k+1` maps back to;
 /// `ingest_tracks[k]` is that track's metadata (main artist first) for ingest.
+#[allow(clippy::too_many_arguments)]
 async fn run_download(
     weak: Weak<MainWindow>,
     filtered: Playlist,
@@ -465,11 +845,15 @@ async fn run_download(
     provider: String,
     opts: DownloadOptions,
     cancel: Arc<AtomicBool>,
+    // Tracks already skipped as "in library" before the run — added to the
+    // displayed skipped counter so the progress pill reflects them.
+    base_skipped: usize,
 ) {
     *index_map().lock().unwrap() = index_map_vec;
     *last_ctx().lock().unwrap() = Some(DlCtx {
         dest: opts.dest_dir.clone(),
         format: opts.format.clone(),
+        bitrate: opts.bitrate,
         method: opts.name_method,
         threads: opts.threads_per_download,
     });
@@ -521,7 +905,7 @@ async fn run_download(
                 ingest_completed(progress_weak.clone(), track.clone(), abs, provider.clone());
             }
         }
-        let (done, skipped, failed) = (p.downloaded, p.skipped, p.failed);
+        let (done, skipped, failed) = (p.downloaded, p.skipped + base_skipped, p.failed);
         let _ = progress_weak.upgrade_in_event_loop(move |w| {
             w.set_music_dl_done(done as i32);
             w.set_music_dl_skipped(skipped as i32);
@@ -534,7 +918,7 @@ async fn run_download(
 
     let _ = weak.upgrade_in_event_loop(move |w| {
         w.set_music_dl_done(summary.downloaded as i32);
-        w.set_music_dl_skipped(summary.skipped as i32);
+        w.set_music_dl_skipped((summary.skipped + base_skipped) as i32);
         w.set_music_dl_failed(summary.failed.len() as i32);
     });
     set_status(&weak, "done");

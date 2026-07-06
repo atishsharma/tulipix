@@ -1297,6 +1297,14 @@ callback cloud-go-home();
     in-out property <int> music-dl-skipped: 0;
     in-out property <int> music-dl-failed: 0;
     in-out property <string> music-dl-format: "opus";
+    in-out property <int> music-dl-bitrate: 128;   // kbps for lossy formats
+    in-out property <string> music-dl-kind: "";     // track|album|playlist (resolved)
+    in-out property <int> music-dl-total: 0;        // full queue length
+    in-out property <int> music-dl-selected: 0;     // # checked rows
+    in-out property <int> music-dl-queue-page: 0;   // queue page (25/page)
+    in-out property <int> music-dl-queue-pages: 1;
+    in-out property <string> music-dl-sort: "";     // "" | name | length | artist
+    in-out property <int> music-dl-sort-dir: 1;     // 1 asc · 2 desc
     in-out property <string> music-dl-name-method: "Artist - Song";
     in-out property <int> music-dl-parallel: 2;    // concurrent tracks (1–4)
     in-out property <int> music-dl-threads: 2;     // fragments per track (1–8)
@@ -1466,6 +1474,10 @@ callback cloud-go-home();
     callback music-dl-toggle-row(int);
     callback music-dl-select-all(bool);
     callback music-dl-set-format(string);
+    callback music-dl-set-bitrate(string);
+    callback music-dl-clear-all();
+    callback music-dl-set-queue-page(int);
+    callback music-dl-sort-by(string);
     callback music-dl-set-name-method(string);
     callback music-dl-set-parallel(int);
     callback music-dl-set-threads(int);
@@ -2387,6 +2399,14 @@ callback cloud-go-home();
                 dl-skipped <=> root.music-dl-skipped;
                 dl-failed <=> root.music-dl-failed;
                 dl-format <=> root.music-dl-format;
+                dl-bitrate <=> root.music-dl-bitrate;
+                dl-kind <=> root.music-dl-kind;
+                dl-total <=> root.music-dl-total;
+                dl-selected <=> root.music-dl-selected;
+                dl-queue-page <=> root.music-dl-queue-page;
+                dl-queue-pages <=> root.music-dl-queue-pages;
+                dl-sort <=> root.music-dl-sort;
+                dl-sort-dir <=> root.music-dl-sort-dir;
                 dl-name-method <=> root.music-dl-name-method;
                 dl-parallel <=> root.music-dl-parallel;
                 dl-threads <=> root.music-dl-threads;
@@ -2421,6 +2441,10 @@ callback cloud-go-home();
                 dl-toggle-row(i) => { root.music-dl-toggle-row(i); }
                 dl-select-all(a) => { root.music-dl-select-all(a); }
                 dl-set-format(v) => { root.music-dl-set-format(v); }
+                dl-set-bitrate(v) => { root.music-dl-set-bitrate(v); }
+                dl-clear-all() => { root.music-dl-clear-all(); }
+                dl-set-queue-page(p) => { root.music-dl-set-queue-page(p); }
+                dl-sort-by(k) => { root.music-dl-sort-by(k); }
                 dl-set-name-method(v) => { root.music-dl-set-name-method(v); }
                 recent: root.music-recent; most: root.music-most; loved-tiles: root.music-loved;
                 fresh: root.music-fresh; albums: root.music-albums; artists: root.music-artists; genres: root.music-genres;

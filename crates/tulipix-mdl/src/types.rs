@@ -133,6 +133,9 @@ pub struct DownloadOptions {
     pub threads_per_download: usize,
     /// Audio format: opus | m4a | mp3 | flac | wav.
     pub format: String,
+    /// Target bitrate in kbps for lossy formats (opus/m4a/mp3). 0 = yt-dlp
+    /// default. Ignored for lossless (flac/wav).
+    pub bitrate: u32,
     pub name_method: NameMethod,
 }
 
