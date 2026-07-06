@@ -86,10 +86,54 @@ pub struct Progress {
     pub file_name: Option<String>,
 }
 
+/// Filename layout for a downloaded track.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum NameMethod {
+    ArtistSong,   // "Artist - Song"
+    ArtistsSong,  // "Artist1, Artist2 - Song"
+    AlbumSong,    // "Album - Song"
+    Numbered,     // "01 - Artist - Song"
+    SongOnly,     // "Song"
+}
+
+impl NameMethod {
+    /// Match the dropdown label the UI sends.
+    pub fn from_label(label: &str) -> NameMethod {
+        match label {
+            "Artists - Song" => NameMethod::ArtistsSong,
+            "Album - Song" => NameMethod::AlbumSong,
+            "## - Artist - Song" => NameMethod::Numbered,
+            "Song" => NameMethod::SongOnly,
+            _ => NameMethod::ArtistSong,
+        }
+    }
+
+    /// Build the (unsanitized) file stem for a track at 1-based `index`.
+    pub fn stem(self, index: usize, track: &Track) -> String {
+        let primary = track.artists.first().map(String::as_str).unwrap_or("Unknown");
+        let all = track.artists.join(", ");
+        let album = track.album.as_deref().unwrap_or("Unknown Album");
+        match self {
+            NameMethod::ArtistSong => format!("{primary} - {}", track.title),
+            NameMethod::ArtistsSong => format!("{all} - {}", track.title),
+            NameMethod::AlbumSong => format!("{album} - {}", track.title),
+            NameMethod::Numbered => format!("{index:02} - {primary} - {}", track.title),
+            NameMethod::SongOnly => track.title.clone(),
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct DownloadOptions {
     pub dest_dir: std::path::PathBuf,
+    /// Number of tracks fetched concurrently (1–4).
     pub parallelism: usize,
+    /// yt-dlp `--concurrent-fragments N` per track (1–8). Only speeds up
+    /// fragmented (DASH/HLS) streams; a harmless no-op on progressive audio.
+    pub threads_per_download: usize,
+    /// Audio format: opus | m4a | mp3 | flac | wav.
+    pub format: String,
+    pub name_method: NameMethod,
 }
 
 #[derive(Debug, Default)]

@@ -159,6 +159,30 @@ CREATE TABLE IF NOT EXISTS music_video_link (
     video_item_id INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS music_video_link_video_idx ON music_video_link(video_item_id);
+
+-- Downloader (mdl) history. Self-contained: `abs_path` is the play/reveal
+-- target and joins to `items` at play time (no FK — survives a library purge).
+CREATE TABLE IF NOT EXISTS dl_history (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    title         TEXT    NOT NULL,
+    artists       TEXT    NOT NULL,       -- "Main, Second, …"
+    album         TEXT,
+    provider      TEXT,                   -- Spotify | Apple Music | …
+    abs_path      TEXT    NOT NULL,
+    downloaded_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS dl_history_at_idx ON dl_history(downloaded_at DESC);
+
+-- Downloader (mdl) search/resolve history — replayable into the URL field.
+CREATE TABLE IF NOT EXISTS dl_searches (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    url         TEXT    NOT NULL,
+    kind        TEXT    NOT NULL,         -- track | album | playlist
+    title       TEXT,
+    provider    TEXT,
+    searched_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS dl_searches_at_idx ON dl_searches(searched_at DESC);
 "#;
 
 pub async fn apply(pool: &SqlitePool) -> Result<()> {

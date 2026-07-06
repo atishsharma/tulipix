@@ -14,9 +14,33 @@ export struct MusicSongRow {
 // One worker row in the Downloader tab (mdl): a track being fetched.
 export struct DownloaderRow {
     title: string,
+    album: string,
+    artists: [string], // all credited artists — main-artist dropdown model
+    main-artist: string, // currently selected primary
     stage: string,     // queued|searching|downloading|tagging|done|skipped|failed
     percent: float,    // 0-100
     file: string,      // produced filename once done
+    selected: bool,    // checkbox — only selected rows download
+    thumb: image,      // album art preview ("" → note placeholder)
+}
+
+// One row in the Downloader → Download History popup.
+export struct DlHistoryEntry {
+    title: string,
+    artists: string,   // "Main, Second, …"
+    album: string,
+    provider: string,
+    when: string,      // "3h ago"
+    path: string,      // abs file path — play / reveal target
+}
+
+// One row in the Downloader → Search History popup.
+export struct DlSearchEntry {
+    url: string,
+    kind: string,      // track | album | playlist
+    title: string,
+    provider: string,
+    when: string,
 }
 
 // One subscribed podcast shown as a card in the Podcasts grid

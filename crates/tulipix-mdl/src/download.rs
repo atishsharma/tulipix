@@ -4,17 +4,16 @@
 //! provider metadata (title/artist/album + cover art) over yt-dlp's guess.
 
 use crate::manifest::{self, Manifest, ManifestTrack};
-use crate::types::{DownloadOptions, Playlist, Progress, Stage, Summary, Track};
+use crate::types::{DownloadOptions, NameMethod, Playlist, Progress, Stage, Summary, Track};
 use anyhow::{anyhow, bail, Result};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
 
-/// `"NN - Artist, Artist - Title"`, filesystem-safe.
-pub fn track_file_stem(index: usize, track: &Track) -> String {
-    let raw = format!("{:02} - {} - {}", index, track.artists.join(", "), track.title);
-    sanitize_filename::sanitize(raw)
+/// Filesystem-safe file stem for `track` at 1-based `index`, per `method`.
+pub fn track_file_stem(index: usize, track: &Track, method: NameMethod) -> String {
+    sanitize_filename::sanitize(method.stem(index, track))
 }
 
 fn search_query(track: &Track) -> String {
@@ -44,16 +43,25 @@ fn cookie_args() -> Vec<String> {
 /// Download one track's audio into `dest` as Opus. Returns the produced path.
 /// Searches YouTube for the single best match of "artist - title" (per track,
 /// never the source playlist) and extracts audio to Opus via ffmpeg.
-async fn download_audio(track: &Track, index: usize, dest: &Path) -> Result<PathBuf> {
-    let stem = track_file_stem(index, track);
+async fn download_audio(
+    track: &Track,
+    index: usize,
+    dest: &Path,
+    format: &str,
+    method: NameMethod,
+    threads: usize,
+) -> Result<PathBuf> {
+    let stem = track_file_stem(index, track, method);
     let out_tmpl = dest.join(format!("{stem}.%(ext)s"));
     let query = format!("ytsearch1:{}", search_query(track));
     let ffmpeg = tulipix_core::thumbs::tool_bin("ffmpeg");
 
     let mut cmd = tokio::process::Command::new(ytdlp_bin());
     cmd.arg(&query)
-        .args(["-f", "bestaudio/best", "-x", "--audio-format", "opus"])
+        .args(["-f", "bestaudio/best", "-x", "--audio-format", format])
         .args(["--no-playlist", "--no-warnings"])
+        // Threads per download — parallel fragment downloads for this track.
+        .args(["--concurrent-fragments", &threads.max(1).to_string()])
         // Rotate player clients — helps dodge YouTube's "confirm you're not a
         // bot" gate that hits the default web client.
         .args(["--extractor-args", "youtube:player_client=default,tv,android"]);
@@ -83,9 +91,9 @@ async fn download_audio(track: &Track, index: usize, dest: &Path) -> Result<Path
         }
         bail!("yt-dlp: {}", stderr.lines().last().unwrap_or("failed").trim());
     }
-    let path = dest.join(format!("{stem}.opus"));
+    let path = dest.join(format!("{stem}.{format}"));
     if !path.exists() {
-        tracing::warn!(expected = %path.display(), stdout = %String::from_utf8_lossy(&out.stdout), "mdl: expected .opus not produced");
+        tracing::warn!(expected = %path.display(), stdout = %String::from_utf8_lossy(&out.stdout), "mdl: expected output not produced");
         bail!("no audio file produced (ffmpeg missing?)");
     }
     Ok(path)
@@ -170,6 +178,9 @@ where
     let sem = Arc::new(Semaphore::new(opts.parallelism.max(1)));
     // (downloaded, skipped, failed)
     let counters = Arc::new(Mutex::new((0usize, 0usize, Vec::<(Track, String)>::new())));
+    let format = opts.format.clone();
+    let method = opts.name_method;
+    let threads = opts.threads_per_download.max(1);
 
     let mut handles = Vec::new();
     for (i, track) in playlist.tracks.iter().cloned().enumerate() {
@@ -180,6 +191,7 @@ where
         let on_progress = on_progress.clone();
         let counters = counters.clone();
         let manifest = manifest.clone();
+        let format = format.clone();
 
         let already = manifest
             .lock()
@@ -229,7 +241,7 @@ where
             }
 
             emit(Stage::SearchingYoutube, 20.0, "Searching YouTube".into(), None);
-            match download_audio(&track, idx, &dest).await {
+            match download_audio(&track, idx, &dest, &format, method, threads).await {
                 Ok(path) => {
                     emit(Stage::WritingMetadata, 90.0, "Embedding metadata".into(), None);
                     if let Err(e) = write_tags(&path, &track, &client).await {
@@ -278,12 +290,16 @@ mod tests {
             id: "1".into(),
             title: "Song/Name".into(),
             artists: vec!["A".into(), "B".into()],
-            album: None,
+            album: Some("Alb".into()),
             artwork_url: None,
             duration_ms: None,
             source_url: None,
         };
-        assert_eq!(track_file_stem(3, &t), "03 - A, B - SongName");
+        assert_eq!(track_file_stem(3, &t, NameMethod::Numbered), "03 - A - SongName");
+        assert_eq!(track_file_stem(3, &t, NameMethod::ArtistsSong), "A, B - SongName");
+        assert_eq!(track_file_stem(3, &t, NameMethod::AlbumSong), "Alb - SongName");
+        assert_eq!(track_file_stem(3, &t, NameMethod::ArtistSong), "A - SongName");
+        assert_eq!(track_file_stem(3, &t, NameMethod::SongOnly), "SongName");
     }
 
     #[test]
@@ -300,7 +316,7 @@ mod tests {
             .unwrap();
             assert!(!pl.tracks.is_empty());
             let dir = std::env::temp_dir().join("mdl-e2e");
-            let opts = DownloadOptions { dest_dir: dir, parallelism: 1 };
+            let opts = DownloadOptions { dest_dir: dir, parallelism: 1, threads_per_download: 2, format: "opus".into(), name_method: crate::types::NameMethod::Numbered };
             let cancel = Arc::new(AtomicBool::new(false));
             let sum = download_playlist(&client, &pl, &opts, cancel, |_| {}).await;
             assert!(sum.downloaded + sum.skipped >= 1);

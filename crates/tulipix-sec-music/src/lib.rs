@@ -2123,6 +2123,13 @@ pub fn audiobook_pick_cover(weak: slint::Weak<MainWindow>, folder: String) {
 /// Stream an arbitrary audio URL via a fresh headless mpv (podcast episodes).
 /// Mirrors `play_music_at` minus the library-position bookkeeping.
 pub fn play_music_url(w: &MainWindow, url: &str, title: &str) {
+    play_music_file(w, url, title, "Podcast");
+}
+
+/// Play an arbitrary local file / URL through the music player with an explicit
+/// second-line label (`sub`). Backs both podcast streams and the Downloader's
+/// "Play in app" from history.
+pub fn play_music_file(w: &MainWindow, url: &str, title: &str, sub: &str) {
     if let Ok(mut g) = yt_cur_audio().lock() { g.clear(); }
     w.set_music_yt_now_video(false);
     let my_gen = MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
@@ -2161,7 +2168,7 @@ pub fn play_music_url(w: &MainWindow, url: &str, title: &str) {
         tracing::error!(error = %e, "mpv stream launch failed"); return;
     }
     w.set_music_np_title(title.into());
-    w.set_music_np_sub("Podcast".into());
+    w.set_music_np_sub(sub.into());
     w.set_music_np_album("".into());      // no stale artist·album on the second line
     w.set_music_np_art(slint::Image::default());
     w.set_music_radio_np_uuid("".into()); // a non-radio stream ends any LIVE state

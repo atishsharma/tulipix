@@ -1,14 +1,53 @@
 // Music section — YouTube Music language: near-black canvas, rounded album
 // art carousels, a compact now-playing bar pinned to the bottom. Pink accent.
 import { PhotoTile } from "section_page.slint";
-import { ScrollView, ComboBox } from "std-widgets.slint";
+import { ScrollView, ComboBox, CheckBox } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
 import { MicBtn } from "voice.slint";
 import { HdrChip, CountPill } from "section_header.slint";
 import { MusicTheme } from "theme.slint";
 import { Theme } from "tokens.slint";
-import { MusicSongRow, DownloaderRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
+import { MusicSongRow, DownloaderRow, DlHistoryEntry, DlSearchEntry, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
 import { LineEdit } from "std-widgets.slint";
+import { PanelFrost, ModalFrost } from "frost.slint";
+
+// Downloader — compact − value + stepper (parallel downloads / threads).
+component DlStepper inherits Rectangle {
+    in property <string> label;
+    in property <int> value;
+    in property <int> min: 1;
+    in property <int> max: 8;
+    callback changed(int);
+    height: 40px; border-radius: 12px;
+    background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+    HorizontalLayout { padding-left: 14px; padding-right: 8px; spacing: 10px;
+        VerticalLayout { alignment: center; Text { text: root.label; color: MusicTheme.fg-mute; font-size: 12px; } }
+        Rectangle { horizontal-stretch: 1; min-width: 4px; }
+        VerticalLayout { alignment: center; Rectangle { width: 28px; height: 28px; border-radius: 8px;
+            background: dec.has-hover ? MusicTheme.hov2 : MusicTheme.hov;
+            Text { text: "−"; color: root.value > root.min ? MusicTheme.fg : MusicTheme.fg-mute; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
+            dec := TouchArea { mouse-cursor: pointer; clicked => { if (root.value > root.min) { root.changed(root.value - 1); } } } } }
+        VerticalLayout { alignment: center; Text { text: root.value; color: MusicTheme.fg; font-size: 15px; font-weight: 800; min-width: 20px; horizontal-alignment: center; } }
+        VerticalLayout { alignment: center; Rectangle { width: 28px; height: 28px; border-radius: 8px;
+            background: inc.has-hover ? MusicTheme.hov2 : MusicTheme.hov;
+            Text { text: "+"; color: root.value < root.max ? MusicTheme.fg : MusicTheme.fg-mute; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; }
+            inc := TouchArea { mouse-cursor: pointer; clicked => { if (root.value < root.max) { root.changed(root.value + 1); } } } } }
+    }
+}
+
+// Downloader — a rounded progress pill with a color-changing gradient fill.
+component DlPill inherits Rectangle {
+    in property <float> frac;   // 0..1
+    in property <color> fill;
+    in property <string> label;
+    height: 32px; border-radius: 16px; background: MusicTheme.surf0; clip: true;
+    Rectangle { x: 0; y: 0; height: 100%;
+        width: parent.width * Math.clamp(root.frac, 0, 1);
+        background: @linear-gradient(90deg, root.fill.darker(0.1), root.fill);
+        animate width { duration: 320ms; easing: ease-out; } }
+    Text { text: root.label; color: MusicTheme.fg; font-size: 12px; font-weight: 800;
+        horizontal-alignment: center; vertical-alignment: center; }
+}
 
 component AlbumCard inherits Rectangle {
     in property <image> thumb;
@@ -1503,12 +1542,40 @@ export component MusicPage inherits Rectangle {
     in-out property <int> dl-done: 0;
     in-out property <int> dl-skipped: 0;
     in-out property <int> dl-failed: 0;
+    in-out property <string> dl-format: "opus";        // opus|m4a|mp3|flac|wav
+    in-out property <string> dl-name-method: "Artist - Song";
+    in-out property <int> dl-parallel: 2;              // concurrent tracks (1–4)
+    in-out property <int> dl-threads: 2;               // fragments per track (1–8)
+    in-out property <[DlHistoryEntry]> dl-history: [];
+    in-out property <int> dl-history-page: 0;
+    in-out property <int> dl-history-pages: 1;
+    in-out property <bool> dl-history-open: false;
+    in-out property <[DlSearchEntry]> dl-searches: [];
+    in-out property <int> dl-search-page: 0;
+    in-out property <int> dl-search-pages: 1;
+    in-out property <bool> dl-search-open: false;
+    // Bulk main-artist bar: deduped artist union across the queue + selection.
+    in-out property <[string]> dl-all-artists: [];
+    in-out property <string> dl-bulk-artist: "";
     callback dl-url-changed(string);
     callback dl-pick-folder();
     callback dl-resolve();
     callback dl-download();
     callback dl-cancel();
     callback dl-refresh-library();
+    callback dl-toggle-row(int);
+    callback dl-select-all(bool);
+    callback dl-set-format(string);
+    callback dl-set-name-method(string);
+    callback dl-set-parallel(int);
+    callback dl-set-threads(int);
+    callback dl-set-main-artist(int, string);
+    callback dl-bulk-main-artist(string, string);
+    callback dl-open-history(int);
+    callback dl-open-searches(int);
+    callback dl-history-play(string, string, string);
+    callback dl-history-reveal(string);
+    callback dl-use-search(string);
     in-out property <string> query: "";          // search box text
     in property <int> sleep-min: 0;              // active sleep-timer minutes (0 = off)
     // Dashboard rails (np.p4.music.dashboard) + browse groups (np.p4.music.browse).
@@ -3999,56 +4066,213 @@ export component MusicPage inherits Rectangle {
             }
         }
 
-        // Downloader tab (mdl) — independent of the library tiles.
-        if root.view == "mymusic" && root.lib-tab == "downloader": ScrollView {
+        // Downloader tab (mdl) — card interface. Rectangle wrapper so the
+        // history/search popups overlay the scroll content (z-order stacking).
+        if root.view == "mymusic" && root.lib-tab == "downloader": Rectangle {
+          ScrollView {
             vertical-stretch: 1; horizontal-stretch: 1;
             VerticalLayout {
                 alignment: start; padding-left: 36px; padding-right: 36px;
-                padding-top: 22px; padding-bottom: 24px; spacing: 18px;
-                // Header.
-                Text { text: "Music Downloader"; color: MusicTheme.fg; font-size: 22px; font-weight: 800; }
-                Text { text: "Paste a Spotify, Apple Music or YouTube Music URL. Tracks download into your library with metadata."; color: MusicTheme.fg-dim2; font-size: 13px; }
-                // URL row + provider badge.
-                HorizontalLayout { spacing: 10px;
-                    Rectangle { horizontal-stretch: 1; height: 44px; border-radius: 12px; background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
-                        HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 8px;
-                            VerticalLayout { alignment: center; AppIcon { source: Icons.clipboard; tint: MusicTheme.fg-mute; width: 15px; height: 15px; } }
-                            urlbox := TextInput { vertical-alignment: center; color: MusicTheme.fg; font-size: 14px;
-                                text <=> root.dl-url;
-                                edited => { root.dl-url-changed(self.text); }
-                                accepted => { root.dl-resolve(); } } } }
-                    if root.dl-provider-badge != "": Rectangle { min-width: 120px; height: 44px; border-radius: 12px; background: #22c55e22; border-width: 1px; border-color: #22c55e80;
-                        HorizontalLayout { alignment: center; spacing: 6px;
-                            VerticalLayout { alignment: center; AppIcon { source: Icons.check; tint: #22c55e; width: 14px; height: 14px; } }
-                            VerticalLayout { alignment: center; Text { text: root.dl-provider-badge; color: #22c55e; font-size: 13px; font-weight: 700; } } } }
-                    if root.dl-url != "" && root.dl-provider-badge == "": Rectangle { min-width: 120px; height: 44px; border-radius: 12px; background: #ef444422; border-width: 1px; border-color: #ef444480;
-                        HorizontalLayout { alignment: center; VerticalLayout { alignment: center; Text { text: "Unsupported"; color: #ef4444; font-size: 13px; font-weight: 700; } } } }
-                }
-                // Folder row.
-                HorizontalLayout { spacing: 10px;
-                    VerticalLayout { alignment: center; Text { text: "Save to"; color: MusicTheme.fg-mute; font-size: 13px; } }
-                    Rectangle { horizontal-stretch: 1; height: 38px; border-radius: 10px; background: MusicTheme.surf1;
-                        HorizontalLayout { padding-left: 12px; padding-right: 12px;
-                            VerticalLayout { alignment: center; Text { text: root.dl-dest; color: MusicTheme.fg-dim2; font-size: 12px; overflow: elide; } } } }
-                    MusicTab { icon: Icons.folder; label: "Change"; has-grad: true; tint: #f59e0b; grad: @linear-gradient(120deg, #f59e0b, #f97316); clicked => { root.dl-pick-folder(); } } }
-                // Actions.
-                HorizontalLayout { spacing: 10px; alignment: start;
-                    MusicTab { icon: Icons.search; label: "Resolve"; has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); clicked => { root.dl-resolve(); } }
-                    MusicTab { icon: Icons.download; label: "Download"; has-grad: true; tint: #22c55e; grad: @linear-gradient(120deg, #22c55e, #16a34a); clicked => { root.dl-download(); } }
-                    MusicTab { icon: Icons.x; label: "Cancel"; has-grad: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f43f5e); clicked => { root.dl-cancel(); } }
+                padding-top: 22px; padding-bottom: 24px; spacing: 16px;
+                // Header — icon + title + history buttons.
+                HorizontalLayout { spacing: 12px;
+                    VerticalLayout { alignment: center; Rectangle { width: 40px; height: 40px; border-radius: 12px;
+                        background: @linear-gradient(135deg, #8b5cf6, #6366f1);
+                        AppIcon { source: Icons.download; tint: #ffffff; width: 20px; height: 20px; } } }
+                    VerticalLayout { alignment: center; spacing: 1px;
+                        Text { text: "Music Downloader"; color: MusicTheme.fg; font-size: 22px; font-weight: 800; }
+                        Text { text: "Paste a Spotify, Apple Music or YouTube Music link — tracks land in your library with full metadata."; color: MusicTheme.fg-dim2; font-size: 12px; } }
                     Rectangle { horizontal-stretch: 1; }
-                    VerticalLayout { alignment: center; Text {
-                        text: "✓ " + root.dl-done + "   ⤼ " + root.dl-skipped + "   ✗ " + root.dl-failed + "   ·   " + root.dl-status;
-                        color: MusicTheme.fg-dim2; font-size: 12px; } } }
-                // Worker rows.
-                for row in root.dl-rows: Rectangle { height: 46px; border-radius: 10px; background: MusicTheme.surf1; clip: true;
-                    Rectangle { x: 0; y: 0; height: 100%; width: parent.width * (row.percent / 100); background: #8b5cf620; }
-                    HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 10px;
-                        VerticalLayout { alignment: center; horizontal-stretch: 1; Text { text: row.title; color: MusicTheme.fg; font-size: 13px; overflow: elide; } }
-                        VerticalLayout { alignment: center; Text { text: row.stage; color: MusicTheme.fg-mute; font-size: 12px; } }
-                        VerticalLayout { alignment: center; Text { text: Math.round(row.percent) + "%"; color: MusicTheme.fg-dim2; font-size: 12px; min-width: 40px; horizontal-alignment: right; } } } }
+                    VerticalLayout { alignment: center; MusicTab { icon: Icons.clock; label: "History"; clicked => { root.dl-history-open = true; root.dl-open-history(0); } } }
+                    VerticalLayout { alignment: center; MusicTab { icon: Icons.search; label: "Searches"; clicked => { root.dl-search-open = true; root.dl-open-searches(0); } } }
+                }
+
+                // ── Source card ──────────────────────────────────────────────
+                PanelFrost { accent: #8b5cf6;
+                    VerticalLayout { padding: 16px; spacing: 12px;
+                        HorizontalLayout { spacing: 10px;
+                            Rectangle { horizontal-stretch: 1; height: 44px; border-radius: 12px; background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                                HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 8px;
+                                    VerticalLayout { alignment: center; AppIcon { source: Icons.clipboard; tint: MusicTheme.fg-mute; width: 15px; height: 15px; } }
+                                    urlbox := TextInput { vertical-alignment: center; color: MusicTheme.fg; font-size: 14px;
+                                        text <=> root.dl-url;
+                                        edited => { root.dl-url-changed(self.text); }
+                                        accepted => { root.dl-resolve(); } } } }
+                            if root.dl-provider-badge != "": Rectangle { min-width: 120px; height: 44px; border-radius: 12px; background: #22c55e22; border-width: 1px; border-color: #22c55e80;
+                                HorizontalLayout { alignment: center; spacing: 6px;
+                                    VerticalLayout { alignment: center; AppIcon { source: Icons.check; tint: #22c55e; width: 14px; height: 14px; } }
+                                    VerticalLayout { alignment: center; Text { text: root.dl-provider-badge; color: #22c55e; font-size: 13px; font-weight: 700; } } } }
+                            if root.dl-url != "" && root.dl-provider-badge == "": Rectangle { min-width: 120px; height: 44px; border-radius: 12px; background: #ef444422; border-width: 1px; border-color: #ef444480;
+                                HorizontalLayout { alignment: center; VerticalLayout { alignment: center; Text { text: "Unsupported"; color: #ef4444; font-size: 13px; font-weight: 700; } } } }
+                        }
+                        HorizontalLayout { spacing: 10px;
+                            VerticalLayout { alignment: center; Text { text: "Save to"; color: MusicTheme.fg-mute; font-size: 13px; } }
+                            Rectangle { horizontal-stretch: 1; height: 38px; border-radius: 10px; background: MusicTheme.surf1;
+                                HorizontalLayout { padding-left: 12px; padding-right: 12px;
+                                    VerticalLayout { alignment: center; Text { text: root.dl-dest; color: MusicTheme.fg-dim2; font-size: 12px; overflow: elide; } } } }
+                            MusicTab { icon: Icons.folder; label: "Change"; has-grad: true; tint: #f59e0b; grad: @linear-gradient(120deg, #f59e0b, #f97316); clicked => { root.dl-pick-folder(); } } }
+                        HorizontalLayout { spacing: 10px; alignment: start;
+                            MusicTab { icon: Icons.search; label: "Resolve"; has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); clicked => { root.dl-resolve(); } }
+                            MusicTab { icon: Icons.download; label: "Download"; has-grad: true; tint: #22c55e; grad: @linear-gradient(120deg, #22c55e, #16a34a); clicked => { root.dl-download(); } }
+                            MusicTab { icon: Icons.x; label: "Cancel"; has-grad: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f43f5e); clicked => { root.dl-cancel(); } }
+                            Rectangle { horizontal-stretch: 1; }
+                            VerticalLayout { alignment: center; Text {
+                                text: "✓ " + root.dl-done + "   ⤼ " + root.dl-skipped + "   ✗ " + root.dl-failed + "   ·   " + root.dl-status;
+                                color: MusicTheme.fg-dim2; font-size: 12px; } } }
+                    }
+                }
+
+                // ── Options card ─────────────────────────────────────────────
+                PanelFrost { accent: #6366f1;
+                    VerticalLayout { padding: 16px; spacing: 12px;
+                        HorizontalLayout { spacing: 12px;
+                            VerticalLayout { alignment: center; Text { text: "Format"; color: MusicTheme.fg-mute; font-size: 12px; } }
+                            VerticalLayout { alignment: center; ComboBox {
+                                model: ["opus", "m4a", "mp3", "flac", "wav"];
+                                current-value: root.dl-format;
+                                selected(v) => { root.dl-set-format(v); } } }
+                            VerticalLayout { alignment: center; Text { text: "Name"; color: MusicTheme.fg-mute; font-size: 12px; } }
+                            VerticalLayout { alignment: center; ComboBox {
+                                model: ["Artist - Song", "Artists - Song", "Album - Song", "## - Artist - Song", "Song"];
+                                current-value: root.dl-name-method;
+                                selected(v) => { root.dl-set-name-method(v); } } }
+                            Rectangle { horizontal-stretch: 1; min-width: 4px; }
+                            MusicTab { icon: Icons.check; label: "All"; clicked => { root.dl-select-all(true); } }
+                            MusicTab { icon: Icons.x; label: "None"; clicked => { root.dl-select-all(false); } }
+                        }
+                        HorizontalLayout { spacing: 12px;
+                            DlStepper { horizontal-stretch: 1; label: "Parallel downloads"; value: root.dl-parallel; min: 1; max: 4; changed(v) => { root.dl-set-parallel(v); } }
+                            DlStepper { horizontal-stretch: 1; label: "Threads / download"; value: root.dl-threads; min: 1; max: 8; changed(v) => { root.dl-set-threads(v); } }
+                        }
+                    }
+                }
+
+                // ── Queue card ───────────────────────────────────────────────
+                if root.dl-rows.length > 0: PanelFrost { accent: #22c55e;
+                    VerticalLayout { padding: 16px; spacing: 12px;
+                        // Overall progress pill (album / playlist).
+                        DlPill {
+                            frac: root.dl-rows.length > 0 ? 1.0 * (root.dl-done + root.dl-skipped) / root.dl-rows.length : 0;
+                            fill: root.dl-rows.length > 0 && (root.dl-done + root.dl-skipped) >= root.dl-rows.length ? #22c55e : #8b5cf6;
+                            label: (root.dl-done + root.dl-skipped) + " / " + root.dl-rows.length + " tracks"
+                                + (root.dl-failed > 0 ? "  ·  " + root.dl-failed + " failed" : "");
+                        }
+                        // Bulk main-artist bar.
+                        if root.dl-all-artists.length > 0: HorizontalLayout { spacing: 8px;
+                            VerticalLayout { alignment: center; Text { text: "Main artist"; color: MusicTheme.fg-mute; font-size: 12px; } }
+                            VerticalLayout { alignment: center; ComboBox {
+                                model: root.dl-all-artists;
+                                current-value: root.dl-bulk-artist;
+                                selected(v) => { root.dl-bulk-artist = v; }
+                            } }
+                            MusicTab { icon: Icons.disc; label: "Per Album"; clicked => { root.dl-bulk-main-artist("album", root.dl-bulk-artist); } }
+                            MusicTab { icon: Icons.list-music; label: "Per Playlist"; clicked => { root.dl-bulk-main-artist("playlist", root.dl-bulk-artist); } }
+                            Rectangle { horizontal-stretch: 1; }
+                        }
+                        // Per-track cards.
+                        for row[i] in root.dl-rows: card := Rectangle {
+                            height: 60px; border-radius: 12px; background: MusicTheme.surf1;
+                            border-width: 1px; border-color: MusicTheme.line; clip: true;
+                            property <color> sc:
+                                row.stage == "done" ? #22c55e :
+                                row.stage == "skipped" ? #64748b :
+                                row.stage == "queued" ? #64748b :
+                                row.percent >= 100 ? #ef4444 : #8b5cf6;
+                            // Color-changing fill behind the content.
+                            Rectangle { x: 0; y: 0; height: 100%;
+                                width: parent.width * (row.percent / 100);
+                                background: card.sc; opacity: 0.16;
+                                animate width { duration: 300ms; easing: ease-out; } }
+                            HorizontalLayout { padding-left: 10px; padding-right: 14px; spacing: 10px;
+                                VerticalLayout { alignment: center; CheckBox { checked: row.selected; toggled => { root.dl-toggle-row(i); } } }
+                                VerticalLayout { alignment: center; Rectangle { width: 40px; height: 40px; border-radius: 8px; background: MusicTheme.surf-thumb; clip: true;
+                                    if row.thumb.width > 0: Image { source: row.thumb; width: 40px; height: 40px; image-fit: cover; }
+                                    if row.thumb.width <= 0: AppIcon { source: Icons.music; tint: MusicTheme.fg-mute; width: 16px; height: 16px; } } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
+                                    Text { text: row.title; color: MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; }
+                                    Text { text: row.album != "" ? row.album : row.file; color: MusicTheme.fg-dim2; font-size: 11px; overflow: elide; } }
+                                if row.artists.length > 1: VerticalLayout { alignment: center; ComboBox {
+                                    model: row.artists; current-value: row.main-artist;
+                                    selected(v) => { root.dl-set-main-artist(i, v); } } }
+                                if row.artists.length <= 1: VerticalLayout { alignment: center; Text { text: row.main-artist; color: MusicTheme.fg-mute; font-size: 12px; } }
+                                VerticalLayout { alignment: center; Text { text: row.stage; color: card.sc; font-size: 11px; font-weight: 700; } }
+                                VerticalLayout { alignment: center; Text { text: Math.round(row.percent) + "%"; color: MusicTheme.fg-dim2; font-size: 11px; min-width: 36px; horizontal-alignment: right; } }
+                            }
+                        }
+                    }
+                }
                 if root.dl-rows.length == 0: Text { text: "No tracks yet — resolve a URL to preview, then download."; color: MusicTheme.fg-dim2; font-size: 13px; }
             }
+          }
+
+          // ── Download History popup ─────────────────────────────────────────
+          if root.dl-history-open: Rectangle { background: #00000099;
+              TouchArea { clicked => { root.dl-history-open = false; } }
+              ModalFrost { accent: #8b5cf6;
+                  width: Math.min(760px, parent.width - 80px);
+                  height: Math.min(600px, parent.height - 80px);
+                  x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                  TouchArea {} // swallow clicks inside the modal
+                  VerticalLayout { padding: 22px; spacing: 14px;
+                      HorizontalLayout { spacing: 10px;
+                          VerticalLayout { alignment: center; AppIcon { source: Icons.clock; tint: MusicTheme.fg; width: 18px; height: 18px; } }
+                          VerticalLayout { alignment: center; Text { text: "Download History"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; } }
+                          Rectangle { horizontal-stretch: 1; }
+                          MusicTab { icon: Icons.x; label: "Close"; clicked => { root.dl-history-open = false; } } }
+                      ScrollView { vertical-stretch: 1;
+                          VerticalLayout { spacing: 6px;
+                              if root.dl-history.length == 0: Text { text: "Nothing downloaded yet."; color: MusicTheme.fg-dim2; font-size: 13px; }
+                              for e[i] in root.dl-history: Rectangle { height: 54px; border-radius: 10px; background: MusicTheme.surf1;
+                                  HorizontalLayout { padding-left: 12px; padding-right: 10px; spacing: 10px;
+                                      VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
+                                          Text { text: e.title; color: MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; }
+                                          Text { text: e.artists + (e.album != "" ? "  ·  " + e.album : "") + "  ·  " + e.when; color: MusicTheme.fg-dim2; font-size: 11px; overflow: elide; } }
+                                      MusicTab { icon: Icons.folder-open; label: "Open"; clicked => { root.dl-history-reveal(e.path); } }
+                                      MusicTab { icon: Icons.play; label: "Play"; has-grad: true; tint: #22c55e; grad: @linear-gradient(120deg, #22c55e, #16a34a); clicked => { root.dl-history-play(e.path, e.title, e.artists); } }
+                                  } }
+                          } }
+                      HorizontalLayout { spacing: 10px; alignment: center;
+                          MusicTab { icon: Icons.chevron-left; label: "Prev"; clicked => { root.dl-open-history(root.dl-history-page - 1); } }
+                          VerticalLayout { alignment: center; Text { text: (root.dl-history-page + 1) + " / " + root.dl-history-pages; color: MusicTheme.fg-dim2; font-size: 12px; } }
+                          MusicTab { icon: Icons.chevron-right; label: "Next"; clicked => { root.dl-open-history(root.dl-history-page + 1); } } }
+                  }
+              }
+          }
+
+          // ── Search History popup ───────────────────────────────────────────
+          if root.dl-search-open: Rectangle { background: #00000099;
+              TouchArea { clicked => { root.dl-search-open = false; } }
+              ModalFrost { accent: #6366f1;
+                  width: Math.min(760px, parent.width - 80px);
+                  height: Math.min(600px, parent.height - 80px);
+                  x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                  TouchArea {}
+                  VerticalLayout { padding: 22px; spacing: 14px;
+                      HorizontalLayout { spacing: 10px;
+                          VerticalLayout { alignment: center; AppIcon { source: Icons.search; tint: MusicTheme.fg; width: 18px; height: 18px; } }
+                          VerticalLayout { alignment: center; Text { text: "Search History"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; } }
+                          Rectangle { horizontal-stretch: 1; }
+                          MusicTab { icon: Icons.x; label: "Close"; clicked => { root.dl-search-open = false; } } }
+                      ScrollView { vertical-stretch: 1;
+                          VerticalLayout { spacing: 6px;
+                              if root.dl-searches.length == 0: Text { text: "No searches yet."; color: MusicTheme.fg-dim2; font-size: 13px; }
+                              for e[i] in root.dl-searches: Rectangle { height: 54px; border-radius: 10px; background: MusicTheme.surf1;
+                                  HorizontalLayout { padding-left: 12px; padding-right: 10px; spacing: 10px;
+                                      VerticalLayout { alignment: center; Rectangle { width: 62px; height: 22px; border-radius: 11px; background: #6366f133; border-width: 1px; border-color: #6366f180;
+                                          Text { text: e.kind; color: #818cf8; font-size: 10px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
+                                      VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
+                                          Text { text: e.title != "" ? e.title : e.url; color: MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; }
+                                          Text { text: (e.provider != "" ? e.provider + "  ·  " : "") + e.when; color: MusicTheme.fg-dim2; font-size: 11px; overflow: elide; } }
+                                      MusicTab { icon: Icons.download; label: "Use"; has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); clicked => { root.dl-url = e.url; root.dl-url-changed(e.url); root.dl-use-search(e.url); root.dl-search-open = false; } }
+                                  } }
+                          } }
+                      HorizontalLayout { spacing: 10px; alignment: center;
+                          MusicTab { icon: Icons.chevron-left; label: "Prev"; clicked => { root.dl-open-searches(root.dl-search-page - 1); } }
+                          VerticalLayout { alignment: center; Text { text: (root.dl-search-page + 1) + " / " + root.dl-search-pages; color: MusicTheme.fg-dim2; font-size: 12px; } }
+                          MusicTab { icon: Icons.chevron-right; label: "Next"; clicked => { root.dl-open-searches(root.dl-search-page + 1); } } }
+                  }
+              }
+          }
         }
 
         if root.view == "mymusic" && root.lib-tab != "downloader" && tiles.length > 0: libscroll := ScrollView {

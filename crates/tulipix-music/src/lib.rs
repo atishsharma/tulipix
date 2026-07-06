@@ -23,6 +23,7 @@ pub mod dashboard;
 pub mod mini_player;
 pub mod motion;
 pub mod sidebar_collapse;
+pub mod dl_history;
 pub mod dr_meter;
 pub mod embeddings;
 pub mod eq;

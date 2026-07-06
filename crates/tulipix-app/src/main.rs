@@ -1464,14 +1464,75 @@ fn main() -> Result<()> {
                 let url = win.get_music_dl_url().to_string();
                 let dest_s = win.get_music_dl_dest().to_string();
                 let dest = if dest_s.is_empty() { mdl::default_music_dir() } else { std::path::PathBuf::from(dest_s) };
-                mdl::start_download(win.as_weak(), url, dest);
+                let format = win.get_music_dl_format().to_string();
+                let name_method = win.get_music_dl_name_method().to_string();
+                let parallel = win.get_music_dl_parallel();
+                let threads = win.get_music_dl_threads();
+                mdl::start_download(win.as_weak(), url, dest, format, name_method, parallel, threads);
             }
         }
     });
     window.on_music_dl_cancel(move || { mdl::cancel(); });
+    window.on_music_dl_toggle_row({
+        let w = window.as_weak();
+        move |i| { if let Some(win) = w.upgrade() { mdl::toggle_row(win.as_weak(), i); } }
+    });
+    window.on_music_dl_select_all({
+        let w = window.as_weak();
+        move |all| { if let Some(win) = w.upgrade() { mdl::select_all(win.as_weak(), all); } }
+    });
+    window.on_music_dl_set_format({
+        let w = window.as_weak();
+        move |v| { if let Some(win) = w.upgrade() { win.set_music_dl_format(v); } }
+    });
+    window.on_music_dl_set_name_method({
+        let w = window.as_weak();
+        move |v| { if let Some(win) = w.upgrade() { win.set_music_dl_name_method(v); } }
+    });
     window.on_music_dl_refresh_library({
         let w = window.as_weak();
         move || { if let Some(win) = w.upgrade() { refresh_library_silent(&win); } }
+    });
+    window.on_music_dl_set_parallel({
+        let w = window.as_weak();
+        move |v| { if let Some(win) = w.upgrade() { win.set_music_dl_parallel(v.clamp(1, 4)); } }
+    });
+    window.on_music_dl_set_threads({
+        let w = window.as_weak();
+        move |v| { if let Some(win) = w.upgrade() { win.set_music_dl_threads(v.clamp(1, 8)); } }
+    });
+    window.on_music_dl_set_main_artist({
+        let w = window.as_weak();
+        move |i, a| { if let Some(win) = w.upgrade() { mdl::set_main_artist(win.as_weak(), i, a.to_string()); } }
+    });
+    window.on_music_dl_bulk_main_artist({
+        let w = window.as_weak();
+        move |scope, a| { if let Some(win) = w.upgrade() { mdl::bulk_main_artist(win.as_weak(), scope.to_string(), a.to_string()); } }
+    });
+    window.on_music_dl_open_history({
+        let w = window.as_weak();
+        move |page| { if let Some(win) = w.upgrade() { mdl::load_history(win.as_weak(), page); } }
+    });
+    window.on_music_dl_open_searches({
+        let w = window.as_weak();
+        move |page| { if let Some(win) = w.upgrade() { mdl::load_searches(win.as_weak(), page); } }
+    });
+    window.on_music_dl_history_play({
+        let w = window.as_weak();
+        move |path, title, sub| { if let Some(win) = w.upgrade() { mdl::play_history(&win, path.to_string(), title.to_string(), sub.to_string()); } }
+    });
+    window.on_music_dl_history_reveal(move |path| {
+        let p = std::path::PathBuf::from(path.to_string());
+        if let Err(e) = tulipix_platform::fm::reveal_in_file_manager(&p) {
+            tracing::error!(error = %e, "mdl: reveal failed");
+        }
+    });
+    window.on_music_dl_use_search({
+        let w = window.as_weak();
+        move |url| { if let Some(win) = w.upgrade() {
+            win.set_music_dl_url(url.clone());
+            win.set_music_dl_provider_badge(mdl::detect(&url).into());
+        } }
     });
     // Rating (np.p4.music.rating) — loved + 1–5 stars on the current track.
     let w = window.as_weak();
