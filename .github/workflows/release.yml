@@ -307,18 +307,23 @@ jobs:
 
             ### Music Downloader
             - **Direct-to-library ingest** — downloaded tracks appear instantly with full metadata and cover art; no manual refresh or restart.
-            - **Highest-quality cover art for every provider** — Spotify now embeds the largest available source (was a tiny thumbnail), Apple Music pulls 3000×3000, and covers keep their real image format.
-            - **Pick the main artist** — choose the primary artist per track/album/playlist; the library credits only that artist while the full credit list stays in the file tags.
-            - **Per-track retry** — each track auto-retries up to 3×, and failed rows get a one-click **Retry** button plus color-coded status pills (done / failed / skipped).
+            - **Real per-track cover art** — album/playlist tracks now fetch each track's own release cover (streamed into the queue as it resolves) instead of reusing one shared thumbnail; art is cached on disk so re-resolving a link never re-downloads it.
+            - **Highest-quality covers for every provider** — Spotify embeds the largest available source, Apple Music pulls 3000×3000, covers keep their real image format.
+            - **Pick the main artist** — set the primary artist per track, or bulk-apply per album / per playlist; the library credits only that artist while the full credit list stays in the file tags.
+            - **Bitrate selection** (128–320 kbps) alongside format (opus/m4a/mp3/flac/wav) and file-naming templates.
+            - **"In Library" skip** — tracks you already own aren't downloaded again.
+            - **Sort & paginate the queue** — order by name, length or artist (ascending/descending); large playlists paginate at 25/page.
+            - **Per-track retry** — each track auto-retries up to 3×; failed rows get a one-click **Retry** and color-coded status pills (done / failed / skipped / in library).
             - **Download & search history** with in-app play and "open in file manager".
-            - Configurable parallel downloads and threads-per-download; live CLI/activity view.
+            - Configurable parallel downloads and threads-per-download; live output/activity view; theme-aware UI polished for light, dark and OLED.
 
             ### Player & Library
-            - Play-from-history now shows cover art and links the title/artist to the correct album/artist page.
-            - Equalizer button moved beside volume; **every** player button now has a hover tooltip.
+            - Play-from-history shows cover art and links the title/artist to the correct album/artist page.
+            - Equalizer button beside volume; **every** player button has a hover tooltip.
             - Live delete-sync: removing files from watched (and newly-added) folders updates the library without a restart.
 
             ### Packaging
             - App icon embedded across all platforms — Windows exe + installer, macOS `.app`, and Linux `.desktop`/hicolor launchers — so it no longer looks like a generic app.
+            - Fully self-contained builds: ffmpeg, yt-dlp, mpv, rclone, whisper, exiftool all bundled.
 
             ---
