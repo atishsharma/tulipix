@@ -53,6 +53,20 @@ fn index_map() -> &'static Mutex<Vec<usize>> {
     INDEX_MAP.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// Options + destination of the last download run, so per-row Retry can rebuild
+/// the same pipeline for a single failed track.
+#[derive(Clone)]
+struct DlCtx {
+    dest: PathBuf,
+    format: String,
+    method: NameMethod,
+    threads: usize,
+}
+static LAST_CTX: OnceLock<Mutex<Option<DlCtx>>> = OnceLock::new();
+fn last_ctx() -> &'static Mutex<Option<DlCtx>> {
+    LAST_CTX.get_or_init(|| Mutex::new(None))
+}
+
 /// Rolling CLI/activity log for the downloader — what it's doing in the
 /// background. Cleared on each new download and empty at app start.
 static CLI_LOG: OnceLock<Mutex<String>> = OnceLock::new();
@@ -373,7 +387,6 @@ pub fn start_download(
             set_status(&weak, "nothing selected");
             return;
         }
-        *index_map().lock().unwrap() = selected.clone();
         let tracks: Vec<Track> = selected
             .iter()
             .zip(mains.iter())
@@ -384,12 +397,7 @@ pub fn start_download(
             })
             .collect();
         let filtered = Playlist { tracks: tracks.clone(), ..playlist.clone() };
-        // Metadata used by the completion ingest (indexed by filtered position).
-        let ingest_tracks = tracks;
         let provider = playlist.provider.display_name().to_string();
-
-        set_status(&weak, "downloading");
-        let client = reqwest::Client::new();
         let opts = DownloadOptions {
             dest_dir: dest.clone(),
             parallelism: parallel,
@@ -397,73 +405,139 @@ pub fn start_download(
             format,
             name_method: method,
         };
-        let progress_weak = weak.clone();
-        let dest_for_ingest = dest.clone();
-        let on_progress = move |p: Progress| {
-            // Map the filtered worker index back to its full-list row.
-            let row_idx = index_map()
-                .lock()
-                .unwrap()
-                .get(p.track_index.saturating_sub(1))
-                .copied();
-            if let Some(ri) = row_idx {
-                let mut r = rows().lock().unwrap();
-                if let Some(row) = r.get_mut(ri) {
-                    row.stage = if matches!(p.stage, Stage::Failed) {
-                        let msg: String = p.message.chars().take(60).collect();
-                        format!("failed — {msg}")
-                    } else {
-                        stage_label(p.stage).to_string()
-                    };
-                    row.percent = p.percent;
-                    if let Some(f) = &p.file_name {
-                        row.file = f.clone();
-                    }
-                }
-            }
-            push_rows(&progress_weak);
-            // CLI activity line per meaningful stage transition.
-            let cli = match p.stage {
-                Stage::SearchingYoutube => format!("[{}/{}] search  ▸ {}", p.track_index, p.total, p.title),
-                Stage::WritingMetadata => format!("[{}/{}] tag     · {}", p.track_index, p.total, p.title),
-                Stage::Completed => format!("[{}/{}] done    ✓ {}", p.track_index, p.total, p.file_name.clone().unwrap_or_default()),
-                Stage::Failed => format!("[{}/{}] FAILED  ✗ {} — {}", p.track_index, p.total, p.title, p.message),
-                Stage::Skipped => format!("[{}/{}] skip    ⤼ {}", p.track_index, p.total, p.title),
-                _ => String::new(),
-            };
-            if !cli.is_empty() {
-                cli_push(&progress_weak, &cli);
-            }
-            // On completion, ingest the finished file straight into the library.
-            if matches!(p.stage, Stage::Completed) {
-                if let (Some(file), Some(track)) = (
-                    p.file_name.as_ref(),
-                    ingest_tracks.get(p.track_index.saturating_sub(1)),
-                ) {
-                    let abs = dest_for_ingest.join(file).to_string_lossy().to_string();
-                    ingest_completed(progress_weak.clone(), track.clone(), abs, provider.clone());
-                }
-            }
-            let (done, skipped, failed) = (p.downloaded, p.skipped, p.failed);
-            let _ = progress_weak.upgrade_in_event_loop(move |w| {
-                w.set_music_dl_done(done as i32);
-                w.set_music_dl_skipped(skipped as i32);
-                w.set_music_dl_failed(failed as i32);
-            });
-        };
-
-        let summary = tulipix_mdl::download::download_playlist(
-            &client, &filtered, &opts, cancel, on_progress,
-        )
-        .await;
-
-        let _ = weak.upgrade_in_event_loop(move |w| {
-            w.set_music_dl_done(summary.downloaded as i32);
-            w.set_music_dl_skipped(summary.skipped as i32);
-            w.set_music_dl_failed(summary.failed.len() as i32);
-        });
-        set_status(&weak, "done");
+        run_download(weak, filtered, selected, tracks, provider, opts, cancel).await;
     });
+}
+
+/// Re-download a single failed track (its full-list row `row_index`) using the
+/// last run's destination/format/naming. No-op if there is no cached context.
+pub fn retry_track(weak: Weak<MainWindow>, row_index: i32) {
+    let ri = row_index.max(0) as usize;
+    let Some(ctx) = last_ctx().lock().unwrap().clone() else { return; };
+    let playlist = { resolved().lock().unwrap().clone() };
+    let Some(playlist) = playlist else { return; };
+    let Some(base) = playlist.tracks.get(ri).cloned() else { return; };
+    // Apply the row's current main-artist choice.
+    let main = rows()
+        .lock()
+        .unwrap()
+        .get(ri)
+        .map(|r| r.main_artist.clone())
+        .unwrap_or_default();
+    let mut track = base;
+    apply_main(&mut track, &main);
+    // Reset the row to "queued" so the pill + fill restart.
+    if let Some(r) = rows().lock().unwrap().get_mut(ri) {
+        r.stage = "queued".into();
+        r.percent = 0.0;
+        r.file.clear();
+    }
+    push_rows(&weak);
+    cli_push(&weak, &format!("↻ retry ▸ {}", track.title));
+
+    let provider = playlist.provider.display_name().to_string();
+    let opts = DownloadOptions {
+        dest_dir: ctx.dest.clone(),
+        parallelism: 1,
+        threads_per_download: ctx.threads,
+        format: ctx.format.clone(),
+        name_method: ctx.method,
+    };
+    let filtered = Playlist { tracks: vec![track.clone()], ..playlist.clone() };
+    cancel_flag().store(false, Ordering::Relaxed);
+    let cancel = cancel_flag().clone();
+    tokio::runtime::Handle::current().spawn(async move {
+        run_download(weak, filtered, vec![ri], vec![track], provider, opts, cancel).await;
+    });
+}
+
+/// Drive one `download_playlist` run: pumps per-track progress into the UI rows,
+/// logs CLI activity, ingests finished tracks into the library, and mirrors the
+/// counters. Shared by a full download and a single-track Retry.
+///
+/// `index_map_vec[k]` is the full-list row that worker track `k+1` maps back to;
+/// `ingest_tracks[k]` is that track's metadata (main artist first) for ingest.
+async fn run_download(
+    weak: Weak<MainWindow>,
+    filtered: Playlist,
+    index_map_vec: Vec<usize>,
+    ingest_tracks: Vec<Track>,
+    provider: String,
+    opts: DownloadOptions,
+    cancel: Arc<AtomicBool>,
+) {
+    *index_map().lock().unwrap() = index_map_vec;
+    *last_ctx().lock().unwrap() = Some(DlCtx {
+        dest: opts.dest_dir.clone(),
+        format: opts.format.clone(),
+        method: opts.name_method,
+        threads: opts.threads_per_download,
+    });
+    set_status(&weak, "downloading");
+    let client = reqwest::Client::new();
+    let dest_for_ingest = opts.dest_dir.clone();
+    let progress_weak = weak.clone();
+    let on_progress = move |p: Progress| {
+        // Map the filtered worker index back to its full-list row.
+        let row_idx = index_map()
+            .lock()
+            .unwrap()
+            .get(p.track_index.saturating_sub(1))
+            .copied();
+        if let Some(ri) = row_idx {
+            let mut r = rows().lock().unwrap();
+            if let Some(row) = r.get_mut(ri) {
+                // Keep the stage a clean single word ("failed") so the UI can
+                // match it for the pill + Retry button; stash the reason in file.
+                row.stage = stage_label(p.stage).to_string();
+                row.percent = p.percent;
+                if matches!(p.stage, Stage::Failed) {
+                    row.file = p.message.chars().take(80).collect();
+                } else if let Some(f) = &p.file_name {
+                    row.file = f.clone();
+                }
+            }
+        }
+        push_rows(&progress_weak);
+        // CLI activity line per meaningful stage transition.
+        let cli = match p.stage {
+            Stage::SearchingYoutube => format!("[{}/{}] search  ▸ {}", p.track_index, p.total, p.title),
+            Stage::WritingMetadata => format!("[{}/{}] tag     · {}", p.track_index, p.total, p.title),
+            Stage::Completed => format!("[{}/{}] done    ✓ {}", p.track_index, p.total, p.file_name.clone().unwrap_or_default()),
+            Stage::Failed => format!("[{}/{}] FAILED  ✗ {} — {}", p.track_index, p.total, p.title, p.message),
+            Stage::Skipped => format!("[{}/{}] skip    ⤼ {}", p.track_index, p.total, p.title),
+            _ => String::new(),
+        };
+        if !cli.is_empty() {
+            cli_push(&progress_weak, &cli);
+        }
+        // On completion, ingest the finished file straight into the library.
+        if matches!(p.stage, Stage::Completed) {
+            if let (Some(file), Some(track)) = (
+                p.file_name.as_ref(),
+                ingest_tracks.get(p.track_index.saturating_sub(1)),
+            ) {
+                let abs = dest_for_ingest.join(file).to_string_lossy().to_string();
+                ingest_completed(progress_weak.clone(), track.clone(), abs, provider.clone());
+            }
+        }
+        let (done, skipped, failed) = (p.downloaded, p.skipped, p.failed);
+        let _ = progress_weak.upgrade_in_event_loop(move |w| {
+            w.set_music_dl_done(done as i32);
+            w.set_music_dl_skipped(skipped as i32);
+            w.set_music_dl_failed(failed as i32);
+        });
+    };
+
+    let summary =
+        tulipix_mdl::download::download_playlist(&client, &filtered, &opts, cancel, on_progress).await;
+
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        w.set_music_dl_done(summary.downloaded as i32);
+        w.set_music_dl_skipped(summary.skipped as i32);
+        w.set_music_dl_failed(summary.failed.len() as i32);
+    });
+    set_status(&weak, "done");
 }
 
 // ── History popups ─────────────────────────────────────────────────────────
@@ -535,7 +609,18 @@ pub fn load_searches(weak: Weak<MainWindow>, page: i32) {
     });
 }
 
-/// Play a downloaded track (from history) in-app.
+/// Play a downloaded track (from history) in-app. Downloaded tracks are ingested
+/// into the library, so prefer the real library play path: it loads the cover
+/// art and sets the now-playing index so clicking the title/artist in the player
+/// opens the *correct* album/artist page. Falls back to a raw file stream only
+/// if the track isn't in the current library list.
 pub fn play_history(w: &MainWindow, path: String, title: String, sub: String) {
-    crate::play_music_file(w, &path, &title, &sub);
+    let pos = crate::music_paths()
+        .lock()
+        .ok()
+        .and_then(|g| g.iter().position(|p| p.to_string_lossy() == path));
+    match pos {
+        Some(i) => crate::play_music_at(w, i as i32),
+        None => crate::play_music_file(w, &path, &title, &sub),
+    }
 }

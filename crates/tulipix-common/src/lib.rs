@@ -291,6 +291,9 @@ pub fn add_watched_folder(dir: &std::path::Path) -> bool {
     let had = existing.iter().any(|p| p == dir);
     if !had {
         save_watched_folders(&merge_watched(existing, dir));
+        // Attach the new folder to the running FS watcher so deletes/renames
+        // there update the library live, without waiting for a restart.
+        tulipix_core::watcher::watch_path(dir);
     }
     !had
 }

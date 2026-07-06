@@ -43,6 +43,10 @@ fn cookie_args() -> Vec<String> {
 /// Download one track's audio into `dest` as Opus. Returns the produced path.
 /// Searches YouTube for the single best match of "artist - title" (per track,
 /// never the source playlist) and extracts audio to Opus via ffmpeg.
+/// How many times to (re)try a single track before giving up. YouTube throws
+/// transient 403/network hiccups; a couple of retries clears most of them.
+const MAX_TRIES: usize = 3;
+
 async fn download_audio(
     track: &Track,
     index: usize,
@@ -55,48 +59,60 @@ async fn download_audio(
     let out_tmpl = dest.join(format!("{stem}.%(ext)s"));
     let query = format!("ytsearch1:{}", search_query(track));
     let ffmpeg = tulipix_core::thumbs::tool_bin("ffmpeg");
-
-    let mut cmd = tokio::process::Command::new(ytdlp_bin());
-    cmd.arg(&query)
-        .args(["-f", "bestaudio/best", "-x", "--audio-format", format])
-        .args(["--no-playlist", "--no-warnings"])
-        // Threads per download — parallel fragment downloads for this track.
-        .args(["--concurrent-fragments", &threads.max(1).to_string()])
-        // Rotate player clients — helps dodge YouTube's "confirm you're not a
-        // bot" gate that hits the default web client.
-        .args(["--extractor-args", "youtube:player_client=default,tv,android"]);
-    // yt-dlp needs ffmpeg for the Opus extraction. Point it at the resolved
-    // binary so it works even when ffmpeg isn't on the app process's PATH.
-    if ffmpeg.exists() {
-        cmd.arg("--ffmpeg-location").arg(&ffmpeg);
-    }
-    // Optional cookies (Settings → "yt-dlp cookies"): a cookies.txt path or a
-    // browser name for --cookies-from-browser. The only reliable way past
-    // YouTube's bot check.
-    for a in cookie_args() {
-        cmd.arg(a);
-    }
-    cmd.arg("-o").arg(&out_tmpl);
-
-    tracing::info!(query = %query, dest = %dest.display(), ffmpeg = %ffmpeg.display(), "mdl: yt-dlp search+download");
-    let out = cmd.output().await.map_err(|e| {
-        tracing::warn!(error = %e, "mdl: yt-dlp spawn failed (is yt-dlp installed?)");
-        anyhow!("yt-dlp could not be launched: {e}")
-    })?;
-    if !out.status.success() {
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        tracing::warn!(%stderr, "mdl: yt-dlp exited non-zero");
-        if stderr.contains("confirm you") || stderr.contains("not a bot") || stderr.contains("Sign in") {
-            bail!("YouTube bot check — set browser cookies in Settings → yt-dlp cookies");
-        }
-        bail!("yt-dlp: {}", stderr.lines().last().unwrap_or("failed").trim());
-    }
     let path = dest.join(format!("{stem}.{format}"));
-    if !path.exists() {
-        tracing::warn!(expected = %path.display(), stdout = %String::from_utf8_lossy(&out.stdout), "mdl: expected output not produced");
-        bail!("no audio file produced (ffmpeg missing?)");
+
+    let mut last_err = anyhow!("download failed");
+    for attempt in 1..=MAX_TRIES {
+        let mut cmd = tokio::process::Command::new(ytdlp_bin());
+        cmd.arg(&query)
+            .args(["-f", "bestaudio/best", "-x", "--audio-format", format])
+            .args(["--no-playlist", "--no-warnings"])
+            // Threads per download — parallel fragment downloads for this track.
+            .args(["--concurrent-fragments", &threads.max(1).to_string()])
+            // Rotate player clients — helps dodge YouTube's "confirm you're not a
+            // bot" gate that hits the default web client.
+            .args(["--extractor-args", "youtube:player_client=default,tv,android"]);
+        // yt-dlp needs ffmpeg for the Opus extraction. Point it at the resolved
+        // binary so it works even when ffmpeg isn't on the app process's PATH.
+        if ffmpeg.exists() {
+            cmd.arg("--ffmpeg-location").arg(&ffmpeg);
+        }
+        // Optional cookies (Settings → "yt-dlp cookies"): a cookies.txt path or a
+        // browser name for --cookies-from-browser. The only reliable way past
+        // YouTube's bot check.
+        for a in cookie_args() {
+            cmd.arg(a);
+        }
+        cmd.arg("-o").arg(&out_tmpl);
+
+        tracing::info!(query = %query, attempt, dest = %dest.display(), "mdl: yt-dlp search+download");
+        match cmd.output().await {
+            Err(e) => {
+                tracing::warn!(error = %e, "mdl: yt-dlp spawn failed (is yt-dlp installed?)");
+                return Err(anyhow!("yt-dlp could not be launched: {e}"));
+            }
+            Ok(out) if out.status.success() => {
+                if path.exists() {
+                    return Ok(path);
+                }
+                tracing::warn!(expected = %path.display(), stdout = %String::from_utf8_lossy(&out.stdout), "mdl: expected output not produced");
+                last_err = anyhow!("no audio file produced (ffmpeg missing?)");
+            }
+            Ok(out) => {
+                let stderr = String::from_utf8_lossy(&out.stderr);
+                tracing::warn!(%stderr, attempt, "mdl: yt-dlp exited non-zero");
+                // The bot check never clears by retrying — fail fast.
+                if stderr.contains("confirm you") || stderr.contains("not a bot") || stderr.contains("Sign in") {
+                    bail!("YouTube bot check — set browser cookies in Settings → yt-dlp cookies");
+                }
+                last_err = anyhow!("yt-dlp: {}", stderr.lines().last().unwrap_or("failed").trim().to_string());
+            }
+        }
+        if attempt < MAX_TRIES {
+            tokio::time::sleep(std::time::Duration::from_millis(800 * attempt as u64)).await;
+        }
     }
-    Ok(path)
+    Err(last_err)
 }
 
 /// Overwrite tags + cover art with the provider metadata via lofty.
@@ -140,12 +156,17 @@ async fn write_tags(path: &Path, track: &Track, client: &reqwest::Client) -> Res
             tag.set_album(a);
         }
         if let Some(bytes) = cover {
-            let pic = Picture::new_unchecked(
-                PictureType::CoverFront,
-                Some(MimeType::Jpeg),
-                None,
-                bytes,
-            );
+            // Detect the real image type from the magic bytes — provider covers
+            // are JPEG (Spotify/Apple) or PNG/WebP (YouTube). A mislabeled mime
+            // makes some players drop the art, so never assume JPEG.
+            let mime = match bytes.as_slice() {
+                [0x89, b'P', b'N', b'G', ..] => MimeType::Png,
+                [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => {
+                    MimeType::Unknown("image/webp".into())
+                }
+                _ => MimeType::Jpeg,
+            };
+            let pic = Picture::new_unchecked(PictureType::CoverFront, Some(mime), None, bytes);
             tag.push_picture(pic);
         }
         tag.save_to_path(&path, WriteOptions::default())?;

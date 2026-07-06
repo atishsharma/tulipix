@@ -2170,7 +2170,19 @@ pub fn play_music_file(w: &MainWindow, url: &str, title: &str, sub: &str) {
     w.set_music_np_title(title.into());
     w.set_music_np_sub(sub.into());
     w.set_music_np_album("".into());      // no stale artist·album on the second line
-    w.set_music_np_art(slint::Image::default());
+    // Local files carry embedded cover art — extract it so the player isn't blank
+    // (podcast/radio URLs have no thumb and fall back to the default).
+    let art = std::path::Path::new(url)
+        .exists()
+        .then(|| tulipix_core::thumbs::render_or_cache(
+            std::path::Path::new(url),
+            tulipix_core::thumbs::ThumbSpec {
+                kind: tulipix_core::thumbs::ThumbKind::Audio, width: 320, height: 320 })
+            .ok().flatten().map(|t| t.path))
+        .flatten()
+        .and_then(|p| slint::Image::load_from_path(&p).ok())
+        .unwrap_or_default();
+    w.set_music_np_art(art);
     w.set_music_radio_np_uuid("".into()); // a non-radio stream ends any LIVE state
     w.set_music_playing(true);
     w.set_music_pos(0.0); w.set_music_dur(0.0);

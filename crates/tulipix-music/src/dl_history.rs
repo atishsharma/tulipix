@@ -60,9 +60,11 @@ pub async fn upsert_music_item(pool: &SqlitePool, abs_path: &str) -> Result<i64>
 
 /// Ingest a just-downloaded track into the library from provider metadata.
 ///
-/// `artists` is already ordered with the chosen main artist first, so
-/// `album_artist` = `artists[0]` and the joined `artist` string reads
-/// "Main, Second, …". Returns the created `items.id`.
+/// `artists` is already ordered with the chosen main artist first. The library
+/// (DB) is credited to the **main artist only** — `artist` = `album_artist` =
+/// `artists[0]` — so the now-playing line and library grouping show just the
+/// singer the user picked. The full credit list stays in the file's embedded
+/// tags (written by the downloader), so nothing is lost. Returns the `items.id`.
 pub async fn ingest_downloaded_track(
     pool: &SqlitePool,
     abs_path: &str,
@@ -72,7 +74,6 @@ pub async fn ingest_downloaded_track(
     duration_ms: Option<u64>,
 ) -> Result<i64> {
     let item_id = upsert_music_item(pool, abs_path).await?;
-    let joined = artists.join(", ");
     let main = artists.first().cloned();
     let container = Path::new(abs_path)
         .extension()
@@ -81,7 +82,7 @@ pub async fn ingest_downloaded_track(
         .map(|s| s.to_string());
     let tags = TrackTags {
         title: Some(title.to_string()),
-        artist: if joined.is_empty() { None } else { Some(joined) },
+        artist: main.clone(),
         album: album.map(|s| s.to_string()),
         album_artist: main,
         duration_s: duration_ms.map(|ms| ms as f64 / 1000.0),
@@ -228,7 +229,8 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(artist, "Lead Singer, Producer");
+        // Library credits the chosen main artist only (others stay in file tags).
+        assert_eq!(artist, "Lead Singer");
         assert_eq!(album_artist.as_deref(), Some("Lead Singer"));
     }
 

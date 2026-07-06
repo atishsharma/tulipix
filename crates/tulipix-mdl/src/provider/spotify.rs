@@ -72,6 +72,19 @@ struct VisualIdentity {
 #[derive(Deserialize)]
 struct ImgSrc {
     url: Option<String>,
+    // Spotify serves several fixed sizes; pick the biggest so the embedded
+    // cover (and the library thumb extracted from it) is sharp, not a 64px chip.
+    width: Option<u64>,
+}
+
+/// Largest-by-width image URL from a source list (Spotify orders these small→
+/// large or vice-versa depending on the surface, so never just take `.first()`).
+fn largest_src(srcs: Option<&Vec<ImgSrc>>) -> Option<&str> {
+    srcs?
+        .iter()
+        .filter(|s| s.url.as_deref().map(|u| !u.is_empty()).unwrap_or(false))
+        .max_by_key(|s| s.width.unwrap_or(0))
+        .and_then(|s| s.url.as_deref())
 }
 
 impl Spotify {
@@ -115,18 +128,8 @@ impl Spotify {
         let title = get_first_non_empty(&[entity.title.as_deref(), entity.name.as_deref()])
             .unwrap_or_else(|| format!("Spotify {kind}"));
         let artwork = get_first_non_empty(&[
-            entity
-                .cover_art
-                .as_ref()
-                .and_then(|c| c.sources.as_ref())
-                .and_then(|s| s.first())
-                .and_then(|s| s.url.as_deref()),
-            entity
-                .visual_identity
-                .as_ref()
-                .and_then(|v| v.image.as_ref())
-                .and_then(|i| i.first())
-                .and_then(|i| i.url.as_deref()),
+            largest_src(entity.cover_art.as_ref().and_then(|c| c.sources.as_ref())),
+            largest_src(entity.visual_identity.as_ref().and_then(|v| v.image.as_ref())),
         ]);
         let owner = get_first_non_empty(&[entity.subtitle.as_deref()]).or_else(|| {
             entity

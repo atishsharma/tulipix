@@ -23,6 +23,9 @@ SolidCompression=yes
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 UninstallDisplayIcon={app}\tulipix.exe
+; The setup wizard's own icon (relative to this script's dir) so the installer
+; exe isn't the generic Inno icon. Same .ico the app exe embeds.
+SetupIconFile=..\..\crates\tulipix-app\icon.ico
 WizardStyle=modern
 
 [Files]

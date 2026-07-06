@@ -13,9 +13,37 @@ use anyhow::Result;
 use notify::{Event as NotifyEvent, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc;
+use std::sync::{Mutex, OnceLock};
 use std::time::{SystemTime, UNIX_EPOCH};
+
+/// The live app watcher, kept here so folders added mid-session (e.g. a new
+/// download destination) can be attached to it without a restart.
+static LIVE: OnceLock<Mutex<Option<RecommendedWatcher>>> = OnceLock::new();
+fn live() -> &'static Mutex<Option<RecommendedWatcher>> {
+    LIVE.get_or_init(|| Mutex::new(None))
+}
+
+/// Hand the app's watcher to the module so [`watch_path`] can extend it later.
+/// Also keeps it alive for the process lifetime.
+pub fn install(watcher: RecommendedWatcher) {
+    if let Ok(mut g) = live().lock() {
+        *g = Some(watcher);
+    }
+}
+
+/// Start recursively watching an additional folder on the live watcher. No-op
+/// if the watcher isn't installed yet (startup will pick the folder up instead).
+pub fn watch_path(path: &Path) {
+    if let Ok(mut g) = live().lock() {
+        if let Some(w) = g.as_mut() {
+            if let Err(e) = w.watch(path, RecursiveMode::Recursive) {
+                tracing::warn!(error = %e, path = %path.display(), "watcher: watch_path failed");
+            }
+        }
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum FsEvent {

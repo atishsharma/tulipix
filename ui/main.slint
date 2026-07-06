@@ -1477,6 +1477,7 @@ callback cloud-go-home();
     callback music-dl-history-reveal(string);            // abs path → open folder
     callback music-dl-use-search(string);                // url → URL field
     callback music-dl-cli-clear();                       // clear the CLI log
+    callback music-dl-retry(int);                        // re-download a failed row
     callback music-cycle-sleep();
     callback music-love();
     callback music-rate(int);
@@ -2401,6 +2402,7 @@ callback cloud-go-home();
                 dl-cli <=> root.music-dl-cli;
                 dl-cli-open <=> root.music-dl-cli-open;
                 dl-cli-clear() => { root.music-dl-cli-clear(); }
+                dl-retry(i) => { root.music-dl-retry(i); }
                 dl-set-parallel(v) => { root.music-dl-set-parallel(v); }
                 dl-set-threads(v) => { root.music-dl-set-threads(v); }
                 dl-set-main-artist(i, a) => { root.music-dl-set-main-artist(i, a); }

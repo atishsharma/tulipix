@@ -302,3 +302,23 @@ jobs:
         with:
           files: artifacts/**
           generate_release_notes: true
+          body: |
+            ## Highlights
+
+            ### Music Downloader
+            - **Direct-to-library ingest** — downloaded tracks appear instantly with full metadata and cover art; no manual refresh or restart.
+            - **Highest-quality cover art for every provider** — Spotify now embeds the largest available source (was a tiny thumbnail), Apple Music pulls 3000×3000, and covers keep their real image format.
+            - **Pick the main artist** — choose the primary artist per track/album/playlist; the library credits only that artist while the full credit list stays in the file tags.
+            - **Per-track retry** — each track auto-retries up to 3×, and failed rows get a one-click **Retry** button plus color-coded status pills (done / failed / skipped).
+            - **Download & search history** with in-app play and "open in file manager".
+            - Configurable parallel downloads and threads-per-download; live CLI/activity view.
+
+            ### Player & Library
+            - Play-from-history now shows cover art and links the title/artist to the correct album/artist page.
+            - Equalizer button moved beside volume; **every** player button now has a hover tooltip.
+            - Live delete-sync: removing files from watched (and newly-added) folders updates the library without a restart.
+
+            ### Packaging
+            - App icon embedded across all platforms — Windows exe + installer, macOS `.app`, and Linux `.desktop`/hicolor launchers — so it no longer looks like a generic app.
+
+            ---

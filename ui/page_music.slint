@@ -264,6 +264,7 @@ component PlayerBtn inherits Rectangle {
     in property <length> size: 38px;
     in property <length> isz: 18px;
     in property <color> accent: #ec4899;
+    in property <string> tip;           // hover tooltip ("" = none)
     callback clicked();
     width: size; height: size;
     // Android-17 morph — circle relaxes into a squircle while pressed, with a
@@ -279,6 +280,13 @@ component PlayerBtn inherits Rectangle {
         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
         tint: active ? accent : (t.has-hover || t.pressed ? MusicTheme.fg : MusicTheme.fg3);
         animate colorize, width, height { duration: 140ms; easing: ease-out; } }
+    // Hover tooltip — floats above the button; no clip so it overflows the bar.
+    if root.tip != "" && t.has-hover: Rectangle {
+        y: -26px; x: (parent.width - self.width) / 2;
+        height: 21px; border-radius: 6px; background: #0b0f17ee; border-width: 1px; border-color: #334155;
+        drop-shadow-blur: 10px; drop-shadow-color: #000000aa;
+        HorizontalLayout { padding-left: 8px; padding-right: 8px;
+            Text { text: root.tip; color: #e2e8f0; font-size: 11px; font-weight: 600; vertical-alignment: center; } } }
 }
 
 // Text-glyph round button for actions without a Lucide icon.
@@ -1665,6 +1673,7 @@ export component MusicPage inherits Rectangle {
     callback dl-history-reveal(string);
     callback dl-use-search(string);
     callback dl-cli-clear();
+    callback dl-retry(int);                       // re-download a failed row
     in-out property <string> query: "";          // search box text
     in property <int> sleep-min: 0;              // active sleep-timer minutes (0 = off)
     // Dashboard rails (np.p4.music.dashboard) + browse groups (np.p4.music.browse).
@@ -4198,7 +4207,7 @@ export component MusicPage inherits Rectangle {
                         HorizontalLayout { spacing: 10px;
                             Rectangle { horizontal-stretch: 1; height: 44px; border-radius: 12px; clip: true;
                                 background: #ffffff; border-width: 1.5px; border-color: #8b5cf6;
-                                HorizontalLayout { padding-left: 6px; padding-right: 14px; spacing: 6px;
+                                HorizontalLayout { padding-left: 6px; padding-right: 6px; spacing: 6px;
                                     // Paste button — pull the clipboard straight into the field.
                                     VerticalLayout { alignment: center; Rectangle { width: 32px; height: 32px; border-radius: 8px;
                                         background: pst.pressed ? #7c3aed : (pst.has-hover ? #8b5cf6 : #ede9fe);
@@ -4208,17 +4217,37 @@ export component MusicPage inherits Rectangle {
                                     // TextInput lives as a direct child of a clip wrapper (NOT in the
                                     // layout) with width:100% so a long URL scrolls/clips inside the
                                     // field instead of stretching the row + pushing the badge out.
-                                    Rectangle { horizontal-stretch: 1; clip: true;
+                                    // min-width:0 stops the TextInput's content width from driving
+                                    // the layout — a long URL scrolls inside the clip instead of
+                                    // stretching the row and shoving the provider chip out of the card.
+                                    Rectangle { horizontal-stretch: 1; min-width: 0px; clip: true;
                                         urlbox := TextInput { width: 100%; height: 100%; vertical-alignment: center; color: #1f2937; font-size: 14px; single-line: true;
                                             text <=> root.dl-url;
                                             edited => { root.dl-url-changed(self.text); }
-                                            accepted => { root.dl-resolve(); } } } } }
-                            if root.dl-provider-badge != "": Rectangle { min-width: 120px; height: 44px; border-radius: 12px; background: #22c55e22; border-width: 1px; border-color: #22c55e80;
-                                HorizontalLayout { alignment: center; spacing: 6px;
-                                    VerticalLayout { alignment: center; AppIcon { source: Icons.check; tint: #22c55e; width: 14px; height: 14px; } }
-                                    VerticalLayout { alignment: center; Text { text: root.dl-provider-badge; color: #22c55e; font-size: 13px; font-weight: 700; } } } }
-                            if root.dl-url != "" && root.dl-provider-badge == "": Rectangle { min-width: 120px; height: 44px; border-radius: 12px; background: #ef444422; border-width: 1px; border-color: #ef444480;
-                                HorizontalLayout { alignment: center; VerticalLayout { alignment: center; Text { text: "Unsupported"; color: #ef4444; font-size: 13px; font-weight: 700; } } } }
+                                            accepted => { root.dl-resolve(); } } }
+                                    // Provider chip — fixed, pinned at the field's right end. Black
+                                    // fill + white text; the accent (dot + outline) is the provider's
+                                    // brand color. Fixed width means a long URL clips instead of
+                                    // pushing the chip out of the card.
+                                    if root.dl-provider-badge != "": VerticalLayout { alignment: center; pbadge := Rectangle {
+                                        property <color> pc:
+                                            root.dl-provider-badge == "Spotify" ? #1db954 :
+                                            root.dl-provider-badge == "Apple Music" ? #fa2d48 :
+                                            root.dl-provider-badge == "YouTube Music" ? #ff3b30 :
+                                            root.dl-provider-badge == "Amazon Music" ? #00a8e1 :
+                                            root.dl-provider-badge == "SoundCloud" ? #ff5500 :
+                                            root.dl-provider-badge == "Deezer" ? #a238ff :
+                                            root.dl-provider-badge == "Tidal" ? #22d3ee :
+                                            #8b5cf6;
+                                        width: 124px; height: 34px; border-radius: 9px;
+                                        background: #000000; border-width: 1.5px; border-color: pc;
+                                        HorizontalLayout { alignment: center; spacing: 6px; padding-left: 9px; padding-right: 9px;
+                                            VerticalLayout { alignment: center; Rectangle { width: 8px; height: 8px; border-radius: 4px; background: pbadge.pc; } }
+                                            VerticalLayout { alignment: center; Text { text: root.dl-provider-badge; color: #ffffff; font-size: 12px; font-weight: 800; overflow: elide; } } } } }
+                                    if root.dl-url != "" && root.dl-provider-badge == "": VerticalLayout { alignment: center; Rectangle {
+                                        width: 116px; height: 34px; border-radius: 9px; background: #000000; border-width: 1.5px; border-color: #ef4444;
+                                        HorizontalLayout { alignment: center; VerticalLayout { alignment: center; Text { text: "Unsupported"; color: #ef4444; font-size: 12px; font-weight: 800; } } } } }
+                                } }
                         }
                         HorizontalLayout { spacing: 10px;
                             VerticalLayout { alignment: center; Text { text: "Save to"; color: dlpane.ftitle; font-size: 13px; font-weight: 800; } }
@@ -4296,9 +4325,10 @@ export component MusicPage inherits Rectangle {
                             border-width: 1px; border-color: MusicTheme.line; clip: true;
                             property <color> sc:
                                 row.stage == "done" ? #22c55e :
+                                row.stage == "failed" ? #ef4444 :
                                 row.stage == "skipped" ? #64748b :
                                 row.stage == "queued" ? #64748b :
-                                row.percent >= 100 ? #ef4444 : #8b5cf6;
+                                #8b5cf6;
                             // Color-changing fill behind the content.
                             Rectangle { x: 0; y: 0; height: 100%;
                                 width: parent.width * (row.percent / 100);
@@ -4316,7 +4346,14 @@ export component MusicPage inherits Rectangle {
                                     model: row.artists; current-value: row.main-artist;
                                     selected(v) => { root.dl-set-main-artist(i, v); } } }
                                 if row.artists.length <= 1: VerticalLayout { alignment: center; Text { text: row.main-artist; color: MusicTheme.fg-mute; font-size: 12px; } }
-                                VerticalLayout { alignment: center; Text { text: row.stage; color: card.sc; font-size: 11px; font-weight: 700; } }
+                                // Status pill — color-filled, one word (done / failed / skipped / …).
+                                VerticalLayout { alignment: center; Rectangle {
+                                    height: 22px; border-radius: 11px; horizontal-stretch: 0;
+                                    background: card.sc.with-alpha(0.18); border-width: 1px; border-color: card.sc.with-alpha(0.55);
+                                    HorizontalLayout { padding-left: 11px; padding-right: 11px;
+                                        Text { text: row.stage; color: card.sc; font-size: 10px; font-weight: 800; vertical-alignment: center; } } } }
+                                // Retry — only when the row failed. Re-downloads just this track.
+                                if row.stage == "failed": VerticalLayout { alignment: center; DlBtn { icon: Icons.rotate-cw; label: "Retry"; tint: #f59e0b; clicked => { root.dl-retry(i); } } }
                                 VerticalLayout { alignment: center; Text { text: Math.round(row.percent) + "%"; color: MusicTheme.fg-dim2; font-size: 11px; min-width: 36px; horizontal-alignment: right; } }
                             }
                         }
@@ -4354,8 +4391,8 @@ export component MusicPage inherits Rectangle {
                                       VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
                                           Text { text: e.title; color: MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; }
                                           Text { text: e.artists + (e.album != "" ? "  ·  " + e.album : "") + "  ·  " + e.when; color: MusicTheme.fg-dim2; font-size: 11px; overflow: elide; } }
-                                      DlBtn { icon: Icons.folder-open; label: "Open"; tint: #3b82f6; clicked => { root.dl-history-reveal(e.path); } }
-                                      DlBtn { icon: Icons.play; label: "Play"; tint: #22c55e; clicked => { root.dl-history-play(e.path, e.title, e.artists); } }
+                                      VerticalLayout { alignment: center; DlBtn { icon: Icons.folder-open; label: "Open"; tint: #3b82f6; clicked => { root.dl-history-reveal(e.path); } } }
+                                      VerticalLayout { alignment: center; DlBtn { icon: Icons.play; label: "Play"; tint: #22c55e; clicked => { root.dl-history-play(e.path, e.title, e.artists); } } }
                                   } }
                           } }
                       HorizontalLayout { spacing: 10px; alignment: center;
@@ -4393,7 +4430,7 @@ export component MusicPage inherits Rectangle {
                                       VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
                                           Text { text: e.title != "" ? e.title : e.url; color: MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; }
                                           Text { text: (e.provider != "" ? e.provider + "  ·  " : "") + e.when; color: MusicTheme.fg-dim2; font-size: 11px; overflow: elide; } }
-                                      DlBtn { icon: Icons.download; label: "Use"; tint: #8b5cf6; clicked => { root.dl-url = e.url; root.dl-url-changed(e.url); root.dl-use-search(e.url); root.dl-search-open = false; } }
+                                      VerticalLayout { alignment: center; DlBtn { icon: Icons.download; label: "Use"; tint: #8b5cf6; clicked => { root.dl-url = e.url; root.dl-url-changed(e.url); root.dl-use-search(e.url); root.dl-search-open = false; } } }
                                   } }
                           } }
                       HorizontalLayout { spacing: 10px; alignment: center;
@@ -4903,8 +4940,38 @@ export component MusicPage inherits Rectangle {
                     VerticalLayout { alignment: center; horizontal-stretch: 1;
                         Scrubber { value: root.pos; maximum: root.dur > 0 ? root.dur : 1.0; wiggle: true; changed(v) => { root.seek(v); } } }
                     VerticalLayout { alignment: center; Text { text: root.dur-label; color: MusicTheme.fg-dim; font-size: 11px; width: 42px; } }
+                    // Equalizer — anchored popup above the bar (click-away closes). Sits
+                    // just left of the volume button, per request.
+                    VerticalLayout { alignment: center; Rectangle { width: 26px; height: 26px;
+                        PlayerBtn { tip: "Equalizer"; icon: Icons.sliders; size: 26px; isz: 15px; clicked => { eqpop.show(); } }
+                        eqpop := PopupWindow { x: -466px; y: -338px; width: 560px; height: 338px; close-policy: close-on-click-outside;
+                            Rectangle { width: 100%; height: 100%; border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
+                                drop-shadow-blur: 40px; drop-shadow-color: #000000e6;
+                                VerticalLayout { padding: 18px; spacing: 10px;
+                                    HorizontalLayout {
+                                        Text { text: "Equalizer"; color: MusicTheme.fg; font-size: 15px; font-weight: 700; }
+                                        Rectangle { horizontal-stretch: 1; }
+                                        BrowseChip { icon: Icons.plus; label: "Save profile"; clicked => { root.eq-save-profile(); } } }
+                                    // Preset + custom chips — horizontally scrollable so they
+                                    // never overflow the box; right-click a custom = delete.
+                                    ScrollView { height: 50px; horizontal-stretch: 1;
+                                        HorizontalLayout { spacing: 6px; alignment: start; padding-bottom: 12px;
+                                            for p[i] in ["flat", "rock", "pop", "jazz", "bass", "treble"]: BrowseChip {
+                                                on: p == root.eq-preset; label: p; clicked => { root.set-eq(p); } }
+                                            for c[i] in root.eq-custom-names: Rectangle { horizontal-stretch: 0;
+                                                cchip := BrowseChip { on: c == root.eq-preset; label: c; }
+                                                TouchArea { mouse-cursor: pointer;
+                                                    pointer-event(e) => {
+                                                        if (e.kind == PointerEventKind.up) {
+                                                            if (e.button == PointerEventButton.left)  { root.eq-load-profile(c); }
+                                                            if (e.button == PointerEventButton.right) { root.eq-delete-profile(c); }
+                                                        }
+                                                    } } } } }
+                                    HorizontalLayout { spacing: 8px; alignment: center;
+                                        for hz[i] in ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"]:
+                                            EqBand { hz: hz; value: root.eq-bands[i]; changed(v) => { root.set-eq-band(i, v); } } } } } } } }
                     // Volume + mute.
-                    VerticalLayout { alignment: center; PlayerBtn { icon: root.muted ? Icons.volume-x : Icons.volume; size: 24px; isz: 14px; active: root.muted; clicked => { root.toggle-mute(); } } }
+                    VerticalLayout { alignment: center; PlayerBtn { tip: root.muted ? "Unmute" : "Mute"; icon: root.muted ? Icons.volume-x : Icons.volume; size: 24px; isz: 14px; active: root.muted; clicked => { root.toggle-mute(); } } }
                     VerticalLayout { alignment: center; Rectangle { width: 100px; height: 24px;
                         Scrubber { y: (parent.height - self.height)/2; width: 100px; value: root.volume; maximum: 130.0;
                             fill-color: MusicTheme.fg3; changed(v) => { root.set-volume(v); } } } }
@@ -4943,7 +5010,7 @@ export component MusicPage inherits Rectangle {
                             HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.maximize; tint: MusicTheme.fg; width: 11px; height: 11px; } } Text { text: "zen"; color: MusicTheme.fg; font-size: 11px; vertical-alignment: center; } } } }
                     // Visualizer style selector — anchored popup right after the visualizer.
                     VerticalLayout { alignment: center; Rectangle { width: 38px; height: 38px;
-                        PlayerBtn { icon: Icons.waveform; isz: 16px; clicked => { vizpop.show(); } }
+                        PlayerBtn { tip: "Visualizer style"; icon: Icons.waveform; isz: 16px; clicked => { vizpop.show(); } }
                         vizpop := PopupWindow { x: -90px; y: -150px; width: 168px; height: 138px; close-policy: close-on-click-outside;
                             Rectangle { width: 100%; height: 100%; border-radius: 14px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
                                 drop-shadow-blur: 36px; drop-shadow-color: #000000e6;
@@ -4957,8 +5024,8 @@ export component MusicPage inherits Rectangle {
                                             if root.vis-style == i: AppIcon { source: Icons.check; tint: #ec4899; width: 12px; height: 12px; } } } } } } } }
                     Rectangle { width: 6px; }
                     // Center transport.
-                    VerticalLayout { alignment: center; PlayerBtn { icon: Icons.shuffle; isz: 18px; active: root.shuffle; clicked => { root.toggle-shuffle(); } } }
-                    VerticalLayout { alignment: center; PlayerBtn { icon: Icons.skip-back; isz: 20px; clicked => { root.np-prev(); } } }
+                    VerticalLayout { alignment: center; PlayerBtn { tip: "Shuffle"; icon: Icons.shuffle; isz: 18px; active: root.shuffle; clicked => { root.toggle-shuffle(); } } }
+                    VerticalLayout { alignment: center; PlayerBtn { tip: "Previous"; icon: Icons.skip-back; isz: 20px; clicked => { root.np-prev(); } } }
                     VerticalLayout { alignment: center;
                         Rectangle { width: 52px; height: 52px; border-radius: 26px; horizontal-stretch: 0; vertical-stretch: 0;
                             background: pb.has-hover ? #ec4899 : #f0f0f3;
@@ -4966,59 +5033,36 @@ export component MusicPage inherits Rectangle {
                             drop-shadow-blur: 18px; drop-shadow-color: #ec489988;
                             pb := TouchArea { mouse-cursor: pointer; clicked => { root.np-playpause(); } }
                             AppIcon { source: root.playing ? Icons.pause : Icons.play; tint: #14141b;
-                                width: 22px; height: 22px; } } }
-                    VerticalLayout { alignment: center; PlayerBtn { icon: Icons.skip-forward; isz: 20px; clicked => { root.np-next(); } } }
+                                width: 22px; height: 22px; }
+                            if pb.has-hover: Rectangle { y: -26px; x: (parent.width - self.width) / 2;
+                                height: 21px; border-radius: 6px; background: #0b0f17ee; border-width: 1px; border-color: #334155;
+                                HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                                    Text { text: root.playing ? "Pause" : "Play"; color: #e2e8f0; font-size: 11px; font-weight: 600; vertical-alignment: center; } } } } }
+                    VerticalLayout { alignment: center; PlayerBtn { tip: "Next"; icon: Icons.skip-forward; isz: 20px; clicked => { root.np-next(); } } }
                     VerticalLayout { alignment: center; PlayerBtn {
+                        tip: root.repeat == "one" ? "Repeat one" : (root.repeat == "all" ? "Repeat all" : "Repeat");
                         icon: root.repeat == "one" ? Icons.repeat-1 : Icons.repeat; isz: 18px; active: root.repeat != "off"; clicked => { root.cycle-repeat(); } } }
                     // YouTube: watch the current audio as video (blinking red button).
                     if root.yt-now-video: VerticalLayout { alignment: center;
                         YtWatchBtn { clicked => { root.yt-watch-current(); } } }
                     VerticalLayout { alignment: center; Rectangle { width: 10px; } }
                     // Heart only — stars removed from the player.
-                    if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { icon: Icons.heart; isz: 18px; active: root.np-loved; clicked => { root.love(); } } }
+                    if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { tip: root.np-loved ? "Unlike" : "Like"; icon: Icons.heart; isz: 18px; active: root.np-loved; clicked => { root.love(); } } }
                     // (volume + mute moved up beside the seekbar)
                     VerticalLayout { alignment: center; Rectangle { width: 1px; height: 22px; background: MusicTheme.hov2; } }
                     // Extras — queue/lyrics dock to the right sidebar; eq/sleep are anchored popups.
-                    VerticalLayout { alignment: center; PlayerBtn { icon: Icons.list-music; isz: 17px; active: root.side-panel == "queue"; clicked => { root.side-panel-show(root.side-panel == "queue" ? "" : "queue"); } } }
-                    if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { icon: Icons.lyrics; isz: 17px; active: root.side-panel == "lyrics"; clicked => { root.side-panel-show(root.side-panel == "lyrics" ? "" : "lyrics"); } } }
-                    // EQ — anchored popup above the bar (click-away closes, no dim).
-                    VerticalLayout { alignment: center; Rectangle { width: 38px; height: 38px;
-                        PlayerBtn { icon: Icons.sliders; isz: 17px; clicked => { eqpop.show(); } }
-                        eqpop := PopupWindow { x: -440px; y: -356px; width: 560px; height: 338px; close-policy: close-on-click-outside;
-                            Rectangle { width: 100%; height: 100%; border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
-                                drop-shadow-blur: 40px; drop-shadow-color: #000000e6;
-                                VerticalLayout { padding: 18px; spacing: 10px;
-                                    HorizontalLayout {
-                                        Text { text: "Equalizer"; color: MusicTheme.fg; font-size: 15px; font-weight: 700; }
-                                        Rectangle { horizontal-stretch: 1; }
-                                        BrowseChip { icon: Icons.plus; label: "Save profile"; clicked => { root.eq-save-profile(); } } }
-                                    // Preset + custom chips — horizontally scrollable so they
-                                    // never overflow the box; right-click a custom = delete.
-                                    ScrollView { height: 50px; horizontal-stretch: 1;
-                                        HorizontalLayout { spacing: 6px; alignment: start; padding-bottom: 12px;
-                                            for p[i] in ["flat", "rock", "pop", "jazz", "bass", "treble"]: BrowseChip {
-                                                on: p == root.eq-preset; label: p; clicked => { root.set-eq(p); } }
-                                            for c[i] in root.eq-custom-names: Rectangle { horizontal-stretch: 0;
-                                                cchip := BrowseChip { on: c == root.eq-preset; label: c; }
-                                                TouchArea { mouse-cursor: pointer;
-                                                    pointer-event(e) => {
-                                                        if (e.kind == PointerEventKind.up) {
-                                                            if (e.button == PointerEventButton.left)  { root.eq-load-profile(c); }
-                                                            if (e.button == PointerEventButton.right) { root.eq-delete-profile(c); }
-                                                        }
-                                                    } } } } }
-                                    HorizontalLayout { spacing: 8px; alignment: center;
-                                        for hz[i] in ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"]:
-                                            EqBand { hz: hz; value: root.eq-bands[i]; changed(v) => { root.set-eq-band(i, v); } } } } } } } }
-                    if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { icon: Icons.list-plus; isz: 17px; clicked => { root.add-to-playlist(); } } }
+                    VerticalLayout { alignment: center; PlayerBtn { tip: "Queue"; icon: Icons.list-music; isz: 17px; active: root.side-panel == "queue"; clicked => { root.side-panel-show(root.side-panel == "queue" ? "" : "queue"); } } }
+                    if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { tip: "Lyrics"; icon: Icons.lyrics; isz: 17px; active: root.side-panel == "lyrics"; clicked => { root.side-panel-show(root.side-panel == "lyrics" ? "" : "lyrics"); } } }
+                    // (EQ button moved up to the seekbar row, left of volume.)
+                    if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { tip: "Add to playlist"; icon: Icons.list-plus; isz: 17px; clicked => { root.add-to-playlist(); } } }
                     // Karaoke — live centre-vocal cancel (np.p4.music.stem, DSP tier).
-                    if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { icon: Icons.mic; isz: 17px; active: root.karaoke-on; clicked => { root.toggle-karaoke(); } } }
+                    if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { tip: "Karaoke (vocal cut)"; icon: Icons.mic; isz: 17px; active: root.karaoke-on; clicked => { root.toggle-karaoke(); } } }
                     // Sonic similar — queue tracks that sound like the current one
                     // (np.p4.music.embeddings); same action as the song context menu.
-                    if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { icon: Icons.sparkles; isz: 17px; clicked => { root.song-sonic(root.np-index); } } }
+                    if !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { tip: "Play similar"; icon: Icons.sparkles; isz: 17px; clicked => { root.song-sonic(root.np-index); } } }
                     // Sleep — anchored interval popup above the bar.
                     VerticalLayout { alignment: center; Rectangle { width: 38px; height: 38px;
-                        PlayerBtn { icon: Icons.timer; isz: 17px; active: root.sleep-min != 0; clicked => { sleeppop.show(); } }
+                        PlayerBtn { tip: "Sleep timer"; icon: Icons.timer; isz: 17px; active: root.sleep-min != 0; clicked => { sleeppop.show(); } }
                         sleeppop := PopupWindow { x: -200px; y: -366px; width: 240px; height: 358px; close-policy: close-on-click-outside;
                             Rectangle { width: 100%; height: 100%; border-radius: 16px; background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
                                 drop-shadow-blur: 40px; drop-shadow-color: #000000e6;

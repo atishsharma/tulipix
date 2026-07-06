@@ -1538,6 +1538,10 @@ fn main() -> Result<()> {
         let w = window.as_weak();
         move || { if let Some(win) = w.upgrade() { mdl::clear_cli(win.as_weak()); } }
     });
+    window.on_music_dl_retry({
+        let w = window.as_weak();
+        move |i| { if let Some(win) = w.upgrade() { mdl::retry_track(win.as_weak(), i); } }
+    });
     // Rating (np.p4.music.rating) — loved + 1–5 stars on the current track.
     let w = window.as_weak();
     window.on_music_love(move || {
@@ -6762,7 +6766,9 @@ fn main() -> Result<()> {
     // path isn't indexed, so no per-section routing is needed.
     {
         let folders = load_watched_folders();
-        if !folders.is_empty() {
+        // Always spawn — even with zero folders — so a download destination added
+        // later this session can attach to the live watcher (np: dynamic-watch).
+        {
             let mut cfg = tulipix_core::libraries::LibrariesConfig::default();
             for (i, path) in folders.iter().enumerate() {
                 cfg.add(tulipix_core::libraries::Library {
@@ -6775,8 +6781,9 @@ fn main() -> Result<()> {
             let (tx, rx) = std::sync::mpsc::channel();
             match tulipix_core::watcher::spawn(&cfg, tx) {
                 Ok(watcher) => {
-                    // Keep the watcher alive for the app's lifetime.
-                    Box::leak(Box::new(watcher));
+                    // Hand the watcher to the module so it stays alive AND so
+                    // folders added mid-session (new download dirs) can attach.
+                    tulipix_core::watcher::install(watcher);
                     let rt = tokio::runtime::Handle::current();
                     let fsweak = window.as_weak();
                     std::thread::Builder::new().name("tulipix-fsapply".into()).spawn(move || {

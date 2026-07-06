@@ -41,7 +41,7 @@ fn store_adam_id(obj: &Value) -> Option<&str> {
         .as_str()
 }
 
-/// `{w}/{h}/{f}` template -> concrete 1200x1200 jpg URL.
+/// `{w}/{h}/{f}` template -> concrete 3000x3000 jpg URL.
 fn normalize_artwork(artwork: Option<&Value>) -> Option<String> {
     let template = artwork?
         .get("dictionary")?
@@ -51,10 +51,12 @@ fn normalize_artwork(artwork: Option<&Value>) -> Option<String> {
     if template.is_empty() {
         return None;
     }
+    // Request Apple's high-res master (the CDN returns the native size, clamped
+    // down from this) so the embedded cover is sharp, not a 300px thumbnail.
     Some(
         template
-            .replace("{w}", "1200")
-            .replace("{h}", "1200")
+            .replace("{w}", "3000")
+            .replace("{h}", "3000")
             .replace("{f}", "jpg"),
     )
 }
@@ -315,7 +317,7 @@ mod tests {
         assert_eq!(pl.owner.as_deref(), Some("Apple Music"));
         assert_eq!(
             pl.artwork_url.as_deref(),
-            Some("https://is1-ssl.mzstatic.com/image/thumb/Features/v4/test/1200x1200SC.DN01.jpg")
+            Some("https://is1-ssl.mzstatic.com/image/thumb/Features/v4/test/3000x3000SC.DN01.jpg")
         );
         assert_eq!(pl.tracks.len(), 2);
         let t0 = &pl.tracks[0];
@@ -325,7 +327,7 @@ mod tests {
         assert_eq!(t0.album.as_deref(), Some("ARIRANG"));
         assert_eq!(
             t0.artwork_url.as_deref(),
-            Some("https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/test/1200x1200bb.jpg")
+            Some("https://is1-ssl.mzstatic.com/image/thumb/Music211/v4/test/3000x3000bb.jpg")
         );
         assert_eq!(t0.duration_ms, Some(159008));
         assert_eq!(
@@ -364,7 +366,7 @@ mod tests {
         .unwrap();
         assert_eq!(
             pl.tracks[0].artwork_url.as_deref(),
-            Some("https://is1-ssl.mzstatic.com/image/thumb/Features/v4/test/1200x1200SC.DN01.jpg")
+            Some("https://is1-ssl.mzstatic.com/image/thumb/Features/v4/test/3000x3000SC.DN01.jpg")
         );
     }
 
