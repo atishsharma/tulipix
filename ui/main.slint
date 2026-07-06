@@ -1309,6 +1309,8 @@ callback cloud-go-home();
     in-out property <int> music-dl-search-pages: 1;
     in-out property <bool> music-dl-search-open: false;
     in-out property <[string]> music-dl-all-artists: [];
+    in-out property <string> music-dl-cli: "";
+    in-out property <bool> music-dl-cli-open: false;
     in-out property <string> music-query: "";          // search box text
     in-out property <int> music-sleep-min: 0;          // active sleep-timer minutes
     in-out property <[PhotoTile]> music-recent: [];
@@ -1474,6 +1476,7 @@ callback cloud-go-home();
     callback music-dl-history-play(string, string, string); // path, title, sub
     callback music-dl-history-reveal(string);            // abs path → open folder
     callback music-dl-use-search(string);                // url → URL field
+    callback music-dl-cli-clear();                       // clear the CLI log
     callback music-cycle-sleep();
     callback music-love();
     callback music-rate(int);
@@ -2395,6 +2398,9 @@ callback cloud-go-home();
                 dl-search-pages <=> root.music-dl-search-pages;
                 dl-search-open <=> root.music-dl-search-open;
                 dl-all-artists <=> root.music-dl-all-artists;
+                dl-cli <=> root.music-dl-cli;
+                dl-cli-open <=> root.music-dl-cli-open;
+                dl-cli-clear() => { root.music-dl-cli-clear(); }
                 dl-set-parallel(v) => { root.music-dl-set-parallel(v); }
                 dl-set-threads(v) => { root.music-dl-set-threads(v); }
                 dl-set-main-artist(i, a) => { root.music-dl-set-main-artist(i, a); }

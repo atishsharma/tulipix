@@ -1534,6 +1534,10 @@ fn main() -> Result<()> {
             win.set_music_dl_provider_badge(mdl::detect(&url).into());
         } }
     });
+    window.on_music_dl_cli_clear({
+        let w = window.as_weak();
+        move || { if let Some(win) = w.upgrade() { mdl::clear_cli(win.as_weak()); } }
+    });
     // Rating (np.p4.music.rating) — loved + 1–5 stars on the current track.
     let w = window.as_weak();
     window.on_music_love(move || {

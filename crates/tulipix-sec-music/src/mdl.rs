@@ -53,6 +53,35 @@ fn index_map() -> &'static Mutex<Vec<usize>> {
     INDEX_MAP.get_or_init(|| Mutex::new(Vec::new()))
 }
 
+/// Rolling CLI/activity log for the downloader — what it's doing in the
+/// background. Cleared on each new download and empty at app start.
+static CLI_LOG: OnceLock<Mutex<String>> = OnceLock::new();
+fn cli_log() -> &'static Mutex<String> {
+    CLI_LOG.get_or_init(|| Mutex::new(String::new()))
+}
+
+/// Append a line to the CLI log and push the buffer to the UI (capped).
+fn cli_push(weak: &Weak<MainWindow>, line: &str) {
+    let snap = {
+        let mut g = cli_log().lock().unwrap();
+        g.push_str(line);
+        g.push('\n');
+        // Keep the tail bounded so a huge playlist can't grow the buffer forever.
+        if g.len() > 40_000 {
+            let cut = g.len() - 40_000;
+            *g = g[cut..].to_string();
+        }
+        g.clone()
+    };
+    let _ = weak.upgrade_in_event_loop(move |w| w.set_music_dl_cli(SharedString::from(snap.as_str())));
+}
+
+/// Clear the CLI log (new download / user "Clear").
+pub fn clear_cli(weak: Weak<MainWindow>) {
+    cli_log().lock().unwrap().clear();
+    let _ = weak.upgrade_in_event_loop(|w| w.set_music_dl_cli(SharedString::new()));
+}
+
 /// System Music dir — default download destination.
 pub fn default_music_dir() -> PathBuf {
     tulipix_common::dirs_default_music()
@@ -219,10 +248,12 @@ fn record_search_bg(pl: &Playlist, url: String) {
 /// Resolve a URL and show the tracklist preview (all rows selected).
 pub fn start_resolve(weak: Weak<MainWindow>, url: String) {
     set_status(&weak, "resolving");
+    cli_push(&weak, &format!("▸ resolving {url}"));
     tokio::runtime::Handle::current().spawn(async move {
         let client = reqwest::Client::new();
         match tulipix_mdl::resolve_url(&client, &url).await {
             Ok(pl) => {
+                cli_push(&weak, &format!("  resolved: {} — {} track(s) [{}]", pl.title, pl.tracks.len(), pl.provider.display_name()));
                 seed_rows(&pl);
                 record_search_bg(&pl, url.clone());
                 *resolved().lock().unwrap() = Some(pl);
@@ -290,6 +321,10 @@ pub fn start_download(
     let method = NameMethod::from_label(&name_method_label);
     let parallel = parallel.clamp(1, 4) as usize;
     let threads = threads.clamp(1, 8) as usize;
+    // Fresh CLI log per download run.
+    clear_cli(weak.clone());
+    cli_push(&weak, &format!("$ mdl download → {}", dest.display()));
+    cli_push(&weak, &format!("  format={format} name=\"{name_method_label}\" parallel={parallel} threads={threads}"));
 
     set_status(&weak, "resolving");
     let cancel = cancel_flag().clone();
@@ -387,6 +422,18 @@ pub fn start_download(
                 }
             }
             push_rows(&progress_weak);
+            // CLI activity line per meaningful stage transition.
+            let cli = match p.stage {
+                Stage::SearchingYoutube => format!("[{}/{}] search  ▸ {}", p.track_index, p.total, p.title),
+                Stage::WritingMetadata => format!("[{}/{}] tag     · {}", p.track_index, p.total, p.title),
+                Stage::Completed => format!("[{}/{}] done    ✓ {}", p.track_index, p.total, p.file_name.clone().unwrap_or_default()),
+                Stage::Failed => format!("[{}/{}] FAILED  ✗ {} — {}", p.track_index, p.total, p.title, p.message),
+                Stage::Skipped => format!("[{}/{}] skip    ⤼ {}", p.track_index, p.total, p.title),
+                _ => String::new(),
+            };
+            if !cli.is_empty() {
+                cli_push(&progress_weak, &cli);
+            }
             // On completion, ingest the finished file straight into the library.
             if matches!(p.stage, Stage::Completed) {
                 if let (Some(file), Some(track)) = (
