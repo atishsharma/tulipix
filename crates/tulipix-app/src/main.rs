@@ -6778,14 +6778,30 @@ fn main() -> Result<()> {
                     // Keep the watcher alive for the app's lifetime.
                     Box::leak(Box::new(watcher));
                     let rt = tokio::runtime::Handle::current();
+                    let fsweak = window.as_weak();
                     std::thread::Builder::new().name("tulipix-fsapply".into()).spawn(move || {
                         while let Ok(evt) = rx.recv() {
-                            let evt2 = evt.clone();
+                            // Coalesce a burst (bulk delete / folder move) into a
+                            // single apply + one live UI refresh.
+                            let mut batch = vec![evt];
+                            std::thread::sleep(std::time::Duration::from_millis(350));
+                            while let Ok(e) = rx.try_recv() { batch.push(e); }
+                            let needs_resync = batch.iter().any(|e| matches!(e,
+                                tulipix_core::watcher::FsEvent::Deleted(_)
+                                | tulipix_core::watcher::FsEvent::Renamed { .. }));
+                            let fsweak = fsweak.clone();
                             rt.spawn(async move {
                                 for section in ["photos", "videos", "music", "books", "cloud"] {
                                     if let Ok(pool) = pool_for(section).await {
-                                        let _ = tulipix_core::watcher::apply_event(&pool, &evt2).await;
+                                        for e in &batch {
+                                            let _ = tulipix_core::watcher::apply_event(&pool, e).await;
+                                        }
                                     }
+                                }
+                                // A delete/rename removed or moved a file — refresh
+                                // every section's grid so it disappears live.
+                                if needs_resync {
+                                    resync_after_fs_change(fsweak);
                                 }
                             });
                         }
@@ -7830,6 +7846,35 @@ fn refresh_books(w: &MainWindow) {
         w.get_book_sort().to_string(),
         w.get_book_sort_dir().to_string(),
     );
+}
+
+/// After external FS deletes/renames are applied to the DB, prune the in-memory
+/// library mirrors to files that still exist and rebuild every section's grid,
+/// so a file removed in the OS disappears from the app live (np.p1.lib.watch).
+/// The section DB queries already exclude `missing_since IS NOT NULL`; this
+/// keeps the in-memory tile mirrors (music/photos/videos) in sync with that.
+fn resync_after_fs_change(weak: slint::Weak<MainWindow>) {
+    // Prune the mirrors (these are stat() calls — done off the UI thread).
+    if let Ok(mut g) = music_full().lock() { g.retain(|(_, p, _)| p.exists()); }
+    if let Ok(mut g) = photo_full().lock() { g.retain(|(_, p, _)| p.exists()); }
+    if let Ok(mut g) = video_full().lock() { g.retain(|(_, p, _)| p.exists()); }
+    let _ = weak.upgrade_in_event_loop(|w| {
+        // Music — tiles + dashboard/browse.
+        rebuild_music_tiles(&w);
+        populate_music_views(w.as_weak());
+        populate_folder_roots(&w);
+        // Photos — counts + active category grid.
+        w.set_photos_total(photo_full().lock().map(|g| g.len() as i32).unwrap_or(0));
+        w.set_photos_folder_count(photo_folder_count());
+        let pcat = w.get_photos_category().to_string();
+        let pq = w.get_photos_query().to_string();
+        kick_category_refresh(w.as_weak(), pcat, pq);
+        // Videos — active category grid.
+        let vcat = w.get_video_category().to_string();
+        kick_video_refresh(w.as_weak(), vcat);
+        // Books — rebuilt from the DB.
+        refresh_books(&w);
+    });
 }
 
 fn kick_books_refresh(weak: slint::Weak<MainWindow>, view: String, query: String, sort: String, dir: String) {
