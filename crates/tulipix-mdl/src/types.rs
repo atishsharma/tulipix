@@ -20,9 +20,9 @@ impl ProviderId {
     pub fn display_name(self) -> &'static str {
         match self {
             ProviderId::Spotify => "Spotify",
-            ProviderId::AppleMusic => "Apple Music",
+            ProviderId::AppleMusic => "Apple",
             ProviderId::AmazonMusic => "Amazon Music",
-            ProviderId::YoutubeMusic => "YouTube Music",
+            ProviderId::YoutubeMusic => "YT Music",
             ProviderId::Soundcloud => "SoundCloud",
             ProviderId::Bandcamp => "Bandcamp",
             ProviderId::Qobuz => "Qobuz",

@@ -1688,6 +1688,11 @@ export component MusicPage inherits Rectangle {
     in-out property <string> dl-bulk-artist: "";
     in-out property <string> dl-cli: "";
     in-out property <bool> dl-cli-open: false;
+    in-out property <bool> dl-yt-warn: false;             // YT link isn't tagged music
+    in-out property <bool> dl-history-clear-open: false;  // Downloaded clear confirm
+    in-out property <bool> dl-search-clear-open: false;   // Searches clear confirm
+    callback dl-clear-history();                           // wipe download-history records
+    callback dl-clear-searches();                          // wipe search-history records
     callback dl-url-changed(string);
     callback dl-pick-folder();
     callback dl-resolve();
@@ -4235,7 +4240,7 @@ export component MusicPage inherits Rectangle {
                         AppIcon { source: Icons.disc; tint: #ffffff; width: 22px; height: 22px; } } }
                     VerticalLayout { alignment: center; spacing: 1px;
                         Text { text: "Music Downloader"; color: MusicTheme.fg; font-size: 22px; font-weight: 800; }
-                        Text { text: "Paste a Spotify, Apple Music or YouTube Music link — tracks land in your library with full metadata."; color: MusicTheme.fg-dim2; font-size: 12px; } }
+                        Text { text: "Paste a Spotify, Apple or YT Music link — tracks land in your library with full metadata."; color: MusicTheme.fg-dim2; font-size: 12px; } }
                     Rectangle { horizontal-stretch: 1; }
                     // Clear — wipe the resolve + queue below the card.
                     if root.dl-rows.length > 0 || root.dl-kind != "": VerticalLayout { alignment: center;
@@ -4274,8 +4279,8 @@ export component MusicPage inherits Rectangle {
                                     if root.dl-provider-badge != "": VerticalLayout { alignment: center; pbadge := Rectangle {
                                         property <color> pc:
                                             root.dl-provider-badge == "Spotify" ? #1db954 :
-                                            root.dl-provider-badge == "Apple Music" ? #fa2d48 :
-                                            root.dl-provider-badge == "YouTube Music" ? #ff3b30 :
+                                            root.dl-provider-badge == "Apple" ? #fa2d48 :
+                                            root.dl-provider-badge == "YT Music" ? #ff3b30 :
                                             root.dl-provider-badge == "Amazon Music" ? #00a8e1 :
                                             root.dl-provider-badge == "SoundCloud" ? #ff5500 :
                                             root.dl-provider-badge == "Deezer" ? #a238ff :
@@ -4309,15 +4314,35 @@ export component MusicPage inherits Rectangle {
                                 border-width: root.dl-status == "downloading" ? 2px : 1px;
                                 border-color: root.dl-status == "downloading" ? #22c55e : MusicTheme.line;
                                 animate border-color, border-width { duration: 160ms; }
-                                HorizontalLayout { padding-left: 14px; padding-right: 14px;
-                                    VerticalLayout { alignment: center; Text {
-                                        text: "✓ " + root.dl-done + "   ⤼ " + root.dl-skipped + "   ✗ " + root.dl-failed;
-                                        color: MusicTheme.fg2; font-size: 12px; font-weight: 700; } } } }
+                                // Icon counters (check / skipped / failed) — real
+                                // AppIcons, not unicode glyphs, so they always render
+                                // (the old ✓ ⤼ ✗ text showed as tofu on Windows).
+                                HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 10px;
+                                    VerticalLayout { alignment: center; HorizontalLayout { spacing: 4px;
+                                        VerticalLayout { alignment: center; AppIcon { source: Icons.check; tint: #22c55e; width: 13px; height: 13px; } }
+                                        Text { text: "" + root.dl-done; color: MusicTheme.fg2; font-size: 12px; font-weight: 700; vertical-alignment: center; } } }
+                                    VerticalLayout { alignment: center; HorizontalLayout { spacing: 4px;
+                                        VerticalLayout { alignment: center; AppIcon { source: Icons.skip-forward; tint: #64748b; width: 13px; height: 13px; } }
+                                        Text { text: "" + root.dl-skipped; color: MusicTheme.fg2; font-size: 12px; font-weight: 700; vertical-alignment: center; } } }
+                                    VerticalLayout { alignment: center; HorizontalLayout { spacing: 4px;
+                                        VerticalLayout { alignment: center; AppIcon { source: Icons.x; tint: #ef4444; width: 13px; height: 13px; } }
+                                        Text { text: "" + root.dl-failed; color: MusicTheme.fg2; font-size: 12px; font-weight: 700; vertical-alignment: center; } } } } }
                             DlBtn { icon: Icons.clock; label: "Downloaded"; tint: #6366f1; clicked => { root.dl-history-open = true; root.dl-open-history(0); } }
                             DlBtn { icon: Icons.search; label: "Searches"; tint: #06b6d4; clicked => { root.dl-search-open = true; root.dl-open-searches(0); } }
                             DlBtn { icon: Icons.file-text; label: "Output"; tint: #f59e0b; clicked => { root.dl-cli-open = true; } } }
                     }
                 }
+
+                // ── YT non-music warning ─────────────────────────────────────
+                // The YT provider resolves any YouTube link; when it doesn't look
+                // like tagged music (a plain video), warn but still let it through.
+                if root.dl-yt-warn: Rectangle { height: 44px; border-radius: 12px;
+                    background: #f59e0b1a; border-width: 1.5px; border-color: #f59e0b;
+                    HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 10px;
+                        VerticalLayout { alignment: center; AppIcon { source: Icons.triangle-alert; tint: #f59e0b; width: 16px; height: 16px; } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 1; Text {
+                            text: "This YouTube link doesn't look like tagged music — it'll still download, but for regular videos use the YouTube section.";
+                            color: MusicTheme.fg2; font-size: 12px; font-weight: 600; wrap: word-wrap; } } } }
 
                 // ── Options card ─────────────────────────────────────────────
                 // Format · Name · Bitrate · Parallel · Threads — all on one line.
@@ -4488,6 +4513,12 @@ export component MusicPage inherits Rectangle {
                           VerticalLayout { alignment: center; AppIcon { source: Icons.clock; tint: MusicTheme.fg; width: 18px; height: 18px; } }
                           VerticalLayout { alignment: center; Text { text: "Downloaded"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; } }
                           Rectangle { horizontal-stretch: 1; }
+                          // Counter (rows shown on this page) — left of Close.
+                          VerticalLayout { alignment: center; Rectangle { height: 26px; border-radius: 13px; background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                              HorizontalLayout { padding-left: 12px; padding-right: 12px;
+                                  Text { text: root.dl-history.length + " shown"; color: MusicTheme.fg-dim2; font-size: 11px; font-weight: 700; vertical-alignment: center; } } } }
+                          // Clear — wipes the history records (not the files), behind a confirm.
+                          if root.dl-history.length > 0: DlBtn { icon: Icons.trash; label: "Clear"; tint: #ef4444; clicked => { root.dl-history-clear-open = true; } }
                           DlBtn { icon: Icons.x; label: "Close"; tint: #64748b; clicked => { root.dl-history-open = false; } } }
                       ScrollView { vertical-stretch: 1;
                           VerticalLayout { spacing: 6px;
@@ -4505,6 +4536,21 @@ export component MusicPage inherits Rectangle {
                           DlBtn { icon: Icons.chevron-left; label: "Prev"; tint: #64748b; clicked => { root.dl-open-history(root.dl-history-page - 1); } }
                           VerticalLayout { alignment: center; Text { text: (root.dl-history-page + 1) + " / " + root.dl-history-pages; color: MusicTheme.fg-dim2; font-size: 12px; } }
                           DlBtn { icon: Icons.chevron-right; label: "Next"; tint: #64748b; clicked => { root.dl-open-history(root.dl-history-page + 1); } } }
+                  }
+              }
+              // Clear-history confirmation overlay.
+              if root.dl-history-clear-open: Rectangle { background: #000000aa;
+                  TouchArea { clicked => { root.dl-history-clear-open = false; } }
+                  ModalFrost { accent: #ef4444; width: 380px; height: 200px;
+                      x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                      TouchArea {}
+                      VerticalLayout { padding: 22px; spacing: 12px; alignment: center;
+                          Text { text: "Clear download history?"; color: MusicTheme.fg; font-size: 16px; font-weight: 800; horizontal-alignment: center; }
+                          Text { text: "Removes the history records only — your downloaded files stay on disk."; color: MusicTheme.fg-dim2; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; }
+                          HorizontalLayout { spacing: 10px; alignment: center;
+                              DlBtn { icon: Icons.x; label: "Cancel"; tint: #64748b; clicked => { root.dl-history-clear-open = false; } }
+                              DlBtn { icon: Icons.trash; label: "Clear"; tint: #ef4444; clicked => { root.dl-clear-history(); root.dl-history-clear-open = false; } } }
+                      }
                   }
               }
           }
@@ -4525,6 +4571,11 @@ export component MusicPage inherits Rectangle {
                           VerticalLayout { alignment: center; AppIcon { source: Icons.search; tint: MusicTheme.fg; width: 18px; height: 18px; } }
                           VerticalLayout { alignment: center; Text { text: "Search History"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; } }
                           Rectangle { horizontal-stretch: 1; }
+                          // Counter (rows shown on this page) — left of Close.
+                          VerticalLayout { alignment: center; Rectangle { height: 26px; border-radius: 13px; background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                              HorizontalLayout { padding-left: 12px; padding-right: 12px;
+                                  Text { text: root.dl-searches.length + " shown"; color: MusicTheme.fg-dim2; font-size: 11px; font-weight: 700; vertical-alignment: center; } } } }
+                          if root.dl-searches.length > 0: DlBtn { icon: Icons.trash; label: "Clear"; tint: #ef4444; clicked => { root.dl-search-clear-open = true; } }
                           DlBtn { icon: Icons.x; label: "Close"; tint: #64748b; clicked => { root.dl-search-open = false; } } }
                       ScrollView { vertical-stretch: 1;
                           VerticalLayout { spacing: 6px;
@@ -4543,6 +4594,21 @@ export component MusicPage inherits Rectangle {
                           DlBtn { icon: Icons.chevron-left; label: "Prev"; tint: #64748b; clicked => { root.dl-open-searches(root.dl-search-page - 1); } }
                           VerticalLayout { alignment: center; Text { text: (root.dl-search-page + 1) + " / " + root.dl-search-pages; color: MusicTheme.fg-dim2; font-size: 12px; } }
                           DlBtn { icon: Icons.chevron-right; label: "Next"; tint: #64748b; clicked => { root.dl-open-searches(root.dl-search-page + 1); } } }
+                  }
+              }
+              // Clear-searches confirmation overlay.
+              if root.dl-search-clear-open: Rectangle { background: #000000aa;
+                  TouchArea { clicked => { root.dl-search-clear-open = false; } }
+                  ModalFrost { accent: #ef4444; width: 380px; height: 200px;
+                      x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                      TouchArea {}
+                      VerticalLayout { padding: 22px; spacing: 12px; alignment: center;
+                          Text { text: "Clear search history?"; color: MusicTheme.fg; font-size: 16px; font-weight: 800; horizontal-alignment: center; }
+                          Text { text: "Removes the saved resolved-URL list. Nothing on disk is affected."; color: MusicTheme.fg-dim2; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; }
+                          HorizontalLayout { spacing: 10px; alignment: center;
+                              DlBtn { icon: Icons.x; label: "Cancel"; tint: #64748b; clicked => { root.dl-search-clear-open = false; } }
+                              DlBtn { icon: Icons.trash; label: "Clear"; tint: #ef4444; clicked => { root.dl-clear-searches(); root.dl-search-clear-open = false; } } }
+                      }
                   }
               }
           }

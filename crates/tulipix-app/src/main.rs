@@ -1555,6 +1555,14 @@ fn main() -> Result<()> {
         let w = window.as_weak();
         move || { if let Some(win) = w.upgrade() { mdl::clear_cli(win.as_weak()); } }
     });
+    window.on_music_dl_clear_history({
+        let w = window.as_weak();
+        move || { if let Some(win) = w.upgrade() { mdl::clear_history(win.as_weak()); } }
+    });
+    window.on_music_dl_clear_searches({
+        let w = window.as_weak();
+        move || { if let Some(win) = w.upgrade() { mdl::clear_searches(win.as_weak()); } }
+    });
     window.on_music_dl_retry({
         let w = window.as_weak();
         move |i| { if let Some(win) = w.upgrade() { mdl::retry_track(win.as_weak(), i); } }
@@ -6923,6 +6931,22 @@ fn main() -> Result<()> {
                     seed_settings_panels(&w);
                 }
             }
+            // Reset the tools directory back to the app default (bundled + PATH),
+            // behind a confirmation dialog.
+            "tools-dir-reset" => {
+                let ok = rfd::MessageDialog::new()
+                    .set_title("Reset tools directory")
+                    .set_description("Clear the custom tools folder and fall back to the app's bundled binaries and system PATH?")
+                    .set_buttons(rfd::MessageButtons::YesNo)
+                    .show();
+                if ok == rfd::MessageDialogResult::Yes {
+                    let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
+                    s.advanced.remove("tools.bin-dir");
+                    if let Err(e) = s.save() { tracing::warn!(error = %e, "reset tools dir"); }
+                    tulipix_core::thumbs::set_tool_dir(None);
+                    seed_settings_panels(&w);
+                }
+            }
             // Migration import wizard (np.p1.migration): pick the source file,
             // auto-detect its kind, dry-run a plan, surface counts; Picasa
             // stars apply to the photo library (favorite flag) right away.
@@ -9278,6 +9302,18 @@ fn seed_settings_panels(w: &MainWindow) {
 
     // Advanced — live diagnostics + bundled tools + platform status.
     let cache_mb = tulipix_core::thumbs::cache_size().map(|b| b / (1024 * 1024)).unwrap_or(0);
+    // ggml-tiny status — resolve it the same way the app actually loads the model
+    // (user tools-dir, then the bundled per-OS copy walked from current_exe). The
+    // old `bundled_present` check hard-coded a linux-x86_64 dev path, so it always
+    // read "Missing" on installed Windows/macOS builds even with the model present.
+    let ggml_tiny = "ggml-tiny-1.0.bin";
+    let ggml_in_tools = tulipix_core::settings::Settings::load().ok()
+        .map(|s| s.text("tools.bin-dir")).filter(|d| !d.trim().is_empty())
+        .map(|d| std::path::Path::new(d.trim()).join(ggml_tiny).exists())
+        .unwrap_or(false);
+    let ggml_bundled = tulipix_core::thumbs::bundled_file(ggml_tiny).is_some();
+    let (ggml_label, ggml_state) = if ggml_in_tools { ("Tools directory", "ok") }
+        else if ggml_bundled { ("Bundled (75 MB)", "ok") } else { ("Missing", "warn") };
     let mut sys = vec![
         hdr("PERFORMANCE (LIVE)"),
         stat("Startup to ready", &format!("{} ms", startup_ms()), if startup_ms() < 500 { "ok" } else { "warn" }),
@@ -9296,10 +9332,10 @@ fn seed_settings_panels(w: &MainWindow) {
         // every external tool; handy on Windows where they aren't on PATH.
         txt(&s, "tools.bin-dir", "Tools directory", "Folder holding mpv, yt-dlp, ffmpeg… — checked before bundled + PATH (blank = off)"),
         act("tools-dir-browse", "Choose tools directory", "Pick the folder containing your external tool binaries", "Browse…"),
+        act("tools-dir-reset", "Reset tools directory", "Clear the custom folder and fall back to the app's bundled binaries + system PATH", "Reset"),
         tool_row("ffmpeg"), tool_row("ffprobe"), tool_row("rclone"),
         tool_row("yt-dlp"), tool_row("whisper-cli"), tool_row("mpv"),
-        stat("ggml-tiny model", if bundled_present("ggml-tiny-1.0.bin") { "Bundled (75 MB)" } else { "Missing" },
-             if bundled_present("ggml-tiny-1.0.bin") { "ok" } else { "warn" }),
+        stat("ggml-tiny model", ggml_label, ggml_state),
         tool_row("exiftool"),
         hdr("PLATFORM INTEGRATIONS"),
         tog(&s, "notifications", true, "Actionable notifications", "Snooze / mark-played / open-version actions"),

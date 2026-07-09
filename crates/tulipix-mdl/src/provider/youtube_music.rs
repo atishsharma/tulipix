@@ -10,6 +10,7 @@ use crate::types::{Playlist, ProviderId, Track};
 use anyhow::{anyhow, bail, Result};
 use regex::Regex;
 use serde_json::Value;
+use tulipix_core::proc::NoWindow;
 use url::Url;
 
 pub struct YoutubeMusic;
@@ -184,6 +185,7 @@ impl Provider for YoutubeMusic {
             cmd.arg("--flat-playlist");
         }
         cmd.arg(url);
+        cmd.no_window(); // no console-window flash on Windows
         let out = cmd.output().await?;
         if !out.status.success() {
             bail!("yt-dlp failed: {}", String::from_utf8_lossy(&out.stderr));

@@ -265,8 +265,10 @@ export component HomePage inherits Rectangle {
 
     // Grid geometry (pure, no layout feedback).
     property <length> grid-w: root.width - 32px;
-    property <length> content-h: root.height - 32px - 84px - 12px - 30px;
-    property <length> row3-h: 210px;
+    // No footer row anymore — reclaim its ~30px into the content area so the last
+    // row grows to fill it (cards look complete, no dead strip at the bottom).
+    property <length> content-h: root.height - 32px - 84px - 12px;
+    property <length> row3-h: 244px;
     property <length> bento-h: content-h - row3-h - 10px;
     // Scale the embedded player up to fill the music column (design = big player).
     // ~112px of card chrome (padding + MUSIC cap + two tab rows); 488px is the
@@ -383,7 +385,7 @@ export component HomePage inherits Rectangle {
             spacing: 10px; height: root.row3-h;
             Rectangle {
                 horizontal-stretch: 1; min-width: 0; border-radius: 14px;
-                background: Theme.panel-2; border-width: 1px; border-color: Theme.outline;
+                background: Theme.panel-2; border-width: 1.5px; border-color: Theme.sec-music.with-alpha(0.55);
                 VerticalLayout {
                     padding: 14px; spacing: 10px;
                     HomeCap { text: "CONTINUE"; }
@@ -409,7 +411,7 @@ export component HomePage inherits Rectangle {
             }
             Rectangle {
                 width: (root.grid-w - 10px) / 3; border-radius: 14px;
-                background: Theme.panel-2; border-width: 1px; border-color: Theme.outline;
+                background: Theme.panel-2; border-width: 1.5px; border-color: Theme.sec-videos.with-alpha(0.55);
                 VerticalLayout {
                     padding: 14px; spacing: 10px;
                     HomeCap { text: "QUICK ACTIONS"; }
@@ -444,8 +446,5 @@ export component HomePage inherits Rectangle {
             }
         }
 
-        // ── Footer ─────────────────────────────────────────────────
-        Text { text: "Tulipix © 2026 — Developed by Atish Ak Sharma";
-            color: Theme.text-dim.with-alpha(0.7); font-size: 10px; horizontal-alignment: center; }
     }
 }

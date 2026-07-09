@@ -27,10 +27,15 @@ jobs:
           sudo apt-get update
           # mold: the committed .cargo/config.toml links Linux builds with it.
           # libgtk-3-dev: rfd file dialogs (pulls cairo/pango/gdk).
+          # clang + libclang-dev + python3: skia-bindings (slint renderer-skia)
+          # builds Skia from source with GN/Ninja when no prebuilt binary matches
+          # the feature set — that build REQUIRES clang (GN toolchain) and libclang
+          # (bindgen). Their absence is what failed the Skia step ~7 min in.
           sudo apt-get install -y --no-install-recommends \
             libmpv-dev mpv mold cmake ninja-build libgtk-3-dev \
             libfontconfig1-dev libfreetype6-dev libgl1-mesa-dev libegl1-mesa-dev \
-            libxkbcommon-dev libwayland-dev
+            libxkbcommon-dev libwayland-dev \
+            clang libclang-dev llvm-dev python3
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -321,6 +326,15 @@ jobs:
             - Play-from-history shows cover art and links the title/artist to the correct album/artist page.
             - Equalizer button beside volume; **every** player button has a hover tooltip.
             - Live delete-sync: removing files from watched (and newly-added) folders updates the library without a restart.
+
+            ### Fixes & polish
+            - **No more console flash on Windows** — starting a download no longer pops a black `cmd` window (yt-dlp/ffmpeg now spawn with `CREATE_NO_WINDOW`).
+            - **"Open in folder" now opens the right folder on Windows** — Explorer's `/select` argument is passed unquoted so the actual track's folder is revealed instead of a random default directory.
+            - **Downloader counter icons** render everywhere — the ✓ / skipped / ✗ pill uses real icons instead of unicode glyphs that showed as boxes on Windows.
+            - **Provider names tidied** — "YouTube Music" → **YT Music**, "Apple Music" → **Apple**; a YouTube link that isn't tagged music now shows a gentle warning instead of silently treating any video as a song.
+            - **Clear buttons** (with confirmation) and a live count in both the Downloaded and Searches history popups — clears the records only, never your files.
+            - **ggml-tiny model status** reports correctly on installed Windows/macOS builds (was always "Missing" due to a hard-coded dev path); added a **Reset** button for the custom tools directory.
+            - **Home** hides the floating/side mini-player (it already has an embedded player), drops the footer credit, and gives every card a clean, colorful outline.
 
             ### Packaging
             - App icon embedded across all platforms — Windows exe + installer, macOS `.app`, and Linux `.desktop`/hicolor launchers — so it no longer looks like a generic app.

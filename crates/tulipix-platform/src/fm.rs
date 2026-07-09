@@ -16,7 +16,18 @@ pub fn reveal_in_file_manager(path: &Path) -> Result<()> {
     }
     #[cfg(target_os = "windows")]
     {
-        Command::new("explorer").arg(format!("/select,{}", path.display())).status()?;
+        use std::os::windows::process::CommandExt;
+        // `explorer /select,<path>` selects the file in its folder. Two Windows
+        // quirks to work around:
+        //  1. Passed as a normal arg, Rust quotes it when the path has spaces
+        //     ("…\Artist - Song.opus"), and explorer then fails to parse the
+        //     switch and opens a *default* folder (the "random directory" bug).
+        //     `raw_arg` writes the command line verbatim so the quoting is ours.
+        //  2. explorer almost always exits non-zero even on success, so the exit
+        //     status is deliberately ignored rather than surfaced as an error.
+        let mut c = Command::new("explorer");
+        c.raw_arg(format!("/select,\"{}\"", path.display()));
+        let _ = c.status();
         return Ok(());
     }
     #[cfg(target_os = "linux")]

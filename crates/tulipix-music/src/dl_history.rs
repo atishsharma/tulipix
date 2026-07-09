@@ -230,6 +230,19 @@ pub async fn searches_page(pool: &SqlitePool, page: i64) -> Result<(Vec<DlSearch
     Ok((rows, pages))
 }
 
+/// Wipe the download-history log. Only clears the history *records* — the
+/// downloaded audio files on disk (and their library entries) are untouched.
+pub async fn clear_history(pool: &SqlitePool) -> Result<()> {
+    sqlx::query("DELETE FROM dl_history").execute(pool).await?;
+    Ok(())
+}
+
+/// Wipe the search-history log (the replayable resolved-URL list).
+pub async fn clear_searches(pool: &SqlitePool) -> Result<()> {
+    sqlx::query("DELETE FROM dl_searches").execute(pool).await?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

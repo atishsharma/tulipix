@@ -8,7 +8,7 @@ use slint::{ComponentHandle, ModelRc, SharedString, VecModel, Weak};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
-use tulipix_mdl::types::{DownloadOptions, NameMethod, Playlist, Progress, Stage, Track};
+use tulipix_mdl::types::{DownloadOptions, NameMethod, Playlist, Progress, ProviderId, Stage, Track};
 use tulipix_ui::*;
 
 /// Cancels the in-flight download when set.
@@ -569,6 +569,7 @@ fn stream_art(weak: Weak<MainWindow>, playlist: Playlist, kind: String, generati
 /// Resolve a URL and show the tracklist preview (all rows selected).
 pub fn start_resolve(weak: Weak<MainWindow>, url: String) {
     set_status(&weak, "resolving");
+    let _ = weak.upgrade_in_event_loop(|w| w.set_music_dl_yt_warn(false));
     cli_push(&weak, &format!("▸ resolving {url}"));
     tokio::runtime::Handle::current().spawn(async move {
         let client = reqwest::Client::new();
@@ -586,6 +587,14 @@ pub fn start_resolve(weak: Weak<MainWindow>, url: String) {
                 push_kind(&weak, &kind);
                 push_rows(&weak);
                 set_status(&weak, "resolved");
+                // YouTube link that doesn't look like tagged music — warn (but
+                // still resolve). music.youtube.com URLs, or any track carrying a
+                // real album tag, are treated as genuine music; a bare youtube.com
+                // video with no music metadata trips the warning.
+                let yt_warn = pl.provider == ProviderId::YoutubeMusic
+                    && !url.contains("music.youtube.com")
+                    && !pl.tracks.iter().any(|t| t.album.is_some());
+                let _ = weak.upgrade_in_event_loop(move |w| w.set_music_dl_yt_warn(yt_warn));
                 // Kick off background per-track art fetch for the queue thumbs.
                 let generation = art_gen().fetch_add(1, Ordering::Relaxed) + 1;
                 stream_art(weak.clone(), pl, kind, generation);
@@ -617,6 +626,28 @@ pub fn clear_all(weak: Weak<MainWindow>) {
         w.set_music_dl_skipped(0);
         w.set_music_dl_failed(0);
         w.set_music_dl_status(SharedString::from("idle"));
+        w.set_music_dl_yt_warn(false);
+    });
+}
+
+/// Wipe the download-history log (records only — files on disk are kept), then
+/// reload the popup's first page so the list + counter reset live.
+pub fn clear_history(weak: Weak<MainWindow>) {
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = tulipix_common::pool_for("music").await {
+            let _ = tulipix_music::dl_history::clear_history(&pool).await;
+        }
+        load_history(weak, 0);
+    });
+}
+
+/// Wipe the search-history log, then reload the popup's first page.
+pub fn clear_searches(weak: Weak<MainWindow>) {
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = tulipix_common::pool_for("music").await {
+            let _ = tulipix_music::dl_history::clear_searches(&pool).await;
+        }
+        load_searches(weak, 0);
     });
 }
 
@@ -758,7 +789,7 @@ pub fn start_download(
                     row.percent = 100.0;
                     row.file = "Already in library".into();
                 }
-                cli_push(&weak, &format!("• in library ⤼ {}", t.title));
+                cli_push(&weak, &format!("- in library » {}", t.title));
             } else {
                 keep_tracks.push(t);
                 keep_idx.push(ri);
@@ -889,7 +920,7 @@ async fn run_download(
             Stage::WritingMetadata => format!("[{}/{}] tag     · {}", p.track_index, p.total, p.title),
             Stage::Completed => format!("[{}/{}] done    ✓ {}", p.track_index, p.total, p.file_name.clone().unwrap_or_default()),
             Stage::Failed => format!("[{}/{}] FAILED  ✗ {} — {}", p.track_index, p.total, p.title, p.message),
-            Stage::Skipped => format!("[{}/{}] skip    ⤼ {}", p.track_index, p.total, p.title),
+            Stage::Skipped => format!("[{}/{}] skip    » {}", p.track_index, p.total, p.title),
             _ => String::new(),
         };
         if !cli.is_empty() {

@@ -7,6 +7,7 @@ use crate::manifest::{self, Manifest, ManifestTrack};
 use crate::types::{DownloadOptions, NameMethod, Playlist, Progress, Stage, Summary, Track};
 use anyhow::{anyhow, bail, Result};
 use std::path::{Path, PathBuf};
+use tulipix_core::proc::NoWindow;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use tokio::sync::Semaphore;
@@ -92,6 +93,9 @@ async fn download_audio(
             cmd.arg(a);
         }
         cmd.arg("-o").arg(&out_tmpl);
+        // Suppress the console window Windows would otherwise flash for every
+        // yt-dlp/ffmpeg child of this GUI app. No-op off Windows.
+        cmd.no_window();
 
         tracing::info!(query = %query, attempt, dest = %dest.display(), "mdl: yt-dlp search+download");
         match cmd.output().await {
