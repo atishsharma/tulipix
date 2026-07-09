@@ -62,6 +62,13 @@ jobs:
           install -m755 /tmp/whisper.cpp/build/bin/whisper-cli resources/bin/linux-x86_64/whisper-cli
 
       - name: "Build (full: embedded-mpv + skia)"
+        # Cap parallelism to 2 jobs. The default (nproc=4) compiles four heavy
+        # crates (skia + the sec-* + tulipix-app monster) at once and peaked past
+        # the 16 GB runner's memory, which SIGTERM-killed the job (exit 143) with
+        # no compile error. Fewer parallel jobs lowers peak RAM at a modest time
+        # cost.
+        env:
+          CARGO_BUILD_JOBS: "2"
         run: cargo build --release --locked -p tulipix-app --features full,ai-onnx
 
       - name: Strip
@@ -182,6 +189,8 @@ jobs:
           echo "TULIPIX_MPV_LIB_DIR=$PWD\mpv-dev" >> $env:GITHUB_ENV
 
       - name: "Build (full: embedded-mpv + skia)"
+        env:
+          CARGO_BUILD_JOBS: "2"   # cap peak RAM (see linux job note)
         run: cargo build --release --locked -p tulipix-app --features full,ai-onnx
 
       - name: Assemble dist
@@ -244,6 +253,8 @@ jobs:
           install -m755 /tmp/whisper.cpp/build/bin/whisper-cli resources/bin/macos-aarch64/whisper-cli
 
       - name: "Build (full: embedded-mpv + skia)"
+        env:
+          CARGO_BUILD_JOBS: "2"   # cap peak RAM — macos-14 (M1) has ~7 GB
         run: |
           export TULIPIX_MPV_LIB_DIR="$(brew --prefix mpv)/lib"
           cargo build --release --locked -p tulipix-app --features full,ai-onnx
