@@ -20,6 +20,8 @@ export struct HomeStats {
     continue3: string, continue3-sub: string,
 }
 
+export struct HomeRemote { name: string, backend: string }
+
 // Small uppercase section label.
 component HomeCap inherits Text {
     font-size: 9px; font-weight: 800; letter-spacing: 1.2px;
@@ -184,42 +186,389 @@ component HomeMusicCard inherits Rectangle {
     }
 }
 
+// One coverflow card — rounded, shadowed photo, letterboxed (no crop).
+component FlowCard inherits Rectangle {
+    in property <image> img;
+    in property <bool> fill: false;       // cover-fill the tile vs letterbox-contain
+    in property <bool> top-crop: false;   // anchor the cover crop to the TOP of the photo
+    clip: true; border-radius: 12px;
+    background: #14161f;
+    border-width: 1.5px; border-color: #ffffff5c;
+    drop-shadow-blur: 18px; drop-shadow-color: #00000055; drop-shadow-offset-y: 6px;
+    Image {
+        source: root.img; width: 100%; height: 100%;
+        image-fit: root.fill ? ImageFit.cover : ImageFit.contain;
+        vertical-alignment: root.top-crop ? ImageVerticalAlignment.top : ImageVerticalAlignment.center;
+    }
+}
+
+// One fan slot at fixed offset `k` from centre. Geometry derives from the shared
+// float `pos` (which eases one notch per tick), giving heavy overlap + a stacked
+// look; `k == 0` is the centre card and is declared last so it paints on top.
+component FanSlot inherits FlowCard {
+    in property <[image]> photos;
+    in property <int> n;
+    in property <float> pos;
+    in property <int> k;
+    in property <length> step;
+    in property <length> areaw;
+    in property <length> areah;
+    in property <float> aspect: 1.0;                                // 1 = square, >1 = landscape (video)
+    property <float> frac: root.pos - Math.floor(root.pos);
+    property <float> rel: root.k - root.frac;                       // signed distance from centre
+    // Sharp falloff (÷2.1) so only 5 cards ever carry opacity — the 6th buffer
+    // card stays fully hidden until it becomes the incoming edge card.
+    property <float> prox: Math.max(0, 1 - Math.abs(root.rel) / 2.1);
+    // Sub-linear horizontal offset (mild compression) so the 3rd layer hugs the
+    // 2nd for a stacked-deck read while the fan still reaches both card edges.
+    property <float> off: root.rel * (1 - 0.05 * Math.abs(root.rel));
+    img: root.photos[Math.mod(Math.floor(root.pos) + root.k, Math.max(root.n, 1))];
+    // Big square tiles — all 5 near-full-height so they fill the card edge-to-edge
+    // (centre only a little larger). Upright, vertically centred, no tilt/crop.
+    height: root.areah * (0.63 + 0.12 * root.prox);                // ~25% smaller tiles
+    width: root.height * root.aspect;                              // square (1) or landscape (video)
+    x: root.areaw / 2 + root.off * root.step - root.width / 2;
+    y: (root.areah - root.height) / 2;
+    // Hard 0 past the fan edge (no opacity floor) so the 6th buffer card stays
+    // fully invisible until it actually slides in as the new edge card.
+    opacity: (root.n > 0 && root.prox > 0) ? 0.35 + 0.65 * root.prox : 0;
+}
+
+// Photos-tile coverflow — icon chip + a stacked fan of the 10 most-recent photos
+// (centre biggest, neighbours peeking behind) that holds each photo ~2s then
+// eases one step to the next. Clipped so nothing spills. Same accent shell +
+// click target as HomeTile so it drops into the grid.
+component PhotoSlideshow inherits Rectangle {
+    in property <[image]> photos;
+    in property <image> icon;
+    in property <color> accent;
+    in property <string> name;
+    in property <string> stat;
+    in property <string> footer: "";
+    in property <bool> show-play: false;                           // Videos: play badge on centre
+    in property <float> tile-aspect: 1.0;                          // 1 = square (photos), >1 landscape (video)
+    in property <bool> tile-top: false;                            // top-anchor the cover crop (photos)
+    in property <duration> cycle: 4000ms;                          // per-tile dwell (videos offset from photos)
+    in property <image> empty-icon: Icons.image-off;              // shown when the library is empty
+    callback clicked();
+    callback open-item(int);                                       // open the centred item (viewer/player)
+    property <int> n: photos.length;
+    // Continuous head; Timer bumps it by 1 every 4s and `animate` eases the slow
+    // ~1.4s wheel roll, so each photo sits centred for the ~2.6s remainder.
+    property <float> pos: 0;
+    animate pos { duration: 1400ms; easing: ease-in-out; }
+    border-radius: 14px; clip: true;
+    background: accent.with-alpha(ta.has-hover ? 0.14 : 0.08);
+    // Distinct accent outline on hover (Photos vs Videos differ by accent colour).
+    border-width: ta.has-hover ? 2.5px : 1px;
+    border-color: accent.with-alpha(ta.has-hover ? 0.95 : 0.24);
+    drop-shadow-blur: ta.has-hover ? 22px : 0px;
+    drop-shadow-color: accent.with-alpha(0.45); drop-shadow-offset-y: ta.has-hover ? 6px : 0px;
+    animate background, border-color, border-width, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
+    ta := TouchArea { mouse-cursor: pointer;
+        clicked => { if (root.n > 0) { root.open-item(Math.mod(Math.floor(root.pos), root.n)); } else { root.clicked(); } } }
+    // Full-bleed fan — fills the whole card. Labels + icon are overlaid on top.
+    strip := Rectangle {
+        x: 0; y: 0; width: 100%; height: 100%; clip: true;
+        property <length> step: self.width * 0.2;                  // fan spread (outer compressed in FanSlot)
+        Timer { interval: root.cycle; running: root.n > 1; triggered => { root.pos += 1; } }
+        // Empty library — one big muted off-glyph in the middle.
+        if root.n == 0: AppIcon {
+            source: root.empty-icon; tint: root.accent.with-alpha(0.55);
+            width: Math.min(strip.height * 0.5, 96px); height: self.width;
+            x: (strip.width - self.width) / 2; y: (strip.height - self.height) / 2;
+        }
+        // Declared far→near so the centre (k == 0) paints on top of the stack.
+        FanSlot { k: 3;  photos: root.photos; n: root.n; pos: root.pos; step: strip.step; areaw: strip.width; areah: strip.height; aspect: root.tile-aspect; fill: true; top-crop: root.tile-top; }
+        FanSlot { k: -2; photos: root.photos; n: root.n; pos: root.pos; step: strip.step; areaw: strip.width; areah: strip.height; aspect: root.tile-aspect; fill: true; top-crop: root.tile-top; }
+        FanSlot { k: 2;  photos: root.photos; n: root.n; pos: root.pos; step: strip.step; areaw: strip.width; areah: strip.height; aspect: root.tile-aspect; fill: true; top-crop: root.tile-top; }
+        FanSlot { k: -1; photos: root.photos; n: root.n; pos: root.pos; step: strip.step; areaw: strip.width; areah: strip.height; aspect: root.tile-aspect; fill: true; top-crop: root.tile-top; }
+        FanSlot { k: 1;  photos: root.photos; n: root.n; pos: root.pos; step: strip.step; areaw: strip.width; areah: strip.height; aspect: root.tile-aspect; fill: true; top-crop: root.tile-top; }
+        FanSlot { k: 0;  photos: root.photos; n: root.n; pos: root.pos; step: strip.step; areaw: strip.width; areah: strip.height; aspect: root.tile-aspect; fill: true; top-crop: root.tile-top; }
+        // Play badge on the centre card (Videos).
+        if root.show-play && root.n > 0: Rectangle {
+            width: 56px; height: 56px; border-radius: 28px;
+            x: (strip.width - self.width) / 2; y: (strip.height - self.height) / 2;
+            background: #000000b0;
+            border-width: 2px; border-color: #ffffffe0;
+            drop-shadow-blur: 16px; drop-shadow-color: #000000aa;
+            AppIcon { source: Icons.play; tint: #ffffff; width: 24px; height: 24px;
+                x: (parent.width - self.width) / 2 + 2px; y: (parent.height - self.height) / 2; }
+        }
+    }
+    // Icon chip — top-left overlay.
+    Rectangle {
+        x: 16px; y: 16px; width: 44px; height: 44px; border-radius: 12px;
+        background: root.accent.with-alpha(0.92);
+        drop-shadow-blur: 12px; drop-shadow-color: #00000066;
+        AppIcon { source: root.icon; tint: #ffffff; width: 22px; height: 22px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+    }
+    // Name + count — bottom-left, in a solid white box outlined with the card's
+    // accent colour; text is the same accent colour so it reads on any photo.
+    lbl := Rectangle {
+        x: 14px; y: parent.height - self.height - 14px;
+        width: txt.preferred-width; height: txt.preferred-height;
+        border-radius: 10px;
+        background: #ffffff;
+        border-width: 1.5px; border-color: root.accent;
+        drop-shadow-blur: 12px; drop-shadow-color: #00000055;
+        txt := VerticalLayout {
+            padding-left: 12px; padding-right: 12px; padding-top: 7px; padding-bottom: 7px; spacing: 0px;
+            Text { text: name; color: root.accent; font-size: 18px; font-weight: 800; overflow: elide; }
+            Text { text: stat; color: root.accent; font-size: 12px; font-weight: 600; overflow: elide; }
+        }
+    }
+}
+
+// "+N" overflow chip used at the end of the Books/Cloud/Tools rows.
+component MoreChip inherits Rectangle {
+    in property <int> count;
+    min-width: 56px;
+    border-radius: 10px; border-width: 1.5px; border-color: Theme.outline;
+    background: Theme.panel.with-alpha(0.5);
+    Text { text: "+" + root.count; color: Theme.text-dim; font-size: 15px; font-weight: 700;
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+}
+
+// Inner tile with hover feedback (shadow + lift + accent border) used for every
+// clickable tile in the Books/Cloud/Tools rows.
+component HomeTileBox inherits Rectangle {
+    in property <color> hilite: Theme.text-dim;
+    callback clicked();
+    border-radius: 10px;
+    background: tta.has-hover ? Theme.panel : Theme.panel-2;
+    border-width: tta.has-hover ? 1.5px : 1px;
+    border-color: tta.has-hover ? root.hilite : Theme.outline;
+    drop-shadow-blur: tta.has-hover ? 16px : 0px;
+    drop-shadow-color: #00000077; drop-shadow-offset-y: tta.has-hover ? 5px : 0px;
+    animate background, border-color, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
+    tta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    @children
+}
+
+// Shared shell for the row-preview cards (Books/Cloud/Tools): full-bleed content
+// (@children) with an icon chip top-left and a title chip bottom-left overlaid —
+// exactly like the Photos/Videos cards, so the title always shows on top.
+component RowCard inherits Rectangle {
+    in property <image> icon;
+    in property <color> accent;
+    in property <string> name;
+    in property <string> stat;
+    callback clicked();
+    border-radius: 14px; clip: true;
+    background: accent.with-alpha(ta.has-hover ? 0.14 : 0.08);
+    border-width: 1px; border-color: accent.with-alpha(0.24);
+    animate background { duration: 120ms; easing: ease-out; }
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    // Content area — inset below the icon, above the title chip; @children fill it.
+    Rectangle {
+        x: 16px; y: 70px;
+        width: parent.width - 32px;
+        height: parent.height - 70px - 62px;
+        @children
+    }
+    // Icon chip — top-left overlay.
+    Rectangle {
+        x: 16px; y: 16px; width: 44px; height: 44px; border-radius: 12px;
+        background: root.accent.with-alpha(0.92);
+        drop-shadow-blur: 12px; drop-shadow-color: #00000066;
+        AppIcon { source: root.icon; tint: #ffffff; width: 22px; height: 22px;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+    }
+    // Title chip — bottom-left overlay (white box, accent border + text).
+    Rectangle {
+        x: 16px; y: parent.height - self.height - 14px;
+        width: ctxt.preferred-width; height: ctxt.preferred-height;
+        border-radius: 10px; background: #ffffff;
+        border-width: 1.5px; border-color: root.accent;
+        drop-shadow-blur: 12px; drop-shadow-color: #00000055;
+        ctxt := VerticalLayout {
+            padding-left: 12px; padding-right: 12px; padding-top: 7px; padding-bottom: 7px; spacing: 0px;
+            Text { text: root.name; color: root.accent; font-size: 18px; font-weight: 800; overflow: elide; }
+            // Some cards (Cloud/Tools) suppress the count — the "+N" tile already shows it.
+            if root.stat != "": Text { text: root.stat; color: root.accent; font-size: 12px; font-weight: 600; overflow: elide; }
+        }
+    }
+}
+
+// Books card — 3 cover thumbnails + a "+N" box, equal width to fill the card.
+component BookRow inherits RowCard {
+    in property <[image]> covers;
+    in property <int> total;
+    callback open-book(int);      // open a specific recent book in the reader
+    property <int> shown: root.covers.length;
+    HorizontalLayout {
+        width: 100%; height: 100%; spacing: 8px;
+        if root.covers.length == 0: Rectangle { horizontal-stretch: 1;
+            AppIcon { source: Icons.book-off; tint: root.accent.with-alpha(0.55);
+                width: Math.min(parent.height * 0.6, 72px); height: self.width;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } }
+        for bc[i] in root.covers: HomeTileBox {
+            horizontal-stretch: 1; hilite: root.accent; clip: true;
+            clicked => { root.open-book(i); }
+            Image { source: bc; image-fit: cover; width: 100%; height: 100%; }
+        }
+        // "+N" tile → opens the Books section (handled by RowCard.clicked).
+        if root.total - root.shown > 0: HomeTileBox {
+            horizontal-stretch: 1; hilite: root.accent; clicked => { root.clicked(); }
+            Text { text: "+" + (root.total - root.shown); color: Theme.text-dim; font-size: 15px; font-weight: 700;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+        }
+    }
+}
+
+// Backend → brand colour (rclone backend names). Keeps the cloud glyph consistent
+// per provider without bundling trademarked logos.
+component CloudGlyph inherits AppIcon {
+    in property <string> backend;
+    source: Icons.cloud; width: 27px; height: 27px;
+    tint: root.backend == "onedrive" ? #2b7cd3
+        : (root.backend == "drive" || root.backend == "googlecloudstorage" || root.backend == "google cloud storage") ? #1a9f57
+        : root.backend == "dropbox" ? #0061ff
+        : root.backend == "box" ? #0061d5
+        : (root.backend == "s3" || root.backend == "amazon s3") ? #e77600
+        : root.backend == "mega" ? #d9272e
+        : root.backend == "pcloud" ? #21a0ed
+        : root.backend == "yandex" ? #ff3333
+        : (root.backend == "webdav" || root.backend == "sftp" || root.backend == "ftp") ? #8b5cf6
+        : Theme.sec-cloud;
+}
+
+// Cloud card — 3 remote tiles (centred brand-tinted glyph + name + backend) + "+N",
+// equal width to fill the card. Each remote opens that remote in the Cloud page.
+component CloudRow inherits RowCard {
+    in property <[HomeRemote]> remotes;
+    in property <int> total;
+    callback open-remote(string);
+    property <int> shown: root.remotes.length;
+    HorizontalLayout {
+        width: 100%; height: 100%; spacing: 8px;
+        if root.remotes.length == 0: Rectangle { horizontal-stretch: 1;
+            AppIcon { source: Icons.cloud-off; tint: root.accent.with-alpha(0.55);
+                width: Math.min(parent.height * 0.6, 72px); height: self.width;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } }
+        for r in root.remotes: HomeTileBox {
+            horizontal-stretch: 1; hilite: root.accent; clicked => { root.open-remote(r.name); }
+            VerticalLayout {
+                padding: 8px; spacing: 4px; alignment: center;
+                HorizontalLayout { alignment: center; CloudGlyph { backend: r.backend; } }
+                Text { text: r.name; color: Theme.text; font-size: 11px; font-weight: 700;
+                    horizontal-alignment: center; overflow: elide; }
+                Text { text: r.backend; color: Theme.text-dim; font-size: 9px;
+                    horizontal-alignment: center; overflow: elide; }
+            }
+        }
+        if root.total - root.shown > 0: HomeTileBox {
+            horizontal-stretch: 1; hilite: root.accent; clicked => { root.clicked(); }
+            Text { text: "+" + (root.total - root.shown); color: Theme.text-dim; font-size: 15px; font-weight: 700;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+        }
+    }
+}
+
+// A single tool tile (vector icon + label) with hover feedback. Uses a themed
+// AppIcon (not an emoji glyph, which renders invisible on dark/oled themes).
+component ToolTileBox inherits HomeTileBox {
+    in property <image> icon;
+    in property <string> label;
+    VerticalLayout {
+        padding: 6px; spacing: 4px; alignment: center;
+        HorizontalLayout { alignment: center;
+            AppIcon { source: root.icon; tint: root.hilite; width: 26px; height: 26px; } }
+        Text { text: root.label; color: Theme.text; font-size: 10px; font-weight: 700;
+            horizontal-alignment: center; overflow: elide; }
+    }
+}
+
+// Tools card — one representative tool per category (5), laid out 3×2, plus a
+// "+N" box for every other tool across all categories. Each tile opens that tool
+// category in the Tools page.
+component ToolRow inherits RowCard {
+    callback open-tool(string);
+    in property <int> total-tools: 23;                             // total ops across all 5 categories
+    property <[{icon: image, label: string, cat: string}]> tools: [
+        { icon: Icons.folder,         label: "File ops",  cat: "fileops" },
+        { icon: Icons.film,           label: "Video",     cat: "video" },
+        { icon: Icons.music,          label: "Audio",     cat: "audio" },
+        { icon: Icons.image,          label: "Photo",     cat: "photo" },
+        { icon: Icons.message-circle, label: "Subtitles", cat: "subs" }];
+    GridLayout {
+        width: 100%; height: 100%; spacing: 8px;
+        Row {
+            ToolTileBox { hilite: root.accent; icon: root.tools[0].icon; label: root.tools[0].label; clicked => { root.open-tool(root.tools[0].cat); } }
+            ToolTileBox { hilite: root.accent; icon: root.tools[1].icon; label: root.tools[1].label; clicked => { root.open-tool(root.tools[1].cat); } }
+            ToolTileBox { hilite: root.accent; icon: root.tools[2].icon; label: root.tools[2].label; clicked => { root.open-tool(root.tools[2].cat); } }
+        }
+        Row {
+            ToolTileBox { hilite: root.accent; icon: root.tools[3].icon; label: root.tools[3].label; clicked => { root.open-tool(root.tools[3].cat); } }
+            ToolTileBox { hilite: root.accent; icon: root.tools[4].icon; label: root.tools[4].label; clicked => { root.open-tool(root.tools[4].cat); } }
+            HomeTileBox { hilite: root.accent; clicked => { root.clicked(); }
+                Text { text: "+" + (root.total-tools - 5); color: Theme.text-dim; font-size: 15px; font-weight: 700;
+                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } }
+        }
+    }
+}
+
 // Right-hand section grid — Photos+Videos over Books+Cloud+Tools. Every tile
 // gets an explicit width (cell2/cell3) so the row fills; stretch factors alone
 // leave the tiles at icon width.
 component HomeSectionGrid inherits VerticalLayout {
     in property <HomeStats> stats;
+    in property <[image]> recent-photos: [];
+    in property <[image]> recent-videos: [];
+    in property <[image]> book-covers: [];
+    in property <[HomeRemote]> cloud-remotes: [];
     in property <length> cell2;
     in property <length> cell3;
     callback open-section(string);
+    callback open-photo-item(int);
+    callback open-video-item(int);
+    callback open-book-item(int);
+    callback open-tool(string);
+    callback open-remote(string);
     spacing: 10px;
+    // Force both rows to exactly half so Photos/Videos stay as big as the
+    // Books/Cloud/Tools row (whose icon+labels otherwise inflate its preferred
+    // height and steal space from row 1).
+    property <length> row-h: (self.height - self.spacing) / 2;
     HorizontalLayout {
-        spacing: 10px; vertical-stretch: 1;
-        HomeTile { width: cell2; icon: Icons.image; accent: Theme.sec-photos; name: "Photos";
+        spacing: 10px; height: root.row-h;
+        PhotoSlideshow { width: cell2; icon: Icons.image; accent: Theme.sec-photos; name: "Photos";
+            photos: root.recent-photos; tile-top: true;                       // fill square, crop from top
+            empty-icon: Icons.image-off;
             stat: stats.photos + " items · " + stats.photos-albums + " albums";
-            footer: stats.photos-scan; clicked => { root.open-section("photos"); } }
-        HomeTile { width: cell2; icon: Icons.film; accent: Theme.sec-videos; name: "Videos";
+            footer: stats.photos-scan; clicked => { root.open-section("photos"); }
+            open-item(i) => { root.open-photo-item(i); } }
+        PhotoSlideshow { width: cell2; icon: Icons.film; accent: Theme.sec-videos; name: "Videos";
+            photos: root.recent-videos; show-play: true; tile-aspect: 1.6;     // landscape video tiles, centre crop
+            cycle: 3000ms; empty-icon: Icons.video-off;                        // offset from Photos' 4s
             stat: stats.videos + " items · " + stats.videos-shows + " shows";
-            footer: stats.videos-note; clicked => { root.open-section("videos"); } }
+            footer: stats.videos-note; clicked => { root.open-section("videos"); }
+            open-item(i) => { root.open-video-item(i); } }
     }
     HorizontalLayout {
-        spacing: 10px; vertical-stretch: 1;
-        HomeTile { width: cell3; icon: Icons.book-open; accent: Theme.sec-books; name: "Books";
-            stat: stats.books + " books · reading " + stats.books-reading;
-            clicked => { root.open-section("books"); } }
-        HomeTile { width: cell3; icon: Icons.cloud; accent: Theme.sec-cloud; name: "Cloud";
-            stat: stats.cloud-remotes + " remotes"; footer: stats.cloud-note;
-            clicked => { root.open-section("cloud"); } }
-        HomeTile { width: cell3; icon: Icons.wrench; accent: Theme.sec-tools; name: "Tools";
-            stat: stats.tools-jobs == 0 ? "queue idle" : "● " + stats.tools-jobs + " jobs running";
-            footer: stats.tools-note;
-            footer-color: stats.tools-jobs > 0 ? #22c55e : Theme.text-dim.with-alpha(0.7);
-            clicked => { root.open-section("tools"); } }
+        spacing: 10px; height: root.row-h;
+        BookRow { width: cell3; icon: Icons.book-open; accent: Theme.sec-books; name: "Books";
+            covers: root.book-covers; total: stats.books;
+            stat: stats.books + " books · " + stats.books-reading + " reading";
+            clicked => { root.open-section("books"); } open-book(i) => { root.open-book-item(i); } }
+        CloudRow { width: cell3; icon: Icons.cloud; accent: Theme.sec-cloud; name: "Cloud";
+            remotes: root.cloud-remotes; total: stats.cloud-remotes;
+            stat: "";
+            clicked => { root.open-section("cloud"); } open-remote(n) => { root.open-remote(n); } }
+        ToolRow { width: cell3; icon: Icons.wrench; accent: Theme.sec-tools; name: "Tools";
+            stat: "";
+            clicked => { root.open-section("tools"); } open-tool(c) => { root.open-tool(c); } }
     }
 }
 
 export component HomePage inherits Rectangle {
     in property <HomeStats> stats;
+    in property <[image]> recent-photos: [];       // 10 newest photo thumbs → Photos slideshow
+    in property <[image]> recent-videos: [];       // 10 newest video thumbs → Videos slideshow
+    in property <[image]> book-covers: [];         // recent book covers → Books row
+    in property <[HomeRemote]> cloud-remotes: [];  // cloud remotes → Cloud row
     in property <string> greeting: "Welcome";
     in property <string> date-line: "";
     in property <int> logo-choice: 0;
@@ -248,6 +597,11 @@ export component HomePage inherits Rectangle {
     in property <string> podcast-summary: "";
 
     callback open-section(string);
+    callback open-photo-item(int);
+    callback open-video-item(int);
+    callback open-book-item(int);
+    callback open-tool(string);
+    callback open-remote(string);
     callback open-music(string);
     callback open-profile();
     callback playpause(); callback next(); callback prev();
@@ -351,13 +705,27 @@ export component HomePage inherits Rectangle {
             }
             if root.music-left: HomeSectionGrid {
                 horizontal-stretch: 1;
-                stats: root.stats; cell2: root.cell2; cell3: root.cell3;
+                stats: root.stats; recent-photos: root.recent-photos; recent-videos: root.recent-videos;
+                book-covers: root.book-covers; cloud-remotes: root.cloud-remotes;
+                cell2: root.cell2; cell3: root.cell3;
                 open-section(s) => { root.open-section(s); }
+                open-photo-item(i) => { root.open-photo-item(i); }
+                open-video-item(i) => { root.open-video-item(i); }
+                open-book-item(i) => { root.open-book-item(i); }
+                open-tool(c) => { root.open-tool(c); }
+                open-remote(n) => { root.open-remote(n); }
             }
             if !root.music-left: HomeSectionGrid {
                 horizontal-stretch: 1;
-                stats: root.stats; cell2: root.cell2; cell3: root.cell3;
+                stats: root.stats; recent-photos: root.recent-photos; recent-videos: root.recent-videos;
+                book-covers: root.book-covers; cloud-remotes: root.cloud-remotes;
+                cell2: root.cell2; cell3: root.cell3;
                 open-section(s) => { root.open-section(s); }
+                open-photo-item(i) => { root.open-photo-item(i); }
+                open-video-item(i) => { root.open-video-item(i); }
+                open-book-item(i) => { root.open-book-item(i); }
+                open-tool(c) => { root.open-tool(c); }
+                open-remote(n) => { root.open-remote(n); }
             }
             if !root.music-left: HomeMusicCard {
                 width: root.music-w;

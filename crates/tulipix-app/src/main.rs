@@ -1425,12 +1425,41 @@ fn main() -> Result<()> {
     // Sidebar section click — warm every podcast sub-page so the podcast section
     // never shows empty on first open (data loads while the user is elsewhere).
     let w = window.as_weak();
+    // Home Photos card → open the centred photo in the in-app viewer.
+    let wp = window.as_weak();
+    window.on_home_open_photo_item(move |idx| {
+        let Some(w0) = wp.upgrade() else { return; };
+        let path = recent_home_photos().lock().ok().and_then(|g| g.get(idx as usize).cloned());
+        if let Some(p) = path { show_photo_path(&w0, &p); w0.set_viewer_open(true); }
+    });
+    // Home Videos card → play the centred video with the external mpv window
+    // (the video section's default playback path).
+    window.on_home_open_video_item(move |idx| {
+        let path = recent_home_videos().lock().ok().and_then(|g| g.get(idx as usize).cloned());
+        if let Some(p) = path { spawn_mpv_windowed(p, None, None); }
+    });
+    // Home Books card → open that book in the in-app reader.
+    let wb = window.as_weak();
+    window.on_home_open_book_item(move |idx| {
+        let entry = recent_home_books().lock().ok().and_then(|g| g.get(idx as usize).cloned());
+        if let Some((id, path)) = entry { open_book_path(wb.clone(), path, id); }
+    });
+    // Home Tools card → select that tool category in the Tools page.
+    let wt = window.as_weak();
+    window.on_home_open_tool(move |cat| {
+        if let Some(w0) = wt.upgrade() { w0.set_tools_category(cat); }
+    });
+
     window.on_section_changed(move |s| {
         let Some(w0) = w.upgrade() else { return; };
         if s.as_str() == "home" {
             // Fresh greeting (time of day) + counts on every Home landing.
             set_home_greeting_now(&w0);
             kick_home_stats(&w0);
+            kick_home_photos(&w0);
+            kick_home_videos(&w0);
+            kick_home_books(&w0);
+            kick_home_cloud(&w0);
         }
         if s.as_str() == "music" {
             // Warm each sub-page once; re-entering the section reuses loaded models.
@@ -6099,6 +6128,10 @@ fn main() -> Result<()> {
         window.set_home_music_left(s.flag("home.music-left", false));
         set_home_greeting_now(&window);
         kick_home_stats(&window);
+        kick_home_photos(&window);
+        kick_home_videos(&window);
+        kick_home_books(&window);
+        kick_home_cloud(&window);
         // Restore the last-used app theme and keep it until the user changes it.
         let choice = match s.theme.as_str() {
             "extra-dark" => ThemeChoice::ExtraDark,
@@ -8267,6 +8300,12 @@ fn chapter_of_page(s: &ReaderSession, page: usize) -> usize {
 fn open_book(weak: slint::Weak<MainWindow>, idx: i32) {
     let Some(path) = book_paths().lock().ok().and_then(|g| g.get(idx as usize).cloned()) else { return; };
     let item_id = book_ids().lock().ok().and_then(|g| g.get(idx as usize).copied()).unwrap_or(-1);
+    open_book_path(weak, path, item_id);
+}
+
+// Open a specific book (by absolute path + item id) in the reader — shared by the
+// Books grid and the Home Books card, which each resolve their own path/id.
+fn open_book_path(weak: slint::Weak<MainWindow>, path: PathBuf, item_id: i64) {
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
         // Saved progress (page index).
@@ -9195,6 +9234,117 @@ fn kick_home_stats(w: &MainWindow) {
             let mut u = w.get_user();
             u.secondary = secondary.into();
             w.set_user(u);
+        });
+    });
+}
+
+// Recent photo/video absolute paths mirroring the Home coverflow order, so a
+// click on the centre tile can open that exact item (viewer / player).
+static RECENT_HOME_PHOTOS: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();
+static RECENT_HOME_VIDEOS: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();
+fn recent_home_photos() -> &'static std::sync::Mutex<Vec<PathBuf>> {
+    RECENT_HOME_PHOTOS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+fn recent_home_videos() -> &'static std::sync::Mutex<Vec<PathBuf>> {
+    RECENT_HOME_VIDEOS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+// (item_id, abs_path) for the Home Books row, so a cover click opens that book.
+static RECENT_HOME_BOOKS: std::sync::OnceLock<std::sync::Mutex<Vec<(i64, PathBuf)>>> = std::sync::OnceLock::new();
+fn recent_home_books() -> &'static std::sync::Mutex<Vec<(i64, PathBuf)>> {
+    RECENT_HOME_BOOKS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+/// Load the 10 most-recent photo thumbnails for the Home Photos slideshow.
+/// DB read + thumb render happen off the UI thread; the images are handed back
+/// via the event loop as a model the coverflow fan cycles through.
+fn kick_home_photos(w: &MainWindow) {
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        // Same ordering as the Photos timeline (taken_at → mtime desc, trashed/
+        // archived/missing excluded) so "recent" here matches what the user sees.
+        let paths: Vec<String> = timeline_order("").await
+            .into_iter().take(10).map(|(p, _)| p).collect();
+        if let Ok(mut g) = recent_home_photos().lock() {
+            *g = paths.iter().map(PathBuf::from).collect();
+        }
+        // Render thumbs off-thread, collect the paths (slint::Image isn't Send, so
+        // the actual Image decode happens on the UI thread inside the closure).
+        let mut thumbs: Vec<PathBuf> = Vec::new();
+        for p in paths {
+            let src = PathBuf::from(&p);
+            let thumb = thumb_for(src.clone(), tulipix_core::thumbs::ThumbKind::Photo)
+                .await.unwrap_or(src);
+            thumbs.push(thumb);
+        }
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            let imgs: Vec<slint::Image> = thumbs.iter()
+                .filter_map(|t| slint::Image::load_from_path(t).ok()).collect();
+            w.set_home_recent_photos(slint::ModelRc::new(slint::VecModel::from(imgs)));
+        });
+    });
+}
+
+/// Load the 10 most-recent video thumbnails for the Home Videos slideshow.
+fn kick_home_videos(w: &MainWindow) {
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("videos").await else { return; };
+        let paths = sqlx::query_scalar::<_, String>(
+            "SELECT abs_path FROM items WHERE missing_since IS NULL ORDER BY added DESC LIMIT 10")
+            .fetch_all(&pool).await.unwrap_or_default();
+        if let Ok(mut g) = recent_home_videos().lock() {
+            *g = paths.iter().map(PathBuf::from).collect();
+        }
+        let mut thumbs: Vec<PathBuf> = Vec::new();
+        for p in paths {
+            let src = PathBuf::from(&p);
+            let thumb = thumb_for(src.clone(), tulipix_core::thumbs::ThumbKind::Video)
+                .await.unwrap_or(src);
+            thumbs.push(thumb);
+        }
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            let imgs: Vec<slint::Image> = thumbs.iter()
+                .filter_map(|t| slint::Image::load_from_path(t).ok()).collect();
+            w.set_home_recent_videos(slint::ModelRc::new(slint::VecModel::from(imgs)));
+        });
+    });
+}
+
+/// Load recent book covers for the Home Books row (newest first).
+fn kick_home_books(w: &MainWindow) {
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("books").await else { return; };
+        let rows = sqlx::query_as::<_, (String, i64, String)>(
+            "SELECT bm.cover_path, bm.item_id, i.abs_path FROM book_meta bm JOIN items i ON i.id = bm.item_id \
+             WHERE bm.cover_path IS NOT NULL AND bm.cover_path <> '' ORDER BY i.added DESC LIMIT 3")
+            .fetch_all(&pool).await.unwrap_or_default();
+        // Mirror the cover order so a click on tile N opens the matching book.
+        if let Ok(mut g) = recent_home_books().lock() {
+            *g = rows.iter().map(|(_, id, p)| (*id, PathBuf::from(p))).collect();
+        }
+        let covers: Vec<String> = rows.into_iter().map(|(c, _, _)| c).collect();
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            let imgs: Vec<slint::Image> = covers.iter()
+                .filter_map(|c| slint::Image::load_from_path(std::path::Path::new(c)).ok()).collect();
+            w.set_home_book_covers(slint::ModelRc::new(slint::VecModel::from(imgs)));
+        });
+    });
+}
+
+/// Load cloud remotes (name + backend) for the Home Cloud row.
+fn kick_home_cloud(w: &MainWindow) {
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("cloud").await else { return; };
+        let rows = sqlx::query_as::<_, (String, String)>(
+            "SELECT name, backend FROM remotes ORDER BY name COLLATE NOCASE LIMIT 3")
+            .fetch_all(&pool).await.unwrap_or_default();
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            let remotes: Vec<HomeRemote> = rows.into_iter()
+                .map(|(name, backend)| HomeRemote { name: name.into(), backend: backend.into() })
+                .collect();
+            w.set_home_cloud_remotes(slint::ModelRc::new(slint::VecModel::from(remotes)));
         });
     });
 }

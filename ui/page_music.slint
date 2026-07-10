@@ -866,9 +866,21 @@ component MgrTab inherits Rectangle {
 component FancyCount inherits Rectangle {
     in property <int> num;
     in property <string> label;
-    height: 44px; min-width: 150px; border-radius: 22px; horizontal-stretch: 0; vertical-stretch: 0;
-    background: @linear-gradient(120deg, #ec4899, #8b5cf6);
+    // Download progress 0..1; < 0 = idle. While a download runs, the pink→purple
+    // gradient becomes a FILL that grows to this fraction (the count pill doubles
+    // as a progress bar, visible on every sub-tab). Count/label logic unchanged.
+    in property <float> dl-frac: -1;
+    height: 44px; min-width: 150px; border-radius: 22px; clip: true; horizontal-stretch: 0; vertical-stretch: 0;
+    // Dark-purple track behind the gradient fill while downloading (keeps the
+    // white count legible in BOTH themes on the un-filled part); nothing shows
+    // through when idle because the fill spans the full width.
+    background: root.dl-frac >= 0 ? #3b1877 : #00000000;
     drop-shadow-blur: 16px; drop-shadow-color: #ec489955;
+    Rectangle { x: 0; y: 0; height: 100%;
+        width: root.dl-frac >= 0 ? parent.width * Math.clamp(root.dl-frac, 0, 1) : parent.width;
+        background: @linear-gradient(120deg, #ec4899, #8b5cf6);
+        animate width { duration: 200ms; easing: ease-out; }
+    }
     HorizontalLayout { padding-left: 20px; padding-right: 22px; spacing: 9px; alignment: center;
         VerticalLayout { alignment: center; Text { text: num; color: #ffffff; font-size: 23px; font-weight: 800; vertical-alignment: center; } }
         VerticalLayout { alignment: center; Text { text: root.label; color: #ffffffdd; font-size: 12px; font-weight: 700; letter-spacing: 0.5px; vertical-alignment: center; } } }
@@ -2593,7 +2605,14 @@ export component MusicPage inherits Rectangle {
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     FancyCount {
                         num: root.view == "mymusic" ? item-count : (root.view == "podcasts" ? root.podcast-total : (root.view == "audiobooks" ? root.audiobook-cards.length : (root.view == "radio" ? root.radio-total : (root.yt-tab == "playlists" ? root.yt-playlists.length : (root.yt-tab == "cached" ? root.yt-cached.length : (root.yt-tab == "downloads" ? root.yt-downloads-count : root.yt-sub-count))))));
-                        label: root.view == "mymusic" ? "Tracks" : (root.view == "podcasts" ? "Podcasts" : (root.view == "audiobooks" ? "Audiobooks" : (root.view == "radio" ? "Stations" : (root.yt-tab == "playlists" ? "Playlists" : (root.yt-tab == "cached" ? "Cached" : (root.yt-tab == "downloads" ? "Downloads" : "Channels")))))); } }
+                        label: root.view == "mymusic" ? "Tracks" : (root.view == "podcasts" ? "Podcasts" : (root.view == "audiobooks" ? "Audiobooks" : (root.view == "radio" ? "Stations" : (root.yt-tab == "playlists" ? "Playlists" : (root.yt-tab == "cached" ? "Cached" : (root.yt-tab == "downloads" ? "Downloads" : "Channels"))))));
+                        // Fill with live download progress (music Downloader, else an
+                        // active YouTube download); -1 when nothing downloads → full pill.
+                        dl-frac: root.dl-status == "downloading"
+                            ? ((root.dl-selected > 0 ? root.dl-selected : root.dl-total) > 0
+                                ? 1.0 * (root.dl-done + root.dl-skipped) / (root.dl-selected > 0 ? root.dl-selected : root.dl-total)
+                                : 0.0)
+                            : (root.yt-dl-jobs.length > 0 ? Math.clamp(root.yt-dl-active-frac, 0, 1) : -1); } }
                 // App theme toggle (unified) — cycles the whole app light → dark → OLED.
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     Rectangle { width: 40px; height: 40px; border-radius: 20px;
@@ -4311,11 +4330,21 @@ export component MusicPage inherits Rectangle {
                             DlBtn { icon: Icons.x; label: "Cancel"; tint: #ef4444; clicked => { root.dl-cancel(); } }
                             // Counter pill — sits inline with the buttons; lights up
                             // with an accent outline while a download is running.
-                            Rectangle { height: 38px; border-radius: 11px;
+                            Rectangle { height: 38px; border-radius: 11px; clip: true;
                                 background: MusicTheme.surf0;
                                 border-width: root.dl-status == "downloading" ? 2px : 1px;
                                 border-color: root.dl-status == "downloading" ? #22c55e : MusicTheme.line;
                                 animate border-color, border-width { duration: 160ms; }
+                                // Progress fill — same fraction as the queue pill, so the
+                                // always-visible top counter doubles as a live progress bar
+                                // (stays put while the queue scrolls or the sub-tab changes).
+                                // Translucent so the counter numbers stay readable on top.
+                                property <int> denom: root.dl-selected > 0 ? root.dl-selected : root.dl-total;
+                                Rectangle { x: 0; y: 0; height: 100%;
+                                    width: parent.denom > 0 ? parent.width * Math.clamp(1.0 * (root.dl-done + root.dl-skipped) / parent.denom, 0, 1) : 0;
+                                    background: (parent.denom > 0 && (root.dl-done + root.dl-skipped) >= parent.denom) ? #22c55e2e : #8b5cf62e;
+                                    animate width { duration: 200ms; easing: ease-out; }
+                                }
                                 // Icon counters (check / skipped / failed) — real
                                 // AppIcons, not unicode glyphs, so they always render
                                 // (the old ✓ ⤼ ✗ text showed as tofu on Windows).

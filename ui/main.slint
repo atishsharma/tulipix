@@ -34,7 +34,7 @@ import { PropertiesWindow, AssetProperties } from "properties.slint";
 import { SettingsList, SettingItem } from "settings_panels.slint";
 import { ChatOverlay, ChatTurn } from "chat_overlay.slint";
 import { Gated, GateMode } from "gated.slint";
-import { HomePage, HomeStats } from "page_home.slint";
+import { HomePage, HomeStats, HomeRemote } from "page_home.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
 import { AppIcon, Icons } from "icons.slint";
@@ -847,9 +847,18 @@ export component MainWindow inherits Window {
 
     in-out property <string> active-section: "home";
     in-out property <HomeStats> home-stats;
+    in-out property <[image]> home-recent-photos: [];   // Home Photos slideshow feed
+    in-out property <[image]> home-recent-videos: [];   // Home Videos slideshow feed
+    in-out property <[image]> home-book-covers: [];     // Home Books row feed
+    in-out property <[HomeRemote]> home-cloud-remotes: []; // Home Cloud row feed
     in-out property <string> home-greeting: "Welcome";
     in-out property <string> home-date-line: "";
     in-out property <bool> home-music-left: false;   // music block side (Settings)
+    callback home-open-photo-item(int);   // Home Photos card → open in photo viewer
+    callback home-open-video-item(int);   // Home Videos card → play with the video default
+    callback home-open-book-item(int);    // Home Books card → open that book in the reader
+    callback home-open-tool(string);      // Home Tools card → open that tool category
+    callback home-open-remote(string);    // Home Cloud card → open that remote
     callback section-changed(string);   // sidebar section click → preload that section
     in-out property <string> active-settings-tab: "appearance";
     in-out property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local };
@@ -2976,6 +2985,10 @@ callback cloud-go-home();
             if active-section == "home": HomePage {
                 width: parent.width; height: parent.height;
                 stats: root.home-stats;
+                recent-photos: root.home-recent-photos;
+                recent-videos: root.home-recent-videos;
+                book-covers: root.home-book-covers;
+                cloud-remotes: root.home-cloud-remotes;
                 greeting: root.home-greeting;
                 date-line: root.home-date-line;
                 logo-choice: root.app-logo-choice;
@@ -2999,6 +3012,11 @@ callback cloud-go-home();
                 podcast-set-speed(v) => { root.music-podcast-set-speed(v); }
                 podcast-play(id) => { root.music-podcast-play(id); }
                 open-section(s) => { root.active-section = s; root.section-changed(s); }
+                open-photo-item(i) => { root.home-open-photo-item(i); }
+                open-video-item(i) => { root.home-open-video-item(i); }
+                open-book-item(i) => { root.home-open-book-item(i); }
+                open-tool(c) => { root.home-open-tool(c); root.active-section = "tools"; root.section-changed("tools"); }
+                open-remote(n) => { root.home-open-remote(n); root.active-section = "cloud"; root.section-changed("cloud"); }
                 open-music(v) => { root.music-view = v; root.active-section = "music"; root.section-changed("music"); }
                 open-profile => { root.active-settings-tab = "profile"; root.active-section = "settings"; root.section-changed("settings"); }
                 // Idle play → start a sonic mix so the queue is never empty.
