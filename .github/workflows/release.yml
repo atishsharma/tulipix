@@ -22,23 +22,6 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # Linux is the ONLY OS that builds Skia FROM SOURCE (no prebuilt binary
-      # matches skia-bindings for this target+features, unlike win/macOS which
-      # download prebuilts). That source build exhausts the runner's disk and
-      # RAM and silently kills the job (no log uploaded). Reclaim ~25 GB of
-      # preinstalled toolchains and add a big swapfile so it fits.
-      - name: Free disk + add swap
-        run: |
-          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
-            /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
-            /usr/local/share/powershell /usr/share/swift || true
-          sudo docker image prune --all --force || true
-          sudo fallocate -l 12G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
-          echo "=== disk / mem after cleanup ==="; df -h /; free -h
-
       - name: System deps (libmpv link + skia/gl build deps + mpv to bundle)
         run: |
           sudo apt-get update
@@ -79,14 +62,16 @@ jobs:
           install -m755 /tmp/whisper.cpp/build/bin/whisper-cli resources/bin/linux-x86_64/whisper-cli
 
       - name: "Build (full: embedded-mpv + skia)"
-        # Cap parallelism to 2 jobs. The default (nproc=4) compiles four heavy
-        # crates (skia + the sec-* + tulipix-app monster) at once and peaked past
-        # the 16 GB runner's memory, which SIGTERM-killed the job (exit 143) with
-        # no compile error. Fewer parallel jobs lowers peak RAM at a modest time
-        # cost.
+        # Force skia-bindings to DOWNLOAD its prebuilt binary (as win/macOS do)
+        # instead of silently falling back to a 40-min source build that exhausts
+        # the runner and kills the job with no log. Prebuilts for
+        # x86_64-unknown-linux-gnu are published for our feature combo. If a combo
+        # ever mismatches, this fails fast (~2 min) with the expected filename
+        # rather than dying at ~60 min.
         env:
+          FORCE_SKIA_BINARIES_DOWNLOAD: "1"
           CARGO_BUILD_JOBS: "2"
-          CARGO_PROFILE_RELEASE_DEBUG: "false"   # no debuginfo: big disk + link-RAM cut
+          CARGO_PROFILE_RELEASE_DEBUG: "false"
         run: cargo build --release --locked -p tulipix-app --features full,ai-onnx
 
       - name: Strip
