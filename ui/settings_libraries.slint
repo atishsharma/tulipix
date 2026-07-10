@@ -90,6 +90,9 @@ export component SettingsLibraries inherits Rectangle {
     // the running op ("" = idle); busy-frac is 0..1 (negative = indeterminate).
     in property <string> busy-task;
     in property <float> busy-frac;
+    // In-app confirmation for the destructive full reset (native rfd dialogs
+    // don't render on some Linux WMs, so the confirm lives in-app).
+    property <bool> reset-confirm-open: false;
     callback add-location();
     callback rescan-all();
     callback clear-thumb-cache();
@@ -121,7 +124,7 @@ export component SettingsLibraries inherits Rectangle {
             Rectangle { horizontal-stretch: 1; }
             // Wipes every section DB, watched folders, tags + thumb cache to
             // start the app completely fresh.
-            Btn { label: "Reset app…"; danger: true; width: 100px; clicked => { root.reset-app(); } }
+            Btn { label: "Reset app…"; danger: true; width: 100px; clicked => { root.reset-confirm-open = true; } }
         }
         // Maintenance progress bar — shows what Rescan All / Clear Thumb Cache /
         // Rebuild FTS is currently doing. Hidden while idle.
@@ -173,6 +176,39 @@ export component SettingsLibraries inherits Rectangle {
                     }
                 }
                 Rectangle { vertical-stretch: 1; }
+            }
+        }
+    }
+
+    // ── Destructive-reset confirmation (in-app) ──────────────────────────────
+    if root.reset-confirm-open: Rectangle {
+        width: 100%; height: 100%;
+        background: #000000aa;
+        // Swallow clicks behind the dialog; clicking the scrim cancels.
+        TouchArea { clicked => { root.reset-confirm-open = false; } }
+        Rectangle {
+            width: 460px;
+            height: dlg.preferred-height;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: Theme.radius-md;
+            background: Theme.panel;
+            border-width: 1px; border-color: #7f1d1d;
+            drop-shadow-blur: 40px; drop-shadow-color: #000000cc;
+            TouchArea {} // keep clicks on the card from closing the dialog
+            dlg := VerticalLayout {
+                padding: 22px; spacing: 12px;
+                Text { text: "Reset Tulipix?"; color: Theme.text; font-size: 18px; font-weight: 800; }
+                Text {
+                    text: "This erases ALL app data — the library index, download & YouTube history, tags, watched folders, settings and thumbnails — then restarts the app fresh with onboarding.\n\nYour actual media files are NOT touched. This cannot be undone.";
+                    color: Theme.text-dim; font-size: 12px; wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: 10px; alignment: end;
+                    Btn { label: "Cancel"; width: 90px; clicked => { root.reset-confirm-open = false; } }
+                    Btn { label: "Reset everything"; danger: true; width: 140px;
+                        clicked => { root.reset-confirm-open = false; root.reset-app(); } }
+                }
             }
         }
     }

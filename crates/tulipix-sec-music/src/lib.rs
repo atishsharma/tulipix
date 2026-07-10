@@ -317,7 +317,30 @@ pub fn rebuild_browse_tab(w: &MainWindow, tab: &str) {
     // Context search — filter the current browse tab by the search box query.
     {
         let q = music_query_filter().lock().map(|s| s.trim().to_lowercase()).unwrap_or_default();
-        if !q.is_empty() { v.retain(|(t, _)| t.label.to_lowercase().contains(&q)); }
+        if !q.is_empty() {
+            if tab == "folders" {
+                // On the Folders tab, search looks INSIDE each folder, not just at
+                // the folder name: keep a folder if its name matches OR it holds a
+                // track whose title/artist/album matches — so songs stay findable
+                // by folder (np.p5.atmusic.folder-content-search).
+                let paths = music_paths().lock().map(|g| g.clone()).unwrap_or_default();
+                let hit_folders: std::collections::HashSet<std::path::PathBuf> = music_songs().lock()
+                    .map(|g| g.iter()
+                        .filter(|s| s.title.to_lowercase().contains(&q)
+                            || s.artist.to_lowercase().contains(&q)
+                            || s.album.to_lowercase().contains(&q))
+                        .filter_map(|s| paths.get(s.pos as usize).and_then(|p| p.parent().map(|d| d.to_path_buf())))
+                        .collect())
+                    .unwrap_or_default();
+                v.retain(|(t, _)| t.label.to_lowercase().contains(&q)
+                    || paths.get(t.index as usize)
+                        .and_then(|p| p.parent())
+                        .map(|d| hit_folders.contains(d))
+                        .unwrap_or(false));
+            } else {
+                v.retain(|(t, _)| t.label.to_lowercase().contains(&q));
+            }
+        }
     }
     let sort = w.get_music_browse_sort().to_string();
     let asc = w.get_music_browse_dir() == "asc";

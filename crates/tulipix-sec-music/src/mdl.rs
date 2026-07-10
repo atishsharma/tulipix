@@ -683,7 +683,29 @@ fn ingest_completed(
             &abs_path,
         )
         .await;
-        let _ = weak.upgrade_in_event_loop(|w| crate::populate_music_views(w.as_weak()));
+        // Render (or reuse) the embedded-cover thumbnail so the new tile AND the
+        // now-playing player show real art immediately — no restart/rescan.
+        let path = PathBuf::from(&abs_path);
+        let thumb = tulipix_core::thumbs::render_or_cache(
+            &path, tulipix_core::thumbs::ThumbSpec {
+                kind: tulipix_core::thumbs::ThumbKind::Audio, width: 320, height: 320 })
+            .ok().flatten().map(|t| t.path).unwrap_or_default();
+        let label = path.file_stem().and_then(|s| s.to_str())
+            .unwrap_or(track.title.as_str()).to_string();
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            // Add to the in-memory accumulator (dedup by abs path) so the track
+            // enters music_paths → Songs/Albums/Artists/Folders show it live and
+            // play_history resolves its library position (cover art in the player)
+            // WITHOUT waiting for an app restart / folder rescan.
+            if let Ok(mut g) = crate::music_full().lock() {
+                if !g.iter().any(|(_, o, _)| o == &path) {
+                    g.push((label, path, thumb));
+                }
+            }
+            crate::rebuild_music_tiles(&w);
+            crate::populate_music_views(w.as_weak());
+            crate::populate_folder_roots(&w);
+        });
     });
 }
 

@@ -143,6 +143,25 @@ fn main() -> Result<()> {
         tulipix_core::caps::enable_trace();
     }
     tracing::info!(version = env!("CARGO_PKG_VERSION"), "tulipix starting");
+
+    // Factory reset (relaunched by the in-app Settings → "Reset app" button):
+    // wipe every config/data/cache tree BEFORE any DB pool or settings file is
+    // opened, so nothing is locked and the app comes up truly fresh — no
+    // settings.json → onboarding shows automatically.
+    if std::env::args().any(|a| a == "--factory-reset") {
+        for d in [
+            tulipix_core::paths::config_dir(),
+            tulipix_core::paths::data_dir(),
+            tulipix_core::paths::cache_dir(),
+        ] {
+            if let Some(dir) = d {
+                let _ = std::fs::remove_dir_all(&dir);
+                let _ = std::fs::create_dir_all(&dir);
+            }
+        }
+        tracing::info!("factory reset: all app data cleared on startup");
+    }
+
     tulipix_platform::init_window_chrome();
 
     #[cfg(feature = "dev-reload")]
@@ -1432,7 +1451,13 @@ fn main() -> Result<()> {
             match t.as_str() {
                 "favorites" => populate_favorites(&w),
                 "history" => populate_history(&w),
-                "folders" => populate_folder_roots(&w),
+                // Re-apply the current search filter to the tab's cached tiles on
+                // every entry. Without this, a prior search that filtered folders/
+                // playlists to empty stayed empty until an app restart, because the
+                // folders case only refreshed the *roots* list and playlists had no
+                // case at all (np.p5.atmusic.lib-context-search).
+                "folders" => { populate_folder_roots(&w); rebuild_browse_tab(&w, "folders"); }
+                "playlists" => rebuild_browse_tab(&w, "playlists"),
                 "albums" | "artists" | "genres" => { w.set_music_browse_page(0); rebuild_browse_tab(&w, t.as_str()); }
                 _ => {}
             }
@@ -7292,52 +7317,51 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_lib_reset_app(move || {
         let Some(w) = w.upgrade() else { return; };
-        // Destructive — confirm before wiping every library DB + cache.
-        let yes = rfd::MessageDialog::new()
-            .set_level(rfd::MessageLevel::Warning)
-            .set_title("Reset Tulipix?")
-            .set_description("This erases the entire library index, watched folders, tags, and thumbnails. Your actual media files are NOT touched. This cannot be undone.")
-            .set_buttons(rfd::MessageButtons::OkCancelCustom("Reset everything".into(), "Cancel".into()))
-            .show();
-        if !matches!(yes, rfd::MessageDialogResult::Custom(ref s) if s == "Reset everything") { return; }
-        set_lib_busy(&w.as_weak(), "Clearing all data — starting fresh…", -1.0);
-        // Forget persisted lists.
-        if let Some(p) = watched_folders_path() { let _ = std::fs::remove_file(p); }
-        if let Some(p) = folder_sections_path() { let _ = std::fs::remove_file(p); }
-        // Drop the thumbnail cache.
-        if let Some(dir) = tulipix_core::paths::thumbs_dir() {
-            let _ = std::fs::remove_dir_all(&dir);
-            let _ = std::fs::create_dir_all(&dir);
-        }
-        // Clear in-memory accumulators so the grids empty immediately.
+        // Confirmation happens in-app (Settings → Libraries reset-confirm modal)
+        // before this fires — native rfd dialogs don't render on some Linux WMs,
+        // which is why the button previously appeared to do nothing.
+        // Empty the in-memory accumulators so the grids blank out immediately.
         if let Ok(mut g) = photo_full().lock() { g.clear(); }
         if let Ok(mut g) = video_full().lock() { g.clear(); }
         if let Ok(mut g) = music_full().lock() { g.clear(); }
         if let Ok(mut g) = music_paths().lock() { g.clear(); }
         let weak = w.as_weak();
+        set_lib_busy(&weak, "Resetting Tulipix — erasing all app data…", 0.08);
         tokio::runtime::Handle::current().spawn(async move {
-            // Truncate the core items table per section. Derived views read via
-            // joins on items, so emptying it empties every section's library.
-            for section in ["photos", "videos", "music", "books"] {
-                if let Ok(pool) = pool_for(section).await {
-                    let _ = sqlx::query("DELETE FROM items").execute(&pool).await;
+            // Delete every app tree with a staged progress pill. Linux unlinks the
+            // open sqlite files cleanly; the relaunched `--factory-reset` process
+            // re-wipes anything a locked handle leaves behind (Windows-safe).
+            let dirs = [
+                ("index & databases", tulipix_core::paths::data_dir()),
+                ("settings & folders", tulipix_core::paths::config_dir()),
+                ("thumbnails & cache", tulipix_core::paths::cache_dir()),
+            ];
+            let n = dirs.len();
+            for (i, (label, d)) in dirs.into_iter().enumerate() {
+                let msg = format!("Nuking {label}…");
+                let frac = 0.15 + 0.7 * (i as f32 / n as f32);
+                let _ = weak.upgrade_in_event_loop(move |w| {
+                    w.set_lib_busy_task(msg.into());
+                    w.set_lib_busy_frac(frac);
+                });
+                if let Some(dir) = d {
+                    let _ = std::fs::remove_dir_all(&dir);
+                    let _ = std::fs::create_dir_all(&dir);
                 }
+                tokio::time::sleep(std::time::Duration::from_millis(350)).await;
             }
-            tracing::info!("app data reset — fresh start");
             let _ = weak.upgrade_in_event_loop(|w| {
-                w.set_library_rows(slint::ModelRc::new(slint::VecModel::from(Vec::<LibraryRow>::new())));
-                rebuild_scan_rows(&w);
-                w.set_onboarding_lib_added(false);
-                // Rebuild every section view from the now-empty DBs.
-                rebuild_music_tiles(&w);
-                populate_music_views(w.as_weak());
-                populate_folder_roots(&w);
-                w.set_photos_total(0);
-                kick_category_refresh(w.as_weak(), w.get_photos_category().to_string(), w.get_photos_query().to_string());
-                kick_video_refresh(w.as_weak(), w.get_video_category().to_string());
-                refresh_books(&w);
-                clear_lib_busy(&w.as_weak());
+                w.set_lib_busy_task("Restarting fresh…".into());
+                w.set_lib_busy_frac(1.0);
             });
+            tokio::time::sleep(std::time::Duration::from_millis(450)).await;
+            tracing::info!("app data reset — relaunching fresh");
+            // Relaunch the executable; the new process wipes again BEFORE opening
+            // any DB (pre-DB), then finds no settings.json → shows onboarding.
+            if let Ok(exe) = std::env::current_exe() {
+                let _ = std::process::Command::new(exe).arg("--factory-reset").spawn();
+            }
+            std::process::exit(0);
         });
     });
     let w = window.as_weak();

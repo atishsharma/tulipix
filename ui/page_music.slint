@@ -582,7 +582,9 @@ component TrackRow inherits Rectangle {
         }
         VerticalLayout { alignment: center; spacing: 2px; horizontal-stretch: 1;
             Text { text: track.title; color: MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; }
-            Text { text: track.artist; color: MusicTheme.fg-dim; font-size: 11px; overflow: elide; }
+            // fg3 (not fg-dim): a stronger step so the artist reads as dark ink in
+            // light theme and pops bright against dark surfaces (was near-invisible).
+            Text { text: track.artist; color: MusicTheme.fg3; font-size: 11px; overflow: elide; }
         }
         Text { text: track.duration; color: MusicTheme.fg-mute; font-size: 12px; vertical-alignment: center; horizontal-stretch: 0; }
     }
@@ -4330,6 +4332,18 @@ export component MusicPage inherits Rectangle {
                             DlBtn { icon: Icons.clock; label: "Downloaded"; tint: #6366f1; clicked => { root.dl-history-open = true; root.dl-open-history(0); } }
                             DlBtn { icon: Icons.search; label: "Searches"; tint: #06b6d4; clicked => { root.dl-search-open = true; root.dl-open-searches(0); } }
                             DlBtn { icon: Icons.file-text; label: "Output"; tint: #f59e0b; clicked => { root.dl-cli-open = true; } } }
+                        // Resolve progress — resolve is a single opaque fetch, so this
+                        // is an INDETERMINATE sweeping pill that loops while status ==
+                        // "resolving" and disappears the instant the queue is ready.
+                        if root.dl-status == "resolving": HorizontalLayout { spacing: 10px;
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                Text { text: "Resolving…"; color: #8b5cf6; font-size: 12px; font-weight: 800; vertical-alignment: center; } }
+                            Rectangle { horizontal-stretch: 1; height: 8px; border-radius: 4px; clip: true;
+                                background: MusicTheme.surf1; border-width: 1px; border-color: #8b5cf655;
+                                property <float> t: Math.mod(animation-tick() / 1400ms, 1.0);
+                                Rectangle { width: parent.width * 0.32; height: 100%; border-radius: 4px;
+                                    x: (parent.width + self.width) * parent.t - self.width;
+                                    background: @linear-gradient(90deg, #8b5cf600, #8b5cf6 45%, #ec4899 55%, #ec489900); } } }
                     }
                 }
 
@@ -4417,7 +4431,12 @@ export component MusicPage inherits Rectangle {
                                 active: root.dl-status == "downloading";
                                 frac: self.denom > 0 ? 1.0 * (root.dl-done + root.dl-skipped) / self.denom : 0;
                                 fill: self.denom > 0 && (root.dl-done + root.dl-skipped) >= self.denom ? #22c55e : #8b5cf6;
-                                label: (root.dl-done + root.dl-skipped) + " / " + self.denom + " selected"
+                                // State-aware label: reflects the live phase instead of
+                                // always reading "selected" (downloading / downloaded).
+                                label: (root.dl-done + root.dl-skipped) + " / " + self.denom + " "
+                                    + (root.dl-status == "downloading" ? "downloading"
+                                       : (root.dl-status == "done" ? "downloaded"
+                                       : "selected"))
                                     + (root.dl-failed > 0 ? "  ·  " + root.dl-failed + " failed" : "");
                             }
                             if root.dl-queue-pages > 1: VerticalLayout { alignment: center; PageNav {

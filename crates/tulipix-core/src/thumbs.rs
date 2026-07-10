@@ -313,8 +313,12 @@ fn render_audio(src: &Path, out: &Path, spec: ThumbSpec) -> Result<()> {
     let mut c = Command::new(ff);
     c.args(["-y", "-loglevel", "error", "-i"]);
     c.arg(src);
-    c.args(["-map", "0:v?", "-vf", &format!("scale={}:{}:force_original_aspect_ratio=decrease",
-        spec.width, spec.height)]);
+    // Center-crop to the target aspect (cover), not letterbox: a 16:9 YouTube-video
+    // thumbnail embedded as cover art becomes a clean square, so the library tiles
+    // and now-playing art never show black bars (np: square-art).
+    c.args(["-map", "0:v?", "-vf", &format!(
+        "crop='min(iw,ih*{w}/{h})':'min(ih,iw*{h}/{w})',scale={w}:{h}",
+        w = spec.width, h = spec.height)]);
     c.arg(out);
     // Audio without embedded art falls through to synthetic. ffmpeg exits 0
     // even when `0:v?` matched no stream — it then writes a degenerate 67-byte

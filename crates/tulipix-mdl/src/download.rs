@@ -81,6 +81,13 @@ async fn download_audio(
             // Rotate player clients — helps dodge YouTube's "confirm you're not a
             // bot" gate that hits the default web client.
             .args(["--extractor-args", "youtube:player_client=default,tv,android"]);
+        // NOTE: cover art is embedded by write_tags (below) from each provider's
+        // high-res artwork_url — Spotify/Apple/YT-Music square art, or a YouTube
+        // video's highest-quality thumbnail. yt-dlp's own --embed-thumbnail is
+        // deliberately NOT used: it embeds a SECOND picture into the opus, and the
+        // double cover breaks ffmpeg's `-map 0:v?` art extraction (Spotify albums
+        // downloaded with no art). The thumb renderer center-crops to square, which
+        // is a no-op on already-square provider art and squares a 16:9 video thumb.
         // yt-dlp needs ffmpeg for the Opus extraction. Point it at the resolved
         // binary so it works even when ffmpeg isn't on the app process's PATH.
         if ffmpeg.exists() {
