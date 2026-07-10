@@ -22,6 +22,16 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Reclaim ~25 GB of preinstalled toolchains so a large release target dir
+      # can't exhaust disk. Pure rm (no swapfile) — safe, best-effort.
+      - name: Free disk space
+        run: |
+          sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
+            /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
+            /usr/local/share/powershell /usr/share/swift 2>/dev/null || true
+          sudo docker image prune --all --force 2>/dev/null || true
+          df -h /
+
       - name: System deps (libmpv link + skia/gl build deps + mpv to bundle)
         run: |
           sudo apt-get update
@@ -35,7 +45,7 @@ jobs:
             libmpv-dev mpv mold cmake ninja-build libgtk-3-dev \
             libfontconfig1-dev libfreetype6-dev libgl1-mesa-dev libegl1-mesa-dev \
             libxkbcommon-dev libwayland-dev \
-            clang libclang-dev llvm-dev python3
+            clang libclang-dev llvm-dev python3 lld
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -70,7 +80,15 @@ jobs:
         # rather than dying at ~60 min.
         env:
           FORCE_SKIA_BINARIES_DOWNLOAD: "1"
-          CARGO_BUILD_JOBS: "2"
+          # Two memory fixes for the linux-only OOM (exit 143) that v0.3.0 didn't
+          # hit — the app grew (Music Downloader + a 607KB page_music.slint):
+          #  1. mold -> lld: mold holds the whole link in RAM; the now-bigger app
+          #     + static skia link spiked past the 16 GB runner. lld streams leaner.
+          #     (RUSTFLAGS overrides the committed .cargo/config mold flag.)
+          #  2. -j1: one heavy crate at a time. macOS builds this in 7 GB, so a
+          #     single-crate peak fits the 16 GB linux runner with margin.
+          RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+          CARGO_BUILD_JOBS: "1"
           CARGO_PROFILE_RELEASE_DEBUG: "false"
         run: cargo build --release --locked -p tulipix-app --features full,ai-onnx
 
