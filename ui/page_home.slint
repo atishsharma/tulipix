@@ -265,18 +265,18 @@ component HomeMusicCard inherits Rectangle {
             HorizontalLayout {
                 spacing: 6px;
                 LiveTabRing { live: root.active-tab == "mymusic"; tint: #ec4899;
-                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "My Music"; has-grad: true; hollow: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.active-tab == "mymusic"; clicked => { root.open-music("mymusic"); } } }
+                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "My Music"; has-grad: true; grad-always: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.active-tab == "mymusic"; clicked => { root.open-music("mymusic"); } } }
                 LiveTabRing { live: root.active-tab == "podcasts"; tint: #8b5cf6;
-                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "Podcasts"; has-grad: true; hollow: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.active-tab == "podcasts"; clicked => { root.open-music("podcasts"); } } }
+                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "Podcasts"; has-grad: true; grad-always: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.active-tab == "podcasts"; clicked => { root.open-music("podcasts"); } } }
                 LiveTabRing { live: root.active-tab == "audiobooks"; tint: #3b82f6;
-                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "Audiobooks"; has-grad: true; hollow: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.active-tab == "audiobooks"; clicked => { root.open-music("audiobooks"); } } }
+                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "Audiobooks"; has-grad: true; grad-always: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.active-tab == "audiobooks"; clicked => { root.open-music("audiobooks"); } } }
             }
             HorizontalLayout {
                 spacing: 6px;
                 LiveTabRing { live: root.active-tab == "radio"; tint: #14b8a6;
-                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "Radio"; has-grad: true; hollow: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.active-tab == "radio"; clicked => { root.open-music("radio"); } } }
+                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "Radio"; has-grad: true; grad-always: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.active-tab == "radio"; clicked => { root.open-music("radio"); } } }
                 LiveTabRing { live: root.active-tab == "youtube"; tint: #ef4444;
-                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "YouTube"; has-grad: true; hollow: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b); active: root.active-tab == "youtube"; clicked => { root.open-music("youtube"); } } }
+                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "YouTube"; has-grad: true; grad-always: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b); active: root.active-tab == "youtube"; clicked => { root.open-music("youtube"); } } }
             }
         }
     }

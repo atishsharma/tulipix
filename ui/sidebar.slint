@@ -5,10 +5,11 @@ import { Mode } from "mode_pill.slint";
 import { AppIcon, Icons } from "icons.slint";
 import { Ripple } from "ripple.slint";
 
-// Single navigation row. Frosted glass: the active row is a neutral translucent
-// pill (glass-strong) with a faint inner highlight; hover is a lighter glass
-// wash. No accent fills, no coloured shadows — the section accent lives only in
-// the icon glyph, so the sidebar reads cleanly on both themes.
+// Single navigation row. Frosted glass: hover is a light glass wash; the
+// ACTIVE row drops the old inner-highlight/icon-glass "shadow" for a clean
+// DOUBLE OUTLINE — outer ring in the section accent, inner ring in the neutral
+// glass border — so the active state reads crisply in both themes and at both
+// sidebar widths. Expanded rows are taller with bigger glyphs (big tiles).
 component NavRow inherits Rectangle {
     in property <image> icon-img;
     in property <string> label;
@@ -16,13 +17,16 @@ component NavRow inherits Rectangle {
     in property <bool> active;
     in property <bool> collapsed: false;
     callback clicked();
-    min-height: 44px; max-height: 44px;
+    property <length> row-h: root.collapsed ? 46px : 58px;
+    min-height: root.row-h; max-height: root.row-h;
     horizontal-stretch: 1;
     border-radius: Theme.radius-md;
     background: active ? Theme.glass-strong
               : (touch.has-hover ? Theme.glass : transparent);
-    border-width: 1px;
-    border-color: (active || touch.has-hover) ? Theme.glass-border : transparent;
+    // Outer ring — section accent when active.
+    border-width: active ? 1.5px : 1px;
+    border-color: active ? root.accent
+                : (touch.has-hover ? Theme.glass-border : transparent);
     animate background { duration: 130ms; easing: ease-out; }
     animate border-color { duration: 130ms; easing: ease-out; }
 
@@ -35,14 +39,21 @@ component NavRow inherits Rectangle {
         triggered: touch.pressed;
     }
 
-    // Faint inner highlight — the frost recipe (same as PanelFrost).
-    if (active || touch.has-hover): Rectangle {
-        x: 1px; y: 1px;
-        width: parent.width - 2px; height: parent.height - 2px;
-        border-radius: parent.border-radius - 1px;
+    // Inner ring — second colour of the double outline, clearly separated
+    // from the accent ring (3–4px gap) and animated: it fades in and settles
+    // inward when the section activates. Persistent element (not `if`) so the
+    // entry animation actually plays.
+    ring := Rectangle {
+        property <length> inset: root.active ? 5px : 10px;
+        x: ring.inset; y: ring.inset;
+        width: parent.width - 2 * ring.inset; height: parent.height - 2 * ring.inset;
+        border-radius: Math.max(4px, parent.border-radius - 4px);
         background: transparent;
         border-width: 1px;
-        border-color: Theme.highlight-inner;
+        border-color: Theme.text.with-alpha(0.38);
+        opacity: root.active ? 1 : 0;
+        animate inset { duration: 220ms; easing: ease-out; }
+        animate opacity { duration: 220ms; easing: ease-out; }
     }
 
     HorizontalLayout {
@@ -50,16 +61,20 @@ component NavRow inherits Rectangle {
         spacing: 12px;
         alignment: root.collapsed ? center : start;
         Rectangle {
-            width: 28px; height: 28px;
+            width: root.collapsed ? 28px : 40px; height: self.width;
             horizontal-stretch: 0; vertical-stretch: 0;
             y: (parent.height - self.height) / 2;
             border-radius: 9px;
-            background: active ? Theme.glass-strong : (touch.has-hover ? Theme.glass : transparent);
+            // No glass box behind the active icon — the double outline carries
+            // the active state; hover keeps its light wash.
+            background: (!active && touch.has-hover) ? Theme.glass : transparent;
             animate background { duration: 130ms; easing: ease-out; }
             AppIcon {
                 source: icon-img;
                 tint: accent;
-                width: 16px; height: 16px;
+                // Expanded glyphs run clearly bigger than the 14px label so the
+                // icon leads each tile.
+                width: root.collapsed ? 16px : 26px; height: self.width;
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
             }
@@ -68,7 +83,7 @@ component NavRow inherits Rectangle {
         if !root.collapsed: Text {
             text: label;
             color: (active || touch.has-hover) ? Theme.text : Theme.text-dim;
-            font-size: 13px;
+            font-size: 14px;
             font-weight: active ? 700 : 500;
             vertical-alignment: center;
             horizontal-stretch: 1;
@@ -248,7 +263,8 @@ export component Sidebar inherits Rectangle {
 
     VerticalLayout {
         padding: root.collapsed ? 10px : 14px;
-        spacing: 6px;
+        // Roomier gap between nav tiles — keeps the collapsed icon stack airy.
+        spacing: root.collapsed ? 10px : 8px;
 
         BrandHeader { collapsed: root.collapsed; logo-choice: root.logo-choice; }
 
@@ -257,9 +273,8 @@ export component Sidebar inherits Rectangle {
             active: root.active-section == "home";
             clicked => { root.active-section = "home"; root.section-changed("home"); }
         }
-        Rectangle { height: 4px; horizontal-stretch: 1; background: transparent; }
-        GroupHeader { label: "LIBRARY"; collapsed: root.collapsed; }
-        Rectangle { height: 4px; horizontal-stretch: 1; background: transparent; }
+        // Single nav group — every section lives under one "Applications" label.
+        GroupHeader { label: "APPLICATIONS"; collapsed: root.collapsed; }
 
         NavRow { icon-img: Icons.image; label: "Photos"; accent: Theme.sec-photos; collapsed: root.collapsed;
             active: root.active-section == "photos";
@@ -277,20 +292,10 @@ export component Sidebar inherits Rectangle {
             active: root.active-section == "books";
             clicked => { root.active-section = "books"; root.section-changed("books"); }
         }
-
-        Rectangle { height: 10px; horizontal-stretch: 1; background: transparent; }
-        GroupHeader { label: "STORAGE"; collapsed: root.collapsed; }
-        Rectangle { height: 4px; horizontal-stretch: 1; background: transparent; }
-
         NavRow { icon-img: Icons.cloud; label: "Cloud"; accent: Theme.sec-cloud; collapsed: root.collapsed;
             active: root.active-section == "cloud";
             clicked => { root.active-section = "cloud"; root.section-changed("cloud"); }
         }
-
-        Rectangle { height: 10px; horizontal-stretch: 1; background: transparent; }
-        GroupHeader { label: "UTILITIES"; collapsed: root.collapsed; }
-        Rectangle { height: 4px; horizontal-stretch: 1; background: transparent; }
-
         NavRow { icon-img: Icons.wrench; label: "Tools"; accent: Theme.sec-tools; collapsed: root.collapsed;
             active: root.active-section == "tools";
             clicked => { root.active-section = "tools"; root.section-changed("tools"); }

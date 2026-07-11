@@ -1953,6 +1953,303 @@ pub async fn audiobook_cover_px(folder: &str, custom: Option<PathBuf>, first_cha
     Some(px)
 }
 
+// ── Audiobook identity: title + author + cover (np.p7.music.audiobook-net) ──
+// Five resolution methods, best-first; results persist in `audiobook_meta`
+// (title, author) + `audiobook_covers` (cover path) so the library stays
+// consistent across restarts:
+//  1. Embedded tags of the first chapter — LibriVox-style rips carry
+//     album = book title, artist = author, and an archive.org link in the
+//     comment tag (which is also a direct cover source).
+//  2. Filename convention — `{title}_{nn}_{author}_{bitrate}.mp3`: the author
+//     token is whatever non-noise token every chapter file shares.
+//  3. LibriVox catalogue API — title lookup returns proper title, author and
+//     the archive.org identifier.
+//  4. iTunes audiobook search — commercial books; 600×600 art + author.
+//  5. Open Library search — last resort for title/author/cover.
+
+/// Folders already looked up online this session (hit or miss) — populate
+/// never re-hits the network or loops on books the internet doesn't know.
+fn ab_net_tried() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static C: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// (title, author) per book folder (from `audiobook_meta`), for cards + detail.
+pub fn ab_meta_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, (String, String)>> {
+    static C: OnceLock<std::sync::Mutex<std::collections::HashMap<String, (String, String)>>> = OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Book display title: resolved real title when known, else folder basename.
+pub fn book_display_title(folder: &str) -> String {
+    ab_meta_cache().lock().ok()
+        .and_then(|g| g.get(folder).map(|(t, _)| t.clone()))
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| book_title(folder))
+}
+
+/// Folder basename → search query: separators to spaces, bracketed release
+/// junk and common rip noise dropped ("Dune_1965_[64k MP3]" → "Dune 1965").
+pub fn book_query(folder: &str) -> String {
+    let base = book_title(folder);
+    let mut out = String::with_capacity(base.len());
+    let mut depth = 0i32;
+    for c in base.chars() {
+        match c {
+            '[' | '(' | '{' => depth += 1,
+            ']' | ')' | '}' => depth = (depth - 1).max(0),
+            _ if depth == 0 => out.push(match c { '_' | '.' | '-' => ' ', _ => c }),
+            _ => {}
+        }
+    }
+    let noise = ["unabridged", "abridged", "audiobook", "mp3", "m4b", "64k", "128k", "320k", "kbps"];
+    out.split_whitespace()
+        .filter(|w| !noise.contains(&w.to_lowercase().as_str()))
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// Everything one lookup pass learns about a book.
+#[derive(Default, Clone)]
+struct AbInfo {
+    title: Option<String>,
+    author: Option<String>,
+    archive_id: Option<String>, // archive.org identifier — direct cover source
+    cover: Option<Vec<u8>>,
+}
+
+fn ab_pick(dst: &mut Option<String>, src: Option<String>) {
+    if dst.is_none() {
+        *dst = src.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    }
+}
+
+/// Method 1 — embedded tags of the first chapter file. LibriVox rips carry
+/// album = book title, artist = author, and the archive.org details URL in
+/// the comment tag.
+async fn ab_info_from_tags(pool: &sqlx::SqlitePool, folder: &str) -> AbInfo {
+    let mut info = AbInfo::default();
+    let Ok(Some(path)) = sqlx::query_scalar::<_, String>(
+        "SELECT i.abs_path FROM items i JOIN track_meta tm ON tm.item_id = i.id \
+         WHERE tm.folder = ? ORDER BY i.abs_path LIMIT 1")
+        .bind(folder).fetch_optional(pool).await else { return info; };
+    let out = tokio::task::spawn_blocking(move || {
+        let ff = tulipix_core::thumbs::tool_bin("ffprobe");
+        std::process::Command::new(ff)
+            .args(["-v", "quiet", "-print_format", "json", "-show_format"])
+            .arg(&path).no_window().output()
+    }).await.ok().and_then(|r| r.ok());
+    let Some(out) = out else { return info; };
+    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&out.stdout) else { return info; };
+    let tags = &v["format"]["tags"];
+    let get = |k: &str| tags.get(k).or_else(|| tags.get(k.to_uppercase().as_str()))
+        .and_then(|s| s.as_str()).map(String::from);
+    ab_pick(&mut info.title, get("album"));
+    ab_pick(&mut info.author, get("artist").or_else(|| get("album_artist")));
+    // "https://archive.org/details/<id>" anywhere in the comment.
+    if let Some(c) = get("comment") {
+        if let Some(idx) = c.find("archive.org/details/") {
+            let id: String = c[idx + "archive.org/details/".len()..]
+                .chars().take_while(|c| !c.is_whitespace() && *c != '/' && *c != '"').collect();
+            if !id.is_empty() { info.archive_id = Some(id); }
+        }
+    }
+    info
+}
+
+/// Method 2 — filename convention (`{title}_{nn}_{author}_{bitrate}`): the
+/// author hint is a non-noise token shared by EVERY chapter file that isn't
+/// part of the folder (title) name.
+async fn ab_author_hint_from_filenames(pool: &sqlx::SqlitePool, folder: &str) -> Option<String> {
+    let stems: Vec<String> = sqlx::query_scalar::<_, String>(
+        "SELECT i.abs_path FROM items i JOIN track_meta tm ON tm.item_id = i.id \
+         WHERE tm.folder = ? LIMIT 40")
+        .bind(folder).fetch_all(pool).await.ok()?
+        .into_iter()
+        .filter_map(|p| std::path::Path::new(&p).file_stem().map(|s| s.to_string_lossy().to_lowercase()))
+        .collect();
+    if stems.len() < 2 { return None; }
+    let title_l = book_title(folder).to_lowercase();
+    let noise = ["64kb", "128kb", "mp3", "m4b", "librivox", "read", "by"];
+    let is_candidate = |t: &str| {
+        t.len() >= 3 && !t.chars().any(|c| c.is_ascii_digit())
+            && !noise.contains(&t) && !title_l.contains(t)
+    };
+    let first: Vec<String> = stems[0].split(['_', '-', ' ', '.'])
+        .filter(|t| is_candidate(t)).map(String::from).collect();
+    first.into_iter().find(|tok|
+        stems.iter().all(|s| s.split(['_', '-', ' ', '.']).any(|t| t == tok)))
+}
+
+/// Method 3 — LibriVox catalogue: proper title, author and archive identifier.
+async fn ab_info_from_librivox(client: &reqwest::Client, query: &str) -> AbInfo {
+    let mut info = AbInfo::default();
+    let Ok(resp) = client
+        .get("https://librivox.org/api/feed/audiobooks")
+        .query(&[("format", "json"), ("limit", "1"), ("title", query)])
+        .send().await else { return info; };
+    let Ok(v) = resp.json::<serde_json::Value>().await else { return info; };
+    let Some(b) = v.get("books").and_then(|b| b.as_array()).and_then(|a| a.first()) else { return info; };
+    ab_pick(&mut info.title, b.get("title").and_then(|t| t.as_str()).map(String::from));
+    if let Some(a) = b.get("authors").and_then(|a| a.as_array()).and_then(|a| a.first()) {
+        let name = format!("{} {}",
+            a.get("first_name").and_then(|s| s.as_str()).unwrap_or(""),
+            a.get("last_name").and_then(|s| s.as_str()).unwrap_or(""));
+        ab_pick(&mut info.author, Some(name));
+    }
+    if let Some(u) = b.get("url_iarchive").and_then(|u| u.as_str()) {
+        if let Some(idx) = u.find("archive.org/details/") {
+            let id: String = u[idx + "archive.org/details/".len()..]
+                .chars().take_while(|c| !c.is_whitespace() && *c != '/').collect();
+            if !id.is_empty() { info.archive_id = Some(id); }
+        }
+    }
+    info
+}
+
+async fn ab_grab(client: &reqwest::Client, url: &str) -> Option<Vec<u8>> {
+    let b = client.get(url).send().await.ok()?
+        .error_for_status().ok()?
+        .bytes().await.ok()?;
+    // archive.org serves a tiny generic placeholder for unknown ids — skip it.
+    (b.len() > 1500).then(|| b.to_vec())
+}
+
+/// Method 4 — iTunes audiobook search (art + author + title).
+async fn ab_info_from_itunes(client: &reqwest::Client, query: &str) -> AbInfo {
+    let mut info = AbInfo::default();
+    let Ok(resp) = client
+        .get("https://itunes.apple.com/search")
+        .query(&[("media", "audiobook"), ("limit", "1"), ("term", query)])
+        .send().await else { return info; };
+    let Ok(v) = resp.json::<serde_json::Value>().await else { return info; };
+    let Some(r) = v.get("results").and_then(|r| r.as_array()).and_then(|a| a.first()) else { return info; };
+    ab_pick(&mut info.author, r.get("artistName").and_then(|a| a.as_str()).map(String::from));
+    ab_pick(&mut info.title, r.get("collectionName").and_then(|a| a.as_str()).map(String::from));
+    if let Some(art) = r.get("artworkUrl100").and_then(|a| a.as_str()) {
+        info.cover = ab_grab(client, &art.replace("100x100", "600x600")).await;
+    }
+    info
+}
+
+/// Method 5 — Open Library search (title/author/cover fallback).
+async fn ab_info_from_openlibrary(client: &reqwest::Client, query: &str) -> AbInfo {
+    let mut info = AbInfo::default();
+    let Ok(resp) = client
+        .get("https://openlibrary.org/search.json")
+        .query(&[("q", query), ("limit", "1")])
+        .send().await else { return info; };
+    let Ok(v) = resp.json::<serde_json::Value>().await else { return info; };
+    let Some(doc) = v.get("docs").and_then(|d| d.as_array()).and_then(|a| a.first()) else { return info; };
+    ab_pick(&mut info.title, doc.get("title").and_then(|t| t.as_str()).map(String::from));
+    ab_pick(&mut info.author, doc.get("author_name").and_then(|a| a.as_array())
+        .and_then(|a| a.first()).and_then(|a| a.as_str()).map(String::from));
+    if let Some(cid) = doc.get("cover_i").and_then(|c| c.as_i64()) {
+        info.cover = ab_grab(client, &format!("https://covers.openlibrary.org/b/id/{cid}-L.jpg")).await;
+    }
+    info
+}
+
+/// Full resolution chain for one folder. Local evidence (tags, filenames)
+/// builds the query; the online methods fill whatever is still missing.
+async fn ab_resolve_info(pool: &sqlx::SqlitePool, client: &reqwest::Client, folder: &str) -> AbInfo {
+    // 1. Embedded tags.
+    let mut info = ab_info_from_tags(pool, folder).await;
+    // 2. Filename author hint (used for the query even when tags had an author).
+    let hint = ab_author_hint_from_filenames(pool, folder).await;
+    let title_q = info.title.clone().unwrap_or_else(|| book_query(folder));
+    let author_q = info.author.clone().or(hint.clone()).unwrap_or_default();
+    let full_q = if author_q.is_empty() { title_q.clone() } else { format!("{title_q} {author_q}") };
+    // 3. LibriVox (these rips usually ARE LibriVox).
+    if info.title.is_none() || info.author.is_none() || info.archive_id.is_none() {
+        let lv = ab_info_from_librivox(client, &title_q).await;
+        ab_pick(&mut info.title, lv.title);
+        ab_pick(&mut info.author, lv.author);
+        if info.archive_id.is_none() { info.archive_id = lv.archive_id; }
+    }
+    // Cover from the archive identifier the moment we have one.
+    if info.cover.is_none() {
+        if let Some(id) = &info.archive_id {
+            info.cover = ab_grab(client, &format!("https://archive.org/services/img/{id}")).await;
+        }
+    }
+    // 4. iTunes / 5. Open Library — only for what's still missing.
+    if info.cover.is_none() || info.author.is_none() || info.title.is_none() {
+        let it = ab_info_from_itunes(client, &full_q).await;
+        ab_pick(&mut info.title, it.title);
+        ab_pick(&mut info.author, it.author);
+        if info.cover.is_none() { info.cover = it.cover; }
+    }
+    if info.cover.is_none() || info.author.is_none() || info.title.is_none() {
+        let ol = ab_info_from_openlibrary(client, &full_q).await;
+        ab_pick(&mut info.title, ol.title);
+        ab_pick(&mut info.author, ol.author);
+        if info.cover.is_none() { info.cover = ol.cover; }
+    }
+    info
+}
+
+/// Background pass: resolve title + author + cover for each folder, persist,
+/// then re-populate the cards once. Session-deduped per folder; a net-fetched
+/// cover (`*_net.jpg`) may be replaced by a better later resolution, a
+/// user-chosen cover never is.
+fn kick_ab_net_lookup(weak: slint::Weak<MainWindow>, folders: Vec<String>) {
+    tokio::runtime::Handle::current().spawn(async move {
+        let todo: Vec<String> = {
+            let Ok(mut g) = ab_net_tried().lock() else { return; };
+            folders.into_iter().filter(|f| g.insert(f.clone())).collect()
+        };
+        if todo.is_empty() { return; }
+        let Ok(pool) = pool_for("music").await else { return; };
+        let _ = sqlx::query("CREATE TABLE IF NOT EXISTS audiobook_meta (folder TEXT PRIMARY KEY, author TEXT NOT NULL)")
+            .execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE audiobook_meta ADD COLUMN title TEXT").execute(&pool).await;
+        let Some(base) = dirs_default() else { return; };
+        let out_dir = base.join("cache").join("abcover");
+        let _ = std::fs::create_dir_all(&out_dir);
+        let client = reqwest::Client::new();
+        let mut got_any = false;
+        for folder in todo {
+            let info = ab_resolve_info(&pool, &client, &folder).await;
+            if let Some(bytes) = &info.cover {
+                use sha2::{Digest, Sha256};
+                let mut h = Sha256::new();
+                h.update(folder.as_bytes());
+                let stem: String = h.finalize().iter().take(8).map(|b| format!("{b:02x}")).collect();
+                let path = out_dir.join(format!("{stem}_net.jpg"));
+                if std::fs::write(&path, bytes).is_ok() {
+                    // Replace a previous net cover (better resolution wins);
+                    // never a user-chosen path outside the _net cache slot.
+                    let existing: Option<String> = sqlx::query_scalar(
+                        "SELECT path FROM audiobook_covers WHERE folder = ?")
+                        .bind(&folder).fetch_optional(&pool).await.ok().flatten();
+                    let replace_ok = existing.as_deref()
+                        .map(|p| p.ends_with("_net.jpg")).unwrap_or(true);
+                    if replace_ok {
+                        let _ = sqlx::query("INSERT OR REPLACE INTO audiobook_covers (folder, path) VALUES (?, ?)")
+                            .bind(&folder).bind(path.to_string_lossy().as_ref()).execute(&pool).await;
+                        // Evict the decoded stale art so the new file shows now.
+                        if let Ok(mut g) = ab_cover_cache().lock() { g.remove(&folder); }
+                    }
+                }
+            }
+            if info.title.is_some() || info.author.is_some() {
+                let _ = sqlx::query(
+                    "INSERT INTO audiobook_meta (folder, author, title) VALUES (?1, ?2, ?3) \
+                     ON CONFLICT(folder) DO UPDATE SET author = ?2, title = ?3")
+                    .bind(&folder)
+                    .bind(info.author.clone().unwrap_or_default())
+                    .bind(info.title.clone())
+                    .execute(&pool).await;
+            }
+            got_any = true;
+        }
+        if got_any {
+            let _ = weak.upgrade_in_event_loop(|w| populate_audiobooks(&w));
+        }
+    });
+}
+
 /// Fill the audiobook detail hero + chapter list for one folder.
 pub fn fill_book_detail(w: &MainWindow, folder: &str, ids: &[i64]) {
     let (pos_of, by_pos) = music_pos_maps();
@@ -1984,8 +2281,9 @@ pub fn fill_book_detail(w: &MainWindow, folder: &str, ids: &[i64]) {
             } else { None }
         })
         .unwrap_or_default();
-    w.set_music_ab_d_title(book_title(folder).into());
-    w.set_music_ab_d_author("".into());
+    w.set_music_ab_d_title(book_display_title(folder).into());
+    w.set_music_ab_d_author(ab_meta_cache().lock().ok()
+        .and_then(|g| g.get(folder).map(|(_, a)| a.clone())).unwrap_or_default().into());
     w.set_music_ab_d_cover(cover);
     w.set_music_ab_d_total(fmt_hm(total).into());
     w.set_music_ab_d_chapters(slint::ModelRc::new(slint::VecModel::from(rows)));
@@ -2015,6 +2313,17 @@ pub fn populate_audiobooks(w: &MainWindow) {
         let custom_covers: std::collections::HashMap<String, String> =
             sqlx::query_as("SELECT folder, path FROM audiobook_covers")
                 .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
+        // Title + author resolved by the lookup chain (np.p7.music.audiobook-net).
+        let _ = sqlx::query("CREATE TABLE IF NOT EXISTS audiobook_meta (folder TEXT PRIMARY KEY, author TEXT NOT NULL)")
+            .execute(&pool).await;
+        let _ = sqlx::query("ALTER TABLE audiobook_meta ADD COLUMN title TEXT").execute(&pool).await;
+        let metas: std::collections::HashMap<String, (String, String)> =
+            sqlx::query_as::<_, (String, Option<String>, String)>(
+                "SELECT folder, title, author FROM audiobook_meta")
+                .fetch_all(&pool).await.unwrap_or_default().into_iter()
+                .map(|(f, t, a)| (f, (t.unwrap_or_default(), a)))
+                .collect();
+        if let Ok(mut g) = ab_meta_cache().lock() { *g = metas.clone(); }
         // Per-chapter resume positions → book status (in-progress / finished).
         let progress: std::collections::HashMap<i64, f64> = sqlx::query_as(
             "SELECT item_id, position_s FROM audiobook_progress")
@@ -2053,10 +2362,22 @@ pub fn populate_audiobooks(w: &MainWindow) {
             }
             book_data.push((folder.clone(), cids, total, cover, resume, finished));
         }
+        // Resolution pass targets: books with no art anywhere, plus books whose
+        // cover came from an EARLIER net lookup that didn't yet resolve a real
+        // title (the improved chain re-resolves those once). User-chosen covers
+        // are never touched. Session-deduped inside the kick.
+        let missing: Vec<String> = book_data.iter()
+            .filter(|(f, _, _, c, ..)| {
+                let net_cover = custom_covers.get(f).map(|p| p.ends_with("_net.jpg")).unwrap_or(false);
+                let has_title = metas.get(f).map(|(t, _)| !t.is_empty()).unwrap_or(false);
+                (c.is_none() && !custom_covers.contains_key(f)) || (net_cover && !has_title)
+            })
+            .map(|(f, ..)| f.clone()).collect();
+        if !missing.is_empty() { kick_ab_net_lookup(weak.clone(), missing); }
         let tab = ab_tab().lock().map(|g| g.clone()).unwrap_or_default();
         // Folders view rows: "name · N chapters — /path".
         let folder_rows: Vec<String> = book_data.iter()
-            .map(|(f, c, ..)| format!("{}   ·   {} chapters   —   {}", book_title(f), c.len(), f))
+            .map(|(f, c, ..)| format!("{}   ·   {} chapters   —   {}", book_display_title(f), c.len(), f))
             .collect();
         let _ = weak.upgrade_in_event_loop(move |w| {
             let tiles = w.get_music_tiles();
@@ -2079,8 +2400,11 @@ pub fn populate_audiobooks(w: &MainWindow) {
                 })
                 .map(|(folder, cids, total, cover, resume, _)| BookCard {
                     id: folder.clone().into(),
-                    title: book_title(folder).into(),
-                    author: "".into(),
+                    // Real book title once resolved; folder basename until then.
+                    title: metas.get(folder).map(|(t, _)| t.clone())
+                        .filter(|t| !t.is_empty())
+                        .unwrap_or_else(|| book_title(folder)).into(),
+                    author: metas.get(folder).map(|(_, a)| a.clone()).unwrap_or_default().into(),
                     cover: art_image(cover),
                     chapters: cids.len() as i32,
                     total_time: fmt_hm(*total).into(),
@@ -3699,6 +4023,15 @@ pub fn populate_music_views(weak: slint::Weak<MainWindow>) {
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
         let Ok(pool) = pool_for("music").await else { return; };
+        // Re-assert audiobook-section flags BEFORE building any view, so
+        // chapters never leak into songs/albums/artists even when the user
+        // hasn't opened the Audiobooks tab yet this session (subtree-aware —
+        // a parent dir of per-book folders flags everything under it).
+        for (folder, key) in load_folder_sections() {
+            if key == "audiobooks" {
+                let _ = tulipix_music::audiobooks::flag_audiobook_folder(&pool, &folder).await;
+            }
+        }
         // abs_path → item_id for every present music item.
         let id_rows: Vec<(i64, String)> = sqlx::query_as(
             "SELECT id, abs_path FROM items WHERE section = 'music' AND missing_since IS NULL")
@@ -4573,9 +4906,15 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
     w.set_music_np_title(title.into());
     // Audiobook chapters carry the book title on the second line (and survive
     // chapter auto-advance, which re-enters here); plain tracks show the artist.
-    let is_book = book_px.is_some();
+    // Book detection uses the DB flag from the songs store — the old cover-
+    // cache probe missed whenever the Audiobooks tab hadn't populated yet,
+    // which dropped the player back to plain music mode mid-book.
+    let is_book = music_songs().lock().ok()
+        .and_then(|g| g.iter().find(|s| s.pos == idx).map(|s| s.is_audiobook))
+        .unwrap_or(false)
+        || book_px.is_some();
     w.set_music_np_sub(match (is_book, &book_folder) {
-        (true, Some(f)) => book_title(f).into(),
+        (true, Some(f)) => book_display_title(f).into(),
         _ if artist.is_empty() => "Playing from your library".into(),
         _ => artist.into(),
     });

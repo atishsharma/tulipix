@@ -63,63 +63,54 @@ pub async fn bookmarks(pool: &SqlitePool, item_id: i64) -> Result<Vec<(f64, Stri
     Ok(rows.into_iter().map(|(p, l)| (p, l.unwrap_or_default())).collect())
 }
 
-/// Set (or clear) `is_audiobook` for every track whose `folder` matches.
+// SQL predicate: track_meta.folder is `?1` itself OR anything under it. The
+// user points the Audiobooks section at a PARENT directory ("my audiobooks")
+// whose sub-folders are the individual books; per-file `folder` is the book's
+// own sub-folder, so an exact `folder = ?` never matched and every chapter
+// leaked into My Music as songs. Both separators so a Windows-written DB works.
+const UNDER_FOLDER: &str =
+    "(folder = ?1 OR folder LIKE ?1 || '/%' OR folder LIKE ?1 || '\\%')";
+
+/// Strip trailing path separators: folder pickers hand back "/x/books/" while
+/// `track_meta.folder` (from `Path::parent()`) is "/x/books" — an exact match
+/// or a `?1 || '/%'` LIKE with the slash kept silently matches NOTHING, which
+/// is precisely how audiobook folders leaked into My Music.
+fn norm_folder(folder: &str) -> &str {
+    let t = folder.trim_end_matches(['/', '\\']);
+    if t.is_empty() { folder } else { t }
+}
+
+/// Set (or clear) `is_audiobook` for every track in `folder` — including its
+/// sub-folders (each sub-folder stays its own book via `book_folders`).
 /// Returns the number of track_meta rows updated.
 pub async fn set_folder_flag(pool: &SqlitePool, folder: &str, on: bool) -> Result<u64> {
-    let res = sqlx::query("UPDATE track_meta SET is_audiobook = ? WHERE folder = ?")
+    let res = sqlx::query(&format!("UPDATE track_meta SET is_audiobook = ?2 WHERE {UNDER_FOLDER}"))
+        .bind(norm_folder(folder))
         .bind(if on { 1 } else { 0 })
-        .bind(folder)
         .execute(pool)
         .await?;
     Ok(res.rows_affected())
 }
 
-// SQL predicate: a track whose metadata marks it as spoken-word audiobook
-// material — an `.m4b`-style container, or an audiobook/spoken/speech genre.
-const AUDIOBOOK_META: &str =
-    "(LOWER(COALESCE(container,'')) LIKE '%m4b%' \
-      OR LOWER(COALESCE(genre,'')) LIKE '%audiobook%' \
-      OR LOWER(COALESCE(genre,'')) LIKE '%audio book%' \
-      OR LOWER(COALESCE(genre,'')) LIKE '%spoken%' \
-      OR LOWER(COALESCE(genre,'')) LIKE '%speech%')";
-
 /// Flag a folder that the user added via the **Audiobooks** section
-/// (np.p5.music.audiobook-detect).
-///
-/// Detection — metadata-gated with a whole-folder fallback:
-/// * If **any** track in the folder carries audiobook metadata
-///   ([`AUDIOBOOK_META`]), gate per-file on that signal: flag the matching
-///   tracks and *hide* the rest (set `items.missing_since`) so non-audiobook
-///   files never leak into My Music.
-/// * If **no** track has such metadata, the user added the whole folder as
-///   audiobooks, so flag every track in it (nothing hidden).
-///
-/// Returns `(flagged, hidden)`.
+/// (np.p5.music.audiobook-detect). Returns `(flagged, hidden)` (hidden is
+/// always 0 now — the old metadata gate that hid untagged files is gone).
 pub async fn flag_audiobook_folder(pool: &SqlitePool, folder: &str) -> Result<(u64, u64)> {
-    let with_meta: i64 = sqlx::query_scalar(
-        &format!("SELECT COUNT(*) FROM track_meta WHERE folder = ? AND {AUDIOBOOK_META}"))
-        .bind(folder).fetch_one(pool).await?;
-
-    // No metadata signal anywhere → trust the section: whole folder is audiobook.
-    if with_meta == 0 {
-        let n = set_folder_flag(pool, folder, true).await?;
-        return Ok((n, 0));
-    }
-
-    // Per-file gate: flag the audiobook tracks, clear the flag on the rest
-    // (in case a prior whole-folder pass set it), and hide the non-audiobooks.
-    let flagged = sqlx::query(
-        &format!("UPDATE track_meta SET is_audiobook = 1 WHERE folder = ? AND {AUDIOBOOK_META}"))
+    let folder = norm_folder(folder);
+    // The user added this folder to the AUDIOBOOKS section — that's the
+    // strongest signal there is; audiobook chapters are usually plain MP3s with
+    // no spoken-word tags, so a metadata gate can't be trusted here. Flag the
+    // whole subtree (each sub-folder still renders as its own book via
+    // `book_folders`), and un-hide anything a previous metadata-gated pass
+    // wrongly buried with `missing_since`.
+    let restored = sqlx::query(
+        &format!("UPDATE items SET missing_since = NULL \
+                  WHERE missing_since IS NOT NULL AND id IN (\
+                     SELECT item_id FROM track_meta WHERE {UNDER_FOLDER})"))
         .bind(folder).execute(pool).await?.rows_affected();
-    sqlx::query(
-        &format!("UPDATE track_meta SET is_audiobook = 0 WHERE folder = ? AND NOT {AUDIOBOOK_META}"))
-        .bind(folder).execute(pool).await?;
-    let hidden = sqlx::query(
-        &format!("UPDATE items SET missing_since = ? \
-                  WHERE missing_since IS NULL AND id IN (\
-                     SELECT item_id FROM track_meta WHERE folder = ? AND NOT {AUDIOBOOK_META})"))
-        .bind(now()).bind(folder).execute(pool).await?.rows_affected();
-    Ok((flagged, hidden))
+    let flagged = set_folder_flag(pool, folder, true).await?;
+    let _ = restored;
+    Ok((flagged, 0))
 }
 
 /// Distinct audiobook folders with chapter counts, ordered by folder path.

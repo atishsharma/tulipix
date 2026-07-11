@@ -1611,6 +1611,30 @@ fn main() -> Result<()> {
         },
     );
 
+    // Pre-instantiate the Music page (the biggest component tree by far) a
+    // moment after startup, while the user is still looking at Home. The first
+    // click on Music then only flips visibility instead of paying the whole
+    // build cost on the UI thread. The same shot pre-warms the music data
+    // models (guarded by music_warm_once, so a real visit never double-loads).
+    let wpre = window.as_weak();
+    let prewarm: &'static slint::Timer = Box::leak(Box::new(slint::Timer::default()));
+    prewarm.start(
+        slint::TimerMode::SingleShot,
+        std::time::Duration::from_millis(2500),
+        move || {
+            let Some(w0) = wpre.upgrade() else { return; };
+            if music_warm_once("podcasts") { populate_podcasts(&w0); }
+            if music_warm_once("podcast_latest") { populate_podcast_latest(&w0); }
+            if music_warm_once("podcast_downloads") { populate_podcast_downloads(&w0); }
+            if music_warm_once("podcast_trends") { populate_podcast_trends(&w0); }
+            // Audiobooks too: warms book covers AND kicks the title/author/cover
+            // resolution chain without the user having to open the tab first.
+            if music_warm_once("audiobooks") { populate_audiobooks(&w0); }
+            warm_youtube(&w0);
+            w0.set_music_prewarmed(true);
+        },
+    );
+
     window.on_section_changed(move |s| {
         let Some(w0) = w.upgrade() else { return; };
         if s.as_str() == "home" {
@@ -1675,7 +1699,10 @@ fn main() -> Result<()> {
     });
     window.on_music_dl_search({
         let w = window.as_weak();
-        move || { if let Some(win) = w.upgrade() { mdl::start_search(win.as_weak(), win.get_music_dl_url().to_string()); } }
+        move || { if let Some(win) = w.upgrade() {
+            mdl::start_search(win.as_weak(), win.get_music_dl_url().to_string(),
+                              win.get_music_dl_search_provider().to_string());
+        } }
     });
     window.on_music_dl_download({
         let w = window.as_weak();
@@ -5081,33 +5108,46 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_music_audiobook_play(move |pos| {
         let Some(w0) = w.upgrade() else { return; };
-        play_music_at(&w0, pos);
-        // Force book mode even when the cover cache hasn't seen this folder yet
-        // (play_music_at only detects books through that cache).
-        w0.set_music_player_mode("book".into());
-        if !w0.get_music_ab_d_title().is_empty() {
-            w0.set_music_np_sub(w0.get_music_ab_d_title());
-        }
-        w0.set_music_np_album("".into());
-        // Audiobooks have no bottom bar — the mini player IS the player.
-        w0.invoke_music_center_mini();
-        let speed = w0.get_music_book_speed();
-        music_ipc(&["set_property", "audio-pitch-correction", "yes"]);
-        music_ipc(&["set_property", "speed", &speed.to_string()]);
-        if let Some(id) = current_music_id(&w0) { load_book_bookmarks(&w0, id); }
-        if let Some(id) = current_music_id(&w0) {
-            let speed = speed as f64;
-            tokio::runtime::Handle::current().spawn(async move {
-                if let Ok(pool) = pool_for("music").await {
+        // Resolve the saved resume position BEFORE spawning mpv, so it rides in
+        // as `--start` via resume_pending — the old post-spawn IPC `seek` raced
+        // loadfile and silently landed at 0:00.
+        let id = music_ids().lock().ok()
+            .and_then(|g| g.get(pos as usize).copied()).filter(|i| *i >= 0);
+        let weak = w0.as_weak();
+        tokio::runtime::Handle::current().spawn(async move {
+            let resume = match id {
+                Some(id) => {
+                    let Ok(pool) = pool_for("music").await else { return; };
+                    let r = tulipix_music::audiobooks::resume(&pool, id).await.unwrap_or((0.0, 1.0));
                     let _ = tulipix_music::audiobooks::mark_audiobook(&pool, id).await;
-                    let (pos_s, _) = tulipix_music::audiobooks::resume(&pool, id).await.unwrap_or((0.0, 1.0));
-                    if pos_s > 1.0 { music_ipc(&["seek", &pos_s.to_string(), "absolute"]); }
                     // Register the book as in-progress IMMEDIATELY — the card
                     // bar + "In progress" tab key off audiobook_progress rows.
-                    let _ = tulipix_music::audiobooks::save_progress(&pool, id, pos_s.max(1.0), speed).await;
+                    let _ = tulipix_music::audiobooks::save_progress(&pool, id, r.0.max(1.0), r.1).await;
+                    Some(r)
                 }
+                None => None,
+            };
+            let _ = weak.upgrade_in_event_loop(move |w0| {
+                if let (Some(id), Some((pos_s, _))) = (id, resume) {
+                    if pos_s > 5.0 {
+                        if let Ok(mut g) = resume_pending().lock() { *g = Some((id, pos_s)); }
+                    }
+                }
+                play_music_at(&w0, pos);
+                // Force book mode even when the songs store hasn't warmed yet.
+                w0.set_music_player_mode("book".into());
+                if !w0.get_music_ab_d_title().is_empty() {
+                    w0.set_music_np_sub(w0.get_music_ab_d_title());
+                }
+                w0.set_music_np_album("".into());
+                // Audiobooks have no bottom bar — the mini player IS the player.
+                w0.invoke_music_center_mini();
+                let speed = w0.get_music_book_speed();
+                music_ipc(&["set_property", "audio-pitch-correction", "yes"]);
+                music_ipc(&["set_property", "speed", &speed.to_string()]);
+                if let Some(id) = current_music_id(&w0) { load_book_bookmarks(&w0, id); }
             });
-        }
+        });
     });
     let w = window.as_weak();
     window.on_music_set_book_speed(move |s| {
@@ -9304,103 +9344,128 @@ fn kick_home_stats(w: &MainWindow) {
         };
         // Running library totals for the header line ("N items · X B"): every
         // section's `items` table carries a `size` column.
-        let mut total_items: i64 = 0;
-        let mut total_bytes: i64 = 0;
         let sum_items = |pool: sqlx::SqlitePool| async move {
             sqlx::query_as::<_, (i64, i64)>(
                 "SELECT COUNT(*), COALESCE(SUM(size), 0) FROM items")
                 .fetch_one(&pool).await.unwrap_or((0, 0))
         };
-        if let Ok(pool) = pool_for("photos").await {
-            s.photos = count(pool.clone(), "SELECT COUNT(*) FROM items").await;
-            s.photos_albums = count(pool.clone(), "SELECT COUNT(*) FROM albums").await;
-            let (n, b) = sum_items(pool).await; total_items += n; total_bytes += b;
-        }
-        if let Ok(pool) = pool_for("videos").await {
-            s.videos = count(pool.clone(), "SELECT COUNT(*) FROM items").await;
-            s.videos_shows = count(pool.clone(), "SELECT COUNT(*) FROM shows").await;
-            let (n, b) = sum_items(pool).await; total_items += n; total_bytes += b;
-        }
-        if let Ok(pool) = pool_for("music").await {
-            let (n, b) = sum_items(pool.clone()).await; total_items += n; total_bytes += b;
-            s.songs = count(pool.clone(),
+        // Every section lives in its own SQLite file, so the per-section
+        // blocks are independent — join! runs them concurrently and the
+        // header stats land in ~max(section) latency instead of the sum.
+        let photos_f = async {
+            let Ok(pool) = pool_for("photos").await else { return (0, 0, (0i64, 0i64)); };
+            (count(pool.clone(), "SELECT COUNT(*) FROM items").await,
+             count(pool.clone(), "SELECT COUNT(*) FROM albums").await,
+             sum_items(pool).await)
+        };
+        let videos_f = async {
+            let Ok(pool) = pool_for("videos").await else { return (0, 0, (0i64, 0i64)); };
+            (count(pool.clone(), "SELECT COUNT(*) FROM items").await,
+             count(pool.clone(), "SELECT COUNT(*) FROM shows").await,
+             sum_items(pool).await)
+        };
+        let music_f = async {
+            let Ok(pool) = pool_for("music").await else { return (0, 0, (0i64, 0i64), None); };
+            let nb = sum_items(pool.clone()).await;
+            let songs = count(pool.clone(),
                 "SELECT COUNT(*) FROM track_meta WHERE is_audiobook = 0").await;
-            s.audiobooks = count(pool.clone(),
+            let audiobooks = count(pool.clone(),
                 "SELECT COUNT(DISTINCT folder) FROM track_meta WHERE is_audiobook = 1").await;
             // Continue card: newest in-progress audiobook (folder = the book).
-            if let Ok(Some((folder, pos))) = sqlx::query_as::<_, (String, f64)>(
+            let cont = sqlx::query_as::<_, (String, f64)>(
                 "SELECT tm.folder, ap.position_s FROM audiobook_progress ap \
                  JOIN track_meta tm ON tm.item_id = ap.item_id \
                  WHERE ap.finished = 0 AND ap.position_s > 0 AND tm.folder IS NOT NULL \
                  ORDER BY ap.updated DESC LIMIT 1")
-                .fetch_optional(&pool).await
-            {
-                let book = std::path::Path::new(&folder).file_name()
-                    .map(|f| f.to_string_lossy().into_owned()).unwrap_or(folder.clone());
-                s.continue3 = format!("🎧 {book}").into();
-                s.continue3_sub = format!("{}:{:02} in", (pos as i64) / 60, (pos as i64) % 60).into();
-            }
-        }
-        if let Ok(pool) = pool_for("podcasts").await {
-            s.podcasts = count(pool.clone(), "SELECT COUNT(*) FROM podcasts").await;
+                .fetch_optional(&pool).await.ok().flatten()
+                .map(|(folder, pos)| {
+                    let book = std::path::Path::new(&folder).file_name()
+                        .map(|f| f.to_string_lossy().into_owned()).unwrap_or(folder.clone());
+                    (format!("🎧 {book}"),
+                     format!("{}:{:02} in", (pos as i64) / 60, (pos as i64) % 60))
+                });
+            (songs, audiobooks, nb, cont)
+        };
+        let podcasts_f = async {
+            let Ok(pool) = pool_for("podcasts").await else { return (0, None); };
+            let n = count(pool.clone(), "SELECT COUNT(*) FROM podcasts").await;
             // Continue card: newest partially-played episode.
-            if let Ok(Some((title, pos, dur))) = sqlx::query_as::<_, (String, f64, Option<f64>)>(
+            let cont = sqlx::query_as::<_, (String, f64, Option<f64>)>(
                 "SELECT COALESCE(title, ''), position_s, duration_s FROM podcast_episodes \
                  WHERE position_s > 0 AND played = 0 \
                  ORDER BY COALESCE(downloaded_at, published) DESC LIMIT 1")
-                .fetch_optional(&pool).await
-            {
-                if !title.is_empty() {
-                    s.continue2 = format!("🎙 {title}").into();
-                    s.continue2_sub = match dur {
-                        Some(d) if d > 0.0 =>
-                            format!("{}:{:02} · {}%", (pos as i64) / 60, (pos as i64) % 60,
-                                    ((pos / d) * 100.0).round() as i64),
-                        _ => format!("{}:{:02} in", (pos as i64) / 60, (pos as i64) % 60),
-                    }.into();
-                }
-            }
-        }
-        if let Ok(pool) = pool_for("radio").await {
-            s.radio = count(pool, "SELECT COUNT(*) FROM radio_stations").await;
-        }
-        if let Ok(pool) = pool_for("books").await {
-            let (n, b) = sum_items(pool.clone()).await; total_items += n; total_bytes += b;
-            s.books = count(pool.clone(), "SELECT COUNT(*) FROM items").await;
-            s.books_reading = count(pool.clone(),
+                .fetch_optional(&pool).await.ok().flatten()
+                .filter(|(title, _, _)| !title.is_empty())
+                .map(|(title, pos, dur)| {
+                    (format!("🎙 {title}"),
+                     match dur {
+                         Some(d) if d > 0.0 =>
+                             format!("{}:{:02} · {}%", (pos as i64) / 60, (pos as i64) % 60,
+                                     ((pos / d) * 100.0).round() as i64),
+                         _ => format!("{}:{:02} in", (pos as i64) / 60, (pos as i64) % 60),
+                     })
+                });
+            (n, cont)
+        };
+        let radio_f = async {
+            let Ok(pool) = pool_for("radio").await else { return 0; };
+            count(pool, "SELECT COUNT(*) FROM radio_stations").await
+        };
+        let books_f = async {
+            let Ok(pool) = pool_for("books").await else { return (0, 0, (0i64, 0i64), None); };
+            let nb = sum_items(pool.clone()).await;
+            let books = count(pool.clone(), "SELECT COUNT(*) FROM items").await;
+            let reading = count(pool.clone(),
                 "SELECT COUNT(*) FROM reading_progress \
                  WHERE finished = 0 AND (page > 0 OR locator IS NOT NULL)").await;
             // Continue card: newest in-progress book.
-            if let Ok(Some((title, path, page, total))) = sqlx::query_as::<_, (String, String, i64, Option<i64>)>(
+            let cont = sqlx::query_as::<_, (String, String, i64, Option<i64>)>(
                 "SELECT COALESCE(NULLIF(bm.title, ''), ''), i.abs_path, rp.page, rp.total_pages \
                  FROM reading_progress rp \
                  JOIN items i ON i.id = rp.item_id \
                  LEFT JOIN book_meta bm ON bm.item_id = rp.item_id \
                  WHERE rp.finished = 0 AND (rp.page > 0 OR rp.locator IS NOT NULL) \
                  ORDER BY rp.updated DESC LIMIT 1")
-                .fetch_optional(&pool).await
-            {
-                let name = if title.is_empty() {
-                    std::path::Path::new(&path).file_stem()
-                        .map(|f| f.to_string_lossy().into_owned()).unwrap_or(path.clone())
-                } else { title };
-                s.continue1 = format!("📖 {name}").into();
-                s.continue1_sub = match total {
-                    Some(t) if t > 0 => format!("page {page} · {}%", (page * 100) / t),
-                    _ => format!("page {page}"),
-                }.into();
-            }
-        }
-        if let Ok(pool) = pool_for("cloud").await {
-            s.cloud_remotes = count(pool, "SELECT COUNT(*) FROM remotes").await;
-        }
-        if let Ok(pool) = pool_for("tools").await {
-            s.tools_jobs = count(pool.clone(),
-                "SELECT COUNT(*) FROM jobs WHERE state = 'running'").await;
-            let queued = count(pool,
-                "SELECT COUNT(*) FROM jobs WHERE state = 'queued'").await;
-            if queued > 0 { s.tools_note = format!("{queued} queued").into(); }
-        }
+                .fetch_optional(&pool).await.ok().flatten()
+                .map(|(title, path, page, total)| {
+                    let name = if title.is_empty() {
+                        std::path::Path::new(&path).file_stem()
+                            .map(|f| f.to_string_lossy().into_owned()).unwrap_or(path.clone())
+                    } else { title };
+                    (format!("📖 {name}"),
+                     match total {
+                         Some(t) if t > 0 => format!("page {page} · {}%", (page * 100) / t),
+                         _ => format!("page {page}"),
+                     })
+                });
+            (books, reading, nb, cont)
+        };
+        let cloud_f = async {
+            let Ok(pool) = pool_for("cloud").await else { return 0; };
+            count(pool, "SELECT COUNT(*) FROM remotes").await
+        };
+        let tools_f = async {
+            let Ok(pool) = pool_for("tools").await else { return (0, 0); };
+            (count(pool.clone(), "SELECT COUNT(*) FROM jobs WHERE state = 'running'").await,
+             count(pool, "SELECT COUNT(*) FROM jobs WHERE state = 'queued'").await)
+        };
+        let (photos, videos, music, podcasts, radio, books, cloud, tools) =
+            tokio::join!(photos_f, videos_f, music_f, podcasts_f, radio_f, books_f, cloud_f, tools_f);
+        let mut total_items: i64 = 0;
+        let mut total_bytes: i64 = 0;
+        let mut add = |(n, b): (i64, i64)| { total_items += n; total_bytes += b; };
+        s.photos = photos.0; s.photos_albums = photos.1; add(photos.2);
+        s.videos = videos.0; s.videos_shows = videos.1; add(videos.2);
+        s.songs = music.0; s.audiobooks = music.1; add(music.2);
+        if let Some((c, sub)) = music.3 { s.continue3 = c.into(); s.continue3_sub = sub.into(); }
+        s.podcasts = podcasts.0;
+        if let Some((c, sub)) = podcasts.1 { s.continue2 = c.into(); s.continue2_sub = sub.into(); }
+        s.radio = radio;
+        s.books = books.0; s.books_reading = books.1; add(books.2);
+        if let Some((c, sub)) = books.3 { s.continue1 = c.into(); s.continue1_sub = sub.into(); }
+        s.cloud_remotes = cloud;
+        s.tools_jobs = tools.0;
+        if tools.1 > 0 { s.tools_note = format!("{} queued", tools.1).into(); }
         // Header totals line — "12,304 items · 41 GB" (thousands-separated).
         let items_str = {
             let d = total_items.to_string();
@@ -9438,6 +9503,26 @@ fn recent_home_books() -> &'static std::sync::Mutex<Vec<(i64, PathBuf)>> {
     RECENT_HOME_BOOKS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
+/// Generate thumbnails for the Home rows concurrently (4 at a time — enough to
+/// hide latency, few enough to not stampede ffmpeg on a cold cache), keeping
+/// the input order. Falls back to the source path when a thumb can't be made.
+async fn home_thumbs_parallel(paths: Vec<String>, kind: tulipix_core::thumbs::ThumbKind) -> Vec<PathBuf> {
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
+    let handles: Vec<_> = paths.into_iter().map(|p| {
+        let sem = sem.clone();
+        tokio::spawn(async move {
+            let _permit = sem.acquire().await.ok();
+            let src = PathBuf::from(&p);
+            thumb_for(src.clone(), kind).await.unwrap_or(src)
+        })
+    }).collect();
+    let mut thumbs = Vec::with_capacity(handles.len());
+    for h in handles {
+        if let Ok(t) = h.await { thumbs.push(t); }
+    }
+    thumbs
+}
+
 /// Load the 10 most-recent photo thumbnails for the Home Photos slideshow.
 /// DB read + thumb render happen off the UI thread; the images are handed back
 /// via the event loop as a model the coverflow fan cycles through.
@@ -9453,13 +9538,9 @@ fn kick_home_photos(w: &MainWindow) {
         }
         // Render thumbs off-thread, collect the paths (slint::Image isn't Send, so
         // the actual Image decode happens on the UI thread inside the closure).
-        let mut thumbs: Vec<PathBuf> = Vec::new();
-        for p in paths {
-            let src = PathBuf::from(&p);
-            let thumb = thumb_for(src.clone(), tulipix_core::thumbs::ThumbKind::Photo)
-                .await.unwrap_or(src);
-            thumbs.push(thumb);
-        }
+        // Concurrent (bounded) instead of one-by-one: a cold cache means real
+        // decodes per item, and serially that held the whole row back.
+        let thumbs = home_thumbs_parallel(paths, tulipix_core::thumbs::ThumbKind::Photo).await;
         let _ = weak.upgrade_in_event_loop(move |w| {
             let imgs: Vec<slint::Image> = thumbs.iter()
                 .filter_map(|t| slint::Image::load_from_path(t).ok()).collect();
@@ -9479,13 +9560,9 @@ fn kick_home_videos(w: &MainWindow) {
         if let Ok(mut g) = recent_home_videos().lock() {
             *g = paths.iter().map(PathBuf::from).collect();
         }
-        let mut thumbs: Vec<PathBuf> = Vec::new();
-        for p in paths {
-            let src = PathBuf::from(&p);
-            let thumb = thumb_for(src.clone(), tulipix_core::thumbs::ThumbKind::Video)
-                .await.unwrap_or(src);
-            thumbs.push(thumb);
-        }
+        // Same bounded-concurrency thumb render as the Photos row — video
+        // thumbs cost an ffmpeg frame-grab each on a cold cache.
+        let thumbs = home_thumbs_parallel(paths, tulipix_core::thumbs::ThumbKind::Video).await;
         let _ = weak.upgrade_in_event_loop(move |w| {
             let imgs: Vec<slint::Image> = thumbs.iter()
                 .filter_map(|t| slint::Image::load_from_path(t).ok()).collect();
@@ -9640,9 +9717,12 @@ fn push_home_continue(weak: &slint::Weak<MainWindow>) {
 fn kick_home_continue(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
-        let mut rows: Vec<HomeContRow> = Vec::new();
+        // The four sources live in four separate DBs — gather them
+        // concurrently (join!) so the strip fills in ~max latency, not sum.
         // Books — reading_progress rows, cover from book_meta.
-        if let Ok(pool) = pool_for("books").await {
+        let books_f = async {
+            let mut rows: Vec<HomeContRow> = Vec::new();
+            let Ok(pool) = pool_for("books").await else { return rows; };
             let items = sqlx::query_as::<_, (i64, String, String, String, i64, Option<i64>, Option<String>, i64)>(
                 "SELECT rp.item_id, COALESCE(NULLIF(bm.title, ''), ''), COALESCE(bm.author, ''), \
                         i.abs_path, rp.page, rp.total_pages, bm.cover_path, COALESCE(rp.updated, 0) \
@@ -9669,11 +9749,14 @@ fn kick_home_continue(w: &MainWindow) {
                     cover.filter(|c| !c.is_empty()).map(PathBuf::from)).await;
                 rows.push(HomeContRow { kind: "book", title: name, author, sub, frac, cover, id, path, ts });
             }
-        }
+            rows
+        };
         // Podcasts — in-progress episodes (position saved by the 5s playback
         // ticker; `played` is set on OPEN so it can't gate this list, and ≥95%
         // through counts as finished). Episode art falls back to show art.
-        if let Ok(pool) = pool_for("podcasts").await {
+        let podcasts_f = async {
+            let mut rows: Vec<HomeContRow> = Vec::new();
+            let Ok(pool) = pool_for("podcasts").await else { return rows; };
             let items = sqlx::query_as::<_, (i64, String, String, f64, Option<f64>, String, String, i64)>(
                 "SELECT e.id, COALESCE(e.title, ''), COALESCE(p.title, ''), e.position_s, e.duration_s, \
                         COALESCE(e.image_url, ''), COALESCE(NULLIF(p.custom_image, ''), p.image_url, ''), \
@@ -9699,9 +9782,12 @@ fn kick_home_continue(w: &MainWindow) {
                 let cover = tulipix_sec_music::decode_art_px(cover_path).await;
                 rows.push(HomeContRow { kind: "podcast", title, author: show, sub, frac, cover, id, path: String::new(), ts });
             }
-        }
+            rows
+        };
         // Audiobooks — newest chapter resume per book folder (dedup on folder).
-        if let Ok(pool) = pool_for("music").await {
+        let audiobooks_f = async {
+            let mut rows: Vec<HomeContRow> = Vec::new();
+            let Ok(pool) = pool_for("music").await else { return rows; };
             let _ = sqlx::query("CREATE TABLE IF NOT EXISTS audiobook_covers (folder TEXT PRIMARY KEY, path TEXT NOT NULL)")
                 .execute(&pool).await;
             let custom: std::collections::HashMap<String, String> =
@@ -9731,10 +9817,13 @@ fn kick_home_continue(w: &MainWindow) {
                     id: item_id, path: folder, ts,
                 });
             }
-        }
+            rows
+        };
         // Videos — in-progress watches (same filter as the Videos section's
         // Continue tab), newest watch first. Cover = TMDB poster else thumb.
-        if let Ok(pool) = pool_for("videos").await {
+        let videos_f = async {
+            let mut rows: Vec<HomeContRow> = Vec::new();
+            let Ok(pool) = pool_for("videos").await else { return rows; };
             let items = sqlx::query_as::<_, (i64, String, f64, Option<f64>, Option<String>, i64)>(
                 "SELECT vm.item_id, i.abs_path, COALESCE(wp.position_s, 0.0), \
                         COALESCE(wp.duration_s, vm.duration_s), mv.poster_local, \
@@ -9765,7 +9854,11 @@ fn kick_home_continue(w: &MainWindow) {
                 let cover = tulipix_sec_music::decode_art_px(cover_path).await;
                 rows.push(HomeContRow { kind: "video", title, author: "Video".into(), sub, frac, cover, id, path, ts });
             }
-        }
+            rows
+        };
+        let (b, p, a, v) = tokio::join!(books_f, podcasts_f, audiobooks_f, videos_f);
+        let mut rows: Vec<HomeContRow> = b;
+        rows.extend(p); rows.extend(a); rows.extend(v);
         // Drop user-dismissed items, then "All" interleaves by recency.
         let dismissed = home_cont_dismissed().lock().map(|g| g.clone()).unwrap_or_default();
         rows.retain(|r| !dismissed.contains(&home_cont_dismiss_key(r.kind, r.id, &r.path)));
@@ -10365,16 +10458,23 @@ fn flush_progress(weak: &slint::Weak<MainWindow>) {
         }
         let any_active = rows.iter().any(|r| r.active);
         // Auto-dismiss: once every section finished, keep the popup up for
-        // 5 s (so the final counts are readable) then hide it.
+        // 4 s (so the final counts are readable) then hide it. The popup shows
+        // while scan-active OR scan-progress has rows, so the timer must clear
+        // BOTH; it must also arm on all_done alone — scan_active was just set
+        // false above, so gating on it meant the timer never fired.
         let all_done = !rows.is_empty()
             && rows.iter().all(|r| r.total > 0 && r.added + r.failed >= r.total);
         w.set_scan_progress(slint::ModelRc::new(slint::VecModel::from(rows)));
         w.set_scan_active(any_active);
         use std::sync::atomic::Ordering::Relaxed;
-        if all_done && w.get_scan_active() && !SCAN_HIDE_SCHEDULED.swap(true, Relaxed) {
+        if all_done && !SCAN_HIDE_SCHEDULED.swap(true, Relaxed) {
             let weak = w.as_weak();
-            slint::Timer::single_shot(std::time::Duration::from_secs(5), move || {
-                if let Some(w) = weak.upgrade() { w.set_scan_active(false); }
+            slint::Timer::single_shot(std::time::Duration::from_secs(4), move || {
+                if let Some(w) = weak.upgrade() {
+                    w.set_scan_active(false);
+                    w.set_scan_progress(slint::ModelRc::new(
+                        slint::VecModel::from(Vec::<ScanProgress>::new())));
+                }
             });
         }
         if !all_done { SCAN_HIDE_SCHEDULED.store(false, Relaxed); }

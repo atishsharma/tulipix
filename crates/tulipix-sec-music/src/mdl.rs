@@ -21,6 +21,8 @@ fn cancel_flag() -> &'static Arc<AtomicBool> {
 #[derive(Clone)]
 struct RowData {
     title: String,
+    /// "3:45" from provider metadata ("" when the provider didn't know).
+    length: String,
     album: String,
     artists: Vec<String>,
     main_artist: String,
@@ -340,6 +342,7 @@ fn push_rows(weak: &Weak<MainWindow>) {
             .map(|(abs, r)| DownloaderRow {
                 abs_index: *abs as i32,
                 title: SharedString::from(r.title.as_str()),
+                length: SharedString::from(r.length.as_str()),
                 album: SharedString::from(r.album.as_str()),
                 artists: ModelRc::new(VecModel::from(
                     r.artists.iter().map(SharedString::from).collect::<Vec<_>>(),
@@ -368,6 +371,17 @@ fn set_status(weak: &Weak<MainWindow>, status: &str) {
     let _ = weak.upgrade_in_event_loop(move |w| w.set_music_dl_status(SharedString::from(status)));
 }
 
+/// "3:45" for a provider duration, "" when unknown.
+fn fmt_len(ms: Option<u64>) -> String {
+    match ms {
+        Some(ms) if ms > 0 => {
+            let s = ms / 1000;
+            format!("{}:{:02}", s / 60, s % 60)
+        }
+        _ => String::new(),
+    }
+}
+
 fn seed_rows(pl: &Playlist) {
     let mut r = rows().lock().unwrap();
     *r = pl
@@ -375,6 +389,7 @@ fn seed_rows(pl: &Playlist) {
         .iter()
         .map(|t| RowData {
             title: t.title.clone(),
+            length: fmt_len(t.duration_ms),
             album: t.album.clone().unwrap_or_default(),
             artists: t.artists.clone(),
             main_artist: t.artists.first().cloned().unwrap_or_default(),
@@ -566,14 +581,29 @@ fn stream_art(weak: Weak<MainWindow>, playlist: Playlist, kind: String, generati
     });
 }
 
-/// Search mode (np.p6.mdl.search): yt-dlp `ytsearch` on YouTube Music — the
-/// results land in the same queue/tag/download pipeline as a resolved URL.
-pub fn start_search(weak: Weak<MainWindow>, query: String) {
+/// Search mode (np.p6.mdl.search): the results land in the same queue/tag/
+/// download pipeline as a resolved URL. `provider` picks the backend —
+/// "Spotify" tries the anonymous web-player token first and silently falls
+/// back to the default yt-dlp `ytsearch` (YT Music) when Spotify won't play.
+pub fn start_search(weak: Weak<MainWindow>, query: String, provider: String) {
     set_status(&weak, "resolving");
     let _ = weak.upgrade_in_event_loop(|w| w.set_music_dl_yt_warn(false));
-    cli_push(&weak, &format!("▸ searching YouTube Music: {query}"));
     tokio::runtime::Handle::current().spawn(async move {
-        match tulipix_mdl::search_ytmusic(&query, 12).await {
+        let result = if provider == "Spotify" {
+            cli_push(&weak, &format!("▸ searching Spotify: {query}"));
+            let client = reqwest::Client::new();
+            match tulipix_mdl::search_spotify(&client, &query, 12).await {
+                Ok(pl) => Ok(pl),
+                Err(e) => {
+                    cli_push(&weak, &format!("  Spotify search failed ({e}) — falling back to YouTube Music"));
+                    tulipix_mdl::search_ytmusic(&query, 12).await
+                }
+            }
+        } else {
+            cli_push(&weak, &format!("▸ searching YouTube Music: {query}"));
+            tulipix_mdl::search_ytmusic(&query, 12).await
+        };
+        match result {
             Ok(pl) => {
                 cli_push(&weak, &format!("  found {} result(s)", pl.tracks.len()));
                 seed_rows(&pl);

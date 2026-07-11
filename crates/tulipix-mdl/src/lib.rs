@@ -10,6 +10,7 @@ pub mod resolve;
 pub mod manifest;
 pub mod download;
 
+pub use provider::spotify::search as search_spotify;
 pub use provider::youtube_music::search as search_ytmusic;
 pub use resolve::{detect_provider, resolve_url};
 pub use types::{Playlist, Progress, ProviderId, Stage, Track};

@@ -10,7 +10,7 @@ import { SharedHero, HeroRect } from "shared_element.slint";
 import { MilestoneConfetti } from "empty_state.slint";
 import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
-import { MusicPage, MusicFullscreen, MusicMini, PodcastMini } from "page_music.slint";
+import { MusicPage, MusicFullscreen, MusicMini, PodcastMini, BookMini } from "page_music.slint";
 import { MusicSongRow, DownloaderRow, DlHistoryEntry, DlSearchEntry, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
 import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow, AuthorRow, CollectionRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
@@ -846,6 +846,10 @@ export component MainWindow inherits Window {
     default-font-size: 13px;
 
     in-out property <string> active-section: "home";
+    // Set once shortly after startup: keeps the (huge) Music page instantiated
+    // in the background so the first click on Music flips visibility instead
+    // of building the whole component tree on the UI thread.
+    in-out property <bool> music-prewarmed: false;
     in-out property <HomeStats> home-stats;
     in-out property <[image]> home-recent-photos: [];   // Home Photos slideshow feed
     in-out property <[image]> home-recent-videos: [];   // Home Videos slideshow feed
@@ -1304,6 +1308,7 @@ callback cloud-go-home();
     in-out property <string> music-lib-tab: "home";    // My Music sub-tab
     // Downloader tab (mdl).
     in-out property <string> music-dl-url: "";
+    in-out property <string> music-dl-search-provider: "YT Music"; // search backend: "YT Music" | "Spotify"
     in-out property <string> music-dl-provider-badge: "";
     in-out property <string> music-dl-dest: "";
     in-out property <string> music-dl-status: "idle";
@@ -2404,12 +2409,13 @@ callback cloud-go-home();
                 discover-upcoming: root.video-discover-upcoming;
                 discover-on-air: root.video-discover-on-air;
                 refresh-discover => { root.video-refresh-discover(); } }
-            if active-section == "music":    MusicPage  { width: parent.width; height: parent.height; item-count: root.music-song-total; tiles: root.music-tracks-grid;
+            if active-section == "music" || music-prewarmed: MusicPage { width: parent.width; height: parent.height; visible: root.active-section == "music"; item-count: root.music-song-total; tiles: root.music-tracks-grid;
                 np-title: root.music-np-title; np-sub: root.music-np-sub; np-art: root.music-np-art; playing: root.music-playing;
                 player-mode: root.music-player-mode;
                 view <=> root.music-view; sleep-min: root.music-sleep-min;
                 lib-tab <=> root.music-lib-tab;
                 dl-url <=> root.music-dl-url;
+                dl-search-provider <=> root.music-dl-search-provider;
                 dl-provider-badge <=> root.music-dl-provider-badge;
                 dl-dest <=> root.music-dl-dest;
                 dl-status <=> root.music-dl-status;
@@ -3223,7 +3229,7 @@ callback cloud-go-home();
             }
         }
         // Music mode — full music mini player (vinyl / queue / lyrics).
-        if root.music-player-mode != "podcast": MusicMini {
+        if root.music-player-mode != "podcast" && root.music-player-mode != "book": MusicMini {
             width: 100%; height: 100%;
             bold-outline: root.music-mini-outline;
             uiscale: root.music-mini-scale;
@@ -3245,6 +3251,29 @@ callback cloud-go-home();
             // Title/artist click → album/artist page; hop to Music if elsewhere.
             open-now-album => { root.music-view = "mymusic"; root.music-open-now-album(); root.active-section = "music"; root.section-changed("music"); }
             open-now-artist => { root.music-view = "mymusic"; root.music-open-now-artist(); root.active-section = "music"; root.section-changed("music"); }
+        }
+        // Book mode — audiobook-tuned player (±30s, chapter step, 0.5–3× speed,
+        // bookmark, chapter list) — audiobooks are not vinyl records.
+        if root.music-player-mode == "book": BookMini {
+            width: 100%; height: 100%;
+            bold-outline: root.music-mini-outline;
+            uiscale: root.music-mini-scale;
+            art: root.music-np-art; accent: root.music-np-accent; title: root.music-np-title; sub: root.music-np-sub; playing: root.music-playing;
+            pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
+            speed: root.music-book-speed; volume: root.music-volume; muted: root.music-muted;
+            chapters: root.music-queue-rows;
+            close => { root.music-mini-open = false; }
+            minimise => { root.music-mini-bubble = true; }
+            playpause => { root.music-toggle-pause(); }
+            skip(s) => { root.music-podcast-skip(s); }
+            seek(s) => { root.music-seek(s); }
+            set-speed(v) => { root.music-set-book-speed(v); }
+            set-volume(v) => { root.music-set-volume(v); }
+            toggle-mute => { root.music-toggle-mute(); }
+            play-chapter(i) => { root.music-play-queue(i); }
+            chapter-step(d) => { root.music-book-chapter(d); }
+            bookmark => { root.music-book-bookmark(); }
+            open-zen => { root.music-mini-open = false; root.music-fullscreen = true; }
         }
         // Podcast mode — spoken-word tuned player (-15s / +30s / speed / notes).
         if root.music-player-mode == "podcast": PodcastMini {

@@ -31,6 +31,9 @@ export component HdrChip inherits Rectangle {
     // Hollow gradient chip: no idle tint wash — just a stronger tinted outline
     // (for chips sitting on unfilled cards where the wash reads as mud).
     in property <bool> hollow: false;
+    // Always-filled gradient chip: full gradient + white text even at rest
+    // (Home music card tabs — outline chips vanished on card hover).
+    in property <bool> grad-always: false;
     // Light-mode flag so colored (has-grad) chips can darken their text + deepen
     // the idle wash for readability on a light canvas.
     in property <bool> light-theme: false;
@@ -44,7 +47,9 @@ export component HdrChip inherits Rectangle {
     horizontal-stretch: 0; vertical-stretch: 0;
     border-radius: self.height / 2;
     clip: true;
-    background: has-grad
+    background: grad-always
+        ? (touch.has-hover && !active ? tint : grad)
+        : (has-grad
         ? (active ? grad : (touch.has-hover
             ? tint.with-alpha(light-theme ? 0.34 : 0.30)
             : (hollow ? transparent : tint.with-alpha(light-theme ? 0.20 : 0.15))))
@@ -52,16 +57,19 @@ export component HdrChip inherits Rectangle {
             ? accent
             : (dark
                 ? (touch.has-hover ? dk-hover : dk-idle)
-                : (touch.has-hover ? #e8eaed : #f1f3f4)));
-    border-width: has-grad ? (active ? 0px : (hollow ? 1.5px : 1px)) : ((dark && !active) ? 1px : 0px);
-    border-color: has-grad ? tint.with-alpha(hollow ? 0.9 : (light-theme ? 0.85 : 0.55)) : dk-border;
+                : (touch.has-hover ? #e8eaed : #f1f3f4))));
+    border-width: grad-always ? (active ? 1.5px : 0px)
+        : (has-grad ? (active ? 0px : (hollow ? 1.5px : 1px)) : ((dark && !active) ? 1px : 0px));
+    border-color: grad-always ? #ffffffcc
+        : (has-grad ? tint.with-alpha(hollow ? 0.9 : (light-theme ? 0.85 : 0.55)) : dk-border);
     animate background { duration: 140ms; easing: ease-out; }
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     // On a light canvas the bright tints (teal/amber) wash out — darken the
     // idle text so it stays legible; active text stays white on the gradient.
     // Inactive coloured chips: darken on light, brighten toward white on dark
     // so the label stays legible against the faint tint wash either way.
-    property <color> lbl-color: active ? active-text : (has-grad ? (light-theme ? tint.mix(#000000, 0.72) : tint.mix(#ffffff, 0.5)) : (dark ? dk-text : #3c4043));
+    property <color> lbl-color: grad-always ? #ffffff
+        : (active ? active-text : (has-grad ? (light-theme ? tint.mix(#000000, 0.72) : tint.mix(#ffffff, 0.5)) : (dark ? dk-text : #3c4043)));
     HorizontalLayout { alignment: center;
         spacing: (root.label == "" || (root.collapsible && !root.revealed)) ? 0px : 7px;
         padding-left: 4px; padding-right: 4px;

@@ -14,6 +14,7 @@ export struct MusicSongRow {
 // One worker row in the Downloader tab (mdl): a track being fetched.
 export struct DownloaderRow {
     title: string,
+    length: string,    // "3:45" from provider metadata ("" when unknown)
     album: string,
     artists: [string], // all credited artists — main-artist dropdown model
     main-artist: string, // currently selected primary

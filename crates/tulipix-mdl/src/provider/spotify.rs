@@ -87,6 +87,139 @@ fn largest_src(srcs: Option<&Vec<ImgSrc>>) -> Option<&str> {
         .and_then(|s| s.url.as_deref())
 }
 
+// ── Search (anonymous web-player token) ──────────────────────────────────────
+// Spotify has no public search without auth. The web player bootstraps an
+// anonymous access token from `open.spotify.com/get_access_token`; while that
+// unofficial endpoint answers, the regular `api.spotify.com/v1/search` accepts
+// the token. It DOES change occasionally — callers must treat any error here
+// as "fall back to the YT Music search".
+
+#[derive(Deserialize)]
+struct AnonToken {
+    #[serde(rename = "accessToken")]
+    access_token: Option<String>,
+}
+#[derive(Deserialize)]
+struct SearchResp {
+    tracks: Option<SearchTracks>,
+}
+#[derive(Deserialize)]
+struct SearchTracks {
+    items: Option<Vec<SearchTrack>>,
+}
+#[derive(Deserialize)]
+struct SearchTrack {
+    id: Option<String>,
+    name: Option<String>,
+    duration_ms: Option<u64>,
+    artists: Option<Vec<Artist>>,
+    album: Option<SearchAlbum>,
+    external_urls: Option<SearchUrls>,
+}
+#[derive(Deserialize)]
+struct SearchAlbum {
+    name: Option<String>,
+    images: Option<Vec<ImgSrc>>,
+}
+#[derive(Deserialize)]
+struct SearchUrls {
+    spotify: Option<String>,
+}
+
+/// Downloader Search mode via Spotify: anonymous token + `/v1/search`, results
+/// as a [`Playlist`] so the existing queue/tag/download pipeline applies
+/// unchanged (audio still comes from YouTube per track — Spotify only supplies
+/// the metadata: full artist credits, album, duration, art).
+pub async fn search(client: &reqwest::Client, query: &str, limit: usize) -> Result<Playlist> {
+    let q = query.trim();
+    if q.is_empty() {
+        bail!("Type something to search.");
+    }
+    let tok: AnonToken = client
+        .get("https://open.spotify.com/get_access_token?reason=transport&productType=web_player")
+        .header(
+            "user-agent",
+            "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36",
+        )
+        .header("accept", "application/json")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await
+        .map_err(|e| anyhow!("Spotify token endpoint changed shape: {e}"))?;
+    let token = tok
+        .access_token
+        .filter(|t| !t.is_empty())
+        .ok_or_else(|| anyhow!("Spotify did not hand out an anonymous token."))?;
+    let mut u = Url::parse("https://api.spotify.com/v1/search").unwrap();
+    u.query_pairs_mut()
+        .append_pair("type", "track")
+        .append_pair("limit", &limit.clamp(1, 50).to_string())
+        .append_pair("q", q);
+    let resp: SearchResp = client
+        .get(u)
+        .bearer_auth(&token)
+        .header("accept", "application/json")
+        .send()
+        .await?
+        .error_for_status()?
+        .json()
+        .await?;
+    let tracks: Vec<Track> = resp
+        .tracks
+        .and_then(|t| t.items)
+        .unwrap_or_default()
+        .into_iter()
+        .filter_map(|t| {
+            let id = t.id?;
+            let title = t.name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty())?;
+            let artists: Vec<String> = t
+                .artists
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|a| a.name)
+                .map(|s| s.trim().to_string())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if artists.is_empty() {
+                return None;
+            }
+            let (album, artwork_url) = match t.album {
+                Some(al) => (
+                    al.name.map(|s| s.trim().to_string()).filter(|s| !s.is_empty()),
+                    largest_src(al.images.as_ref()).map(String::from),
+                ),
+                None => (None, None),
+            };
+            Some(Track {
+                source_url: t
+                    .external_urls
+                    .and_then(|u| u.spotify)
+                    .or_else(|| Some(format!("https://open.spotify.com/track/{id}"))),
+                id,
+                title,
+                artists,
+                album,
+                artwork_url,
+                duration_ms: t.duration_ms,
+            })
+        })
+        .collect();
+    if tracks.is_empty() {
+        bail!("No Spotify tracks matched.");
+    }
+    Ok(Playlist {
+        id: format!("spsearch:{q}"),
+        title: format!("Search: {q}"),
+        owner: None,
+        artwork_url: tracks.first().and_then(|t| t.artwork_url.clone()),
+        provider: ProviderId::Spotify,
+        source_url: format!("spsearch:{q}"),
+        tracks,
+    })
+}
+
 impl Spotify {
     fn collection_kind(url: &str) -> &'static str {
         let path = Url::parse(url).map(|u| u.path().to_string()).unwrap_or_default();

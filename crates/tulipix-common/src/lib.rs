@@ -548,9 +548,16 @@ pub fn music_section_key(label: &str) -> &'static str {
     }
 }
 /// Persist a folder → section assignment (settings dropdown / chip both use this).
+/// Keys are stored WITHOUT trailing separators — folder pickers hand back
+/// "/x/books/" while everything downstream (track_meta.folder, Path::parent)
+/// uses "/x/books"; a slashed key made the audiobook flag pass match nothing.
 pub fn set_folder_section(folder: &str, key: &str) {
+    let f = folder.trim_end_matches(['/', '\\']);
+    let f = if f.is_empty() { folder } else { f };
     let mut map = load_folder_sections();
-    map.insert(folder.to_string(), key.to_string());
+    // Drop any older slashed twin of the same folder so one entry survives.
+    map.retain(|k, _| k.trim_end_matches(['/', '\\']) != f);
+    map.insert(f.to_string(), key.to_string());
     save_folder_sections(&map);
 }
 /// Advance a folder's section tag to the next of the 5 and persist it.
