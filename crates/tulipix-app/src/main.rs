@@ -1673,6 +1673,10 @@ fn main() -> Result<()> {
         let w = window.as_weak();
         move || { if let Some(win) = w.upgrade() { mdl::start_resolve(win.as_weak(), win.get_music_dl_url().to_string()); } }
     });
+    window.on_music_dl_search({
+        let w = window.as_weak();
+        move || { if let Some(win) = w.upgrade() { mdl::start_search(win.as_weak(), win.get_music_dl_url().to_string()); } }
+    });
     window.on_music_dl_download({
         let w = window.as_weak();
         move || {

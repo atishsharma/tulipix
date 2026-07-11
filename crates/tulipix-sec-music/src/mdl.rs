@@ -566,6 +566,37 @@ fn stream_art(weak: Weak<MainWindow>, playlist: Playlist, kind: String, generati
     });
 }
 
+/// Search mode (np.p6.mdl.search): yt-dlp `ytsearch` on YouTube Music — the
+/// results land in the same queue/tag/download pipeline as a resolved URL.
+pub fn start_search(weak: Weak<MainWindow>, query: String) {
+    set_status(&weak, "resolving");
+    let _ = weak.upgrade_in_event_loop(|w| w.set_music_dl_yt_warn(false));
+    cli_push(&weak, &format!("▸ searching YouTube Music: {query}"));
+    tokio::runtime::Handle::current().spawn(async move {
+        match tulipix_mdl::search_ytmusic(&query, 12).await {
+            Ok(pl) => {
+                cli_push(&weak, &format!("  found {} result(s)", pl.tracks.len()));
+                seed_rows(&pl);
+                record_search_bg(&pl, query.clone());
+                let kind = resolve_kind(&pl).to_string();
+                *resolved().lock().unwrap() = Some(pl.clone());
+                // Store the raw query as the "resolved URL" — Download passes the
+                // same field text back, so the playlist is reused, not re-resolved.
+                *resolved_url().lock().unwrap() = query.clone();
+                *queue_page().lock().unwrap() = 0;
+                *sort_state().lock().unwrap() = (String::new(), 1);
+                emit_sort(&weak, "", 1);
+                push_kind(&weak, &kind);
+                push_rows(&weak);
+                set_status(&weak, "resolved");
+                let generation = art_gen().fetch_add(1, Ordering::Relaxed) + 1;
+                stream_art(weak.clone(), pl, kind, generation);
+            }
+            Err(e) => set_status(&weak, &format!("error: {e}")),
+        }
+    });
+}
+
 /// Resolve a URL and show the tracklist preview (all rows selected).
 pub fn start_resolve(weak: Weak<MainWindow>, url: String) {
     set_status(&weak, "resolving");

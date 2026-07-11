@@ -132,6 +132,31 @@ impl YoutubeMusic {
     }
 }
 
+/// Downloader Search mode: run a yt-dlp `ytsearchN:` query and return the
+/// results as a [`Playlist`], so the existing queue/tag/download pipeline
+/// works on search results exactly like on a resolved URL.
+pub async fn search(query: &str, limit: usize) -> Result<Playlist> {
+    let q = query.trim();
+    if q.is_empty() {
+        bail!("Type something to search.");
+    }
+    let bin = tulipix_core::thumbs::tool_bin("yt-dlp");
+    let mut cmd = tokio::process::Command::new(bin);
+    cmd.arg("-J")
+        .arg("--no-warnings")
+        .arg("--flat-playlist")
+        .arg(format!("ytsearch{limit}:{q}"));
+    cmd.no_window();
+    let out = cmd.output().await?;
+    if !out.status.success() {
+        bail!("yt-dlp search failed: {}", String::from_utf8_lossy(&out.stderr));
+    }
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    let mut pl = YoutubeMusic::parse_ytdlp_json(&stdout, &format!("ytsearch:{q}"))?;
+    pl.title = format!("Search: {q}");
+    Ok(pl)
+}
+
 #[async_trait::async_trait]
 impl Provider for YoutubeMusic {
     fn id(&self) -> ProviderId {

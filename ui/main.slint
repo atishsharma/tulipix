@@ -1483,7 +1483,8 @@ callback cloud-go-home();
     callback music-set-lib-tab(string);
     callback music-dl-url-changed(string);
     callback music-dl-pick-folder();
-    callback music-dl-resolve();
+        callback music-dl-resolve();
+    callback music-dl-search();
     callback music-dl-download();
     callback music-dl-cancel();
     callback music-dl-refresh-library();
@@ -2456,6 +2457,7 @@ callback cloud-go-home();
                 dl-url-changed(u) => { root.music-dl-url-changed(u); }
                 dl-pick-folder() => { root.music-dl-pick-folder(); }
                 dl-resolve() => { root.music-dl-resolve(); }
+                dl-search() => { root.music-dl-search(); }
                 dl-download() => { root.music-dl-download(); }
                 dl-cancel() => { root.music-dl-cancel(); }
                 dl-refresh-library() => { root.music-dl-refresh-library(); }
@@ -3009,6 +3011,8 @@ callback cloud-go-home();
                 pos-label: root.music-pos-label; dur-label: root.music-dur-label;
                 shuffle: root.music-shuffle; volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat;
                 player-mode: root.music-player-mode;
+                vis-bars: root.music-vis-bars; vis-style: root.music-vis-style;
+                set-vis-style(s) => { root.music-vis-style = s; root.music-set-vis-style(s); }
                 queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
                 radio-initial: root.music-radio-np-initial; yt-now-video: root.music-yt-now-video;
                 podcast-speed: root.music-podcast-speed; podcast-episodes: root.music-podcast-d-episodes; podcast-summary: root.music-podcast-d-desc;

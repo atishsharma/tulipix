@@ -5,7 +5,7 @@
 // and a left/right swap for the music block driven by `music-left`.
 import { Theme, Accent } from "tokens.slint";
 import { AppIcon, Icons } from "icons.slint";
-import { MusicMini, PodcastMini, MusicTab, LiveTabRing } from "page_music.slint";
+import { MusicMini, PodcastMini, MusicTab, LiveTabRing, VizView } from "page_music.slint";
 import { MusicSongRow, MusicLyricLine, PodcastEpisodeRow } from "music_common.slint";
 
 export struct HomeStats {
@@ -130,35 +130,6 @@ component HomeTile inherits Rectangle {
     }
 }
 
-// Rainbow "smoke" visualizer hugging the inside of the music card's outline
-// while anything plays (np.p6.home.viz). Four edge ribbons carry a slowly
-// cycling hsv rainbow sweep; big soft drop-shadows are the smoke. The whole
-// ring breathes with animation-tick. Pure saturated hues read on every theme.
-component RainbowSmoke inherits Rectangle {
-    in property <bool> on: false;
-    property <float> hue: Math.mod(animation-tick() / 22ms, 360);
-    property <float> pulse: 0.66 + 0.34 * Math.sin((Math.mod(animation-tick() / 8ms, 360)) * 1deg);
-    background: transparent;
-    opacity: root.on ? 0.9 * root.pulse : 0;
-    animate opacity { duration: 600ms; easing: ease-out; }
-    // top
-    Rectangle { x: 12px; y: 3px; width: parent.width - 24px; height: 4px; border-radius: 2px;
-        background: @linear-gradient(90deg, hsv(root.hue, 1, 1) 0%, hsv(Math.mod(root.hue + 120, 360), 1, 1) 50%, hsv(Math.mod(root.hue + 240, 360), 1, 1) 100%);
-        drop-shadow-blur: 14px; drop-shadow-color: hsv(root.hue, 1, 1).with-alpha(0.6); }
-    // bottom (hue offset half a turn so opposite edges never match)
-    Rectangle { x: 12px; y: parent.height - 7px; width: parent.width - 24px; height: 4px; border-radius: 2px;
-        background: @linear-gradient(90deg, hsv(Math.mod(root.hue + 180, 360), 1, 1) 0%, hsv(Math.mod(root.hue + 300, 360), 1, 1) 50%, hsv(Math.mod(root.hue + 60, 360), 1, 1) 100%);
-        drop-shadow-blur: 14px; drop-shadow-color: hsv(Math.mod(root.hue + 180, 360), 1, 1).with-alpha(0.6); }
-    // left
-    Rectangle { x: 3px; y: 12px; width: 4px; height: parent.height - 24px; border-radius: 2px;
-        background: @linear-gradient(180deg, hsv(root.hue, 1, 1) 0%, hsv(Math.mod(root.hue + 120, 360), 1, 1) 50%, hsv(Math.mod(root.hue + 240, 360), 1, 1) 100%);
-        drop-shadow-blur: 14px; drop-shadow-color: hsv(Math.mod(root.hue + 90, 360), 1, 1).with-alpha(0.6); }
-    // right
-    Rectangle { x: parent.width - 7px; y: 12px; width: 4px; height: parent.height - 24px; border-radius: 2px;
-        background: @linear-gradient(180deg, hsv(Math.mod(root.hue + 180, 360), 1, 1) 0%, hsv(Math.mod(root.hue + 300, 360), 1, 1) 50%, hsv(Math.mod(root.hue + 60, 360), 1, 1) 100%);
-        drop-shadow-blur: 14px; drop-shadow-color: hsv(Math.mod(root.hue + 270, 360), 1, 1).with-alpha(0.6); }
-}
-
 // Left-hand music card — MUSIC cap + the original MusicMini (embedded) + 5
 // name-only tab chips. MusicMini now follows the app theme (MusicTheme derives
 // from Theme), so the real player renders natively here instead of a clone.
@@ -247,7 +218,9 @@ component HomeMusicCard inherits Rectangle {
         Rectangle {
             vertical-stretch: 1;
             border-radius: 12px;
-            background: Theme.sec-music.with-alpha(0.18);
+            // Theme-aware player fill: white-cream on light themes (design
+            // match), theme panel surface on dark — the fixed cream glared.
+            background: Theme.dark ? Theme.panel-2 : #FAFAF7;
             border-width: 1px; border-color: Theme.sec-music.with-alpha(0.60);
             if root.player-mode != "podcast": MusicMini {
                 embedded: true; width: 100%; height: 100%; uiscale: root.player-scale;
@@ -284,28 +257,29 @@ component HomeMusicCard inherits Rectangle {
         // + LiveTabRing (rotating halo on the source that's playing). `hollow`
         // drops the idle tint wash for a bare tinted outline, so the chips stay
         // visible on the unfilled card in every theme.
-        // Row 1: 3 tabs; Row 2: 2 tabs (wider — stretch fills the row).
-        HorizontalLayout {
-            spacing: 6px;
-            LiveTabRing { live: root.active-tab == "mymusic"; tint: #ec4899;
-                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "My Music"; has-grad: true; hollow: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.active-tab == "mymusic"; clicked => { root.open-music("mymusic"); } } }
-            LiveTabRing { live: root.active-tab == "podcasts"; tint: #8b5cf6;
-                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "Podcasts"; has-grad: true; hollow: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.active-tab == "podcasts"; clicked => { root.open-music("podcasts"); } } }
-            LiveTabRing { live: root.active-tab == "audiobooks"; tint: #3b82f6;
-                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "Audiobooks"; has-grad: true; hollow: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.active-tab == "audiobooks"; clicked => { root.open-music("audiobooks"); } } }
-        }
-        HorizontalLayout {
-            spacing: 6px;
-            LiveTabRing { live: root.active-tab == "radio"; tint: #14b8a6;
-                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "Radio"; has-grad: true; hollow: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.active-tab == "radio"; clicked => { root.open-music("radio"); } } }
-            LiveTabRing { live: root.active-tab == "youtube"; tint: #ef4444;
-                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "YouTube"; has-grad: true; hollow: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b); active: root.active-tab == "youtube"; clicked => { root.open-music("youtube"); } } }
+        // Row 1: 3 tabs; Row 2: 2 tabs (wider — stretch fills the row). Chips
+        // run 10% shorter than the Music-section originals (32px vs 36px) and
+        // the two rows sit tighter (4px) so the player above gets the slack.
+        VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                spacing: 6px;
+                LiveTabRing { live: root.active-tab == "mymusic"; tint: #ec4899;
+                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "My Music"; has-grad: true; hollow: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.active-tab == "mymusic"; clicked => { root.open-music("mymusic"); } } }
+                LiveTabRing { live: root.active-tab == "podcasts"; tint: #8b5cf6;
+                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "Podcasts"; has-grad: true; hollow: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.active-tab == "podcasts"; clicked => { root.open-music("podcasts"); } } }
+                LiveTabRing { live: root.active-tab == "audiobooks"; tint: #3b82f6;
+                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "Audiobooks"; has-grad: true; hollow: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.active-tab == "audiobooks"; clicked => { root.open-music("audiobooks"); } } }
+            }
+            HorizontalLayout {
+                spacing: 6px;
+                LiveTabRing { live: root.active-tab == "radio"; tint: #14b8a6;
+                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "Radio"; has-grad: true; hollow: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.active-tab == "radio"; clicked => { root.open-music("radio"); } } }
+                LiveTabRing { live: root.active-tab == "youtube"; tint: #ef4444;
+                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "YouTube"; has-grad: true; hollow: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b); active: root.active-tab == "youtube"; clicked => { root.open-music("youtube"); } } }
+            }
         }
     }
-    // Rainbow smoke ring — inside the outline, all four edges, only while
-    // something plays. Drawn last so the glow rides on top of the card chrome
-    // (the 12px content padding keeps it clear of the player controls).
-    RainbowSmoke { x: 0; y: 0; width: 100%; height: 100%; on: root.playing; }
 }
 
 // One coverflow card — rounded, shadowed photo, letterboxed (no crop).
@@ -720,6 +694,18 @@ export component HomePage inherits Rectangle {
     in property <float> podcast-speed: 1.0;
     in property <[PodcastEpisodeRow]> podcast-episodes: [];
     in property <string> podcast-summary: "";
+    // Header spectrum (np.p6.home.header-viz) — zen-player VizView riding the
+    // header canvas while anything plays; the waveform chip hides it.
+    in property <[float]> vis-bars: [];
+    in property <int> vis-style: 4;
+    property <bool> header-viz: true;
+    property <bool> viz-lyrics: true;      // active synced line rides the spectrum
+    callback set-vis-style(int);           // persists via music-set-vis-style
+    // Header spectrum only for My Music + Radio — podcasts/audiobooks/YouTube
+    // don't drive it. Radio additionally has no synced lyrics to show.
+    property <bool> viz-allowed: root.playing
+        && (root.player-mode == "radio" || (root.player-mode == "music" && !root.yt-now-video));
+    property <bool> viz-lyrics-ok: root.player-mode == "music" && !root.yt-now-video;
 
     callback open-section(string);
     callback open-photo-item(int);
@@ -768,7 +754,9 @@ export component HomePage inherits Rectangle {
     // ~112px of card chrome (padding + MUSIC cap + two tab rows); 488px is the
     // player's natural height at scale 1. Bias slightly under so the art-stretch
     // absorbs the residual instead of clipping the bottom controls.
-    property <float> player-scale: Math.clamp((bento-h - 116px) / 500px, 1.0, 1.7);
+    // Card chrome shrank (32px tabs, 4px row gap) but the embedded player grew
+    // taller pills — natural height is now ~505px with ~104px of chrome.
+    property <float> player-scale: Math.clamp((bento-h - 104px) / 505px, 1.0, 1.7);
     property <length> music-w: 300px * player-scale + 40px;
     property <length> right-area: grid-w - music-w - 10px;
     property <length> cell2: (right-area - 10px) / 2;
@@ -802,10 +790,77 @@ export component HomePage inherits Rectangle {
                 }
             }
             VerticalLayout {
-                alignment: center; spacing: 5px; horizontal-stretch: 1; min-width: 0;
+                alignment: center; spacing: 5px; horizontal-stretch: 0; min-width: 0;
                 Text { text: greeting; color: Theme.text; font-size: 30px; font-weight: 800; overflow: elide; }
                 Text { text: date-line + (user-secondary == "" ? "" : " · " + user-secondary);
                     color: Theme.text-dim; font-size: 14px; overflow: elide; }
+            }
+            // Zen-player spectrum spanning the header gap — borderless so it
+            // reads as part of the header, not a boxed card; only while playing.
+            Rectangle {
+                horizontal-stretch: 1; min-width: 0; clip: true;
+                if root.viz-allowed && root.header-viz: VizView {
+                    width: 100%; height: 100%;
+                    bars: root.vis-bars; style: root.vis-style; active: true;
+                }
+                // Active synced-lyric line riding the spectrum — white pill,
+                // dead center; single line only (no prev/next context).
+                if root.viz-allowed && root.header-viz && root.viz-lyrics && root.viz-lyrics-ok
+                    && root.lyrics-active >= 0 && root.lyrics-rows.length > 0: Rectangle {
+                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                    width: Math.min(hlyr.preferred-width + 28px, parent.width - 16px);
+                    height: 30px; border-radius: 15px;
+                    background: #ffffff; border-width: 1px; border-color: #00000022;
+                    drop-shadow-blur: 12px; drop-shadow-color: #00000040;
+                    hlyr := Text { x: 12px; width: parent.width - 24px; height: 100%;
+                        text: root.lyrics-rows[root.lyrics-active].text;
+                        color: #14141b; font-size: 13px; font-weight: 700;
+                        horizontal-alignment: center; vertical-alignment: center; overflow: elide; }
+                }
+            }
+            // Waveform chip — opens the visualizer menu (5 styles like the
+            // Music section, Off, and the lyric-pill toggle); only offered
+            // while something plays (the spectrum is gone otherwise anyway).
+            if root.viz-allowed: VerticalLayout { alignment: center;
+                Rectangle {
+                    width: 30px; height: 30px; border-radius: 15px;
+                    background: root.header-viz ? Accent.color : (vt.has-hover ? Theme.panel : Theme.panel-2);
+                    border-width: 1px; border-color: root.header-viz ? Accent.color : Theme.outline;
+                    animate background { duration: 120ms; }
+                    vt := TouchArea { mouse-cursor: pointer; clicked => { viz-menu.show(); } }
+                    AppIcon { source: Icons.waveform; tint: root.header-viz ? #ffffff : Theme.text;
+                        width: 15px; height: 15px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
+                    viz-menu := PopupWindow {
+                        x: -110px; y: 36px; width: 140px; close-policy: close-on-click-outside;
+                        Rectangle { width: 100%; border-radius: 10px; background: Theme.panel;
+                            border-width: 1px; border-color: Theme.outline;
+                            drop-shadow-blur: 24px; drop-shadow-color: #00000066;
+                            // NOTE: viz-menu.close() must be the LAST statement in every
+                            // row callback — closing first deletes the row mid-eval and
+                            // panics the live-preview interpreter (slint issue #6426).
+                            VerticalLayout { padding: 6px; spacing: 2px;
+                                for n[i] in ["Bars", "Mirror", "Dots", "Levels", "Line"]: Rectangle {
+                                    height: 26px; border-radius: 6px;
+                                    background: (root.header-viz && root.vis-style == i) ? Accent.color.with-alpha(0.18) : (vmi.has-hover ? Theme.panel-2 : transparent);
+                                    vmi := TouchArea { mouse-cursor: pointer;
+                                        clicked => { root.header-viz = true; root.set-vis-style(i); viz-menu.close(); } }
+                                    Text { text: n; color: (root.header-viz && root.vis-style == i) ? Accent.color : Theme.text; font-size: 12px;
+                                        font-weight: (root.header-viz && root.vis-style == i) ? 700 : 500; x: 10px; vertical-alignment: center; height: 100%; } }
+                                Rectangle { height: 1px; background: Theme.outline; }
+                                Rectangle { height: 26px; border-radius: 6px;
+                                    background: !root.header-viz ? Accent.color.with-alpha(0.18) : (vm0.has-hover ? Theme.panel-2 : transparent);
+                                    vm0 := TouchArea { mouse-cursor: pointer; clicked => { root.header-viz = false; viz-menu.close(); } }
+                                    Text { text: "Off Viz"; color: !root.header-viz ? Accent.color : Theme.text; font-size: 12px;
+                                        font-weight: !root.header-viz ? 700 : 500; x: 10px; vertical-alignment: center; height: 100%; } }
+                                // Radio has no synced lyrics — hide the toggle there.
+                                if root.viz-lyrics-ok: Rectangle { height: 26px; border-radius: 6px;
+                                    background: vml.has-hover ? Theme.panel-2 : transparent;
+                                    vml := TouchArea { mouse-cursor: pointer; clicked => { root.viz-lyrics = !root.viz-lyrics; viz-menu.close(); } }
+                                    Text { text: root.viz-lyrics ? "Lyrics · on" : "Lyrics · off";
+                                        color: root.viz-lyrics ? Accent.color : Theme.text; font-size: 12px;
+                                        font-weight: root.viz-lyrics ? 700 : 500; x: 10px; vertical-alignment: center; height: 100%; } }
+                            } } }
+                }
             }
             VerticalLayout { alignment: center;
                 // Flip the music card to the other side of the board — the
