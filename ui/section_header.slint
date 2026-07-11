@@ -28,6 +28,9 @@ export component HdrChip inherits Rectangle {
     in property <brush> grad;
     in property <bool> has-grad: false;
     in property <color> tint: #ec4899;
+    // Hollow gradient chip: no idle tint wash — just a stronger tinted outline
+    // (for chips sitting on unfilled cards where the wash reads as mud).
+    in property <bool> hollow: false;
     // Light-mode flag so colored (has-grad) chips can darken their text + deepen
     // the idle wash for readability on a light canvas.
     in property <bool> light-theme: false;
@@ -44,14 +47,14 @@ export component HdrChip inherits Rectangle {
     background: has-grad
         ? (active ? grad : (touch.has-hover
             ? tint.with-alpha(light-theme ? 0.34 : 0.30)
-            : tint.with-alpha(light-theme ? 0.20 : 0.15)))
+            : (hollow ? transparent : tint.with-alpha(light-theme ? 0.20 : 0.15))))
         : (active
             ? accent
             : (dark
                 ? (touch.has-hover ? dk-hover : dk-idle)
                 : (touch.has-hover ? #e8eaed : #f1f3f4)));
-    border-width: has-grad ? (active ? 0px : 1px) : ((dark && !active) ? 1px : 0px);
-    border-color: has-grad ? tint.with-alpha(light-theme ? 0.85 : 0.55) : dk-border;
+    border-width: has-grad ? (active ? 0px : (hollow ? 1.5px : 1px)) : ((dark && !active) ? 1px : 0px);
+    border-color: has-grad ? tint.with-alpha(hollow ? 0.9 : (light-theme ? 0.85 : 0.55)) : dk-border;
     animate background { duration: 140ms; easing: ease-out; }
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     // On a light canvas the bright tints (teal/amber) wash out — darken the

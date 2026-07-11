@@ -20,7 +20,20 @@ export struct HomeStats {
     continue3: string, continue3-sub: string,
 }
 
-export struct HomeRemote { name: string, backend: string }
+export struct HomeRemote { name: string, backend: string, usage: string }
+
+// One in-progress item for the Home CONTINUE strip (design parity: cover +
+// progress bar + resume click). kind: "book" | "podcast" | "audiobook" | "video".
+export struct HomeContinue {
+    kind: string,
+    title: string,
+    author: string,   // book author / podcast show / audiobook narrator line
+    sub: string,
+    frac: float,      // 0‥1 progress; < 0 = unknown (bar hidden)
+    cover: image,
+    id: int,          // book item id / podcast episode id
+    path: string,     // book abs path (books only)
+}
 
 // Small uppercase section label.
 component HomeCap inherits Text {
@@ -37,14 +50,53 @@ component HomeChip inherits Rectangle {
     callback clicked();
     height: 30px; border-radius: 15px;
     horizontal-stretch: fill ? 1 : 0; vertical-stretch: 0;
-    background: emphasized ? accent.with-alpha(0.18) : (ta.has-hover ? Theme.panel : Theme.panel-2);
+    // Active chip = SOLID accent fill + white text (translucent fill left the
+    // accent-on-accent text unreadable).
+    background: emphasized ? accent : (ta.has-hover ? Theme.panel : Theme.panel-2);
     border-width: 1px;
-    border-color: emphasized ? accent.with-alpha(0.38) : Theme.outline;
+    border-color: emphasized ? accent : Theme.outline;
     animate background { duration: 120ms; }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout { padding-left: 14px; padding-right: 14px;
-        Text { text: label; color: emphasized ? accent : Theme.text; horizontal-stretch: 1;
+        Text { text: label; color: emphasized ? #ffffff : Theme.text; horizontal-stretch: 1;
             font-size: 11px; font-weight: 600; vertical-alignment: center; horizontal-alignment: center; overflow: elide; } }
+}
+
+// White accent-bordered title pill (the Photos/Videos card label made
+// reusable): bare tinted icon | hairline | name (+ optional count). Sizes
+// itself; callers position it (overlay) or drop it in a layout (header row).
+component TitlePill inherits Rectangle {
+    in property <image> icon;
+    in property <color> accent;
+    in property <string> name;
+    in property <string> stat: "";
+    width: prow.preferred-width; height: prow.preferred-height;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: 10px; background: #ffffff;
+    border-width: 1.5px; border-color: root.accent;
+    drop-shadow-blur: 12px; drop-shadow-color: #00000055;
+    prow := HorizontalLayout {
+        padding-left: 11px; padding-right: 12px; padding-top: 6px; padding-bottom: 6px; spacing: 9px;
+        VerticalLayout { alignment: center;
+            AppIcon { source: root.icon; tint: root.accent; width: 20px; height: 20px; } }
+        Rectangle { width: 1px; background: root.accent.with-alpha(0.30); }
+        Text { text: root.name; color: root.accent; font-size: 17px; font-weight: 800;
+            vertical-alignment: center; overflow: elide; }
+        if root.stat != "": Text { text: root.stat; color: root.accent; font-size: 12px; font-weight: 600;
+            vertical-alignment: center; overflow: elide; }
+    }
+}
+
+// Positioned card slot on the Home board — x/y are fractions of the free
+// range (board minus card size), which reproduces the fixed bento grid.
+component BoardSlot inherits Rectangle {
+    in property <float> dfx: 0;
+    in property <float> dfy: 0;
+    in property <length> board-w;
+    in property <length> board-h;
+    x: dfx * Math.max(board-w - self.width, 0px);
+    y: dfy * Math.max(board-h - self.height, 0px);
+    @children
 }
 
 // Section tile — 80px icon chip top-left (200%), spring, big name/stat/footer
@@ -76,6 +128,35 @@ component HomeTile inherits Rectangle {
         Text { text: stat; color: Theme.text-dim; font-size: 13px; overflow: elide; }
         if footer != "": Text { text: footer; color: footer-color; font-size: 13px; overflow: elide; }
     }
+}
+
+// Rainbow "smoke" visualizer hugging the inside of the music card's outline
+// while anything plays (np.p6.home.viz). Four edge ribbons carry a slowly
+// cycling hsv rainbow sweep; big soft drop-shadows are the smoke. The whole
+// ring breathes with animation-tick. Pure saturated hues read on every theme.
+component RainbowSmoke inherits Rectangle {
+    in property <bool> on: false;
+    property <float> hue: Math.mod(animation-tick() / 22ms, 360);
+    property <float> pulse: 0.66 + 0.34 * Math.sin((Math.mod(animation-tick() / 8ms, 360)) * 1deg);
+    background: transparent;
+    opacity: root.on ? 0.9 * root.pulse : 0;
+    animate opacity { duration: 600ms; easing: ease-out; }
+    // top
+    Rectangle { x: 12px; y: 3px; width: parent.width - 24px; height: 4px; border-radius: 2px;
+        background: @linear-gradient(90deg, hsv(root.hue, 1, 1) 0%, hsv(Math.mod(root.hue + 120, 360), 1, 1) 50%, hsv(Math.mod(root.hue + 240, 360), 1, 1) 100%);
+        drop-shadow-blur: 14px; drop-shadow-color: hsv(root.hue, 1, 1).with-alpha(0.6); }
+    // bottom (hue offset half a turn so opposite edges never match)
+    Rectangle { x: 12px; y: parent.height - 7px; width: parent.width - 24px; height: 4px; border-radius: 2px;
+        background: @linear-gradient(90deg, hsv(Math.mod(root.hue + 180, 360), 1, 1) 0%, hsv(Math.mod(root.hue + 300, 360), 1, 1) 50%, hsv(Math.mod(root.hue + 60, 360), 1, 1) 100%);
+        drop-shadow-blur: 14px; drop-shadow-color: hsv(Math.mod(root.hue + 180, 360), 1, 1).with-alpha(0.6); }
+    // left
+    Rectangle { x: 3px; y: 12px; width: 4px; height: parent.height - 24px; border-radius: 2px;
+        background: @linear-gradient(180deg, hsv(root.hue, 1, 1) 0%, hsv(Math.mod(root.hue + 120, 360), 1, 1) 50%, hsv(Math.mod(root.hue + 240, 360), 1, 1) 100%);
+        drop-shadow-blur: 14px; drop-shadow-color: hsv(Math.mod(root.hue + 90, 360), 1, 1).with-alpha(0.6); }
+    // right
+    Rectangle { x: parent.width - 7px; y: 12px; width: 4px; height: parent.height - 24px; border-radius: 2px;
+        background: @linear-gradient(180deg, hsv(Math.mod(root.hue + 180, 360), 1, 1) 0%, hsv(Math.mod(root.hue + 300, 360), 1, 1) 50%, hsv(Math.mod(root.hue + 60, 360), 1, 1) 100%);
+        drop-shadow-blur: 14px; drop-shadow-color: hsv(Math.mod(root.hue + 270, 360), 1, 1).with-alpha(0.6); }
 }
 
 // Left-hand music card — MUSIC cap + the original MusicMini (embedded) + 5
@@ -110,6 +191,8 @@ component HomeMusicCard inherits Rectangle {
     callback podcast-skip(int); callback podcast-set-speed(float); callback podcast-play(int);
     callback open-zen();
     callback open-music(string);
+    callback open-now-album();            // click title in the mini → album page
+    callback open-now-artist();           // click artist line → artist page
     // Which source is currently playing → drives the active tab + the title.
     property <string> active-tab:
         player-mode == "podcast" ? "podcasts"
@@ -117,23 +200,55 @@ component HomeMusicCard inherits Rectangle {
       : player-mode == "radio" ? "radio"
       : yt-now-video ? "youtube" : "mymusic";
     border-radius: 14px;
-    background: Theme.sec-music.with-alpha(0.09);
-    border-width: 1px; border-color: Theme.sec-music.with-alpha(0.24);
+    // Card body follows the uniform card style. Pink (#ec4899) is far
+    // brighter than the other section accents, so the SAME 0.08 alpha the
+    // dark cards use made this one glow — it sits at 0.03 to land at the
+    // same perceived darkness. The player rect inside keeps its own pink.
+    background: Theme.sec-music.with-alpha(musichov.has-hover ? 0.10 : 0.03);
+    // Same chrome as the Photos/Videos cards: quiet 24%-accent hairline at
+    // rest (NO glow — the always-on pink halo made this card look out of
+    // place next to the dark cards), full accent outline + glow on hover.
+    border-width: musichov.has-hover ? 2.5px : 1px;
+    border-color: Theme.sec-music.with-alpha(musichov.has-hover ? 0.95 : 0.24);
+    drop-shadow-blur: musichov.has-hover ? 22px : 0px;
+    drop-shadow-color: Theme.sec-music.with-alpha(0.45);
+    drop-shadow-offset-y: musichov.has-hover ? 6px : 0px;
+    animate border-color, border-width, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
+    musichov := TouchArea { }
+    // Per-tab identity for the title pill (same hues as the tab chips below).
+    property <color> tab-accent:
+        active-tab == "podcasts" ? #8b5cf6
+      : active-tab == "audiobooks" ? #3b82f6
+      : active-tab == "radio" ? #14b8a6
+      : active-tab == "youtube" ? #ef4444 : #ec4899;
     VerticalLayout {
         padding: 12px; spacing: 8px;
-        // Big centered title that names the source currently playing.
-        Text {
-            text: root.player-mode == "podcast" ? "Podcasts"
-                : root.player-mode == "book" ? "Audiobooks"
-                : root.player-mode == "radio" ? "Radio"
-                : root.yt-now-video ? "YouTube" : "My Music";
-            color: Theme.sec-music; font-size: 22px; font-weight: 800;
-            horizontal-alignment: center; overflow: elide;
+        // Centered title pill (Photos-card treatment) naming the source that's
+        // playing — icon + accent follow the active tab, all 5 sources covered.
+        HorizontalLayout {
+            alignment: center;
+            TitlePill {
+                icon: root.active-tab == "podcasts" ? Icons.mic
+                    : root.active-tab == "audiobooks" ? Icons.headphones
+                    : root.active-tab == "radio" ? Icons.radio
+                    : root.active-tab == "youtube" ? Icons.play : Icons.music;
+                accent: root.tab-accent;
+                name: root.active-tab == "podcasts" ? "Podcasts"
+                    : root.active-tab == "audiobooks" ? "Audiobooks"
+                    : root.active-tab == "radio" ? "Radio"
+                    : root.active-tab == "youtube" ? "YouTube" : "My Music";
+            }
         }
         // Stretchy wrapper so the embedded player fills the card (its root height
-        // is fixed; height:100% here lets it grow, killing the blank gaps).
+        // is fixed; height:100% here lets it grow, killing the blank gaps). This
+        // rect carries the PINK player fill + a pink outline so the player
+        // floats on the card's cream canvas — no shadow (read muddy-gray in
+        // light themes), and a stronger wash so it stays clearly pink there.
         Rectangle {
             vertical-stretch: 1;
+            border-radius: 12px;
+            background: Theme.sec-music.with-alpha(0.18);
+            border-width: 1px; border-color: Theme.sec-music.with-alpha(0.60);
             if root.player-mode != "podcast": MusicMini {
                 embedded: true; width: 100%; height: 100%; uiscale: root.player-scale;
                 art: np-art; accent: np-accent; title: np-title; sub: np-sub; album: np-album; playing: playing;
@@ -149,6 +264,8 @@ component HomeMusicCard inherits Rectangle {
                 toggle-shuffle => { root.toggle-shuffle(); } cycle-repeat => { root.cycle-repeat(); }
                 toggle-mute => { root.toggle-mute(); } play-queue(i) => { root.play-queue(i); }
                 open-zen => { root.open-zen(); }
+                open-now-album => { root.open-now-album(); }
+                open-now-artist => { root.open-now-artist(); }
             }
             if root.player-mode == "podcast": PodcastMini {
                 embedded: true; width: 100%; height: 100%; uiscale: root.player-scale;
@@ -164,26 +281,31 @@ component HomeMusicCard inherits Rectangle {
             }
         }
         // Source tabs — reuse the Music-section MusicTab (per-tab gradient colours)
-        // + LiveTabRing (rotating halo on the source that's playing). MusicTheme
-        // derives from the app Theme, so these read correctly in every theme.
+        // + LiveTabRing (rotating halo on the source that's playing). `hollow`
+        // drops the idle tint wash for a bare tinted outline, so the chips stay
+        // visible on the unfilled card in every theme.
         // Row 1: 3 tabs; Row 2: 2 tabs (wider — stretch fills the row).
         HorizontalLayout {
             spacing: 6px;
             LiveTabRing { live: root.active-tab == "mymusic"; tint: #ec4899;
-                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "My Music"; has-grad: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.active-tab == "mymusic"; clicked => { root.open-music("mymusic"); } } }
+                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "My Music"; has-grad: true; hollow: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.active-tab == "mymusic"; clicked => { root.open-music("mymusic"); } } }
             LiveTabRing { live: root.active-tab == "podcasts"; tint: #8b5cf6;
-                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "Podcasts"; has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.active-tab == "podcasts"; clicked => { root.open-music("podcasts"); } } }
+                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "Podcasts"; has-grad: true; hollow: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.active-tab == "podcasts"; clicked => { root.open-music("podcasts"); } } }
             LiveTabRing { live: root.active-tab == "audiobooks"; tint: #3b82f6;
-                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "Audiobooks"; has-grad: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.active-tab == "audiobooks"; clicked => { root.open-music("audiobooks"); } } }
+                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "Audiobooks"; has-grad: true; hollow: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.active-tab == "audiobooks"; clicked => { root.open-music("audiobooks"); } } }
         }
         HorizontalLayout {
             spacing: 6px;
             LiveTabRing { live: root.active-tab == "radio"; tint: #14b8a6;
-                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "Radio"; has-grad: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.active-tab == "radio"; clicked => { root.open-music("radio"); } } }
+                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "Radio"; has-grad: true; hollow: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.active-tab == "radio"; clicked => { root.open-music("radio"); } } }
             LiveTabRing { live: root.active-tab == "youtube"; tint: #ef4444;
-                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "YouTube"; has-grad: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b); active: root.active-tab == "youtube"; clicked => { root.open-music("youtube"); } } }
+                MusicTab { horizontal-stretch: 1; min-width: 0px; label: "YouTube"; has-grad: true; hollow: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b); active: root.active-tab == "youtube"; clicked => { root.open-music("youtube"); } } }
         }
     }
+    // Rainbow smoke ring — inside the outline, all four edges, only while
+    // something plays. Drawn last so the glow rides on top of the card chrome
+    // (the 12px content padding keeps it clear of the player controls).
+    RainbowSmoke { x: 0; y: 0; width: 100%; height: 100%; on: root.playing; }
 }
 
 // One coverflow card — rounded, shadowed photo, letterboxed (no crop).
@@ -265,11 +387,24 @@ component PhotoSlideshow inherits Rectangle {
     drop-shadow-blur: ta.has-hover ? 22px : 0px;
     drop-shadow-color: accent.with-alpha(0.45); drop-shadow-offset-y: ta.has-hover ? 6px : 0px;
     animate background, border-color, border-width, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
+    // Click routing: only a hit on the CENTRE fan tile opens that item — any
+    // other spot on the card opens the section (otherwise the whole card is a
+    // file-open target and the section is unreachable). Centre tile geometry
+    // mirrors FanSlot k=0 at rest: height = 0.75 × strip, width = height × aspect.
     ta := TouchArea { mouse-cursor: pointer;
-        clicked => { if (root.n > 0) { root.open-item(Math.mod(Math.floor(root.pos), root.n)); } else { root.clicked(); } } }
-    // Full-bleed fan — fills the whole card. Labels + icon are overlaid on top.
+        clicked => {
+            if (root.n > 0
+                && Math.abs(self.mouse-x - strip.width / 2) <= strip.height * 0.75 * root.tile-aspect / 2
+                && Math.abs(self.mouse-y - strip.height / 2) <= strip.height * 0.75 / 2) {
+                root.open-item(Math.mod(Math.floor(root.pos), root.n));
+            } else {
+                root.clicked();
+            }
+        } }
+    // Fan strip — raised off the bottom edge so the sliding tiles never sit
+    // underneath the (single-line) title pill overlaid at the bottom-left.
     strip := Rectangle {
-        x: 0; y: 0; width: 100%; height: 100%; clip: true;
+        x: 0; y: 0; width: 100%; height: parent.height - 34px; clip: true;
         property <length> step: self.width * 0.2;                  // fan spread (outer compressed in FanSlot)
         Timer { interval: root.cycle; running: root.n > 1; triggered => { root.pos += 1; } }
         // Empty library — one big muted off-glyph in the middle.
@@ -296,28 +431,10 @@ component PhotoSlideshow inherits Rectangle {
                 x: (parent.width - self.width) / 2 + 2px; y: (parent.height - self.height) / 2; }
         }
     }
-    // Icon chip — top-left overlay.
-    Rectangle {
-        x: 16px; y: 16px; width: 44px; height: 44px; border-radius: 12px;
-        background: root.accent.with-alpha(0.92);
-        drop-shadow-blur: 12px; drop-shadow-color: #00000066;
-        AppIcon { source: root.icon; tint: #ffffff; width: 22px; height: 22px;
-            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
-    }
-    // Name + count — bottom-left, in a solid white box outlined with the card's
-    // accent colour; text is the same accent colour so it reads on any photo.
-    lbl := Rectangle {
+    // Title pill — bottom-left, solid white box outlined with the card's accent.
+    lbl := TitlePill {
         x: 14px; y: parent.height - self.height - 14px;
-        width: txt.preferred-width; height: txt.preferred-height;
-        border-radius: 10px;
-        background: #ffffff;
-        border-width: 1.5px; border-color: root.accent;
-        drop-shadow-blur: 12px; drop-shadow-color: #00000055;
-        txt := VerticalLayout {
-            padding-left: 12px; padding-right: 12px; padding-top: 7px; padding-bottom: 7px; spacing: 0px;
-            Text { text: name; color: root.accent; font-size: 18px; font-weight: 800; overflow: elide; }
-            Text { text: stat; color: root.accent; font-size: 12px; font-weight: 600; overflow: elide; }
-        }
+        icon: root.icon; accent: root.accent; name: root.name; stat: root.stat;
     }
 }
 
@@ -348,8 +465,9 @@ component HomeTileBox inherits Rectangle {
 }
 
 // Shared shell for the row-preview cards (Books/Cloud/Tools): full-bleed content
-// (@children) with an icon chip top-left and a title chip bottom-left overlaid —
-// exactly like the Photos/Videos cards, so the title always shows on top.
+// (@children) below a title pill overlaid top-left — the pill carries the bare
+// accent-tinted section icon inside it, matching the Photos/Videos cards. Hover
+// gets the same accent outline + shadow glow as the Photos/Videos cards.
 component RowCard inherits Rectangle {
     in property <image> icon;
     in property <color> accent;
@@ -358,60 +476,62 @@ component RowCard inherits Rectangle {
     callback clicked();
     border-radius: 14px; clip: true;
     background: accent.with-alpha(ta.has-hover ? 0.14 : 0.08);
-    border-width: 1px; border-color: accent.with-alpha(0.24);
-    animate background { duration: 120ms; easing: ease-out; }
+    border-width: ta.has-hover ? 2.5px : 1px;
+    border-color: accent.with-alpha(ta.has-hover ? 0.95 : 0.24);
+    drop-shadow-blur: ta.has-hover ? 22px : 0px;
+    drop-shadow-color: accent.with-alpha(0.45); drop-shadow-offset-y: ta.has-hover ? 6px : 0px;
+    animate background, border-color, border-width, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    // Content area — inset below the icon, above the title chip; @children fill it.
+    // Content area — dropped below the (single-line) top-left title pill so
+    // tiles never underlap it; @children fill it.
     Rectangle {
-        x: 16px; y: 70px;
+        x: 16px; y: 62px;
         width: parent.width - 32px;
-        height: parent.height - 70px - 62px;
+        height: parent.height - 62px - 16px;
         @children
     }
-    // Icon chip — top-left overlay.
-    Rectangle {
-        x: 16px; y: 16px; width: 44px; height: 44px; border-radius: 12px;
-        background: root.accent.with-alpha(0.92);
-        drop-shadow-blur: 12px; drop-shadow-color: #00000066;
-        AppIcon { source: root.icon; tint: #ffffff; width: 22px; height: 22px;
-            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
-    }
-    // Title chip — bottom-left overlay (white box, accent border + text).
-    Rectangle {
-        x: 16px; y: parent.height - self.height - 14px;
-        width: ctxt.preferred-width; height: ctxt.preferred-height;
-        border-radius: 10px; background: #ffffff;
-        border-width: 1.5px; border-color: root.accent;
-        drop-shadow-blur: 12px; drop-shadow-color: #00000055;
-        ctxt := VerticalLayout {
-            padding-left: 12px; padding-right: 12px; padding-top: 7px; padding-bottom: 7px; spacing: 0px;
-            Text { text: root.name; color: root.accent; font-size: 18px; font-weight: 800; overflow: elide; }
-            // Some cards (Cloud/Tools) suppress the count — the "+N" tile already shows it.
-            if root.stat != "": Text { text: root.stat; color: root.accent; font-size: 12px; font-weight: 600; overflow: elide; }
-        }
+    // Title pill — top-left overlay. Some cards (Cloud/Tools) suppress the
+    // count — the "+N" tile already shows it.
+    TitlePill {
+        x: 14px; y: 14px;
+        icon: root.icon; accent: root.accent; name: root.name; stat: root.stat;
     }
 }
 
-// Books card — 3 cover thumbnails + a "+N" box, equal width to fill the card.
+// Books card — 3 cover thumbnails + a "+N" box, all as small 9:16 portrait
+// tiles sized so exactly four fit the row (uniform pills, evenly spread).
 component BookRow inherits RowCard {
     in property <[image]> covers;
     in property <int> total;
     callback open-book(int);      // open a specific recent book in the reader
     property <int> shown: root.covers.length;
-    HorizontalLayout {
-        width: 100%; height: 100%; spacing: 8px;
-        if root.covers.length == 0: Rectangle { horizontal-stretch: 1;
-            AppIcon { source: Icons.book-off; tint: root.accent.with-alpha(0.55);
-                width: Math.min(parent.height * 0.6, 72px); height: self.width;
-                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } }
+    area := Rectangle {
+        width: 100%; height: 100%;
+        // 9:16 tile — as tall as fits while four across (3 covers + "+N") still fit.
+        property <length> tile-h: Math.min(self.height, ((self.width - 24px) / 4) * 16 / 9);
+        property <length> tile-w: self.tile-h * 9 / 16;
+        // Even leftover spread so the four pills fill the row edge to edge.
+        property <length> gap: root.shown + (root.total - root.shown > 0 ? 1 : 0) > 1
+            ? (self.width - (root.shown + (root.total - root.shown > 0 ? 1 : 0)) * self.tile-w)
+              / ((root.shown + (root.total - root.shown > 0 ? 1 : 0)) - 1)
+            : 0px;
+        if root.covers.length == 0: AppIcon {
+            source: Icons.book-off; tint: root.accent.with-alpha(0.55);
+            width: Math.min(area.height * 0.6, 72px); height: self.width;
+            x: (area.width - self.width) / 2; y: (area.height - self.height) / 2; }
         for bc[i] in root.covers: HomeTileBox {
-            horizontal-stretch: 1; hilite: root.accent; clip: true;
+            width: area.tile-w; height: area.tile-h;
+            x: i * (area.tile-w + area.gap); y: (area.height - self.height) / 2;
+            hilite: root.accent; clip: true;
             clicked => { root.open-book(i); }
             Image { source: bc; image-fit: cover; width: 100%; height: 100%; }
         }
         // "+N" tile → opens the Books section (handled by RowCard.clicked).
+        // Same 9:16 size as the cover tiles so all four pills read uniform.
         if root.total - root.shown > 0: HomeTileBox {
-            horizontal-stretch: 1; hilite: root.accent; clicked => { root.clicked(); }
+            width: area.tile-w; height: area.tile-h;
+            x: root.shown * (area.tile-w + area.gap); y: (area.height - self.height) / 2;
+            hilite: root.accent; clicked => { root.clicked(); }
             Text { text: "+" + (root.total - root.shown); color: Theme.text-dim; font-size: 15px; font-weight: 700;
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
         }
@@ -457,6 +577,9 @@ component CloudRow inherits RowCard {
                     horizontal-alignment: center; overflow: elide; }
                 Text { text: r.backend; color: Theme.text-dim; font-size: 9px;
                     horizontal-alignment: center; overflow: elide; }
+                // Storage usage ("11 GB / 5 GB") — rclone about, cached backend-side.
+                if r.usage != "": Text { text: r.usage; color: root.accent; font-size: 9px; font-weight: 700;
+                    horizontal-alignment: center; overflow: elide; }
             }
         }
         if root.total - root.shown > 0: HomeTileBox {
@@ -472,11 +595,13 @@ component CloudRow inherits RowCard {
 component ToolTileBox inherits HomeTileBox {
     in property <image> icon;
     in property <string> label;
+    in property <length> icon-size: 26px;
+    in property <length> label-size: 10px;
     VerticalLayout {
         padding: 6px; spacing: 4px; alignment: center;
         HorizontalLayout { alignment: center;
-            AppIcon { source: root.icon; tint: root.hilite; width: 26px; height: 26px; } }
-        Text { text: root.label; color: Theme.text; font-size: 10px; font-weight: 700;
+            AppIcon { source: root.icon; tint: root.hilite; width: root.icon-size; height: root.icon-size; } }
+        Text { text: root.label; color: Theme.text; font-size: root.label-size; font-weight: 700;
             horizontal-alignment: center; overflow: elide; }
     }
 }
@@ -603,7 +728,20 @@ export component HomePage inherits Rectangle {
     callback open-tool(string);
     callback open-remote(string);
     callback open-music(string);
+    callback open-now-album();
+    callback open-now-artist();
     callback open-profile();
+    // CONTINUE strip v2 — model comes filtered from the backend; the chips just
+    // report the wanted kind ("all" | "book" | "podcast" | "audiobook").
+    in property <[HomeContinue]> continue-rows: [];
+    property <string> cont-filter: "all";
+    callback continue-filter(string);
+    callback continue-open(HomeContinue);
+    callback continue-remove(HomeContinue);
+    // ⋮ menu + remove confirmation state.
+    property <int> cont-menu-idx: -1;
+    property <HomeContinue> cont-menu-item;
+    property <bool> cont-confirm-open: false;
     callback playpause(); callback next(); callback prev();
     callback seek(float); callback set-volume(float);
     callback toggle-mute(); callback toggle-shuffle(); callback cycle-repeat();
@@ -614,6 +752,8 @@ export component HomePage inherits Rectangle {
     callback add-folder();
     callback shuffle-all();
     callback open-download();
+    callback random-radio();      // play a random Hindi radio station in the home player
+    callback toggle-music-side(); // header button: flip the music card left/right
 
     background: transparent;
 
@@ -633,6 +773,16 @@ export component HomePage inherits Rectangle {
     property <length> right-area: grid-w - music-w - 10px;
     property <length> cell2: (right-area - 10px) / 2;
     property <length> cell3: (right-area - 20px) / 3;
+    // CONTINUE pill geometry — pure root math (layout-derived widths loop).
+    // Card width = grid minus the quick-actions column; 4 slots inside padding
+    // (4 wider pills so the 3:4 cover thumb isn't a skinny sliver).
+    property <length> cont-w: grid-w - (grid-w - 10px) / 3 - 10px;
+    property <length> cont-slot-w: (cont-w - 28px - 24px) / 4;
+    // Cover thumb inside a pill: pill height = row3 minus card padding (28)
+    // + header row (35px title pill) + spacing (10); thumb height = pill minus
+    // its padding (20). Narrower than 3:4 (×0.6) so four pills always fit
+    // inside the card even on tighter windows.
+    property <length> cont-thumb-w: (row3-h - 93px) * 3 / 5;
 
     VerticalLayout {
         padding: 16px; spacing: 10px;
@@ -658,7 +808,11 @@ export component HomePage inherits Rectangle {
                     color: Theme.text-dim; font-size: 14px; overflow: elide; }
             }
             VerticalLayout { alignment: center;
-                HomeChip { label: "⌘K  Search"; clicked => { root.open-search(); } } }
+                // Flip the music card to the other side of the board — the
+                // toggle persists (home.music-left) and applies live.
+                HomeChip { label: root.music-left ? "Music → Right" : "Music → Left";
+                    clicked => { root.toggle-music-side(); } }
+            }
             Rectangle {
                 width: 64px; horizontal-stretch: 0;
                 avatar := Rectangle {
@@ -677,142 +831,330 @@ export component HomePage inherits Rectangle {
                     if avatar-image.width == 0 && avatar-emoji == "": AppIcon { source: Icons.user; tint: #ffffff;
                         width: 24px; height: 24px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
                 }
+                // Online-style status dot (design parity) — sits on the avatar edge.
+                Rectangle {
+                    width: 14px; height: 14px; border-radius: 7px;
+                    x: avatar.x + avatar.width - self.width - 1px;
+                    y: avatar.y + avatar.height - self.height - 1px;
+                    background: #22c55e; border-width: 2px; border-color: Theme.panel;
+                }
             }
         }
 
-        // ── Bento: music card + section grid (order follows music-left) ──
-        HorizontalLayout {
-            spacing: 10px; height: root.bento-h;
+        // ── Card board (np.p6.home.edit-layout) — every card lives in a
+        // movable EditWrap; defaults reproduce the old bento + row-3 grid.
+        board := Rectangle {
+            vertical-stretch: 1;
+            property <length> rh: (root.bento-h - 10px) / 2;
+            property <length> gx: root.music-left ? root.music-w + 10px : 0px;
+            BoardSlot {
+                width: root.cell2; height: board.rh;
+                board-w: board.width; board-h: board.height;
+                dfx: board.gx / Math.max(board.width - self.width, 1px); dfy: 0;
+                PhotoSlideshow { width: 100%; height: 100%; icon: Icons.image; accent: Theme.sec-photos; name: "Photos";
+                    photos: root.recent-photos; tile-top: true; empty-icon: Icons.image-off;
+                    stat: root.stats.photos + " items · " + root.stats.photos-albums + " albums";
+                    footer: root.stats.photos-scan; clicked => { root.open-section("photos"); }
+                    open-item(i) => { root.open-photo-item(i); } }
+            }
+            BoardSlot {
+                width: root.cell2; height: board.rh;
+                board-w: board.width; board-h: board.height;
+                dfx: (board.gx + root.cell2 + 10px) / Math.max(board.width - self.width, 1px); dfy: 0;
+                PhotoSlideshow { width: 100%; height: 100%; icon: Icons.film; accent: Theme.sec-videos; name: "Videos";
+                    photos: root.recent-videos; show-play: true; tile-aspect: 1.6;
+                    cycle: 3000ms; empty-icon: Icons.video-off;
+                    stat: root.stats.videos + " items · " + root.stats.videos-shows + " shows";
+                    footer: root.stats.videos-note; clicked => { root.open-section("videos"); }
+                    open-item(i) => { root.open-video-item(i); } }
+            }
+            BoardSlot {
+                width: root.cell3; height: board.rh;
+                board-w: board.width; board-h: board.height;
+                dfx: board.gx / Math.max(board.width - self.width, 1px);
+                dfy: (board.rh + 10px) / Math.max(board.height - self.height, 1px);
+                BookRow { width: 100%; height: 100%; icon: Icons.book-open; accent: Theme.sec-books; name: "Books";
+                    covers: root.book-covers; total: root.stats.books;
+                    stat: root.stats.books + " books · " + root.stats.books-reading + " reading";
+                    clicked => { root.open-section("books"); } open-book(i) => { root.open-book-item(i); } }
+            }
+            BoardSlot {
+                width: root.cell3; height: board.rh;
+                board-w: board.width; board-h: board.height;
+                dfx: (board.gx + root.cell3 + 10px) / Math.max(board.width - self.width, 1px);
+                dfy: (board.rh + 10px) / Math.max(board.height - self.height, 1px);
+                CloudRow { width: 100%; height: 100%; icon: Icons.cloud; accent: Theme.sec-cloud; name: "Cloud";
+                    remotes: root.cloud-remotes; total: root.stats.cloud-remotes; stat: "";
+                    clicked => { root.open-section("cloud"); } open-remote(n) => { root.open-remote(n); } }
+            }
+            BoardSlot {
+                width: root.cell3; height: board.rh;
+                board-w: board.width; board-h: board.height;
+                dfx: (board.gx + 2 * (root.cell3 + 10px)) / Math.max(board.width - self.width, 1px);
+                dfy: (board.rh + 10px) / Math.max(board.height - self.height, 1px);
+                ToolRow { width: 100%; height: 100%; icon: Icons.wrench; accent: Theme.sec-tools; name: "Tools"; stat: "";
+                    clicked => { root.open-section("tools"); } open-tool(c) => { root.open-tool(c); } }
+            }
+            BoardSlot {
+                width: root.music-w; height: root.bento-h;
+                board-w: board.width; board-h: board.height;
+                dfx: root.music-left ? 0 : 1; dfy: 0;
+                HomeMusicCard {
+                    width: 100%; height: 100%;
+                    np-art: root.np-art; np-accent: root.np-accent; np-title: root.np-title; np-sub: root.np-sub; np-album: root.np-album;
+                    playing: root.playing; pos: root.pos; dur: root.dur;
+                    pos-label: root.pos-label; dur-label: root.dur-label;
+                    shuffle: root.shuffle; repeat: root.repeat; volume: root.volume; muted: root.muted;
+                    player-mode: root.player-mode; player-scale: root.player-scale;
+                    queue-rows: root.queue-rows; lyrics-rows: root.lyrics-rows; lyrics-active: root.lyrics-active;
+                    radio-initial: root.radio-initial; yt-now-video: root.yt-now-video;
+                    podcast-speed: root.podcast-speed; podcast-episodes: root.podcast-episodes; podcast-summary: root.podcast-summary;
+                    playpause => { root.playpause(); } next => { root.next(); } prev => { root.prev(); }
+                    seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
+                    toggle-shuffle => { root.toggle-shuffle(); } cycle-repeat => { root.cycle-repeat(); }
+                    toggle-mute => { root.toggle-mute(); } open-zen => { root.open-zen(); }
+                    play-queue(i) => { root.play-queue(i); } watch-video => { root.watch-video(); }
+                    podcast-skip(s) => { root.podcast-skip(s); } podcast-set-speed(v) => { root.podcast-set-speed(v); }
+                    podcast-play(id) => { root.podcast-play(id); }
+                    open-music(v) => { root.open-music(v); }
+                    open-now-album => { root.open-now-album(); }
+                    open-now-artist => { root.open-now-artist(); }
+                }
+            }
 
-            if root.music-left: HomeMusicCard {
-                width: root.music-w;
-                np-art: root.np-art; np-accent: root.np-accent; np-title: root.np-title; np-sub: root.np-sub; np-album: root.np-album;
-                playing: root.playing; pos: root.pos; dur: root.dur;
-                pos-label: root.pos-label; dur-label: root.dur-label;
-                shuffle: root.shuffle; repeat: root.repeat; volume: root.volume; muted: root.muted;
-                player-mode: root.player-mode; player-scale: root.player-scale;
-                queue-rows: root.queue-rows; lyrics-rows: root.lyrics-rows; lyrics-active: root.lyrics-active;
-                radio-initial: root.radio-initial; yt-now-video: root.yt-now-video;
-                podcast-speed: root.podcast-speed; podcast-episodes: root.podcast-episodes; podcast-summary: root.podcast-summary;
-                playpause => { root.playpause(); } next => { root.next(); } prev => { root.prev(); }
-                seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
-                toggle-shuffle => { root.toggle-shuffle(); } cycle-repeat => { root.cycle-repeat(); }
-                toggle-mute => { root.toggle-mute(); } open-zen => { root.open-zen(); }
-                play-queue(i) => { root.play-queue(i); } watch-video => { root.watch-video(); }
-                podcast-skip(s) => { root.podcast-skip(s); } podcast-set-speed(v) => { root.podcast-set-speed(v); }
-                podcast-play(id) => { root.podcast-play(id); }
-                open-music(v) => { root.open-music(v); }
-            }
-            if root.music-left: HomeSectionGrid {
-                horizontal-stretch: 1;
-                stats: root.stats; recent-photos: root.recent-photos; recent-videos: root.recent-videos;
-                book-covers: root.book-covers; cloud-remotes: root.cloud-remotes;
-                cell2: root.cell2; cell3: root.cell3;
-                open-section(s) => { root.open-section(s); }
-                open-photo-item(i) => { root.open-photo-item(i); }
-                open-video-item(i) => { root.open-video-item(i); }
-                open-book-item(i) => { root.open-book-item(i); }
-                open-tool(c) => { root.open-tool(c); }
-                open-remote(n) => { root.open-remote(n); }
-            }
-            if !root.music-left: HomeSectionGrid {
-                horizontal-stretch: 1;
-                stats: root.stats; recent-photos: root.recent-photos; recent-videos: root.recent-videos;
-                book-covers: root.book-covers; cloud-remotes: root.cloud-remotes;
-                cell2: root.cell2; cell3: root.cell3;
-                open-section(s) => { root.open-section(s); }
-                open-photo-item(i) => { root.open-photo-item(i); }
-                open-video-item(i) => { root.open-video-item(i); }
-                open-book-item(i) => { root.open-book-item(i); }
-                open-tool(c) => { root.open-tool(c); }
-                open-remote(n) => { root.open-remote(n); }
-            }
-            if !root.music-left: HomeMusicCard {
-                width: root.music-w;
-                np-art: root.np-art; np-accent: root.np-accent; np-title: root.np-title; np-sub: root.np-sub; np-album: root.np-album;
-                playing: root.playing; pos: root.pos; dur: root.dur;
-                pos-label: root.pos-label; dur-label: root.dur-label;
-                shuffle: root.shuffle; repeat: root.repeat; volume: root.volume; muted: root.muted;
-                player-mode: root.player-mode; player-scale: root.player-scale;
-                queue-rows: root.queue-rows; lyrics-rows: root.lyrics-rows; lyrics-active: root.lyrics-active;
-                radio-initial: root.radio-initial; yt-now-video: root.yt-now-video;
-                podcast-speed: root.podcast-speed; podcast-episodes: root.podcast-episodes; podcast-summary: root.podcast-summary;
-                playpause => { root.playpause(); } next => { root.next(); } prev => { root.prev(); }
-                seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
-                toggle-shuffle => { root.toggle-shuffle(); } cycle-repeat => { root.cycle-repeat(); }
-                toggle-mute => { root.toggle-mute(); } open-zen => { root.open-zen(); }
-                play-queue(i) => { root.play-queue(i); } watch-video => { root.watch-video(); }
-                podcast-skip(s) => { root.podcast-skip(s); } podcast-set-speed(v) => { root.podcast-set-speed(v); }
-                podcast-play(id) => { root.podcast-play(id); }
-                open-music(v) => { root.open-music(v); }
-            }
-        }
-
-        // ── Row 3: continue + quick actions ────────────────────────
-        HorizontalLayout {
-            spacing: 10px; height: root.row3-h;
+            // ── Continue + quick actions (former row 3) ────────────
+            BoardSlot {
+                width: root.cont-w; height: root.row3-h;
+                board-w: board.width; board-h: board.height;
+                dfx: 0; dfy: 1;
             Rectangle {
-                horizontal-stretch: 1; min-width: 0; border-radius: 14px;
-                background: Theme.panel-2; border-width: 1.5px; border-color: Theme.sec-music.with-alpha(0.55);
+                width: 100%; height: 100%; border-radius: 14px;
+                // Pink reads brighter than the other accents — 0.03 matches the
+                // dark cards' perceived fill; idle chrome matches Photos/Videos
+                // (24% hairline, no glow) so the card sits flat until hovered.
+                background: Theme.sec-music.with-alpha(conthov.has-hover ? 0.10 : 0.03);
+                border-width: conthov.has-hover ? 2.5px : 1px;
+                border-color: Theme.sec-music.with-alpha(conthov.has-hover ? 0.95 : 0.24);
+                drop-shadow-blur: conthov.has-hover ? 22px : 0px;
+                drop-shadow-color: Theme.sec-music.with-alpha(0.45);
+                drop-shadow-offset-y: conthov.has-hover ? 6px : 0px;
+                animate background, border-color, border-width, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
+                conthov := TouchArea { }
                 VerticalLayout {
                     padding: 14px; spacing: 10px;
-                    HomeCap { text: "CONTINUE"; }
+                    // Title pill (Photos-card treatment) + kind filter chips.
                     HorizontalLayout {
-                        spacing: 8px; vertical-stretch: 1;
-                        if stats.continue1 == "" && stats.continue2 == "" && stats.continue3 == "": Text {
+                        spacing: 6px;
+                        TitlePill { icon: Icons.rotate-ccw; accent: Theme.sec-music; name: "Continue"; }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout { alignment: center;
+                            HorizontalLayout { spacing: 6px;
+                                HomeChip { label: "All"; emphasized: root.cont-filter == "all"; accent: Theme.sec-music;
+                                    clicked => { root.cont-menu-idx = -1; root.cont-filter = "all"; root.continue-filter("all"); } }
+                                HomeChip { label: "Videos"; emphasized: root.cont-filter == "video"; accent: Theme.sec-videos;
+                                    clicked => { root.cont-menu-idx = -1; root.cont-filter = "video"; root.continue-filter("video"); } }
+                                HomeChip { label: "Books"; emphasized: root.cont-filter == "book"; accent: Theme.sec-books;
+                                    clicked => { root.cont-menu-idx = -1; root.cont-filter = "book"; root.continue-filter("book"); } }
+                                HomeChip { label: "Podcasts"; emphasized: root.cont-filter == "podcast"; accent: #8b5cf6;
+                                    clicked => { root.cont-menu-idx = -1; root.cont-filter = "podcast"; root.continue-filter("podcast"); } }
+                                HomeChip { label: "Audiobooks"; emphasized: root.cont-filter == "audiobook"; accent: #3b82f6;
+                                    clicked => { root.cont-menu-idx = -1; root.cont-filter = "audiobook"; root.continue-filter("audiobook"); } }
+                            }
+                        }
+                    }
+                    // Rich resume cards — FIVE fixed pill slots (design parity), filled
+                    // left→right with only as many items as exist; never stretched.
+                    HorizontalLayout {
+                        spacing: 8px; vertical-stretch: 1; alignment: start;
+                        if root.continue-rows.length == 0: Text {
                             text: "Nothing in progress — resume points from books, podcasts and audiobooks show up here.";
-                            color: Theme.text-dim; font-size: 10px; wrap: word-wrap; }
-                        if stats.continue1 != "": Rectangle { horizontal-stretch: 1; border-radius: 10px; background: Theme.panel;
-                            VerticalLayout { padding: 10px; spacing: 3px; alignment: start;
-                                Text { text: stats.continue1; color: Theme.text; font-size: 10px; font-weight: 600; overflow: elide; }
-                                Text { text: stats.continue1-sub; color: Theme.text-dim; font-size: 9px; overflow: elide; } } }
-                        if stats.continue2 != "": Rectangle { horizontal-stretch: 1; border-radius: 10px; background: Theme.panel;
-                            VerticalLayout { padding: 10px; spacing: 3px; alignment: start;
-                                Text { text: stats.continue2; color: Theme.text; font-size: 10px; font-weight: 600; overflow: elide; }
-                                Text { text: stats.continue2-sub; color: Theme.text-dim; font-size: 9px; overflow: elide; } } }
-                        if stats.continue3 != "": Rectangle { horizontal-stretch: 1; border-radius: 10px; background: Theme.panel;
-                            VerticalLayout { padding: 10px; spacing: 3px; alignment: start;
-                                Text { text: stats.continue3; color: Theme.text; font-size: 10px; font-weight: 600; overflow: elide; }
-                                Text { text: stats.continue3-sub; color: Theme.text-dim; font-size: 9px; overflow: elide; } } }
+                            color: Theme.text-dim; font-size: 10px; wrap: word-wrap;
+                            vertical-alignment: center; }
+                        for r[i] in root.continue-rows: ccard := Rectangle {
+                            width: root.cont-slot-w; border-radius: 10px;
+                            property <color> kaccent: r.kind == "book" ? Theme.sec-books
+                                : r.kind == "video" ? Theme.sec-videos
+                                : r.kind == "podcast" ? #8b5cf6 : #3b82f6;
+                            background: cta.has-hover ? Theme.panel : Theme.panel.with-alpha(0.6);
+                            border-width: 1px;
+                            border-color: cta.has-hover ? ccard.kaccent.with-alpha(0.6) : Theme.outline;
+                            animate background, border-color { duration: 120ms; easing: ease-out; }
+                            cta := TouchArea { mouse-cursor: pointer; clicked => { root.continue-open(r); } }
+                            HorizontalLayout {
+                                padding: 10px; spacing: 10px;
+                                // Cover — full-height 3:4 portrait; kind icon fallback.
+                                Rectangle {
+                                    width: root.cont-thumb-w; border-radius: 8px; clip: true;
+                                    background: ccard.kaccent.with-alpha(0.15);
+                                    if r.cover.width > 0: Image { source: r.cover; image-fit: cover; width: 100%; height: 100%; }
+                                    if r.cover.width == 0: AppIcon {
+                                        source: r.kind == "book" ? Icons.book-open : r.kind == "video" ? Icons.film : r.kind == "podcast" ? Icons.mic : Icons.headphones;
+                                        tint: ccard.kaccent; width: 22px; height: 22px;
+                                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                                }
+                                // Design order, top-down: big title → author → spring →
+                                // progress text → fill bar pinned at the bottom.
+                                VerticalLayout {
+                                    spacing: 3px; horizontal-stretch: 1; min-width: 0;
+                                    padding-right: 12px;   // keep the title clear of the ⋮ button
+                                    // Spacer drops the title BELOW the kind tag + ⋮ button
+                                    // (y 4‥24px) so long first lines never collide with them.
+                                    Rectangle { height: 14px; }
+                                    // Up-to-4-line wrapping title — max-height (not fixed) so
+                                    // short titles keep the author snug underneath; elide trims
+                                    // only what still overflows line 4.
+                                    Text { text: r.title; color: Theme.text; font-size: 12px; font-weight: 800;
+                                        max-height: 62px; wrap: word-wrap; overflow: elide; }
+                                    // Up-to-2-line author/show line.
+                                    if r.author != "": Text { text: r.author; color: Theme.text-dim; font-size: 10px;
+                                        max-height: 27px; wrap: word-wrap; overflow: elide; }
+                                    Rectangle { vertical-stretch: 1; }
+                                    Text { text: r.sub; color: Theme.text-dim; font-size: 10px; font-weight: 600; overflow: elide; }
+                                    if r.frac >= 0: Rectangle {
+                                        height: 4px; border-radius: 2px; background: Theme.panel-2;
+                                        Rectangle { x: 0; y: 0; width: parent.width * Math.clamp(r.frac, 0, 1);
+                                            height: 100%; border-radius: 2px; background: ccard.kaccent; }
+                                    }
+                                }
+                            }
+                            // Kind tag — sits left of the ⋮ on every tab so each
+                            // pill says where it comes from (kind-tinted mini chip).
+                            Rectangle {
+                                x: parent.width - self.width - 28px; y: 4px;
+                                width: tagrow.preferred-width; height: 18px;
+                                border-radius: 9px;
+                                background: ccard.kaccent.with-alpha(0.15);
+                                border-width: 1px; border-color: ccard.kaccent.with-alpha(0.55);
+                                tagrow := HorizontalLayout {
+                                    padding-left: 7px; padding-right: 7px;
+                                    Text {
+                                        text: r.kind == "book" ? "BOOK"
+                                            : r.kind == "video" ? "VIDEO"
+                                            : r.kind == "podcast" ? "PODCAST" : "AUDIOBOOK";
+                                        color: ccard.kaccent; font-size: 8px; font-weight: 800;
+                                        letter-spacing: 0.6px; vertical-alignment: center;
+                                    }
+                                }
+                            }
+                            // ⋮ menu button — top-right corner of the pill.
+                            mta := TouchArea {
+                                x: parent.width - 24px; y: 4px; width: 20px; height: 20px;
+                                mouse-cursor: pointer;
+                                clicked => {
+                                    root.cont-menu-item = r;
+                                    root.cont-menu-idx = root.cont-menu-idx == i ? -1 : i;
+                                }
+                                Rectangle {
+                                    border-radius: 6px;
+                                    background: mta.has-hover ? Theme.panel-2 : transparent;
+                                    Text { text: "⋮"; color: Theme.text-dim; font-size: 13px; font-weight: 800;
+                                        width: 100%; height: 100%;
+                                        horizontal-alignment: center; vertical-alignment: center; }
+                                }
+                            }
+                            // Context menu — single "Remove" action → confirmation box.
+                            if root.cont-menu-idx == i: Rectangle {
+                                x: parent.width - 108px; y: 26px; width: 102px; height: 32px;
+                                border-radius: 8px; background: Theme.panel;
+                                border-width: 1px; border-color: Theme.outline;
+                                drop-shadow-blur: 14px; drop-shadow-color: #00000077;
+                                TouchArea { mouse-cursor: pointer;
+                                    clicked => { root.cont-menu-idx = -1; root.cont-confirm-open = true; } }
+                                HorizontalLayout {
+                                    padding-left: 10px; padding-right: 10px; spacing: 7px;
+                                    VerticalLayout { alignment: center;
+                                        AppIcon { source: Icons.trash; tint: #ef4444; width: 13px; height: 13px; } }
+                                    Text { text: "Remove"; color: #ef4444; font-size: 11px; font-weight: 700;
+                                        vertical-alignment: center; }
+                                }
+                            }
+                        }
                     }
                 }
             }
+            }
+            BoardSlot {
+                width: (root.grid-w - 10px) / 3; height: root.row3-h;
+                board-w: board.width; board-h: board.height;
+                dfx: (root.cont-w + 10px) / Math.max(board.width - self.width, 1px); dfy: 1;
             Rectangle {
-                width: (root.grid-w - 10px) / 3; border-radius: 14px;
-                background: Theme.panel-2; border-width: 1.5px; border-color: Theme.sec-videos.with-alpha(0.55);
+                width: 100%; height: 100%; border-radius: 14px;
+                background: Theme.sec-videos.with-alpha(qahov.has-hover ? 0.14 : 0.08);
+                border-width: qahov.has-hover ? 2.5px : 1px;
+                border-color: Theme.sec-videos.with-alpha(qahov.has-hover ? 0.95 : 0.24);
+                drop-shadow-blur: qahov.has-hover ? 22px : 0px;
+                drop-shadow-color: Theme.sec-videos.with-alpha(0.45);
+                drop-shadow-offset-y: qahov.has-hover ? 6px : 0px;
+                animate background, border-color, border-width, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
+                qahov := TouchArea { }
                 VerticalLayout {
                     padding: 14px; spacing: 10px;
-                    HomeCap { text: "QUICK ACTIONS"; }
+                    // Title pill matching the other cards.
+                    HorizontalLayout {
+                        TitlePill { icon: Icons.zap; accent: Theme.sec-videos; name: "Quick Actions"; }
+                        Rectangle { horizontal-stretch: 1; }
+                    }
+                    // 2×2 action grid — icon above name (ToolTileBox), each action
+                    // tinted with its target section's hue.
                     GridLayout {
-                        spacing: 6px; vertical-stretch: 1;
+                        spacing: 8px; vertical-stretch: 1;
                         Row {
-                            Rectangle { border-radius: 10px; background: qa1.has-hover ? Theme.panel : transparent;
-                                border-width: 1px; border-color: Theme.outline;
-                                qa1 := TouchArea { mouse-cursor: pointer; clicked => { root.add-folder(); } }
-                                Text { text: "+ Add folder"; color: Theme.text; font-size: 10px; font-weight: 600;
-                                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; } }
-                            Rectangle { border-radius: 10px; background: qa2.has-hover ? Theme.panel : transparent;
-                                border-width: 1px; border-color: Theme.outline;
-                                qa2 := TouchArea { mouse-cursor: pointer; clicked => { root.shuffle-all(); } }
-                                Text { text: "▶ Shuffle all"; color: Theme.text; font-size: 10px; font-weight: 600;
-                                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; } }
+                            ToolTileBox { hilite: #ec4899; icon: Icons.download; label: "Music Downloader";
+                                icon-size: 32px; label-size: 12px; clicked => { root.open-download(); } }
+                            ToolTileBox { hilite: #8b5cf6; icon: Icons.shuffle; label: "Shuffle All";
+                                icon-size: 32px; label-size: 12px; clicked => { root.shuffle-all(); } }
                         }
                         Row {
-                            Rectangle { border-radius: 10px; background: qa3.has-hover ? Theme.panel : transparent;
-                                border-width: 1px; border-color: Theme.outline;
-                                qa3 := TouchArea { mouse-cursor: pointer; clicked => { root.open-download(); } }
-                                Text { text: "⬇ Download"; color: Theme.text; font-size: 10px; font-weight: 600;
-                                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; } }
-                            Rectangle { border-radius: 10px; background: qa4.has-hover ? Theme.panel : transparent;
-                                border-width: 1px; border-color: Theme.outline;
-                                qa4 := TouchArea { mouse-cursor: pointer; clicked => { root.open-section("settings"); } }
-                                Text { text: "⚙ Settings"; color: Theme.text; font-size: 10px; font-weight: 600;
-                                    width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; } }
+                            ToolTileBox { hilite: Theme.sec-videos; icon: Icons.folder-open; label: "Add Folder";
+                                icon-size: 32px; label-size: 12px; clicked => { root.add-folder(); } }
+                            ToolTileBox { hilite: #14b8a6; icon: Icons.radio; label: "Random Radio";
+                                icon-size: 32px; label-size: 12px; clicked => { root.random-radio(); } }
                         }
+                    }
+                }
+            }
+            }
+        }
+
+    }
+
+    // Remove-from-Continue confirmation — Enter removes, Escape cancels,
+    // backdrop click cancels. Painted above the whole page.
+    if root.cont-confirm-open: Rectangle {
+        width: 100%; height: 100%; background: #00000088;
+        TouchArea { clicked => { root.cont-confirm-open = false; } }
+        FocusScope {
+            width: 100%; height: 100%;
+            init => { self.focus(); }
+            key-pressed(e) => {
+                if (e.text == Key.Return) {
+                    root.continue-remove(root.cont-menu-item);
+                    root.cont-confirm-open = false;
+                    return accept;
+                }
+                if (e.text == Key.Escape) { root.cont-confirm-open = false; return accept; }
+                reject
+            }
+            Rectangle {
+                width: 340px; height: dlg.preferred-height;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                border-radius: 14px; background: Theme.panel;
+                border-width: 1.5px; border-color: Theme.outline;
+                drop-shadow-blur: 30px; drop-shadow-color: #000000aa;
+                TouchArea { }   // eat clicks so the backdrop-cancel doesn't fire under the box
+                dlg := VerticalLayout {
+                    padding: 16px; spacing: 10px;
+                    Text { text: "Remove from Continue?"; color: Theme.text; font-size: 14px; font-weight: 800; }
+                    Text { text: root.cont-menu-item.title; color: Theme.text-dim; font-size: 11px; overflow: elide; }
+                    Text { text: "Enter to remove · Esc to cancel"; color: Theme.text-dim.with-alpha(0.7); font-size: 9px; }
+                    HorizontalLayout {
+                        spacing: 8px; alignment: end;
+                        HomeChip { label: "Cancel"; clicked => { root.cont-confirm-open = false; } }
+                        HomeChip { label: "Remove"; emphasized: true; accent: #ef4444;
+                            clicked => { root.continue-remove(root.cont-menu-item); root.cont-confirm-open = false; } }
                     }
                 }
             }
         }
-
     }
 }

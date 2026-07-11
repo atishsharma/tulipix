@@ -6988,6 +6988,12 @@ export component MusicMini inherits Rectangle {
     // Audiobook mode — the second line carries the book title (set as `sub`).
     in property <bool> book-mode: false;
     callback open-zen();                  // full-screen zen player
+    // Click title → album page, click artist line → artist page (same as the
+    // bottom now-playing bar). Only for library tracks — radio/book/yt lines
+    // aren't backed by album/artist rows.
+    callback open-now-album();
+    callback open-now-artist();
+    property <bool> np-clickable: root.title != "" && !root.yt-now-video && !root.radio-mode && !root.book-mode;
     in property <bool> bold-outline: true;   // thick gradient ring for visibility (toggle)
     // Embedded mode (Home command center): renders inline inside a card, so drop
     // the floating chrome — no close/minimise buttons, no drop-shadow, no ring.
@@ -7006,7 +7012,12 @@ export component MusicMini inherits Rectangle {
         HorizontalLayout { spacing: 4px * root.uiscale;
             if !root.embedded: PlayerBtn { icon: Icons.x; size: 26px * root.uiscale; isz: 13px * root.uiscale; clicked => { root.close(); } }
             VerticalLayout { alignment: center; horizontal-stretch: 1;
-                Marquee { height: 20px * root.uiscale; centered: true; text: title == "" ? "Nothing playing" : title; fg: MusicTheme.fg; font-size: 15px * root.uiscale; weight: 700; } }
+                Rectangle { height: 20px * root.uiscale;
+                    Marquee { width: 100%; height: 100%; centered: true; text: title == "" ? "Nothing playing" : title;
+                        fg: mtt.has-hover && root.np-clickable ? #ec4899 : MusicTheme.fg; font-size: 15px * root.uiscale; weight: 700; }
+                    mtt := TouchArea { mouse-cursor: root.np-clickable ? pointer : default;
+                        clicked => { if (root.np-clickable) { root.open-now-album(); } } }
+                } }
             if !root.embedded: PlayerBtn { icon: Icons.chevron-right; size: 26px * root.uiscale; isz: 14px * root.uiscale; clicked => { root.minimise(); } } }
         // 2. Second line by mode — music: artist · album; audiobook: book title;
         //    radio: what's playing on the station (ICY now-playing) + a green LIVE
@@ -7021,10 +7032,18 @@ export component MusicMini inherits Rectangle {
                     VerticalLayout { alignment: center; Rectangle { width: 5px * root.uiscale; height: 5px * root.uiscale; border-radius: 2.5px * root.uiscale; background: #ffffff; } }
                     Text { text: "LIVE"; color: #ffffff; font-size: 9px * root.uiscale; font-weight: 800;
                         vertical-alignment: center; } } } }
-        if !root.radio-mode: Text {
-            text: title == "" ? "Pick a track"
-                : (root.book-mode ? sub : (album != "" ? sub + "  ·  " + album : sub));
-            color: MusicTheme.fg3; font-size: 12px * root.uiscale; overflow: elide; horizontal-alignment: center; }
+        if !root.radio-mode: Rectangle {
+            height: 16px * root.uiscale;
+            Text {
+                width: 100%; height: 100%;
+                text: title == "" ? "Pick a track"
+                    : (root.book-mode ? sub : (album != "" ? sub + "  ·  " + album : sub));
+                color: stt.has-hover && root.np-clickable ? #ec4899 : MusicTheme.fg3;
+                font-size: 12px * root.uiscale; overflow: elide;
+                horizontal-alignment: center; vertical-alignment: center; }
+            stt := TouchArea { mouse-cursor: root.np-clickable ? pointer : default;
+                clicked => { if (root.np-clickable) { root.open-now-artist(); } } }
+        }
         // 3. Square art — flips to reveal the queue / 3-line lyrics panel. Radio
         //    drops the transport row below, so the art grows to fill that space
         //    and the mini keeps its exact frame size.

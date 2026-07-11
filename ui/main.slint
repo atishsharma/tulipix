@@ -34,7 +34,7 @@ import { PropertiesWindow, AssetProperties } from "properties.slint";
 import { SettingsList, SettingItem } from "settings_panels.slint";
 import { ChatOverlay, ChatTurn } from "chat_overlay.slint";
 import { Gated, GateMode } from "gated.slint";
-import { HomePage, HomeStats, HomeRemote } from "page_home.slint";
+import { HomePage, HomeStats, HomeRemote, HomeContinue } from "page_home.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
 import { AppIcon, Icons } from "icons.slint";
@@ -851,6 +851,11 @@ export component MainWindow inherits Window {
     in-out property <[image]> home-recent-videos: [];   // Home Videos slideshow feed
     in-out property <[image]> home-book-covers: [];     // Home Books row feed
     in-out property <[HomeRemote]> home-cloud-remotes: []; // Home Cloud row feed
+    in-out property <[HomeContinue]> home-continue-rows: []; // Home CONTINUE strip feed (pre-filtered)
+    callback home-continue-filter(string);   // chip click → backend re-filters the model
+    callback home-continue-book(int, string); // resume a book (item id, abs path)
+    callback home-continue-video(int, string); // resume a video in external mpv (item id, abs path)
+    callback home-continue-remove(string, int, string); // dismiss (kind, id, path) from the strip
     in-out property <string> home-greeting: "Welcome";
     in-out property <string> home-date-line: "";
     in-out property <bool> home-music-left: false;   // music block side (Settings)
@@ -859,6 +864,7 @@ export component MainWindow inherits Window {
     callback home-open-book-item(int);    // Home Books card → open that book in the reader
     callback home-open-tool(string);      // Home Tools card → open that tool category
     callback home-open-remote(string);    // Home Cloud card → open that remote
+    callback home-random-radio();         // Quick Actions → random Hindi station in the home player
     callback section-changed(string);   // sidebar section click → preload that section
     in-out property <string> active-settings-tab: "appearance";
     in-out property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local };
@@ -3015,9 +3021,25 @@ callback cloud-go-home();
                 open-photo-item(i) => { root.home-open-photo-item(i); }
                 open-video-item(i) => { root.home-open-video-item(i); }
                 open-book-item(i) => { root.home-open-book-item(i); }
-                open-tool(c) => { root.home-open-tool(c); root.active-section = "tools"; root.section-changed("tools"); }
+                // tools-set-category (not home-open-tool) so the backend also runs
+                // tools_refresh — bare category set left the op list stale/empty.
+                open-tool(c) => { root.tools-set-category(c); root.active-section = "tools"; root.section-changed("tools"); }
                 open-remote(n) => { root.home-open-remote(n); root.active-section = "cloud"; root.section-changed("cloud"); }
+                // CONTINUE strip — resume the clicked item by kind.
+                continue-rows: root.home-continue-rows;
+                continue-filter(f) => { root.home-continue-filter(f); }
+                continue-open(r) => {
+                    if (r.kind == "book") { root.home-continue-book(r.id, r.path); }
+                    else if (r.kind == "video") { root.home-continue-video(r.id, r.path); }
+                    else if (r.kind == "podcast") { root.music-podcast-play(r.id); }
+                    else { root.music-view = "audiobooks"; root.active-section = "music"; root.section-changed("music"); }
+                }
+                continue-remove(r) => { root.home-continue-remove(r.kind, r.id, r.path); }
                 open-music(v) => { root.music-view = v; root.active-section = "music"; root.section-changed("music"); }
+                // Title/artist click in the embedded player → jump into the Music
+                // section with that album/artist page open (bottom-bar parity).
+                open-now-album => { root.music-view = "mymusic"; root.music-open-now-album(); root.active-section = "music"; root.section-changed("music"); }
+                open-now-artist => { root.music-view = "mymusic"; root.music-open-now-artist(); root.active-section = "music"; root.section-changed("music"); }
                 open-profile => { root.active-settings-tab = "profile"; root.active-section = "settings"; root.section-changed("settings"); }
                 // Idle play → start a sonic mix so the queue is never empty.
                 playpause => { if (root.music-np-title == "") { root.music-shuffle-all(); } else { root.music-toggle-pause(); } }
@@ -3029,7 +3051,13 @@ callback cloud-go-home();
                 open-search => { root.palette-open = true; }
                 add-folder => { root.pick-folder(); }
                 shuffle-all => { root.music-shuffle-all(); }
-                open-download => { root.active-section = "tools"; root.section-changed("tools"); }
+                // Music Downloader lives in Music → My Music → Downloader tab;
+                // set-lib-tab (not a bare property set) so the backend refreshes it.
+                open-download => { root.music-view = "mymusic"; root.music-set-lib-tab("downloader"); root.active-section = "music"; root.section-changed("music"); }
+                random-radio => { root.home-random-radio(); }
+                // Header music-side button — reuse the settings toggle so the
+                // flip persists (home.music-left) and applies live.
+                toggle-music-side => { root.setting-toggle("home.music-left", !root.home-music-left); }
             }
             if active-section == "settings": SettingsPage {
                 width: parent.width; height: parent.height;
@@ -3210,6 +3238,9 @@ callback cloud-go-home();
             next => { root.music-next(); } prev => { root.music-prev(); }
             seek(s) => { root.music-seek(s); } set-volume(v) => { root.music-set-volume(v); }
             toggle-mute => { root.music-toggle-mute(); } toggle-shuffle => { root.music-toggle-shuffle(); } play-queue(i) => { root.music-play-queue(i); }
+            // Title/artist click → album/artist page; hop to Music if elsewhere.
+            open-now-album => { root.music-view = "mymusic"; root.music-open-now-album(); root.active-section = "music"; root.section-changed("music"); }
+            open-now-artist => { root.music-view = "mymusic"; root.music-open-now-artist(); root.active-section = "music"; root.section-changed("music"); }
         }
         // Podcast mode — spoken-word tuned player (-15s / +30s / speed / notes).
         if root.music-player-mode == "podcast": PodcastMini {

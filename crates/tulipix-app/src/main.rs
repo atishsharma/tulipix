@@ -1433,10 +1433,41 @@ fn main() -> Result<()> {
         if let Some(p) = path { show_photo_path(&w0, &p); w0.set_viewer_open(true); }
     });
     // Home Videos card → play the centred video with the external mpv window
-    // (the video section's default playback path).
+    // (the video section's default playback path). The library id is looked up
+    // by path so resume + watch-progress + last-accessed all track this playback
+    // — an id-less spawn never reached the CONTINUE strip.
+    let wvh = window.as_weak();
     window.on_home_open_video_item(move |idx| {
         let path = recent_home_videos().lock().ok().and_then(|g| g.get(idx as usize).cloned());
-        if let Some(p) = path { spawn_mpv_windowed(p, None, None); }
+        let Some(p) = path else { return; };
+        let weak = wvh.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let (item_id, resume) = match pool_for("videos").await {
+                Ok(pool) => {
+                    let id = sqlx::query_scalar::<_, i64>("SELECT id FROM items WHERE abs_path = ?")
+                        .bind(p.to_string_lossy().as_ref())
+                        .fetch_optional(&pool).await.ok().flatten();
+                    let resume = match id {
+                        Some(id) => {
+                            let _ = tulipix_videos::last_accessed::touch(&pool, id).await;
+                            let r = tulipix_videos::watch_progress::resume(&pool, id).await.ok().flatten();
+                            // First watch: seed a 1s progress row so the CONTINUE
+                            // strip picks the video up the moment playback starts
+                            // (the real position overwrites this on mpv exit).
+                            if r.is_none() {
+                                let _ = tulipix_videos::watch_progress::update(&pool, id, 1.0, None).await;
+                            }
+                            r
+                        }
+                        None => None,
+                    };
+                    (id, resume)
+                }
+                Err(_) => (None, None),
+            };
+            spawn_mpv_windowed(p, resume, item_id);
+            let _ = weak.upgrade_in_event_loop(|w| kick_home_continue(&w));
+        });
     });
     // Home Books card → open that book in the in-app reader.
     let wb = window.as_weak();
@@ -1449,6 +1480,136 @@ fn main() -> Result<()> {
     window.on_home_open_tool(move |cat| {
         if let Some(w0) = wt.upgrade() { w0.set_tools_category(cat); }
     });
+    // CONTINUE strip — chip filter re-pushes the cached rows; a card click on a
+    // book resumes it in the reader (podcast/audiobook routing lives in .slint).
+    let wcf = window.as_weak();
+    window.on_home_continue_filter(move |f| {
+        if let Ok(mut g) = home_cont_filter().lock() { *g = f.to_string(); }
+        push_home_continue(&wcf);
+    });
+    let wcb = window.as_weak();
+    window.on_home_continue_book(move |id, path| {
+        open_book_path(wcb.clone(), PathBuf::from(path.to_string()), id as i64);
+    });
+    // CONTINUE video card → resume in the external mpv window at the saved
+    // position (item_id keeps watch_progress tracking across the resume, the
+    // last-accessed touch keeps it at the head of the strip).
+    let wcv = window.as_weak();
+    window.on_home_continue_video(move |id, path| {
+        let id = id as i64;
+        let path = PathBuf::from(path.to_string());
+        let weak = wcv.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let resume = match pool_for("videos").await {
+                Ok(pool) => {
+                    let _ = tulipix_videos::last_accessed::touch(&pool, id).await;
+                    tulipix_videos::watch_progress::resume(&pool, id).await.ok().flatten()
+                }
+                Err(_) => None,
+            };
+            spawn_mpv_windowed(path, resume, Some(id));
+            let _ = weak.upgrade_in_event_loop(|w| kick_home_continue(&w));
+        });
+    });
+    // ⋮ → Remove: persist the dismissal + drop the card immediately.
+    let wcr = window.as_weak();
+    window.on_home_continue_remove(move |kind, id, path| {
+        let key = home_cont_dismiss_key(kind.as_str(), id as i64, path.as_str());
+        if let Ok(mut g) = home_cont_dismissed().lock() { g.insert(key.clone()); }
+        save_home_cont_dismissed();
+        if let Ok(mut rows) = home_cont_rows().lock() {
+            rows.retain(|r| home_cont_dismiss_key(r.kind, r.id, &r.path) != key);
+        }
+        push_home_continue(&wcr);
+    });
+    // Home auto-refresh — while Home is visible, re-pull every card feed on a
+    // slow tick so library changes (scans, new books, cloud remotes, progress)
+    // show up without leaving the page. Slint caches images by path, so the
+    // repeated thumb loads are cheap. Timer leaked on purpose: one per app life.
+    // Tray menu (np.p1.tray) — poll the global MenuEvent channel. Without this
+    // drain, the tray's "Open Tulipix" / "Quit" items were dead ends.
+    let wtr = window.as_weak();
+    let tray_tick: &'static slint::Timer = Box::leak(Box::new(slint::Timer::default()));
+    tray_tick.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_millis(500),
+        move || {
+            let weak = wtr.clone();
+            tulipix_platform::drain_tray_events(move |id| match id {
+                "tray.open" => {
+                    if let Some(w) = weak.upgrade() {
+                        let _ = w.show();
+                        w.window().set_minimized(false);
+                    }
+                }
+                "tray.quit" => { let _ = slint::quit_event_loop(); }
+                _ => {}
+            });
+        },
+    );
+    // Playback-progress ticker (5s) — persists the live podcast/audiobook
+    // position while playing (podcast position_s had NO writer at all) and
+    // live-refreshes the CONTINUE strip whenever Home is visible.
+    let wpt = window.as_weak();
+    let pos_tick: &'static slint::Timer = Box::leak(Box::new(slint::Timer::default()));
+    pos_tick.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_secs(5),
+        move || {
+            let Some(w0) = wpt.upgrade() else { return; };
+            if !w0.get_music_playing() { return; }
+            let pos = w0.get_music_pos() as f64;
+            let on_home = w0.get_active_section() == "home";
+            let weak = w0.as_weak();
+            match w0.get_music_player_mode().as_str() {
+                "podcast" => {
+                    let id = PODCAST_NOW_ID.load(std::sync::atomic::Ordering::Relaxed);
+                    if id > 0 && pos > 1.0 {
+                        tokio::runtime::Handle::current().spawn(async move {
+                            if let Ok(pool) = pool_for("podcasts").await {
+                                let _ = sqlx::query("UPDATE podcast_episodes SET position_s = ? WHERE id = ?")
+                                    .bind(pos).bind(id).execute(&pool).await;
+                            }
+                            if on_home {
+                                let _ = weak.upgrade_in_event_loop(|w| kick_home_continue(&w));
+                            }
+                        });
+                    }
+                }
+                "book" => {
+                    if let Some(id) = current_music_id(&w0) {
+                        let speed = w0.get_music_book_speed() as f64;
+                        tokio::runtime::Handle::current().spawn(async move {
+                            if let Ok(pool) = pool_for("music").await {
+                                let _ = tulipix_music::audiobooks::save_progress(&pool, id, pos.max(1.0), speed).await;
+                            }
+                            if on_home {
+                                let _ = weak.upgrade_in_event_loop(|w| kick_home_continue(&w));
+                            }
+                        });
+                    }
+                }
+                _ => {}
+            }
+        },
+    );
+    let wh = window.as_weak();
+    let home_tick: &'static slint::Timer = Box::leak(Box::new(slint::Timer::default()));
+    home_tick.start(
+        slint::TimerMode::Repeated,
+        std::time::Duration::from_secs(20),
+        move || {
+            let Some(w0) = wh.upgrade() else { return; };
+            if w0.get_active_section() == "home" {
+                kick_home_stats(&w0);
+                kick_home_photos(&w0);
+                kick_home_videos(&w0);
+                kick_home_books(&w0);
+                kick_home_cloud(&w0);
+                kick_home_continue(&w0);
+            }
+        },
+    );
 
     window.on_section_changed(move |s| {
         let Some(w0) = w.upgrade() else { return; };
@@ -1460,6 +1621,7 @@ fn main() -> Result<()> {
             kick_home_videos(&w0);
             kick_home_books(&w0);
             kick_home_cloud(&w0);
+            kick_home_continue(&w0);
         }
         if s.as_str() == "music" {
             // Warm each sub-page once; re-entering the section reuses loaded models.
@@ -3812,13 +3974,15 @@ fn main() -> Result<()> {
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("podcasts").await else { return; };
-            let row: Option<(String, String, Option<String>, String, i64, String, String)> = sqlx::query_as(
+            let row: Option<(String, String, Option<String>, String, i64, String, String, f64)> = sqlx::query_as(
                 "SELECT e.title, e.audio_url, e.downloaded_path, COALESCE(e.image_url,''),
-                        p.id, COALESCE(NULLIF(p.custom_image,''), p.image_url, ''), COALESCE(p.title,'')
+                        p.id, COALESCE(NULLIF(p.custom_image,''), p.image_url, ''), COALESCE(p.title,''),
+                        COALESCE(e.position_s, 0)
                  FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id WHERE e.id = ?")
                 .bind(id as i64).fetch_optional(&pool).await.ok().flatten();
-            let Some((title, url, dl, eimg, pid, pimg, show)) = row else { return; };
+            let Some((title, url, dl, eimg, pid, pimg, show, resume_pos)) = row else { return; };
             if url.is_empty() && dl.is_none() { return; }
+            PODCAST_NOW_ID.store(id as i64, std::sync::atomic::Ordering::Relaxed);
             let client = reqwest::Client::new();
             let art = match cache_artwork(&client, &format!("ep-{id}"), &eimg).await {
                 Some(p) => Some(p),
@@ -3840,6 +4004,8 @@ fn main() -> Result<()> {
                 let sp = w.get_music_podcast_speed();
                 music_ipc(&["set_property", "audio-pitch-correction", "yes"]);
                 if (sp - 1.0).abs() > 0.01 { music_ipc(&["set_property", "speed", &sp.to_string()]); }
+                // Resume where the last listen stopped (same pattern as audiobooks).
+                if resume_pos > 5.0 { music_ipc(&["seek", &resume_pos.to_string(), "absolute"]); }
                 refresh_podcast_views(&w);
                 // Queue reflects WHERE playback started: a single-podcast page keeps
                 // its own episodes; the Downloads tab queues the downloads list;
@@ -6132,6 +6298,7 @@ fn main() -> Result<()> {
         kick_home_videos(&window);
         kick_home_books(&window);
         kick_home_cloud(&window);
+        kick_home_continue(&window);
         // Restore the last-used app theme and keep it until the user changes it.
         let choice = match s.theme.as_str() {
             "extra-dark" => ThemeChoice::ExtraDark,
@@ -7617,6 +7784,11 @@ fn main() -> Result<()> {
     if let Some(cache) = dirs_default().map(|d| d.join("cache")) {
         let _ = tulipix_core::caps::persist_hit_counts(&cache);
     }
+    // Bounded runtime shutdown — the implicit `Drop` waits FOREVER for running
+    // blocking tasks (a wedged rclone/network call, a mid-walk scan), which left
+    // a windowless zombie process after close. Cap it, then return.
+    drop(_rt_guard);
+    rt.shutdown_timeout(std::time::Duration::from_secs(2));
     Ok(())
 }
 
@@ -7776,7 +7948,13 @@ fn play_video_at(weak: slint::Weak<MainWindow>, idx: i32) {
         let resume = if let Some(id) = item_id {
             if let Ok(pool) = pool_for("videos").await {
                 let _ = tulipix_videos::last_accessed::touch(&pool, id).await;
-                tulipix_videos::watch_progress::resume(&pool, id).await.ok().flatten()
+                let r = tulipix_videos::watch_progress::resume(&pool, id).await.ok().flatten();
+                // First watch: seed 1s so the Home CONTINUE strip picks the video
+                // up immediately (real position overwrites this on mpv exit).
+                if r.is_none() {
+                    let _ = tulipix_videos::watch_progress::update(&pool, id, 1.0, None).await;
+                }
+                r
             } else { None }
         } else { None };
         // Play in an external mpv window — the embedded libmpv/skia-opengl render
@@ -7785,9 +7963,11 @@ fn play_video_at(weak: slint::Weak<MainWindow>, idx: i32) {
         // blocks Slint. Resume + progress writeback still flow via the IPC socket.
         spawn_mpv_windowed(path.clone(), resume, item_id);
         let _ = weak.upgrade_in_event_loop(move |w| {
-            // A fresh access — refresh the Continue tab if it's showing.
+            // A fresh access — refresh the Continue tab if it's showing, and the
+            // Home CONTINUE strip so the video appears there instantly.
             let cat = w.get_video_category().to_string();
             if cat == "continue" || cat == "library" { kick_video_refresh(w.as_weak(), cat); }
+            kick_home_continue(&w);
         });
     });
 }
@@ -9332,7 +9512,7 @@ fn kick_home_books(w: &MainWindow) {
     });
 }
 
-/// Load cloud remotes (name + backend) for the Home Cloud row.
+/// Load cloud remotes (name + backend + storage usage) for the Home Cloud row.
 fn kick_home_cloud(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
@@ -9340,12 +9520,254 @@ fn kick_home_cloud(w: &MainWindow) {
         let rows = sqlx::query_as::<_, (String, String)>(
             "SELECT name, backend FROM remotes ORDER BY name COLLATE NOCASE LIMIT 3")
             .fetch_all(&pool).await.unwrap_or_default();
-        let _ = weak.upgrade_in_event_loop(move |w| {
-            let remotes: Vec<HomeRemote> = rows.into_iter()
-                .map(|(name, backend)| HomeRemote { name: name.into(), backend: backend.into() })
-                .collect();
-            w.set_home_cloud_remotes(slint::ModelRc::new(slint::VecModel::from(remotes)));
-        });
+        // Push the tiles immediately (usage blank), then again once the
+        // rclone-about usage map resolves — first paint stays instant even
+        // when a remote needs the full 15s timeout.
+        let push = |weak: &slint::Weak<MainWindow>,
+                    rows: Vec<(String, String)>,
+                    usage: std::collections::HashMap<String, String>| {
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                let remotes: Vec<HomeRemote> = rows.into_iter()
+                    .map(|(name, backend)| HomeRemote {
+                        usage: usage.get(&name).cloned().unwrap_or_default().into(),
+                        name: name.into(), backend: backend.into(),
+                    })
+                    .collect();
+                w.set_home_cloud_remotes(slint::ModelRc::new(slint::VecModel::from(remotes)));
+            });
+        };
+        // Last-known usage seeds the instant push so the quota line never
+        // flickers blank on the periodic re-kick.
+        static LAST_USAGE: OnceLock<std::sync::Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
+        let last = LAST_USAGE.get_or_init(Default::default);
+        push(&weak, rows.clone(), last.lock().map(|g| g.clone()).unwrap_or_default());
+        let names: Vec<String> = rows.iter().map(|(n, _)| n.clone()).collect();
+        if names.is_empty() { return; }
+        let usage = tulipix_sec_cloud::home_usage_map(&names).await;
+        if let Ok(mut g) = last.lock() { *g = usage.clone(); }
+        push(&weak, rows, usage);
+    });
+}
+
+// ── Home CONTINUE strip v2 (np.p6.home.continue) ─────────────────────────────
+// Several in-progress items across books / podcasts / audiobooks with covers +
+// progress bars, filterable from the UI chips. Rows are gathered off-thread as
+// a Send-safe snapshot (pixel buffers, not Images); the event-loop push only
+// wraps pixels — O(1) per row.
+#[derive(Clone)]
+struct HomeContRow {
+    kind: &'static str,   // "book" | "podcast" | "audiobook" | "video"
+    title: String,
+    author: String,
+    sub: String,
+    frac: f32,            // 0‥1; < 0 = unknown (bar hidden)
+    cover: Option<slint::SharedPixelBuffer<slint::Rgba8Pixel>>,
+    id: i64,
+    path: String,
+    ts: i64,              // recency for the "All" interleave
+}
+/// Episode id currently loaded in the podcast player (0 = none). The 5s
+/// playback ticker persists its position — nothing else ever wrote
+/// podcast_episodes.position_s, so resume/Continue never saw live listening.
+static PODCAST_NOW_ID: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
+static HOME_CONT_ROWS: OnceLock<std::sync::Mutex<Vec<HomeContRow>>> = OnceLock::new();
+static HOME_CONT_FILTER: OnceLock<std::sync::Mutex<String>> = OnceLock::new();
+fn home_cont_rows() -> &'static std::sync::Mutex<Vec<HomeContRow>> {
+    HOME_CONT_ROWS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+fn home_cont_filter() -> &'static std::sync::Mutex<String> {
+    HOME_CONT_FILTER.get_or_init(|| std::sync::Mutex::new("all".into()))
+}
+// User-dismissed CONTINUE items ("kind:id" / "audiobook:folder"), persisted to
+// continue_dismissed.json so a removed card never resurfaces on refresh.
+static HOME_CONT_DISMISSED: OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> = OnceLock::new();
+fn home_cont_dismissed() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    HOME_CONT_DISMISSED.get_or_init(|| {
+        let set = tulipix_core::paths::config_dir()
+            .and_then(|d| std::fs::read_to_string(d.join("continue_dismissed.json")).ok())
+            .and_then(|s| serde_json::from_str::<Vec<String>>(&s).ok())
+            .map(|v| v.into_iter().collect())
+            .unwrap_or_default();
+        std::sync::Mutex::new(set)
+    })
+}
+fn home_cont_dismiss_key(kind: &str, id: i64, path: &str) -> String {
+    if kind == "audiobook" { format!("audiobook:{path}") } else { format!("{kind}:{id}") }
+}
+fn save_home_cont_dismissed() {
+    let Some(dir) = tulipix_core::paths::config_dir() else { return; };
+    let Ok(g) = home_cont_dismissed().lock() else { return; };
+    let v: Vec<&String> = g.iter().collect();
+    if let Ok(s) = serde_json::to_string(&v) {
+        let _ = std::fs::create_dir_all(&dir);
+        let _ = std::fs::write(dir.join("continue_dismissed.json"), s);
+    }
+}
+
+/// Push the cached CONTINUE rows through the active kind filter (≤4 cards —
+/// the strip has four fixed pill slots). "All" shows ONE card per kind (the
+/// newest of each — video/book/podcast/audiobook), kind tabs show up to 4.
+fn push_home_continue(weak: &slint::Weak<MainWindow>) {
+    let filter = home_cont_filter().lock().map(|g| g.clone()).unwrap_or_else(|_| "all".into());
+    let rows = home_cont_rows().lock().map(|g| g.clone()).unwrap_or_default();
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        // Rows are already newest-first, so "first of each kind" = newest.
+        let mut seen_kinds = std::collections::HashSet::new();
+        let items: Vec<HomeContinue> = rows.into_iter()
+            .filter(|r| if filter == "all" { seen_kinds.insert(r.kind) } else { r.kind == filter })
+            .take(4)
+            .map(|r| HomeContinue {
+                kind: r.kind.into(),
+                title: r.title.into(),
+                author: r.author.into(),
+                sub: r.sub.into(),
+                frac: r.frac,
+                cover: r.cover.map(slint::Image::from_rgba8).unwrap_or_default(),
+                id: r.id as i32,
+                path: r.path.into(),
+            })
+            .collect();
+        w.set_home_continue_rows(slint::ModelRc::new(slint::VecModel::from(items)));
+    });
+}
+
+/// Gather in-progress books / podcast episodes / audiobooks (≤4 each, newest
+/// first) with covers, cache them, then push through the active filter.
+fn kick_home_continue(w: &MainWindow) {
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let mut rows: Vec<HomeContRow> = Vec::new();
+        // Books — reading_progress rows, cover from book_meta.
+        if let Ok(pool) = pool_for("books").await {
+            let items = sqlx::query_as::<_, (i64, String, String, String, i64, Option<i64>, Option<String>, i64)>(
+                "SELECT rp.item_id, COALESCE(NULLIF(bm.title, ''), ''), COALESCE(bm.author, ''), \
+                        i.abs_path, rp.page, rp.total_pages, bm.cover_path, COALESCE(rp.updated, 0) \
+                 FROM reading_progress rp \
+                 JOIN items i ON i.id = rp.item_id \
+                 LEFT JOIN book_meta bm ON bm.item_id = rp.item_id \
+                 WHERE rp.finished = 0 AND (rp.page > 0 OR rp.locator IS NOT NULL) \
+                 ORDER BY rp.updated DESC LIMIT 4")
+                .fetch_all(&pool).await.unwrap_or_default();
+            for (id, title, author, path, page, total, cover, ts) in items {
+                let name = if title.is_empty() {
+                    std::path::Path::new(&path).file_stem()
+                        .map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone())
+                } else { title };
+                let frac = match total {
+                    Some(t) if t > 0 => (page as f32 / t as f32).clamp(0.0, 1.0),
+                    _ => -1.0,
+                };
+                let sub = match total {
+                    Some(t) if t > 0 => format!("page {page} · {}%", (page * 100) / t),
+                    _ => format!("page {page}"),
+                };
+                let cover = tulipix_sec_music::decode_art_px(
+                    cover.filter(|c| !c.is_empty()).map(PathBuf::from)).await;
+                rows.push(HomeContRow { kind: "book", title: name, author, sub, frac, cover, id, path, ts });
+            }
+        }
+        // Podcasts — in-progress episodes (position saved by the 5s playback
+        // ticker; `played` is set on OPEN so it can't gate this list, and ≥95%
+        // through counts as finished). Episode art falls back to show art.
+        if let Ok(pool) = pool_for("podcasts").await {
+            let items = sqlx::query_as::<_, (i64, String, String, f64, Option<f64>, String, String, i64)>(
+                "SELECT e.id, COALESCE(e.title, ''), COALESCE(p.title, ''), e.position_s, e.duration_s, \
+                        COALESCE(e.image_url, ''), COALESCE(NULLIF(p.custom_image, ''), p.image_url, ''), \
+                        COALESCE(e.published, 0) \
+                 FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id \
+                 WHERE e.position_s > 5 \
+                   AND (e.duration_s IS NULL OR e.duration_s <= 0 OR e.position_s < e.duration_s * 0.95) \
+                 ORDER BY COALESCE(e.published, 0) DESC LIMIT 4")
+                .fetch_all(&pool).await.unwrap_or_default();
+            let client = reqwest::Client::new();
+            for (id, title, show, pos, dur, ep_img, show_img, ts) in items {
+                if title.is_empty() { continue; }
+                let (frac, sub) = match dur {
+                    Some(d) if d > 1.0 => (
+                        ((pos / d) as f32).clamp(0.0, 1.0),
+                        format!("{}m left", ((((d - pos) / 60.0).ceil()) as i64).max(1)),
+                    ),
+                    _ => (-1.0, format!("{}:{:02} in", (pos as i64) / 60, (pos as i64) % 60)),
+                };
+                let src = if !ep_img.is_empty() { ep_img } else { show_img };
+                let cover_path = tulipix_sec_music::resolve_artwork(
+                    &client, &format!("home_ep_{id}"), &src).await;
+                let cover = tulipix_sec_music::decode_art_px(cover_path).await;
+                rows.push(HomeContRow { kind: "podcast", title, author: show, sub, frac, cover, id, path: String::new(), ts });
+            }
+        }
+        // Audiobooks — newest chapter resume per book folder (dedup on folder).
+        if let Ok(pool) = pool_for("music").await {
+            let _ = sqlx::query("CREATE TABLE IF NOT EXISTS audiobook_covers (folder TEXT PRIMARY KEY, path TEXT NOT NULL)")
+                .execute(&pool).await;
+            let custom: std::collections::HashMap<String, String> =
+                sqlx::query_as("SELECT folder, path FROM audiobook_covers")
+                    .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
+            let items = sqlx::query_as::<_, (String, i64, f64, i64, String)>(
+                "SELECT tm.folder, ap.item_id, ap.position_s, COALESCE(ap.updated, 0), COALESCE(i.abs_path, '') \
+                 FROM audiobook_progress ap \
+                 JOIN track_meta tm ON tm.item_id = ap.item_id \
+                 LEFT JOIN items i ON i.id = ap.item_id \
+                 WHERE ap.finished = 0 AND ap.position_s > 0 AND tm.folder IS NOT NULL \
+                 ORDER BY ap.updated DESC LIMIT 12")
+                .fetch_all(&pool).await.unwrap_or_default();
+            let mut seen = std::collections::HashSet::new();
+            for (folder, item_id, pos, ts, chapter) in items {
+                if !seen.insert(folder.clone()) { continue; }
+                if seen.len() > 4 { break; }
+                let title = tulipix_sec_music::book_title(&folder);
+                let sub = format!("{}:{:02} in", (pos as i64) / 60, (pos as i64) % 60);
+                let cover = tulipix_sec_music::audiobook_cover_px(
+                    &folder,
+                    custom.get(&folder).map(PathBuf::from),
+                    (!chapter.is_empty()).then(|| PathBuf::from(&chapter)),
+                ).await;
+                rows.push(HomeContRow {
+                    kind: "audiobook", title, author: "Audiobook".into(), sub, frac: -1.0, cover,
+                    id: item_id, path: folder, ts,
+                });
+            }
+        }
+        // Videos — in-progress watches (same filter as the Videos section's
+        // Continue tab), newest watch first. Cover = TMDB poster else thumb.
+        if let Ok(pool) = pool_for("videos").await {
+            let items = sqlx::query_as::<_, (i64, String, f64, Option<f64>, Option<String>, i64)>(
+                "SELECT vm.item_id, i.abs_path, COALESCE(wp.position_s, 0.0), \
+                        COALESCE(wp.duration_s, vm.duration_s), mv.poster_local, \
+                        COALESCE(vm.last_accessed, 0) \
+                 FROM video_meta vm \
+                 JOIN items i ON i.id = vm.item_id \
+                 LEFT JOIN watch_progress wp ON wp.item_id = vm.item_id \
+                 LEFT JOIN movies mv ON mv.item_id = vm.item_id \
+                 WHERE vm.deleted_at IS NULL AND vm.archived = 0 \
+                   AND vm.last_accessed IS NOT NULL \
+                   AND COALESCE(wp.finished, 0) = 0 AND COALESCE(wp.position_s, 0) > 0 \
+                 ORDER BY vm.last_accessed DESC LIMIT 4")
+                .fetch_all(&pool).await.unwrap_or_default();
+            for (id, path, pos, dur, poster, ts) in items {
+                let title = std::path::Path::new(&path).file_stem()
+                    .map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone());
+                let (frac, sub) = match dur {
+                    Some(d) if d > 1.0 => (
+                        ((pos / d) as f32).clamp(0.0, 1.0),
+                        format!("{}m left", ((((d - pos) / 60.0).ceil()) as i64).max(1)),
+                    ),
+                    _ => (-1.0, format!("{}:{:02} in", (pos as i64) / 60, (pos as i64) % 60)),
+                };
+                let cover_path = match poster.filter(|p| !p.is_empty()) {
+                    Some(p) => Some(PathBuf::from(p)),
+                    None => thumb_for(PathBuf::from(&path), tulipix_core::thumbs::ThumbKind::Video).await.ok(),
+                };
+                let cover = tulipix_sec_music::decode_art_px(cover_path).await;
+                rows.push(HomeContRow { kind: "video", title, author: "Video".into(), sub, frac, cover, id, path, ts });
+            }
+        }
+        // Drop user-dismissed items, then "All" interleaves by recency.
+        let dismissed = home_cont_dismissed().lock().map(|g| g.clone()).unwrap_or_default();
+        rows.retain(|r| !dismissed.contains(&home_cont_dismiss_key(r.kind, r.id, &r.path)));
+        rows.sort_by(|a, b| b.ts.cmp(&a.ts));
+        if let Ok(mut g) = home_cont_rows().lock() { *g = rows; }
+        push_home_continue(&weak);
     });
 }
 

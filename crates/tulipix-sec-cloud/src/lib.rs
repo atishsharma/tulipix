@@ -1272,6 +1272,45 @@ fn cloud_refresh_usage(weak: slint::Weak<MainWindow>) {
     });
 }
 
+/// Per-remote "used / total" usage strings for the Home Cloud card. Runs
+/// `rclone about` per remote (15s cap each) but caches the whole map for
+/// 15 minutes, so the Home auto-refresh tick never re-spawns rclone.
+pub async fn home_usage_map(names: &[String]) -> std::collections::HashMap<String, String> {
+    use std::time::{Duration, Instant};
+    type Cache = std::sync::Mutex<(Option<Instant>, std::collections::HashMap<String, String>)>;
+    static CACHE: std::sync::OnceLock<Cache> = std::sync::OnceLock::new();
+    let cache = CACHE.get_or_init(|| std::sync::Mutex::new((None, std::collections::HashMap::new())));
+    if let Ok(g) = cache.lock() {
+        if let Some(t) = g.0 {
+            if t.elapsed() < Duration::from_secs(900) && names.iter().all(|n| g.1.contains_key(n)) {
+                return g.1.clone();
+            }
+        }
+    }
+    let mut m = std::collections::HashMap::new();
+    for name in names {
+        let n2 = name.clone();
+        let out = match tokio::time::timeout(
+            Duration::from_secs(15),
+            tokio::task::spawn_blocking(move || cloud::run(&tulipix_cloud::quota::about_args(&n2))),
+        ).await {
+            Ok(Ok(Ok(s))) => Some(s),
+            _ => None,
+        };
+        let line = out.as_deref().and_then(tulipix_cloud::quota::parse_about).map(|a| {
+            match (a.used.map(|b| cloud_human_size(b.max(0) as u64)),
+                   a.total.map(|b| cloud_human_size(b.max(0) as u64))) {
+                (Some(u), Some(t)) => format!("{u} / {t}"),
+                (Some(u), None) => format!("{u} used"),
+                _ => String::new(),
+            }
+        }).unwrap_or_default();
+        m.insert(name.clone(), line);
+    }
+    if let Ok(mut g) = cache.lock() { *g = (Some(Instant::now()), m.clone()); }
+    m
+}
+
 /// Re-run a logged transfer. For arrow-detail kinds (sync/bisync/copy/move) the
 /// "src → dst" is parsed and the matching rclone op replayed; other kinds aren't
 /// replayable from the log alone.

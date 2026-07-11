@@ -2772,6 +2772,58 @@ pub fn wire_radio(window: &MainWindow) {
             });
         });
     });
+    // Home Quick Action — play a random Bollywood/Punjabi station in the home
+    // player. Coin-flips between the two curated presets, cache-first; a cold
+    // cache goes to radio-browser once and saves the list so the next click is
+    // instant. If the flipped preset comes up empty, the other one is tried.
+    let w = window.as_weak();
+    window.on_home_random_radio(move || {
+        if w.upgrade().is_none() { return; }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            const SOURCES: [&str; 2] = ["tag=bollywood", "language=punjabi"];
+            // Clock-nanos randomness — good enough for "surprise me", no rand dep.
+            let nanos = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.subsec_nanos() as usize)
+                .unwrap_or(0);
+            let mut list = Vec::new();
+            for k in 0..SOURCES.len() {
+                let q = SOURCES[(nanos + k) % SOURCES.len()];
+                list = match pool_for("radio").await {
+                    Ok(pool) => radio::load_cache(&pool, q).await.unwrap_or_default(),
+                    Err(_) => Vec::new(),
+                };
+                if list.is_empty() {
+                    list = radio_fetch_preset(q).await.unwrap_or_default();
+                    if !list.is_empty() {
+                        if let Ok(pool) = pool_for("radio").await {
+                            let _ = radio::save_cache(&pool, q, &list).await;
+                        }
+                    }
+                }
+                if !list.is_empty() { break; }
+            }
+            if list.is_empty() { return; }
+            let pick = (nanos / 7) % list.len();
+            let st = list[pick].clone();
+            let st2 = st.clone();
+            let _ = weak.upgrade_in_event_loop(move |w| play_radio(&w, &st2));
+            // Recents + popularity click-ping — same etiquette as a grid click.
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs() as i64).unwrap_or(0);
+            if let Ok(pool) = pool_for("radio").await {
+                let _ = radio::touch_played(&pool, &st, now).await;
+            }
+            if !st.stationuuid.starts_with("custom:") {
+                if let Ok(client) = reqwest::Client::builder().timeout(std::time::Duration::from_secs(8)).build() {
+                    let _ = client.post(radio::click_url(&st.stationuuid))
+                        .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
+                        .send().await;
+                }
+            }
+        });
+    });
     let w = window.as_weak();
     window.on_music_radio_add_save(move || {
         let Some(w0) = w.upgrade() else { return; };
