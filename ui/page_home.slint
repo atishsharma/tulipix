@@ -5,8 +5,8 @@
 // and a left/right swap for the music block driven by `music-left`.
 import { Theme, Accent } from "tokens.slint";
 import { AppIcon, Icons } from "icons.slint";
-import { MusicMini, PodcastMini, MusicTab, LiveTabRing, VizView } from "page_music.slint";
-import { MusicSongRow, MusicLyricLine, PodcastEpisodeRow } from "music_common.slint";
+import { MusicMini, PodcastMini, BookMini, MusicTab, LiveTabRing, VizView } from "page_music.slint";
+import { MusicSongRow, MusicLyricLine, PodcastEpisodeRow, ChapterRow } from "music_common.slint";
 
 export struct HomeStats {
     photos: int, photos-albums: int, photos-scan: string,
@@ -155,11 +155,16 @@ component HomeMusicCard inherits Rectangle {
     in property <float> podcast-speed: 1.0;
     in property <[PodcastEpisodeRow]> podcast-episodes: [];
     in property <string> podcast-summary: "";
+    in property <float> book-speed: 1.0;
+    in property <[ChapterRow]> book-chapters: [];
+    in property <int> np-index: -1;
     callback playpause(); callback next(); callback prev();
     callback seek(float); callback set-volume(float);
     callback toggle-shuffle(); callback cycle-repeat(); callback toggle-mute();
     callback play-queue(int); callback watch-video();
     callback podcast-skip(int); callback podcast-set-speed(float); callback podcast-play(int);
+    callback book-set-speed(float); callback book-chapter-step(int); callback book-bookmark();
+    callback play-chapter(int);
     callback open-zen();
     callback open-music(string);
     callback open-now-album();            // click title in the mini → album page
@@ -222,14 +227,13 @@ component HomeMusicCard inherits Rectangle {
             // match), theme panel surface on dark — the fixed cream glared.
             background: Theme.dark ? Theme.panel-2 : #FAFAF7;
             border-width: 1px; border-color: Theme.sec-music.with-alpha(0.60);
-            if root.player-mode != "podcast": MusicMini {
+            if root.player-mode != "podcast" && root.player-mode != "book": MusicMini {
                 embedded: true; width: 100%; height: 100%; uiscale: root.player-scale;
                 art: np-art; accent: np-accent; title: np-title; sub: np-sub; album: np-album; playing: playing;
                 pos: pos; dur: dur; pos-label: pos-label; dur-label: dur-label;
                 shuffle: shuffle; repeat: repeat; volume: volume; muted: muted;
                 queue-rows: root.queue-rows; lyrics-rows: root.lyrics-rows; lyrics-active: root.lyrics-active;
                 radio-mode: root.player-mode == "radio"; radio-initial: root.radio-initial;
-                book-mode: root.player-mode == "book";
                 yt-now-video: root.yt-now-video; watch-video => { root.watch-video(); }
                 playpause => { root.playpause(); }
                 next => { root.next(); } prev => { root.prev(); }
@@ -239,6 +243,24 @@ component HomeMusicCard inherits Rectangle {
                 open-zen => { root.open-zen(); }
                 open-now-album => { root.open-now-album(); }
                 open-now-artist => { root.open-now-artist(); }
+            }
+            // Audiobook playing → the real book player (±30s, chapter step,
+            // speed, bookmark, chapter queue) — not the vinyl MusicMini.
+            if root.player-mode == "book": BookMini {
+                embedded: true; width: 100%; height: 100%; uiscale: root.player-scale;
+                art: np-art; accent: np-accent; title: np-title; sub: np-sub; playing: playing;
+                pos: pos; dur: dur; pos-label: pos-label; dur-label: dur-label;
+                speed: root.book-speed; volume: volume; muted: muted;
+                chapters: root.book-chapters; np-index: root.np-index;
+                playpause => { root.playpause(); }
+                skip(s) => { root.podcast-skip(s); }
+                seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
+                set-speed(v) => { root.book-set-speed(v); }
+                toggle-mute => { root.toggle-mute(); }
+                play-chapter(i) => { root.play-chapter(i); }
+                chapter-step(d) => { root.book-chapter-step(d); }
+                bookmark => { root.book-bookmark(); }
+                open-zen => { root.open-zen(); }
             }
             if root.player-mode == "podcast": PodcastMini {
                 embedded: true; width: 100%; height: 100%; uiscale: root.player-scale;
@@ -694,6 +716,9 @@ export component HomePage inherits Rectangle {
     in property <float> podcast-speed: 1.0;
     in property <[PodcastEpisodeRow]> podcast-episodes: [];
     in property <string> podcast-summary: "";
+    in property <float> book-speed: 1.0;
+    in property <[ChapterRow]> book-chapters: [];
+    in property <int> np-index: -1;
     // Header spectrum (np.p6.home.header-viz) — zen-player VizView riding the
     // header canvas while anything plays; the waveform chip hides it.
     in property <[float]> vis-bars: [];
@@ -733,6 +758,8 @@ export component HomePage inherits Rectangle {
     callback toggle-mute(); callback toggle-shuffle(); callback cycle-repeat();
     callback play-queue(int); callback watch-video();
     callback podcast-skip(int); callback podcast-set-speed(float); callback podcast-play(int);
+    callback book-set-speed(float); callback book-chapter-step(int); callback book-bookmark();
+    callback play-chapter(int);
     callback open-zen();
     callback open-search();
     callback add-folder();
@@ -964,6 +991,7 @@ export component HomePage inherits Rectangle {
                     queue-rows: root.queue-rows; lyrics-rows: root.lyrics-rows; lyrics-active: root.lyrics-active;
                     radio-initial: root.radio-initial; yt-now-video: root.yt-now-video;
                     podcast-speed: root.podcast-speed; podcast-episodes: root.podcast-episodes; podcast-summary: root.podcast-summary;
+                    book-speed: root.book-speed; book-chapters: root.book-chapters; np-index: root.np-index;
                     playpause => { root.playpause(); } next => { root.next(); } prev => { root.prev(); }
                     seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
                     toggle-shuffle => { root.toggle-shuffle(); } cycle-repeat => { root.cycle-repeat(); }
@@ -971,6 +999,10 @@ export component HomePage inherits Rectangle {
                     play-queue(i) => { root.play-queue(i); } watch-video => { root.watch-video(); }
                     podcast-skip(s) => { root.podcast-skip(s); } podcast-set-speed(v) => { root.podcast-set-speed(v); }
                     podcast-play(id) => { root.podcast-play(id); }
+                    book-set-speed(v) => { root.book-set-speed(v); }
+                    book-chapter-step(d) => { root.book-chapter-step(d); }
+                    book-bookmark => { root.book-bookmark(); }
+                    play-chapter(i) => { root.play-chapter(i); }
                     open-music(v) => { root.open-music(v); }
                     open-now-album => { root.open-now-album(); }
                     open-now-artist => { root.open-now-artist(); }

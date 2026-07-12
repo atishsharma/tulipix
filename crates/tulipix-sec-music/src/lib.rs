@@ -1045,6 +1045,19 @@ pub fn dominant_color(path: &std::path::Path) -> Option<slint::Color> {
     let best = buckets.iter().filter(|e| e.1 > 0).max_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal))?;
     if best.1 == 0 { return None; }
     let (r, g, b) = ((best.2 / best.1) as u8, (best.3 / best.1) as u8, (best.4 / best.1) as u8);
+    // Washed-out result (white / near-grey covers): accent-tinted pills and
+    // bars painted with it disappear on light surfaces (user report
+    // 2026-07-12: white art made the home player's volume bar vanish). Treat
+    // as "no usable accent" — callers fall back to the brand pink.
+    {
+        let (rf, gf, bf) = (r as f64, g as f64, b as f64);
+        let max = rf.max(gf).max(bf);
+        let sat = if max > 0.0 { (max - rf.min(gf).min(bf)) / max } else { 0.0 };
+        let luma = (0.299 * rf + 0.587 * gf + 0.114 * bf) / 255.0;
+        if luma > 0.82 || sat < 0.12 {
+            return None;
+        }
+    }
     Some(slint::Color::from_rgb_u8(r, g, b))
 }
 
@@ -2251,15 +2264,23 @@ fn kick_ab_net_lookup(weak: slint::Weak<MainWindow>, folders: Vec<String>) {
 }
 
 /// Fill the audiobook detail hero + chapter list for one folder.
-pub fn fill_book_detail(w: &MainWindow, folder: &str, ids: &[i64]) {
+/// Build the ChapterRow list for one book's ordered chapter ids — shared by
+/// the detail page and the BookMini chapter queue. Returns
+/// `(rows, first_pos, resume_pos, total_s)`; `resume_pos` is the CURRENT
+/// chapter's playback position (-1 when the book was never touched).
+pub fn chapter_rows_for(
+    ids: &[i64], listened: &[i64], current: Option<i64>,
+) -> (Vec<ChapterRow>, i32, i32, f64) {
     let (pos_of, by_pos) = music_pos_maps();
-    let tiles = w.get_music_tiles();
     let mut total = 0.0;
     let mut first_pos = -1;
+    let mut resume_pos = -1;
     let mut rows: Vec<ChapterRow> = Vec::new();
     for id in ids {
         let Some(&pos) = pos_of.get(id) else { continue; };
         if first_pos < 0 { first_pos = pos; }
+        let is_cur = current == Some(*id);
+        if is_cur { resume_pos = pos; }
         let (title, _artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
         total += dur;
         let n = rows.len() + 1;
@@ -2267,9 +2288,18 @@ pub fn fill_book_detail(w: &MainWindow, folder: &str, ids: &[i64]) {
             title: if title.is_empty() { format!("Chapter {}", n).into() } else { title.into() },
             duration: if dur > 0.0 { fmt_clock(dur).into() } else { "".into() },
             index: pos,
-            played: false,
+            played: !is_cur && listened.contains(id),
+            current: is_cur,
         });
     }
+    (rows, first_pos, resume_pos, total)
+}
+
+pub fn fill_book_detail(
+    w: &MainWindow, folder: &str, ids: &[i64], listened: &[i64], current: Option<i64>,
+) {
+    let tiles = w.get_music_tiles();
+    let (rows, first_pos, resume_pos, total) = chapter_rows_for(ids, listened, current);
     // Real book cover (folder image / embedded art) decoded by the cards
     // populate; tile thumb only as the last resort.
     let cover = ab_cover_cache().lock().ok()
@@ -2287,7 +2317,8 @@ pub fn fill_book_detail(w: &MainWindow, folder: &str, ids: &[i64]) {
     w.set_music_ab_d_cover(cover);
     w.set_music_ab_d_total(fmt_hm(total).into());
     w.set_music_ab_d_chapters(slint::ModelRc::new(slint::VecModel::from(rows)));
-    w.set_music_ab_d_resume_index(first_pos);
+    // Resume = start of the CURRENT chapter (never a mid-chapter seek).
+    w.set_music_ab_d_resume_index(if resume_pos >= 0 { resume_pos } else { first_pos });
     w.set_music_audiobook_detail_open(true);
 }
 
@@ -2450,11 +2481,13 @@ pub fn audiobook_pick_cover(weak: slint::Weak<MainWindow>, folder: String) {
         // Drop the stale decode and rebuild cards + the open detail hero.
         if let Ok(mut g) = ab_cover_cache().lock() { g.remove(&folder); }
         let ids = tulipix_music::audiobooks::book_chapters(&pool, &folder).await.unwrap_or_default();
+        let (listened, current) = tulipix_music::audiobooks::chapter_states(&pool, &ids).await
+            .unwrap_or_default();
         let px = audiobook_cover_px(&folder, Some(path), None).await;
         let _ = weak.upgrade_in_event_loop(move |w| {
             populate_audiobooks(&w);
             if w.get_music_audiobook_detail_open() {
-                fill_book_detail(&w, &folder, &ids);
+                fill_book_detail(&w, &folder, &ids, &listened, current);
             }
             // Live vinyl art swap if this book is currently playing.
             let np = w.get_music_np_index();
@@ -2480,9 +2513,7 @@ pub fn play_music_file(w: &MainWindow, url: &str, title: &str, sub: &str) {
     if let Ok(mut g) = yt_cur_audio().lock() { g.clear(); }
     w.set_music_yt_now_video(false);
     let my_gen = MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-    if let Ok(mut g) = music_proc().lock() {
-        if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
-    }
+    stop_music_child(); // graceful quit → kill fallback (WirePlumber-safe)
     let mut pre_args = vec![format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32)];
     if w.get_music_muted() { pre_args.push("--mute=yes".into()); }
     pre_args.push(format!("--af={}", music_full_af(&music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10])))));
@@ -2863,9 +2894,7 @@ pub fn play_radio(w: &MainWindow, st: &tulipix_music::radio::Station) {
     if let Ok(mut g) = yt_cur_audio().lock() { g.clear(); }
     w.set_music_yt_now_video(false);
     let my_gen = MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-    if let Ok(mut g) = music_proc().lock() {
-        if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
-    }
+    stop_music_child(); // graceful quit → kill fallback (WirePlumber-safe)
     let mut pre_args = vec![format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32)];
     if w.get_music_muted() { pre_args.push("--mute=yes".into()); }
     pre_args.push(format!("--af={}", music_full_af(&music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10])))));
@@ -3520,9 +3549,7 @@ pub fn discover_cast_devices() -> Vec<tulipix_music::cast::CastDevice> {
 /// cast handoff (renderer owns playback) and the lyrics-only "check" path.
 pub fn stop_music(w: &MainWindow) {
     MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    if let Ok(mut g) = music_proc().lock() {
-        if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
-    }
+    stop_music_child(); // graceful quit → kill fallback (WirePlumber-safe)
     w.set_music_playing(false);
 }
 
@@ -4323,6 +4350,11 @@ pub fn resume_pending() -> &'static std::sync::Mutex<Option<(i64, f64)>> {
 /// Throttle stamp for the periodic now-playing position save.
 static RESUME_SAVED_AT: std::sync::OnceLock<std::sync::Mutex<std::time::Instant>> = std::sync::OnceLock::new();
 pub fn resume_maybe_save(w: &MainWindow, pos_s: f64) {
+    // Audiobooks never write the global song-resume: a book position leaking
+    // into music.resume made the next SONG cold-start mid-file (user report
+    // 2026-07-12, songs cut at 1:26). Book progress has its own chapter-level
+    // store (audiobook_progress).
+    if w.get_music_player_mode().as_str() == "book" { return; }
     let stamp = RESUME_SAVED_AT.get_or_init(|| std::sync::Mutex::new(std::time::Instant::now() - std::time::Duration::from_secs(60)));
     let due = stamp.lock().map(|g| g.elapsed().as_secs() >= 15).unwrap_or(false);
     if !due || pos_s < 5.0 { return; }
@@ -4392,9 +4424,7 @@ pub fn arm_sleep_timer(weak: &slint::Weak<MainWindow>, min: i32) {
         }
         FADE_SLEEP.store(false, Ordering::Relaxed);
         let _ = weak.upgrade_in_event_loop(|w| {
-            if let Ok(mut g) = music_proc().lock() {
-                if let Some(mut c) = g.take() { let _ = c.kill(); let _ = c.wait(); }
-            }
+            stop_music_child(); // graceful quit → kill fallback (WirePlumber-safe)
             w.set_music_playing(false);
             w.set_music_sleep_min(0);
             tracing::info!("music sleep timer fired (faded)");
@@ -4621,6 +4651,28 @@ pub fn sleep_eot_fired(w: &MainWindow) -> bool {
 
 pub fn advance_music(w: &MainWindow) {
     if sleep_eot_fired(w) { return; }
+    // Book mode follows the BOOK: the next chapter in book order from the
+    // chapter-queue model — never the shuffle bag or the music queue (user
+    // report 2026-07-12: chapter EOF jumped to a random My Music song). Going
+    // through the audiobook-play callback keeps the chapter bookkeeping
+    // (current-chapter row, progress registration) intact. End of book = stop.
+    if w.get_music_player_mode().as_str() == "book" {
+        let cur = w.get_music_np_index();
+        let rows = w.get_music_book_chapter_rows();
+        let mut next = None;
+        let mut seen = false;
+        for i in 0..rows.row_count() {
+            if let Some(r) = rows.row_data(i) {
+                if seen { next = Some(r.index); break; }
+                if r.index == cur { seen = true; }
+            }
+        }
+        match next {
+            Some(p) => w.invoke_music_audiobook_play(p),
+            None => w.set_music_playing(false), // book finished
+        }
+        return;
+    }
     // "Repeat one" always re-plays the current track, ignoring the queue.
     if w.get_music_repeat() == "one" { advance_sequential(w); return; }
     // Shuffle overrides the sequential auto-queue — pick a random next track.
@@ -4740,14 +4792,23 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
     let load_props = vec![
         ("volume".to_string(), format!("{}", if fade_s > 0.0 { 0 } else { user_vol as i32 })),
         ("mute".to_string(), (if w.get_music_muted() { "yes" } else { "no" }).to_string()),
+        // Speed never carries across content types: a 2× podcast/audiobook
+        // session left the persistent process fast, so the next SONG played
+        // at 2× (user report 2026-07-12). Audiobook plays re-apply the book
+        // speed over IPC right after this.
+        ("speed".to_string(), "1".to_string()),
     ];
     // Cold-start resume: this exact track was mid-play last session → pick up
     // where it left off (one-shot; any other track clears the request).
-    let this_id = music_songs().lock().ok()
-        .and_then(|g| g.iter().find(|s| s.pos == idx).map(|s| s.item_id));
+    let this = music_songs().lock().ok()
+        .and_then(|g| g.iter().find(|s| s.pos == idx).map(|s| (s.item_id, s.is_audiobook)));
+    let this_id = this.map(|(id, _)| id);
     let mut start_s = None;
     if let Some((rid, rpos)) = resume_pending().lock().ok().and_then(|mut g| g.take()) {
-        if this_id == Some(rid) && rpos > 5.0 {
+        // Never for audiobook chapters — chapters restart from 0:00 by design
+        // (chapter-level resume; a stale pre-decree music.resume could still
+        // carry a chapter id + mid-file position).
+        if this_id == Some(rid) && rpos > 5.0 && !this.map(|(_, ab)| ab).unwrap_or(false) {
             start_s = Some(rpos);
         }
     }
@@ -4824,9 +4885,7 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
         }
     } else {
         // Legacy spawn-per-track: stop the previous track, spawn fresh.
-        if let Ok(mut g) = music_proc().lock() {
-            if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
-        }
+        stop_music_child(); // graceful quit → kill fallback (WirePlumber-safe)
         let mut pre_args: Vec<String> = load_props.iter().map(|(k, v)| format!("--{k}={v}")).collect();
         pre_args.extend(session_args);
         if let Some(rp) = start_s { pre_args.push(format!("--start={rp:.0}")); }
@@ -6276,7 +6335,7 @@ static YT_VID_POS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::
 pub fn yt_watch_video(weak: slint::Weak<MainWindow>, id: String, height: i64, start: f64) {
     // Stop in-app audio (kill the music mpv, invalidate its reader, clear UI).
     MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    if let Ok(mut g) = music_proc().lock() { if let Some(mut c) = g.take() { let _ = c.kill(); let _ = c.wait(); } }
+    stop_music_child(); // graceful quit → kill fallback (WirePlumber-safe)
     let _ = weak.upgrade_in_event_loop(|w| w.set_music_playing(false));
     tokio::runtime::Handle::current().spawn(async move {
         let fmt = if height <= 0 { "best".to_string() } else { format!("best[height<=?{height}]/best") };
@@ -6347,7 +6406,7 @@ pub fn yt_watch_video(weak: slint::Weak<MainWindow>, id: String, height: i64, st
 pub fn yt_play_local_video(weak: slint::Weak<MainWindow>, path: String) {
     // Stop the in-app audio first (same as yt_watch_video).
     MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-    if let Ok(mut g) = music_proc().lock() { if let Some(mut c) = g.take() { let _ = c.kill(); let _ = c.wait(); } }
+    stop_music_child(); // graceful quit → kill fallback (WirePlumber-safe)
     let _ = weak.upgrade_in_event_loop(|w| w.set_music_playing(false));
     let sock = mpv_ipc::endpoint("tulipix-yt-video");
     mpv_ipc::cleanup(&sock);
@@ -6368,9 +6427,7 @@ pub fn yt_play_inapp(w: &MainWindow, id: String, path: String, title: String, su
     w.set_music_yt_pl_playall_busy(false); // playback started → clear the loading fill
     build_yt_queue_panel(w);
     let my_gen = MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
-    if let Ok(mut g) = music_proc().lock() {
-        if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
-    }
+    stop_music_child(); // graceful quit → kill fallback (WirePlumber-safe)
     let mut pre_args = vec![format!("--volume={}", w.get_music_volume().clamp(0.0, 130.0) as i32)];
     if start > 1.0 { pre_args.push(format!("--start={}", start as i64)); }
     if w.get_music_muted() { pre_args.push("--mute=yes".into()); }

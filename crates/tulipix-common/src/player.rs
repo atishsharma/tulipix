@@ -200,13 +200,9 @@ where
 
     // (Re)spawn — mirrors spawn_audio, plus idle mode and the event-driven
     // reader below (EOF must come from `end-file`, the socket never closes
-    // between tracks).
-    if let Ok(mut g) = music_proc().lock() {
-        if let Some(mut child) = g.take() {
-            let _ = child.kill();
-            let _ = child.wait();
-        }
-    }
+    // between tracks). Graceful stop: a SIGKILL mid PipeWire link-activation
+    // can wedge WirePlumber for the whole session.
+    crate::stop_music_child();
     let sock = mpv_ipc::endpoint(launch.prefix);
     mpv_ipc::cleanup(&sock);
 

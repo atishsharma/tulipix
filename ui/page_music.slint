@@ -1210,19 +1210,27 @@ component BookCardView inherits Rectangle {
     }
 }
 
-// One chapter row in the audiobook detail view.
+// One chapter row in the audiobook detail view. Chapter-level resume colours:
+// listened chapters dim out, the CURRENT chapter (what Resume restarts) is red.
 component ChapterItem inherits Rectangle {
     in property <ChapterRow> chapter;
     in property <int> n;
     callback play();
     height: 40px; border-radius: 8px;
-    background: cta.has-hover ? MusicTheme.hov2 : transparent;
+    background: cta.has-hover ? MusicTheme.hov2
+        : root.chapter.current ? #ef444422 : transparent;
+    border-width: root.chapter.current ? 1px : 0px; border-color: #ef444455;
     cta := TouchArea { mouse-cursor: pointer; clicked => { root.play(); } }
     HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 10px;
-        VerticalLayout { alignment: center; Text { text: root.n + "."; color: MusicTheme.fg-dim; font-size: 12px; width: 28px; } }
+        VerticalLayout { alignment: center; Text { text: root.n + ".";
+            color: root.chapter.current ? #ef4444 : MusicTheme.fg-dim; font-size: 12px; width: 28px; } }
         VerticalLayout { alignment: center; horizontal-stretch: 1;
-            Text { text: root.chapter.title; color: root.chapter.played ? MusicTheme.fg-dim2 : MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; } }
-        VerticalLayout { alignment: center; Text { text: root.chapter.duration; color: MusicTheme.fg-dim; font-size: 12px; } }
+            Text { text: root.chapter.title;
+                color: root.chapter.current ? #ef4444
+                    : root.chapter.played ? MusicTheme.fg-dim2 : MusicTheme.fg;
+                font-size: 13px; font-weight: root.chapter.current ? 800 : 600; overflow: elide; } }
+        VerticalLayout { alignment: center; Text { text: root.chapter.duration;
+            color: root.chapter.current ? #ef4444 : MusicTheme.fg-dim; font-size: 12px; } }
     }
 }
 
@@ -5920,7 +5928,7 @@ export component MusicPage inherits Rectangle {
                                             for m[i] in [0, 10, 15, 30, 45, 60, 90]: SetChip {
                                                 on: root.sleep-min == m; tint: #3b82f6; label: m == 0 ? "Off" : m + "m";
                                                 clicked => { root.set-sleep(m); } } } }
-                                    SetHint { text: "Chapters resume where you stopped; End of track mode lives on the timer itself."; } }
+                                    SetHint { text: "Resume restarts your current chapter from its beginning — bookmark any moment you want to jump back to."; } }
                                 // Radio.
                                 SetCard { horizontal-stretch: 1; accent: true; icon: Icons.radio;
                                     tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e);
@@ -7213,30 +7221,40 @@ export component MusicMini inherits Rectangle {
             if root.yt-now-video && !root.radio-mode: YtWatchBtn { uiscale: root.uiscale;
                 x: parent.width - self.width; y: parent.height - self.height;
                 clicked => { root.watch-video(); } } }
-        // 4. Seekbar with elapsed / total time, then music controls. Embedded:
-        // accent-washed track + elapsed/total in small accent pills (bare dim
-        // text was unreadable on some themes).
-        Scrubber { value: pos; maximum: dur > 0 ? dur : 1.0; wiggle: true;
-            track-color: root.embedded ? root.accent.with-alpha(0.30) : MusicTheme.line;
+        // 4. Seekbar with elapsed / total time, then music controls. Embedded
+        // (Home card): elapsed · bar · total live in ONE accent pill — same
+        // treatment as the title pill so it follows the song's colour — and
+        // the bar itself fills with theme fg (NOT the accent) so it stays
+        // visible inside the accent wash on any theme (user report 2026-07-12:
+        // accent-on-accent seekbar vanished on dark covers).
+        if root.embedded: Rectangle {
+            height: 26px * root.uiscale; border-radius: self.height / 2;
+            background: root.accent.with-alpha(0.20);
+            border-width: 1px; border-color: root.accent.with-alpha(0.45);
+            HorizontalLayout {
+                padding-left: 12px * root.uiscale; padding-right: 12px * root.uiscale;
+                spacing: 8px * root.uiscale;
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Text { text: pos-label; color: root.cream ? #1f1a14 : MusicTheme.fg;
+                        font-size: 10px * root.uiscale; font-weight: 700; } }
+                VerticalLayout { alignment: center; horizontal-stretch: 1;
+                    Scrubber { value: pos; maximum: dur > 0 ? dur : 1.0; wiggle: true;
+                        fill-color: root.cream ? #1f1a14 : MusicTheme.fg;
+                        track-color: (root.cream ? #1f1a14 : MusicTheme.fg).with-alpha(0.22);
+                        changed(v) => { root.seek(v); } } }
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Text { text: dur-label; color: root.cream ? #1f1a14 : MusicTheme.fg;
+                        font-size: 10px * root.uiscale; font-weight: 700; } }
+            }
+        }
+        if !root.embedded: Scrubber { value: pos; maximum: dur > 0 ? dur : 1.0; wiggle: true;
+            track-color: MusicTheme.line;
             changed(v) => { root.seek(v); } }
-        HorizontalLayout {
-            Rectangle {
-                height: 18px * root.uiscale; border-radius: self.height / 2; horizontal-stretch: 0;
-                background: root.embedded ? root.accent.with-alpha(0.16) : transparent;
-                border-width: root.embedded ? 1px : 0px; border-color: root.accent.with-alpha(0.35);
-                width: post.preferred-width + (root.embedded ? 16px * root.uiscale : 0px);
-                post := Text { width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center;
-                    text: pos-label; color: root.cream ? #1f1a14 : (root.embedded ? MusicTheme.fg : MusicTheme.fg-dim);
-                    font-size: 10px * root.uiscale; font-weight: root.embedded ? 700 : 400; } }
+        if !root.embedded: HorizontalLayout {
+            Text { text: pos-label; color: MusicTheme.fg-dim; font-size: 10px * root.uiscale; }
             Rectangle { horizontal-stretch: 1; }
-            Rectangle {
-                height: 18px * root.uiscale; border-radius: self.height / 2; horizontal-stretch: 0;
-                background: root.embedded ? root.accent.with-alpha(0.16) : transparent;
-                border-width: root.embedded ? 1px : 0px; border-color: root.accent.with-alpha(0.35);
-                width: durt.preferred-width + (root.embedded ? 16px * root.uiscale : 0px);
-                durt := Text { width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center;
-                    text: dur-label; color: root.cream ? #1f1a14 : (root.embedded ? MusicTheme.fg : MusicTheme.fg-dim);
-                    font-size: 10px * root.uiscale; font-weight: root.embedded ? 700 : 400; } } }
+            Text { text: dur-label; color: MusicTheme.fg-dim; font-size: 10px * root.uiscale; }
+        }
         if !root.radio-mode: HorizontalLayout { alignment: center; spacing: 12px * root.uiscale;
             PlayerBtn { icon: Icons.shuffle; size: 32px * root.uiscale; isz: 16px * root.uiscale; active: root.shuffle; solid: root.embedded; clicked => { root.toggle-shuffle(); } }
             PlayerBtn { icon: Icons.skip-back; size: 38px * root.uiscale; isz: 19px * root.uiscale; solid: root.embedded; clicked => { root.prev(); } }
@@ -7273,8 +7291,11 @@ export component MusicMini inherits Rectangle {
                                     width: 15px * root.uiscale; height: 15px * root.uiscale;
                                     x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } }
                         VerticalLayout { alignment: center; Rectangle { height: 20px * root.uiscale; horizontal-stretch: 1;
+                            // The pill is always WHITE — darken the accent fill
+                            // and keep a fixed dark track so a light cover
+                            // accent can never white-out the volume bar.
                             Scrubber { y: (parent.height - self.height)/2; width: parent.width; value: volume; maximum: 130.0;
-                                fill-color: root.accent; track-color: root.accent.with-alpha(0.30);
+                                fill-color: root.accent.darker(25%); track-color: #00000022;
                                 changed(v) => { root.set-volume(v); } } } }
                     } } }
             if !root.embedded: VerticalLayout { alignment: center; PlayerBtn { icon: muted ? Icons.volume-x : Icons.volume; size: 30px * root.uiscale; isz: 15px * root.uiscale; active: muted; clicked => { root.toggle-mute(); } } }
@@ -7492,9 +7513,13 @@ export component BookMini inherits Rectangle {
     in property <float> speed: 1.0;
     in property <float> volume: 100;
     in property <bool> muted;
-    in property <[MusicSongRow]> chapters: [];   // the book's chapter queue
+    in property <[ChapterRow]> chapters: [];   // the PLAYING book's chapters, in order
+    in property <int> np-index: -1;            // active chapter (music-np-index)
     in-out property <string> face: "";   // "" cover | chapters
     in property <float> uiscale: 1.0;
+    // Embedded mode (Home command center card): drop the floating chrome —
+    // no close/minimise, transparent root, no shadow (mirrors MusicMini).
+    in property <bool> embedded: false;
     callback close();
     callback minimise();
     callback playpause();
@@ -7510,19 +7535,19 @@ export component BookMini inherits Rectangle {
     in property <bool> bold-outline: true;
 
     width: 300px; height: 442px; border-radius: 18px;
-    background: MusicTheme.surf-player;
-    border-width: root.bold-outline ? 2px : 1px;
+    background: embedded ? transparent : MusicTheme.surf-player;
+    border-width: embedded ? 0px : (root.bold-outline ? 2px : 1px);
     border-color: root.bold-outline ? @linear-gradient(135deg, #3b82f6, #06b6d4 55%, #8b5cf6) : MusicTheme.line;
-    drop-shadow-blur: 42px; drop-shadow-color: #000000e6;
+    drop-shadow-blur: embedded ? 0px : 42px; drop-shadow-color: #000000e6;
     VerticalLayout {
         padding: 14px * root.uiscale; spacing: 8px * root.uiscale;
-        // 1. Close · chapter title · minimise.
+        // 1. Close · chapter title · minimise (floating only).
         HorizontalLayout { spacing: 4px * root.uiscale;
-            PlayerBtn { icon: Icons.x; size: 26px * root.uiscale; isz: 13px * root.uiscale; clicked => { root.close(); } }
+            if !root.embedded: PlayerBtn { icon: Icons.x; size: 26px * root.uiscale; isz: 13px * root.uiscale; clicked => { root.close(); } }
             VerticalLayout { alignment: center; horizontal-stretch: 1;
                 Marquee { height: 20px * root.uiscale; centered: true; text: title == "" ? "Nothing playing" : title;
                     fg: MusicTheme.fg; font-size: 15px * root.uiscale; weight: 700; } }
-            PlayerBtn { icon: Icons.chevron-right; size: 26px * root.uiscale; isz: 14px * root.uiscale; clicked => { root.minimise(); } } }
+            if !root.embedded: PlayerBtn { icon: Icons.chevron-right; size: 26px * root.uiscale; isz: 14px * root.uiscale; clicked => { root.minimise(); } } }
         // 2. Book title pill.
         HorizontalLayout { alignment: center;
             Rectangle { height: 18px * root.uiscale; border-radius: self.height / 2; horizontal-stretch: 0;
@@ -7546,26 +7571,42 @@ export component BookMini inherits Rectangle {
                     if art.width > 0: Image { source: art; image-fit: cover; width: 100%; height: 100%; }
                     if art.width == 0: AppIcon { source: Icons.book-open; tint: root.accent; width: 44px * root.uiscale; height: 44px * root.uiscale;
                         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } }
+            // The PLAYING book's chapters in book order; the active chapter
+            // (np-index) carries the accent row, listened ones dim out.
             if root.face == "chapters": ScrollView { width: 100%; height: 100%;
                 VerticalLayout { spacing: 2px; padding: 6px;
                     if chapters.length == 0: Text { text: "No chapters."; color: MusicTheme.fg-dim; font-size: 12px; }
                     for s[i] in chapters: Rectangle { height: 34px; border-radius: 8px;
-                        background: bchr.has-hover ? MusicTheme.hov : transparent;
+                        background: bchr.has-hover ? MusicTheme.hov
+                            : s.index == root.np-index ? root.accent.with-alpha(0.20) : transparent;
+                        border-width: s.index == root.np-index ? 1px : 0px;
+                        border-color: root.accent.with-alpha(0.55);
                         bchr := TouchArea { mouse-cursor: pointer; clicked => { root.play-chapter(s.index); } }
                         HorizontalLayout { padding-left: 8px; padding-right: 8px; spacing: 8px;
-                            VerticalLayout { alignment: center; Text { text: i + 1; color: MusicTheme.fg-mute; font-size: 11px; font-weight: 700; } }
+                            VerticalLayout { alignment: center; Text {
+                                text: s.index == root.np-index ? "▶" : (i + 1);
+                                color: s.index == root.np-index ? root.accent : MusicTheme.fg-mute;
+                                font-size: 11px; font-weight: 700; } }
                             VerticalLayout { alignment: center; horizontal-stretch: 1;
-                                Text { text: s.title; color: MusicTheme.fg; font-size: 12px; overflow: elide; } }
-                            VerticalLayout { alignment: center; Text { text: s.duration; color: MusicTheme.fg-dim2; font-size: 11px; } } } } } }
+                                Text { text: s.title;
+                                    color: s.index == root.np-index ? root.accent
+                                        : s.played ? MusicTheme.fg-dim2 : MusicTheme.fg;
+                                    font-size: 12px; font-weight: s.index == root.np-index ? 800 : 400;
+                                    overflow: elide; } }
+                            VerticalLayout { alignment: center; Text { text: s.duration;
+                                color: s.index == root.np-index ? root.accent : MusicTheme.fg-dim2;
+                                font-size: 11px; } } } } } }
             if root.face != "": bkflip := TouchArea {
                 x: parent.width - 30px; y: 2px; width: 28px; height: 28px; mouse-cursor: pointer;
                 clicked => { root.face = ""; }
-                AppIcon { source: Icons.refresh-cw; tint: bkflip.has-hover ? #ffffffcc : #ffffff66;
+                AppIcon { source: Icons.refresh-cw;
+                    tint: bkflip.has-hover ? MusicTheme.fg2 : MusicTheme.fg-mute;
                     width: 14px; height: 14px; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } }
         Rectangle { vertical-stretch: 1; }
-        // 4. Seekbar + time labels.
+        // 4. Seekbar + time labels. Theme-inverse fill (fg on a faint fg track):
+        // the art-derived accent went black-on-black in dark themes.
         Scrubber { value: pos; maximum: dur > 0 ? dur : 1.0;
-            track-color: MusicTheme.line; fill-color: root.accent;
+            track-color: MusicTheme.fg.with-alpha(0.20); fill-color: MusicTheme.fg;
             changed(v) => { root.seek(v); } }
         HorizontalLayout {
             Text { text: pos-label; color: MusicTheme.fg-dim; font-size: 10px * root.uiscale; }
@@ -7581,10 +7622,14 @@ export component BookMini inherits Rectangle {
                     kb30 := TouchArea { mouse-cursor: pointer; clicked => { root.skip(-30); } }
                     HorizontalLayout { alignment: center; spacing: 1px; VerticalLayout { alignment: center; AppIcon { source: Icons.rotate-ccw; tint: MusicTheme.fg2; width: 12px * root.uiscale; height: 12px * root.uiscale; } } Text { text: "30"; color: MusicTheme.fg2; font-size: 12px * root.uiscale; font-weight: 700; vertical-alignment: center; } } } }
             VerticalLayout { alignment: center;
+                // Theme-inverse play chip: fg pill + bg-coloured glyph reads on
+                // every theme (the fixed light-grey chip clashed on dark).
                 Rectangle { width: 54px * root.uiscale; height: 46px * root.uiscale; border-radius: self.height / 2; horizontal-stretch: 0;
-                    background: kpp.has-hover ? root.accent : #f0f0f3; animate background { duration: 150ms; }
+                    background: kpp.has-hover ? root.accent : MusicTheme.fg; animate background { duration: 150ms; }
                     kpp := TouchArea { mouse-cursor: pointer; clicked => { root.playpause(); } }
-                    AppIcon { source: playing ? Icons.pause : Icons.play; tint: kpp.has-hover ? #ffffff : #14141b; width: 20px * root.uiscale; height: 20px * root.uiscale; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
+                    AppIcon { source: playing ? Icons.pause : Icons.play;
+                        tint: kpp.has-hover || MusicTheme.light ? #ffffff : #14141b;
+                        width: 20px * root.uiscale; height: 20px * root.uiscale; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
             VerticalLayout { alignment: center;
                 bk30f := Rectangle { width: 46px * root.uiscale; height: 46px * root.uiscale; border-radius: self.height / 2; horizontal-stretch: 0;
                     background: kf30.has-hover ? MusicTheme.surf1 : transparent;
@@ -7604,7 +7649,7 @@ export component BookMini inherits Rectangle {
             PlayerBtn { icon: muted ? Icons.volume-x : Icons.volume; size: 30px * root.uiscale; isz: 15px * root.uiscale; active: muted; accent: root.accent; clicked => { root.toggle-mute(); } }
             Rectangle { width: 70px * root.uiscale; height: 30px * root.uiscale;
                 Scrubber { y: (parent.height - self.height)/2; width: 70px * root.uiscale; value: volume; maximum: 130.0;
-                    fill-color: root.accent; track-color: MusicTheme.line;
+                    fill-color: MusicTheme.fg; track-color: MusicTheme.fg.with-alpha(0.20);
                     changed(v) => { root.set-volume(v); } } }
             PlayerBtn { icon: Icons.maximize; size: 32px * root.uiscale; isz: 16px * root.uiscale; accent: root.accent; clicked => { root.open-zen(); } } }
     }

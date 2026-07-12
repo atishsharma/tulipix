@@ -1916,6 +1916,9 @@ callback cloud-go-home();
     in-out property <float> music-book-speed: 1.0;
     in-out property <bool> music-book-skip-silence-on: false;
     in-out property <[string]> music-book-bookmarks: [];
+    // The PLAYING book's chapters (ordered) — BookMini chapter queue, set on
+    // every audiobook play; the active row follows music-np-index.
+    in property <[ChapterRow]> music-book-chapter-rows: [];
     callback music-audiobook-play(int);
     callback music-set-book-speed(float);
     callback music-book-chapter(int);
@@ -3022,6 +3025,11 @@ callback cloud-go-home();
                 queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
                 radio-initial: root.music-radio-np-initial; yt-now-video: root.music-yt-now-video;
                 podcast-speed: root.music-podcast-speed; podcast-episodes: root.music-podcast-d-episodes; podcast-summary: root.music-podcast-d-desc;
+                book-speed: root.music-book-speed; book-chapters: root.music-book-chapter-rows; np-index: root.music-np-index;
+                book-set-speed(v) => { root.music-set-book-speed(v); }
+                book-chapter-step(d) => { root.music-book-chapter(d); }
+                book-bookmark => { root.music-book-bookmark(); }
+                play-chapter(i) => { root.music-audiobook-play(i); }
                 play-queue(i) => { root.music-play-queue(i); }
                 watch-video => { root.music-yt-watch-current(); }
                 podcast-skip(s) => { root.music-podcast-skip(s); }
@@ -3261,7 +3269,7 @@ callback cloud-go-home();
             art: root.music-np-art; accent: root.music-np-accent; title: root.music-np-title; sub: root.music-np-sub; playing: root.music-playing;
             pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
             speed: root.music-book-speed; volume: root.music-volume; muted: root.music-muted;
-            chapters: root.music-queue-rows;
+            chapters: root.music-book-chapter-rows; np-index: root.music-np-index;
             close => { root.music-mini-open = false; }
             minimise => { root.music-mini-bubble = true; }
             playpause => { root.music-toggle-pause(); }
@@ -3270,7 +3278,9 @@ callback cloud-go-home();
             set-speed(v) => { root.music-set-book-speed(v); }
             set-volume(v) => { root.music-set-volume(v); }
             toggle-mute => { root.music-toggle-mute(); }
-            play-chapter(i) => { root.music-play-queue(i); }
+            // Chapter rows carry the PLAYBACK index — route through the
+            // audiobook play path (chapter-level resume), not the queue.
+            play-chapter(i) => { root.music-audiobook-play(i); }
             chapter-step(d) => { root.music-book-chapter(d); }
             bookmark => { root.music-book-bookmark(); }
             open-zen => { root.music-mini-open = false; root.music-fullscreen = true; }

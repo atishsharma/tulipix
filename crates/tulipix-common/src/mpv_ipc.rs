@@ -60,6 +60,11 @@ pub fn connect(path: &Path) -> io::Result<IpcConn> {
     for _ in 0..60 {
         match connect_once(path) {
             Ok(s) => return Ok(s),
+            // Refused = the socket file exists but nothing listens on it — a
+            // leftover from a dead mpv. It will never come alive, and callers
+            // (some on the UI thread) must not stall ~3 s retrying against it.
+            #[cfg(not(windows))]
+            Err(e) if e.kind() == io::ErrorKind::ConnectionRefused => return Err(e),
             Err(e) => {
                 last = e;
                 std::thread::sleep(Duration::from_millis(50));

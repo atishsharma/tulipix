@@ -46,6 +46,21 @@ pub async fn resume(pool: &SqlitePool, item_id: i64) -> Result<(f64, f64)> {
     Ok(row.unwrap_or((0.0, 1.0)))
 }
 
+/// Chapter-level book state (np: chapter-resume, user decree 2026-07-12 — a
+/// chapter always restarts from 0:00; bookmarks cover in-chapter positions):
+/// returns (ids with any progress row = "listened" colour, most-recently
+/// updated id = the CURRENT chapter, the Resume target / red row).
+pub async fn chapter_states(pool: &SqlitePool, ids: &[i64]) -> Result<(Vec<i64>, Option<i64>)> {
+    if ids.is_empty() { return Ok((Vec::new(), None)); }
+    let ph = vec!["?"; ids.len()].join(",");
+    let sql = format!("SELECT item_id, updated FROM audiobook_progress WHERE item_id IN ({ph})");
+    let mut q = sqlx::query_as::<_, (i64, i64)>(&sql);
+    for id in ids { q = q.bind(id); }
+    let rows: Vec<(i64, i64)> = q.fetch_all(pool).await?;
+    let current = rows.iter().max_by_key(|(_, u)| *u).map(|(id, _)| *id);
+    Ok((rows.into_iter().map(|(id, _)| id).collect(), current))
+}
+
 /// Save a position bookmark for an audiobook (np.p5.music.audiobook-chapters).
 pub async fn add_bookmark(pool: &SqlitePool, item_id: i64, position_s: f64, label: &str) -> Result<()> {
     sqlx::query("INSERT INTO audiobook_bookmarks (item_id, position_s, label, created) VALUES (?,?,?,?)")

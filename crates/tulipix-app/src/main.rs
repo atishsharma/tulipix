@@ -32,7 +32,7 @@ pub(crate) use tulipix_common::{
     human_size, kill_all_mpv, load_folder_sections, load_watched_folders,
     music_ipc, music_proc, music_section_key, music_section_label,
     now_secs, on_path, pool_for, set_folder_section, spawn_mpv_windowed,
-    video_ipc, watched_folders_path, MUSIC_GEN,
+    stop_music_child, video_ipc, watched_folders_path, MUSIC_GEN,
 };
 // MPRIS/SMTC handle storage now lives in common; setup_media_controls in main
 // writes to it.
@@ -1251,9 +1251,7 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_music_stop(move || {
         MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst); // suppress auto-advance
-        if let Ok(mut g) = music_proc().lock() {
-            if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
-        }
+        stop_music_child(); // graceful quit → kill fallback (WirePlumber-safe)
         if let Some(w) = w.upgrade() { w.set_music_playing(false); }
     });
     // Play/pause toggle — resume the live track via IPC, or start one if idle.
@@ -5104,35 +5102,46 @@ fn main() -> Result<()> {
         if let Ok(mut g) = cur_podcast_id().lock() { *g = -1; }
         refresh_podcast_views(&w0);
     });
-    // Audiobook play with pitch-preserving speed + resume (np.p5.music.audiobook-chapters).
+    // Audiobook play — CHAPTER-level resume only (user decree 2026-07-12): a
+    // chapter always starts from 0:00, never a mid-chapter `--start` seek. The
+    // progress row only records WHICH chapter is current; in-chapter moments
+    // are what bookmarks are for. (The old in-file position leaked into the
+    // global music.resume and cut the start of plain songs.)
     let w = window.as_weak();
     window.on_music_audiobook_play(move |pos| {
         let Some(w0) = w.upgrade() else { return; };
-        // Resolve the saved resume position BEFORE spawning mpv, so it rides in
-        // as `--start` via resume_pending — the old post-spawn IPC `seek` raced
-        // loadfile and silently landed at 0:00.
         let id = music_ids().lock().ok()
             .and_then(|g| g.get(pos as usize).copied()).filter(|i| *i >= 0);
+        let speed_now = w0.get_music_book_speed() as f64;
         let weak = w0.as_weak();
         tokio::runtime::Handle::current().spawn(async move {
-            let resume = match id {
-                Some(id) => {
-                    let Ok(pool) = pool_for("music").await else { return; };
-                    let r = tulipix_music::audiobooks::resume(&pool, id).await.unwrap_or((0.0, 1.0));
-                    let _ = tulipix_music::audiobooks::mark_audiobook(&pool, id).await;
-                    // Register the book as in-progress IMMEDIATELY — the card
-                    // bar + "In progress" tab key off audiobook_progress rows.
-                    let _ = tulipix_music::audiobooks::save_progress(&pool, id, r.0.max(1.0), r.1).await;
-                    Some(r)
+            if let Some(id) = id {
+                let Ok(pool) = pool_for("music").await else { return; };
+                let _ = tulipix_music::audiobooks::mark_audiobook(&pool, id).await;
+                // Register this chapter as CURRENT immediately — the red row,
+                // card bar + "In progress" tab key off audiobook_progress.
+                let _ = tulipix_music::audiobooks::save_progress(&pool, id, 1.0, speed_now).await;
+                // Chapter queue for the BookMini + live detail refresh. Derive
+                // the book folder from the clicked chapter itself — the
+                // detail's cur_book_folder may be unset or on another book.
+                let folder = music_paths().lock().ok()
+                    .and_then(|g| g.get(pos as usize).and_then(|p| p.parent().map(|d| d.display().to_string())))
+                    .unwrap_or_default();
+                if !folder.is_empty() {
+                    let ids = tulipix_music::audiobooks::book_chapters(&pool, &folder).await.unwrap_or_default();
+                    let (listened, current) = tulipix_music::audiobooks::chapter_states(&pool, &ids).await.unwrap_or_default();
+                    let detail_folder = cur_book_folder().lock().map(|g| g.clone()).unwrap_or_default();
+                    let wk = weak.clone();
+                    let _ = wk.upgrade_in_event_loop(move |w0| {
+                        let (rows, _, _, _) = chapter_rows_for(&ids, &listened, current);
+                        w0.set_music_book_chapter_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+                        if w0.get_music_audiobook_detail_open() && detail_folder == folder {
+                            fill_book_detail(&w0, &folder, &ids, &listened, current);
+                        }
+                    });
                 }
-                None => None,
-            };
+            }
             let _ = weak.upgrade_in_event_loop(move |w0| {
-                if let (Some(id), Some((pos_s, _))) = (id, resume) {
-                    if pos_s > 5.0 {
-                        if let Ok(mut g) = resume_pending().lock() { *g = Some((id, pos_s)); }
-                    }
-                }
                 play_music_at(&w0, pos);
                 // Force book mode even when the songs store hasn't warmed yet.
                 w0.set_music_player_mode("book".into());
@@ -5211,7 +5220,8 @@ fn main() -> Result<()> {
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("music").await else { return; };
             let ids = tulipix_music::audiobooks::book_chapters(&pool, &folder).await.unwrap_or_default();
-            let _ = weak.upgrade_in_event_loop(move |w| fill_book_detail(&w, &folder, &ids));
+            let (listened, current) = tulipix_music::audiobooks::chapter_states(&pool, &ids).await.unwrap_or_default();
+            let _ = weak.upgrade_in_event_loop(move |w| fill_book_detail(&w, &folder, &ids, &listened, current));
         });
     });
     let w = window.as_weak();
@@ -5631,10 +5641,11 @@ fn main() -> Result<()> {
             let Some(w) = weak.upgrade() else { return; };
             if !w.get_music_playing() { return; }
             let Some(id) = current_music_id(&w) else { return; };
-            let idx = w.get_music_np_index();
-            let is_book = music_songs().lock().ok()
-                .map(|g| g.iter().any(|s| s.pos == idx && s.is_audiobook)).unwrap_or(false);
-            if !is_book { return; }
+            // Book mode is set explicitly on every audiobook play — unlike the
+            // songs-store `is_audiobook` flag, which is a stale snapshot on a
+            // book's FIRST-ever listen (mark_audiobook only hits the DB at
+            // click time), so progress was never saved and resume landed at 0.
+            if w.get_music_player_mode().as_str() != "book" { return; }
             let pos = w.get_music_pos() as f64;
             let speed = w.get_music_book_speed() as f64;
             let refresh_cards = w.get_music_view() == "audiobooks";
@@ -9742,7 +9753,7 @@ fn kick_home_continue(w: &MainWindow) {
                     _ => -1.0,
                 };
                 let sub = match total {
-                    Some(t) if t > 0 => format!("page {page} · {}%", (page * 100) / t),
+                    Some(t) if t > 0 => format!("Page {page}/{t}"),
                     _ => format!("page {page}"),
                 };
                 let cover = tulipix_sec_music::decode_art_px(
@@ -9772,7 +9783,8 @@ fn kick_home_continue(w: &MainWindow) {
                 let (frac, sub) = match dur {
                     Some(d) if d > 1.0 => (
                         ((pos / d) as f32).clamp(0.0, 1.0),
-                        format!("{}m left", ((((d - pos) / 60.0).ceil()) as i64).max(1)),
+                        format!("{}m left / {}", ((((d - pos) / 60.0).ceil()) as i64).max(1),
+                            tulipix_sec_music::fmt_hm(d)),
                     ),
                     _ => (-1.0, format!("{}:{:02} in", (pos as i64) / 60, (pos as i64) % 60)),
                 };
@@ -9793,6 +9805,14 @@ fn kick_home_continue(w: &MainWindow) {
             let custom: std::collections::HashMap<String, String> =
                 sqlx::query_as("SELECT folder, path FROM audiobook_covers")
                     .fetch_all(&pool).await.unwrap_or_default().into_iter().collect();
+            // Resolved book metadata (5-method lookup chain) — the card title
+            // was the raw FOLDER name and the author line was missing.
+            let meta: std::collections::HashMap<String, (String, String)> =
+                sqlx::query_as::<_, (String, Option<String>, Option<String>)>(
+                    "SELECT folder, title, author FROM audiobook_meta")
+                    .fetch_all(&pool).await.unwrap_or_default().into_iter()
+                    .map(|(f, t, a)| (f, (t.unwrap_or_default(), a.unwrap_or_default())))
+                    .collect();
             let items = sqlx::query_as::<_, (String, i64, f64, i64, String)>(
                 "SELECT tm.folder, ap.item_id, ap.position_s, COALESCE(ap.updated, 0), COALESCE(i.abs_path, '') \
                  FROM audiobook_progress ap \
@@ -9805,15 +9825,27 @@ fn kick_home_continue(w: &MainWindow) {
             for (folder, item_id, pos, ts, chapter) in items {
                 if !seen.insert(folder.clone()) { continue; }
                 if seen.len() > 4 { break; }
-                let title = tulipix_sec_music::book_title(&folder);
-                let sub = format!("{}:{:02} in", (pos as i64) / 60, (pos as i64) % 60);
+                let (mt, ma) = meta.get(&folder).cloned().unwrap_or_default();
+                let title = if mt.is_empty() { tulipix_sec_music::book_title(&folder) } else { mt };
+                let author = if ma.is_empty() { "Audiobook".to_string() } else { ma };
+                // Chapter-level resume → show book progress as chapter i/n
+                // (raw seconds counters are meaningless across chapters).
+                let chapters = tulipix_music::audiobooks::book_chapters(&pool, &folder).await.unwrap_or_default();
+                let idx = chapters.iter().position(|c| *c == item_id);
+                let (frac, sub) = match idx {
+                    Some(i) if !chapters.is_empty() => (
+                        ((i + 1) as f32 / chapters.len() as f32).clamp(0.0, 1.0),
+                        format!("Chapter {}/{}", i + 1, chapters.len()),
+                    ),
+                    _ => (-1.0, format!("{}:{:02} in", (pos as i64) / 60, (pos as i64) % 60)),
+                };
                 let cover = tulipix_sec_music::audiobook_cover_px(
                     &folder,
                     custom.get(&folder).map(PathBuf::from),
                     (!chapter.is_empty()).then(|| PathBuf::from(&chapter)),
                 ).await;
                 rows.push(HomeContRow {
-                    kind: "audiobook", title, author: "Audiobook".into(), sub, frac: -1.0, cover,
+                    kind: "audiobook", title, author, sub, frac, cover,
                     id: item_id, path: folder, ts,
                 });
             }
@@ -9843,7 +9875,8 @@ fn kick_home_continue(w: &MainWindow) {
                 let (frac, sub) = match dur {
                     Some(d) if d > 1.0 => (
                         ((pos / d) as f32).clamp(0.0, 1.0),
-                        format!("{}m left", ((((d - pos) / 60.0).ceil()) as i64).max(1)),
+                        format!("{}m left / {}", ((((d - pos) / 60.0).ceil()) as i64).max(1),
+                            tulipix_sec_music::fmt_hm(d)),
                     ),
                     _ => (-1.0, format!("{}:{:02} in", (pos as i64) / 60, (pos as i64) % 60)),
                 };

@@ -343,12 +343,43 @@ pub fn stop_video() {
     #[cfg(not(windows))]
     let _ = std::process::Command::new("kill").arg("-9").arg(pid.to_string()).status();
 }
+/// Stop the headless music mpv without an instant SIGKILL: ask it to `quit`
+/// over IPC and give it a short grace window to close its audio stream
+/// cleanly, hard-killing only if it doesn't exit. SIGKILL-ing a PipeWire
+/// client mid link-activation can wedge WirePlumber session-wide — every
+/// later mpv then starts with no sound until the session restarts (user
+/// report 2026-07-12, audiobooks: rapid chapter respawns). Also clears the
+/// socket singleton + file so later one-shot IPC calls no-op fast instead of
+/// probing a dead endpoint. Does NOT touch `MUSIC_GEN` — callers that need to
+/// suppress auto-advance bump it themselves.
+pub fn stop_music_child() {
+    let sock = music_sock().lock().ok().and_then(|mut g| g.take());
+    let child = music_proc().lock().ok().and_then(|mut g| g.take());
+    let Some(mut child) = child else {
+        if let Some(s) = &sock { mpv_ipc::cleanup(s); }
+        return;
+    };
+    if let Some(s) = &sock {
+        use std::io::Write;
+        if let Ok(mut c) = mpv_ipc::connect(s) {
+            let _ = c.write_all(b"{\"command\":[\"quit\"]}\n");
+        }
+    }
+    let mut exited = false;
+    for _ in 0..8 {
+        match child.try_wait() {
+            Ok(Some(_)) => { exited = true; break; }
+            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+            Err(_) => break,
+        }
+    }
+    if !exited { let _ = child.kill(); let _ = child.wait(); }
+    if let Some(s) = &sock { mpv_ipc::cleanup(s); }
+}
 /// Kill the headless music mpv if one is running.
 pub fn kill_music_proc() {
     MUSIC_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst); // suppress auto-advance
-    if let Ok(mut g) = music_proc().lock() {
-        if let Some(mut child) = g.take() { let _ = child.kill(); let _ = child.wait(); }
-    }
+    stop_music_child();
 }
 /// Stop every mpv we spawned — called when the app window closes so nothing keeps
 /// playing in the background (np: universal-player teardown).

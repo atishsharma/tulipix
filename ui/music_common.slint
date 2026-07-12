@@ -154,7 +154,8 @@ export struct ChapterRow {
     title: string,
     duration: string,
     index: int,          // music-library position → audiobook-play target
-    played: bool,
+    played: bool,        // listened before (not the current one) → dim colour
+    current: bool,       // the chapter Resume restarts → red row
 }
 
 // One YouTube video — search result, channel grid, cached, downloaded, playlist
