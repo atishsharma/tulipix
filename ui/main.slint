@@ -12,7 +12,7 @@ import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
 import { MusicPage, MusicFullscreen, MusicMini, PodcastMini, BookMini } from "page_music.slint";
 import { MusicSongRow, DownloaderRow, DlHistoryEntry, DlSearchEntry, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
-import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow, AuthorRow, CollectionRow } from "page_books.slint";
+import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow, AuthorRow, CollectionRow, HeroRow, BookDetail, SeriesStripRow } from "page_books.slint";
 import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry, CloudJob, CloudUsage, CloudXfer } from "page_cloud.slint";
 import { ToolsPage, ToolOpRow, ToolField, QueueJob, ToolStatus, DownloadItem, ToolInfoRow, ToolDiffRow, TrimSeg } from "page_tools.slint";
@@ -79,23 +79,6 @@ component SettingsTab inherits Rectangle {
             font-size: 12px; font-weight: active ? 600 : 500;
             vertical-alignment: center; horizontal-alignment: center;
         }
-    }
-}
-
-// Small pill button used in the Settings → Profile panel.
-component AcctBtn inherits Rectangle {
-    in property <string> label;
-    callback clicked();
-    height: 28px; min-width: 96px;
-    horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 8px;
-    background: touch.has-hover ? Theme.panel : Theme.panel-2;
-    border-color: Theme.outline; border-width: 1px;
-    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    HorizontalLayout {
-        padding-left: 12px; padding-right: 12px;
-        Text { text: label; color: Theme.text; font-size: 11px; font-weight: 600;
-            vertical-alignment: center; horizontal-alignment: center; }
     }
 }
 
@@ -1050,7 +1033,30 @@ export component MainWindow inherits Window {
     in property <[AuthorRow]> book-authors: [];
     in property <[CollectionRow]> book-collections: [];
     in property <[image]> book-comic-thumbs: [];
-    in property <string> book-stats: "";
+    // Books redesign — hero slider, stat cards, detail sheet, series strip.
+    in property <int> book-goal-done: 0;
+    in property <int> book-goal-total: 0;
+    in property <string> book-stat-time: "";
+    in property <int> book-streak-days: 0;
+    in property <int> book-in-progress: 0;
+    in property <[HeroRow]> book-hero-rows: [];
+    callback book-resume(int);
+    callback book-hero-detail(int);
+    in property <BookDetail> book-detail;
+    in-out property <int> book-detail-idx: -1;
+    callback book-open-detail(int);
+    callback book-mark-finished(int);
+    callback book-remove(int);
+    in property <[SeriesStripRow]> book-series-strip: [];
+    in property <string> book-series-strip-title: "";
+    in property <string> book-series-strip-sub: "";
+    in property <int> book-series-strip-done: 0;
+    in property <int> book-series-strip-total: 0;
+    callback book-series-strip-open(int);
+    // Books PDF reader (np.p5.books.pdf) — continuous raster pages.
+    in property <[image]> book-pdf-pages: [];
+    callback book-pdf-page-visible(int);
+    callback book-pdf-goto-page(int);
     callback book-toggle-toc();
     callback book-jump-chapter(int);
     callback book-toggle-bookmarks();
@@ -2852,7 +2858,7 @@ callback cloud-go-home();
                 }
                 open-fullscreen => { root.music-open-fullscreen(); }
                 np-next => { root.music-next(); } np-prev => { root.music-prev(); } np-playpause => { root.music-toggle-pause(); } }
-            if active-section == "books":    BooksPage  { width: parent.width; height: parent.height; item-count: root.book-count; tiles: root.book-tiles; series: root.book-series; authors: root.book-authors; collections: root.book-collections; book-stats: root.book-stats; view <=> root.book-view; query <=> root.book-query; sort-mode <=> root.book-sort; sort-dir <=> root.book-sort-dir; add-folder => { root.pick-folder(); } open-book(i) => { root.book-open(i); } set-view(v) => { root.book-set-view(v); } search(q) => { root.book-search(q); } set-sort(s) => { root.book-set-sort(s); } series-open(i) => { root.book-series-open(i); } collection-open(i) => { root.book-collection-open(i); } add-to-collection(i, n) => { root.book-add-to-collection(i, n); } fetch-meta(i) => { root.book-fetch-meta(i); } export-notes(i) => { root.book-export-notes(i); } export-status: root.book-export-status; goal-adjust(d) => { root.book-goal-adjust(d); } }
+            if active-section == "books":    BooksPage  { width: parent.width; height: parent.height; item-count: root.book-count; tiles: root.book-tiles; series: root.book-series; authors: root.book-authors; collections: root.book-collections; view <=> root.book-view; query <=> root.book-query; sort-mode <=> root.book-sort; sort-dir <=> root.book-sort-dir; add-folder => { root.pick-folder(); } open-book(i) => { root.book-open(i); } set-view(v) => { root.book-set-view(v); } search(q) => { root.book-search(q); } set-sort(s) => { root.book-set-sort(s); } series-open(i) => { root.book-series-open(i); } collection-open(i) => { root.book-collection-open(i); } add-to-collection(i, n) => { root.book-add-to-collection(i, n); } fetch-meta(i) => { root.book-fetch-meta(i); } export-notes(i) => { root.book-export-notes(i); } export-status: root.book-export-status; goal-adjust(d) => { root.book-goal-adjust(d); } goal-done: root.book-goal-done; goal-total: root.book-goal-total; stat-time: root.book-stat-time; streak-days: root.book-streak-days; in-progress-count: root.book-in-progress; hero-rows: root.book-hero-rows; resume(i) => { root.book-resume(i); } hero-detail(i) => { root.book-hero-detail(i); } detail: root.book-detail; detail-idx <=> root.book-detail-idx; open-detail(i) => { root.book-open-detail(i); } mark-finished(i) => { root.book-mark-finished(i); } remove-book(i) => { root.book-remove(i); } series-strip: root.book-series-strip; series-strip-title: root.book-series-strip-title; series-strip-sub: root.book-series-strip-sub; series-strip-done: root.book-series-strip-done; series-strip-total: root.book-series-strip-total; series-strip-open(i) => { root.book-series-strip-open(i); } }
             if active-section == "cloud":    CloudPage  {
                 width: parent.width; height: parent.height;
                 remotes: root.cloud-remotes;
@@ -3383,6 +3389,9 @@ callback cloud-go-home();
         turn: root.book-turn;
         turn-dir: root.book-turn-dir;
         comic-thumbs: root.book-comic-thumbs;
+        pdf-pages: root.book-pdf-pages;
+        pdf-page-visible(i) => { root.book-pdf-page-visible(i); }
+        pdf-goto-page(i) => { root.book-pdf-goto-page(i); }
         text-dark <=> root.book-text-dark;
         set-line(l) => { root.book-set-line(l); }
         set-margin(m) => { root.book-set-margin(m); }

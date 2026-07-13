@@ -35,12 +35,6 @@ export struct HomeContinue {
     path: string,     // book abs path (books only)
 }
 
-// Small uppercase section label.
-component HomeCap inherits Text {
-    font-size: 9px; font-weight: 800; letter-spacing: 1.2px;
-    color: Theme.text-dim;
-}
-
 // 24px pill chip — one size everywhere.
 component HomeChip inherits Rectangle {
     in property <string> label;
@@ -97,37 +91,6 @@ component BoardSlot inherits Rectangle {
     x: dfx * Math.max(board-w - self.width, 0px);
     y: dfy * Math.max(board-h - self.height, 0px);
     @children
-}
-
-// Section tile — 80px icon chip top-left (200%), spring, big name/stat/footer
-// at the bottom. Width is set explicitly by the caller (grid distribution).
-component HomeTile inherits Rectangle {
-    in property <image> icon;
-    in property <color> accent;
-    in property <string> name;
-    in property <string> stat;
-    in property <string> footer: "";
-    in property <color> footer-color: Theme.text-dim.with-alpha(0.7);
-    callback clicked();
-    border-radius: 14px;
-    background: accent.with-alpha(ta.has-hover ? 0.14 : 0.08);
-    border-width: 1px; border-color: accent.with-alpha(0.24);
-    animate background { duration: 120ms; easing: ease-out; }
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    VerticalLayout {
-        padding: 16px; spacing: 5px;
-        Rectangle {
-            width: 80px; height: 80px; border-radius: 20px;
-            horizontal-stretch: 0; vertical-stretch: 0;
-            background: accent.with-alpha(0.15);
-            AppIcon { source: root.icon; tint: accent; width: 40px; height: 40px;
-                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
-        }
-        Rectangle { vertical-stretch: 1; }   // spring
-        Text { text: name; color: Theme.text; font-size: 24px; font-weight: 800; overflow: elide; }
-        Text { text: stat; color: Theme.text-dim; font-size: 13px; overflow: elide; }
-        if footer != "": Text { text: footer; color: footer-color; font-size: 13px; overflow: elide; }
-    }
 }
 
 // Left-hand music card — MUSIC cap + the original MusicMini (embedded) + 5
@@ -434,16 +397,6 @@ component PhotoSlideshow inherits Rectangle {
     }
 }
 
-// "+N" overflow chip used at the end of the Books/Cloud/Tools rows.
-component MoreChip inherits Rectangle {
-    in property <int> count;
-    min-width: 56px;
-    border-radius: 10px; border-width: 1.5px; border-color: Theme.outline;
-    background: Theme.panel.with-alpha(0.5);
-    Text { text: "+" + root.count; color: Theme.text-dim; font-size: 15px; font-weight: 700;
-        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
-}
-
 // Inner tile with hover feedback (shadow + lift + accent border) used for every
 // clickable tile in the Books/Cloud/Tools rows.
 component HomeTileBox inherits Rectangle {
@@ -628,59 +581,6 @@ component ToolRow inherits RowCard {
                 Text { text: "+" + (root.total-tools - 5); color: Theme.text-dim; font-size: 15px; font-weight: 700;
                     x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } }
         }
-    }
-}
-
-// Right-hand section grid — Photos+Videos over Books+Cloud+Tools. Every tile
-// gets an explicit width (cell2/cell3) so the row fills; stretch factors alone
-// leave the tiles at icon width.
-component HomeSectionGrid inherits VerticalLayout {
-    in property <HomeStats> stats;
-    in property <[image]> recent-photos: [];
-    in property <[image]> recent-videos: [];
-    in property <[image]> book-covers: [];
-    in property <[HomeRemote]> cloud-remotes: [];
-    in property <length> cell2;
-    in property <length> cell3;
-    callback open-section(string);
-    callback open-photo-item(int);
-    callback open-video-item(int);
-    callback open-book-item(int);
-    callback open-tool(string);
-    callback open-remote(string);
-    spacing: 10px;
-    // Force both rows to exactly half so Photos/Videos stay as big as the
-    // Books/Cloud/Tools row (whose icon+labels otherwise inflate its preferred
-    // height and steal space from row 1).
-    property <length> row-h: (self.height - self.spacing) / 2;
-    HorizontalLayout {
-        spacing: 10px; height: root.row-h;
-        PhotoSlideshow { width: cell2; icon: Icons.image; accent: Theme.sec-photos; name: "Photos";
-            photos: root.recent-photos; tile-top: true;                       // fill square, crop from top
-            empty-icon: Icons.image-off;
-            stat: stats.photos + " items · " + stats.photos-albums + " albums";
-            footer: stats.photos-scan; clicked => { root.open-section("photos"); }
-            open-item(i) => { root.open-photo-item(i); } }
-        PhotoSlideshow { width: cell2; icon: Icons.film; accent: Theme.sec-videos; name: "Videos";
-            photos: root.recent-videos; show-play: true; tile-aspect: 1.6;     // landscape video tiles, centre crop
-            cycle: 3000ms; empty-icon: Icons.video-off;                        // offset from Photos' 4s
-            stat: stats.videos + " items · " + stats.videos-shows + " shows";
-            footer: stats.videos-note; clicked => { root.open-section("videos"); }
-            open-item(i) => { root.open-video-item(i); } }
-    }
-    HorizontalLayout {
-        spacing: 10px; height: root.row-h;
-        BookRow { width: cell3; icon: Icons.book-open; accent: Theme.sec-books; name: "Books";
-            covers: root.book-covers; total: stats.books;
-            stat: stats.books + " books · " + stats.books-reading + " reading";
-            clicked => { root.open-section("books"); } open-book(i) => { root.open-book-item(i); } }
-        CloudRow { width: cell3; icon: Icons.cloud; accent: Theme.sec-cloud; name: "Cloud";
-            remotes: root.cloud-remotes; total: stats.cloud-remotes;
-            stat: "";
-            clicked => { root.open-section("cloud"); } open-remote(n) => { root.open-remote(n); } }
-        ToolRow { width: cell3; icon: Icons.wrench; accent: Theme.sec-tools; name: "Tools";
-            stat: "";
-            clicked => { root.open-section("tools"); } open-tool(c) => { root.open-tool(c); } }
     }
 }
 

@@ -1,0 +1,34 @@
+[package]
+name = "tulipix-sec-books"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Books-section wiring extracted from tulipix-app: the native reader (EPUB
+# pagination, comic/PDF raster pages, continuous PDF scroll), library grid +
+# hero + detail sheet + series strip, and every `window.on_book_*` callback.
+# tulipix-app calls `wire(&window)`. NOTE: this crate also owns what was
+# `tulipix-app/src/books.rs` (EPUB/OPF/FB2/MOBI parsing, poppler raster, covers).
+
+[features]
+dev-reload = ["tulipix-ui/dev-reload"]
+_check = ["slint/renderer-skia", "slint/renderer-skia-opengl"]
+
+[dependencies]
+slint.workspace = true
+tokio.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+sqlx = { workspace = true }
+reqwest = { workspace = true, features = ["json"] }
+serde_json.workspace = true
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
+mobi = "0.8"
+sha2 = "0.10"
+walkdir = "2"
+tulipix-ui = { path = "../tulipix-ui" }
+tulipix-common = { path = "../tulipix-common" }
+tulipix-core = { path = "../tulipix-core" }
+tulipix-books = { path = "../tulipix-books" }

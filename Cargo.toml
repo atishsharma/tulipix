@@ -27,6 +27,7 @@ members = [
     "crates/tulipix-sec-music",
     "crates/tulipix-sec-videos",
     "crates/tulipix-sec-cloud",
+    "crates/tulipix-sec-books",
     "crates/tulipix-hot",
     "crates/tulipix-cli",
     "tools/fetch-resources",

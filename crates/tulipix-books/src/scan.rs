@@ -69,6 +69,63 @@ pub fn parse_opf(opf_xml: &str) -> BookMeta {
     BookMeta { title: dc("title"), author: dc("creator"), language: dc("language") }
 }
 
+/// Extract a `name="…" content="…"` attribute from a single tag slice.
+fn tag_attr(tag: &str, attr: &str) -> Option<String> {
+    let key = format!("{attr}=");
+    let p = tag.find(&key)?;
+    let after = tag[p + key.len()..].trim_start();
+    let q = after.chars().next()?;
+    if q != '"' && q != '\'' { return None; }
+    let rest = &after[1..];
+    let e = rest.find(q)?;
+    Some(rest[..e].to_string())
+}
+
+/// Calibre series metadata from an EPUB OPF:
+/// `<meta name="calibre:series" content="…"/>` + `calibre:series_index`.
+pub fn parse_calibre_series(opf_xml: &str) -> Option<(String, f64)> {
+    let content_of = |name: &str| -> Option<String> {
+        let mut idx = 0;
+        while let Some(rel) = opf_xml[idx..].find("<meta") {
+            let at = idx + rel;
+            let end = opf_xml[at..].find('>').map(|e| at + e).unwrap_or(opf_xml.len());
+            let tag = &opf_xml[at..end];
+            if tag.contains(&format!("name=\"{name}\"")) || tag.contains(&format!("name='{name}'")) {
+                if let Some(c) = tag_attr(tag, "content") { return Some(c); }
+            }
+            idx = end + 1;
+        }
+        None
+    };
+    let name = content_of("calibre:series")?;
+    let name = name.trim();
+    if name.is_empty() { return None; }
+    let index = content_of("calibre:series_index")
+        .and_then(|s| s.trim().parse::<f64>().ok()).unwrap_or(1.0);
+    Some((name.to_string(), index))
+}
+
+/// Conservative series detection from a filename stem. Only fires on a clear
+/// `#n` marker — either parenthetical (`Title (Ram Chandra #3)`) or trailing
+/// (`Ram Chandra #3`) — so unrelated books are never grouped by accident.
+pub fn detect_series_from_filename(stem: &str) -> Option<(String, f64)> {
+    let tail = |s: &str| -> Option<(String, f64)> {
+        let p = s.rfind('#')?;
+        let after = s[p + 1..].trim();
+        let tok: String = after.chars().take_while(|c| c.is_ascii_digit() || *c == '.').collect();
+        let idx = tok.parse::<f64>().ok()?;
+        let name = s[..p].trim().trim_end_matches([',', '-', '·', ':']).trim().to_string();
+        if name.is_empty() { None } else { Some((name, idx)) }
+    };
+    let s = stem.trim();
+    if let (Some(o), Some(c)) = (s.rfind('('), s.rfind(')')) {
+        if o < c {
+            if let Some(hit) = tail(s[o + 1..c].trim()) { return Some(hit); }
+        }
+    }
+    tail(s)
+}
+
 pub async fn upsert(pool: &SqlitePool, item_id: i64, fmt: Format, meta: &BookMeta) -> Result<()> {
     sqlx::query(
         "INSERT INTO book_meta (item_id, format, title, author, language, is_comic) VALUES (?,?,?,?,?,?)
@@ -102,6 +159,25 @@ mod tests {
         assert_eq!(m.title.as_deref(), Some("The Title"));
         assert_eq!(m.author.as_deref(), Some("Jane Doe"));
         assert_eq!(m.language.as_deref(), Some("en"));
+    }
+
+    #[test]
+    fn calibre_series_parse() {
+        let opf = r#"<package><metadata>
+            <meta name="calibre:series" content="Ram Chandra"/>
+            <meta name="calibre:series_index" content="3"/>
+        </metadata></package>"#;
+        assert_eq!(parse_calibre_series(opf), Some(("Ram Chandra".to_string(), 3.0)));
+        assert_eq!(parse_calibre_series("<package></package>"), None);
+    }
+
+    #[test]
+    fn filename_series_detection() {
+        assert_eq!(detect_series_from_filename("Scion of Ikshvaku (Ram Chandra #1)"),
+            Some(("Ram Chandra".to_string(), 1.0)));
+        assert_eq!(detect_series_from_filename("Ram Chandra #3"),
+            Some(("Ram Chandra".to_string(), 3.0)));
+        assert_eq!(detect_series_from_filename("A Fine Balance"), None);
     }
 
     #[tokio::test]

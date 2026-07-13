@@ -25,7 +25,7 @@ fn is_image(name: &str) -> bool {
 }
 
 fn cache_dir() -> Option<PathBuf> {
-    let d = crate::dirs_default()?.join("cache").join("books");
+    let d = tulipix_common::dirs_default()?.join("cache").join("books");
     std::fs::create_dir_all(&d).ok();
     Some(d)
 }
@@ -95,6 +95,8 @@ pub struct Ingest {
     pub rtl: bool,
     pub page_count: Option<i64>,
     pub cover: Option<PathBuf>,
+    pub series: Option<String>,
+    pub series_index: Option<f64>,
 }
 
 fn stem_title(path: &Path) -> Option<String> {
@@ -131,6 +133,10 @@ pub fn ingest_file(path: &Path) -> Option<Ingest> {
                 out.author = meta.author;
                 out.language = meta.language;
                 out.page_count = Some(spine_len as i64);
+                if let Some((name, idx)) = meta.series {
+                    out.series = Some(name);
+                    out.series_index = Some(idx);
+                }
                 if let Some(b) = cover_bytes {
                     out.cover = write_cover(&b, &key(path, "cover"));
                 }
@@ -197,6 +203,14 @@ pub fn ingest_file(path: &Path) -> Option<Ingest> {
                     out.cover = write_cover(&bytes, &key(path, "cover"));
                 }
             }
+        }
+    }
+    // Series fallback: a `#n` marker in the filename when metadata carried none.
+    if out.series.is_none() {
+        let raw_stem = path.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        if let Some((name, idx)) = tulipix_books::scan::detect_series_from_filename(raw_stem) {
+            out.series = Some(name);
+            out.series_index = Some(idx);
         }
     }
     Some(out)
@@ -295,6 +309,7 @@ struct EpubMeta {
     title: Option<String>,
     author: Option<String>,
     language: Option<String>,
+    series: Option<(String, f64)>,
 }
 
 /// Returns (metadata, cover bytes, spine length).
@@ -305,7 +320,10 @@ fn read_epub(path: &Path) -> Result<(EpubMeta, Option<Vec<u8>>, usize)> {
     let opf_xml = String::from_utf8_lossy(&opf_bytes).into_owned();
 
     let bm = tulipix_books::scan::parse_opf(&opf_xml);
-    let meta = EpubMeta { title: bm.title, author: bm.author, language: bm.language };
+    let meta = EpubMeta {
+        title: bm.title, author: bm.author, language: bm.language,
+        series: tulipix_books::scan::parse_calibre_series(&opf_xml),
+    };
     let man = parse_manifest(&opf, &opf_xml);
 
     // Cover: <meta name=cover> → manifest item, else properties=cover-image,
@@ -478,9 +496,20 @@ fn run_capture(bin: &str, args: &[&str]) -> Option<String> {
 }
 
 /// Page count of a PDF via `pdfinfo` ("Pages: N"). None when poppler is absent.
+///
+/// `pdfinfo` frequently exits non-zero on scanned / lightly-corrupt PDFs (broken
+/// xref, missing metadata) while still printing a valid `Pages:` line — so parse
+/// stdout regardless of exit status rather than gating on success (which made
+/// such scans fall through to the "pdf-empty" install-poppler message even
+/// though `pdftoppm` could render them fine).
 pub fn pdf_raster_page_count(path: &Path) -> Option<usize> {
-    let info = run_capture("pdfinfo", &[&path.display().to_string()])?;
-    info.lines()
+    let out = std::process::Command::new("pdfinfo")
+        .arg(path)
+        .stderr(std::process::Stdio::null())
+        .no_window()
+        .output().ok()?;
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
         .find_map(|l| l.strip_prefix("Pages:"))
         .and_then(|v| v.trim().parse().ok())
 }
@@ -537,23 +566,6 @@ pub fn djvu_page_image(path: &Path, index: usize) -> Option<PathBuf> {
 }
 
 // ── Reflowable text sources (np.p5.books.pdf / .formats) ────────────────────
-
-/// PDF plain text as one pseudo-chapter (pdf-extract; reflow-only — raster
-/// rendering of scanned PDFs needs a real PDF engine and stays TBD).
-/// catch_unwind because pdf-extract panics on some malformed files.
-pub fn pdf_chapters_text(path: &Path) -> Vec<String> {
-    let p = path.to_path_buf();
-    let text = std::panic::catch_unwind(move || pdf_extract::extract_text(&p).ok())
-        .ok().flatten().unwrap_or_default();
-    let text = text.trim();
-    if text.is_empty() { Vec::new() } else {
-        // Form feeds mark page breaks in some extractors; use them as chapter
-        // seams when present so the TOC/scrub get useful granularity.
-        let parts: Vec<String> = text.split('\u{c}')
-            .map(|c| c.trim().to_string()).filter(|c| !c.is_empty()).collect();
-        if parts.is_empty() { vec![text.to_string()] } else { parts }
-    }
-}
 
 /// MOBI/AZW3 chapters: split the HTML on Mobipocket page breaks, strip tags.
 pub fn mobi_chapters_text(path: &Path) -> Vec<String> {

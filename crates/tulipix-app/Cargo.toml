@@ -43,7 +43,7 @@ renderer-femtovg = ["slint/renderer-femtovg"]
 # interpreter-backed LiveReloadingComponent that re-reads .slint at runtime —
 # the build must ALSO run with SLINT_LIVE_PREVIEW=1 so the slint compiler
 # emits the live-preview glue (see vendor/i-slint-compiler/generator/rust.rs).
-dev-reload = ["dep:notify", "slint/live-preview", "tulipix-ui/dev-reload", "tulipix-sec-tools/dev-reload", "tulipix-sec-photos/dev-reload", "tulipix-sec-music/dev-reload", "tulipix-sec-videos/dev-reload", "tulipix-sec-cloud/dev-reload"]
+dev-reload = ["dep:notify", "slint/live-preview", "tulipix-ui/dev-reload", "tulipix-sec-tools/dev-reload", "tulipix-sec-photos/dev-reload", "tulipix-sec-music/dev-reload", "tulipix-sec-videos/dev-reload", "tulipix-sec-cloud/dev-reload", "tulipix-sec-books/dev-reload"]
 
 # Dev-only Rust hot-patch. Routes section wire-up through the tulipix-hot dylib
 # (loaded by hot-lib-reloader): edit section callback logic, rebuild that small
@@ -104,7 +104,7 @@ tulipix-sec-photos = { path = "../tulipix-sec-photos" }
 tulipix-sec-music = { path = "../tulipix-sec-music" }
 tulipix-sec-videos = { path = "../tulipix-sec-videos" }
 tulipix-sec-cloud = { path = "../tulipix-sec-cloud" }
-zip = { version = "2.4", default-features = false, features = ["deflate"] }
+tulipix-sec-books = { path = "../tulipix-sec-books" }
 sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true
@@ -113,10 +113,6 @@ walkdir = "2"
 # OS media-key / now-playing integration (Linux MPRIS · Windows SMTC · macOS).
 souvlaki = "0.7"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
-# Books: PDF text reflow (np.p5.books.pdf) + MOBI/AZW3 (np.p5.books.formats).
-# Both pure Rust; CBR/FB2 need no dep (system unrar/bsdtar + plain XML).
-pdf-extract = "0.7"
-mobi = "0.8"
 sha2 = "0.10"
 kamadak-exif = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
