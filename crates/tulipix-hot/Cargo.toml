@@ -26,6 +26,5 @@ crate-type = ["rlib", "dylib"]
 dev-reload = ["tulipix-ui/dev-reload", "tulipix-sec-tools/dev-reload"]
 
 [dependencies]
-slint.workspace = true
 tulipix-ui = { path = "../tulipix-ui" }
 tulipix-sec-tools = { path = "../tulipix-sec-tools" }

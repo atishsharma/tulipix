@@ -7141,7 +7141,6 @@ dependencies = [
  "anyhow",
  "serde",
  "serde_json",
- "tracing",
  "tulipix-core",
 ]
 
@@ -7162,7 +7161,6 @@ dependencies = [
  "raw-window-handle",
  "reqwest",
  "rfd",
- "serde",
  "serde_json",
  "sha2",
  "slint",
@@ -7174,7 +7172,6 @@ dependencies = [
  "tracing-subscriber",
  "tulipix-ai",
  "tulipix-books",
- "tulipix-cloud",
  "tulipix-common",
  "tulipix-core",
  "tulipix-hot",
@@ -7189,7 +7186,6 @@ dependencies = [
  "tulipix-sec-photos",
  "tulipix-sec-tools",
  "tulipix-sec-videos",
- "tulipix-tools",
  "tulipix-ui",
  "tulipix-videos",
  "tulipix-whisper",
@@ -7207,7 +7203,6 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
- "tracing",
  "tulipix-core",
 ]
 
@@ -7217,7 +7212,6 @@ version = "0.6.0"
 dependencies = [
  "anyhow",
  "serde_json",
- "tracing",
  "tracing-subscriber",
  "tulipix-tools",
 ]
@@ -7234,7 +7228,6 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
- "tracing",
  "tulipix-core",
 ]
 
@@ -7274,7 +7267,6 @@ dependencies = [
  "sha2",
  "sqlx",
  "tempfile",
- "thiserror 1.0.69",
  "tokio",
  "toml 0.8.2",
  "tracing",
@@ -7285,7 +7277,6 @@ dependencies = [
 name = "tulipix-hot"
 version = "0.6.0"
 dependencies = [
- "slint",
  "tulipix-sec-tools",
  "tulipix-ui",
 ]
@@ -7302,7 +7293,6 @@ dependencies = [
  "sanitize-filename",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
  "tokio",
  "tracing",
  "tulipix-core",
@@ -7319,11 +7309,9 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
- "sha2",
  "sqlx",
  "tempfile",
  "tokio",
- "tracing",
  "tulipix-core",
 ]
 
@@ -7375,7 +7363,6 @@ dependencies = [
  "serde",
  "serde_json",
  "tempfile",
- "tracing",
 ]
 
 [[package]]
@@ -7386,8 +7373,6 @@ dependencies = [
  "mlua",
  "serde",
  "serde_json",
- "thiserror 1.0.69",
- "tracing",
  "wasmtime",
 ]
 
@@ -7404,7 +7389,6 @@ dependencies = [
  "slint",
  "sqlx",
  "tokio",
- "tracing",
  "tulipix-books",
  "tulipix-common",
  "tulipix-core",
@@ -7461,13 +7445,11 @@ dependencies = [
  "chrono",
  "image",
  "kamadak-exif",
- "serde_json",
  "slint",
  "sqlx",
  "tokio",
  "tracing",
  "tulipix-common",
- "tulipix-core",
  "tulipix-photos",
  "tulipix-ui",
 ]
@@ -7495,12 +7477,10 @@ dependencies = [
 name = "tulipix-sec-videos"
 version = "0.6.0"
 dependencies = [
- "anyhow",
  "sha2",
  "slint",
  "sqlx",
  "tokio",
- "tracing",
  "tulipix-common",
  "tulipix-core",
  "tulipix-ui",
@@ -7518,7 +7498,6 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
- "tracing",
  "tulipix-core",
 ]
 
@@ -7543,7 +7522,6 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
- "tracing",
  "tulipix-core",
 ]
 
@@ -7554,10 +7532,8 @@ dependencies = [
  "anyhow",
  "reqwest",
  "serde",
- "serde_json",
  "sha2",
  "tempfile",
- "tracing",
  "tulipix-core",
 ]
 

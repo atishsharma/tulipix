@@ -30,3 +30,8 @@ ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, fea
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+# False positives: exif is the `kamadak-exif` crate; md-5→`md5`; reqwest
+# used via full path; tulipix-* are optional deps pulled in by feature flags.
+[package.metadata.cargo-machete]
+ignored = ["kamadak-exif"]

@@ -7,13 +7,11 @@ license.workspace = true
 
 [dependencies]
 anyhow.workspace = true
-tracing.workspace = true
 serde.workspace = true
 serde_json.workspace = true
 tokio = { workspace = true }
 sqlx.workspace = true
 reqwest = { workspace = true, features = ["json"] }
-sha2.workspace = true
 # Last.fm API signatures are MD5 by spec (np.p5.music.scrobble).
 md-5 = "0.10"
 # YouTube thumbnail/avatar fetch decodes remote jpg/webp/png and re-encodes PNG.
@@ -23,3 +21,8 @@ tulipix-core = { path = "../tulipix-core" }
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
+
+# False positives: exif is the `kamadak-exif` crate; md-5→`md5`; reqwest
+# used via full path; tulipix-* are optional deps pulled in by feature flags.
+[package.metadata.cargo-machete]
+ignored = ["md-5"]

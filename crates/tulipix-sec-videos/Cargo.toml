@@ -17,8 +17,6 @@ dev-reload = ["tulipix-ui/dev-reload"]
 [dependencies]
 slint.workspace = true
 tokio.workspace = true
-anyhow.workspace = true
-tracing.workspace = true
 sqlx = { workspace = true }
 sha2 = "0.10"
 tulipix-ui = { path = "../tulipix-ui" }

@@ -19,7 +19,6 @@ _check = ["slint/renderer-skia", "slint/renderer-skia-opengl"]
 slint.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
-tracing.workspace = true
 sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true
