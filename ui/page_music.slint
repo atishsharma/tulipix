@@ -430,7 +430,7 @@ export component VizView inherits Rectangle {
     HorizontalLayout {
         // No `alignment` here — default `stretch` lets the bands fill the width
         // via horizontal-stretch (alignment:center would collapse them to 0).
-        spacing: root.style == 4 ? 1px : 3px;
+        spacing: root.style == 4 ? 1px : (root.style == 5 ? 2px : 3px);
         for h[i] in root.data: Rectangle {
             horizontal-stretch: 1;
             opacity: root.active ? 1.0 : 0.5;
@@ -454,6 +454,18 @@ export component VizView inherits Rectangle {
             if root.style == 4: Rectangle { width: 2px; height: 2px + h * (parent.height - 6px); border-radius: 1px;
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; background: #ec4899.mix(#8b5cf6, h);
                 animate height { duration: 90ms; easing: ease-out; } }
+            // 5 music.png spectrum — real audio drawn as FINE center-mirrored
+            // lines, colored by FREQUENCY BAND (position i/N), not level:
+            // low=violet, mid=pink, high=magenta-red. NO smoothing animation —
+            // raw FFT level, so the wave is the actual song.
+            if root.style == 5: Rectangle {
+                property <float> frac: root.data.length > 1 ? (1.0 * i) / (root.data.length - 1) : 0.5;
+                width: 2px; height: Math.max(2px, 2px + h * (parent.height - 4px)); border-radius: 1px;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                background: self.frac < 0.5
+                    ? #8b5cf6.mix(#ec4899, self.frac * 2)
+                    : #ec4899.mix(#f43f5e, (self.frac - 0.5) * 2);
+            }
         }
     }
 }
@@ -7022,6 +7034,9 @@ export component MusicMini inherits Rectangle {
     in property <[MusicSongRow]> queue-rows: [];
     in property <[MusicLyricLine]> lyrics-rows: [];
     in property <int> lyrics-active: -1;
+    // Live audio spectrum (real FFT bands from the backend) for the embedded
+    // under-seekbar visualizer — always shown in the home card.
+    in property <[float]> vis-bars: [];
     in-out property <string> face: "";   // "" art | queue | lyrics  (queue/lyrics buttons flip the art)
     callback close();
     callback minimise();                  // dock as a side bubble
@@ -7156,8 +7171,9 @@ export component MusicMini inherits Rectangle {
                         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
                     Rectangle { width: 154px * root.uiscale; height: self.width; border-radius: self.width / 2; border-width: 1px; border-color: MusicTheme.line;
                         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
-                    // center label — circular album art, spinning (artwork +30%).
-                    Rectangle { width: 146px * root.uiscale; height: self.width; border-radius: self.width / 2; clip: true;
+                    // center label — circular album art, spinning. Home embedded
+                    // player gets a 25% larger label so the art fills the vinyl.
+                    Rectangle { width: (root.embedded ? 183px : 146px) * root.uiscale; height: self.width; border-radius: self.width / 2; clip: true;
                         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                         // Radio with no favicon — the station's letter tile is the label.
                         if root.radio-mode && art.width == 0: Rectangle {
@@ -7246,6 +7262,14 @@ export component MusicMini inherits Rectangle {
                     Text { text: dur-label; color: root.cream ? #1f1a14 : MusicTheme.fg;
                         font-size: 10px * root.uiscale; font-weight: 700; } }
             }
+        }
+        // Embedded under-seekbar visualizer (music.png) — REAL audio spectrum
+        // (live FFT bands) drawn as FINE lines, frequency-colored
+        // (violet→pink→magenta = low→high), not a canned animation. ALWAYS on in
+        // the home card (idle bars when nothing plays, live when it does).
+        if root.embedded: Rectangle {
+            height: 40px * root.uiscale;
+            VizView { width: 100%; height: 100%; bars: root.vis-bars; style: 5; active: root.playing; }
         }
         if !root.embedded: Scrubber { value: pos; maximum: dur > 0 ? dur : 1.0; wiggle: true;
             track-color: MusicTheme.line;

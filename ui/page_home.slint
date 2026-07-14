@@ -5,7 +5,7 @@
 // and a left/right swap for the music block driven by `music-left`.
 import { Theme, Accent } from "tokens.slint";
 import { AppIcon, Icons } from "icons.slint";
-import { MusicMini, PodcastMini, BookMini, MusicTab, LiveTabRing, VizView } from "page_music.slint";
+import { MusicMini, PodcastMini, BookMini, VizView } from "page_music.slint";
 import { MusicSongRow, MusicLyricLine, PodcastEpisodeRow, ChapterRow } from "music_common.slint";
 
 export struct HomeStats {
@@ -66,31 +66,120 @@ component TitlePill inherits Rectangle {
     in property <string> stat: "";
     width: prow.preferred-width; height: prow.preferred-height;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 10px; background: #ffffff;
+    // Dark theme: a deep-accent (card-colour, darkened) pill with WHITE text +
+    // icon so the label shines in the card's colour. Light theme keeps the
+    // white pill with accent text. Accent outline in both.
+    property <color> ink: Theme.dark ? #ffffff : root.accent;
+    border-radius: 10px;
+    background: Theme.dark ? root.accent.darker(0.55) : #ffffff;
     border-width: 1.5px; border-color: root.accent;
     drop-shadow-blur: 12px; drop-shadow-color: #00000055;
     prow := HorizontalLayout {
         padding-left: 11px; padding-right: 12px; padding-top: 6px; padding-bottom: 6px; spacing: 9px;
         VerticalLayout { alignment: center;
-            AppIcon { source: root.icon; tint: root.accent; width: 20px; height: 20px; } }
-        Rectangle { width: 1px; background: root.accent.with-alpha(0.30); }
-        Text { text: root.name; color: root.accent; font-size: 17px; font-weight: 800;
+            AppIcon { source: root.icon; tint: root.ink; width: 20px; height: 20px; } }
+        Rectangle { width: 1px; background: root.ink.with-alpha(0.30); }
+        Text { text: root.name; color: root.ink; font-size: 17px; font-weight: 800;
             vertical-alignment: center; overflow: elide; }
-        if root.stat != "": Text { text: root.stat; color: root.accent; font-size: 12px; font-weight: 600;
+        if root.stat != "": Text { text: root.stat; color: root.ink; font-size: 12px; font-weight: 600;
             vertical-alignment: center; overflow: elide; }
     }
 }
 
-// Positioned card slot on the Home board — x/y are fractions of the free
-// range (board minus card size), which reproduces the fixed bento grid.
-component BoardSlot inherits Rectangle {
-    in property <float> dfx: 0;
-    in property <float> dfy: 0;
-    in property <length> board-w;
-    in property <length> board-h;
-    x: dfx * Math.max(board-w - self.width, 0px);
-    y: dfy * Math.max(board-h - self.height, 0px);
-    @children
+// One circular source button (music.png design) — tinted icon disc + label
+// under it. Active source = solid fill; idle = tinted wash, hover brightens.
+component HomeCircleTab inherits VerticalLayout {
+    in property <image> icon;
+    in property <string> label;
+    in property <color> tint;
+    in property <bool> active;
+    callback clicked();
+    spacing: 5px; horizontal-stretch: 1;
+    HorizontalLayout { alignment: center;
+        // Fixed 48px footprint so every tab stays the same size and the row
+        // stays aligned — the active double outline is drawn INSIDE the disc.
+        Rectangle {
+            width: 48px; height: 48px; border-radius: 24px;
+            background: root.active ? root.tint : root.tint.with-alpha(cta.has-hover ? 0.30 : 0.15);
+            // Outer outline (deep accent) when active.
+            border-width: root.active ? 2px : 1px;
+            border-color: root.active ? root.tint.darker(0.45) : root.tint.with-alpha(0.40);
+            drop-shadow-blur: root.active ? 14px : 0px;
+            drop-shadow-color: root.tint.with-alpha(0.45);
+            animate background, drop-shadow-blur { duration: 120ms; }
+            cta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+            // Inner outline — whiter 2nd ring, drawn inside so the footprint is
+            // unchanged.
+            if root.active: Rectangle {
+                width: 40px; height: 40px; border-radius: 20px; background: transparent;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                border-width: 2px; border-color: #ffffff;
+            }
+            AppIcon { source: root.icon; tint: root.active ? #ffffff : root.tint;
+                width: 22px; height: 22px; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+        }
+    }
+    // Solid-colour pill with white text for the source name (music.png).
+    HorizontalLayout { alignment: center;
+        Rectangle {
+            height: 18px; border-radius: 9px; horizontal-stretch: 0;
+            background: root.tint;
+            border-width: root.active ? 1.5px : 0px; border-color: #ffffff;
+            HorizontalLayout { padding-left: 9px; padding-right: 9px;
+                Text { text: root.label; color: #ffffff; font-size: 10px;
+                    font-weight: root.active ? 800 : 700;
+                    vertical-alignment: center; overflow: elide; } }
+        }
+    }
+}
+
+// Circular action — tinted icon disc + a pill label under it. Replaces the
+// square tiles in the Quick Actions and Tools cards (user pref 2026-07-14).
+component CircleAction inherits VerticalLayout {
+    in property <image> icon;
+    in property <string> label;
+    in property <color> tint;
+    in property <length> disc: 54px;      // disc diameter — Tools passes a larger one
+    // Monochrome style (Tools): white fills in light / black in dark, black
+    // outlines in light / white in dark, and blue (tint) icons in light /
+    // white icons in dark. Quick Actions keeps the default tinted style.
+    in property <bool> mono: false;
+    callback clicked();
+    // Shared mono colors. Dark fill reverts to the original faint tint wash
+    // (user pref); light stays solid white. Outline black(light)/white(dark),
+    // icon blue(light)/white(dark).
+    property <color> mono-fill:    Theme.dark ? root.tint.with-alpha(0.15) : #ffffff;
+    property <color> mono-outline: Theme.dark ? #ffffff : #000000;
+    property <color> mono-icon:    Theme.dark ? #ffffff : root.tint;
+    spacing: 7px; horizontal-stretch: 1;
+    HorizontalLayout { alignment: center;
+        Rectangle {
+            width: root.disc; height: root.disc; border-radius: root.disc / 2;
+            // Hover fills with the accent tint (both styles); mono rest uses the
+            // theme fill, non-mono rest a faint wash.
+            background: ca.has-hover ? root.tint : (root.mono ? root.mono-fill : root.tint.with-alpha(0.15));
+            border-width: 1px;
+            border-color: root.mono ? root.mono-outline : root.tint.with-alpha(0.40);
+            animate background { duration: 120ms; easing: ease-out; }
+            ca := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+            AppIcon { source: root.icon;
+                tint: ca.has-hover ? #ffffff : (root.mono ? root.mono-icon : root.tint);
+                width: root.disc * 0.44; height: root.disc * 0.44;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+        }
+    }
+    // Pill label — rounded chip. Mono: white/black fill + black/white outline.
+    HorizontalLayout { alignment: center;
+        Rectangle {
+            height: 22px; border-radius: 11px; horizontal-stretch: 0;
+            background: root.mono ? root.mono-fill : root.tint.with-alpha(0.12);
+            border-width: 1px;
+            border-color: root.mono ? root.mono-outline : root.tint.with-alpha(0.30);
+            HorizontalLayout { padding-left: 11px; padding-right: 11px;
+                Text { text: root.label; color: Theme.text; font-size: 10px; font-weight: 700;
+                    vertical-alignment: center; overflow: elide; } }
+        }
+    }
 }
 
 // Left-hand music card — MUSIC cap + the original MusicMini (embedded) + 5
@@ -113,6 +202,7 @@ component HomeMusicCard inherits Rectangle {
     in property <[MusicSongRow]> queue-rows: [];
     in property <[MusicLyricLine]> lyrics-rows: [];
     in property <int> lyrics-active: -1;
+    in property <[float]> vis-bars: [];
     in property <string> radio-initial: "";
     in property <bool> yt-now-video: false;
     in property <float> podcast-speed: 1.0;
@@ -143,15 +233,15 @@ component HomeMusicCard inherits Rectangle {
     // brighter than the other section accents, so the SAME 0.08 alpha the
     // dark cards use made this one glow — it sits at 0.03 to land at the
     // same perceived darkness. The player rect inside keeps its own pink.
-    background: Theme.sec-music.with-alpha(musichov.has-hover ? 0.10 : 0.03);
+    background: Theme.sec-music.with-alpha(0.03);
     // Same chrome as the Photos/Videos cards: quiet 24%-accent hairline at
     // rest (NO glow — the always-on pink halo made this card look out of
     // place next to the dark cards), full accent outline + glow on hover.
-    border-width: musichov.has-hover ? 2.5px : 1px;
-    border-color: Theme.sec-music.with-alpha(musichov.has-hover ? 0.95 : 0.24);
-    drop-shadow-blur: musichov.has-hover ? 22px : 0px;
+    border-width: 1px;
+    border-color: Theme.sec-music.with-alpha(0.24);
+    drop-shadow-blur: 0px;
     drop-shadow-color: Theme.sec-music.with-alpha(0.45);
-    drop-shadow-offset-y: musichov.has-hover ? 6px : 0px;
+    drop-shadow-offset-y: 0px;
     animate border-color, border-width, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
     musichov := TouchArea { }
     // Per-tab identity for the title pill (same hues as the tab chips below).
@@ -196,6 +286,7 @@ component HomeMusicCard inherits Rectangle {
                 pos: pos; dur: dur; pos-label: pos-label; dur-label: dur-label;
                 shuffle: shuffle; repeat: repeat; volume: volume; muted: muted;
                 queue-rows: root.queue-rows; lyrics-rows: root.lyrics-rows; lyrics-active: root.lyrics-active;
+                vis-bars: root.vis-bars;
                 radio-mode: root.player-mode == "radio"; radio-initial: root.radio-initial;
                 yt-now-video: root.yt-now-video; watch-video => { root.watch-video(); }
                 playpause => { root.playpause(); }
@@ -238,31 +329,22 @@ component HomeMusicCard inherits Rectangle {
                 open-zen => { root.open-zen(); }
             }
         }
-        // Source tabs — reuse the Music-section MusicTab (per-tab gradient colours)
-        // + LiveTabRing (rotating halo on the source that's playing). `hollow`
-        // drops the idle tint wash for a bare tinted outline, so the chips stay
-        // visible on the unfilled card in every theme.
-        // Row 1: 3 tabs; Row 2: 2 tabs (wider — stretch fills the row). Chips
-        // run 10% shorter than the Music-section originals (32px vs 36px) and
-        // the two rows sit tighter (4px) so the player above gets the slack.
-        VerticalLayout {
-            spacing: 4px;
-            HorizontalLayout {
-                spacing: 6px;
-                LiveTabRing { live: root.active-tab == "mymusic"; tint: #ec4899;
-                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "My Music"; has-grad: true; grad-always: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.active-tab == "mymusic"; clicked => { root.open-music("mymusic"); } } }
-                LiveTabRing { live: root.active-tab == "podcasts"; tint: #8b5cf6;
-                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "Podcasts"; has-grad: true; grad-always: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.active-tab == "podcasts"; clicked => { root.open-music("podcasts"); } } }
-                LiveTabRing { live: root.active-tab == "audiobooks"; tint: #3b82f6;
-                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "Audiobooks"; has-grad: true; grad-always: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.active-tab == "audiobooks"; clicked => { root.open-music("audiobooks"); } } }
-            }
-            HorizontalLayout {
-                spacing: 6px;
-                LiveTabRing { live: root.active-tab == "radio"; tint: #14b8a6;
-                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "Radio"; has-grad: true; grad-always: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.active-tab == "radio"; clicked => { root.open-music("radio"); } } }
-                LiveTabRing { live: root.active-tab == "youtube"; tint: #ef4444;
-                    MusicTab { height: 32px; horizontal-stretch: 1; min-width: 0px; label: "YouTube"; has-grad: true; grad-always: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b); active: root.active-tab == "youtube"; clicked => { root.open-music("youtube"); } } }
-            }
+        // Source buttons — 5 circular tinted discs (music.png design), one row.
+        // Active source = solid disc; the one that's playing reads brightest.
+        // Pin the row height (vertical-stretch:0) so it doesn't split the card's
+        // slack with the player above — the player must own all the free height.
+        HorizontalLayout {
+            spacing: 4px; height: 72px; vertical-stretch: 0;
+            HomeCircleTab { icon: Icons.music; label: "My Music"; tint: #ec4899;
+                active: root.active-tab == "mymusic"; clicked => { root.open-music("mymusic"); } }
+            HomeCircleTab { icon: Icons.mic; label: "Podcasts"; tint: #8b5cf6;
+                active: root.active-tab == "podcasts"; clicked => { root.open-music("podcasts"); } }
+            HomeCircleTab { icon: Icons.headphones; label: "Audiobooks"; tint: #3b82f6;
+                active: root.active-tab == "audiobooks"; clicked => { root.open-music("audiobooks"); } }
+            HomeCircleTab { icon: Icons.radio; label: "Radio"; tint: #14b8a6;
+                active: root.active-tab == "radio"; clicked => { root.open-music("radio"); } }
+            HomeCircleTab { icon: Icons.play; label: "YouTube"; tint: #ef4444;
+                active: root.active-tab == "youtube"; clicked => { root.open-music("youtube"); } }
         }
     }
 }
@@ -339,12 +421,12 @@ component PhotoSlideshow inherits Rectangle {
     property <float> pos: 0;
     animate pos { duration: 1400ms; easing: ease-in-out; }
     border-radius: 14px; clip: true;
-    background: accent.with-alpha(ta.has-hover ? 0.14 : 0.08);
+    background: accent.with-alpha(0.08);
     // Distinct accent outline on hover (Photos vs Videos differ by accent colour).
-    border-width: ta.has-hover ? 2.5px : 1px;
-    border-color: accent.with-alpha(ta.has-hover ? 0.95 : 0.24);
-    drop-shadow-blur: ta.has-hover ? 22px : 0px;
-    drop-shadow-color: accent.with-alpha(0.45); drop-shadow-offset-y: ta.has-hover ? 6px : 0px;
+    border-width: 1px;
+    border-color: accent.with-alpha(0.24);
+    drop-shadow-blur: 0px;
+    drop-shadow-color: accent.with-alpha(0.45); drop-shadow-offset-y: 0px;
     animate background, border-color, border-width, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
     // Click routing: only a hit on the CENTRE fan tile opens that item — any
     // other spot on the card opens the section (otherwise the whole card is a
@@ -424,11 +506,11 @@ component RowCard inherits Rectangle {
     in property <string> stat;
     callback clicked();
     border-radius: 14px; clip: true;
-    background: accent.with-alpha(ta.has-hover ? 0.14 : 0.08);
-    border-width: ta.has-hover ? 2.5px : 1px;
-    border-color: accent.with-alpha(ta.has-hover ? 0.95 : 0.24);
-    drop-shadow-blur: ta.has-hover ? 22px : 0px;
-    drop-shadow-color: accent.with-alpha(0.45); drop-shadow-offset-y: ta.has-hover ? 6px : 0px;
+    background: accent.with-alpha(0.08);
+    border-width: 1px;
+    border-color: accent.with-alpha(0.24);
+    drop-shadow-blur: 0px;
+    drop-shadow-color: accent.with-alpha(0.45); drop-shadow-offset-y: 0px;
     animate background, border-color, border-width, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     // Content area — dropped below the (single-line) top-left title pill so
@@ -539,22 +621,6 @@ component CloudRow inherits RowCard {
     }
 }
 
-// A single tool tile (vector icon + label) with hover feedback. Uses a themed
-// AppIcon (not an emoji glyph, which renders invisible on dark/oled themes).
-component ToolTileBox inherits HomeTileBox {
-    in property <image> icon;
-    in property <string> label;
-    in property <length> icon-size: 26px;
-    in property <length> label-size: 10px;
-    VerticalLayout {
-        padding: 6px; spacing: 4px; alignment: center;
-        HorizontalLayout { alignment: center;
-            AppIcon { source: root.icon; tint: root.hilite; width: root.icon-size; height: root.icon-size; } }
-        Text { text: root.label; color: Theme.text; font-size: root.label-size; font-weight: 700;
-            horizontal-alignment: center; overflow: elide; }
-    }
-}
-
 // Tools card — one representative tool per category (5), laid out 3×2, plus a
 // "+N" box for every other tool across all categories. Each tile opens that tool
 // category in the Tools page.
@@ -568,18 +634,16 @@ component ToolRow inherits RowCard {
         { icon: Icons.image,          label: "Photo",     cat: "photo" },
         { icon: Icons.message-circle, label: "Subtitles", cat: "subs" }];
     GridLayout {
-        width: 100%; height: 100%; spacing: 8px;
+        width: 100%; height: 100%; spacing: 10px;
         Row {
-            ToolTileBox { hilite: root.accent; icon: root.tools[0].icon; label: root.tools[0].label; clicked => { root.open-tool(root.tools[0].cat); } }
-            ToolTileBox { hilite: root.accent; icon: root.tools[1].icon; label: root.tools[1].label; clicked => { root.open-tool(root.tools[1].cat); } }
-            ToolTileBox { hilite: root.accent; icon: root.tools[2].icon; label: root.tools[2].label; clicked => { root.open-tool(root.tools[2].cat); } }
+            CircleAction { disc: 78px; mono: true; tint: root.accent; icon: root.tools[0].icon; label: root.tools[0].label; clicked => { root.open-tool(root.tools[0].cat); } }
+            CircleAction { disc: 78px; mono: true; tint: root.accent; icon: root.tools[1].icon; label: root.tools[1].label; clicked => { root.open-tool(root.tools[1].cat); } }
+            CircleAction { disc: 78px; mono: true; tint: root.accent; icon: root.tools[2].icon; label: root.tools[2].label; clicked => { root.open-tool(root.tools[2].cat); } }
         }
         Row {
-            ToolTileBox { hilite: root.accent; icon: root.tools[3].icon; label: root.tools[3].label; clicked => { root.open-tool(root.tools[3].cat); } }
-            ToolTileBox { hilite: root.accent; icon: root.tools[4].icon; label: root.tools[4].label; clicked => { root.open-tool(root.tools[4].cat); } }
-            HomeTileBox { hilite: root.accent; clicked => { root.clicked(); }
-                Text { text: "+" + (root.total-tools - 5); color: Theme.text-dim; font-size: 15px; font-weight: 700;
-                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } }
+            CircleAction { disc: 78px; mono: true; tint: root.accent; icon: root.tools[3].icon; label: root.tools[3].label; clicked => { root.open-tool(root.tools[3].cat); } }
+            CircleAction { disc: 78px; mono: true; tint: root.accent; icon: root.tools[4].icon; label: root.tools[4].label; clicked => { root.open-tool(root.tools[4].cat); } }
+            CircleAction { disc: 78px; mono: true; tint: root.accent; icon: Icons.plus; label: "+" + (root.total-tools - 5) + " more"; clicked => { root.clicked(); } }
         }
     }
 }
@@ -623,7 +687,7 @@ export component HomePage inherits Rectangle {
     // header canvas while anything plays; the waveform chip hides it.
     in property <[float]> vis-bars: [];
     in property <int> vis-style: 4;
-    property <bool> header-viz: true;
+    property <bool> header-viz: false;     // header spectrum OFF by default (music-mini viz is the always-on one)
     property <bool> viz-lyrics: true;      // active synced line rides the spectrum
     callback set-vis-style(int);           // persists via music-set-vis-style
     // Header spectrum only for My Music + Radio — podcasts/audiobooks/YouTube
@@ -670,39 +734,31 @@ export component HomePage inherits Rectangle {
 
     background: transparent;
 
-    // Grid geometry (pure, no layout feedback).
+    // Two-region layout: a fixed music RAIL on the right (full height — player +
+    // circular tabs + Quick Actions), everything else stacked on the LEFT.
     property <length> grid-w: root.width - 32px;
-    // No footer row anymore — reclaim its ~30px into the content area so the last
-    // row grows to fill it (cards look complete, no dead strip at the bottom).
-    property <length> content-h: root.height - 32px - 84px - 12px;
-    property <length> row3-h: 244px;
-    property <length> bento-h: content-h - row3-h - 10px;
-    // Scale the embedded player up to fill the music column (design = big player).
-    // ~112px of card chrome (padding + MUSIC cap + two tab rows); 488px is the
-    // player's natural height at scale 1. Bias slightly under so the art-stretch
-    // absorbs the residual instead of clipping the bottom controls.
-    // Card chrome shrank (32px tabs, 4px row gap) but the embedded player grew
-    // taller pills — natural height is now ~505px with ~104px of chrome.
-    property <float> player-scale: Math.clamp((bento-h - 104px) / 505px, 1.0, 1.7);
-    property <length> music-w: 300px * player-scale + 40px;
-    property <length> right-area: grid-w - music-w - 10px;
-    property <length> cell2: (right-area - 10px) / 2;
-    property <length> cell3: (right-area - 20px) / 3;
-    // CONTINUE pill geometry — pure root math (layout-derived widths loop).
-    // Card width = grid minus the quick-actions column; 4 slots inside padding
-    // (4 wider pills so the 3:4 cover thumb isn't a skinny sliver).
-    property <length> cont-w: grid-w - (grid-w - 10px) / 3 - 10px;
-    property <length> cont-slot-w: (cont-w - 28px - 24px) / 4;
-    // Cover thumb inside a pill: pill height = row3 minus card padding (28)
-    // + header row (35px title pill) + spacing (10); thumb height = pill minus
-    // its padding (20). Narrower than 3:4 (×0.6) so four pills always fit
-    // inside the card even on tighter windows.
-    property <length> cont-thumb-w: (row3-h - 93px) * 3 / 5;
+    property <length> rail-h: root.height - 32px;            // rail = full height minus padding
+    property <length> qa-h: 250px;                           // Quick Actions — matches the Continue card height
+    // Scale MusicMini so its content fits the slot with the circular tab row
+    // clear beneath it. Its size follows uiscale (NOT the container height), and
+    // the vinyl grows with width too, so its real content runs ~590px at scale 1;
+    // reserve ~180px of chrome and never upscale (cap 1.0) → tabs stay uncovered.
+    property <float> player-scale: Math.clamp((rail-h - qa-h - 10px - 155px) / 505px, 0.9, 1.25);
+    property <length> music-w: (300px * player-scale + 40px) * 1.05;   // +5% so the 5 source tabs fit one aligned row
+    property <length> left-w: grid-w - music-w - 10px;       // left column inner width
+    // CONTINUE pill geometry — full left width now → wider tiles + bigger gaps.
+    property <length> cont-h: 250px;
+    property <length> cont-gap: 14px;
+    property <length> cont-slot-w: (left-w - 28px - 3 * cont-gap) / 4;
+    property <length> cont-thumb-w: (cont-h - 93px) * 3 / 5;
 
-    VerticalLayout {
-        padding: 16px; spacing: 10px;
+    // ── Left region — header + content stack, sized to clear the music rail.
+    Rectangle {
+        x: 16px; y: 16px; width: root.left-w; height: root.height - 32px;
+      VerticalLayout {
+        spacing: 10px;
 
-        // ── Header (150%) ──────────────────────────────────────────
+        // ── Header ──────────────────────────────────────────────────
         HorizontalLayout {
             spacing: 16px; height: 84px;
             Rectangle {
@@ -789,12 +845,6 @@ export component HomePage inherits Rectangle {
                             } } }
                 }
             }
-            VerticalLayout { alignment: center;
-                // Flip the music card to the other side of the board — the
-                // toggle persists (home.music-left) and applies live.
-                HomeChip { label: root.music-left ? "Music → Right" : "Music → Left";
-                    clicked => { root.toggle-music-side(); } }
-            }
             Rectangle {
                 width: 64px; horizontal-stretch: 0;
                 avatar := Rectangle {
@@ -823,108 +873,51 @@ export component HomePage inherits Rectangle {
             }
         }
 
-        // ── Card board (np.p6.home.edit-layout) — every card lives in a
-        // movable EditWrap; defaults reproduce the old bento + row-3 grid.
-        board := Rectangle {
+        // ── Content stack (left column) ─────────────────────────────
+        Rectangle {
             vertical-stretch: 1;
-            property <length> rh: (root.bento-h - 10px) / 2;
-            property <length> gx: root.music-left ? root.music-w + 10px : 0px;
-            BoardSlot {
-                width: root.cell2; height: board.rh;
-                board-w: board.width; board-h: board.height;
-                dfx: board.gx / Math.max(board.width - self.width, 1px); dfy: 0;
-                PhotoSlideshow { width: 100%; height: 100%; icon: Icons.image; accent: Theme.sec-photos; name: "Photos";
-                    photos: root.recent-photos; tile-top: true; empty-icon: Icons.image-off;
-                    stat: root.stats.photos + " items · " + root.stats.photos-albums + " albums";
-                    footer: root.stats.photos-scan; clicked => { root.open-section("photos"); }
-                    open-item(i) => { root.open-photo-item(i); } }
-            }
-            BoardSlot {
-                width: root.cell2; height: board.rh;
-                board-w: board.width; board-h: board.height;
-                dfx: (board.gx + root.cell2 + 10px) / Math.max(board.width - self.width, 1px); dfy: 0;
-                PhotoSlideshow { width: 100%; height: 100%; icon: Icons.film; accent: Theme.sec-videos; name: "Videos";
-                    photos: root.recent-videos; show-play: true; tile-aspect: 1.6;
-                    cycle: 3000ms; empty-icon: Icons.video-off;
-                    stat: root.stats.videos + " items · " + root.stats.videos-shows + " shows";
-                    footer: root.stats.videos-note; clicked => { root.open-section("videos"); }
-                    open-item(i) => { root.open-video-item(i); } }
-            }
-            BoardSlot {
-                width: root.cell3; height: board.rh;
-                board-w: board.width; board-h: board.height;
-                dfx: board.gx / Math.max(board.width - self.width, 1px);
-                dfy: (board.rh + 10px) / Math.max(board.height - self.height, 1px);
-                BookRow { width: 100%; height: 100%; icon: Icons.book-open; accent: Theme.sec-books; name: "Books";
-                    covers: root.book-covers; total: root.stats.books;
-                    stat: root.stats.books + " books · " + root.stats.books-reading + " reading";
-                    clicked => { root.open-section("books"); } open-book(i) => { root.open-book-item(i); } }
-            }
-            BoardSlot {
-                width: root.cell3; height: board.rh;
-                board-w: board.width; board-h: board.height;
-                dfx: (board.gx + root.cell3 + 10px) / Math.max(board.width - self.width, 1px);
-                dfy: (board.rh + 10px) / Math.max(board.height - self.height, 1px);
-                CloudRow { width: 100%; height: 100%; icon: Icons.cloud; accent: Theme.sec-cloud; name: "Cloud";
-                    remotes: root.cloud-remotes; total: root.stats.cloud-remotes; stat: "";
-                    clicked => { root.open-section("cloud"); } open-remote(n) => { root.open-remote(n); } }
-            }
-            BoardSlot {
-                width: root.cell3; height: board.rh;
-                board-w: board.width; board-h: board.height;
-                dfx: (board.gx + 2 * (root.cell3 + 10px)) / Math.max(board.width - self.width, 1px);
-                dfy: (board.rh + 10px) / Math.max(board.height - self.height, 1px);
-                ToolRow { width: 100%; height: 100%; icon: Icons.wrench; accent: Theme.sec-tools; name: "Tools"; stat: "";
-                    clicked => { root.open-section("tools"); } open-tool(c) => { root.open-tool(c); } }
-            }
-            BoardSlot {
-                width: root.music-w; height: root.bento-h;
-                board-w: board.width; board-h: board.height;
-                dfx: root.music-left ? 0 : 1; dfy: 0;
-                HomeMusicCard {
-                    width: 100%; height: 100%;
-                    np-art: root.np-art; np-accent: root.np-accent; np-title: root.np-title; np-sub: root.np-sub; np-album: root.np-album;
-                    playing: root.playing; pos: root.pos; dur: root.dur;
-                    pos-label: root.pos-label; dur-label: root.dur-label;
-                    shuffle: root.shuffle; repeat: root.repeat; volume: root.volume; muted: root.muted;
-                    player-mode: root.player-mode; player-scale: root.player-scale;
-                    queue-rows: root.queue-rows; lyrics-rows: root.lyrics-rows; lyrics-active: root.lyrics-active;
-                    radio-initial: root.radio-initial; yt-now-video: root.yt-now-video;
-                    podcast-speed: root.podcast-speed; podcast-episodes: root.podcast-episodes; podcast-summary: root.podcast-summary;
-                    book-speed: root.book-speed; book-chapters: root.book-chapters; np-index: root.np-index;
-                    playpause => { root.playpause(); } next => { root.next(); } prev => { root.prev(); }
-                    seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
-                    toggle-shuffle => { root.toggle-shuffle(); } cycle-repeat => { root.cycle-repeat(); }
-                    toggle-mute => { root.toggle-mute(); } open-zen => { root.open-zen(); }
-                    play-queue(i) => { root.play-queue(i); } watch-video => { root.watch-video(); }
-                    podcast-skip(s) => { root.podcast-skip(s); } podcast-set-speed(v) => { root.podcast-set-speed(v); }
-                    podcast-play(id) => { root.podcast-play(id); }
-                    book-set-speed(v) => { root.book-set-speed(v); }
-                    book-chapter-step(d) => { root.book-chapter-step(d); }
-                    book-bookmark => { root.book-bookmark(); }
-                    play-chapter(i) => { root.play-chapter(i); }
-                    open-music(v) => { root.open-music(v); }
-                    open-now-album => { root.open-now-album(); }
-                    open-now-artist => { root.open-now-artist(); }
+            VerticalLayout {
+                spacing: 10px;
+                // Photos / Videos
+                HorizontalLayout {
+                    spacing: 10px; vertical-stretch: 1;
+                    PhotoSlideshow { horizontal-stretch: 1; icon: Icons.image; accent: Theme.sec-photos; name: "Photos";
+                        photos: root.recent-photos; tile-top: true; empty-icon: Icons.image-off;
+                        stat: root.stats.photos + " items · " + root.stats.photos-albums + " albums";
+                        footer: root.stats.photos-scan; clicked => { root.open-section("photos"); }
+                        open-item(i) => { root.open-photo-item(i); } }
+                    PhotoSlideshow { horizontal-stretch: 1; icon: Icons.film; accent: Theme.sec-videos; name: "Videos";
+                        photos: root.recent-videos; show-play: true; tile-aspect: 1.6;
+                        cycle: 3000ms; empty-icon: Icons.video-off;
+                        stat: root.stats.videos + " items · " + root.stats.videos-shows + " shows";
+                        footer: root.stats.videos-note; clicked => { root.open-section("videos"); }
+                        open-item(i) => { root.open-video-item(i); } }
                 }
-            }
-
-            // ── Continue + quick actions (former row 3) ────────────
-            BoardSlot {
-                width: root.cont-w; height: root.row3-h;
-                board-w: board.width; board-h: board.height;
-                dfx: 0; dfy: 1;
-            Rectangle {
-                width: 100%; height: 100%; border-radius: 14px;
+                // Books / Cloud / Tools
+                HorizontalLayout {
+                    spacing: 10px; vertical-stretch: 1;
+                    BookRow { horizontal-stretch: 1; icon: Icons.book-open; accent: Theme.sec-books; name: "Books";
+                        covers: root.book-covers; total: root.stats.books;
+                        stat: root.stats.books + " books · " + root.stats.books-reading + " reading";
+                        clicked => { root.open-section("books"); } open-book(i) => { root.open-book-item(i); } }
+                    CloudRow { horizontal-stretch: 1; icon: Icons.cloud; accent: Theme.sec-cloud; name: "Cloud";
+                        remotes: root.cloud-remotes; total: root.stats.cloud-remotes; stat: "";
+                        clicked => { root.open-section("cloud"); } open-remote(n) => { root.open-remote(n); } }
+                    ToolRow { horizontal-stretch: 1; icon: Icons.wrench; accent: Theme.sec-tools; name: "Tools"; stat: "";
+                        clicked => { root.open-section("tools"); } open-tool(c) => { root.open-tool(c); } }
+                }
+                // ── Continue (full left width) — wider tiles, bigger gaps ──
+                Rectangle {
+                    height: root.cont-h; border-radius: 14px;
                 // Pink reads brighter than the other accents — 0.03 matches the
                 // dark cards' perceived fill; idle chrome matches Photos/Videos
                 // (24% hairline, no glow) so the card sits flat until hovered.
-                background: Theme.sec-music.with-alpha(conthov.has-hover ? 0.10 : 0.03);
-                border-width: conthov.has-hover ? 2.5px : 1px;
-                border-color: Theme.sec-music.with-alpha(conthov.has-hover ? 0.95 : 0.24);
-                drop-shadow-blur: conthov.has-hover ? 22px : 0px;
+                background: Theme.sec-music.with-alpha(0.03);
+                border-width: 1px;
+                border-color: Theme.sec-music.with-alpha(0.24);
+                drop-shadow-blur: 0px;
                 drop-shadow-color: Theme.sec-music.with-alpha(0.45);
-                drop-shadow-offset-y: conthov.has-hover ? 6px : 0px;
+                drop-shadow-offset-y: 0px;
                 animate background, border-color, border-width, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
                 conthov := TouchArea { }
                 VerticalLayout {
@@ -952,7 +945,7 @@ export component HomePage inherits Rectangle {
                     // Rich resume cards — FIVE fixed pill slots (design parity), filled
                     // left→right with only as many items as exist; never stretched.
                     HorizontalLayout {
-                        spacing: 8px; vertical-stretch: 1; alignment: start;
+                        spacing: root.cont-gap; vertical-stretch: 1; alignment: start;
                         if root.continue-rows.length == 0: Text {
                             text: "Nothing in progress — resume points from books, podcasts and audiobooks show up here.";
                             color: Theme.text-dim; font-size: 10px; wrap: word-wrap;
@@ -990,17 +983,33 @@ export component HomePage inherits Rectangle {
                                     // Up-to-4-line wrapping title — max-height (not fixed) so
                                     // short titles keep the author snug underneath; elide trims
                                     // only what still overflows line 4.
-                                    Text { text: r.title; color: Theme.text; font-size: 12px; font-weight: 800;
-                                        max-height: 62px; wrap: word-wrap; overflow: elide; }
+                                    Text { text: r.title; color: Theme.text; font-size: 14px; font-weight: 800;
+                                        max-height: 72px; wrap: word-wrap; overflow: elide; }
                                     // Up-to-2-line author/show line.
-                                    if r.author != "": Text { text: r.author; color: Theme.text-dim; font-size: 10px;
-                                        max-height: 27px; wrap: word-wrap; overflow: elide; }
+                                    if r.author != "": Text { text: r.author; color: Theme.text-dim; font-size: 12px;
+                                        max-height: 31px; wrap: word-wrap; overflow: elide; }
                                     Rectangle { vertical-stretch: 1; }
-                                    Text { text: r.sub; color: Theme.text-dim; font-size: 10px; font-weight: 600; overflow: elide; }
-                                    if r.frac >= 0: Rectangle {
-                                        height: 4px; border-radius: 2px; background: Theme.panel-2;
-                                        Rectangle { x: 0; y: 0; width: parent.width * Math.clamp(r.frac, 0, 1);
-                                            height: 100%; border-radius: 2px; background: ccard.kaccent; }
+                                    // Remaining text + progress bar wrapped in ONE pill:
+                                    // white fill (light) / accent card-colour fill (dark),
+                                    // dark outline (light) / light outline (dark).
+                                    Rectangle {
+                                        vertical-stretch: 0;   // size to content — don't split the column slack
+                                        border-radius: 9px;
+                                        background: Theme.dark ? ccard.kaccent.darker(0.30) : #ffffff;
+                                        border-width: 1px;
+                                        border-color: Theme.dark ? #ffffffcc : #00000088;
+                                        VerticalLayout {
+                                            padding-left: 9px; padding-right: 9px; padding-top: 4px; padding-bottom: 5px; spacing: 3px;
+                                            Text { text: r.sub; color: Theme.dark ? #ffffff : Theme.text;
+                                                font-size: 11px; font-weight: 600; overflow: elide; }
+                                            if r.frac >= 0: Rectangle {
+                                                height: 4px; border-radius: 2px;
+                                                background: Theme.dark ? #ffffff.with-alpha(0.25) : ccard.kaccent.with-alpha(0.18);
+                                                Rectangle { x: 0; y: 0; width: parent.width * Math.clamp(r.frac, 0, 1);
+                                                    height: 100%; border-radius: 2px;
+                                                    background: Theme.dark ? #ffffff : ccard.kaccent; }
+                                            }
+                                        }
                                     }
                                 }
                             }
@@ -1060,49 +1069,77 @@ export component HomePage inherits Rectangle {
                 }
             }
             }
-            BoardSlot {
-                width: (root.grid-w - 10px) / 3; height: root.row3-h;
-                board-w: board.width; board-h: board.height;
-                dfx: (root.cont-w + 10px) / Math.max(board.width - self.width, 1px); dfy: 1;
+        }
+      }
+    }
+
+    // ── Right rail — full-height player + circular source tabs + Quick Actions.
+    // Explicit heights (not a stretch layout) so the player card reliably fills
+    // the rail above the fixed-height Quick Actions card.
+    Rectangle {
+        x: root.width - root.music-w - 16px; y: 16px;
+        width: root.music-w; height: root.rail-h;
+            HomeMusicCard {
+                y: 0; width: 100%; height: root.rail-h - root.qa-h - 10px;
+                np-art: root.np-art; np-accent: root.np-accent; np-title: root.np-title; np-sub: root.np-sub; np-album: root.np-album;
+                playing: root.playing; pos: root.pos; dur: root.dur;
+                pos-label: root.pos-label; dur-label: root.dur-label;
+                shuffle: root.shuffle; repeat: root.repeat; volume: root.volume; muted: root.muted;
+                player-mode: root.player-mode; player-scale: root.player-scale;
+                queue-rows: root.queue-rows; lyrics-rows: root.lyrics-rows; lyrics-active: root.lyrics-active;
+                vis-bars: root.vis-bars;
+                radio-initial: root.radio-initial; yt-now-video: root.yt-now-video;
+                podcast-speed: root.podcast-speed; podcast-episodes: root.podcast-episodes; podcast-summary: root.podcast-summary;
+                book-speed: root.book-speed; book-chapters: root.book-chapters; np-index: root.np-index;
+                playpause => { root.playpause(); } next => { root.next(); } prev => { root.prev(); }
+                seek(s) => { root.seek(s); } set-volume(v) => { root.set-volume(v); }
+                toggle-shuffle => { root.toggle-shuffle(); } cycle-repeat => { root.cycle-repeat(); }
+                toggle-mute => { root.toggle-mute(); } open-zen => { root.open-zen(); }
+                play-queue(i) => { root.play-queue(i); } watch-video => { root.watch-video(); }
+                podcast-skip(s) => { root.podcast-skip(s); } podcast-set-speed(v) => { root.podcast-set-speed(v); }
+                podcast-play(id) => { root.podcast-play(id); }
+                book-set-speed(v) => { root.book-set-speed(v); }
+                book-chapter-step(d) => { root.book-chapter-step(d); }
+                book-bookmark => { root.book-bookmark(); }
+                play-chapter(i) => { root.play-chapter(i); }
+                open-music(v) => { root.open-music(v); }
+                open-now-album => { root.open-now-album(); }
+                open-now-artist => { root.open-now-artist(); }
+            }
+            // Quick Actions — under the player, matching the music.png rail.
             Rectangle {
-                width: 100%; height: 100%; border-radius: 14px;
-                background: Theme.sec-videos.with-alpha(qahov.has-hover ? 0.14 : 0.08);
-                border-width: qahov.has-hover ? 2.5px : 1px;
-                border-color: Theme.sec-videos.with-alpha(qahov.has-hover ? 0.95 : 0.24);
-                drop-shadow-blur: qahov.has-hover ? 22px : 0px;
+                y: root.rail-h - root.qa-h; width: 100%; height: root.qa-h; border-radius: 14px;
+                background: Theme.sec-videos.with-alpha(0.08);
+                border-width: 1px;
+                border-color: Theme.sec-videos.with-alpha(0.24);
+                drop-shadow-blur: 0px;
                 drop-shadow-color: Theme.sec-videos.with-alpha(0.45);
-                drop-shadow-offset-y: qahov.has-hover ? 6px : 0px;
+                drop-shadow-offset-y: 0px;
                 animate background, border-color, border-width, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
                 qahov := TouchArea { }
                 VerticalLayout {
                     padding: 14px; spacing: 10px;
-                    // Title pill matching the other cards.
                     HorizontalLayout {
                         TitlePill { icon: Icons.zap; accent: Theme.sec-videos; name: "Quick Actions"; }
                         Rectangle { horizontal-stretch: 1; }
                     }
-                    // 2×2 action grid — icon above name (ToolTileBox), each action
-                    // tinted with its target section's hue.
                     GridLayout {
-                        spacing: 8px; vertical-stretch: 1;
+                        spacing: 10px; vertical-stretch: 1;
                         Row {
-                            ToolTileBox { hilite: #ec4899; icon: Icons.download; label: "Music Downloader";
-                                icon-size: 32px; label-size: 12px; clicked => { root.open-download(); } }
-                            ToolTileBox { hilite: #8b5cf6; icon: Icons.shuffle; label: "Shuffle All";
-                                icon-size: 32px; label-size: 12px; clicked => { root.shuffle-all(); } }
+                            CircleAction { tint: #ec4899; icon: Icons.download; label: "Music Downloader";
+                                clicked => { root.open-download(); } }
+                            CircleAction { tint: #8b5cf6; icon: Icons.shuffle; label: "Shuffle All";
+                                clicked => { root.shuffle-all(); } }
                         }
                         Row {
-                            ToolTileBox { hilite: Theme.sec-videos; icon: Icons.folder-open; label: "Add Folder";
-                                icon-size: 32px; label-size: 12px; clicked => { root.add-folder(); } }
-                            ToolTileBox { hilite: #14b8a6; icon: Icons.radio; label: "Random Radio";
-                                icon-size: 32px; label-size: 12px; clicked => { root.random-radio(); } }
+                            CircleAction { tint: Theme.sec-videos; icon: Icons.folder-open; label: "Add Folder";
+                                clicked => { root.add-folder(); } }
+                            CircleAction { tint: #14b8a6; icon: Icons.radio; label: "Random Radio";
+                                clicked => { root.random-radio(); } }
                         }
                     }
                 }
             }
-            }
-        }
-
     }
 
     // Remove-from-Continue confirmation — Enter removes, Escape cancels,
