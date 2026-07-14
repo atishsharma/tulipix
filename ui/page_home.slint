@@ -786,9 +786,10 @@ export component HomePage inherits Rectangle {
                     width: 100%; height: 100%;
                     bars: root.vis-bars; style: root.vis-style; active: true;
                 }
-                // Active synced-lyric line riding the spectrum — white pill,
-                // dead center; single line only (no prev/next context).
-                if root.viz-allowed && root.header-viz && root.viz-lyrics && root.viz-lyrics-ok
+                // Active synced-lyric line — white pill, dead center. Shown
+                // whenever the lyrics toggle is on, INDEPENDENT of the spectrum
+                // (so it still appears with the header viz off).
+                if root.viz-allowed && root.viz-lyrics && root.viz-lyrics-ok
                     && root.lyrics-active >= 0 && root.lyrics-rows.length > 0: Rectangle {
                     x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                     width: Math.min(hlyr.preferred-width + 28px, parent.width - 16px);
