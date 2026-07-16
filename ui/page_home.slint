@@ -486,8 +486,8 @@ component HomeTileBox inherits Rectangle {
     callback clicked();
     border-radius: 10px;
     background: tta.has-hover ? Theme.panel : Theme.panel-2;
-    border-width: tta.has-hover ? 1.5px : 1px;
-    border-color: tta.has-hover ? root.hilite : Theme.outline;
+    border-width: tta.has-hover ? 2px : 1.5px;
+    border-color: tta.has-hover ? root.hilite : Theme.outline.with-alpha(0.9);
     drop-shadow-blur: tta.has-hover ? 16px : 0px;
     drop-shadow-color: #00000077; drop-shadow-offset-y: tta.has-hover ? 5px : 0px;
     animate background, border-color, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
@@ -507,8 +507,8 @@ component RowCard inherits Rectangle {
     callback clicked();
     border-radius: 14px; clip: true;
     background: accent.with-alpha(0.08);
-    border-width: 1px;
-    border-color: accent.with-alpha(0.24);
+    border-width: 1.5px;
+    border-color: accent.with-alpha(0.4);
     drop-shadow-blur: 0px;
     drop-shadow-color: accent.with-alpha(0.45); drop-shadow-offset-y: 0px;
     animate background, border-color, border-width, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
@@ -573,7 +573,7 @@ component BookRow inherits RowCard {
 // per provider without bundling trademarked logos.
 component CloudGlyph inherits AppIcon {
     in property <string> backend;
-    source: Icons.cloud; width: 27px; height: 27px;
+    source: Icons.cloud; width: 46px; height: 46px;
     tint: root.backend == "onedrive" ? #2b7cd3
         : (root.backend == "drive" || root.backend == "googlecloudstorage" || root.backend == "google cloud storage") ? #1a9f57
         : root.backend == "dropbox" ? #0061ff
@@ -602,15 +602,29 @@ component CloudRow inherits RowCard {
         for r in root.remotes: HomeTileBox {
             horizontal-stretch: 1; hilite: root.accent; clicked => { root.open-remote(r.name); }
             VerticalLayout {
-                padding: 8px; spacing: 4px; alignment: center;
+                padding: 8px; spacing: 5px; alignment: center;
                 HorizontalLayout { alignment: center; CloudGlyph { backend: r.backend; } }
-                Text { text: r.name; color: Theme.text; font-size: 11px; font-weight: 700;
-                    horizontal-alignment: center; overflow: elide; }
-                Text { text: r.backend; color: Theme.text-dim; font-size: 9px;
-                    horizontal-alignment: center; overflow: elide; }
+                // Name / Provider / Size — each in its own pill with a distinct
+                // colour fill (blue / purple / accent).
+                HorizontalLayout { alignment: center;
+                    Rectangle { height: 18px; border-radius: 9px; background: Theme.sec-cloud.with-alpha(Theme.dark ? 0.30 : 0.18);
+                        HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                            Text { text: r.name; color: Theme.sec-cloud; font-size: 11px; font-weight: 800;
+                                vertical-alignment: center; overflow: elide; } } }
+                }
+                HorizontalLayout { alignment: center;
+                    Rectangle { height: 16px; border-radius: 8px; background: #8b5cf6.with-alpha(Theme.dark ? 0.30 : 0.16);
+                        HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                            Text { text: r.backend; color: #8b5cf6; font-size: 9px; font-weight: 700;
+                                vertical-alignment: center; overflow: elide; } } }
+                }
                 // Storage usage ("11 GB / 5 GB") — rclone about, cached backend-side.
-                if r.usage != "": Text { text: r.usage; color: root.accent; font-size: 9px; font-weight: 700;
-                    horizontal-alignment: center; overflow: elide; }
+                if r.usage != "": HorizontalLayout { alignment: center;
+                    Rectangle { height: 16px; border-radius: 8px; background: root.accent.with-alpha(Theme.dark ? 0.30 : 0.16);
+                        HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                            Text { text: r.usage; color: root.accent; font-size: 9px; font-weight: 700;
+                                vertical-alignment: center; overflow: elide; } } }
+                }
             }
         }
         if root.total - root.shown > 0: HomeTileBox {
@@ -636,14 +650,14 @@ component ToolRow inherits RowCard {
     GridLayout {
         width: 100%; height: 100%; spacing: 10px;
         Row {
-            CircleAction { disc: 78px; mono: true; tint: root.accent; icon: root.tools[0].icon; label: root.tools[0].label; clicked => { root.open-tool(root.tools[0].cat); } }
-            CircleAction { disc: 78px; mono: true; tint: root.accent; icon: root.tools[1].icon; label: root.tools[1].label; clicked => { root.open-tool(root.tools[1].cat); } }
-            CircleAction { disc: 78px; mono: true; tint: root.accent; icon: root.tools[2].icon; label: root.tools[2].label; clicked => { root.open-tool(root.tools[2].cat); } }
+            CircleAction { disc: 70px; mono: true; tint: root.accent; icon: root.tools[0].icon; label: root.tools[0].label; clicked => { root.open-tool(root.tools[0].cat); } }
+            CircleAction { disc: 70px; mono: true; tint: root.accent; icon: root.tools[1].icon; label: root.tools[1].label; clicked => { root.open-tool(root.tools[1].cat); } }
+            CircleAction { disc: 70px; mono: true; tint: root.accent; icon: root.tools[2].icon; label: root.tools[2].label; clicked => { root.open-tool(root.tools[2].cat); } }
         }
         Row {
-            CircleAction { disc: 78px; mono: true; tint: root.accent; icon: root.tools[3].icon; label: root.tools[3].label; clicked => { root.open-tool(root.tools[3].cat); } }
-            CircleAction { disc: 78px; mono: true; tint: root.accent; icon: root.tools[4].icon; label: root.tools[4].label; clicked => { root.open-tool(root.tools[4].cat); } }
-            CircleAction { disc: 78px; mono: true; tint: root.accent; icon: Icons.plus; label: "+" + (root.total-tools - 5) + " more"; clicked => { root.clicked(); } }
+            CircleAction { disc: 70px; mono: true; tint: root.accent; icon: root.tools[3].icon; label: root.tools[3].label; clicked => { root.open-tool(root.tools[3].cat); } }
+            CircleAction { disc: 70px; mono: true; tint: root.accent; icon: root.tools[4].icon; label: root.tools[4].label; clicked => { root.open-tool(root.tools[4].cat); } }
+            CircleAction { disc: 70px; mono: true; tint: root.accent; icon: Icons.plus; label: "+" + (root.total-tools - 5) + " more"; clicked => { root.clicked(); } }
         }
     }
 }
@@ -659,7 +673,6 @@ export component HomePage inherits Rectangle {
     in property <int> logo-choice: 0;
     in property <string> user-secondary: "";
     in property <image> avatar-image;
-    in property <string> avatar-emoji: "";
     in property <bool> music-left: false;          // music block on the left vs right
     // now-playing feed
     in property <string> np-title: ""; in property <string> np-sub: ""; in property <string> np-album: "";
@@ -745,7 +758,7 @@ export component HomePage inherits Rectangle {
     // reserve ~180px of chrome and never upscale (cap 1.0) → tabs stay uncovered.
     property <float> player-scale: Math.clamp((rail-h - qa-h - 10px - 155px) / 505px, 0.9, 1.25);
     property <length> music-w: (300px * player-scale + 40px) * 1.05;   // +5% so the 5 source tabs fit one aligned row
-    property <length> left-w: grid-w - music-w - 10px;       // left column inner width
+    property <length> left-w: grid-w - music-w - 30px;       // left column inner width (30px gutter holds the divider)
     // CONTINUE pill geometry — full left width now → wider tiles + bigger gaps.
     property <length> cont-h: 250px;
     property <length> cont-gap: 14px;
@@ -859,9 +872,7 @@ export component HomePage inherits Rectangle {
                     animate width, border-width { duration: 140ms; easing: ease-out; }
                     av := TouchArea { mouse-cursor: pointer; clicked => { root.open-profile(); } }
                     if avatar-image.width != 0: Image { source: avatar-image; image-fit: cover; width: 100%; height: 100%; }
-                    if avatar-image.width == 0 && avatar-emoji != "": Text { text: avatar-emoji; font-size: 26px;
-                        width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
-                    if avatar-image.width == 0 && avatar-emoji == "": AppIcon { source: Icons.user; tint: #ffffff;
+                    if avatar-image.width == 0: AppIcon { source: Icons.user; tint: #ffffff;
                         width: 24px; height: 24px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
                 }
                 // Online-style status dot (design parity) — sits on the avatar edge.
@@ -964,14 +975,23 @@ export component HomePage inherits Rectangle {
                             HorizontalLayout {
                                 padding: 10px; spacing: 10px;
                                 // Cover — full-height 3:4 portrait; kind icon fallback.
+                                // Accent outline sits 1px away from the thumb: outer
+                                // ring draws the border, inner rect (2px inset) holds
+                                // the clipped image → ~1px transparent gap between.
                                 Rectangle {
-                                    width: root.cont-thumb-w; border-radius: 8px; clip: true;
-                                    background: ccard.kaccent.with-alpha(0.15);
-                                    if r.cover.width > 0: Image { source: r.cover; image-fit: cover; width: 100%; height: 100%; }
-                                    if r.cover.width == 0: AppIcon {
-                                        source: r.kind == "book" ? Icons.book-open : r.kind == "video" ? Icons.film : r.kind == "podcast" ? Icons.mic : Icons.headphones;
-                                        tint: ccard.kaccent; width: 22px; height: 22px;
-                                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                                    width: root.cont-thumb-w; border-radius: 9px;
+                                    border-width: 1px; border-color: ccard.kaccent;
+                                    Rectangle {
+                                        x: 2px; y: 2px;
+                                        width: parent.width - 4px; height: parent.height - 4px;
+                                        border-radius: 7px; clip: true;
+                                        background: ccard.kaccent.with-alpha(0.15);
+                                        if r.cover.width > 0: Image { source: r.cover; image-fit: cover; width: 100%; height: 100%; }
+                                        if r.cover.width == 0: AppIcon {
+                                            source: r.kind == "book" ? Icons.book-open : r.kind == "video" ? Icons.film : r.kind == "podcast" ? Icons.mic : Icons.headphones;
+                                            tint: ccard.kaccent; width: 22px; height: 22px;
+                                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                                    }
                                 }
                                 // Design order, top-down: big title → author → spring →
                                 // progress text → fill bar pinned at the bottom.
@@ -1074,6 +1094,19 @@ export component HomePage inherits Rectangle {
       }
     }
 
+    // Long top-to-bottom bento divider — sits in the gutter between the left
+    // cards and the right music rail. Light-blue in light, light-pink in dark,
+    // with a soft glow. Spans the full rail height.
+    Rectangle {
+        // Centred in the 30px gutter between the left cards and the music rail.
+        x: root.width - root.music-w - 32px; y: 16px;
+        width: 2px; height: root.rail-h;
+        border-radius: 1px;
+        background: Theme.dark ? #f9a8d4 : #93c5fd;
+        drop-shadow-blur: 8px;
+        drop-shadow-color: (Theme.dark ? #f9a8d4 : #93c5fd).with-alpha(0.4);
+    }
+
     // ── Right rail — full-height player + circular source tabs + Quick Actions.
     // Explicit heights (not a stretch layout) so the player card reliably fills
     // the rail above the fixed-height Quick Actions card.
@@ -1110,7 +1143,8 @@ export component HomePage inherits Rectangle {
             // Quick Actions — under the player, matching the music.png rail.
             Rectangle {
                 y: root.rail-h - root.qa-h; width: 100%; height: root.qa-h; border-radius: 14px;
-                background: Theme.sec-videos.with-alpha(0.08);
+                // Same pink "splash" wash as the music player card (user pref).
+                background: Theme.sec-music.with-alpha(0.03);
                 border-width: 1px;
                 border-color: Theme.sec-videos.with-alpha(0.24);
                 drop-shadow-blur: 0px;

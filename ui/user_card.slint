@@ -91,11 +91,13 @@ export component UserCard inherits Rectangle {
                         border-radius: 12px;
                         background: Theme.glass-strong;
                         border-width: 1px; border-color: Theme.glass-border;
-                        if user.avatar-emoji == "": AppIcon { source: Icons.user; tint: Theme.text-dim; width: root.collapsed ? 18px : 22px; height: root.collapsed ? 18px : 22px; }
-                        if user.avatar-emoji != "": Text {
-                            text: user.avatar-emoji;
-                            font-size: root.collapsed ? 18px : 23px;
-                            horizontal-alignment: center; vertical-alignment: center;
+                        clip: true;
+                        // Uploaded avatar photo fills the tile; user icon is the fallback.
+                        if user.avatar-image.width == 0: AppIcon { source: Icons.user; tint: Theme.text-dim; width: root.collapsed ? 18px : 22px; height: root.collapsed ? 18px : 22px; }
+                        if user.avatar-image.width > 0: Image {
+                            source: user.avatar-image;
+                            width: 100%; height: 100%;
+                            image-fit: cover;
                         }
                     }
                     if !root.collapsed: VerticalLayout {

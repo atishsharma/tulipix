@@ -176,23 +176,6 @@ component SettingsNavCaption inherits Text {
     height: 26px; vertical-alignment: bottom;
 }
 
-// Emoji chip for the profile avatar picker.
-component EmojiChip inherits Rectangle {
-    in property <string> emoji;
-    in property <bool> selected;
-    callback clicked();
-    width: 40px; height: 40px; border-radius: 12px;
-    horizontal-stretch: 0; vertical-stretch: 0;
-    background: selected ? Accent.color.with-alpha(0.22) : (touch.has-hover ? Theme.panel : Theme.panel-2);
-    border-width: selected ? 2px : 1px;
-    border-color: selected ? Accent.color : Theme.outline;
-    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    if root.emoji != "": Text { text: root.emoji; font-size: 19px;
-        horizontal-alignment: center; vertical-alignment: center; width: 100%; height: 100%; }
-    if root.emoji == "": AppIcon { source: Icons.user; tint: Theme.text-dim; width: 17px; height: 17px;
-        x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
-}
-
 // One credit tile in the Profile page's BUILT WITH grid — vendored logo,
 // name, click opens the project link.
 export struct CreditEntry { icon: image, label: string, link: string }
@@ -503,8 +486,6 @@ component SettingsPage inherits Rectangle {
             if tab == "profile": Rectangle {
                 width: parent.width; height: parent.height;
                 background: transparent;
-                // Avatar choice being edited; starts from the saved value.
-                property <string> sel-emoji: user.avatar-emoji;
                 // Sidebar logo being edited; starts from the saved value.
                 property <int> sel-logo: logo-choice;
                 // Save-button feedback — flips the pill to "Saved ✓" for 2s.
@@ -617,41 +598,6 @@ component SettingsPage inherits Rectangle {
                                 }
                             }
 
-                            Rectangle { height: 2px; }
-
-                            // Avatar picker — two tight rows.
-                            HorizontalLayout {
-                                spacing: 8px; alignment: center;
-                                EmojiChip { emoji: "";   selected: sel-emoji == "";   clicked => { sel-emoji = ""; } }
-                                EmojiChip { emoji: "🙂"; selected: sel-emoji == "🙂"; clicked => { sel-emoji = "🙂"; } }
-                                EmojiChip { emoji: "😎"; selected: sel-emoji == "😎"; clicked => { sel-emoji = "😎"; } }
-                                EmojiChip { emoji: "🦊"; selected: sel-emoji == "🦊"; clicked => { sel-emoji = "🦊"; } }
-                                EmojiChip { emoji: "🐼"; selected: sel-emoji == "🐼"; clicked => { sel-emoji = "🐼"; } }
-                                EmojiChip { emoji: "🌸"; selected: sel-emoji == "🌸"; clicked => { sel-emoji = "🌸"; } }
-                            }
-                            HorizontalLayout {
-                                spacing: 8px; alignment: center;
-                                EmojiChip { emoji: "⚡"; selected: sel-emoji == "⚡"; clicked => { sel-emoji = "⚡"; } }
-                                EmojiChip { emoji: "🎧"; selected: sel-emoji == "🎧"; clicked => { sel-emoji = "🎧"; } }
-                                EmojiChip { emoji: "📷"; selected: sel-emoji == "📷"; clicked => { sel-emoji = "📷"; } }
-                                EmojiChip { emoji: "🎬"; selected: sel-emoji == "🎬"; clicked => { sel-emoji = "🎬"; } }
-                                EmojiChip { emoji: "🚀"; selected: sel-emoji == "🚀"; clicked => { sel-emoji = "🚀"; } }
-                                EmojiChip { emoji: "🌙"; selected: sel-emoji == "🌙"; clicked => { sel-emoji = "🌙"; } }
-                            }
-
-                            // Upload a custom avatar — takes precedence over the emoji.
-                            HorizontalLayout {
-                                alignment: center;
-                                Rectangle {
-                                    height: 28px; border-radius: 14px;
-                                    horizontal-stretch: 0; vertical-stretch: 0;
-                                    background: av-t.has-hover ? Theme.panel : transparent;
-                                    border-width: 1px; border-color: Theme.outline;
-                                    av-t := TouchArea { mouse-cursor: pointer; clicked => { root.pick-avatar-image(); } }
-                                    HorizontalLayout { padding-left: 12px; padding-right: 12px;
-                                        Text { text: "Upload avatar photo"; color: Theme.text; font-size: 11px; font-weight: 600; vertical-alignment: center; } }
-                                }
-                            }
                             // ── Appearance — same card, hairline divider ────
                             Rectangle { height: 1px; background: Theme.outline; }
                             Text { text: "APPEARANCE"; color: Theme.text-dim; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
@@ -740,7 +686,7 @@ component SettingsPage inherits Rectangle {
                                     background: just-saved ? #22c55e : (save-t.has-hover ? Accent.color.with-alpha(0.85) : Accent.color);
                                     animate background { duration: 120ms; easing: ease-out; }
                                     save-t := TouchArea { mouse-cursor: pointer;
-                                        clicked => { root.profile-save(name-ti.text, sel-emoji, sel-logo); just-saved = true; } }
+                                        clicked => { root.profile-save(name-ti.text, "", sel-logo); just-saved = true; } }
                                     Text { text: just-saved ? "Saved ✓" : "Save profile"; color: #ffffff; font-size: 12px; font-weight: 700;
                                         width: 100%; height: 100%;
                                         horizontal-alignment: center; vertical-alignment: center; }
@@ -750,22 +696,32 @@ component SettingsPage inherits Rectangle {
                         }
 
                         // Avatar — straddles the cover/card seam, centered.
-                        // Custom image wins; falls back to emoji, then glyph.
+                        // Click anywhere on it to pick a new image; custom image
+                        // wins, otherwise the user glyph.
                         Rectangle {
                             width: 96px; height: 96px; border-radius: 48px;
                             x: (parent.width - self.width) / 2; y: -48px;
                             clip: true;
                             background: @linear-gradient(135deg, Theme.brand, Theme.brand-2);
-                            border-width: 4px; border-color: Theme.panel-2;
+                            border-width: 4px; border-color: av-pick.has-hover ? Accent.color : Theme.panel-2;
                             drop-shadow-blur: 16px; drop-shadow-color: #00000055;
+                            animate border-color { duration: 140ms; easing: ease-out; }
                             if user.avatar-image.width != 0: Image {
                                 source: user.avatar-image; image-fit: cover; width: 100%; height: 100%;
                             }
-                            if user.avatar-image.width == 0 && sel-emoji == "": AppIcon { source: Icons.user; tint: #ffffff; width: 40px; height: 40px;
+                            if user.avatar-image.width == 0: AppIcon { source: Icons.user; tint: #ffffff; width: 40px; height: 40px;
                                 x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
-                            if user.avatar-image.width == 0 && sel-emoji != "": Text { text: sel-emoji; font-size: 44px;
+                            // Click-to-change scrim + camera hint (fades in on hover).
+                            Rectangle {
                                 width: 100%; height: 100%;
-                                horizontal-alignment: center; vertical-alignment: center; }
+                                background: #000000aa.with-alpha(av-pick.has-hover ? 0.42 : 0.0);
+                                animate background { duration: 140ms; easing: ease-out; }
+                                AppIcon { source: Icons.pencil; tint: #ffffff;
+                                    width: 26px; height: 26px; opacity: av-pick.has-hover ? 1.0 : 0.0;
+                                    x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
+                                    animate opacity { duration: 140ms; easing: ease-out; } }
+                            }
+                            av-pick := TouchArea { mouse-cursor: pointer; clicked => { root.pick-avatar-image(); } }
                         }
                       }
                     }
@@ -1302,6 +1258,17 @@ callback cloud-go-home();
     in-out property <string> ambient-clock: "";
     in-out property <string> ambient-caption: "";
     callback ambient-dismissed();
+    // Lock screen: slideshow + now-playing + PIN (idle auto-lock lives in Rust)
+    in-out property <image> ambient-photo;
+    in-out property <image> ambient-photo-next;
+    in-out property <float> ambient-photo-fade: 0;
+    in-out property <bool> ambient-pin-required: false;
+    in-out property <int> ambient-pin-len: 0;
+    in-out property <bool> ambient-pin-error: false;
+    callback ambient-pin-digit(string);
+    callback ambient-pin-backspace();
+    callback ambient-pin-clear();
+    callback ambient-unlock();
 
     // Music now-playing bar state
     in-out property <string> music-np-title: "";
@@ -2244,6 +2211,22 @@ callback cloud-go-home();
         active <=> root.ambient-active;
         clock-text: root.ambient-clock;
         caption: root.ambient-caption;
+        photo: root.ambient-photo;
+        photo-next: root.ambient-photo-next;
+        photo-fade: root.ambient-photo-fade;
+        music-art: root.music-np-art;
+        music-title: root.music-np-title;
+        music-artist: root.music-np-sub;
+        music-playing: root.music-playing;
+        pin-required: root.ambient-pin-required;
+        pin-len: root.ambient-pin-len;
+        pin-error: root.ambient-pin-error;
+        music-toggle => { root.music-toggle-pause(); }
+        music-next => { root.music-next(); }
+        pin-digit(d) => { root.ambient-pin-digit(d); }
+        pin-backspace => { root.ambient-pin-backspace(); }
+        pin-clear => { root.ambient-pin-clear(); }
+        unlock => { root.ambient-unlock(); }
     }
     changed ambient-active => { if !root.ambient-active { root.ambient-dismissed(); } }
 
@@ -3017,7 +3000,6 @@ callback cloud-go-home();
                 logo-choice: root.app-logo-choice;
                 user-secondary: root.user.secondary;
                 avatar-image: root.user.avatar-image;
-                avatar-emoji: root.user.avatar-emoji;
                 music-left: root.home-music-left;
                 // Mini-player feed — full parity with the Music-section players.
                 np-title: root.music-np-title; np-sub: root.music-np-sub; np-album: root.music-np-album;

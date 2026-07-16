@@ -1,22 +1,77 @@
 import { Theme } from "tokens.slint";
+import { AppIcon, Icons } from "icons.slint";
 
-// Idle-screensaver overlay — Ken Burns pan/zoom over a backdrop placeholder
-// + clock overlay. Real photo/video source from local 5★ + AI memories
-// wires up in tulipix-photos (np.p1.ambient backend).
+// Idle-screensaver / lock overlay — Ken Burns pan/zoom over a photo slideshow
+// (local 5★ + AI memories, source from tulipix-photos np.p1.ambient backend),
+// a now-playing music mini-card, a clock, and an optional PIN pad.
+//
+// Behaviour: fades in while idle (`active`). First click "wakes" it — if
+// `pin-required` the PIN pad appears and the screen only dismisses once Rust
+// verifies the code (clears `active` + resets `pin-entry`); otherwise the
+// click dismisses immediately. Inactivity timing + auto-lock live in Rust
+// (idle tracker → account::lock → Mode.locked); this is the presentation layer.
+
+// Single keypad key.
+component PinKey inherits Rectangle {
+    in property <string> label;
+    in property <bool> muted: false;
+    callback clicked();
+    width: 68px; height: 68px; border-radius: 34px;
+    background: ka.has-hover ? #ffffff26 : #ffffff14;
+    border-width: 1px; border-color: #ffffff22;
+    animate background { duration: 100ms; }
+    ka := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    Text {
+        text: root.label; color: root.muted ? #f8faffcc : #f8faff;
+        font-size: root.muted ? 20px : 26px; font-weight: 400;
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+    }
+}
 
 export component AmbientScreensaver inherits Rectangle {
     in property <string> clock-text: "00:00";
     in property <string> caption: "";
     in-out property <bool> active: false;
 
+    // Slideshow — current photo (crossfades on change). Empty → gradient only.
+    in property <image> photo;
+    in property <image> photo-next;   // preloaded next frame for crossfade
+    in property <float> photo-fade;    // 0 = show `photo`, 1 = show `photo-next`
+
+    // Now-playing mini-card. Hidden when `music-title` is empty.
+    in property <image> music-art;
+    in property <string> music-title: "";
+    in property <string> music-artist: "";
+    in property <bool> music-playing: false;
+    callback music-toggle();
+    callback music-next();
+
+    // PIN. `pin-required` gates dismissal; `pin-len` drives the dot row;
+    // `pin-error` flashes the dots red. Rust owns verification.
+    in property <bool> pin-required: false;
+    in property <int> pin-len: 0;
+    in property <bool> pin-error: false;
+    callback pin-digit(string);   // append a digit
+    callback pin-backspace();
+    callback pin-clear();
+    callback unlock();            // no-PIN dismissal (wake)
+
+    // Once woken, whether the PIN pad is showing.
+    property <bool> woke: false;
+
     visible: active;
     background: #000000;
     width: 100%; height: 100%;
     z: 1000;
 
+    // Reset wake state whenever the overlay (re)activates.
+    changed active => { if root.active { root.woke = false; } }
+
+    // ---- Slideshow layer (Ken Burns) --------------------------------------
     if active: Rectangle {
         property <float> t: 0;
         animate t { duration: 12s; easing: ease-in-out; }
+        // Fallback gradient behind the photo (also shows through while empty).
         background: @linear-gradient(135deg,
             #1a0f3a.with-alpha(0.95) 0%,
             #050614.with-alpha(0.85) 50%,
@@ -28,10 +83,33 @@ export component AmbientScreensaver inherits Rectangle {
             width: parent.width * 0.7;
             height: parent.height * 0.7;
         }
+        // Current + next photo, cross-faded. Ken Burns scale via the animated t.
+        Image {
+            source: root.photo; image-fit: cover;
+            width: parent.width * (1.0 + t * 0.08);
+            height: parent.height * (1.0 + t * 0.08);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            opacity: 1.0 - root.photo-fade;
+        }
+        Image {
+            source: root.photo-next; image-fit: cover;
+            width: parent.width * (1.0 + t * 0.08);
+            height: parent.height * (1.0 + t * 0.08);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            opacity: root.photo-fade;
+        }
+        // Legibility scrim under the clock / pad.
+        Rectangle {
+            background: @linear-gradient(180deg,
+                #00000000 0%, #00000033 55%, #000000cc 100%);
+        }
         init => { self.t = 1; }
     }
 
-    if active: VerticalLayout {
+    // ---- Clock + caption (bottom, hidden once the pad shows) ---------------
+    if active && !(root.woke && root.pin-required): VerticalLayout {
         alignment: end; padding: 60px;
         Text {
             text: clock-text;
@@ -47,5 +125,103 @@ export component AmbientScreensaver inherits Rectangle {
         }
     }
 
-    TouchArea { clicked => { root.active = false; } }
+    // ---- Now-playing mini-card (top-left) ---------------------------------
+    if active && root.music-title != "": Rectangle {
+        x: 40px; y: 40px;
+        width: 320px; height: 76px;
+        border-radius: 14px;
+        background: #0b0b16cc;
+        border-width: 1px; border-color: #ffffff22;
+        HorizontalLayout {
+            padding: 10px; spacing: 12px;
+            Rectangle {
+                width: 56px; height: 56px; border-radius: 8px; clip: true;
+                background: #ffffff10;
+                Image { source: root.music-art; image-fit: cover; width: 100%; height: 100%; }
+            }
+            VerticalLayout {
+                alignment: center; spacing: 2px;
+                Text { text: root.music-title; color: #f8faff; font-size: 13px; font-weight: 600;
+                    overflow: elide; horizontal-alignment: left; }
+                Text { text: root.music-artist; color: #f8faffa0; font-size: 11px;
+                    overflow: elide; horizontal-alignment: left; }
+            }
+            // Play/pause + next.
+            HorizontalLayout {
+                alignment: end; spacing: 4px;
+                TouchArea {
+                    width: 32px; height: 56px; mouse-cursor: pointer;
+                    clicked => { root.music-toggle(); }
+                    AppIcon { source: root.music-playing ? Icons.pause : Icons.play;
+                        tint: #f8faff; width: 20px; height: 20px;
+                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                }
+                TouchArea {
+                    width: 32px; height: 56px; mouse-cursor: pointer;
+                    clicked => { root.music-next(); }
+                    AppIcon { source: Icons.skip-forward; tint: #f8faff; width: 20px; height: 20px;
+                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                }
+            }
+        }
+    }
+
+    // ---- PIN pad (center, only after wake when required) ------------------
+    if active && root.woke && root.pin-required: Rectangle {
+        VerticalLayout {
+            alignment: center; spacing: 28px;
+            Text { text: "Enter PIN"; color: #f8faff; font-size: 20px; font-weight: 500;
+                horizontal-alignment: center; }
+            // Dot row — filled per entered digit; red on error.
+            HorizontalLayout {
+                alignment: center; spacing: 16px;
+                for i in 6: Rectangle {
+                    width: 14px; height: 14px; border-radius: 7px;
+                    background: i < root.pin-len
+                        ? (root.pin-error ? #ff5c5c : #f8faff)
+                        : #ffffff2a;
+                    border-width: 1px;
+                    border-color: root.pin-error ? #ff5c5c : #ffffff44;
+                    animate background { duration: 120ms; }
+                }
+            }
+            // 3×4 keypad.
+            GridLayout {
+                spacing: 14px;
+                Row {
+                    PinKey { label: "1"; clicked => { root.pin-digit("1"); } }
+                    PinKey { label: "2"; clicked => { root.pin-digit("2"); } }
+                    PinKey { label: "3"; clicked => { root.pin-digit("3"); } }
+                }
+                Row {
+                    PinKey { label: "4"; clicked => { root.pin-digit("4"); } }
+                    PinKey { label: "5"; clicked => { root.pin-digit("5"); } }
+                    PinKey { label: "6"; clicked => { root.pin-digit("6"); } }
+                }
+                Row {
+                    PinKey { label: "7"; clicked => { root.pin-digit("7"); } }
+                    PinKey { label: "8"; clicked => { root.pin-digit("8"); } }
+                    PinKey { label: "9"; clicked => { root.pin-digit("9"); } }
+                }
+                Row {
+                    PinKey { label: "C"; muted: true; clicked => { root.pin-clear(); } }
+                    PinKey { label: "0"; clicked => { root.pin-digit("0"); } }
+                    PinKey { label: "⌫"; muted: true; clicked => { root.pin-backspace(); } }
+                }
+            }
+        }
+    }
+
+    // Wake / dismiss. Click anywhere not on the pad/card: if a PIN is required
+    // reveal the pad (Rust dismisses on correct code); else unlock immediately.
+    TouchArea {
+        clicked => {
+            if root.pin-required {
+                root.woke = true;
+            } else {
+                root.unlock();
+                root.active = false;
+            }
+        }
+    }
 }

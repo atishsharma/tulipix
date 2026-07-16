@@ -6853,6 +6853,18 @@ export component MusicFullscreen inherits Rectangle {
     // still reads through the pale gradient (user request 2026-06-13).
     Image { source: art; image-fit: cover; width: 100%; height: 100%; opacity: MusicTheme.light ? 0.89 : 0.59; }
     Rectangle { width: 100%; height: 100%; background: @linear-gradient(180deg, MusicTheme.surf-zen-w1, MusicTheme.surf-zen-w2); }
+    // Solid-overlay guard: the zen player fills the screen but is only a floating
+    // layer — without a base TouchArea, stray clicks in empty regions fall
+    // through to the section rendered underneath (annoying click-through the
+    // user reported). This catch-all sits below the interactive content in
+    // z-order, so real controls (later siblings) still receive their events
+    // while blank areas are swallowed. Also blocks scroll/wheel bleed-through.
+    TouchArea {
+        width: 100%; height: 100%;
+        // Absorb pointer + wheel so the page below never reacts.
+        clicked => { }
+        scroll-event(e) => { return accept; }
+    }
     // Escape closes the queue panel / lyrics, then exits zen.
     zfs := FocusScope {
         init => { self.focus(); }
