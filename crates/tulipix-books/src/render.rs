@@ -58,36 +58,78 @@ fn cbr_pages(path: &Path) -> Result<Vec<String>> {
 /// Total fixed pages for pdf/cbz/cbr.
 pub fn page_count(path: &Path, format: &str) -> Result<usize> {
     match format {
-        "pdf" => {
-            let out = Command::new("pdfinfo").arg(path).output()
-                .context("pdfinfo not found (install poppler-utils)")?;
-            let text = String::from_utf8_lossy(&out.stdout).to_string();
-            text.lines()
-                .find(|l| l.starts_with("Pages:"))
-                .and_then(|l| l.split_whitespace().nth(1))
-                .and_then(|n| n.parse().ok())
-                .context("pdfinfo gave no page count")
-        }
+        "pdf" => pdf_page_count(path),
         "cbz" => Ok(cbz_pages(path)?.len()),
         "cbr" => Ok(cbr_pages(path)?.len()),
         _ => bail!("not a fixed-page format: {format}"),
     }
 }
 
-/// Render page `idx` (0-based) to a cached PNG/JPG; returns the cache path.
+/// PDF page count, hardened against the "valid file won't open" bug: `pdfinfo`
+/// with an empty user password (so empty-password-encrypted PDFs count), exit
+/// status + stderr actually checked, and a pure-Rust `lopdf` fallback when
+/// poppler yields nothing (broken xref / stderr-only output / missing binary).
+fn pdf_page_count(path: &Path) -> Result<usize> {
+    // 1) poppler pdfinfo — the fast path, now with -upw "" and status check.
+    let pdfinfo_err = match Command::new("pdfinfo").args(["-upw", ""]).arg(path).output() {
+        Ok(out) => {
+            let text = String::from_utf8_lossy(&out.stdout);
+            let n = text
+                .lines()
+                .find(|l| l.starts_with("Pages:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|n| n.parse::<usize>().ok());
+            if let Some(n) = n.filter(|n| *n > 0) {
+                return Ok(n);
+            }
+            format!(
+                "pdfinfo status {}: {}",
+                out.status,
+                String::from_utf8_lossy(&out.stderr).trim()
+            )
+        }
+        Err(e) => format!("pdfinfo not runnable ({e})"),
+    };
+    // 2) Fallback: parse the page tree ourselves.
+    if let Some(n) = pdf_pages_lopdf(path) {
+        return Ok(n);
+    }
+    bail!("could not read PDF page count ({pdfinfo_err}); install poppler-utils or the file may be corrupt")
+}
+
+/// Pure-Rust page count via `lopdf` (fallback when poppler fails).
+fn pdf_pages_lopdf(path: &Path) -> Option<usize> {
+    let doc = lopdf::Document::load(path).ok()?;
+    let n = doc.get_pages().len();
+    (n > 0).then_some(n)
+}
+
+/// Default rasterisation resolution (DPI) for fixed-page rendering.
+pub const BASE_DPI: u32 = 150;
+
+/// Render page `idx` (0-based) at [`BASE_DPI`] to a cached PNG/JPG.
 pub fn page_image(path: &Path, format: &str, idx: usize) -> Result<PathBuf> {
+    page_image_dpi(path, format, idx, BASE_DPI)
+}
+
+/// Render page `idx` (0-based) at `dpi` to a cached PNG/JPG; returns the cache
+/// path. Higher `dpi` gives a crisp bitmap for deep zoom (PDF only — comics are
+/// stored bitmaps, so `dpi` is ignored there). Cache is keyed by dpi so the
+/// 150-DPI page and a zoomed 300-DPI page coexist.
+pub fn page_image_dpi(path: &Path, format: &str, idx: usize, dpi: u32) -> Result<PathBuf> {
     let dir = pages_dir(path)?;
-    let cached = dir.join(format!("{idx:05}.png"));
+    let cached = dir.join(format!("{idx:05}@{dpi}.png"));
     if cached.exists() {
         return Ok(cached);
     }
     match format {
         "pdf" => {
-            // pdftoppm -png -f N -l N -r 150 in.pdf out_prefix → out_prefix-N.png
-            let prefix = dir.join(format!("p{idx:05}"));
+            // pdftoppm -png -f N -l N -r DPI -upw "" in.pdf out_prefix → out_prefix-N.png
+            let prefix = dir.join(format!("p{idx:05}_{dpi}"));
             let n = (idx + 1).to_string();
+            let r = dpi.to_string();
             let st = Command::new("pdftoppm")
-                .args(["-png", "-r", "150", "-f", &n, "-l", &n])
+                .args(["-png", "-upw", "", "-r", &r, "-f", &n, "-l", &n])
                 .arg(path)
                 .arg(&prefix)
                 .status()
@@ -102,7 +144,7 @@ pub fn page_image(path: &Path, format: &str, idx: usize) -> Result<PathBuf> {
                 .find(|p| {
                     p.file_name()
                         .and_then(|f| f.to_str())
-                        .map(|f| f.starts_with(&format!("p{idx:05}-")))
+                        .map(|f| f.starts_with(&format!("p{idx:05}_{dpi}-")))
                         .unwrap_or(false)
                 })
                 .context("pdftoppm produced no file")?;
@@ -146,6 +188,48 @@ pub fn page_image(path: &Path, format: &str, idx: usize) -> Result<PathBuf> {
             Ok(cached)
         }
         _ => bail!("not a fixed-page format: {format}"),
+    }
+}
+
+/// Prune the rendered-page cache to at most `cap_bytes`, deleting whole
+/// per-book page dirs oldest-first (by mtime). Cheap bound so `~/.cache` doesn't
+/// grow forever; call on reader open. ponytail: whole-dir LRU, not per-page —
+/// good enough, upgrade to per-page LRU only if it ever matters.
+pub fn prune_page_cache(cap_bytes: u64) {
+    let Some(root) = crate::cache_dir().map(|d| d.join("pages")) else { return };
+    let mut dirs: Vec<(std::time::SystemTime, u64, PathBuf)> = Vec::new();
+    let Ok(rd) = std::fs::read_dir(&root) else { return };
+    for e in rd.filter_map(|e| e.ok()) {
+        let p = e.path();
+        if !p.is_dir() {
+            continue;
+        }
+        let mut size = 0u64;
+        let mut newest = std::time::SystemTime::UNIX_EPOCH;
+        if let Ok(inner) = std::fs::read_dir(&p) {
+            for f in inner.filter_map(|f| f.ok()) {
+                if let Ok(m) = f.metadata() {
+                    size += m.len();
+                    if let Ok(t) = m.modified() {
+                        newest = newest.max(t);
+                    }
+                }
+            }
+        }
+        dirs.push((newest, size, p));
+    }
+    let mut total: u64 = dirs.iter().map(|(_, s, _)| *s).sum();
+    if total <= cap_bytes {
+        return;
+    }
+    dirs.sort_by_key(|(t, _, _)| *t); // oldest first
+    for (_, size, path) in dirs {
+        if total <= cap_bytes {
+            break;
+        }
+        if std::fs::remove_dir_all(&path).is_ok() {
+            total = total.saturating_sub(size);
+        }
     }
 }
 

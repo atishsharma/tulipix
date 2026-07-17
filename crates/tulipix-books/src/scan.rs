@@ -93,6 +93,29 @@ pub async fn scan_all(pool: &SqlitePool) -> Result<ScanReport> {
     Ok(report)
 }
 
+/// Index book *contents* for library-wide search (FTS). Walks books that have
+/// no `book_fts` row yet, extracts their text (blocking parse, off-thread), and
+/// inserts it. Best-effort + resumable — run in a background task after a scan.
+/// Image-only formats (PDF/CBZ/CBR) have no reflow text and are skipped.
+pub async fn index_contents(pool: &SqlitePool) -> Result<()> {
+    let rows: Vec<(i64, String, String)> = sqlx::query_as(
+        "SELECT b.id, b.path, b.format FROM books b
+         WHERE b.missing = 0
+           AND b.format IN ('epub','mobi','azw3')
+           AND b.id NOT IN (SELECT CAST(book_id AS INTEGER) FROM book_fts)",
+    )
+    .fetch_all(pool)
+    .await?;
+    for (id, path, format) in rows {
+        let p = PathBuf::from(&path);
+        let body = tokio::task::spawn_blocking(move || crate::book_text(&p, &format).join("\n"))
+            .await
+            .unwrap_or_default();
+        let _ = crate::library::fts_index(pool, id, &body).await;
+    }
+    Ok(())
+}
+
 /// Upsert a single file (also used by drag-drop / file-picker adds).
 pub async fn add_one(pool: &SqlitePool, path: &Path) -> Result<i64> {
     let Some(format) = format_of(path) else { anyhow::bail!("unsupported file") };

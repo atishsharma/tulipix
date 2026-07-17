@@ -139,6 +139,9 @@ component PaperPage inherits Rectangle {
     in property <bool> bold: false;
     in property <bool> is-image: false; // fixed-page (PDF/CBZ/CBR) mode
     in property <image> page-image;
+    // Horizontal padding (both sides combined), margin-driven so the rendered
+    // column matches what the engine paginates to.
+    in property <length> pad-x: 96px;
     callback prev;
     callback next;
     background: paper;
@@ -148,7 +151,9 @@ component PaperPage inherits Rectangle {
     drop-shadow-color: #00000022;
     drop-shadow-offset-y: 10px;
     VerticalLayout {
-        padding: root.is-image ? 16px : 40px;
+        padding-left: root.is-image ? 16px : root.pad-x / 2;
+        padding-right: root.is-image ? 16px : root.pad-x / 2;
+        padding-top: root.is-image ? 16px : 40px;
         padding-bottom: 20px;
         spacing: 0px;
         // Fixed-page: rasterised page image (PDF/CBZ/CBR).
@@ -576,6 +581,7 @@ component AnnotPanel inherits Rectangle {
     callback jump(int);
     callback set-note(int, string);
     callback remove(int);
+    callback export();
     callback close();
     width: 310px;
     background: BookTheme.card;
@@ -593,11 +599,20 @@ component AnnotPanel inherits Rectangle {
                 font-weight: 700;
                 vertical-alignment: center;
             }
-            ChromeButton {
-                icon: Icons.x;
-                width: 32px;
-                height: 32px;
-                clicked => { root.close(); }
+            HorizontalLayout {
+                spacing: 6px;
+                ChromeButton {
+                    icon: Icons.file-text;
+                    width: 32px;
+                    height: 32px;
+                    clicked => { root.export(); }
+                }
+                ChromeButton {
+                    icon: Icons.x;
+                    width: 32px;
+                    height: 32px;
+                    clicked => { root.close(); }
+                }
             }
         }
         // Add a note anchored to the current page.
@@ -695,6 +710,7 @@ export component BookReader inherits Rectangle {
     in property <string> next-chapter-name;
     // Toggles / state
     in property <bool> bookmarked;
+    in property <bool> has-note: false;   // current page carries a note (R3)
     in-out property <bool> contents-open: true;
     in-out property <bool> typography-open: false;
     in property <float> font-px: 17;
@@ -728,6 +744,16 @@ export component BookReader inherits Rectangle {
     in property <int> tts-speed-index: 1;   // 0 .75× · 1 1× · 2 1.25× · 3 1.5×
     in property <[string]> tts-voices: [];
     in property <string> tts-voice: "";
+    // Define-a-word popup (R2): centered lookup — definition / translation / wiki.
+    in-out property <bool> define-open: false;
+    in-out property <string> define-word: "";
+    in-out property <string> define-lang: "es";     // translation target (2-letter)
+    in property <bool> define-loading: false;
+    in property <string> define-definition: "";
+    in property <string> define-pos: "";
+    in property <string> define-translation: "";
+    in property <string> define-wiki: "";
+    in property <string> define-wiki-url: "";
 
     // Callbacks → sec-books
     callback back();
@@ -739,6 +765,7 @@ export component BookReader inherits Rectangle {
     callback annot-jump(int);
     callback annot-set-note(int, string);
     callback annot-remove(int);
+    callback annot-export();
     callback search-run(string);
     callback font-dec();
     callback font-inc();
@@ -758,12 +785,15 @@ export component BookReader inherits Rectangle {
     callback prev-page();         // single-page step (±1)
     callback next-page();
     callback set-single(bool);    // tell the engine to stop even-aligning spreads
+    callback report-geom(length, length); // real page px → engine pagination
     callback tts-start();
     callback tts-stop();
     callback tts-play-pause();
     callback tts-set-speed(int);
     callback tts-set-voice(string);
     callback tts-jump(int);
+    callback define-run(string, string);   // (word, target-lang)
+    callback open-url(string);
 
     // Derived paper palette from theme-mode.
     property <color> paper: root.theme-mode == "sepia" ? #f4ecd8
@@ -772,6 +802,9 @@ export component BookReader inherits Rectangle {
     property <color> paper-ink: root.theme-mode == "sepia" ? #4a3f2f
         : root.theme-mode == "dark" ? #d8d8dc
         : root.theme-mode == "night" ? #b8b8be : #1b1b22;
+    // Margin-driven horizontal page padding (both sides), matching the engine's
+    // MARGINS table so pagination and rendering agree.
+    property <length> page-pad-x: root.margin-index == 0 ? 56px : root.margin-index == 2 ? 150px : 96px;
     // Single page when the user toggles it, or the window is too narrow for two.
     property <bool> single-page: root.force-single || root.width < 1000px;
     // Continuous text scroll = single-page mode on a reflow (non-image) book.
@@ -795,10 +828,13 @@ export component BookReader inherits Rectangle {
 
     key-scope := FocusScope {
         key-pressed(e) => {
-            if (e.text == Key.LeftArrow) { root.prev-spread(); return accept; }
-            if (e.text == Key.RightArrow) { root.next-spread(); return accept; }
+            if (e.text == Key.LeftArrow || e.text == Key.PageUp) { root.prev-spread(); return accept; }
+            if (e.text == Key.RightArrow || e.text == Key.PageDown || e.text == " ") { root.next-spread(); return accept; }
             if (e.text == Key.Escape) {
-                if (root.contents-open) { root.contents-open = false; } else { root.back(); }
+                if (root.define-open) { root.define-open = false; }
+                else if (root.typography-open) { root.typography-open = false; }
+                else if (root.contents-open) { root.contents-open = false; }
+                else { root.back(); }
                 return accept;
             }
             if (e.text == "b") { root.toggle-bookmark(); return accept; }
@@ -865,16 +901,25 @@ export component BookReader inherits Rectangle {
                         active: root.bookmarked;
                         clicked => { root.toggle-bookmark(); }
                     }
-                    ChromeButton {
-                        icon: Icons.square-pen;
-                        active: root.notes-open;
-                        clicked => {
-                            root.notes-open = !root.notes-open;
-                            if (root.notes-open) {
-                                root.contents-open = false;
-                                root.search-open = false;
-                                root.annotate();
+                    Rectangle {
+                        width: 44px; height: 44px;
+                        ChromeButton {
+                            icon: Icons.square-pen;
+                            active: root.notes-open;
+                            clicked => {
+                                root.notes-open = !root.notes-open;
+                                if (root.notes-open) {
+                                    root.contents-open = false;
+                                    root.search-open = false;
+                                    root.annotate();
+                                }
                             }
+                        }
+                        // Amber dot when the current page has a note.
+                        if root.has-note: Rectangle {
+                            x: parent.width - 13px; y: 7px;
+                            width: 8px; height: 8px; border-radius: 4px;
+                            background: #f5a623; border-width: 1.5px; border-color: BookTheme.card;
                         }
                     }
                     ChromeButton {
@@ -899,14 +944,20 @@ export component BookReader inherits Rectangle {
                         active: root.force-single;
                         clicked => { root.force-single = !root.force-single; }
                     }
-                    // Read aloud (TTS).
-                    ChromeButton {
+                    // Read aloud (TTS) — reflow text only (image PDFs have no text).
+                    if !root.image-mode: ChromeButton {
                         icon: Icons.headphones;
                         active: root.tts-open;
                         clicked => {
                             root.tts-open = !root.tts-open;
                             if (root.tts-open) { root.tts-start(); } else { root.tts-stop(); }
                         }
+                    }
+                    // Define a word (dictionary / translation / Wikipedia).
+                    ChromeButton {
+                        caption: "Def";
+                        active: root.define-open;
+                        clicked => { root.define-open = !root.define-open; }
                     }
                     ChromeButton {
                         caption: "Aa";
@@ -965,7 +1016,7 @@ export component BookReader inherits Rectangle {
                         opacity: root.spread-op;
                         HorizontalLayout {
                             spacing: 0px;
-                            PaperPage {
+                            lp := PaperPage {
                                 horizontal-stretch: 1;
                                 body: root.left-text;
                                 heading: root.left-heading;
@@ -976,9 +1027,14 @@ export component BookReader inherits Rectangle {
                                 folio: root.left-folio;
                                 paper: root.paper;
                                 ink: root.paper-ink;
+                                pad-x: root.page-pad-x;
                                 font-size: root.font-px * 1px;
                                 prev => { root.prev-spread(); }
                                 next => { root.next-spread(); }
+                                // Report the real page px so the engine paginates to
+                                // the actual column (fixes clipping / gaps on resize).
+                                changed width => { if (!root.image-mode) { root.report-geom(self.width, self.height); } }
+                                changed height => { if (!root.image-mode) { root.report-geom(self.width, self.height); } }
                             }
                             // Center gutter shadow.
                             if !root.single-page: Rectangle {
@@ -996,6 +1052,7 @@ export component BookReader inherits Rectangle {
                                 folio: root.right-folio;
                                 paper: root.paper;
                                 ink: root.paper-ink;
+                                pad-x: root.page-pad-x;
                                 font-size: root.font-px * 1px;
                                 prev => { root.prev-spread(); }
                                 next => { root.next-spread(); }
@@ -1088,6 +1145,7 @@ export component BookReader inherits Rectangle {
                 jump(id) => { root.annot-jump(id); }
                 set-note(id, t) => { root.annot-set-note(id, t); }
                 remove(id) => { root.annot-remove(id); }
+                export => { root.annot-export(); }
                 close => { root.notes-open = false; }
             }
         }
@@ -1422,6 +1480,90 @@ export component BookReader inherits Rectangle {
                 border-width: 1px; border-color: BookTheme.hairline;
                 AppIcon { source: Icons.x; tint: BookTheme.ink-dim; width: 15px; height: 15px; }
                 closeta := TouchArea { mouse-cursor: pointer; clicked => { root.tts-open = false; root.tts-stop(); } }
+            }
+        }
+    }
+
+    // ── Define-a-word popup (R2) ───────────────────────────────────────────────
+    if root.define-open: TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.define-open = false; }
+    }
+    if root.define-open: Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: 540px;
+        height: 460px;
+        border-radius: 18px;
+        background: BookTheme.card;
+        border-width: 1px;
+        border-color: BookTheme.hairline;
+        drop-shadow-blur: 34px;
+        drop-shadow-color: #00000033;
+        drop-shadow-offset-y: 8px;
+        VerticalLayout {
+            padding: 18px;
+            spacing: 14px;
+            // Title + close.
+            HorizontalLayout {
+                alignment: space-between;
+                Text { text: "Define"; color: BookTheme.ink; font-size: 18px; font-weight: 800; vertical-alignment: center; }
+                ChromeButton { icon: Icons.x; width: 32px; height: 32px; clicked => { root.define-open = false; } }
+            }
+            // Word input + language + search.
+            HorizontalLayout {
+                spacing: 8px;
+                wordfield := LineEdit {
+                    placeholder-text: "Type a word…";
+                    text <=> root.define-word;
+                    horizontal-stretch: 1;
+                    accepted(t) => { root.define-run(t, root.define-lang); }
+                }
+                ComboBox {
+                    model: ["es", "fr", "de", "it", "pt", "hi", "ja", "zh", "ru", "ar"];
+                    current-value: root.define-lang;
+                    selected(v) => { root.define-lang = v; }
+                }
+                Rectangle {
+                    width: 92px; height: 34px; border-radius: 9px; background: BookTheme.accent;
+                    HorizontalLayout { alignment: center; spacing: 6px;
+                        AppIcon { source: Icons.search; tint: #ffffff; width: 14px; height: 14px; vertical-alignment: center; }
+                        Text { text: "Search"; color: #ffffff; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                    }
+                    TouchArea { mouse-cursor: pointer; clicked => { root.define-run(root.define-word, root.define-lang); } }
+                }
+            }
+            if root.define-loading: Text { text: "Looking up…"; color: BookTheme.ink-dim; font-size: 13px; }
+            // Results.
+            ScrollView {
+                VerticalLayout {
+                    spacing: 14px;
+                    if root.define-definition != "": VerticalLayout {
+                        spacing: 3px;
+                        Text { text: "Definition" + (root.define-pos != "" ? " · " + root.define-pos : "");
+                            color: BookTheme.accent; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+                        Text { text: root.define-definition; color: BookTheme.ink; font-size: 14px; wrap: word-wrap; }
+                    }
+                    if root.define-translation != "": VerticalLayout {
+                        spacing: 3px;
+                        Text { text: "Translation (" + root.define-lang + ")"; color: BookTheme.accent; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+                        Text { text: root.define-translation; color: BookTheme.ink; font-size: 14px; wrap: word-wrap; }
+                    }
+                    if root.define-wiki != "": VerticalLayout {
+                        spacing: 3px;
+                        Text { text: "Wikipedia"; color: BookTheme.accent; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+                        Text { text: root.define-wiki; color: BookTheme.ink; font-size: 13px; wrap: word-wrap; }
+                        if root.define-wiki-url != "": Text {
+                            text: "Open article →"; color: BookTheme.accent; font-size: 12px; font-weight: 700;
+                            TouchArea { mouse-cursor: pointer; clicked => { root.open-url(root.define-wiki-url); } }
+                        }
+                    }
+                    if !root.define-loading && root.define-definition == "" && root.define-translation == "" && root.define-wiki == "": Text {
+                        text: "Enter a word and press Search.";
+                        color: BookTheme.ink-dim; font-size: 13px;
+                    }
+                }
             }
         }
     }

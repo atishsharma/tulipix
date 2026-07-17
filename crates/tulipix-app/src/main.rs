@@ -4676,6 +4676,9 @@ fn seed_settings_panels(w: &MainWindow) {
         tog(&s, "ai.captions", false, "Describe photos automatically", "Writes captions and alt-text for new photos as they are added"),
         tog(&s, "ai.voice", true, "Voice search", "The mic button in search bars — speak instead of typing"),
         tog(&s, "ai.chat", false, "Chat assistant (Ctrl+J)", "Ask questions about your library in plain language"),
+        hdr("BOOK READ-ALOUD"),
+        tog(&s, "books.tts.neural", true, "Use neural voice (Kokoro)",
+            "Natural AI voice for the reader's Read Aloud. Off = robotic espeak voice (no model, needs espeak-ng). Neural needs the kokoro-82m model above + a books-tts build."),
         hdr("CLOUD"),
         tog(&s, "ai.cloud-offload", false, "Allow cloud AI help", "Send selected questions to a cloud AI service. Off = everything stays on-device"),
     ]);

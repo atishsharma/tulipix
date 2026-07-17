@@ -17,8 +17,8 @@ use tulipix_books::toc::TocEntry;
 use tulipix_common::pool_for;
 use tulipix_ui::*;
 
-/// Books per grid page.
-const PAGE_SIZE: usize = 24;
+/// Books per grid page (full-bleed 4×3 library grid).
+const PAGE_SIZE: usize = 12;
 
 /// Live reader session, owned by the Slint event-loop thread. The async book
 /// loader hands its result in via [`slint::Weak::upgrade_in_event_loop`], and
@@ -79,6 +79,9 @@ thread_local! {
     }) };
     // Single-page view: nav steps by 1 and doesn't even-align spreads.
     static SINGLE: Cell<bool> = const { Cell::new(false) };
+    // Real rendered page size (px), reported by the Slint PaperPage so pagination
+    // matches the on-screen column. (0,0) until first report → Layout defaults.
+    static PAGE_GEOM: Cell<(f32, f32)> = const { Cell::new((0.0, 0.0)) };
     // Read-aloud (TTS) state — Phase 1 timer-paced highlight; Phase 2 syncs to
     // Kokoro audio. Lives on the event-loop thread (all TTS callbacks + the
     // slint::Timer fire there).
@@ -88,10 +91,18 @@ thread_local! {
 #[derive(Default)]
 struct TtsState {
     sentences: Vec<String>,
+    /// Screen-page index of each sentence (paginate space), so the reader spread
+    /// follows along as the highlight advances. Index-aligned with `sentences`.
+    sent_pages: Vec<usize>,
     active: usize,
     playing: bool,
     speed_idx: u8,
     voice: String,
+    /// True when real audio (neural or robotic) drives playback; false = timer-
+    /// paced highlight. Decided at `tts_start` from settings + availability.
+    audio: bool,
+    /// When `audio`: true = Kokoro neural, false = espeak robotic.
+    neural: bool,
     /// Bumped on every (re)start/seek so stale scheduled timers self-cancel.
     generation: u64,
 }
@@ -104,6 +115,28 @@ const TTS_VOICES: [(&str, &str); 4] = [
     ("Michael (M)", "am_michael"),
     ("Adam (M)", "am_adam"),
 ];
+
+/// Kokoro voice id for a UI label (defaults to the first voice).
+fn voice_id(label: &str) -> &'static str {
+    TTS_VOICES.iter().find(|(l, _)| *l == label).map(|(_, id)| *id).unwrap_or(TTS_VOICES[0].1)
+}
+
+/// Pick the read-aloud engine for `voice_label` → (uses_audio, is_neural).
+/// Honors the `books.tts.neural` setting, falling back to robotic espeak, then
+/// to the timer-paced highlight when nothing is available.
+fn decide_engine(voice_label: &str) -> (bool, bool) {
+    let prefer_neural = tulipix_core::settings::Settings::load()
+        .map(|s| s.flag("books.tts.neural", true))
+        .unwrap_or(true);
+    let neural_ok = prefer_neural && tulipix_books::kokoro::available(voice_id(voice_label));
+    if neural_ok {
+        (true, true)
+    } else if tulipix_books::speech::espeak_available() {
+        (true, false)
+    } else {
+        (false, false)
+    }
+}
 
 /// Font-size bounds for the Aa stepper (px).
 const FONT_MIN: f32 = 13.0;
@@ -128,15 +161,28 @@ fn typeface_glyph(t: u8) -> f32 {
     }
 }
 
-/// Build the pagination [`Layout`] from the current prefs.
+/// Build the pagination [`Layout`] from the current prefs. When a real page
+/// size is known (`PAGE_GEOM`), use it so pagination matches the rendered
+/// column instead of the 480×640 default (fixes text clipping / gaps).
 fn layout_from(p: &ReaderPrefs) -> Layout {
-    Layout {
+    // Bold widens glyphs ~8%, so fewer chars fit per line — reflect that in the
+    // width estimate or bold body text clips.
+    let glyph = typeface_glyph(p.typeface) * if p.bold { 1.08 } else { 1.0 };
+    let (w, h) = PAGE_GEOM.with(|c| c.get());
+    let mut l = Layout {
         font_px: p.font_px,
         line_height: LINE_HEIGHTS[p.line_idx as usize % 3],
         pad_x_px: MARGINS[p.margin_idx as usize % 3],
-        glyph_em: typeface_glyph(p.typeface),
+        glyph_em: glyph,
         ..Layout::default()
+    };
+    if w > 1.0 && h > 1.0 {
+        l.page_w_px = w;
+        l.page_h_px = h;
+        // PaperPage chrome: 40 top + 20 bottom + 24 folio ≈ 84px; small safety.
+        l.pad_y_px = 92.0;
     }
+    l
 }
 
 /// Push every appearance pref to the reader window props (visual + sheet state).
@@ -174,10 +220,11 @@ fn reader_repaginate(w: &MainWindow, weak: slint::Weak<MainWindow>) {
 pub fn wire(window: &MainWindow) {
     // Sort index is not a UI property (it flows through set-sort by label), so
     // hold it here and rebuild the [`Filter`] from window props on each refresh.
-    let sort_idx = Rc::new(Cell::new(0usize));
+    let sort_idx = Rc::new(Cell::new(tulipix_books::prefs::load_sort()));
 
-    // Restore the persisted grid/list view preference.
+    // Restore the persisted grid/list view preference + sort order.
     window.set_books_view_mode(tulipix_books::prefs::load_view_mode().into());
+    window.set_books_sort_index(sort_idx.get() as i32);
 
     let w = window.as_weak();
     let s = sort_idx.clone();
@@ -237,6 +284,60 @@ pub fn wire(window: &MainWindow) {
         books_refresh(w.clone(), s.get());
     });
 
+    // Series filter (toggle off by clicking the active one).
+    let w = window.as_weak();
+    let s = sort_idx.clone();
+    window.on_books_series_filter(move |name| {
+        if let Some(w) = w.upgrade() {
+            let cur = w.get_books_active_series().to_string();
+            let next = if cur == name.as_str() { String::new() } else { name.to_string() };
+            w.set_books_active_series(next.into());
+            w.set_books_page(1);
+        }
+        books_refresh(w.clone(), s.get());
+    });
+
+    // Collection filter (0 clears).
+    let w = window.as_weak();
+    let s = sort_idx.clone();
+    window.on_books_collection_filter(move |id| {
+        if let Some(w) = w.upgrade() {
+            let cur = w.get_books_active_collection();
+            w.set_books_active_collection(if cur == id { 0 } else { id });
+            w.set_books_page(1);
+        }
+        books_refresh(w.clone(), s.get());
+    });
+    let w = window.as_weak();
+    let s = sort_idx.clone();
+    window.on_books_collection_create(move |name| {
+        collection_create(w.clone(), name.to_string(), s.get());
+    });
+    let w = window.as_weak();
+    let s = sort_idx.clone();
+    window.on_books_collection_delete(move |id| {
+        collection_delete(w.clone(), id as i64, s.get());
+    });
+    let w = window.as_weak();
+    window.on_books_collection_toggle(move |book_id, cid| {
+        collection_toggle(w.clone(), book_id as i64, cid as i64);
+    });
+
+    // Content (full-text) search toggle.
+    let w = window.as_weak();
+    let s = sort_idx.clone();
+    window.on_books_set_search_contents(move |on| {
+        if let Some(w) = w.upgrade() {
+            w.set_books_search_contents(on);
+            w.set_books_page(1);
+        }
+        books_refresh(w.clone(), s.get());
+    });
+
+    // Reading-stats panel.
+    let w = window.as_weak();
+    window.on_books_open_stats(move || { books_open_stats(w.clone()); });
+
     // Local star rating.
     let w = window.as_weak();
     let s = sort_idx.clone();
@@ -247,8 +348,10 @@ pub fn wire(window: &MainWindow) {
     let w = window.as_weak();
     let s = sort_idx.clone();
     window.on_books_set_sort(move |label| {
-        s.set(sort_index_of(&label));
-        if let Some(w) = w.upgrade() { w.set_books_page(1); }
+        let idx = sort_index_of(&label);
+        s.set(idx);
+        tulipix_books::prefs::save_sort(idx);
+        if let Some(w) = w.upgrade() { w.set_books_page(1); w.set_books_sort_index(idx as i32); }
         books_refresh(w.clone(), s.get());
     });
 
@@ -292,6 +395,12 @@ pub fn wire(window: &MainWindow) {
     window.on_books_card_menu(move |id, action| {
         books_card_menu(w.clone(), id as i64, action.to_string(), s.get());
     });
+
+    // Book detail popup (R1): show metadata, fetch/cache online summary.
+    let w = window.as_weak();
+    window.on_books_show_detail(move |id| { books_show_detail(w.clone(), id as i64); });
+    let w = window.as_weak();
+    window.on_books_fetch_summary(move |id| { books_fetch_summary(w.clone(), id as i64); });
 
     // ── Reader (Phase 3) ─────────────────────────────────────────────────
     // Open a book from a grid tile.
@@ -351,6 +460,24 @@ pub fn wire(window: &MainWindow) {
     });
     window.on_books_reader_set_single(move |s| { SINGLE.with(|c| c.set(s)); });
 
+    // Real page geometry from the Slint PaperPage → drives pagination so text
+    // fills the actual column (no clipping / gaps). Repaginate only on a material
+    // size change to avoid thrash during a resize drag.
+    let w = window.as_weak();
+    window.on_books_reader_report_geom(move |pw, ph| {
+        if pw < 60.0 || ph < 60.0 {
+            return;
+        }
+        let (ow, oh) = PAGE_GEOM.with(|c| c.get());
+        if (pw - ow).abs() < 4.0 && (ph - oh).abs() < 4.0 {
+            return;
+        }
+        PAGE_GEOM.with(|c| c.set((pw, ph)));
+        if let Some(w) = w.upgrade() {
+            reader_repaginate(&w, w.as_weak());
+        }
+    });
+
     // Read-aloud (TTS).
     let w = window.as_weak();
     window.on_books_reader_tts_start(move || { tts_start(w.clone()); });
@@ -363,6 +490,13 @@ pub fn wire(window: &MainWindow) {
     window.on_books_reader_tts_set_voice(move |v| { tts_set_voice(v.to_string()); });
     let w = window.as_weak();
     window.on_books_reader_tts_jump(move |i| { tts_jump(w.clone(), i); });
+
+    // Define-a-word popup (R2): fetch definition/translation/wiki off-thread.
+    let w = window.as_weak();
+    window.on_books_reader_define_run(move |word, lang| {
+        define_run(w.clone(), word.to_string(), lang.to_string());
+    });
+    window.on_books_open_url(move |url| { open_url(&url); });
     let w = window.as_weak();
     window.on_books_reader_next_chapter(move || {
         if let Some(w) = w.upgrade() { nav_chapter(&w, w.as_weak(), 1); }
@@ -423,6 +557,8 @@ pub fn wire(window: &MainWindow) {
     });
     let w = window.as_weak();
     window.on_books_reader_annot_remove(move |id| { reader_annot_remove(w.clone(), id as i64); });
+    let w = window.as_weak();
+    window.on_books_reader_annot_export(move || { reader_annot_export(w.clone()); });
     // In-book search: scan the paginated pages (in memory) for the query.
     let w = window.as_weak();
     window.on_books_reader_search_run(move |q| { reader_search(w.clone(), q.to_string()); });
@@ -492,7 +628,7 @@ fn sort_index_of(label: &str) -> usize {
 fn filter_from(w: &MainWindow, sort_idx: usize) -> Filter {
     let quick = w.get_books_active_quick().to_string();
     let status = match quick.as_str() {
-        "reading" | "finished" | "unread" | "favorites" => quick,
+        "reading" | "finished" | "unread" | "favorites" | "missing" => quick,
         _ => String::new(), // "all"
     };
     Filter {
@@ -500,7 +636,10 @@ fn filter_from(w: &MainWindow, sort_idx: usize) -> Filter {
         status,
         author: w.get_books_active_author().to_string(),
         genre: w.get_books_active_genre().to_string(),
+        series: w.get_books_active_series().to_string(),
+        collection: w.get_books_active_collection() as i64,
         query: w.get_books_search().to_string(),
+        ids: Vec::new(), // filled by books_refresh for content search
         sort: Sort::from_index(sort_idx),
     }
 }
@@ -508,8 +647,8 @@ fn filter_from(w: &MainWindow, sort_idx: usize) -> Filter {
 /// Reload the whole Book Home page: hero + stats from `home::load`, the grid
 /// from `library::list` (filtered + paginated), and the chip rows.
 fn books_refresh(weak: slint::Weak<MainWindow>, sort_idx: usize) {
-    let filter = match weak.upgrade() {
-        Some(w) => filter_from(&w, sort_idx),
+    let (mut filter, content) = match weak.upgrade() {
+        Some(w) => (filter_from(&w, sort_idx), w.get_books_search_contents()),
         None => return,
     };
     let handle = tokio::runtime::Handle::current();
@@ -521,16 +660,48 @@ fn books_refresh(weak: slint::Weak<MainWindow>, sort_idx: usize) {
                 return;
             }
         };
+        // Content search: resolve the query to matching book ids via FTS. A ran
+        // search with no hits becomes the `-1` sentinel → empty grid.
+        if content && !filter.query.trim().is_empty() {
+            let mut ids = library::fts_search(&pool, &filter.query).await.unwrap_or_default();
+            if ids.is_empty() {
+                ids.push(-1);
+            }
+            filter.ids = ids;
+            filter.query = String::new(); // ids already narrow it; skip LIKE
+        }
         let home = tulipix_books::home::load(&pool).await.unwrap_or_default();
         let rows = library::list(&pool, &filter).await.unwrap_or_default();
         let formats = library::format_counts(&pool).await.unwrap_or_default();
         let genres = library::genre_counts(&pool).await.unwrap_or_default();
+        let series = library::series_counts(&pool).await.unwrap_or_default();
+        let colls = library::collections(&pool).await.unwrap_or_default();
         let _ = weak.upgrade_in_event_loop(move |w| {
             apply_home(&w, &home);
             apply_grid(&w, &rows);
             apply_chips(&w, &formats, &genres, &home);
+            apply_series_collections(&w, &series, &colls);
         });
     });
+}
+
+/// Push the Series + Collections rail models.
+fn apply_series_collections(
+    w: &MainWindow,
+    series: &[(String, i64)],
+    colls: &[(i64, String, i64)],
+) {
+    let s: Vec<BookChip> = series
+        .iter()
+        .take(12)
+        .map(|(name, n)| BookChip { key: name.clone().into(), label: name.clone().into(), count: *n as i32 })
+        .collect();
+    w.set_books_series(VecModel::from_slice(&s));
+    let c: Vec<CollChip> = colls
+        .iter()
+        .map(|(id, name, n)| CollChip { id: *id as i32, name: name.clone().into(), count: *n as i32 })
+        .collect();
+    w.set_books_collections(VecModel::from_slice(&c));
 }
 
 /// Push hero + the 2×2 stats strip.
@@ -605,7 +776,8 @@ fn apply_grid(w: &MainWindow, rows: &[BookRow]) {
             percent: b.percent as f32,
             favorite: b.favorite != 0,
             format: b.format.to_uppercase().into(),
-            date: fmt_date(b.added_at),
+            // Card date: last-read when the book has been opened, else added.
+            date: if b.last_read > 0 { fmt_date(b.last_read) } else { fmt_date(b.added_at) },
             hue: cover_hue(&b.title),
             rating: b.rating as f32,
             missing: b.missing != 0,
@@ -646,6 +818,7 @@ fn apply_chips(
         BookChip { key: "unread".into(), label: "Unread".into(), count: -1 },
         BookChip { key: "finished".into(), label: "Finished".into(), count: home.stats.finished as i32 },
         BookChip { key: "favorites".into(), label: "Favorites".into(), count: -1 },
+        BookChip { key: "missing".into(), label: "Missing".into(), count: -1 },
     ];
     w.set_books_quick_filters(VecModel::from_slice(&quick));
 }
@@ -658,6 +831,232 @@ fn books_set_rating(weak: slint::Weak<MainWindow>, id: i64, rating: f64, sort_id
             let _ = library::set_rating(&pool, id, rating).await;
         }
         books_refresh(weak, sort_idx);
+    });
+}
+
+/// Human-readable byte size ("1.4 MB").
+fn fmt_size(bytes: i64) -> String {
+    if bytes <= 0 {
+        return String::new();
+    }
+    let b = bytes as f64;
+    const KB: f64 = 1024.0;
+    if b < KB { format!("{bytes} B") }
+    else if b < KB * KB { format!("{:.0} KB", b / KB) }
+    else if b < KB * KB * KB { format!("{:.1} MB", b / (KB * KB)) }
+    else { format!("{:.1} GB", b / (KB * KB * KB)) }
+}
+
+/// Populate + open the detail popup for a book (R1). Loads the row, pushes
+/// metadata + any cached summary.
+fn books_show_detail(weak: slint::Weak<MainWindow>, id: i64) {
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("books").await else { return };
+        let Ok(Some(b)) = library::get(&pool, id).await else { return };
+        let colls = library::collections(&pool).await.unwrap_or_default();
+        let mine = library::book_collections(&pool, id).await.unwrap_or_default();
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            push_detail_collections(&w, &colls, &mine);
+            w.set_books_detail_id(b.id as i32);
+            w.set_books_detail_title(b.title.clone().into());
+            w.set_books_detail_author(b.author.clone().into());
+            w.set_books_detail_cover(load_cover(&b.cover_path));
+            w.set_books_detail_hue(cover_hue(&b.title));
+            w.set_books_detail_format(b.format.to_uppercase().into());
+            w.set_books_detail_genre(b.genre.clone().into());
+            w.set_books_detail_series(b.series.clone().into());
+            w.set_books_detail_size(fmt_size(b.size_bytes).into());
+            w.set_books_detail_added(fmt_date(b.added_at));
+            w.set_books_detail_rating(b.rating as f32);
+            w.set_books_detail_percent(b.percent as f32);
+            w.set_books_detail_summary(b.summary.clone().into());
+            w.set_books_detail_summary_loading(false);
+            w.set_books_detail_open(true);
+        });
+    });
+}
+
+/// Fetch an online summary for the detail popup, cache it in the DB, and show it.
+fn books_fetch_summary(weak: slint::Weak<MainWindow>, id: i64) {
+    if let Some(w) = weak.upgrade() {
+        if w.get_books_detail_id() as i64 == id {
+            w.set_books_detail_summary_loading(true);
+        }
+    }
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("books").await else { return };
+        let Ok(Some(b)) = library::get(&pool, id).await else { return };
+        let summary = tulipix_books::summary::fetch(&b.title, &b.author).await;
+        if let Some(s) = &summary {
+            let _ = library::set_summary(&pool, id, s).await;
+        }
+        let text = summary.unwrap_or_else(|| "No summary found online.".into());
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            // Only update if the popup is still on this book.
+            if w.get_books_detail_id() as i64 == id {
+                w.set_books_detail_summary(text.into());
+                w.set_books_detail_summary_loading(false);
+            }
+        });
+    });
+}
+
+// ── collections ───────────────────────────────────────────────────────────────
+
+fn collection_create(weak: slint::Weak<MainWindow>, name: String, sort_idx: usize) {
+    if name.trim().is_empty() {
+        return;
+    }
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = pool_for("books").await {
+            let _ = library::collection_create(&pool, &name).await;
+        }
+        books_refresh(weak, sort_idx);
+    });
+}
+
+fn collection_delete(weak: slint::Weak<MainWindow>, id: i64, sort_idx: usize) {
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = pool_for("books").await {
+            let _ = library::collection_delete(&pool, id).await;
+        }
+        // Clear the filter if it pointed at the deleted collection.
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            if w.get_books_active_collection() as i64 == id {
+                w.set_books_active_collection(0);
+            }
+        });
+        books_refresh(weak, sort_idx);
+    });
+}
+
+/// Add/remove the current detail book to/from a collection, then refresh the
+/// popup's membership + the rail counts.
+fn collection_toggle(weak: slint::Weak<MainWindow>, book_id: i64, cid: i64) {
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("books").await else { return };
+        let members = library::book_collections(&pool, book_id).await.unwrap_or_default();
+        if members.contains(&cid) {
+            let _ = library::collection_remove(&pool, cid, book_id).await;
+        } else {
+            let _ = library::collection_add(&pool, cid, book_id).await;
+        }
+        let colls = library::collections(&pool).await.unwrap_or_default();
+        let mine = library::book_collections(&pool, book_id).await.unwrap_or_default();
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            push_detail_collections(&w, &colls, &mine);
+        });
+    });
+}
+
+/// Push the detail popup's collection rows (all collections + membership).
+fn push_detail_collections(w: &MainWindow, colls: &[(i64, String, i64)], member_ids: &[i64]) {
+    let rows: Vec<CollRow> = colls
+        .iter()
+        .map(|(id, name, _)| CollRow {
+            id: *id as i32,
+            name: name.clone().into(),
+            member: member_ids.contains(id),
+        })
+        .collect();
+    w.set_books_detail_collections(VecModel::from_slice(&rows));
+}
+
+// ── reading stats ─────────────────────────────────────────────────────────────
+
+/// Load reading stats (totals + streak + 12-week heatmap + per-book time) and
+/// open the stats panel.
+fn books_open_stats(weak: slint::Weak<MainWindow>) {
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("books").await else { return };
+        let (secs, days, finished, started) =
+            library::reading_totals(&pool).await.unwrap_or((0, 0, 0, 0));
+        let read_days = library::reading_days(&pool).await.unwrap_or_default();
+        let per_book = library::time_per_book(&pool, 8).await.unwrap_or_default();
+        let today = tulipix_books::schema::now() / 86400;
+        let day_set: std::collections::HashSet<i64> = read_days.iter().copied().collect();
+        // Current streak: consecutive days ending today (or yesterday).
+        let mut streak = 0i64;
+        let mut d = if day_set.contains(&today) { today } else { today - 1 };
+        while day_set.contains(&d) {
+            streak += 1;
+            d -= 1;
+        }
+        // 12-week heatmap (84 days, oldest→today).
+        let heat: Vec<bool> = (0..84).rev().map(|i| day_set.contains(&(today - i))).collect();
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_books_stats_hours(((secs as f32) / 3600.0 * 10.0).round() / 10.0);
+            w.set_books_stats_days(days as i32);
+            w.set_books_stats_finished(finished as i32);
+            w.set_books_stats_started(started as i32);
+            w.set_books_stats_streak(streak as i32);
+            let heat_model: Vec<bool> = heat;
+            w.set_books_stats_heat(VecModel::from_slice(&heat_model));
+            let rows: Vec<StatBookRow> = per_book
+                .iter()
+                .map(|(title, s)| StatBookRow {
+                    title: title.clone().into(),
+                    time: fmt_duration(*s).into(),
+                })
+                .collect();
+            w.set_books_stats_books(VecModel::from_slice(&rows));
+            w.set_books_stats_open(true);
+        });
+    });
+}
+
+/// "3h 12m" / "45m" / "2m" from seconds.
+fn fmt_duration(secs: i64) -> String {
+    let m = secs / 60;
+    if m >= 60 {
+        format!("{}h {}m", m / 60, m % 60)
+    } else {
+        format!("{m}m")
+    }
+}
+
+// ── notes export ──────────────────────────────────────────────────────────────
+
+/// Export the current book's notes to a Markdown file (save dialog).
+fn reader_annot_export(weak: slint::Weak<MainWindow>) {
+    let (book_id, title, author) = match weak.upgrade() {
+        Some(w) => (
+            READER.with(|r| r.borrow().book_id),
+            w.get_books_reader_title().to_string(),
+            w.get_books_reader_author().to_string(),
+        ),
+        None => return,
+    };
+    if book_id == 0 {
+        return;
+    }
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("books").await else { return };
+        let notes = annotations::for_book(&pool, book_id).await.unwrap_or_default();
+        let mut md = format!("# Notes — {title}\n");
+        if !author.is_empty() {
+            md.push_str(&format!("*{author}*\n"));
+        }
+        md.push('\n');
+        for n in &notes {
+            md.push_str(&format!("## p{}\n", n.page));
+            if !n.snippet.trim().is_empty() {
+                md.push_str(&format!("> {}\n\n", n.snippet.trim()));
+            }
+            if !n.note.trim().is_empty() {
+                md.push_str(&format!("{}\n\n", n.note.trim()));
+            }
+        }
+        let default_name = format!("{}-notes.md", title.replace(['/', '\\'], "-"));
+        let Some(file) = rfd::AsyncFileDialog::new()
+            .set_file_name(&default_name)
+            .add_filter("Markdown", &["md"])
+            .save_file()
+            .await
+        else {
+            return;
+        };
+        let _ = std::fs::write(file.path(), md);
     });
 }
 
@@ -696,6 +1095,10 @@ fn books_add_folder(weak: slint::Weak<MainWindow>) {
         if let Ok(pool) = pool_for("books").await {
             let _ = tulipix_books::scan::add_folder(&pool, &path).await;
             let _ = tulipix_books::scan::scan_all(&pool).await;
+            books_refresh(weak.clone(), 0);
+            // Index contents for library-wide search in the background (slow for
+            // big libraries; resumable so a partial run picks up next time).
+            let _ = tulipix_books::scan::index_contents(&pool).await;
         }
         books_refresh(weak, 0);
     });
@@ -713,12 +1116,26 @@ fn cover_hue(title: &str) -> slint::Color {
     slint::Color::from_rgb_u8(r, g, b)
 }
 
-/// Decode a cover file into a slint image (empty → default placeholder).
+thread_local! {
+    /// Decoded cover cache, keyed by path. Every `books_refresh` rebuilds the
+    /// whole tile model; without this each rebuild re-decodes every visible
+    /// cover (flicker + wasted work when you just rated/favorited a book).
+    static COVER_CACHE: RefCell<std::collections::HashMap<String, slint::Image>> =
+        RefCell::new(std::collections::HashMap::new());
+}
+
+/// Decode a cover file into a slint image (empty → default placeholder),
+/// memoised by path so repeated grid rebuilds don't re-decode.
 fn load_cover(path: &str) -> slint::Image {
     if path.is_empty() {
         return slint::Image::default();
     }
-    slint::Image::load_from_path(std::path::Path::new(path)).unwrap_or_default()
+    if let Some(img) = COVER_CACHE.with(|c| c.borrow().get(path).cloned()) {
+        return img;
+    }
+    let img = slint::Image::load_from_path(std::path::Path::new(path)).unwrap_or_default();
+    COVER_CACHE.with(|c| c.borrow_mut().insert(path.to_string(), img.clone()));
+    img
 }
 
 // ── Reader (Phase 3) ─────────────────────────────────────────────────────────
@@ -770,6 +1187,8 @@ fn books_open(weak: slint::Weak<MainWindow>, id: i64) {
             return reader_fail(weak, format!("No readable text in this {} file", book.format));
         }
         let full_text = chapters.join("\n\n");
+        // Index this book's contents for library-wide search (cheap — text in hand).
+        let _ = library::fts_index(&pool, id, &full_text).await;
         let _ = weak.upgrade_in_event_loop(move |w| {
             READER.with(|r| {
                 *r.borrow_mut() = ReaderState {
@@ -795,6 +1214,8 @@ fn books_open(weak: slint::Weak<MainWindow>, id: i64) {
             w.set_books_reader_toc(Rc::new(VecModel::<TocRow>::default()).into());
             w.set_books_reader_loading(false);
             nav_to(&w, w.as_weak(), start);
+            // Load notes up front so the per-page note indicator is accurate.
+            reader_load_notes(w.as_weak());
         });
     });
 }
@@ -805,6 +1226,8 @@ async fn open_image_book(weak: slint::Weak<MainWindow>, book: BookRow, start_pag
     let path = std::path::PathBuf::from(&book.path);
     let format = book.format.clone();
     let (path, format, total) = tokio::task::spawn_blocking(move || {
+        // Bound the rendered-page cache before adding more pages to it.
+        render::prune_page_cache(512 * 1024 * 1024);
         let total = render::page_count(&path, &format).unwrap_or(0);
         (path, format, total)
     })
@@ -922,23 +1345,46 @@ fn nav_image(w: &MainWindow, weak: slint::Weak<MainWindow>, page: usize) {
 /// voices, and start the highlight timer.
 fn tts_start(weak: slint::Weak<MainWindow>) {
     let Some(w) = weak.upgrade() else { return };
-    let full = w.get_books_reader_full_text().to_string();
-    // ponytail: cap the sentence list — the read-along view isn't virtualised, so
+    // Image books (PDF/CBZ/CBR) have no reflow text → nothing to read aloud.
+    if w.get_books_reader_image_mode() {
+        return;
+    }
+    // Segment per screen-page so each sentence carries its page index (paginate
+    // space) — the highlight can then drive the reader spread with no offset-space
+    // mismatch. ponytail: cap the list — the read-along view isn't virtualised, so
     // thousands of Text rows would stall Slint. Phase 2 windows around the cursor.
-    let sents: Vec<String> = tulipix_books::tts::sentences(&full)
-        .into_iter()
-        .map(|s| s.text)
-        .take(1500)
-        .collect();
+    let (sents, sent_pages): (Vec<String>, Vec<usize>) = READER.with(|r| {
+        let r = r.borrow();
+        let mut texts = Vec::new();
+        let mut pages = Vec::new();
+        for (pi, page) in r.pages.iter().enumerate() {
+            for s in tulipix_books::tts::sentences(&page.text) {
+                texts.push(s.text);
+                pages.push(pi);
+                if texts.len() >= 1500 {
+                    return (texts, pages);
+                }
+            }
+        }
+        (texts, pages)
+    });
+    if sents.is_empty() {
+        return;
+    }
     let g = TTS.with(|t| {
         let mut t = t.borrow_mut();
         t.generation += 1;
         t.sentences = sents.clone();
+        t.sent_pages = sent_pages;
         t.active = 0;
         t.playing = !sents.is_empty();
         if t.voice.is_empty() {
             t.voice = TTS_VOICES[0].0.to_string();
         }
+        // Neural (Kokoro) / robotic (espeak) / timer, per setting + availability.
+        let (audio, neural) = decide_engine(&t.voice);
+        t.audio = audio;
+        t.neural = neural;
         t.generation
     });
     let model: Vec<slint::SharedString> = sents.iter().map(|s| s.as_str().into()).collect();
@@ -948,7 +1394,96 @@ fn tts_start(weak: slint::Weak<MainWindow>) {
     w.set_books_reader_tts_voice(TTS.with(|t| t.borrow().voice.clone()).into());
     w.set_books_reader_tts_active(0);
     w.set_books_reader_tts_playing(TTS.with(|t| t.borrow().playing));
-    tts_schedule(weak, g);
+    tts_resume(weak, g);
+}
+
+/// Continue playback from the current sentence — neural audio when `audio` is
+/// set, else the timer-paced highlight.
+fn tts_resume(weak: slint::Weak<MainWindow>, generation: u64) {
+    if TTS.with(|t| t.borrow().audio) {
+        tts_audio_step(weak, generation);
+    } else {
+        tts_schedule(weak, generation);
+    }
+}
+
+/// Neural-audio step: synth the current sentence (Kokoro, off-thread), play it
+/// through mpv, then advance the highlight + spread and recurse. ponytail:
+/// pause/seek take effect at the next sentence boundary (no mid-sentence mpv
+/// kill) — a manual seek can briefly overlap one sentence. Upgrade path: hold
+/// the mpv child and kill it on generation bump.
+fn tts_audio_step(weak: slint::Weak<MainWindow>, generation: u64) {
+    let snap = TTS.with(|t| {
+        let t = t.borrow();
+        if t.generation != generation || !t.playing || t.active >= t.sentences.len() {
+            return None;
+        }
+        Some((
+            t.sentences[t.active].clone(),
+            voice_id(&t.voice).to_string(),
+            TTS_SPEEDS[t.speed_idx as usize % 4],
+            t.neural,
+        ))
+    });
+    let Some((text, voice, speed, neural)) = snap else { return };
+    tokio::runtime::Handle::current().spawn(async move {
+        // Render the sentence to a temp WAV off the async worker (CPU-bound):
+        // Kokoro neural synth, or robotic espeak, per the chosen engine.
+        let wav = tokio::task::spawn_blocking(move || {
+            let path = std::env::temp_dir()
+                .join(format!("tulipix-tts-{}-{}.wav", std::process::id(), generation));
+            if neural {
+                let pcm = tulipix_books::kokoro::synth(&text, &voice, speed).ok()?;
+                if pcm.is_empty() {
+                    return None;
+                }
+                tulipix_books::kokoro::write_wav(&pcm, &path).ok()?;
+            } else {
+                // espeak base rate ~175 wpm, scaled by the speed multiplier.
+                let wpm = (175.0 * speed).round() as u32;
+                let female = voice.as_bytes().get(1) == Some(&b'f');
+                if !tulipix_books::speech::espeak_to_wav(&text, female, wpm, &path) {
+                    return None;
+                }
+            }
+            Some(path)
+        })
+        .await
+        .ok()
+        .flatten();
+        // Play it and wait for the end (blocking) on a blocking worker.
+        if let Some(path) = wav.clone() {
+            let _ = tokio::task::spawn_blocking(move || {
+                let _ = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"))
+                    .args(["--no-video", "--really-quiet", "--no-terminal"])
+                    .arg(&path)
+                    .status();
+                let _ = std::fs::remove_file(&path);
+            })
+            .await;
+        }
+        // Advance on the event-loop thread (unless cancelled/paused meanwhile).
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            let (active, playing) = TTS.with(|t| {
+                let mut t = t.borrow_mut();
+                if t.generation != generation || !t.playing {
+                    return (t.active, false);
+                }
+                t.active += 1;
+                if t.active >= t.sentences.len() {
+                    t.active = t.sentences.len().saturating_sub(1);
+                    t.playing = false;
+                }
+                (t.active, t.playing)
+            });
+            w.set_books_reader_tts_active(active as i32);
+            w.set_books_reader_tts_playing(playing);
+            tts_follow_page(&w, w.as_weak(), active);
+            if playing {
+                tts_audio_step(w.as_weak(), generation);
+            }
+        });
+    });
 }
 
 /// Schedule the highlight advance for the current sentence (delay ∝ length /
@@ -980,11 +1515,25 @@ fn tts_schedule(weak: slint::Weak<MainWindow>, generation: u64) {
         if let Some(w) = weak.upgrade() {
             w.set_books_reader_tts_active(active as i32);
             w.set_books_reader_tts_playing(playing);
+            tts_follow_page(&w, weak.clone(), active);
         }
         if playing {
             tts_schedule(weak.clone(), generation);
         }
     });
+}
+
+/// Turn the reader spread to the page holding sentence `active`, if it isn't
+/// already visible — so read-aloud scrolls the book as it speaks.
+fn tts_follow_page(w: &MainWindow, weak: slint::Weak<MainWindow>, active: usize) {
+    let target = TTS.with(|t| t.borrow().sent_pages.get(active).copied());
+    let Some(target) = target else { return };
+    // Only move when the sentence's page isn't within the current spread.
+    let cur = READER.with(|r| r.borrow().pos);
+    let visible = target == cur || (!SINGLE.with(|c| c.get()) && target == cur + 1);
+    if !visible {
+        nav_to(w, weak, target);
+    }
 }
 
 fn tts_play_pause(weak: slint::Weak<MainWindow>) {
@@ -1002,7 +1551,7 @@ fn tts_play_pause(weak: slint::Weak<MainWindow>) {
     });
     w.set_books_reader_tts_playing(playing);
     if playing {
-        tts_schedule(weak, g);
+        tts_resume(weak, g);
     }
 }
 
@@ -1018,12 +1567,59 @@ fn tts_set_speed(weak: slint::Weak<MainWindow>, idx: i32) {
     });
     w.set_books_reader_tts_speed_index(idx.clamp(0, 3));
     if playing {
-        tts_schedule(weak, g);
+        tts_resume(weak, g);
     }
 }
 
 fn tts_set_voice(name: String) {
-    TTS.with(|t| t.borrow_mut().voice = name);
+    let (audio, neural) = decide_engine(&name);
+    TTS.with(|t| {
+        let mut t = t.borrow_mut();
+        t.audio = audio;
+        t.neural = neural;
+        t.voice = name;
+    });
+}
+
+// ── define-a-word (R2) ────────────────────────────────────────────────────────
+
+/// Fetch a word's definition/translation/wiki and push the result to the popup.
+fn define_run(weak: slint::Weak<MainWindow>, word: String, lang: String) {
+    let word = word.trim().to_string();
+    if word.is_empty() {
+        return;
+    }
+    if let Some(w) = weak.upgrade() {
+        w.set_books_reader_define_loading(true);
+        w.set_books_reader_define_definition("".into());
+        w.set_books_reader_define_pos("".into());
+        w.set_books_reader_define_translation("".into());
+        w.set_books_reader_define_wiki("".into());
+        w.set_books_reader_define_wiki_url("".into());
+    }
+    tokio::runtime::Handle::current().spawn(async move {
+        let r = tulipix_books::lookup::lookup(&word, &lang).await;
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_books_reader_define_loading(false);
+            w.set_books_reader_define_definition(r.definition.into());
+            w.set_books_reader_define_pos(r.part_of_speech.into());
+            w.set_books_reader_define_translation(r.translation.into());
+            w.set_books_reader_define_wiki(r.wiki_extract.into());
+            w.set_books_reader_define_wiki_url(r.wiki_url.into());
+        });
+    });
+}
+
+/// Open a URL in the OS default browser (best-effort, cross-platform).
+fn open_url(url: &str) {
+    let prog = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    let _ = std::process::Command::new(prog).arg(url).spawn();
 }
 
 fn tts_jump(weak: slint::Weak<MainWindow>, i: i32) {
@@ -1038,9 +1634,11 @@ fn tts_jump(weak: slint::Weak<MainWindow>, i: i32) {
         t.generation += 1;
         t.generation
     });
-    w.set_books_reader_tts_active(TTS.with(|t| t.borrow().active) as i32);
+    let active = TTS.with(|t| t.borrow().active);
+    w.set_books_reader_tts_active(active as i32);
     w.set_books_reader_tts_playing(true);
-    tts_schedule(weak, g);
+    tts_follow_page(&w, weak.clone(), active);
+    tts_resume(weak, g);
 }
 
 fn tts_stop(weak: slint::Weak<MainWindow>) {
@@ -1173,6 +1771,16 @@ fn nav_to(w: &MainWindow, weak: slint::Weak<MainWindow>, page: usize) {
         }
     });
 
+    // Note indicator: does any annotation land on the current spread?
+    let has_note = READER.with(|r| {
+        let r = r.borrow();
+        r.annots.iter().any(|a| {
+            let ap = paginate::page_at_offset(&r.pages, a.start_off as usize);
+            ap == s.pos || (s.right.is_some() && ap == s.pos + 1)
+        })
+    });
+    w.set_books_reader_has_note(has_note);
+
     // Bookmark indicator for the new left page.
     let handle = tokio::runtime::Handle::current();
     let (book_id, pos) = (s.book_id, s.pos);
@@ -1251,12 +1859,17 @@ fn reader_load_notes(weak: slint::Weak<MainWindow>) {
         let Ok(pool) = pool_for("books").await else { return };
         let list = annotations::for_book(&pool, book_id).await.unwrap_or_default();
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let rows = READER.with(|r| {
+            let (rows, has_note) = READER.with(|r| {
                 let mut r = r.borrow_mut();
                 r.annots = list;
-                annot_rows(&r.annots, &r.pages)
+                let pos = r.pos;
+                let has = r.annots.iter().any(|a| {
+                    paginate::page_at_offset(&r.pages, a.start_off as usize) == pos
+                });
+                (annot_rows(&r.annots, &r.pages), has)
             });
             w.set_books_reader_notes(VecModel::from_slice(&rows));
+            w.set_books_reader_has_note(has_note);
         });
     });
 }
@@ -1427,10 +2040,13 @@ fn persist_progress() {
         if r.pages.is_empty() {
             return None;
         }
+        // Fold the reading burst into total time — but cap it: a gap longer than
+        // IDLE_CAP means the reader sat open unattended, not active reading.
+        const IDLE_CAP: i64 = 300; // 5 min
         let secs = r
             .session_start
             .replace(std::time::Instant::now())
-            .map(|t| t.elapsed().as_secs() as i64)
+            .map(|t| (t.elapsed().as_secs() as i64).min(IDLE_CAP))
             .unwrap_or(0);
         let pos = r.pos.min(r.pages.len() - 1);
         Some((
@@ -1446,6 +2062,8 @@ fn persist_progress() {
     handle.spawn(async move {
         if let Ok(pool) = pool_for("books").await {
             let _ = progress::save(&pool, book_id, page, total, off, secs).await;
+            // Log today for the reading streak/heatmap.
+            let _ = library::mark_read_today(&pool).await;
         }
     });
 }

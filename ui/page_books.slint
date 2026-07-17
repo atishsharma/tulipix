@@ -9,24 +9,27 @@
 // action leaves through a callback the sec-books crate wires to the engine.
 import { Theme } from "tokens.slint";
 import { AppIcon, Icons } from "icons.slint";
-import { ScrollView, ComboBox } from "std-widgets.slint";
+import { ScrollView, ComboBox, LineEdit } from "std-widgets.slint";
 
-// Pinned SPEC palette — independent of Theme so the surface never goes dark.
+// Books-section palette. Follows the app's global light/dark (Theme.dark) so
+// the whole section (Home grid + reader chrome) matches the app theme (R4). The
+// reader's *paper* themes (light/sepia/dark/night) are separate — see BookReader.
 export global BookTheme {
-    out property <color> canvas: #f2f2f7;
-    out property <color> card: #ffffff;
-    out property <color> accent: #6c4df6;
-    out property <color> tint-violet: #efeaff;
-    out property <color> tint-pink: #fdeef4;
-    out property <color> tint-orange: #fff3e6;
-    out property <color> tint-green: #e8f8ef;
-    out property <color> ink: #1b1b22;
-    out property <color> ink-dim: #8a8a94;
-    out property <color> track: #ececf2;
-    out property <color> pill-bg: #f4f4f8;
-    out property <color> hairline: #ececf2;
+    out property <bool> dark: Theme.dark;
+    out property <color> canvas:      dark ? #14151a : #f2f2f7;
+    out property <color> card:        dark ? #1e1f26 : #ffffff;
+    out property <color> accent:      #6c4df6;
+    out property <color> tint-violet: dark ? #241d3d : #efeaff;
+    out property <color> tint-pink:   dark ? #2e1f28 : #fdeef4;
+    out property <color> tint-orange: dark ? #2e2519 : #fff3e6;
+    out property <color> tint-green:  dark ? #17281f : #e8f8ef;
+    out property <color> ink:         dark ? #e8e8ee : #1b1b22;
+    out property <color> ink-dim:     dark ? #8f8f9a : #8a8a94;
+    out property <color> track:       dark ? #2a2b33 : #ececf2;
+    out property <color> pill-bg:     dark ? #24252d : #f4f4f8;
+    out property <color> hairline:    dark ? #2c2d36 : #ececf2;
     out property <length> radius: 16px;
-    out property <color> shadow: #00000010;
+    out property <color> shadow:      dark ? #00000040 : #00000010;
 }
 
 // One book row for the grid. `percent` 0‥100; `cover` filled by Rust (empty →
@@ -72,6 +75,26 @@ export struct BookChip {
     key: string,
     label: string,
     count: int,
+}
+
+// A collection row in the detail popup (name + whether the book is a member).
+export struct CollRow {
+    id: int,
+    name: string,
+    member: bool,
+}
+
+// A collection chip in the rail (int id so the filter callback stays typed).
+export struct CollChip {
+    id: int,
+    name: string,
+    count: int,
+}
+
+// One per-book time row in the reading-stats panel.
+export struct StatBookRow {
+    title: string,
+    time: string,
 }
 
 // ── small parts ───────────────────────────────────────────────────────────────
@@ -391,6 +414,7 @@ export component BooksPage inherits Rectangle {
     in property <[BookChip]> genres: [];
     in property <[BookChip]> quick-filters: [];
     in property <[string]> sort-options: ["Recently Added", "Recently Read", "Title", "Author", "Rating"];
+    in property <int> sort-index: 0;
     in property <[string]> file-type-options: ["All"];
     // Rotating hue palette for the genre chips.
     property <[color]> genre-hues: [#6c4df6, #e0518f, #2fbf71, #f5a623, #3a86ff, #b5179e];
@@ -401,6 +425,11 @@ export component BooksPage inherits Rectangle {
     in property <string> active-quick: "all";
     in property <string> active-genre: "";
     in property <string> active-author: "";
+    in property <string> active-series: "";
+    in property <int> active-collection: 0;
+    in property <[BookChip]> series: [];
+    in property <[CollChip]> collections: [];
+    in-out property <bool> search-contents: false;
     in property <string> view-mode: "grid";
     in-out property <string> search-text: "";
     // True when any filter/search narrows the grid — drives the empty-state copy.
@@ -424,6 +453,44 @@ export component BooksPage inherits Rectangle {
     callback set-page(int);
     callback set-rating(int, float);
     callback open-author(string);
+    // Series / collections / content search / stats.
+    callback series-filter(string);
+    callback collection-filter(int);
+    callback collection-create(string);
+    callback collection-delete(int);
+    callback collection-toggle(int, int); // (book-id, collection-id)
+    callback set-search-contents(bool);
+    callback open-stats();
+    // Reading-stats panel (R: reading-stats page).
+    in-out property <bool> stats-open: false;
+    in property <float> stats-hours: 0;
+    in property <int> stats-days: 0;
+    in property <int> stats-finished: 0;
+    in property <int> stats-started: 0;
+    in property <int> stats-streak: 0;
+    in property <[bool]> stats-heat: [];
+    in property <[StatBookRow]> stats-books: [];
+    // Book detail popup (R1).
+    callback show-detail(int);
+    callback fetch-summary(int);
+    in property <[CollRow]> detail-collections: [];
+    in-out property <bool> detail-open: false;
+    in property <int> detail-id: 0;
+    in property <string> detail-title: "";
+    in property <string> detail-author: "";
+    in property <image> detail-cover;
+    in property <color> detail-hue: #6c4df6;
+    in property <string> detail-format: "";
+    in property <string> detail-genre: "";
+    in property <string> detail-series: "";
+    in property <string> detail-size: "";
+    in property <string> detail-added: "";
+    in property <float> detail-rating: 0;
+    in property <float> detail-percent: 0;
+    in property <string> detail-summary: "";
+    in property <bool> detail-summary-loading: false;
+    // Delete confirmation sub-state (inside the detail popup).
+    property <bool> confirm-delete: false;
 
     background: BookTheme.canvas;
 
@@ -463,10 +530,20 @@ export component BooksPage inherits Rectangle {
                             accepted => { root.search(self.text); }
                         }
                     }
-                    VerticalLayout { alignment: center;
-                        AppIcon { source: Icons.mic; tint: BookTheme.ink-dim; width: 18px; height: 18px; } }
+                    // Content-search toggle: search inside book text (FTS).
+                    Rectangle {
+                        width: 30px; height: 30px; border-radius: 8px; y: (parent.height - 30px) / 2;
+                        background: root.search-contents ? BookTheme.accent.with-alpha(0.16) : transparent;
+                        AppIcon { source: Icons.file-text;
+                            tint: root.search-contents ? BookTheme.accent : BookTheme.ink-dim;
+                            width: 17px; height: 17px; }
+                        TouchArea { mouse-cursor: pointer;
+                            clicked => { root.set-search-contents(!root.search-contents); } }
+                    }
                 }
             }
+            PillButton { label: "Stats"; icon: Icons.clock;
+                clicked => { root.open-stats(); } }
             PillButton { label: "Add books"; icon: Icons.plus; filled: true;
                 clicked => { root.add-books(); } }
             // count pill
@@ -589,6 +666,7 @@ export component BooksPage inherits Rectangle {
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
                             ComboBox {
                                 model: root.sort-options;
+                                current-index: root.sort-index;
                                 selected(v) => { root.set-sort(v); }
                             } }
                         // View toggle.
@@ -617,6 +695,24 @@ export component BooksPage inherits Rectangle {
                                         AppIcon { source: Icons.sliders; tint: BookTheme.accent; width: 15px; height: 15px; } }
                                     Text { text: "Filters"; color: BookTheme.accent; font-size: 13px; font-weight: 700; vertical-alignment: center; } }
                                 fta := TouchArea { mouse-cursor: pointer; }
+                            } }
+                        // Pagination (moved from below the grid) — prev · p/N · next.
+                        if root.page-count > 1: VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            HorizontalLayout { spacing: 6px;
+                                Rectangle { width: 32px; height: 32px; border-radius: 16px;
+                                    background: root.page > 1 ? BookTheme.card : BookTheme.pill-bg;
+                                    border-width: 1px; border-color: BookTheme.hairline;
+                                    AppIcon { source: Icons.chevron-left; tint: BookTheme.ink; width: 16px; height: 16px; }
+                                    TouchArea { mouse-cursor: pointer;
+                                        clicked => { if (root.page > 1) { root.set-page(root.page - 1); } } } }
+                                Text { text: root.page + " / " + root.page-count; color: BookTheme.ink;
+                                    font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                                Rectangle { width: 32px; height: 32px; border-radius: 16px;
+                                    background: root.page < root.page-count ? BookTheme.card : BookTheme.pill-bg;
+                                    border-width: 1px; border-color: BookTheme.hairline;
+                                    AppIcon { source: Icons.chevron-right; tint: BookTheme.ink; width: 16px; height: 16px; }
+                                    TouchArea { mouse-cursor: pointer;
+                                        clicked => { if (root.page < root.page-count) { root.set-page(root.page + 1); } } } }
                             } }
                     }
                 }
@@ -651,18 +747,21 @@ export component BooksPage inherits Rectangle {
                     property <int> watch-page: root.page;
                     changed watch-page => { sv.viewport-y = 0; }
                     grid := Rectangle {
-                        property <length> gap: 14px;
-                        property <length> cell-w: 316px;
-                        property <int> cols: Math.max(1, Math.floor((self.width + gap) / (cell-w + gap)));
-                        property <length> cell-h: 134px;
+                        property <length> gap: 16px;
+                        // Full-bleed 4×3: 12 books per page, cells stretch to fill
+                        // the whole grid area (no blank margins left/right/bottom).
+                        property <int> cols: 4;
+                        property <int> rows: 3;
+                        property <length> cell-w: (sv.visible-width - (cols - 1) * gap) / cols;
+                        property <length> cell-h: (sv.visible-height - (rows - 1) * gap) / rows;
                         width: sv.visible-width;
-                        height: Math.ceil(tiles.length / cols) * (cell-h + gap);
+                        height: sv.visible-height;
                         for tile[idx] in root.tiles: GridTile {
                             x: Math.mod(idx, grid.cols) * (grid.cell-w + grid.gap);
                             y: Math.floor(idx / grid.cols) * (grid.cell-h + grid.gap);
                             width: grid.cell-w; height: grid.cell-h;
                             tile: tile;
-                            open => { root.open-details(tile.id); }
+                            open => { root.show-detail(tile.id); }
                             favorite => { root.toggle-favorite(tile.id); }
                             menu => { root.card-menu-action(tile.id, "menu"); }
                             rate(v) => { root.set-rating(tile.id, v); }
@@ -683,24 +782,6 @@ export component BooksPage inherits Rectangle {
                                 color: BookTheme.ink-dim; font-size: 13px; horizontal-alignment: center; }
                         }
                     }
-                }
-                // pagination
-                if root.page-count > 1: HorizontalLayout {
-                    alignment: center; spacing: 12px;
-                    prev := Rectangle { width: 36px; height: 36px; border-radius: 18px;
-                        background: root.page > 1 ? BookTheme.card : BookTheme.pill-bg;
-                        border-width: 1px; border-color: BookTheme.hairline;
-                        AppIcon { source: Icons.chevron-left; tint: BookTheme.ink; width: 18px; height: 18px; }
-                        TouchArea { mouse-cursor: pointer;
-                            clicked => { if (root.page > 1) { root.set-page(root.page - 1); } } } }
-                    Text { text: root.page + " / " + root.page-count; color: BookTheme.ink;
-                        font-size: 14px; font-weight: 600; vertical-alignment: center; }
-                    next := Rectangle { width: 36px; height: 36px; border-radius: 18px;
-                        background: root.page < root.page-count ? BookTheme.card : BookTheme.pill-bg;
-                        border-width: 1px; border-color: BookTheme.hairline;
-                        AppIcon { source: Icons.chevron-right; tint: BookTheme.ink; width: 18px; height: 18px; }
-                        TouchArea { mouse-cursor: pointer;
-                            clicked => { if (root.page < root.page-count) { root.set-page(root.page + 1); } } } }
                 }
             }
             // right rail
@@ -742,7 +823,266 @@ export component BooksPage inherits Rectangle {
                                 hue: root.genre-hues[Math.mod(i, root.genre-hues.length)];
                                 clicked => { root.genre-filter(g.key); } }
                         }
+                        // Series (2+ books) — filter like genres.
+                        if root.series.length > 0: RailBlock { title: "SERIES";
+                            for sr in root.series: RailRow {
+                                label: sr.label; count: sr.count; active: root.active-series == sr.key;
+                                icon: Icons.book-open; icon-tint: BookTheme.accent;
+                                clicked => { root.series-filter(sr.key); } } }
+                        // Collections — user shelves + inline create.
+                        VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "COLLECTIONS"; color: BookTheme.ink-dim; font-size: 11px;
+                                font-weight: 700; letter-spacing: 0.6px; vertical-alignment: center; }
+                            for c in root.collections: RailRow {
+                                label: c.name; count: c.count; active: root.active-collection == c.id;
+                                icon: Icons.bookmark; icon-tint: BookTheme.accent;
+                                clicked => { root.collection-filter(c.id); } }
+                            HorizontalLayout {
+                                spacing: 6px;
+                                newcol := LineEdit {
+                                    placeholder-text: "New collection…";
+                                    horizontal-stretch: 1;
+                                    accepted(t) => { root.collection-create(t); self.text = ""; }
+                                }
+                                Rectangle {
+                                    width: 34px; height: 34px; border-radius: 8px; background: BookTheme.accent;
+                                    AppIcon { source: Icons.plus; tint: #ffffff; width: 16px; height: 16px; }
+                                    TouchArea { mouse-cursor: pointer;
+                                        clicked => { root.collection-create(newcol.text); newcol.text = ""; } }
+                                }
+                            }
+                        }
                         Rectangle { height: 4px; }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Book detail popup (R1) ─────────────────────────────────────────────────
+    if root.detail-open: Rectangle {
+        width: 100%; height: 100%;
+        background: #00000066;
+        TouchArea { clicked => { root.detail-open = false; root.confirm-delete = false; } }
+    }
+    if root.detail-open: Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: 640px;
+        height: 460px;
+        border-radius: 20px;
+        background: BookTheme.card;
+        border-width: 1px;
+        border-color: BookTheme.hairline;
+        drop-shadow-blur: 40px;
+        drop-shadow-color: #00000040;
+        drop-shadow-offset-y: 10px;
+        HorizontalLayout {
+            padding: 22px; spacing: 20px;
+            // Cover.
+            Cover {
+                width: 168px; height: 246px;
+                source: root.detail-cover;
+                format: root.detail-format;
+                title: root.detail-title;
+                author: root.detail-author;
+                hue: root.detail-hue;
+            }
+            // Right column.
+            VerticalLayout {
+                horizontal-stretch: 1; spacing: 10px;
+                HorizontalLayout {
+                    alignment: space-between;
+                    VerticalLayout {
+                        spacing: 2px; horizontal-stretch: 1;
+                        Text { text: root.detail-title; color: BookTheme.ink; font-size: 20px;
+                            font-weight: 800; wrap: word-wrap; overflow: elide; }
+                        Text { text: root.detail-author; color: BookTheme.accent; font-size: 13px; font-weight: 600;
+                            TouchArea { mouse-cursor: pointer; clicked => { root.detail-open = false; root.open-author(root.detail-author); } } }
+                    }
+                    Rectangle {
+                        width: 30px; height: 30px; border-radius: 15px;
+                        background: xta.has-hover ? BookTheme.pill-bg : transparent;
+                        AppIcon { source: Icons.x; tint: BookTheme.ink-dim; width: 15px; height: 15px; }
+                        xta := TouchArea { mouse-cursor: pointer; clicked => { root.detail-open = false; root.confirm-delete = false; } }
+                    }
+                }
+                // Meta row (format · genre · size · added).
+                Text {
+                    text: root.detail-format
+                        + (root.detail-genre != "" ? "  ·  " + root.detail-genre : "")
+                        + (root.detail-size != "" ? "  ·  " + root.detail-size : "")
+                        + (root.detail-added != "" ? "  ·  " + root.detail-added : "");
+                    color: BookTheme.ink-dim; font-size: 12px; wrap: word-wrap;
+                }
+                if root.detail-series != "": Text { text: "Series: " + root.detail-series;
+                    color: BookTheme.accent; font-size: 12px; font-weight: 600;
+                    TouchArea { mouse-cursor: pointer;
+                        clicked => { root.detail-open = false; root.series-filter(root.detail-series); } } }
+                Stars { rating: root.detail-rating; rate(v) => { root.set-rating(root.detail-id, v); } }
+                if root.detail-percent > 0: Text {
+                    text: Math.round(root.detail-percent * 100) + "% read";
+                    color: BookTheme.ink-dim; font-size: 12px;
+                }
+                // Collections — toggle membership for this book.
+                if root.detail-collections.length > 0: HorizontalLayout {
+                    spacing: 6px; alignment: start;
+                    for c in root.detail-collections: Rectangle {
+                        height: 26px; border-radius: 13px;
+                        min-width: 44px;
+                        background: c.member ? BookTheme.accent : BookTheme.pill-bg;
+                        HorizontalLayout { padding-left: 10px; padding-right: 10px; spacing: 4px;
+                            Text { text: (c.member ? "✓ " : "+ ") + c.name;
+                                color: c.member ? #ffffff : BookTheme.ink; font-size: 11px;
+                                font-weight: 600; vertical-alignment: center; } }
+                        TouchArea { mouse-cursor: pointer;
+                            clicked => { root.collection-toggle(root.detail-id, c.id); } }
+                    }
+                }
+                // Summary.
+                Rectangle {
+                    vertical-stretch: 1;
+                    border-radius: 10px; background: BookTheme.pill-bg.with-alpha(0.5);
+                    ScrollView {
+                        VerticalLayout {
+                            padding: 10px; spacing: 6px;
+                            Text { text: root.detail-summary-loading ? "Fetching summary…"
+                                    : (root.detail-summary != "" ? root.detail-summary : "No summary yet.");
+                                color: BookTheme.ink; font-size: 12px; wrap: word-wrap; }
+                            if root.detail-summary == "" && !root.detail-summary-loading: Text {
+                                text: "Fetch from online →"; color: BookTheme.accent; font-size: 12px; font-weight: 700;
+                                TouchArea { mouse-cursor: pointer; clicked => { root.fetch-summary(root.detail-id); } }
+                            }
+                        }
+                    }
+                }
+                // Actions.
+                if !root.confirm-delete: HorizontalLayout {
+                    spacing: 10px;
+                    Rectangle {
+                        height: 42px; border-radius: 11px; background: BookTheme.accent; horizontal-stretch: 1;
+                        HorizontalLayout { alignment: center; spacing: 6px;
+                            AppIcon { source: Icons.book-open; tint: #ffffff; width: 16px; height: 16px; vertical-alignment: center; }
+                            Text { text: "Open"; color: #ffffff; font-size: 14px; font-weight: 700; vertical-alignment: center; } }
+                        TouchArea { mouse-cursor: pointer; clicked => { root.detail-open = false; root.open-details(root.detail-id); } }
+                    }
+                    Rectangle {
+                        width: 46px; height: 42px; border-radius: 11px;
+                        background: refta.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                        border-width: 1px; border-color: BookTheme.hairline;
+                        AppIcon { source: Icons.refresh-cw; tint: BookTheme.ink-dim; width: 16px; height: 16px; }
+                        refta := TouchArea { mouse-cursor: pointer; clicked => { root.fetch-summary(root.detail-id); } }
+                    }
+                    Rectangle {
+                        width: 46px; height: 42px; border-radius: 11px;
+                        background: delta.has-hover ? #d6454518 : BookTheme.card;
+                        border-width: 1px; border-color: #d6454555;
+                        AppIcon { source: Icons.trash; tint: #d64545; width: 16px; height: 16px; }
+                        delta := TouchArea { mouse-cursor: pointer; clicked => { root.confirm-delete = true; } }
+                    }
+                }
+                // Delete confirmation.
+                if root.confirm-delete: VerticalLayout {
+                    spacing: 8px;
+                    Text { text: "Remove “" + root.detail-title + "” from your library? The file on disk is kept.";
+                        color: BookTheme.ink; font-size: 12px; wrap: word-wrap; }
+                    HorizontalLayout {
+                        spacing: 10px;
+                        Rectangle {
+                            height: 40px; border-radius: 10px; horizontal-stretch: 1;
+                            background: cta.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                            border-width: 1px; border-color: BookTheme.hairline;
+                            Text { text: "Cancel"; color: BookTheme.ink; font-size: 13px; font-weight: 700; }
+                            cta := TouchArea { mouse-cursor: pointer; clicked => { root.confirm-delete = false; } }
+                        }
+                        Rectangle {
+                            height: 40px; border-radius: 10px; horizontal-stretch: 1; background: #d64545;
+                            Text { text: "Remove"; color: #ffffff; font-size: 13px; font-weight: 700; }
+                            TouchArea { mouse-cursor: pointer; clicked => {
+                                root.confirm-delete = false; root.detail-open = false;
+                                root.card-menu-action(root.detail-id, "remove");
+                            } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Reading-stats panel ────────────────────────────────────────────────────
+    if root.stats-open: Rectangle {
+        width: 100%; height: 100%;
+        background: #00000066;
+        TouchArea { clicked => { root.stats-open = false; } }
+    }
+    if root.stats-open: Rectangle {
+        x: (root.width - self.width) / 2;
+        y: (root.height - self.height) / 2;
+        width: 620px;
+        height: 500px;
+        border-radius: 20px;
+        background: BookTheme.card;
+        border-width: 1px;
+        border-color: BookTheme.hairline;
+        drop-shadow-blur: 40px;
+        drop-shadow-color: #00000040;
+        drop-shadow-offset-y: 10px;
+        VerticalLayout {
+            padding: 22px; spacing: 16px;
+            HorizontalLayout {
+                alignment: space-between;
+                Text { text: "Reading stats"; color: BookTheme.ink; font-size: 20px; font-weight: 800;
+                    vertical-alignment: center; }
+                Rectangle { width: 30px; height: 30px; border-radius: 15px;
+                    background: sxta.has-hover ? BookTheme.pill-bg : transparent;
+                    AppIcon { source: Icons.x; tint: BookTheme.ink-dim; width: 15px; height: 15px; }
+                    sxta := TouchArea { mouse-cursor: pointer; clicked => { root.stats-open = false; } } }
+            }
+            // Big numbers.
+            HorizontalLayout {
+                spacing: 12px;
+                for m in [
+                    { v: root.stats-hours + "h", l: "Read" },
+                    { v: root.stats-streak + "d", l: "Streak" },
+                    { v: root.stats-finished + "", l: "Finished" },
+                    { v: root.stats-started + "", l: "Started" },
+                    { v: root.stats-days + "", l: "Days" },
+                ]: Rectangle {
+                    horizontal-stretch: 1; height: 74px; border-radius: 12px; background: BookTheme.pill-bg;
+                    VerticalLayout { alignment: center; spacing: 2px;
+                        Text { text: m.v; color: BookTheme.accent; font-size: 22px; font-weight: 800;
+                            horizontal-alignment: center; }
+                        Text { text: m.l; color: BookTheme.ink-dim; font-size: 11px; font-weight: 600;
+                            horizontal-alignment: center; } }
+                }
+            }
+            // 12-week heatmap (84 days, 7 rows × 12 cols).
+            Text { text: "Last 12 weeks"; color: BookTheme.ink-dim; font-size: 11px; font-weight: 700;
+                letter-spacing: 0.5px; }
+            Rectangle {
+                height: 7 * 15px;
+                // 84 days laid out 12 cols × 7 rows (index = col*7 + row).
+                for hd[i] in root.stats-heat: Rectangle {
+                    x: Math.floor(i / 7) * 15px;
+                    y: Math.mod(i, 7) * 15px;
+                    width: 11px; height: 11px; border-radius: 3px;
+                    background: hd ? BookTheme.accent : BookTheme.track;
+                }
+            }
+            // Per-book time.
+            Text { text: "Time per book"; color: BookTheme.ink-dim; font-size: 11px; font-weight: 700;
+                letter-spacing: 0.5px; }
+            ScrollView {
+                VerticalLayout {
+                    spacing: 4px;
+                    if root.stats-books.length == 0: Text { text: "No reading time logged yet.";
+                        color: BookTheme.ink-dim; font-size: 12px; }
+                    for b in root.stats-books: HorizontalLayout {
+                        Text { text: b.title; color: BookTheme.ink; font-size: 13px; overflow: elide;
+                            horizontal-stretch: 1; vertical-alignment: center; }
+                        Text { text: b.time; color: BookTheme.ink-dim; font-size: 12px; font-weight: 600;
+                            vertical-alignment: center; }
                     }
                 }
             }

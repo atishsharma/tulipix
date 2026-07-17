@@ -16,6 +16,9 @@ dev-reload = ["tulipix-ui/dev-reload"]
 # Dev-only: lets `cargo check -p tulipix-sec-books` satisfy slint's winit
 # backend renderer requirement in isolation (the app normally selects it).
 _check = ["slint/renderer-skia", "slint/renderer-skia-opengl"]
+# Neural read-aloud (Kokoro-82M). Heavy (ONNX Runtime) — off in lite dev, on in
+# release/CI. Runtime falls back to timer highlight without the model/espeak.
+kokoro = ["tulipix-books/kokoro"]
 
 [dependencies]
 slint.workspace = true
@@ -25,4 +28,5 @@ tracing.workspace = true
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 tulipix-ui = { path = "../tulipix-ui" }
 tulipix-common = { path = "../tulipix-common" }
+tulipix-core = { path = "../tulipix-core" }
 tulipix-books = { path = "../tulipix-books" }

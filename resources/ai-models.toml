@@ -113,3 +113,23 @@ size_bytes = 66000000
 quant = "fp32"
 min_vram_mb = 1024
 cap = "music.ai.stems"
+
+# ── Books read-aloud (Kokoro-82M neural TTS) ───────────────────────────────
+# Downloads the ONNX model to <data_dir>/models/kokoro-82m-<ver>/kokoro-82m.onnx.
+# Read-aloud ALSO needs, in the same dir:
+#   voices/<voice_id>.bin  — raw little-endian f32, shape [510, 256] per voice
+#                            (af_heart, af_bella, am_michael, am_adam, …), and
+#   espeak-ng — bundled in resources/bin/<os-arch>/ (+ espeak-ng-data) by release
+#               packaging, or on PATH. Resolved via tool_bin, so no user install.
+# Extract the per-voice style vectors from the Kokoro voices pack into voices/.
+# Without them the reader falls back to the timer-paced highlight. Requires the
+# `books-tts` build feature (ORT). See tulipix_books::kokoro.
+[[models]]
+name = "kokoro-82m"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/onnx-community/Kokoro-82M-v1.0-ONNX/resolve/main/onnx/model.onnx"
+size_bytes = 330000000
+quant = "fp32"
+min_vram_mb = 1024
+cap = "books.ai.tts"

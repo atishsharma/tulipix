@@ -10,6 +10,13 @@ license.workspace = true
 # text, paginates it, parses TOC, renders PDF/comic pages (pdftoppm / zip /
 # unrar), and owns reading progress + bookmarks + annotations + library queries.
 
+[features]
+# Read-aloud neural TTS (Kokoro-82M via ONNX Runtime). Heavy: pulls `ort` +
+# onnxruntime binaries — OFF in the lite dev build, ON in release/CI. Runtime
+# still degrades to the timer-paced highlight when the model / espeak-ng /
+# voices aren't present, so nothing breaks without them.
+kokoro = ["dep:ort"]
+
 [dependencies]
 anyhow.workspace = true
 tokio = { workspace = true }
@@ -20,6 +27,12 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 mobi = "0.8"
 sha2 = "0.10"
 walkdir = "2"
+lopdf = { version = "0.44", default-features = false }
+reqwest = { workspace = true, features = ["json"] }
+serde_json = { workspace = true }
+urlencoding = "2"
+# Kokoro TTS (feature `kokoro`) — same ORT pin as tulipix-photos.
+ort = { version = "=2.0.0-rc.10", optional = true, default-features = false, features = ["std", "download-binaries"] }
 
 [dev-dependencies]
 tempfile = "3"

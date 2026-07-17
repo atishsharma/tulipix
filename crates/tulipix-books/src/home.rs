@@ -28,7 +28,7 @@ const SHELF: usize = 12;
 const ROW_SQL: &str =
     "SELECT b.id, b.path, b.format, b.title, b.author, b.genre, b.series,
             b.cover_path, b.size_bytes, b.added_at, b.finished, b.favorite, b.missing,
-            b.rating,
+            b.rating, b.summary, b.summary_fetched_at,
             COALESCE(p.percent, 0.0) AS percent,
             COALESCE(p.updated_at, 0) AS last_read
      FROM books b LEFT JOIN progress p ON p.book_id = b.id

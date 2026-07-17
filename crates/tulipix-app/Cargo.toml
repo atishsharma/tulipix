@@ -56,6 +56,10 @@ hot = ["dev-reload", "dep:hot-lib-reloader", "dep:tulipix-hot", "tulipix-hot/dev
 # tulipix-photos (downloads the native runtime at build time).
 ai-onnx = ["tulipix-photos/onnx", "tulipix-sec-photos/ai-onnx"]
 
+# Neural read-aloud (Kokoro-82M) in the Books reader. Pulls ORT into
+# tulipix-books; runtime falls back to timer highlight without the model.
+books-tts = ["tulipix-sec-books/kokoro"]
+
 # Global allocator. mimalloc on Win/Linux gives 10-20% perf on the thumb
 # pipeline + DB pool; macOS keeps system malloc (jemalloc nightly-only).
 alloc-mimalloc = ["dep:mimalloc"]

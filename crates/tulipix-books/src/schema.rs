@@ -81,11 +81,57 @@ pub async fn apply(pool: &SqlitePool) -> Result<()> {
     .execute(pool)
     .await?;
 
-    // Older DBs may predate the rating column — add it best-effort (errors when
-    // it already exists, which is fine).
-    let _ = sqlx::query("ALTER TABLE books ADD COLUMN rating REAL NOT NULL DEFAULT 0")
-        .execute(pool)
-        .await;
+    // Distinct days the user read (unix day number = secs/86400) — powers the
+    // reading-stats streak + heatmap.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS reading_days (
+            day INTEGER PRIMARY KEY
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // User collections (shelves beyond genre) + membership.
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS collections (
+            id         INTEGER PRIMARY KEY AUTOINCREMENT,
+            name       TEXT NOT NULL,
+            created_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS collection_books (
+            collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
+            book_id       INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+            PRIMARY KEY (collection_id, book_id)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Full-text search over book contents (FTS5). `book_id` is UNINDEXED so the
+    // table maps a match back to a book without duplicating it in the index.
+    sqlx::query(
+        "CREATE VIRTUAL TABLE IF NOT EXISTS book_fts USING fts5(
+            body,
+            book_id UNINDEXED
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Older DBs may predate these columns — add best-effort (errors when they
+    // already exist, which is fine).
+    for alter in [
+        "ALTER TABLE books ADD COLUMN rating REAL NOT NULL DEFAULT 0",
+        // R1 book-detail popup: cached online summary + when it was fetched.
+        "ALTER TABLE books ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE books ADD COLUMN summary_fetched_at INTEGER NOT NULL DEFAULT 0",
+    ] {
+        let _ = sqlx::query(alter).execute(pool).await;
+    }
 
     sqlx::query("CREATE INDEX IF NOT EXISTS idx_books_title  ON books(title)")
         .execute(pool)

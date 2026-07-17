@@ -10,7 +10,9 @@ pub mod annotations;
 pub mod covers;
 pub mod epub;
 pub mod home;
+pub mod kokoro;
 pub mod library;
+pub mod lookup;
 pub mod metadata;
 pub mod paginate;
 pub mod prefs;
@@ -18,6 +20,8 @@ pub mod progress;
 pub mod render;
 pub mod scan;
 pub mod schema;
+pub mod speech;
+pub mod summary;
 pub mod toc;
 pub mod tts;
 
