@@ -1086,20 +1086,54 @@ fn books_card_menu(weak: slint::Weak<MainWindow>, id: i64, action: String, sort_
     });
 }
 
-/// "Add books" → folder picker → scan into the library.
+/// One-row books scan-progress model for the shared ScanProgressCard.
+fn books_scan_row(total: i32, added: i32, active: bool) -> ScanProgress {
+    ScanProgress {
+        section: "books".into(),
+        label: "Books".into(),
+        total,
+        added,
+        failed: 0,
+        active,
+        last_error: "".into(),
+    }
+}
+
+/// "Add books" → folder picker → scan into the library, showing the shared
+/// scan-progress popup (same dialog other media get when adding a folder).
 fn books_add_folder(weak: slint::Weak<MainWindow>) {
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
         let Some(dir) = rfd::AsyncFileDialog::new().pick_folder().await else { return };
         let path = dir.path().to_string_lossy().to_string();
+        // Show the loading popup (indeterminate while the scan walks the folder).
+        let _ = weak.upgrade_in_event_loop(|w| {
+            w.set_scan_progress(VecModel::from_slice(&[books_scan_row(0, 0, true)]));
+            w.set_scan_active(true);
+        });
+        let mut added = 0i32;
         if let Ok(pool) = pool_for("books").await {
             let _ = tulipix_books::scan::add_folder(&pool, &path).await;
-            let _ = tulipix_books::scan::scan_all(&pool).await;
+            let report = tulipix_books::scan::scan_all(&pool).await;
+            added = report.map(|r| r.added as i32).unwrap_or(0);
             books_refresh(weak.clone(), 0);
             // Index contents for library-wide search in the background (slow for
             // big libraries; resumable so a partial run picks up next time).
             let _ = tulipix_books::scan::index_contents(&pool).await;
         }
+        // Mark done; keep the popup up briefly with the count, then auto-hide.
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_scan_progress(VecModel::from_slice(&[books_scan_row(added.max(1), added, false)]));
+            w.set_scan_active(false);
+            let weak2 = w.as_weak();
+            slint::Timer::single_shot(std::time::Duration::from_secs(4), move || {
+                if let Some(w) = weak2.upgrade() {
+                    let empty: &[ScanProgress] = &[];
+                    w.set_scan_progress(VecModel::from_slice(empty));
+                    w.set_scan_active(false);
+                }
+            });
+        });
         books_refresh(weak, 0);
     });
 }
