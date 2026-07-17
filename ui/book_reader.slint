@@ -1,699 +1,1427 @@
-// Native book reader overlay (np.p4.books.reader). Three modes driven by
-// `kind`: "comic" (1–2 page images, spread / RTL / invert), "text" (EPUB
-// chapter text with typography), "unsupported" (honest PDF/CBR notice).
-import { ScrollView, LineEdit, ListView } from "std-widgets.slint";
-import { TocEntryRow, BookmarkRow } from "page_books.slint";
+// Book Reader (np.p8.books.reader) — target: docs/books-redesign/newreader.png.
+// ORIGINAL design (the dead creader.png single cream column is NOT reused).
+// Full-screen overlay pushed above the section content when a book is opened.
+//
+// Skeleton: white top bar (back + title/author + icon buttons) · content row
+// (floating chevrons + two-page paper spread | optional Contents panel) ·
+// white bottom bar (prev-chapter pill + scrub slider + page pill + next-chapter
+// pill). Paper surface + body text follow the reading theme (light/sepia/dark);
+// chrome always stays app-sans white. All data flows in via `in` properties;
+// user actions leave through callbacks the sec-books crate wires to the engine.
+import { Theme } from "tokens.slint";
 import { AppIcon, Icons } from "icons.slint";
+import { BookTheme } from "page_books.slint";
+import { ScrollView, LineEdit, ComboBox } from "std-widgets.slint";
 
-component RBtn inherits Rectangle {
-    in property <string> label;
-    in property <image> icon;
-    in property <bool> on: false;
-    // Light chrome (sepia/light reading themes) needs dark glyphs — the
-    // default white-on-translucent-white is invisible there.
-    in property <bool> light: false;
-    callback clicked();
-    property <color> fg: on ? #ffffff : light ? #20201c : #ffffff;
-    height: 34px;
-    width: lay.preferred-width + 24px;
-    border-radius: 8px;
-    background: on ? #1a73e8
-              : ta.has-hover ? (light ? #00000016 : #ffffff22)
-              : (light ? #0000000a : #ffffff14);
-    border-width: 1px; border-color: light ? #00000030 : #ffffff2e;
-    animate background { duration: 110ms; }
-    lay := HorizontalLayout { alignment: center; spacing: 6px;
-        if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: root.fg; width: 15px; height: 15px; } }
-        if root.label != "": Text { text: root.label; color: root.fg;
-            font-size: 13px; font-weight: 600; vertical-alignment: center; } }
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+// One Contents-panel row: front-matter or chapter. `chapter` is the spine index
+// to jump to (-1 = non-navigable heading). `active` highlights current position.
+export struct TocRow {
+    label: string,
+    page: int,
+    depth: int,
+    chapter: int,
+    active: bool,
 }
 
-export component BookReader inherits Rectangle {
-    in property <bool> open: false;
-    in property <string> title;
-    in property <string> kind: "comic";   // comic | text | unsupported
-    in property <string> page-label;
-    in property <float> progress;          // 0..1
-    // comic
-    in property <image> page-left;
-    in property <image> page-right;
-    in property <bool> has-right: false;
-    in property <bool> spread-double: false;
-    in property <bool> rtl: false;
-    in property <bool> invert: false;
-    // text
-    in property <string> text;
-    // Two-page spread (np.p4.books.reader — real-book layout): right page +
-    // the outgoing page faces shown during the flip animation.
-    in property <string> text-right;
-    in property <string> text-prev;
-    in property <string> text-prev-right;
-    in-out property <bool> two-page: true;
-    // True when the spread actually renders two-up (toggle on + window wide
-    // enough). Rust reads this to step pages by 2.
-    in-out property <bool> two-up-active: root.two-page && root.kind == "text"
-        && root.read-mode == "paginated" && root.width >= 900px;
-    in property <float> font-px: 18;
-    in property <int> font-family: 0;
-    in property <bool> text-dark: false;
-    // Phase 5 — TOC / bookmarks / read-mode / theme
-    in property <[TocEntryRow]> toc-entries: [];
-    in property <[BookmarkRow]> reader-bookmarks: [];
-    in-out property <bool> toc-open: false;
-    in-out property <bool> bookmarks-open: false;
-    in-out property <bool> find-open: false;
-    in-out property <bool> settings-open: false;
-    in-out property <bool> timeline-open: false;
-    in-out property <bool> define-open: false;
-    // Comic thumbnail timeline (np.p4.books.reader.navigation).
-    in property <[image]> comic-thumbs: [];
-    // PDF continuous reader (np.p5.books.pdf): lazily-filled page images.
-    in property <[image]> pdf-pages: [];
-    callback pdf-page-visible(int);
-    callback pdf-goto-page(int);
-    // Comic guided view (np.p5.books.comic-guided).
-    in property <bool> guided: false;
-    // Dictionary popover (np.p5.books.dictionary).
-    in property <string> define-result: "";
-    // Colour-coded bookmarks (np.p5.books.annotations): the active colour new
-    // bookmarks get; the palette lives in the bookmarks sidebar.
-    in-out property <string> bm-color: "#ffd54f";
-    // TTS read-aloud (np.p5.books.tts): currently spoken sentence, "" = idle.
-    in property <string> tts-sentence: "";
-    in property <string> read-mode: "paginated";
-    in property <string> theme: "sepia";
-    in property <float> line-height-val: 1.5;
-    in property <float> margin-pct: 8.0;
-    // EPUB pagination + page-turn fold animation.
-    in property <int> page-index;
-    in property <int> page-total: 1;
-    in property <int> turn;        // bumped by Rust on each page turn
-    in property <int> turn-dir;    // +1 forward · -1 back
+// One bookmark, listed under the annotate icon.
+export struct BookmarkRow {
+    id: int,
+    page: int,
+    note: string,
+}
 
+// One in-book search hit: 1-based screen page + a snippet around the match.
+export struct SearchRow {
+    page: int,
+    snippet: string,
+}
+
+// One page-anchored note in the annotate panel. `id` is the DB row id (used to
+// edit/delete/jump); `page` is the 1-based screen page it was made on.
+export struct AnnotRow {
+    id: int,
+    page: int,
+    snippet: string,
+    note: string,
+}
+
+// ── small parts ─────────────────────────────────────────────────────────────
+
+// 44px rounded-square chrome icon button; `active` = violet-tint + violet icon.
+component ChromeButton inherits Rectangle {
+    in property <image> icon;
+    in property <bool> active: false;
+    in property <string> caption;
+    callback clicked;
+    width: 44px;
+    height: 44px;
+    border-radius: 12px;
+    background: active ? BookTheme.tint-violet : (ta.has-hover ? BookTheme.pill-bg : BookTheme.card);
+    border-width: 1px;
+    border-color: active ? BookTheme.accent.with-alpha(0.35) : BookTheme.hairline;
+    animate background { duration: 120ms; }
+    if root.caption == "": AppIcon {
+        source: root.icon;
+        tint: root.active ? BookTheme.accent : BookTheme.ink-dim;
+        width: 20px;
+        height: 20px;
+    }
+    if root.caption != "": Text {
+        text: root.caption;
+        color: root.active ? BookTheme.accent : BookTheme.ink-dim;
+        font-size: 15px;
+        font-weight: 800;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// One segment in a settings segmented-control (Line spacing / Margins / Typeface).
+component SegItem inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <length> text-size: 12px;
+    in property <string> preview-font: "";
+    callback clicked;
+    height: 34px;
+    border-radius: 9px;
+    background: active ? BookTheme.accent : BookTheme.pill-bg;
+    border-width: 1px;
+    border-color: active ? BookTheme.accent : BookTheme.hairline;
+    HorizontalLayout {
+        alignment: center;
+        Text {
+            text: root.label;
+            color: root.active ? #ffffff : BookTheme.ink;
+            font-size: root.text-size;
+            font-weight: 600;
+            font-family: root.preview-font;
+            vertical-alignment: center;
+        }
+    }
+    TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+// Floating circular white chevron at a spread edge (48px, soft shadow).
+component EdgeNav inherits Rectangle {
+    in property <image> icon;
+    callback clicked;
+    width: 48px;
+    height: 48px;
+    border-radius: 24px;
+    background: ta.has-hover ? #ffffff : #fffffff2;
+    drop-shadow-blur: 16px;
+    drop-shadow-color: #00000022;
+    drop-shadow-offset-y: 2px;
+    AppIcon {
+        source: root.icon;
+        tint: BookTheme.ink;
+        width: 22px;
+        height: 22px;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.clicked(); }
+    }
+}
+
+// One paper page: serif body column + centered folio footer `‹ n ›`.
+component PaperPage inherits Rectangle {
+    in property <string> body;
+    in property <string> heading;       // chapter title, shown on its first page
+    in property <int> folio;
+    in property <color> paper;
+    in property <color> ink;
+    in property <length> font-size: 17px;
+    in property <string> font-family: "serif";
+    in property <bool> bold: false;
+    in property <bool> is-image: false; // fixed-page (PDF/CBZ/CBR) mode
+    in property <image> page-image;
+    callback prev;
+    callback next;
+    background: paper;
+    border-radius: 3px;
+    // Floating-book lift (soft drop-shadow under the page edge).
+    drop-shadow-blur: 32px;
+    drop-shadow-color: #00000022;
+    drop-shadow-offset-y: 10px;
+    VerticalLayout {
+        padding: root.is-image ? 16px : 40px;
+        padding-bottom: 20px;
+        spacing: 0px;
+        // Fixed-page: rasterised page image (PDF/CBZ/CBR).
+        if root.is-image: Image {
+            source: root.page-image;
+            image-fit: contain;
+            vertical-stretch: 1;
+        }
+        // Reflow text page: chapter opener (centered serif title + divider) + body.
+        if !root.is-image: VerticalLayout {
+            vertical-stretch: 1;
+            spacing: 0px;
+            if root.heading != "": VerticalLayout {
+                padding-top: 12px;
+                padding-bottom: 26px;
+                spacing: 16px;
+                Text {
+                    text: root.heading;
+                    color: root.ink;
+                    font-size: root.font-size * 1.85;
+                    font-family: root.font-family;
+                    font-weight: 700;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                }
+                // Ornamental divider: two thin rules + a center dot (manual layout
+                // so the 1px rules aren't stretched by a surrounding layout).
+                Rectangle {
+                    height: 8px;
+                    Rectangle { x: parent.width / 2 - 64px; y: (parent.height - 1px) / 2; width: 54px; height: 1px; background: root.ink.with-alpha(0.28); }
+                    Rectangle { x: (parent.width - 5px) / 2; y: (parent.height - 5px) / 2; width: 5px; height: 5px; border-radius: 2.5px; background: root.ink.with-alpha(0.42); }
+                    Rectangle { x: parent.width / 2 + 10px; y: (parent.height - 1px) / 2; width: 54px; height: 1px; background: root.ink.with-alpha(0.28); }
+                }
+            }
+            Text {
+                text: root.body;
+                color: root.ink;
+                font-size: root.font-size;
+                font-family: root.font-family;
+                font-weight: root.bold ? 600 : 400;
+                wrap: word-wrap;
+                vertical-alignment: top;
+                horizontal-alignment: left;
+                vertical-stretch: 1;
+            }
+        }
+        // Folio footer: ‹ n ›
+        HorizontalLayout {
+            alignment: center;
+            spacing: 12px;
+            height: 24px;
+            fa := TouchArea {
+                width: 16px;
+                mouse-cursor: pointer;
+                clicked => { root.prev(); }
+                AppIcon { source: Icons.chevron-left; tint: root.ink.with-alpha(0.5); width: 12px; height: 12px; }
+            }
+            Text {
+                text: root.folio;
+                color: root.ink.with-alpha(0.6);
+                font-size: 12px;
+                vertical-alignment: center;
+            }
+            na := TouchArea {
+                width: 16px;
+                mouse-cursor: pointer;
+                clicked => { root.next(); }
+                AppIcon { source: Icons.chevron-right; tint: root.ink.with-alpha(0.5); width: 12px; height: 12px; }
+            }
+        }
+    }
+}
+
+// ── scrub slider ──────────────────────────────────────────────────────────
+// Custom slider so the handle matches the design (clean white/violet knob)
+// instead of the renderer's default. Click or drag maps x → page.
+component BookSlider inherits Rectangle {
+    in property <int> minimum: 1;
+    in property <int> maximum: 1;
+    in property <int> value: 1;
+    callback changed(int);
+    height: 20px;
+    property <float> frac: root.maximum > root.minimum
+        ? (root.value - root.minimum) / (root.maximum - root.minimum) : 0;
+    // Track + violet fill.
+    Rectangle {
+        y: (parent.height - 4px) / 2;
+        height: 4px;
+        border-radius: 2px;
+        background: BookTheme.track;
+        Rectangle {
+            x: 0;
+            width: parent.width * root.frac;
+            height: 4px;
+            border-radius: 2px;
+            background: BookTheme.accent;
+        }
+    }
+    // Knob.
+    Rectangle {
+        width: 16px;
+        height: 16px;
+        border-radius: 8px;
+        x: root.frac * (parent.width - self.width);
+        y: (parent.height - self.height) / 2;
+        background: #ffffff;
+        border-width: 2px;
+        border-color: BookTheme.accent;
+        drop-shadow-blur: 6px;
+        drop-shadow-color: #00000026;
+        drop-shadow-offset-y: 1px;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        moved => {
+            if (self.pressed) {
+                root.changed(root.minimum + Math.round(Math.clamp(self.mouse-x / root.width, 0, 1) * (root.maximum - root.minimum)));
+            }
+        }
+        clicked => {
+            root.changed(root.minimum + Math.round(Math.clamp(self.mouse-x / root.width, 0, 1) * (root.maximum - root.minimum)));
+        }
+    }
+}
+
+// Float slider (page zoom) — same look as BookSlider but continuous.
+component FloatSlider inherits Rectangle {
+    in property <float> minimum: 1.0;
+    in property <float> maximum: 3.0;
+    in property <float> value: 1.0;
+    callback changed(float);
+    height: 20px;
+    property <float> frac: root.maximum > root.minimum
+        ? (root.value - root.minimum) / (root.maximum - root.minimum) : 0;
+    Rectangle {
+        y: (parent.height - 4px) / 2; height: 4px; border-radius: 2px; background: BookTheme.track;
+        Rectangle { x: 0; width: parent.width * root.frac; height: 4px; border-radius: 2px; background: BookTheme.accent; }
+    }
+    Rectangle {
+        width: 15px; height: 15px; border-radius: 8px;
+        x: root.frac * (parent.width - self.width); y: (parent.height - self.height) / 2;
+        background: #ffffff; border-width: 2px; border-color: BookTheme.accent;
+        drop-shadow-blur: 5px; drop-shadow-color: #00000026;
+    }
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        moved => { if (self.pressed) { root.changed(root.minimum + Math.clamp(self.mouse-x / root.width, 0, 1) * (root.maximum - root.minimum)); } }
+        clicked => { root.changed(root.minimum + Math.clamp(self.mouse-x / root.width, 0, 1) * (root.maximum - root.minimum)); }
+    }
+}
+
+// Zoomable / pannable single page image (PDF/CBZ). Scroll to zoom, drag to pan,
+// reset per page. `zoom` two-ways to the reader so the bottom slider drives it.
+component ZoomStage inherits Rectangle {
+    in property <image> page-image;
+    in-out property <float> zoom: 1.0;
+    clip: true;
+    property <length> pan-x: 0;
+    property <length> pan-y: 0;
+    property <length> max-px: Math.max(0px, (root.width * root.zoom - root.width) / 2);
+    property <length> max-py: Math.max(0px, (root.height * root.zoom - root.height) / 2);
+    // New page → reset zoom/pan (each page zooms independently).
+    changed page-image => { root.zoom = 1.0; root.pan-x = 0; root.pan-y = 0; }
+    changed zoom => {
+        if (root.zoom <= 1.0) { root.pan-x = 0; root.pan-y = 0; }
+        root.pan-x = Math.clamp(root.pan-x, -root.max-px, root.max-px);
+        root.pan-y = Math.clamp(root.pan-y, -root.max-py, root.max-py);
+    }
+    Image {
+        source: root.page-image;
+        image-fit: contain;
+        width: root.width * root.zoom;
+        height: root.height * root.zoom;
+        x: (root.width - self.width) / 2 + root.pan-x;
+        y: (root.height - self.height) / 2 + root.pan-y;
+    }
+    ta := TouchArea {
+        mouse-cursor: root.zoom > 1.0 ? MouseCursor.grab : MouseCursor.default;
+        property <length> down-x: 0;
+        property <length> down-y: 0;
+        scroll-event(e) => {
+            root.zoom = Math.clamp(root.zoom + (e.delta-y > 0 ? 0.2 : -0.2), 1.0, 3.0);
+            return accept;
+        }
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down) { self.down-x = root.pan-x; self.down-y = root.pan-y; }
+        }
+        moved => {
+            if (root.zoom > 1.0) {
+                root.pan-x = Math.clamp(self.down-x + (self.mouse-x - self.pressed-x), -root.max-px, root.max-px);
+                root.pan-y = Math.clamp(self.down-y + (self.mouse-y - self.pressed-y), -root.max-py, root.max-py);
+            }
+        }
+    }
+}
+
+// Continuous single-column scroll of the whole book (reflow text mode).
+component ContinuousText inherits Rectangle {
+    in property <string> text;
+    in property <color> paper;
+    in property <color> ink;
+    in property <length> font-size;
+    in property <string> font-family;
+    in property <bool> bold: false;
+    background: root.paper;
+    ScrollView {
+        VerticalLayout {
+            padding: 44px;
+            Text {
+                text: root.text;
+                color: root.ink;
+                font-size: root.font-size;
+                font-family: root.font-family;
+                font-weight: root.bold ? 600 : 400;
+                wrap: word-wrap;
+            }
+        }
+    }
+}
+
+// Read-aloud view: chapter sentences as a scroll list, active one highlighted.
+component ReadAlong inherits Rectangle {
+    in property <[string]> sentences;
+    in property <int> active;
+    in property <color> paper;
+    in property <color> ink;
+    in property <length> font-size;
+    in property <string> font-family;
+    callback jump(int);
+    background: root.paper;
+    property <length> row-h: root.font-size * 2.6;
+    sv := ScrollView {
+        VerticalLayout {
+            padding: 44px;
+            spacing: 4px;
+            for s[i] in root.sentences: Rectangle {
+                border-radius: 8px;
+                background: i == root.active ? BookTheme.accent.with-alpha(0.15) : (rowta.has-hover ? BookTheme.pill-bg.with-alpha(0.5) : transparent);
+                HorizontalLayout {
+                    padding: 7px;
+                    Text {
+                        text: s;
+                        color: i == root.active ? BookTheme.accent : root.ink;
+                        font-size: root.font-size;
+                        font-family: root.font-family;
+                        font-weight: i == root.active ? 600 : 400;
+                        wrap: word-wrap;
+                        horizontal-stretch: 1;
+                    }
+                }
+                rowta := TouchArea { mouse-cursor: pointer; clicked => { root.jump(i); } }
+            }
+        }
+    }
+    // Rough auto-scroll to keep the active sentence in the upper third.
+    changed active => { sv.viewport-y = -Math.max(0px, root.active * root.row-h - root.height / 3); }
+}
+
+// ── contents panel ──────────────────────────────────────────────────────────
+
+component ContentsPanel inherits Rectangle {
+    in property <[TocRow]> toc;
+    in-out property <string> filter;
+    callback jump(int);
     callback close();
-    callback next();
-    callback prev();
-    callback scrub(float);
-    callback toggle-spread();
-    callback toggle-rtl();
-    callback toggle-invert();
-    callback set-font(float);
-    callback set-family(int);
-    callback set-line(float);
-    callback set-margin(float);
-    callback reflow(length, length); // text-stage size → re-paginate in Rust
-    callback toggle-text-dark();
-    // Phase 5 callbacks
-    callback toggle-guided();
-    callback define(string);
-    callback toggle-toc();
-    callback jump-to-chapter(int);
-    callback toggle-bookmarks();
-    callback add-bookmark();
-    callback jump-to-bookmark(int);
-    callback toggle-read-mode();
+    width: 310px;
+    background: BookTheme.card;
+    border-width: 1px;
+    border-color: BookTheme.hairline;
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+        // Header
+        HorizontalLayout {
+            alignment: space-between;
+            Text {
+                text: "Contents";
+                color: BookTheme.ink;
+                font-size: 17px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            ChromeButton {
+                icon: Icons.x;
+                width: 32px;
+                height: 32px;
+                clicked => { root.close(); }
+            }
+        }
+        // Live filter field
+        search := LineEdit {
+            placeholder-text: "Search contents";
+            text <=> root.filter;
+        }
+        // Tree
+        ScrollView {
+            VerticalLayout {
+                spacing: 2px;
+                for row[i] in root.toc: rowrect := Rectangle {
+                    height: 34px;
+                    border-radius: 8px;
+                    background: row.active ? BookTheme.tint-violet : (rowta.has-hover ? BookTheme.pill-bg : transparent);
+                    HorizontalLayout {
+                        padding-left: 8px + (row.depth * 16px);
+                        padding-right: 10px;
+                        spacing: 6px;
+                        if row.chapter >= 0: AppIcon {
+                            source: Icons.chevron-right;
+                            tint: BookTheme.ink-dim;
+                            width: 12px;
+                            height: 12px;
+                            vertical-alignment: center;
+                        }
+                        Text {
+                            text: row.label;
+                            color: row.active ? BookTheme.accent : BookTheme.ink;
+                            font-size: 13px;
+                            font-weight: row.active ? 700 : 400;
+                            vertical-alignment: center;
+                            overflow: elide;
+                            horizontal-stretch: 1;
+                        }
+                        Text {
+                            text: row.page > 0 ? row.page : "";
+                            color: BookTheme.ink-dim;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    rowta := TouchArea {
+                        mouse-cursor: row.chapter >= 0 ? pointer : default;
+                        clicked => { if (row.chapter >= 0) { root.jump(row.chapter); } }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── search panel ──────────────────────────────────────────────────────────
+
+component SearchPanel inherits Rectangle {
+    in property <[SearchRow]> results;
+    in-out property <string> query;
+    callback run(string);
+    callback jump(int);
+    callback close();
+    width: 310px;
+    background: BookTheme.card;
+    border-width: 1px;
+    border-color: BookTheme.hairline;
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+        HorizontalLayout {
+            alignment: space-between;
+            Text {
+                text: "Search";
+                color: BookTheme.ink;
+                font-size: 17px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            ChromeButton {
+                icon: Icons.x;
+                width: 32px;
+                height: 32px;
+                clicked => { root.close(); }
+            }
+        }
+        field := LineEdit {
+            placeholder-text: "Find in book";
+            text <=> root.query;
+            edited(t) => { root.run(t); }
+        }
+        Text {
+            text: root.query == "" ? "" : (root.results.length + (root.results.length == 1 ? " result" : " results"));
+            color: BookTheme.ink-dim;
+            font-size: 12px;
+        }
+        ScrollView {
+            VerticalLayout {
+                spacing: 2px;
+                for row in root.results: Rectangle {
+                    height: 56px;
+                    border-radius: 8px;
+                    background: hitta.has-hover ? BookTheme.pill-bg : transparent;
+                    HorizontalLayout {
+                        padding-left: 8px;
+                        padding-right: 10px;
+                        spacing: 8px;
+                        Text {
+                            text: "p" + row.page;
+                            color: BookTheme.accent;
+                            font-size: 12px;
+                            font-weight: 700;
+                            vertical-alignment: center;
+                            width: 34px;
+                        }
+                        Text {
+                            text: row.snippet;
+                            color: BookTheme.ink;
+                            font-size: 12px;
+                            wrap: word-wrap;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                    }
+                    hitta := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.jump(row.page); }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── notes (annotate) panel ────────────────────────────────────────────────
+
+component AnnotPanel inherits Rectangle {
+    in property <[AnnotRow]> notes;
+    callback add();
+    callback jump(int);
+    callback set-note(int, string);
+    callback remove(int);
+    callback close();
+    width: 310px;
+    background: BookTheme.card;
+    border-width: 1px;
+    border-color: BookTheme.hairline;
+    VerticalLayout {
+        padding: 16px;
+        spacing: 12px;
+        HorizontalLayout {
+            alignment: space-between;
+            Text {
+                text: "Notes";
+                color: BookTheme.ink;
+                font-size: 17px;
+                font-weight: 700;
+                vertical-alignment: center;
+            }
+            ChromeButton {
+                icon: Icons.x;
+                width: 32px;
+                height: 32px;
+                clicked => { root.close(); }
+            }
+        }
+        // Add a note anchored to the current page.
+        addbtn := Rectangle {
+            height: 40px;
+            border-radius: 10px;
+            background: addta.has-hover ? BookTheme.accent.with-alpha(0.9) : BookTheme.accent;
+            HorizontalLayout {
+                alignment: center;
+                spacing: 6px;
+                AppIcon { source: Icons.square-pen; tint: #ffffff; width: 15px; height: 15px; vertical-alignment: center; }
+                Text { text: "Add note on this page"; color: #ffffff; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+            }
+            addta := TouchArea { mouse-cursor: pointer; clicked => { root.add(); } }
+        }
+        if root.notes.length == 0: Text {
+            text: "No notes yet.";
+            color: BookTheme.ink-dim;
+            font-size: 12px;
+        }
+        ScrollView {
+            VerticalLayout {
+                spacing: 8px;
+                for row in root.notes: Rectangle {
+                    border-radius: 10px;
+                    background: BookTheme.pill-bg;
+                    VerticalLayout {
+                        padding: 10px;
+                        spacing: 6px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            jumpbox := Rectangle {
+                                horizontal-stretch: 1;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Text {
+                                        text: "p" + row.page;
+                                        color: BookTheme.accent;
+                                        font-size: 12px;
+                                        font-weight: 700;
+                                        vertical-alignment: center;
+                                        width: 30px;
+                                    }
+                                    Text {
+                                        text: row.snippet;
+                                        color: BookTheme.ink-dim;
+                                        font-size: 12px;
+                                        overflow: elide;
+                                        horizontal-stretch: 1;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                TouchArea { mouse-cursor: pointer; clicked => { root.jump(row.id); } }
+                            }
+                            ChromeButton {
+                                icon: Icons.trash;
+                                width: 28px;
+                                height: 28px;
+                                clicked => { root.remove(row.id); }
+                            }
+                        }
+                        note-field := LineEdit {
+                            placeholder-text: "Write a note…";
+                            text: row.note;
+                            edited(t) => { root.set-note(row.id, t); }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// ── reader ──────────────────────────────────────────────────────────────────
+
+export component BookReader inherits Rectangle {
+    // Header
+    in property <string> title;
+    in property <string> author;
+    // Two-page spread text + folios (right-* empty in single-page mode).
+    in property <string> left-text;
+    in property <string> right-text;
+    in property <string> left-heading;   // chapter title on a chapter's first page
+    in property <string> right-heading;
+    in property <bool> image-mode: false;   // fixed-page (PDF/CBZ/CBR) book
+    in property <image> left-image;
+    in property <image> right-image;
+    in property <int> left-folio;
+    in property <int> right-folio;
+    // Bottom bar
+    in property <int> page-index;     // 1-based screen page
+    in property <int> page-count;
+    in property <float> percent;      // 0‥1
+    in property <string> chapter-name;
+    in property <string> next-chapter-name;
+    // Toggles / state
+    in property <bool> bookmarked;
+    in-out property <bool> contents-open: true;
+    in-out property <bool> typography-open: false;
+    in property <float> font-px: 17;
+    in property <string> font-family: "serif";
+    in property <bool> bold: false;
+    in property <int> line-index: 1;      // 0 compact · 1 normal · 2 relaxed
+    in property <int> margin-index: 1;     // 0 narrow · 1 normal · 2 wide
+    in property <int> typeface: 0;         // 0 serif · 1 sans · 2 mono
+    in property <float> brightness: 1.0;   // 0.4‥1.0 page dim
+    in-out property <bool> search-open: false;
+    in-out property <string> search-query;
+    in property <[SearchRow]> search-results;
+    in-out property <bool> notes-open: false;
+    in property <[AnnotRow]> notes;
+    in-out property <bool> more-open: false;
+    in property <[TocRow]> toc;
+    in property <string> theme-mode: "light"; // light | sepia | dark
+    in property <bool> loading: false;
+    in property <string> error-text: "";
+    in-out property <string> contents-filter;
+    // Single-page view (header toggle): one page + zoom (image) or continuous
+    // scroll (text). `full-text` is the whole book for the text-scroll mode.
+    in-out property <bool> force-single: false;
+    in-out property <float> zoom: 1.0;
+    in property <string> full-text: "";
+    // Read-aloud (TTS) — sentence list + highlight + controls.
+    in-out property <bool> tts-open: false;
+    in property <[string]> tts-sentences: [];
+    in property <int> tts-active: 0;
+    in property <bool> tts-playing: false;
+    in property <int> tts-speed-index: 1;   // 0 .75× · 1 1× · 2 1.25× · 3 1.5×
+    in property <[string]> tts-voices: [];
+    in property <string> tts-voice: "";
+
+    // Callbacks → sec-books
+    callback back();
+    callback prev-spread();
+    callback next-spread();
+    callback toggle-bookmark();
+    callback annotate();           // fired on opening the notes panel → load
+    callback annot-add();
+    callback annot-jump(int);
+    callback annot-set-note(int, string);
+    callback annot-remove(int);
+    callback search-run(string);
+    callback font-dec();
+    callback font-inc();
+    callback set-line-spacing(int);
+    callback set-margin(int);
+    callback set-typeface(int);
+    callback toggle-bold();
     callback set-theme(string);
+    callback set-brightness(float);
+    callback brightness-cycle();
+    callback more-mark-finished();
+    callback more-remove();
+    callback jump-chapter(int);
+    callback scrub(int);          // slider release → screen page
+    callback prev-chapter();
+    callback next-chapter();
+    callback prev-page();         // single-page step (±1)
+    callback next-page();
+    callback set-single(bool);    // tell the engine to stop even-aligning spreads
     callback tts-start();
     callback tts-stop();
-    callback find-text(string);
+    callback tts-play-pause();
+    callback tts-set-speed(int);
+    callback tts-set-voice(string);
+    callback tts-jump(int);
 
-    property <string> family-name: font-family == 1 ? "Arial" : font-family == 2 ? "OpenDyslexic" : "Georgia";
-    // PDF reader view state (np.p5.books.pdf): zoom + fit-width (display-only —
-    // pages are rastered at a fixed dpi and scaled here).
-    property <float> pdf-zoom: 1.0;
-    property <bool> pdf-fit: false;
+    // Derived paper palette from theme-mode.
+    property <color> paper: root.theme-mode == "sepia" ? #f4ecd8
+        : root.theme-mode == "dark" ? #1c1c20
+        : root.theme-mode == "night" ? #000000 : #fdfcf8;
+    property <color> paper-ink: root.theme-mode == "sepia" ? #4a3f2f
+        : root.theme-mode == "dark" ? #d8d8dc
+        : root.theme-mode == "night" ? #b8b8be : #1b1b22;
+    // Single page when the user toggles it, or the window is too narrow for two.
+    property <bool> single-page: root.force-single || root.width < 1000px;
+    // Continuous text scroll = single-page mode on a reflow (non-image) book.
+    property <bool> continuous: root.single-page && !root.image-mode;
+    // Keep the engine's spread alignment in sync with the view mode.
+    changed single-page => { root.set-single(root.single-page); }
 
-    // True when the top/bottom chrome is light (sepia/light reading themes) —
-    // buttons and the scrub track flip to dark glyphs there.
-    property <bool> bars-light: kind == "text" && (theme == "sepia" || theme == "light");
+    // Page-turn animation: on each spread change dip the paper opacity, and a
+    // one-shot Timer eases it back — a soft cross-flip without double-buffering.
+    property <float> spread-op: 1.0;
+    animate spread-op { duration: 130ms; easing: ease-in-out; }
+    changed page-index => { root.spread-op = 0.4; turn-timer.running = true; }
+    turn-timer := Timer {
+        interval: 130ms;
+        running: false;
+        triggered => { turn-timer.running = false; root.spread-op = 1.0; }
+    }
 
-    // Theme-aware text area colors
-    property <color> text-bg:
-        kind == "text"
-            ? (theme == "light" ? #ffffff
-               : theme == "dark"  ? #1e1e1e
-               : theme == "black" ? #000000
-               : #f7f2e6)
-            : #0c0c10;
-    property <color> text-fg:
-        (theme == "dark" || theme == "black") ? #d6d0c2 : #2a2620;
+    background: BookTheme.canvas;
+    forward-focus: key-scope;
 
-    visible: open;
-    background: text-bg;
-
-    if open: FocusScope {
+    key-scope := FocusScope {
         key-pressed(e) => {
-            if (e.text == Key.LeftArrow) { rtl ? root.next() : root.prev(); return accept; }
-            if (e.text == Key.RightArrow) { rtl ? root.prev() : root.next(); return accept; }
-            if (e.text == Key.Escape) { root.close(); return accept; }
-            if (e.text == " ") { root.next(); return accept; }
+            if (e.text == Key.LeftArrow) { root.prev-spread(); return accept; }
+            if (e.text == Key.RightArrow) { root.next-spread(); return accept; }
+            if (e.text == Key.Escape) {
+                if (root.contents-open) { root.contents-open = false; } else { root.back(); }
+                return accept;
+            }
+            if (e.text == "b") { root.toggle-bookmark(); return accept; }
+            if (e.text == "t") { root.contents-open = !root.contents-open; return accept; }
             return reject;
         }
-        init => { self.focus(); }
+    }
 
-        VerticalLayout {
-            // Top bar
-            Rectangle {
-                height: 52px; background: kind == "text" && theme == "sepia" ? #fbf9f3
-                              : kind == "text" && theme == "light" ? #f5f5f5
-                              : #00000066;
+    VerticalLayout {
+        spacing: 0px;
+
+        // ── Top bar ──────────────────────────────────────────────────────
+        Rectangle {
+            height: 72px;
+            background: BookTheme.card;
+            border-width: 1px;
+            border-color: BookTheme.hairline;
+            HorizontalLayout {
+                padding-left: 20px;
+                padding-right: 20px;
+                spacing: 12px;
+                alignment: space-between;
+                // Left: back + title/author
                 HorizontalLayout {
-                    padding-left: 18px; padding-right: 14px; spacing: 8px;
-                    Text { text: title; font-size: 15px; font-weight: 700; vertical-alignment: center;
-                        color: root.bars-light ? #20201c : #ffffff;
-                        overflow: elide; }
-                    Rectangle { horizontal-stretch: 1; }
-
-                    // ── Shared controls (all modes) ──────────────────────────
-                    RBtn { icon: Icons.menu; label: ""; light: root.bars-light; on: root.toc-open; clicked => { root.toggle-toc(); } }
-                    RBtn { icon: Icons.bookmark; light: root.bars-light; clicked => { root.add-bookmark(); } }
-                    RBtn { icon: Icons.clipboard; label: ""; light: root.bars-light; on: root.bookmarks-open; clicked => { root.toggle-bookmarks(); } }
-                    RBtn { icon: root.read-mode == "paginated" ? Icons.move-vertical : Icons.file-text; label: root.read-mode == "paginated" ? "Scroll" : "Pages"; light: root.bars-light; clicked => { root.toggle-read-mode(); } }
-
-                    // ── Text mode controls ───────────────────────────────────
-                    if kind == "text": HorizontalLayout {
-                        spacing: 8px;
-                        RBtn { icon: Icons.book-open; label: "Spread"; light: root.bars-light; on: root.two-page;
-                            clicked => { root.two-page = !root.two-page; } }
-                        RBtn { label: "Aa"; light: root.bars-light; on: root.settings-open; clicked => { root.settings-open = !root.settings-open; } }
-                        RBtn { icon: Icons.search; label: ""; light: root.bars-light; on: root.find-open; clicked => { root.find-open = !root.find-open; } }
-                        RBtn { icon: Icons.book-open; label: ""; light: root.bars-light; on: root.define-open; clicked => { root.define-open = !root.define-open; } }
-                        RBtn { icon: Icons.volume; label: ""; light: root.bars-light; clicked => { root.tts-start(); } }
-                        RBtn {
-                            light: root.bars-light;
-                            icon: root.theme == "sepia"  ? Icons.sun
-                                 : root.theme == "light"  ? Icons.sun
-                                 : root.theme == "dark"   ? Icons.moon
-                                 : Icons.contrast;
-                            clicked => {
-                                root.set-theme(
-                                    root.theme == "sepia"  ? "light"
-                                  : root.theme == "light"  ? "dark"
-                                  : root.theme == "dark"   ? "black"
-                                  : "sepia"
-                                );
+                    spacing: 12px;
+                    Rectangle {
+                        width: 44px;
+                        height: 44px;
+                        y: (parent.height - 44px) / 2;
+                        border-radius: 22px;
+                        background: backta.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                        border-width: 1px;
+                        border-color: BookTheme.hairline;
+                        AppIcon { source: Icons.chevron-left; tint: BookTheme.ink; width: 20px; height: 20px; }
+                        backta := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.back(); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center;
+                        spacing: 1px;
+                        Text {
+                            text: root.title;
+                            color: BookTheme.ink;
+                            font-size: 16px;
+                            font-weight: 800;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: root.author;
+                            color: BookTheme.ink-dim;
+                            font-size: 12px;
+                            overflow: elide;
+                        }
+                    }
+                }
+                // Right: icon buttons
+                HorizontalLayout {
+                    spacing: 8px;
+                    alignment: end;
+                    ChromeButton {
+                        icon: Icons.bookmark;
+                        active: root.bookmarked;
+                        clicked => { root.toggle-bookmark(); }
+                    }
+                    ChromeButton {
+                        icon: Icons.square-pen;
+                        active: root.notes-open;
+                        clicked => {
+                            root.notes-open = !root.notes-open;
+                            if (root.notes-open) {
+                                root.contents-open = false;
+                                root.search-open = false;
+                                root.annotate();
                             }
                         }
                     }
-
-                    // ── Comic mode controls ──────────────────────────────────
-                    if kind == "comic": HorizontalLayout {
-                        spacing: 8px;
-                        RBtn { label: spread-double ? "Two-page" : "Single"; on: spread-double; clicked => { root.toggle-spread(); } }
-                        RBtn { label: "RTL"; on: rtl; clicked => { root.toggle-rtl(); } }
-                        RBtn { label: "Invert"; on: invert; clicked => { root.toggle-invert(); } }
-                        RBtn { label: "Guided"; on: root.guided; clicked => { root.toggle-guided(); } }
-                        RBtn { icon: Icons.film; label: ""; on: root.timeline-open; clicked => { root.timeline-open = !root.timeline-open; } }
+                    ChromeButton {
+                        icon: Icons.search;
+                        active: root.search-open;
+                        clicked => {
+                            root.search-open = !root.search-open;
+                            if (root.search-open) { root.contents-open = false; root.notes-open = false; }
+                        }
                     }
-
-                    // ── PDF mode controls ────────────────────────────────────
-                    if kind == "pdf": HorizontalLayout {
-                        spacing: 8px;
-                        RBtn { label: "PDF · original layout"; light: root.bars-light; }
-                        RBtn { label: "−"; light: root.bars-light; clicked => { root.pdf-fit = false; root.pdf-zoom = max(0.5, root.pdf-zoom - 0.15); } }
-                        RBtn { label: root.pdf-fit ? "Fit" : "" + round(root.pdf-zoom * 100) + "%"; light: root.bars-light; }
-                        RBtn { label: "+"; light: root.bars-light; clicked => { root.pdf-fit = false; root.pdf-zoom = min(3.0, root.pdf-zoom + 0.15); } }
-                        RBtn { label: "Fit width"; on: root.pdf-fit; light: root.bars-light; clicked => { root.pdf-fit = !root.pdf-fit; } }
+                    ChromeButton {
+                        icon: Icons.menu;
+                        active: root.contents-open;
+                        clicked => {
+                            root.contents-open = !root.contents-open;
+                            if (root.contents-open) { root.search-open = false; root.notes-open = false; }
+                        }
                     }
-
-                    RBtn { icon: Icons.x; label: "Close"; light: root.bars-light; clicked => { root.close(); } }
+                    // Single-page view toggle (one page + zoom / continuous scroll).
+                    ChromeButton {
+                        icon: root.force-single ? Icons.file-text : Icons.book-open;
+                        active: root.force-single;
+                        clicked => { root.force-single = !root.force-single; }
+                    }
+                    // Read aloud (TTS).
+                    ChromeButton {
+                        icon: Icons.headphones;
+                        active: root.tts-open;
+                        clicked => {
+                            root.tts-open = !root.tts-open;
+                            if (root.tts-open) { root.tts-start(); } else { root.tts-stop(); }
+                        }
+                    }
+                    ChromeButton {
+                        caption: "Aa";
+                        active: root.typography-open;
+                        clicked => { root.typography-open = !root.typography-open; }
+                    }
+                    ChromeButton {
+                        icon: Icons.sun;
+                        clicked => { root.brightness-cycle(); }
+                    }
+                    ChromeButton {
+                        icon: Icons.ellipsis;
+                        active: root.more-open;
+                        clicked => { root.more-open = !root.more-open; }
+                    }
                 }
             }
+        }
 
-            // Stage
+        // ── Content row ──────────────────────────────────────────────────
+        HorizontalLayout {
+            vertical-stretch: 1;
+            spacing: 0px;
+            // Spread area with floating chevrons.
             Rectangle {
-                vertical-stretch: 1; horizontal-stretch: 1;
-
-                // COMIC
-                if kind == "comic": HorizontalLayout {
-                    padding: 16px; spacing: 10px; alignment: center;
-                    Image { source: page-left; image-fit: contain; height: parent.height - 32px;
-                        horizontal-stretch: has-right ? 1 : 0; }
-                    if has-right: Image { source: page-right; image-fit: contain; height: parent.height - 32px;
-                        horizontal-stretch: 1; }
+                horizontal-stretch: 1;
+                clip: true;
+                // Loading / error states over the paper.
+                if root.error-text != "": VerticalLayout {
+                    alignment: center;
+                    spacing: 12px;
+                    Text {
+                        text: root.error-text;
+                        color: BookTheme.ink;
+                        font-size: 15px;
+                        horizontal-alignment: center;
+                    }
+                    Rectangle {
+                        width: 160px;
+                        height: 40px;
+                        border-radius: 20px;
+                        background: BookTheme.accent;
+                        Text { text: "Back to library"; color: #ffffff; font-size: 13px; font-weight: 700; }
+                        TouchArea { mouse-cursor: pointer; clicked => { root.back(); } }
+                    }
                 }
-                // page tap zones (left third = prev, right third = next), RTL-aware
-                if kind == "comic": TouchArea {
-                    width: parent.width / 3; x: 0; mouse-cursor: pointer;
-                    clicked => { rtl ? root.next() : root.prev(); }
-                }
-                if kind == "comic": TouchArea {
-                    width: parent.width / 3; x: parent.width * 2 / 3; mouse-cursor: pointer;
-                    clicked => { rtl ? root.prev() : root.next(); }
-                }
-
-                // PDF — continuous vertical scroll of raster pages, as-is, plus a
-                // left thumbs rail (np.p5.books.pdf). Warm-dark canvas.
-                if kind == "pdf": HorizontalLayout {
+                // Two-page spread (wide, not single-page).
+                if root.error-text == "" && !root.tts-open && !root.single-page: HorizontalLayout {
+                    alignment: center;
+                    padding: 32px;
                     spacing: 0px;
                     Rectangle {
-                        width: 108px; background: #1c1a15;
-                        ScrollView {
-                            VerticalLayout {
-                                padding: 14px; spacing: 12px; alignment: start;
-                                for img[i] in root.comic-thumbs: Rectangle {
-                                    width: 64px; height: 90px; border-radius: 3px; clip: true; background: #f6f4ee;
-                                    border-width: i == root.page-index ? 2px : 0px; border-color: #1a73e8;
-                                    Image { source: img; image-fit: contain; width: parent.width; height: parent.height; }
-                                    TouchArea { mouse-cursor: pointer; clicked => { root.pdf-goto-page(i); } }
-                                    Rectangle { x: parent.width - 24px; y: parent.height - 15px; width: 24px; height: 14px; background: #000000b0;
-                                        Text { text: i + 1; color: #fff; font-size: 8px; horizontal-alignment: center; vertical-alignment: center; } }
-                                }
-                            }
-                        }
-                    }
-                    ListView {
-                        horizontal-stretch: 1;
-                        for img[i] in root.pdf-pages: Rectangle {
-                            property <length> pw: root.pdf-fit ? (root.width - 108px - 96px) : (640px * root.pdf-zoom);
-                            height: self.pw * 1.414 + 26px;
-                            Rectangle {
-                                width: parent.pw; height: parent.pw * 1.414;
-                                x: (parent.width - self.width) / 2; y: 13px;
-                                background: #ffffff; border-radius: 2px;
-                                drop-shadow-blur: 26px; drop-shadow-color: #00000080; drop-shadow-offset-y: 8px;
-                                init => { root.pdf-page-visible(i); }
-                                Image { source: img; image-fit: contain; width: parent.width; height: parent.height; }
-                            }
-                        }
-                    }
-                }
-
-                // TEXT · scroll mode (np.p4.books.continuous) — the whole current
-                // chapter as one continuous column; next/prev step chapters.
-                if kind == "text" && root.read-mode == "scroll": ScrollView {
-                    width: 100%; height: 100%;
-                    VerticalLayout {
-                        padding-top: 30px; padding-bottom: 60px;
-                        padding-left: max(48px, (root.width - 760px) / 2);
-                        padding-right: max(48px, (root.width - 760px) / 2);
-                        Text {
-                            text: root.text;
-                            wrap: word-wrap;
-                            font-size: root.font-px * 1px;
-                            font-family: root.family-name;
-                            color: root.text-fg;
-                        }
-                    }
-                }
-
-                // TEXT · paginated — real-book spread. Wide windows show two
-                // pages around a spine; the page-turn pivots the outgoing page
-                // at the spine (width collapse → paper back sweeps the other
-                // column and fades into the new page). Single-page mode slides
-                // the outgoing page out under a soft edge shadow.
-                // `m` flips 0↔1 each turn; `p` normalises it to 0→1 progress
-                // per turn; `fold-depth` peaks mid-turn (gates the overlay).
-                if kind == "text" && root.read-mode == "paginated": txt := Rectangle {
-                    property <bool> two-up: root.two-up-active;
-                    property <float> m: mod(root.turn, 2) == 1 ? 1.0 : 0.0;
-                    animate m { duration: 420ms; easing: ease-in-out; }
-                    property <float> p: mod(root.turn, 2) == 1 ? m : 1.0 - m;
-                    property <float> fold-depth: 1.0 - abs(2.0 * m - 1.0);
-                    property <length> col-margin: max(40px, root.margin-pct / 100.0 * self.width);
-                    property <length> gutter: two-up ? 56px : 0px;
-                    property <length> col-w: two-up
-                        ? (self.width - 2 * self.col-margin - self.gutter) / 2
-                        : self.width - 2 * self.col-margin;
-                    property <length> spine-x: self.col-margin + self.col-w + self.gutter / 2;
-
-                    // Left (or only) column — its size is reported to Rust so
-                    // the paginator fills exactly one column of text.
-                    Rectangle {
-                        x: parent.col-margin; y: 30px;
-                        width: parent.col-w;
-                        height: parent.height - 60px;
-                        clip: true;
-                        changed width => { root.reflow(self.width, self.height); }
-                        changed height => { root.reflow(self.width, self.height); }
-                        Text {
-                            width: parent.width;
-                            text: root.text;
-                            wrap: word-wrap;
-                            font-size: root.font-px * 1px;
-                            font-family: root.family-name;
-                            color: root.text-fg;
-                            vertical-alignment: top;
-                        }
-                    }
-                    // Right column + spine shadow (two-up only).
-                    if txt.two-up: Rectangle {
-                        x: txt.col-margin + txt.col-w + txt.gutter; y: 30px;
-                        width: txt.col-w; height: parent.height - 60px;
-                        clip: true;
-                        Text {
-                            width: parent.width;
-                            text: root.text-right;
-                            wrap: word-wrap;
-                            font-size: root.font-px * 1px;
-                            font-family: root.family-name;
-                            color: root.text-fg;
-                            vertical-alignment: top;
-                        }
-                    }
-                    if txt.two-up: Rectangle {
-                        x: txt.spine-x - 16px; y: 20px; width: 32px;
-                        height: parent.height - 40px;
-                        background: @linear-gradient(90deg, #00000000 0%, #00000026 50%, #00000000 100%);
-                    }
-
-                    // ── Flip overlay · two-up: the outgoing page pivots at the
-                    // spine. First half: it narrows toward the spine showing
-                    // its text; second half: its paper back grows over the
-                    // opposite column and fades into the freshly-set page.
-                    if txt.two-up && txt.fold-depth > 0.02 && txt.p <= 0.5: Rectangle {
-                        // forward: right page collapses leftward into the spine;
-                        // backward: left page collapses rightward into it.
-                        x: root.turn-dir >= 0 ? txt.spine-x + txt.gutter / 2
-                                              : txt.spine-x - txt.gutter / 2 - self.width;
-                        y: 30px; height: parent.height - 60px;
-                        width: txt.col-w * (1.0 - 2.0 * txt.p);
-                        clip: true;
-                        background: root.text-bg;
-                        drop-shadow-blur: 18px; drop-shadow-color: #00000055;
-                        Text {
-                            x: 0; width: txt.col-w;
-                            text: root.turn-dir >= 0 ? root.text-prev-right : root.text-prev;
-                            wrap: word-wrap;
-                            font-size: root.font-px * 1px;
-                            font-family: root.family-name;
-                            color: root.text-fg;
-                            vertical-alignment: top;
-                        }
-                    }
-                    if txt.two-up && txt.fold-depth > 0.02 && txt.p > 0.5: Rectangle {
-                        // Paper back sweeping across the landing column.
-                        x: root.turn-dir >= 0 ? txt.spine-x - txt.gutter / 2 - self.width
-                                              : txt.spine-x + txt.gutter / 2;
-                        y: 30px; height: parent.height - 60px;
-                        width: txt.col-w * (2.0 * txt.p - 1.0);
-                        background: root.text-bg.brighter(0.03);
-                        opacity: txt.p < 0.9 ? 1.0 : (1.0 - txt.p) / 0.1;
-                        drop-shadow-blur: 18px; drop-shadow-color: #00000055;
-                    }
-                    // ── Flip overlay · single page: outgoing page slides out
-                    // under a soft page-edge shadow and fades at the end.
-                    if !txt.two-up && txt.fold-depth > 0.02: Rectangle {
-                        x: txt.col-margin - root.turn-dir * txt.p * (self.width + 80px);
-                        y: 30px; width: txt.col-w; height: parent.height - 60px;
-                        clip: true;
-                        background: root.text-bg;
-                        opacity: txt.p < 0.85 ? 1.0 : (1.0 - txt.p) / 0.15;
-                        drop-shadow-blur: 24px; drop-shadow-color: #00000060;
-                        Text {
-                            width: parent.width;
-                            text: root.text-prev;
-                            wrap: word-wrap;
-                            font-size: root.font-px * 1px;
-                            font-family: root.family-name;
-                            color: root.text-fg;
-                            vertical-alignment: top;
-                        }
-                    }
-
-                    // Tap zones: left third = prev, right third = next.
-                    TouchArea { width: parent.width / 3; x: 0; mouse-cursor: pointer;
-                        clicked => { root.prev(); } }
-                    TouchArea { width: parent.width / 3; x: parent.width * 2 / 3; mouse-cursor: pointer;
-                        clicked => { root.next(); } }
-                }
-
-                // Comic thumbnail timeline (np.p4.books.reader.navigation) —
-                // bottom strip of page thumbs; click jumps to that page.
-                if kind == "comic" && root.timeline-open: Rectangle {
-                    y: parent.height - 132px; height: 132px; width: parent.width;
-                    background: #000000c0;
-                    ScrollView {
-                        width: 100%; height: 100%;
+                        // The book block, max spread width ~1200px.
+                        property <length> spread-w: min(1200px, parent.width - 160px);
+                        width: spread-w;
+                        opacity: root.spread-op;
                         HorizontalLayout {
-                            padding: 10px; spacing: 8px; alignment: start;
-                            for t[i] in root.comic-thumbs: Rectangle {
-                                width: 78px; height: 108px; border-radius: 6px; clip: true;
-                                border-width: 2px;
-                                border-color: i == root.page-index ? #1a73e8 : #ffffff22;
-                                background: #1b1b1b;
-                                Image { source: t; image-fit: cover; width: 100%; height: 100%; }
-                                Rectangle {
-                                    y: parent.height - 18px; height: 18px; width: parent.width;
-                                    background: #000000a0;
-                                    Text { text: (i + 1) + ""; color: #ffffff; font-size: 10px;
-                                        horizontal-alignment: center; vertical-alignment: center; }
-                                }
-                                TouchArea { mouse-cursor: pointer; clicked => { root.jump-to-chapter(i); } }
+                            spacing: 0px;
+                            PaperPage {
+                                horizontal-stretch: 1;
+                                body: root.left-text;
+                                heading: root.left-heading;
+                                font-family: root.font-family;
+                                bold: root.bold;
+                                is-image: root.image-mode;
+                                page-image: root.left-image;
+                                folio: root.left-folio;
+                                paper: root.paper;
+                                ink: root.paper-ink;
+                                font-size: root.font-px * 1px;
+                                prev => { root.prev-spread(); }
+                                next => { root.next-spread(); }
+                            }
+                            // Center gutter shadow.
+                            if !root.single-page: Rectangle {
+                                width: 2px;
+                                background: #00000012;
+                            }
+                            if !root.single-page: PaperPage {
+                                horizontal-stretch: 1;
+                                body: root.right-text;
+                                heading: root.right-heading;
+                                font-family: root.font-family;
+                                bold: root.bold;
+                                is-image: root.image-mode;
+                                page-image: root.right-image;
+                                folio: root.right-folio;
+                                paper: root.paper;
+                                ink: root.paper-ink;
+                                font-size: root.font-px * 1px;
+                                prev => { root.prev-spread(); }
+                                next => { root.next-spread(); }
                             }
                         }
                     }
                 }
-
-                // UNSUPPORTED
-                if kind == "unsupported": VerticalLayout {
-                    alignment: center; spacing: 12px;
-                    AppIcon { source: Icons.file-text; width: 52px; height: 52px; }
-                    Text { text: page-label; color: #cfcfe0; font-size: 16px; font-weight: 600; horizontal-alignment: center; }
-                    Text { text: "EPUB · CBZ · CBR · PDF · MOBI · AZW3 · FB2 · DjVu open natively. Scanned PDFs need poppler-utils, DjVu needs djvulibre. DRM'd files aren't supported.";
-                        color: #8a8aa0; font-size: 12px; horizontal-alignment: center; }
+                // Read-aloud view (overrides the page layout while active).
+                if root.error-text == "" && root.tts-open: ReadAlong {
+                    width: 100%;
+                    height: 100%;
+                    sentences: root.tts-sentences;
+                    active: root.tts-active;
+                    paper: root.paper;
+                    ink: root.paper-ink;
+                    font-size: root.font-px * 1px;
+                    font-family: root.font-family;
+                    jump(i) => { root.tts-jump(i); }
                 }
-            }
-
-            // Bottom nav bar
-            Rectangle {
-                height: 56px; background: root.bars-light ? #fbf9f3 : #00000066;
-                HorizontalLayout {
-                    padding-left: 18px; padding-right: 18px; spacing: 14px;
-                    RBtn { icon: Icons.chevron-left; label: "Prev"; light: root.bars-light; clicked => { root.prev(); } }
-                    // scrub track
-                    Rectangle {
-                        vertical-stretch: 1; horizontal-stretch: 1; y: 0;
-                        track := Rectangle {
-                            width: parent.width; height: 6px; y: (parent.height - self.height)/2;
-                            border-radius: 3px; background: root.bars-light ? #00000022 : #ffffff2e;
-                            Rectangle { x: 0; y: 0; height: parent.height; width: parent.width * progress;
-                                border-radius: 3px; background: #1a73e8; }
-                        }
-                        TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.scrub((self.mouse-x / self.width).clamp(0, 1)); }
-                            moved => { if (self.pressed) { root.scrub((self.mouse-x / self.width).clamp(0, 1)); } }
-                        }
+                // Single image page — zoom + pan (PDF/CBZ).
+                if root.error-text == "" && !root.tts-open && root.single-page && root.image-mode: ZoomStage {
+                    width: 100%;
+                    height: 100%;
+                    page-image: root.left-image;
+                    zoom <=> root.zoom;
+                }
+                // Continuous single-column scroll (reflow text).
+                if root.error-text == "" && !root.tts-open && root.continuous: ContinuousText {
+                    width: 100%;
+                    height: 100%;
+                    text: root.full-text;
+                    paper: root.paper;
+                    ink: root.paper-ink;
+                    font-size: root.font-px * 1px;
+                    font-family: root.font-family;
+                    bold: root.bold;
+                }
+                // Floating chevrons — spread & single-image (not continuous scroll).
+                // Single-page steps by 1; spread steps by 2.
+                if root.error-text == "" && !root.continuous && !root.tts-open: EdgeNav {
+                    x: 16px;
+                    y: (parent.height - self.height) / 2;
+                    icon: Icons.chevron-left;
+                    clicked => { if (root.single-page) { root.prev-page(); } else { root.prev-spread(); } }
+                }
+                if root.error-text == "" && !root.continuous && !root.tts-open: EdgeNav {
+                    x: parent.width - self.width - 16px;
+                    y: (parent.height - self.height) / 2;
+                    icon: Icons.chevron-right;
+                    clicked => { if (root.single-page) { root.next-page(); } else { root.next-spread(); } }
+                }
+                // Brightness dimmer (over the paper, under the chrome bars).
+                if root.brightness < 1.0: Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    background: #000000;
+                    opacity: 1.0 - root.brightness;
+                }
+                // Loading spinner (simple).
+                if root.loading: Rectangle {
+                    width: 100%;
+                    height: 100%;
+                    background: root.paper.with-alpha(0.4);
+                    Text {
+                        text: "Loading…";
+                        color: BookTheme.ink-dim;
+                        font-size: 14px;
                     }
-                    Text { text: page-label; color: root.bars-light ? #6b6456 : #cfcfe0;
-                        font-size: 12px; vertical-alignment: center; }
-                    RBtn { icon: Icons.chevron-right; label: "Next"; light: root.bars-light; clicked => { root.next(); } }
                 }
+            }
+            // Contents panel.
+            if root.contents-open: ContentsPanel {
+                toc: root.toc;
+                filter <=> root.contents-filter;
+                jump(c) => { root.jump-chapter(c); }
+                close => { root.contents-open = false; }
+            }
+            // Search panel (mutually exclusive with contents).
+            if root.search-open: SearchPanel {
+                results: root.search-results;
+                query <=> root.search-query;
+                run(t) => { root.search-run(t); }
+                jump(p) => { root.scrub(p); }
+                close => { root.search-open = false; }
+            }
+            // Notes / annotate panel (page-anchored notes).
+            if root.notes-open: AnnotPanel {
+                notes: root.notes;
+                add => { root.annot-add(); }
+                jump(id) => { root.annot-jump(id); }
+                set-note(id, t) => { root.annot-set-note(id, t); }
+                remove(id) => { root.annot-remove(id); }
+                close => { root.notes-open = false; }
             }
         }
 
-        // ── TTS read-aloud overlay (np.p5.books.tts) — the sentence being
-        // spoken, highlighted above the bottom bar; ⏹ stops playback.
-        if root.tts-sentence != "": Rectangle {
-            x: (root.width - min(root.width - 40px, 680px)) / 2;
-            width: min(root.width - 40px, 680px);
-            y: root.height - 56px - self.height - 12px;
-            height: ttst.preferred-height + 24px;
-            background: #1b1b1bf0; border-radius: 12px;
-            border-width: 1px; border-color: #ffd54f88;
+        // ── Bottom bar ───────────────────────────────────────────────────
+        Rectangle {
+            height: 72px;
+            background: BookTheme.card;
+            border-width: 1px;
+            border-color: BookTheme.hairline;
             HorizontalLayout {
-                padding: 12px; spacing: 10px;
-                AppIcon { source: Icons.volume; width: 14px; height: 14px; }
-                ttst := Text {
-                    text: root.tts-sentence; color: #ffd54f; font-size: 13px;
-                    wrap: word-wrap; horizontal-stretch: 1; vertical-alignment: center;
-                }
-                RBtn { icon: Icons.square; label: ""; clicked => { root.tts-stop(); } }
-            }
-        }
-
-        // ── Find-in-book bar (top-centre overlay) ─────────────────────────────
-        if root.find-open: Rectangle {
-            x: (root.width - 440px) / 2; y: 62px; width: 440px; height: 48px;
-            background: #1b1b1be6; border-radius: 12px;
-            border-width: 1px; border-color: #ffffff33;
-            HorizontalLayout {
-                padding: 7px; spacing: 8px;
-                fe := LineEdit {
-                    placeholder-text: "Find in book…"; horizontal-stretch: 1;
-                    accepted(t) => { root.find-text(t); }
-                }
-                // Repeating the same query steps to the next match (wraps).
-                RBtn { icon: Icons.arrow-down; label: "Next"; clicked => { root.find-text(fe.text); } }
-                RBtn { icon: Icons.x; label: ""; clicked => { root.find-open = false; } }
-            }
-        }
-
-        // ── Dictionary popover (np.p5.books.dictionary) ──────────────────────
-        if root.define-open && kind == "text": Rectangle {
-            x: (root.width - 460px) / 2; y: 120px; width: 460px; height: 340px;
-            background: #1d1d1df2; border-radius: 14px;
-            border-width: 1px; border-color: #ffffff2e;
-            VerticalLayout {
-                padding: 14px; spacing: 10px;
-                HorizontalLayout {
-                    spacing: 8px;
-                    de := LineEdit {
-                        placeholder-text: "Define a word…"; horizontal-stretch: 1;
-                        accepted(t) => { root.define(t); }
+                padding-left: 20px;
+                padding-right: 20px;
+                spacing: 16px;
+                // Prev chapter pill.
+                Rectangle {
+                    width: 108px;
+                    y: (parent.height - 40px) / 2;
+                    height: 40px;
+                    border-radius: 20px;
+                    background: prevta.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                    border-width: 1px;
+                    border-color: BookTheme.hairline;
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        AppIcon { source: Icons.chevron-left; tint: BookTheme.ink; width: 14px; height: 14px; vertical-alignment: center; }
+                        Text { text: "Previous"; color: BookTheme.ink; font-size: 13px; font-weight: 600; vertical-alignment: center; }
                     }
-                    RBtn { label: "Look up"; clicked => { root.define(de.text); } }
-                    RBtn { icon: Icons.x; label: ""; clicked => { root.define-open = false; } }
+                    prevta := TouchArea { mouse-cursor: pointer; clicked => { root.prev-chapter(); } }
                 }
-                ScrollView {
-                    vertical-stretch: 1;
-                    VerticalLayout {
+                // Center scrub block.
+                VerticalLayout {
+                    horizontal-stretch: 1;
+                    alignment: center;
+                    spacing: 2px;
+                    // Slider row with page pill + percent.
+                    HorizontalLayout {
+                        spacing: 12px;
+                        BookSlider {
+                            horizontal-stretch: 1;
+                            minimum: 1;
+                            maximum: max(root.page-count, 1);
+                            value: root.page-index;
+                            changed(p) => { root.scrub(p); }
+                        }
+                        // Page pill.
+                        Rectangle {
+                            width: 74px;
+                            height: 26px;
+                            y: (parent.height - 26px) / 2;
+                            border-radius: 13px;
+                            background: BookTheme.card;
+                            border-width: 1px;
+                            border-color: BookTheme.hairline;
+                            Text {
+                                text: root.page-index + " / " + root.page-count;
+                                color: BookTheme.ink;
+                                font-size: 13px;
+                                font-weight: 700;
+                            }
+                        }
                         Text {
-                            text: root.define-result == "" ? "Type a word — definition, translation and Wikipedia summary." : root.define-result;
-                            wrap: word-wrap; color: #e8e8f0; font-size: 13px;
+                            text: round(root.percent * 100) + "%";
+                            color: BookTheme.ink-dim;
+                            font-size: 12px;
+                            vertical-alignment: center;
+                        }
+                    }
+                    // Zoom row — single-page image (PDF/CBZ) only.
+                    if root.single-page && root.image-mode: HorizontalLayout {
+                        spacing: 10px;
+                        VerticalLayout { alignment: center;
+                            AppIcon { source: Icons.search; tint: BookTheme.ink-dim; width: 14px; height: 14px; } }
+                        FloatSlider {
+                            horizontal-stretch: 1;
+                            minimum: 1.0;
+                            maximum: 3.0;
+                            value: root.zoom;
+                            changed(v) => { root.zoom = v; }
+                        }
+                        Text {
+                            text: round(root.zoom * 100) + "%";
+                            color: BookTheme.ink-dim;
+                            font-size: 12px;
+                            font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+                    // Chapter names under slider.
+                    if !(root.single-page && root.image-mode): HorizontalLayout {
+                        Text {
+                            text: root.chapter-name;
+                            color: BookTheme.ink-dim;
+                            font-size: 12px;
+                            horizontal-stretch: 1;
+                            overflow: elide;
+                        }
+                        Text {
+                            text: root.next-chapter-name;
+                            color: BookTheme.ink-dim;
+                            font-size: 12px;
+                            horizontal-alignment: right;
+                            overflow: elide;
                         }
                     }
                 }
-            }
-        }
-
-        // ── Aa typography popover (top-right) ─────────────────────────────────
-        if root.settings-open && kind == "text": Rectangle {
-            x: root.width - 334px; y: 60px; width: 320px; height: 252px;
-            background: #1d1d1df2; border-radius: 14px;
-            border-width: 1px; border-color: #ffffff2e;
-            VerticalLayout {
-                padding: 14px; spacing: 11px;
-                HorizontalLayout {
-                    spacing: 8px;
-                    Text { text: "Size"; color: #bbb; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                    RBtn { label: "A-"; clicked => { root.set-font(max(12, root.font-px - 1)); } }
-                    Text { text: round(root.font-px) + "px"; color: #fff; font-size: 12px;
-                        width: 46px; horizontal-alignment: center; vertical-alignment: center; }
-                    RBtn { label: "A+"; clicked => { root.set-font(min(32, root.font-px + 1)); } }
-                }
-                HorizontalLayout {
-                    spacing: 8px;
-                    Text { text: "Font"; color: #bbb; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                    RBtn { label: root.family-name; clicked => { root.set-family(mod(root.font-family + 1, 3)); } }
-                }
-                HorizontalLayout {
-                    spacing: 8px;
-                    Text { text: "Spacing"; color: #bbb; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                    RBtn { label: "-"; clicked => { root.set-line(max(1.0, root.line-height-val - 0.1)); } }
-                    Text { text: (round(root.line-height-val * 10) / 10) + "×"; color: #fff; font-size: 12px;
-                        width: 46px; horizontal-alignment: center; vertical-alignment: center; }
-                    RBtn { label: "+"; clicked => { root.set-line(min(2.5, root.line-height-val + 0.1)); } }
-                }
-                HorizontalLayout {
-                    spacing: 8px;
-                    Text { text: "Margin"; color: #bbb; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; }
-                    RBtn { label: "-"; clicked => { root.set-margin(max(0, root.margin-pct - 2)); } }
-                    Text { text: round(root.margin-pct) + "%"; color: #fff; font-size: 12px;
-                        width: 46px; horizontal-alignment: center; vertical-alignment: center; }
-                    RBtn { label: "+"; clicked => { root.set-margin(min(24, root.margin-pct + 2)); } }
-                }
-                HorizontalLayout {
-                    spacing: 8px;
-                    RBtn { label: "Night mode"; on: root.text-dark; horizontal-stretch: 1;
-                        clicked => { root.toggle-text-dark(); } }
-                    RBtn { icon: Icons.x; label: ""; clicked => { root.settings-open = false; } }
-                }
-            }
-        }
-
-        // ── TOC sidebar (left-side overlay, renders on top) ───────────────────
-        if root.toc-open: Rectangle {
-            width: 280px; height: 100%; x: 0; y: 0;
-            background: #1a1a1acc;
-            // Close overlay touch area (right side of screen outside panel)
-            TouchArea { x: 280px; width: root.width - 280px; height: parent.height;
-                clicked => { root.toc-open = false; } }
-            VerticalLayout {
-                padding: 12px; spacing: 8px;
-                HorizontalLayout {
-                    spacing: 8px;
-                    Text { text: "Contents"; color: #ffffff; font-size: 14px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
-                    Rectangle { width: 28px; height: 28px; border-radius: 14px;
-                        background: xt.has-hover ? #ffffff22 : transparent;
-                        xt := TouchArea { clicked => { root.toc-open = false; } }
-                        AppIcon { source: Icons.x; tint: #ffffff; width: 13px; height: 13px; } }
-                }
-                if root.toc-entries.length == 0: Text { text: "No chapters"; color: #7a7a7a; font-size: 12px; }
-                ScrollView { vertical-stretch: 1;
-                    VerticalLayout { alignment: start; spacing: 2px;
-                        for e[i] in root.toc-entries: Rectangle {
-                            height: 44px; horizontal-stretch: 1;
-                            background: tr.has-hover ? #ffffff18 : transparent;
-                            border-radius: 6px;
-                            tr := TouchArea { clicked => { root.jump-to-chapter(e.page); } }
-                            HorizontalLayout { padding-left: 10px; padding-right: 10px; spacing: 8px;
-                                Text { text: e.title; color: #d0d0d0; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                                Text { text: "p." + e.page; color: #707070; font-size: 11px; vertical-alignment: center; }
-                            }
-                        }
+                // Next chapter pill (violet filled).
+                Rectangle {
+                    width: 92px;
+                    y: (parent.height - 40px) / 2;
+                    height: 40px;
+                    border-radius: 20px;
+                    background: nextta.has-hover ? BookTheme.accent.with-alpha(0.9) : BookTheme.accent;
+                    HorizontalLayout {
+                        alignment: center;
+                        spacing: 4px;
+                        Text { text: "Next"; color: #ffffff; font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                        AppIcon { source: Icons.chevron-right; tint: #ffffff; width: 14px; height: 14px; vertical-alignment: center; }
                     }
+                    nextta := TouchArea { mouse-cursor: pointer; clicked => { root.next-chapter(); } }
                 }
             }
         }
+    }
 
-        // ── Bookmarks sidebar (right-side overlay, renders on top) ────────────
-        if root.bookmarks-open: Rectangle {
-            width: 280px; height: 100%; x: root.width - 280px; y: 0;
-            background: #1a1a1acc;
-            TouchArea { x: -(root.width - 280px); width: root.width - 280px; height: parent.height;
-                clicked => { root.bookmarks-open = false; } }
+    // ── Reading-settings (Aa) sheet ───────────────────────────────────────────
+    // Click-away backdrop + floating card anchored under the Aa button. Size /
+    // line-spacing / margins / typeface re-paginate (sec-books); theme / bold /
+    // brightness are visual-only.
+    if root.typography-open: TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.typography-open = false; }
+    }
+    if root.typography-open: Rectangle {
+        x: root.width - self.width - 20px;
+        y: 76px;
+        width: 320px;
+        height: 500px;
+        border-radius: 16px;
+        background: BookTheme.card;
+        border-width: 1px;
+        border-color: BookTheme.hairline;
+        drop-shadow-blur: 28px;
+        drop-shadow-color: #00000026;
+        drop-shadow-offset-y: 6px;
+        VerticalLayout {
+            padding: 16px;
+            spacing: 14px;
+            // Text size.
             VerticalLayout {
-                padding: 12px; spacing: 8px;
+                spacing: 7px;
+                Text { text: "Text size"; color: BookTheme.ink-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
                 HorizontalLayout {
-                    spacing: 4px;
-                    Text { text: "Bookmarks"; color: #ffffff; font-size: 14px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
-                    Rectangle { width: 28px; height: 28px; border-radius: 14px;
-                        background: addbm.has-hover ? #1a73e8 : #1a73e844;
-                        addbm := TouchArea { clicked => { root.add-bookmark(); } }
-                        AppIcon { source: Icons.plus; tint: #ffffff; width: 14px; height: 14px; } }
-                    Rectangle { width: 28px; height: 28px; border-radius: 14px;
-                        background: xbm.has-hover ? #ffffff22 : transparent;
-                        xbm := TouchArea { clicked => { root.bookmarks-open = false; } }
-                        AppIcon { source: Icons.x; tint: #ffffff; width: 13px; height: 13px; } }
+                    spacing: 10px;
+                    ChromeButton { caption: "A−"; clicked => { root.font-dec(); } }
+                    Text { text: round(root.font-px) + " px"; color: BookTheme.ink; font-size: 14px;
+                        font-weight: 700; horizontal-stretch: 1; horizontal-alignment: center; vertical-alignment: center; }
+                    ChromeButton { caption: "A+"; clicked => { root.font-inc(); } }
                 }
-                // Colour palette — the active colour tags the next ＋ bookmark
-                // (np.p5.books.annotations: colour-coded jump list).
+            }
+            // Line spacing.
+            VerticalLayout {
+                spacing: 7px;
+                Text { text: "Line spacing"; color: BookTheme.ink-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
                 HorizontalLayout {
-                    spacing: 6px;
-                    Text { text: "Colour"; color: #9a9a9a; font-size: 11px; vertical-alignment: center; horizontal-stretch: 1; }
-                    for p in [
-                        { hex: "#ffd54f", col: #ffd54f },
-                        { hex: "#81c784", col: #81c784 },
-                        { hex: "#64b5f6", col: #64b5f6 },
-                        { hex: "#f48fb1", col: #f48fb1 },
+                    spacing: 8px;
+                    SegItem { label: "Compact"; active: root.line-index == 0; clicked => { root.set-line-spacing(0); } }
+                    SegItem { label: "Normal"; active: root.line-index == 1; clicked => { root.set-line-spacing(1); } }
+                    SegItem { label: "Relaxed"; active: root.line-index == 2; clicked => { root.set-line-spacing(2); } }
+                }
+            }
+            // Margins.
+            VerticalLayout {
+                spacing: 7px;
+                Text { text: "Margins"; color: BookTheme.ink-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    SegItem { label: "Narrow"; active: root.margin-index == 0; clicked => { root.set-margin(0); } }
+                    SegItem { label: "Normal"; active: root.margin-index == 1; clicked => { root.set-margin(1); } }
+                    SegItem { label: "Wide"; active: root.margin-index == 2; clicked => { root.set-margin(2); } }
+                }
+            }
+            // Typeface.
+            VerticalLayout {
+                spacing: 7px;
+                Text { text: "Typeface"; color: BookTheme.ink-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    SegItem { label: "Serif"; preview-font: "serif"; active: root.typeface == 0; clicked => { root.set-typeface(0); } }
+                    SegItem { label: "Sans"; preview-font: "sans-serif"; active: root.typeface == 1; clicked => { root.set-typeface(1); } }
+                    SegItem { label: "Mono"; preview-font: "monospace"; active: root.typeface == 2; clicked => { root.set-typeface(2); } }
+                }
+            }
+            // Theme swatches.
+            VerticalLayout {
+                spacing: 7px;
+                Text { text: "Theme"; color: BookTheme.ink-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+                HorizontalLayout {
+                    spacing: 10px;
+                    for t in [
+                        { key: "light", col: #fdfcf8 },
+                        { key: "sepia", col: #f4ecd8 },
+                        { key: "dark", col: #1c1c20 },
+                        { key: "night", col: #000000 },
                     ]: Rectangle {
-                        width: 22px; height: 22px; border-radius: 11px;
-                        background: p.col;
-                        border-width: root.bm-color == p.hex ? 3px : 1px;
-                        border-color: root.bm-color == p.hex ? #ffffff : #00000055;
-                        TouchArea { mouse-cursor: pointer; clicked => { root.bm-color = p.hex; } }
+                        height: 36px;
+                        border-radius: 10px;
+                        background: t.col;
+                        border-width: root.theme-mode == t.key ? 2.5px : 1px;
+                        border-color: root.theme-mode == t.key ? BookTheme.accent : BookTheme.hairline;
+                        TouchArea { mouse-cursor: pointer; clicked => { root.set-theme(t.key); } }
                     }
                 }
-                if root.reader-bookmarks.length == 0: Text {
-                    text: "No bookmarks yet.\nTap + to add one.";
-                    color: #7a7a7a; font-size: 12px; wrap: word-wrap; }
-                ScrollView { vertical-stretch: 1;
-                    VerticalLayout { alignment: start; spacing: 2px;
-                        for bm[i] in root.reader-bookmarks: Rectangle {
-                            height: 52px; horizontal-stretch: 1;
-                            background: bmr.has-hover ? #ffffff18 : transparent;
-                            border-radius: 6px;
-                            bmr := TouchArea { clicked => { root.jump-to-bookmark(bm.page); } }
-                            HorizontalLayout { padding-left: 10px; padding-right: 10px; spacing: 8px;
-                                VerticalLayout { alignment: center;
-                                    Rectangle { width: 10px; height: 10px; border-radius: 5px;
-                                        background: bm.color == "#81c784" ? #81c784
-                                                  : bm.color == "#64b5f6" ? #64b5f6
-                                                  : bm.color == "#f48fb1" ? #f48fb1
-                                                  : bm.color == "#ffd54f" ? #ffd54f
-                                                  : #707070; }
-                                }
-                                VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
-                                    Text { text: "Page " + (bm.page + 1); color: #d0d0d0; font-size: 13px; font-weight: 600; }
-                                    if bm.note != "": Text { text: bm.note; color: #909090; font-size: 11px; overflow: elide; }
-                                }
-                            }
-                        }
+            }
+            // Brightness.
+            VerticalLayout {
+                spacing: 7px;
+                Text { text: "Brightness"; color: BookTheme.ink-dim; font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+                HorizontalLayout {
+                    spacing: 8px;
+                    SegItem { label: "Dim"; active: root.brightness <= 0.65; clicked => { root.set-brightness(0.6); } }
+                    SegItem { label: "Medium"; active: root.brightness > 0.65 && root.brightness < 0.95; clicked => { root.set-brightness(0.8); } }
+                    SegItem { label: "Full"; active: root.brightness >= 0.95; clicked => { root.set-brightness(1.0); } }
+                }
+            }
+            // Bold.
+            HorizontalLayout {
+                SegItem { label: root.bold ? "Bold: On" : "Bold: Off"; active: root.bold;
+                    clicked => { root.toggle-bold(); } }
+            }
+        }
+    }
+
+    // ── ••• (more) popover ────────────────────────────────────────────────────
+    if root.more-open: TouchArea {
+        width: 100%;
+        height: 100%;
+        clicked => { root.more-open = false; }
+    }
+    if root.more-open: Rectangle {
+        x: root.width - self.width - 20px;
+        y: 76px;
+        width: 220px;
+        height: 96px;
+        border-radius: 14px;
+        background: BookTheme.card;
+        border-width: 1px;
+        border-color: BookTheme.hairline;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000022;
+        drop-shadow-offset-y: 4px;
+        VerticalLayout {
+            padding: 8px;
+            spacing: 2px;
+            for item in [
+                { label: "Mark as finished", icon: Icons.check, danger: false, action: "finished" },
+                { label: "Remove from library", icon: Icons.trash, danger: true, action: "remove" },
+            ]: Rectangle {
+                height: 38px;
+                border-radius: 8px;
+                background: mrowta.has-hover ? BookTheme.pill-bg : transparent;
+                HorizontalLayout {
+                    padding-left: 10px;
+                    padding-right: 10px;
+                    spacing: 10px;
+                    AppIcon {
+                        source: item.icon;
+                        tint: item.danger ? #d64545 : BookTheme.ink-dim;
+                        width: 16px;
+                        height: 16px;
+                        vertical-alignment: center;
+                    }
+                    Text {
+                        text: item.label;
+                        color: item.danger ? #d64545 : BookTheme.ink;
+                        font-size: 13px;
+                        font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1;
                     }
                 }
+                mrowta := TouchArea {
+                    mouse-cursor: pointer;
+                    clicked => {
+                        root.more-open = false;
+                        if (item.action == "finished") { root.more-mark-finished(); }
+                        if (item.action == "remove") { root.more-remove(); }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Read-aloud control bar ────────────────────────────────────────────────
+    if root.tts-open: Rectangle {
+        x: (root.width - self.width) / 2;
+        y: root.height - 72px - 68px;
+        width: 640px;
+        height: 56px;
+        border-radius: 28px;
+        background: BookTheme.card;
+        border-width: 1px;
+        border-color: BookTheme.hairline;
+        drop-shadow-blur: 24px;
+        drop-shadow-color: #00000026;
+        drop-shadow-offset-y: 4px;
+        HorizontalLayout {
+            padding-left: 10px; padding-right: 14px; spacing: 10px; alignment: center;
+            // Play / pause.
+            Rectangle {
+                width: 40px; height: 40px; border-radius: 20px; background: BookTheme.accent;
+                AppIcon { source: root.tts-playing ? Icons.pause : Icons.play; tint: #ffffff; width: 18px; height: 18px; }
+                TouchArea { mouse-cursor: pointer; clicked => { root.tts-play-pause(); } }
+            }
+            // Voice.
+            VerticalLayout { alignment: center; horizontal-stretch: 1;
+                ComboBox {
+                    model: root.tts-voices;
+                    current-value: root.tts-voice;
+                    selected(v) => { root.tts-set-voice(v); }
+                } }
+            // Speed.
+            SegItem { label: "0.75×"; text-size: 11px; active: root.tts-speed-index == 0; clicked => { root.tts-set-speed(0); } }
+            SegItem { label: "1×"; text-size: 11px; active: root.tts-speed-index == 1; clicked => { root.tts-set-speed(1); } }
+            SegItem { label: "1.25×"; text-size: 11px; active: root.tts-speed-index == 2; clicked => { root.tts-set-speed(2); } }
+            SegItem { label: "1.5×"; text-size: 11px; active: root.tts-speed-index == 3; clicked => { root.tts-set-speed(3); } }
+            // Close.
+            Rectangle {
+                width: 36px; height: 36px; border-radius: 18px; background: closeta.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                border-width: 1px; border-color: BookTheme.hairline;
+                AppIcon { source: Icons.x; tint: BookTheme.ink-dim; width: 15px; height: 15px; }
+                closeta := TouchArea { mouse-cursor: pointer; clicked => { root.tts-open = false; root.tts-stop(); } }
             }
         }
     }

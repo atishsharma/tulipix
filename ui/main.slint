@@ -12,8 +12,6 @@ import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
 import { MusicPage, MusicFullscreen, MusicMini, PodcastMini, BookMini } from "page_music.slint";
 import { MusicSongRow, DownloaderRow, DlHistoryEntry, DlSearchEntry, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
-import { BooksPage, BookTile, TocEntryRow, BookmarkRow, SeriesRow, AuthorRow, CollectionRow, HeroRow, BookDetail, SeriesStripRow } from "page_books.slint";
-import { BookReader } from "book_reader.slint";
 import { CloudPage, CloudRemote, CloudEntry, CloudJob, CloudUsage, CloudXfer } from "page_cloud.slint";
 import { ToolsPage, ToolOpRow, ToolField, QueueJob, ToolStatus, DownloadItem, ToolInfoRow, ToolDiffRow, TrimSeg } from "page_tools.slint";
 import { ThemePicker, ThemeChoice } from "theme_picker.slint";
@@ -35,6 +33,8 @@ import { SettingsList, SettingItem } from "settings_panels.slint";
 import { ChatOverlay, ChatTurn } from "chat_overlay.slint";
 import { Gated, GateMode } from "gated.slint";
 import { HomePage, HomeStats, HomeRemote, HomeContinue } from "page_home.slint";
+import { BooksPage, BookTile, BooksHero, BookStat, BookChip } from "page_books.slint";
+import { BookReader, TocRow, BookmarkRow, SearchRow, AnnotRow } from "book_reader.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
 import { AppIcon, Icons } from "icons.slint";
@@ -792,11 +792,10 @@ export component MainWindow inherits Window {
     in-out property <HomeStats> home-stats;
     in-out property <[image]> home-recent-photos: [];   // Home Photos slideshow feed
     in-out property <[image]> home-recent-videos: [];   // Home Videos slideshow feed
-    in-out property <[image]> home-book-covers: [];     // Home Books row feed
+    in-out property <[image]> home-book-covers: [];      // Home Books row feed (recent covers)
     in-out property <[HomeRemote]> home-cloud-remotes: []; // Home Cloud row feed
     in-out property <[HomeContinue]> home-continue-rows: []; // Home CONTINUE strip feed (pre-filtered)
     callback home-continue-filter(string);   // chip click → backend re-filters the model
-    callback home-continue-book(int, string); // resume a book (item id, abs path)
     callback home-continue-video(int, string); // resume a video in external mpv (item id, abs path)
     callback home-continue-remove(string, int, string); // dismiss (kind, id, path) from the strip
     in-out property <string> home-greeting: "Welcome";
@@ -917,118 +916,115 @@ export component MainWindow inherits Window {
     // Tracks grid only: music-tiles minus folders assigned to other music
     // sections (audiobooks etc.) — tile.index stays the playback position.
     in-out property <[PhotoTile]> music-tracks-grid: [];
-    in-out property <[BookTile]> book-tiles: [];
-    in-out property <int> book-count: 0;
-    in-out property <string> book-view: "all";
-    in-out property <string> book-query: "";
-    in-out property <string> book-sort: "title";
-    in-out property <string> book-sort-dir: "asc";
-    // Book reader state.
-    in-out property <bool> book-reader-open: false;
-    in property <string> book-reader-title;
-    in property <string> book-reader-kind: "comic";
-    in property <string> book-page-label;
-    in property <float> book-progress;
-    in property <image> book-page-left;
-    in property <image> book-page-right;
-    in property <bool> book-has-right: false;
-    in property <bool> book-spread-double: false;
-    in property <bool> book-rtl: false;
-    in property <bool> book-invert: false;
-    in property <string> book-text;
-    // Two-page spread + flip animation faces (np.p4.books.reader).
-    in property <string> book-text-right;
-    in property <string> book-text-prev;
-    in property <string> book-text-prev-right;
-    in-out property <bool> book-two-page: true;
-    in-out property <bool> book-two-up-active: false;
-    in property <float> book-font-px: 18;
-    in property <float> book-line-height: 1.5;
-    in property <int> book-font-family: 0;
-    in-out property <bool> book-text-dark: false;
-    // EPUB pagination + page-turn animation.
-    in property <int> book-page-index;     // current screen page (0-based)
-    in property <int> book-page-total: 1;  // total screen pages in the book
-    in property <int> book-turn;           // bumped on each turn → triggers fold
-    in property <int> book-turn-dir;       // +1 forward · -1 back
-    callback book-set-view(string);
-    callback book-search(string);
-    callback book-set-sort(string);
-    callback book-open(int);
-    callback book-reader-close();
-    callback book-next();
-    callback book-prev();
-    callback book-scrub(float);
-    callback book-toggle-spread();
-    callback book-toggle-rtl();
-    callback book-toggle-invert();
-    callback book-set-font(float);
-    callback book-set-line(float);
-    callback book-set-family(int);
-    callback book-set-margin(float);
-    callback book-reflow(length, length); // text-stage size → re-paginate
-    callback book-toggle-text-dark();
-    // Books Phase 5 — TOC / bookmarks / themes / series / stats
-    in property <[TocEntryRow]> book-toc-entries: [];
-    in property <[BookmarkRow]> book-bookmarks: [];
-    in-out property <bool> book-toc-open: false;
-    in-out property <bool> book-bookmarks-open: false;
-    in property <string> book-read-mode: "paginated";
-    in property <string> book-theme: "sepia";
-    // Colour-coded bookmarks + TTS overlay + export feedback + yearly goal.
-    in-out property <string> book-bm-color: "#ffd54f";
-    in-out property <string> book-tts-sentence: "";
-    in-out property <string> book-export-status: "";
-    callback book-tts-stop();
-    callback book-goal-adjust(int);
-    in property <float> book-line-height-val: 1.5;
-    in property <float> book-margin-pct: 8.0;
-    in property <bool> book-guided: false;          // comic guided view active
-    in property <string> book-define-result: "";    // dictionary popover text
-    in property <[SeriesRow]> book-series: [];
-    in property <[AuthorRow]> book-authors: [];
-    in property <[CollectionRow]> book-collections: [];
-    in property <[image]> book-comic-thumbs: [];
-    // Books redesign — hero slider, stat cards, detail sheet, series strip.
-    in property <int> book-goal-done: 0;
-    in property <int> book-goal-total: 0;
-    in property <string> book-stat-time: "";
-    in property <int> book-streak-days: 0;
-    in property <int> book-in-progress: 0;
-    in property <[HeroRow]> book-hero-rows: [];
-    callback book-resume(int);
-    callback book-hero-detail(int);
-    in property <BookDetail> book-detail;
-    in-out property <int> book-detail-idx: -1;
-    callback book-open-detail(int);
-    callback book-mark-finished(int);
-    callback book-remove(int);
-    in property <[SeriesStripRow]> book-series-strip: [];
-    in property <string> book-series-strip-title: "";
-    in property <string> book-series-strip-sub: "";
-    in property <int> book-series-strip-done: 0;
-    in property <int> book-series-strip-total: 0;
-    callback book-series-strip-open(int);
-    // Books PDF reader (np.p5.books.pdf) — continuous raster pages.
-    in property <[image]> book-pdf-pages: [];
-    callback book-pdf-page-visible(int);
-    callback book-pdf-goto-page(int);
-    callback book-toggle-toc();
-    callback book-jump-chapter(int);
-    callback book-toggle-bookmarks();
-    callback book-add-bookmark();
-    callback book-jump-bookmark(int);
-    callback book-toggle-read-mode();
-    callback book-set-theme(string);
-    callback book-tts-start();
-    callback book-find-text(string);
-    callback book-toggle-guided();
-    callback book-define(string);
-    callback book-series-open(int);
-    callback book-collection-open(int);
-    callback book-add-to-collection(int, string);
-    callback book-fetch-meta(int);
-    callback book-export-notes(int);
+    // Books section state (np.p8.books).
+    in-out property <BooksHero> books-hero;
+    in-out property <[BookTile]> books-tiles: [];
+    in-out property <[BookStat]> books-stats: [];
+    in-out property <[BookChip]> books-file-types: [];
+    in-out property <[string]> books-file-type-options: ["All"];
+    in-out property <[BookChip]> books-genres: [];
+    in-out property <[BookChip]> books-quick-filters: [];
+    in-out property <int> books-count: 0;
+    in-out property <int> books-page: 1;
+    in-out property <int> books-page-count: 1;
+    in-out property <string> books-active-file-type: "";
+    in-out property <string> books-active-quick: "all";
+    in-out property <string> books-active-genre: "";
+    in-out property <string> books-active-author: "";
+    in-out property <string> books-view-mode: "grid";
+    in-out property <string> books-search: "";
+    callback books-search-changed(string);
+    callback books-resume();
+    callback books-hero-details();
+    callback books-add();
+    callback books-open-details(int);
+    callback books-toggle-favorite(int);
+    callback books-card-menu(int, string);
+    callback books-set-file-type(string);
+    callback books-set-sort(string);
+    callback books-set-view-mode(string);
+    callback books-quick-filter(string);
+    callback books-genre-filter(string);
+    callback books-stat-card(string);
+    callback books-set-page(int);
+    callback books-set-rating(int, float);
+    callback books-open-author(string);
+    // Book Reader overlay state (np.p8.books.reader).
+    in-out property <bool> books-reader-open: false;
+    in-out property <string> books-reader-title;
+    in-out property <string> books-reader-author;
+    in-out property <string> books-reader-left-text;
+    in-out property <string> books-reader-right-text;
+    in-out property <string> books-reader-left-heading;
+    in-out property <string> books-reader-right-heading;
+    in-out property <bool> books-reader-image-mode: false;
+    in-out property <image> books-reader-left-image;
+    in-out property <image> books-reader-right-image;
+    in-out property <int> books-reader-left-folio;
+    in-out property <int> books-reader-right-folio;
+    in-out property <int> books-reader-page: 1;
+    in-out property <int> books-reader-page-count: 1;
+    in-out property <float> books-reader-percent: 0;
+    in-out property <string> books-reader-chapter-name;
+    in-out property <string> books-reader-next-chapter-name;
+    in-out property <bool> books-reader-bookmarked: false;
+    in-out property <float> books-reader-font-px: 17;
+    in-out property <string> books-reader-font-family: "serif";
+    in-out property <bool> books-reader-bold: false;
+    in-out property <int> books-reader-line-index: 1;
+    in-out property <int> books-reader-margin-index: 1;
+    in-out property <int> books-reader-typeface: 0;
+    in-out property <float> books-reader-brightness: 1.0;
+    in-out property <bool> books-reader-contents-open: true;
+    in-out property <[TocRow]> books-reader-toc: [];
+    in-out property <string> books-reader-search-query;
+    in-out property <[SearchRow]> books-reader-search-results: [];
+    in-out property <[AnnotRow]> books-reader-notes: [];
+    in-out property <string> books-reader-theme: "light";
+    in-out property <string> books-reader-full-text: "";
+    in-out property <bool> books-reader-tts-open: false;
+    in-out property <[string]> books-reader-tts-sentences: [];
+    in-out property <int> books-reader-tts-active: 0;
+    in-out property <bool> books-reader-tts-playing: false;
+    in-out property <int> books-reader-tts-speed-index: 1;
+    in-out property <[string]> books-reader-tts-voices: [];
+    in-out property <string> books-reader-tts-voice: "";
+    in-out property <bool> books-reader-loading: false;
+    in-out property <string> books-reader-error: "";
+    callback books-reader-back();
+    callback books-reader-prev-spread();
+    callback books-reader-next-spread();
+    callback books-reader-toggle-bookmark();
+    callback books-reader-annotate();
+    callback books-reader-annot-add();
+    callback books-reader-annot-jump(int);
+    callback books-reader-annot-set-note(int, string);
+    callback books-reader-annot-remove(int);
+    callback books-reader-search-run(string);
+    callback books-reader-font-dec();
+    callback books-reader-font-inc();
+    callback books-reader-set-line-spacing(int);
+    callback books-reader-set-margin(int);
+    callback books-reader-set-typeface(int);
+    callback books-reader-toggle-bold();
+    callback books-reader-set-theme(string);
+    callback books-reader-set-brightness(float);
+    callback books-reader-brightness-cycle();
+    callback books-reader-more-mark-finished();
+    callback books-reader-more-remove();
+    callback books-reader-jump-chapter(int);
+    callback books-reader-scrub(int);
+    callback books-reader-prev-page();
+    callback books-reader-next-page();
+    callback books-reader-set-single(bool);
+    callback books-reader-tts-start();
+    callback books-reader-tts-stop();
+    callback books-reader-tts-play-pause();
+    callback books-reader-tts-set-speed(int);
+    callback books-reader-tts-set-voice(string);
+    callback books-reader-tts-jump(int);
+    callback books-reader-prev-chapter();
+    callback books-reader-next-chapter();
     // Cloud (rclone) state.
     in-out property <[CloudRemote]> cloud-remotes: [];
     in-out property <string> cloud-active-remote: "";
@@ -2841,7 +2837,6 @@ callback cloud-go-home();
                 }
                 open-fullscreen => { root.music-open-fullscreen(); }
                 np-next => { root.music-next(); } np-prev => { root.music-prev(); } np-playpause => { root.music-toggle-pause(); } }
-            if active-section == "books":    BooksPage  { width: parent.width; height: parent.height; item-count: root.book-count; tiles: root.book-tiles; series: root.book-series; authors: root.book-authors; collections: root.book-collections; view <=> root.book-view; query <=> root.book-query; sort-mode <=> root.book-sort; sort-dir <=> root.book-sort-dir; add-folder => { root.pick-folder(); } open-book(i) => { root.book-open(i); } set-view(v) => { root.book-set-view(v); } search(q) => { root.book-search(q); } set-sort(s) => { root.book-set-sort(s); } series-open(i) => { root.book-series-open(i); } collection-open(i) => { root.book-collection-open(i); } add-to-collection(i, n) => { root.book-add-to-collection(i, n); } fetch-meta(i) => { root.book-fetch-meta(i); } export-notes(i) => { root.book-export-notes(i); } export-status: root.book-export-status; goal-adjust(d) => { root.book-goal-adjust(d); } goal-done: root.book-goal-done; goal-total: root.book-goal-total; stat-time: root.book-stat-time; streak-days: root.book-streak-days; in-progress-count: root.book-in-progress; hero-rows: root.book-hero-rows; resume(i) => { root.book-resume(i); } hero-detail(i) => { root.book-hero-detail(i); } detail: root.book-detail; detail-idx <=> root.book-detail-idx; open-detail(i) => { root.book-open-detail(i); } mark-finished(i) => { root.book-mark-finished(i); } remove-book(i) => { root.book-remove(i); } series-strip: root.book-series-strip; series-strip-title: root.book-series-strip-title; series-strip-sub: root.book-series-strip-sub; series-strip-done: root.book-series-strip-done; series-strip-total: root.book-series-strip-total; series-strip-open(i) => { root.book-series-strip-open(i); } }
             if active-section == "cloud":    CloudPage  {
                 width: parent.width; height: parent.height;
                 remotes: root.cloud-remotes;
@@ -3035,9 +3030,9 @@ callback cloud-go-home();
                 continue-rows: root.home-continue-rows;
                 continue-filter(f) => { root.home-continue-filter(f); }
                 continue-open(r) => {
-                    if (r.kind == "book") { root.home-continue-book(r.id, r.path); }
-                    else if (r.kind == "video") { root.home-continue-video(r.id, r.path); }
+                    if (r.kind == "video") { root.home-continue-video(r.id, r.path); }
                     else if (r.kind == "podcast") { root.music-podcast-play(r.id); }
+                    else if (r.kind == "book") { root.books-open-details(r.id); }
                     else { root.music-view = "audiobooks"; root.active-section = "music"; root.section-changed("music"); }
                 }
                 continue-remove(r) => { root.home-continue-remove(r.kind, r.id, r.path); }
@@ -3064,6 +3059,41 @@ callback cloud-go-home();
                 // Header music-side button — reuse the settings toggle so the
                 // flip persists (home.music-left) and applies live.
                 toggle-music-side => { root.setting-toggle("home.music-left", !root.home-music-left); }
+            }
+            if active-section == "books": BooksPage {
+                width: parent.width; height: parent.height;
+                hero: root.books-hero;
+                tiles: root.books-tiles;
+                stats: root.books-stats;
+                file-types: root.books-file-types;
+                file-type-options: root.books-file-type-options;
+                genres: root.books-genres;
+                quick-filters: root.books-quick-filters;
+                book-count: root.books-count;
+                page <=> root.books-page;
+                page-count: root.books-page-count;
+                active-file-type <=> root.books-active-file-type;
+                active-quick <=> root.books-active-quick;
+                active-genre <=> root.books-active-genre;
+                active-author <=> root.books-active-author;
+                view-mode <=> root.books-view-mode;
+                search-text <=> root.books-search;
+                search(q) => { root.books-search-changed(q); }
+                resume => { root.books-resume(); }
+                hero-details => { root.books-hero-details(); }
+                add-books => { root.books-add(); }
+                open-details(id) => { root.books-open-details(id); }
+                toggle-favorite(id) => { root.books-toggle-favorite(id); }
+                card-menu-action(id, a) => { root.books-card-menu(id, a); }
+                set-file-type(k) => { root.books-set-file-type(k); }
+                set-sort(s) => { root.books-set-sort(s); }
+                set-view-mode(m) => { root.books-set-view-mode(m); }
+                quick-filter(k) => { root.books-quick-filter(k); }
+                genre-filter(k) => { root.books-genre-filter(k); }
+                stat-card(id) => { root.books-stat-card(id); }
+                set-page(p) => { root.books-set-page(p); }
+                set-rating(id, v) => { root.books-set-rating(id, v); }
+                open-author(a) => { root.books-open-author(a); }
             }
             if active-section == "settings": SettingsPage {
                 width: parent.width; height: parent.height;
@@ -3210,6 +3240,77 @@ callback cloud-go-home();
         theme-changed => { root.music-theme-changed(); }
     }
 
+    // Book Reader — full-screen immersive overlay (np.p8.books.reader).
+    if root.books-reader-open: BookReader {
+        width: 100%; height: 100%;
+        title: root.books-reader-title; author: root.books-reader-author;
+        left-text: root.books-reader-left-text; right-text: root.books-reader-right-text;
+        left-heading: root.books-reader-left-heading; right-heading: root.books-reader-right-heading;
+        image-mode: root.books-reader-image-mode;
+        left-image: root.books-reader-left-image; right-image: root.books-reader-right-image;
+        left-folio: root.books-reader-left-folio; right-folio: root.books-reader-right-folio;
+        page-index: root.books-reader-page; page-count: root.books-reader-page-count;
+        percent: root.books-reader-percent;
+        chapter-name: root.books-reader-chapter-name; next-chapter-name: root.books-reader-next-chapter-name;
+        bookmarked: root.books-reader-bookmarked;
+        font-px: root.books-reader-font-px;
+        font-family: root.books-reader-font-family;
+        bold: root.books-reader-bold;
+        line-index: root.books-reader-line-index;
+        margin-index: root.books-reader-margin-index;
+        typeface: root.books-reader-typeface;
+        brightness: root.books-reader-brightness;
+        contents-open <=> root.books-reader-contents-open;
+        toc: root.books-reader-toc;
+        search-query <=> root.books-reader-search-query;
+        search-results: root.books-reader-search-results;
+        notes: root.books-reader-notes;
+        theme-mode: root.books-reader-theme;
+        full-text: root.books-reader-full-text;
+        tts-open <=> root.books-reader-tts-open;
+        tts-sentences: root.books-reader-tts-sentences;
+        tts-active: root.books-reader-tts-active;
+        tts-playing: root.books-reader-tts-playing;
+        tts-speed-index: root.books-reader-tts-speed-index;
+        tts-voices: root.books-reader-tts-voices;
+        tts-voice: root.books-reader-tts-voice;
+        loading: root.books-reader-loading; error-text: root.books-reader-error;
+        back => { root.books-reader-back(); }
+        prev-spread => { root.books-reader-prev-spread(); }
+        next-spread => { root.books-reader-next-spread(); }
+        toggle-bookmark => { root.books-reader-toggle-bookmark(); }
+        annotate => { root.books-reader-annotate(); }
+        annot-add => { root.books-reader-annot-add(); }
+        annot-jump(id) => { root.books-reader-annot-jump(id); }
+        annot-set-note(id, t) => { root.books-reader-annot-set-note(id, t); }
+        annot-remove(id) => { root.books-reader-annot-remove(id); }
+        search-run(t) => { root.books-reader-search-run(t); }
+        font-dec => { root.books-reader-font-dec(); }
+        font-inc => { root.books-reader-font-inc(); }
+        set-line-spacing(i) => { root.books-reader-set-line-spacing(i); }
+        set-margin(i) => { root.books-reader-set-margin(i); }
+        set-typeface(i) => { root.books-reader-set-typeface(i); }
+        toggle-bold => { root.books-reader-toggle-bold(); }
+        set-theme(t) => { root.books-reader-set-theme(t); }
+        set-brightness(v) => { root.books-reader-set-brightness(v); }
+        brightness-cycle => { root.books-reader-brightness-cycle(); }
+        more-mark-finished => { root.books-reader-more-mark-finished(); }
+        more-remove => { root.books-reader-more-remove(); }
+        jump-chapter(i) => { root.books-reader-jump-chapter(i); }
+        scrub(p) => { root.books-reader-scrub(p); }
+        prev-page => { root.books-reader-prev-page(); }
+        next-page => { root.books-reader-next-page(); }
+        set-single(s) => { root.books-reader-set-single(s); }
+        tts-start => { root.books-reader-tts-start(); }
+        tts-stop => { root.books-reader-tts-stop(); }
+        tts-play-pause => { root.books-reader-tts-play-pause(); }
+        tts-set-speed(i) => { root.books-reader-tts-set-speed(i); }
+        tts-set-voice(v) => { root.books-reader-tts-set-voice(v); }
+        tts-jump(i) => { root.books-reader-tts-jump(i); }
+        prev-chapter => { root.books-reader-prev-chapter(); }
+        next-chapter => { root.books-reader-next-chapter(); }
+    }
+
     // App-wide draggable mini-player (over every section except Home, which has
     // its own embedded player in the bento layout).
     if root.music-mini-open && !root.music-mini-bubble && root.active-section != "home": Rectangle {
@@ -3344,75 +3445,6 @@ callback cloud-go-home();
         }
     }
 
-    // Book reader overlay (np.p4.books.reader) — full window above content.
-    BookReader {
-        width: 100%; height: 100%;
-        open: root.book-reader-open;
-        title: root.book-reader-title;
-        kind: root.book-reader-kind;
-        page-label: root.book-page-label;
-        progress: root.book-progress;
-        page-left: root.book-page-left;
-        page-right: root.book-page-right;
-        has-right: root.book-has-right;
-        spread-double: root.book-spread-double;
-        rtl: root.book-rtl;
-        invert: root.book-invert;
-        text: root.book-text;
-        text-right: root.book-text-right;
-        text-prev: root.book-text-prev;
-        text-prev-right: root.book-text-prev-right;
-        two-page <=> root.book-two-page;
-        two-up-active <=> root.book-two-up-active;
-        font-px: root.book-font-px;
-        font-family: root.book-font-family;
-        page-index: root.book-page-index;
-        page-total: root.book-page-total;
-        turn: root.book-turn;
-        turn-dir: root.book-turn-dir;
-        comic-thumbs: root.book-comic-thumbs;
-        pdf-pages: root.book-pdf-pages;
-        pdf-page-visible(i) => { root.book-pdf-page-visible(i); }
-        pdf-goto-page(i) => { root.book-pdf-goto-page(i); }
-        text-dark <=> root.book-text-dark;
-        set-line(l) => { root.book-set-line(l); }
-        set-margin(m) => { root.book-set-margin(m); }
-        reflow(w, h) => { root.book-reflow(w, h); }
-        close => { root.book-reader-close(); }
-        next => { root.book-next(); }
-        prev => { root.book-prev(); }
-        scrub(f) => { root.book-scrub(f); }
-        toggle-spread => { root.book-toggle-spread(); }
-        toggle-rtl => { root.book-toggle-rtl(); }
-        toggle-invert => { root.book-toggle-invert(); }
-        set-font(p) => { root.book-set-font(p); }
-        set-family(i) => { root.book-set-family(i); }
-        toggle-text-dark => { root.book-toggle-text-dark(); }
-        toc-entries: root.book-toc-entries;
-        reader-bookmarks: root.book-bookmarks;
-        toc-open <=> root.book-toc-open;
-        bookmarks-open <=> root.book-bookmarks-open;
-        read-mode: root.book-read-mode;
-        theme: root.book-theme;
-        line-height-val: root.book-line-height-val;
-        margin-pct: root.book-margin-pct;
-        toggle-toc => { root.book-toggle-toc(); }
-        jump-to-chapter(i) => { root.book-jump-chapter(i); }
-        toggle-bookmarks => { root.book-toggle-bookmarks(); }
-        add-bookmark => { root.book-add-bookmark(); }
-        jump-to-bookmark(p) => { root.book-jump-bookmark(p); }
-        toggle-read-mode => { root.book-toggle-read-mode(); }
-        set-theme(t) => { root.book-set-theme(t); }
-        tts-start => { root.book-tts-start(); }
-        tts-stop => { root.book-tts-stop(); }
-        tts-sentence: root.book-tts-sentence;
-        bm-color <=> root.book-bm-color;
-        find-text(s) => { root.book-find-text(s); }
-        guided: root.book-guided;
-        define-result: root.book-define-result;
-        toggle-guided => { root.book-toggle-guided(); }
-        define(s) => { root.book-define(s); }
-    }
 
     // Scan progress floating card — bottom-right corner, visible while a
     // scan is in flight OR a scan finished with at least one failure (so the

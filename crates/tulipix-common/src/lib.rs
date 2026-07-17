@@ -14,7 +14,6 @@ use std::sync::OnceLock;
 static PHOTOS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
 static VIDEOS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
 static MUSIC_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
-static BOOKS_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
 static CLOUD_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
 // Music sub-sections split out of music.db (no items FK — self-contained).
 static PODCASTS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
@@ -22,6 +21,8 @@ static RADIO_POOL:    OnceLock<sqlx::SqlitePool> = OnceLock::new();
 static YOUTUBE_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
 // Tools job queue (tools.db) — shared by the GUI Tools section + CLI.
 static TOOLS_POOL:    OnceLock<sqlx::SqlitePool> = OnceLock::new();
+// Books library (books.db) — standalone, no items FK.
+static BOOKS_POOL:    OnceLock<sqlx::SqlitePool> = OnceLock::new();
 
 /// Open (or return the cached) SQLite pool for a section, applying its schema
 /// on first open. Both the GUI and CLI go through here so every front-end sees
@@ -31,12 +32,12 @@ pub async fn pool_for(section: &str) -> Result<sqlx::SqlitePool> {
         "photos" => &PHOTOS_POOL,
         "videos" => &VIDEOS_POOL,
         "music"  => &MUSIC_POOL,
-        "books"  => &BOOKS_POOL,
         "cloud"  => &CLOUD_POOL,
         "podcasts" => &PODCASTS_POOL,
         "radio"    => &RADIO_POOL,
         "youtube"  => &YOUTUBE_POOL,
         "tools"    => &TOOLS_POOL,
+        "books"    => &BOOKS_POOL,
         _ => anyhow::bail!("unknown section"),
     };
     if let Some(p) = cache.get() { return Ok(p.clone()); }
@@ -89,9 +90,9 @@ pub async fn pool_for(section: &str) -> Result<sqlx::SqlitePool> {
         "youtube" => {
             tulipix_music::youtube::store::apply_schema(&pool).await?;
         }
-        "books"  => tulipix_books::schema::apply(&pool).await?,
         "cloud"  => tulipix_cloud::schema::apply(&pool).await?,
         "tools"  => tulipix_tools::schema::apply(&pool).await?,
+        "books"  => tulipix_books::schema::apply(&pool).await?,
         _ => {}
     }
     let _ = cache.set(pool.clone());

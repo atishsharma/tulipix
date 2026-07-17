@@ -1,753 +1,748 @@
-// Books section — Google Play Books language: warm paper canvas, covers on
-// shelves with title + author + a reading-progress bar. View tabs filter the
-// library (All / Reading / Unread / Comics). Click a cover → native reader.
-import { ScrollView, LineEdit } from "std-widgets.slint";
-import { HdrChip, HdrSearch, CountPill } from "section_header.slint";
-import { AppIcon, Icons } from "icons.slint";
+// Book Home page (np.p8.books.home) — target: docs/books-redesign/newbook22.png.
+// ORIGINAL design (not derived from the dead cbook.png). Colors are PINNED to
+// the SPEC light palette via the BookTheme global so the page reads the same
+// regardless of the app dark/light Theme — Books is its own bright surface.
+//
+// Layout (fills parent): Header row · Hero row (Continue card + 2×2 stats) ·
+// Main row (Toolbar + book grid + pagination | right rail: quick filters /
+// file types / genres). All data flows in via `in` properties; every user
+// action leaves through a callback the sec-books crate wires to the engine.
 import { Theme } from "tokens.slint";
+import { AppIcon, Icons } from "icons.slint";
+import { ScrollView, ComboBox } from "std-widgets.slint";
 
-export struct TocEntryRow { idx: int, title: string, page: int }
-export struct BookmarkRow { id: int, page: int, note: string, color: string }
-export struct SeriesRow { id: int, name: string, book-count: int, cover: image }
-export struct AuthorRow { name: string, book-count: int }
-export struct CollectionRow { id: int, name: string, book-count: int, cover: image }
+// Pinned SPEC palette — independent of Theme so the surface never goes dark.
+export global BookTheme {
+    out property <color> canvas: #f2f2f7;
+    out property <color> card: #ffffff;
+    out property <color> accent: #6c4df6;
+    out property <color> tint-violet: #efeaff;
+    out property <color> tint-pink: #fdeef4;
+    out property <color> tint-orange: #fff3e6;
+    out property <color> tint-green: #e8f8ef;
+    out property <color> ink: #1b1b22;
+    out property <color> ink-dim: #8a8a94;
+    out property <color> track: #ececf2;
+    out property <color> pill-bg: #f4f4f8;
+    out property <color> hairline: #ececf2;
+    out property <length> radius: 16px;
+    out property <color> shadow: #00000010;
+}
 
+// One book row for the grid. `percent` 0‥100; `cover` filled by Rust (empty →
+// tinted placeholder shows through). `format` is the badge label (EPUB/PDF/…).
 export struct BookTile {
-    thumb: image,
+    id: int,
     title: string,
     author: string,
-    index: int,
-    progress: float,   // 0..1 read
-    finished: bool,
-    comic: bool,
-    format: string,    // epub / cbz / cbr / pdf
-    has-cover: bool,   // true → show thumb; false → generated fallback cover
-    tint: color,       // paper tint for the generated cover (hash(title))
+    cover: image,
+    percent: float,
+    favorite: bool,
+    format: string,
+    date: string,
+    hue: color,
+    rating: float,
+    missing: bool,
 }
 
-// Continue-reading hero card row. `index` maps into the Rust hero list.
-export struct HeroRow {
-    thumb: image, has-cover: bool, tint: color,
-    title: string, author: string,
-    frac: float, page-label: string, left-label: string, index: int,
+// Hero "Continue Reading" card. `present` false → empty-state hero.
+export struct BooksHero {
+    present: bool,
+    title: string,
+    author: string,
+    cover: image,
+    hue: color,
+    page: int,
+    total: int,
+    percent: float,
+    time-left: string,
 }
 
-// Book detail sheet payload. `index` is the tile index (book_paths) for actions.
-export struct BookDetail {
-    title: string, author: string, eyebrow: string, desc: string,
-    format: string, size: string, pages: string, shelf: string,
-    frac: float, page-label: string, left-label: string,
-    has-progress: bool, finished: bool,
-    thumb: image, has-cover: bool, tint: color, index: int,
+// One of the four stat cards (2×2).
+export struct BookStat {
+    label: string,
+    value: string,
+    tint: color,
+    accent: color,
+    icon: image,
 }
 
-// One tile in the series drill-in strip. `index` maps into the Rust strip list.
-export struct SeriesStripRow {
-    thumb: image, has-cover: bool, tint: color,
-    title: string, status: string, num: int,
-    next-up: bool, finished: bool, frac: float, index: int,
+// A labelled chip with an optional count — file types, genres, quick filters.
+export struct BookChip {
+    key: string,
+    label: string,
+    count: int,
 }
 
-// Generated fallback cover — the signature look when a book has no art.
-// Paper-tinted panel, 1px inset frame, Georgia title (top), faint author (foot).
-// Reused across the grid, hero, series strip and detail sheet.
-component GenCover inherits Rectangle {
+// ── small parts ───────────────────────────────────────────────────────────────
+
+// White rounded card with the SPEC hairline shadow.
+component Card inherits Rectangle {
+    background: BookTheme.card;
+    border-radius: BookTheme.radius;
+    drop-shadow-blur: 2px;
+    drop-shadow-offset-y: 1px;
+    drop-shadow-color: BookTheme.shadow;
+}
+
+// Rounded pill button. `filled` → solid accent + white; else outline.
+component PillButton inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> filled: false;
+    in property <color> accent: BookTheme.accent;
+    callback clicked();
+    height: 40px;
+    border-radius: 20px;
+    horizontal-stretch: 0;
+    background: filled ? accent : BookTheme.card;
+    border-width: filled ? 0px : 1.5px;
+    border-color: accent.with-alpha(0.35);
+    property <color> ink: filled ? #ffffff : accent;
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 16px; padding-right: 18px; spacing: 8px; alignment: center;
+        VerticalLayout { alignment: center;
+            if root.icon.width > 0: AppIcon { source: root.icon; tint: root.ink; width: 18px; height: 18px; } }
+        Text { text: root.label; color: root.ink; font-size: 14px; font-weight: 700;
+            vertical-alignment: center; }
+    }
+    states [ hover when ta.has-hover: { background: filled ? accent.darker(0.08) : BookTheme.pill-bg; } ]
+    animate background { duration: 120ms; }
+}
+
+// Rounded filter chip with optional count badge.
+component FilterChip inherits Rectangle {
+    in property <string> label;
+    in property <int> count: -1;
+    in property <bool> active: false;
+    callback clicked();
+    height: 34px;
+    border-radius: 17px;
+    horizontal-stretch: 0;
+    background: active ? BookTheme.accent : BookTheme.pill-bg;
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 14px; padding-right: 14px; spacing: 6px; alignment: center;
+        Text { text: root.label; color: root.active ? #ffffff : BookTheme.ink;
+            font-size: 13px; font-weight: 600; vertical-alignment: center; }
+        if root.count >= 0: Text { text: root.count; font-size: 12px; font-weight: 600;
+            color: root.active ? #ffffffcc : BookTheme.ink-dim; vertical-alignment: center; }
+    }
+    states [ hover when ta.has-hover && !active: { background: BookTheme.track; } ]
+    animate background { duration: 100ms; }
+}
+
+// Left cover artwork. When there's no cover image, draws a generated cover
+// card from the title/author on a hash-picked color (for PDFs and any coverless
+// book). Also shows the format badge + optional reading-progress bar.
+component Cover inherits Rectangle {
+    in property <image> source;
+    in property <string> format;
     in property <string> title;
     in property <string> author;
-    in property <color> tint;
-    in property <bool> dark: false;
-    property <color> base: dark ? root.tint.mix(#14130f, 0.24) : root.tint;
-    property <color> ink: dark ? #d8cfb8 : #3a3428;
-    background: base;
+    in property <color> hue: #6c4df6;
+    in property <float> percent: -1;
+    // Scale text with the card so it reads in both the tiny grid tile and the
+    // larger hero — `big` splits the two size regimes.
+    property <bool> big: self.width > 100px;
+    border-radius: 8px;
     clip: true;
-    Rectangle {
-        x: 8px; y: 8px; width: parent.width - 16px; height: parent.height - 16px;
-        border-width: 1px; border-radius: 3px;
-        border-color: root.dark ? #ffffff1c : #00000024;
-    }
-    VerticalLayout {
-        padding-left: 12px; padding-right: 12px; padding-top: 14px; padding-bottom: 12px;
-        Text {
-            text: root.title; color: root.ink; font-family: "Georgia";
-            font-weight: 700; font-size: 14px; wrap: word-wrap; overflow: elide;
+    background: root.source.width <= 0
+        ? @linear-gradient(155deg, root.hue, root.hue.darker(0.35))
+        : BookTheme.tint-violet;
+
+    // ── Generated cover (no image) ───────────────────────────────────────────
+    if root.source.width <= 0: Rectangle {
+        // Inner hairline frame.
+        Rectangle {
+            x: 6px; y: 6px; width: parent.width - 12px; height: parent.height - 12px;
+            border-radius: 6px; border-width: 1.5px; border-color: #ffffff55; background: transparent;
         }
-        Rectangle { vertical-stretch: 1; }
-        Text {
-            text: root.author; color: root.ink; font-size: 9px;
-            letter-spacing: 1.1px; opacity: 0.62; overflow: elide;
+        VerticalLayout {
+            padding: root.big ? 16px : 8px; spacing: 0px;
+            // Format badge.
+            HorizontalLayout {
+                alignment: start;
+                Rectangle {
+                    height: root.big ? 20px : 15px; border-radius: 5px; background: #ffffff33;
+                    HorizontalLayout { padding-left: 6px; padding-right: 6px;
+                        Text { text: root.format; color: #ffffff; font-size: root.big ? 10px : 8px;
+                            font-weight: 700; vertical-alignment: center; } }
+                }
+            }
+            // Title (centered) + divider + author.
+            Rectangle {
+                vertical-stretch: 1;
+                VerticalLayout {
+                    alignment: center; spacing: root.big ? 12px : 6px;
+                    Text {
+                        text: root.title; color: #ffffff; font-family: "serif";
+                        font-size: root.big ? 20px : 11px; font-weight: 700;
+                        horizontal-alignment: center; wrap: word-wrap; overflow: elide;
+                    }
+                    HorizontalLayout { alignment: center;
+                        Rectangle { width: root.big ? 46px : 24px; height: 1px; background: #ffffff77; } }
+                    Text {
+                        text: root.author; color: #ffffffdd; font-family: "serif";
+                        font-size: root.big ? 14px : 9px; font-italic: true;
+                        horizontal-alignment: center; wrap: word-wrap; overflow: elide;
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Real cover image ─────────────────────────────────────────────────────
+    Image { source: root.source; image-fit: cover; width: 100%; height: 100%; }
+
+    // Reading progress bar along the bottom edge.
+    if root.percent > 0: Rectangle {
+        x: 0; y: parent.height - 4px; width: 100%; height: 4px; background: #00000030;
+        Rectangle { x: 0; width: parent.width * root.percent / 100; height: 4px;
+            background: BookTheme.accent; }
+    }
+}
+
+// ── stat card ─────────────────────────────────────────────────────────────────
+component StatCard inherits Card {
+    in property <string> label;
+    in property <string> value;
+    in property <color> tint;
+    in property <color> accent: BookTheme.accent;
+    in property <image> icon;
+    callback clicked();
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding: 16px; spacing: 14px; alignment: start;
+        Rectangle {
+            width: 46px; height: 46px; border-radius: 13px; background: root.tint;
+            AppIcon { source: root.icon; tint: root.accent; width: 22px; height: 22px; }
+        }
+        VerticalLayout { alignment: center; spacing: 2px;
+            Text { text: root.value; color: BookTheme.ink; font-size: 24px; font-weight: 800; }
+            Text { text: root.label; color: BookTheme.ink-dim; font-size: 12px; font-weight: 500; }
+        }
+    }
+    states [ hover when ta.has-hover: { background: #fbfbfd; } ]
+}
+
+// Five clickable stars for the local rating (click star N → rating N).
+component Stars inherits HorizontalLayout {
+    in property <float> rating;
+    callback rate(float);
+    spacing: 2px;
+    for i in [1, 2, 3, 4, 5]: TouchArea {
+        width: 15px; height: 15px;
+        mouse-cursor: pointer;
+        // Clicking the current top star clears the rating.
+        clicked => { root.rate(i == root.rating ? 0 : i); }
+        AppIcon {
+            source: i <= root.rating ? Icons.star-filled : Icons.star;
+            tint: i <= root.rating ? #f5a623 : BookTheme.ink-dim.with-alpha(0.55);
+            width: 14px; height: 14px;
         }
     }
 }
 
+// ── book grid tile (horizontal card: cover-left + details-right) ───────────────
+component GridTile inherits Rectangle {
+    in property <BookTile> tile;
+    callback open();
+    callback favorite();
+    callback menu();
+    callback rate(float);
+    callback open-author();
+    border-radius: 14px;
+    background: BookTheme.card;
+    border-width: 1px;
+    border-color: ta.has-hover ? BookTheme.accent.with-alpha(0.35) : BookTheme.hairline;
+    drop-shadow-blur: 2px;
+    drop-shadow-offset-y: 1px;
+    drop-shadow-color: BookTheme.shadow;
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
+    HorizontalLayout {
+        padding: 14px; spacing: 14px;
+        // Cover.
+        Rectangle {
+            width: 74px;
+            Cover { width: 100%; height: 106px; source: tile.cover; percent: tile.percent;
+                format: tile.format; title: tile.title; author: tile.author; hue: tile.hue; }
+        }
+        // Details column.
+        VerticalLayout {
+            alignment: start; spacing: 4px; horizontal-stretch: 1;
+            // Title (leave room for the ⋮ button on its right).
+            HorizontalLayout {
+                Text { text: tile.title; color: BookTheme.ink; font-size: 14px; font-weight: 700;
+                    wrap: word-wrap; overflow: elide; horizontal-stretch: 1; }
+                Rectangle { width: 26px; }
+            }
+            // Author — click opens the author page.
+            Rectangle {
+                height: 16px;
+                Text { text: tile.author; width: 100%; color: autht.has-hover ? BookTheme.accent : BookTheme.ink-dim;
+                    font-size: 12px; font-weight: 500; overflow: elide; vertical-alignment: center; }
+                autht := TouchArea { mouse-cursor: pointer; clicked => { root.open-author(); } }
+            }
+            // Format badge + date.
+            HorizontalLayout {
+                alignment: start; spacing: 8px;
+                Rectangle {
+                    height: 18px; border-radius: 6px; background: BookTheme.pill-bg;
+                    HorizontalLayout { padding-left: 7px; padding-right: 7px;
+                        Text { text: tile.format; color: BookTheme.ink-dim; font-size: 9px;
+                            font-weight: 700; vertical-alignment: center; } }
+                }
+                if tile.date != "": HorizontalLayout {
+                    spacing: 4px;
+                    VerticalLayout { alignment: center;
+                        AppIcon { source: Icons.calendar; tint: BookTheme.ink-dim; width: 11px; height: 11px; } }
+                    Text { text: tile.date; color: BookTheme.ink-dim; font-size: 10px; vertical-alignment: center; }
+                }
+            }
+            // Local rating (click a star to set).
+            HorizontalLayout {
+                alignment: start; spacing: 6px;
+                Stars { rating: tile.rating; rate(v) => { root.rate(v); } }
+                if tile.rating > 0: Text { text: tile.rating; color: BookTheme.ink-dim;
+                    font-size: 11px; font-weight: 600; vertical-alignment: center; }
+            }
+        }
+    }
+    // Overflow menu (top-right).
+    menu-ta := TouchArea {
+        x: parent.width - 34px; y: 10px; width: 26px; height: 26px;
+        mouse-cursor: pointer; clicked => { root.menu(); }
+        AppIcon { source: Icons.ellipsis; tint: BookTheme.ink-dim; width: 16px; height: 16px; }
+    }
+    // Bookmark / favorite (bottom-right).
+    fav-ta := TouchArea {
+        x: parent.width - 34px; y: parent.height - 34px; width: 26px; height: 26px;
+        mouse-cursor: pointer; clicked => { root.favorite(); }
+        AppIcon { source: Icons.bookmark;
+            tint: tile.favorite ? BookTheme.accent : BookTheme.ink-dim; width: 16px; height: 16px; }
+    }
+}
+
+// A titled rail block (Quick filters / File types / Genres).
+component RailBlock inherits VerticalLayout {
+    in property <string> title;
+    spacing: 6px;
+    Text { text: root.title; color: BookTheme.ink-dim; font-size: 11px; font-weight: 700;
+        letter-spacing: 0.6px; }
+    @children
+}
+
+// One rail list row: leading icon · label · trailing count. Used for quick
+// filters and file types (matches the design's right-rail list style).
+component RailRow inherits Rectangle {
+    in property <image> icon;
+    in property <color> icon-tint: BookTheme.accent;
+    in property <string> label;
+    in property <int> count: -1;
+    in property <bool> active: false;
+    callback clicked();
+    height: 36px;
+    border-radius: 10px;
+    background: root.active ? BookTheme.tint-violet : (ta.has-hover ? BookTheme.pill-bg : transparent);
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 12px; spacing: 10px;
+        VerticalLayout { alignment: center;
+            AppIcon { source: root.icon; tint: root.active ? BookTheme.accent : root.icon-tint;
+                width: 16px; height: 16px; } }
+        Text { text: root.label; color: root.active ? BookTheme.accent : BookTheme.ink;
+            font-size: 13px; font-weight: root.active ? 700 : 500; vertical-alignment: center;
+            horizontal-stretch: 1; overflow: elide; }
+        if root.count >= 0: Text { text: root.count; color: BookTheme.ink-dim; font-size: 12px;
+            font-weight: 600; vertical-alignment: center; }
+    }
+    animate background { duration: 100ms; }
+}
+
+// A colored genre chip with a trailing count (rail Genres section).
+component GenreChip inherits Rectangle {
+    in property <string> label;
+    in property <int> count: -1;
+    in property <color> hue: BookTheme.accent;
+    in property <bool> active: false;
+    callback clicked();
+    height: 30px;
+    border-radius: 15px;
+    background: root.active ? root.hue.with-alpha(0.9) : root.hue.with-alpha(0.12);
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px; spacing: 8px; alignment: start;
+        Text { text: root.label; color: root.active ? #ffffff : root.hue; font-size: 12px;
+            font-weight: 600; vertical-alignment: center; overflow: elide; }
+        if root.count >= 0: Text { text: root.count; color: root.active ? #ffffffcc : root.hue.with-alpha(0.7);
+            font-size: 11px; font-weight: 600; vertical-alignment: center; }
+    }
+}
+
+// ── page ──────────────────────────────────────────────────────────────────────
 export component BooksPage inherits Rectangle {
-    in property <int> item-count: 0;
+    // data in
+    in property <BooksHero> hero;
     in property <[BookTile]> tiles: [];
-    in property <[SeriesRow]> series: [];
-    in property <[AuthorRow]> authors: [];
-    in property <[CollectionRow]> collections: [];
-    // Structured stats for the chip-card row (np.p5.books.stats).
-    in property <int> goal-done: 0;
-    in property <int> goal-total: 0;
-    in property <string> stat-time: "";      // "14h 20m"
-    in property <int> streak-days: 0;
-    in property <int> in-progress-count: 0;
-    // Transient export confirmation ("Notes exported → ~/Documents/…").
-    in property <string> export-status: "";
-    in-out property <string> view: "all";
-    in-out property <string> query: "";
-    in-out property <string> sort-mode: "title";   // title | author | recent
-    in-out property <string> sort-dir: "asc";       // asc | desc
-    // Drill-in state: shelf (collection) the tile grid is filtered to, and the
-    // tile index a "＋ shelf" popup is open for (-1 = closed).
-    in-out property <int> sel-collection: -1;
-    in-out property <int> shelf-pick-idx: -1;
-    callback add-folder();
-    callback open-book(int);
-    callback set-view(string);
+    in property <[BookStat]> stats: [];
+    in property <[BookChip]> file-types: [];
+    in property <[BookChip]> genres: [];
+    in property <[BookChip]> quick-filters: [];
+    in property <[string]> sort-options: ["Recently Added", "Recently Read", "Title", "Author", "Rating"];
+    in property <[string]> file-type-options: ["All"];
+    // Rotating hue palette for the genre chips.
+    property <[color]> genre-hues: [#6c4df6, #e0518f, #2fbf71, #f5a623, #3a86ff, #b5179e];
+    in property <int> book-count: 0;
+    in property <int> page: 1;
+    in property <int> page-count: 1;
+    in property <string> active-file-type: "";
+    in property <string> active-quick: "all";
+    in property <string> active-genre: "";
+    in property <string> active-author: "";
+    in property <string> view-mode: "grid";
+    in-out property <string> search-text: "";
+    // True when any filter/search narrows the grid — drives the empty-state copy.
+    property <bool> filtered: root.active-file-type != "" || root.active-genre != ""
+        || root.active-quick != "all" || root.search-text != "" || root.active-author != "";
+
+    // actions out
     callback search(string);
+    callback resume();
+    callback hero-details();
+    callback add-books();
+    callback open-details(int);
+    callback toggle-favorite(int);
+    callback card-menu-action(int, string);
+    callback set-file-type(string);
     callback set-sort(string);
-    callback series-open(int);
-    callback collection-open(int);
-    callback add-to-collection(int, string); // tile index, shelf name
-    callback fetch-meta(int);
-    callback export-notes(int);
-    callback goal-adjust(int);   // ± yearly reading goal (np.p5.books.stats)
-    // Continue-reading hero slider. resume/hero-detail take a hero-list index.
-    in property <[HeroRow]> hero-rows: [];
-    callback resume(int);
-    callback hero-detail(int);   // hero-list index → Rust resolves to a grid index
-    // Book detail sheet. detail.index is a grid (tile) index, so the sheet reuses
-    // open-book / fetch-meta / shelf-pick directly.
-    in property <BookDetail> detail;
-    in-out property <int> detail-idx: -1;   // -1 closed
-    callback open-detail(int);
-    callback mark-finished(int);
-    callback remove-book(int);
-    // Series drill-in strip.
-    in property <[SeriesStripRow]> series-strip: [];
-    in property <string> series-strip-title: "";
-    in property <string> series-strip-sub: "";
-    in property <int> series-strip-done: 0;
-    in property <int> series-strip-total: 0;
-    callback series-strip-open(int);
+    callback set-view-mode(string);
+    callback quick-filter(string);
+    callback genre-filter(string);
+    callback stat-card(string);
+    callback set-page(int);
+    callback set-rating(int, float);
+    callback open-author(string);
 
-    // Books accent (Play-Books blue) — shared so header chips stay on-theme.
-    property <color> accent: #1a73e8;
-    // Books follows the app light/dark theme. Light keeps the warm-paper
-    // identity (unchanged); dark uses a warm-neutral dark surface ramp.
-    property <bool> dk: Theme.dark;
-    property <color> bk-canvas: dk ? #14130f : #f5f1e8;  // page background
-    property <color> bk-bar:    dk ? #1c1a15 : #fbf9f3;  // header rows / cards / popup
-    property <color> bk-hair:   dk ? #33302a : #e7e0d0;  // hairline borders / cancel btn
-    property <color> bk-ink:    dk ? #f0ece2 : #20201c;  // primary text
-    property <color> bk-ink2:   dk ? #b0a890 : #8a8369;  // secondary text
-    property <color> bk-ink3:   dk ? #9a9382 : #6b6456;  // tertiary text
-    property <color> bk-faint:  dk ? #7d7665 : #b0a88e;  // faint label
-    property <color> bk-cover:  dk ? #2a2720 : #d8cfbb;  // cover placeholder
-    property <color> bk-hover:  dk ? #2c2922 : #efe8d8;  // row / card hover
-    property <color> bk-chiph:  dk ? #2c2922 : #e0d9c6;  // ± goal hover
-    property <color> bk-empty:  dk ? #2a2620 : #e7dcc4;  // empty-state circle
-    // Views that show the book tile grid (incl. a drilled-in shelf "col:N").
-    property <bool> grid-view: view != "series" && view != "authors" && view != "collections";
-
-    property <length> col-gap: 26px;
-    property <length> row-h: 296px;
-    property <length> cover-h: 210px;
-
-    background: bk-canvas;
+    background: BookTheme.canvas;
 
     VerticalLayout {
-        spacing: 0px;
+        padding: 24px; spacing: 20px;
 
-        // Row 1 — title · search · add · count pill (Photos two-tier pattern).
-        Rectangle {
-            height: 72px; horizontal-stretch: 1; background: bk-bar;
-            border-width: 1px; border-color: bk-hair;
-            HorizontalLayout {
-                padding-left: 28px; padding-right: 28px; spacing: 14px;
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Rectangle { width: 34px; height: 34px; border-radius: 10px;
-                        background: root.accent.with-alpha(0.16);
-                        AppIcon { source: Icons.book-open; tint: root.accent; width: 18px; height: 18px;
-                            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Text { text: "My library"; color: bk-ink; font-size: 22px; font-weight: 700; } }
-                Rectangle { horizontal-stretch: 1; }
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    HdrSearch { width: 420px; dark: Theme.dark; placeholder: "Search your books";
-                        mic-target: "books";
-                        query <=> root.query; edited(q) => { root.search(q); } } }
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    HdrChip { label: "+ Add books"; accent: root.accent; dark: Theme.dark; active: true; height: 44px; min-width: 140px;
-                        clicked => { root.add-folder(); } } }
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    CountPill { accent: root.accent; seg1: "" + item-count + " books"; } }
+        // ── header row ──────────────────────────────────────────────────────
+        HorizontalLayout {
+            spacing: 16px;
+            // badge + title
+            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                Rectangle { width: 40px; height: 40px; border-radius: 12px; background: BookTheme.tint-violet;
+                    AppIcon { source: Icons.book-open; tint: BookTheme.accent; width: 22px; height: 22px; } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                Text { text: "My Library"; color: BookTheme.ink; font-size: 26px; font-weight: 800;
+                    vertical-alignment: center; } }
+            // search pill
+            Rectangle {
+                horizontal-stretch: 1; max-width: 460px; height: 44px; border-radius: 22px;
+                background: BookTheme.pill-bg;
+                HorizontalLayout {
+                    padding-left: 16px; padding-right: 16px; spacing: 10px; alignment: start;
+                    VerticalLayout { alignment: center;
+                        AppIcon { source: Icons.search; tint: BookTheme.ink-dim; width: 18px; height: 18px; } }
+                    Rectangle {
+                        horizontal-stretch: 1;
+                        // Placeholder sits behind; input is on top in z-order.
+                        if root.search-text == "": Text { text: "Search by title, author, genre";
+                            x: 0; color: BookTheme.ink-dim; font-size: 14px;
+                            vertical-alignment: center; horizontal-alignment: left; }
+                        ti := TextInput {
+                            width: 100%; height: 100%;
+                            vertical-alignment: center;
+                            color: BookTheme.ink; font-size: 14px; single-line: true;
+                            text <=> root.search-text;
+                            edited => { root.search(self.text); }
+                            accepted => { root.search(self.text); }
+                        }
+                    }
+                    VerticalLayout { alignment: center;
+                        AppIcon { source: Icons.mic; tint: BookTheme.ink-dim; width: 18px; height: 18px; } }
+                }
             }
+            PillButton { label: "Add books"; icon: Icons.plus; filled: true;
+                clicked => { root.add-books(); } }
+            // count pill
+            Rectangle { height: 40px; border-radius: 20px; background: BookTheme.card;
+                border-width: 1.5px; border-color: BookTheme.hairline;
+                HorizontalLayout { padding-left: 16px; padding-right: 16px;
+                    Text { text: root.book-count + " books"; color: BookTheme.ink-dim;
+                        font-size: 13px; font-weight: 600; vertical-alignment: center; } } }
         }
 
-        // Hero — continue reading (np.p5.books). Cycles the most-recent
-        // unfinished books; shown only on the All tab.
-        if view == "all" && root.hero-rows.length > 0: heroC := Rectangle {
-            height: 248px; horizontal-stretch: 1; background: bk-bar; clip: true;
-            border-width: 1px; border-color: bk-hair;
-            property <int> hidx: 0;
-            property <HeroRow> h: root.hero-rows[min(self.hidx, root.hero-rows.length - 1)];
-            HorizontalLayout {
-                padding-left: 84px; padding-right: 84px; spacing: 36px; alignment: center;
-                Rectangle {
-                    width: 150px; height: 220px; border-radius: 8px; clip: true; horizontal-stretch: 0;
-                    drop-shadow-blur: 24px; drop-shadow-color: #00000055; drop-shadow-offset-y: 10px;
-                    if heroC.h.has-cover: Image { source: heroC.h.thumb; image-fit: cover; width: parent.width; height: parent.height; }
-                    if !heroC.h.has-cover: GenCover { title: heroC.h.title; author: heroC.h.author; tint: heroC.h.tint; dark: dk; width: parent.width; height: parent.height; }
+        // ── hero row ────────────────────────────────────────────────────────
+        HorizontalLayout {
+            spacing: 20px; height: 210px;
+            // continue-reading card
+            Card {
+                horizontal-stretch: 1;
+                if root.hero.present: HorizontalLayout {
+                    padding: 16px; spacing: 18px;
+                    Cover { width: 130px; source: root.hero.cover;
+                        title: root.hero.title; author: root.hero.author; hue: root.hero.hue; }
+                    VerticalLayout {
+                        alignment: center; spacing: 6px;
+                        Text { text: "CONTINUE READING"; color: BookTheme.accent; font-size: 11px;
+                            font-weight: 700; letter-spacing: 1px; }
+                        Text { text: root.hero.title; color: BookTheme.ink; font-size: 24px;
+                            font-weight: 800; overflow: elide; }
+                        Text { text: root.hero.author; color: BookTheme.ink-dim; font-size: 14px;
+                            font-weight: 500; overflow: elide; }
+                        // progress
+                        Rectangle { height: 4px; border-radius: 2px; background: BookTheme.track;
+                            Rectangle { x: 0; width: parent.width * root.hero.percent / 100; height: 4px;
+                                border-radius: 2px; background: BookTheme.accent; } }
+                        Text { color: BookTheme.ink-dim; font-size: 12px;
+                            text: "Page " + root.hero.page + " of " + root.hero.total + " • "
+                                + Math.round(root.hero.percent) + "%   " + root.hero.time-left; }
+                        HorizontalLayout {
+                            spacing: 10px; alignment: start; padding-top: 6px;
+                            PillButton { label: "Resume"; icon: Icons.book-open; filled: true;
+                                clicked => { root.resume(); } }
+                            PillButton { label: "Details";
+                                clicked => { root.hero-details(); } }
+                        }
+                    }
                 }
+                if !root.hero.present: VerticalLayout {
+                    alignment: center; spacing: 6px;
+                    HorizontalLayout { alignment: center;
+                        AppIcon { source: Icons.book-open; tint: BookTheme.ink-dim; width: 40px; height: 40px; } }
+                    Text { text: "Nothing in progress"; color: BookTheme.ink; font-size: 16px;
+                        font-weight: 700; horizontal-alignment: center; }
+                    Text { text: "Open a book to start reading"; color: BookTheme.ink-dim;
+                        font-size: 13px; horizontal-alignment: center; }
+                }
+            }
+            // stats 2×2 (fixed identities; values flow in via `stats` model).
+            Rectangle {
+                width: 520px;
                 VerticalLayout {
-                    alignment: center; spacing: 3px; horizontal-stretch: 1;
-                    Text { text: "CONTINUE READING"; color: root.accent; font-size: 11px; font-weight: 700; letter-spacing: 1.4px; }
-                    Text { text: heroC.h.title; color: bk-ink; font-family: "Georgia"; font-size: 30px; font-weight: 700; overflow: elide; }
-                    Text { text: heroC.h.author; color: bk-ink2; font-size: 14px; overflow: elide; }
-                    Rectangle { height: 10px; }
-                    Rectangle { height: 6px; width: 420px; border-radius: 3px; background: bk-hair; horizontal-stretch: 0;
-                        Rectangle { x: 0; y: 0; height: parent.height; width: parent.width * heroC.h.frac; border-radius: 3px; background: #f4b400; } }
-                    HorizontalLayout { spacing: 8px; width: 420px;
-                        Text { text: heroC.h.page-label; color: bk-ink3; font-size: 12px; }
-                        Rectangle { horizontal-stretch: 1; }
-                        Text { text: heroC.h.left-label; color: bk-ink3; font-size: 12px; } }
-                    Rectangle { height: 12px; }
-                    HorizontalLayout { spacing: 10px; alignment: start;
-                        Rectangle { width: 132px; height: 42px; border-radius: 21px; background: root.accent; horizontal-stretch: 0;
-                            TouchArea { mouse-cursor: pointer; clicked => { root.resume(heroC.h.index); } }
-                            Text { text: "▶ Resume"; color: #ffffff; font-size: 14px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
-                        Rectangle { width: 104px; height: 42px; border-radius: 21px; background: transparent; border-width: 1px; border-color: bk-hair; horizontal-stretch: 0;
-                            TouchArea { mouse-cursor: pointer; clicked => { root.hero-detail(heroC.h.index); } }
-                            Text { text: "Details"; color: bk-ink; font-size: 14px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
+                    spacing: 12px;
+                    HorizontalLayout { spacing: 12px;
+                        StatCard { horizontal-stretch: 1; label: "Total Books";
+                            value: root.stats.length > 0 ? stats[0].value : "0";
+                            tint: BookTheme.tint-violet; accent: #6c4df6; icon: Icons.book-open;
+                            clicked => { root.stat-card("total"); } }
+                        StatCard { horizontal-stretch: 1; label: "Authors";
+                            value: root.stats.length > 1 ? stats[1].value : "0";
+                            tint: BookTheme.tint-pink; accent: #e0518f; icon: Icons.user;
+                            clicked => { root.stat-card("authors"); } }
+                    }
+                    HorizontalLayout { spacing: 12px;
+                        StatCard { horizontal-stretch: 1; label: "In Progress";
+                            value: root.stats.length > 2 ? stats[2].value : "0";
+                            tint: BookTheme.tint-orange; accent: #f5a623; icon: Icons.circle;
+                            clicked => { root.stat-card("reading"); } }
+                        StatCard { horizontal-stretch: 1; label: "Completed";
+                            value: root.stats.length > 3 ? stats[3].value : "0";
+                            tint: BookTheme.tint-green; accent: #2fbf71; icon: Icons.check;
+                            clicked => { root.stat-card("finished"); } }
                     }
                 }
             }
-            if root.hero-rows.length > 1: Rectangle {
-                x: 18px; y: (parent.height - 42px) / 2; width: 42px; height: 42px; border-radius: 21px;
-                background: aprev.has-hover ? bk-hover : bk-canvas; border-width: 1px; border-color: bk-hair;
-                aprev := TouchArea { mouse-cursor: pointer; clicked => { heroC.hidx = mod(heroC.hidx - 1 + root.hero-rows.length, root.hero-rows.length); } }
-                Text { text: "‹"; color: bk-ink; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; } }
-            if root.hero-rows.length > 1: Rectangle {
-                x: parent.width - 60px; y: (parent.height - 42px) / 2; width: 42px; height: 42px; border-radius: 21px;
-                background: anext.has-hover ? bk-hover : bk-canvas; border-width: 1px; border-color: bk-hair;
-                anext := TouchArea { mouse-cursor: pointer; clicked => { heroC.hidx = mod(heroC.hidx + 1, root.hero-rows.length); } }
-                Text { text: "›"; color: bk-ink; font-size: 20px; horizontal-alignment: center; vertical-alignment: center; } }
         }
 
-        // Row 2 — view tabs · sort chips.
-        Rectangle {
-            height: 54px; horizontal-stretch: 1; background: bk-bar;
-            border-width: 1px; border-color: bk-hair;
-            HorizontalLayout {
-                padding-left: 28px; padding-right: 28px; spacing: 8px; alignment: start;
-                VerticalLayout { alignment: center; HdrChip { label: "All";       min-width: 90px;  accent: root.accent; dark: Theme.dark; active: view == "all";     clicked => { root.sel-collection = -1; root.view = "all";     root.set-view("all"); } } }
-                VerticalLayout { alignment: center; HdrChip { label: "Reading";   min-width: 90px;  accent: root.accent; dark: Theme.dark; active: view == "reading"; clicked => { root.sel-collection = -1; root.view = "reading"; root.set-view("reading"); } } }
-                VerticalLayout { alignment: center; HdrChip { label: "Unread";    min-width: 90px;  accent: root.accent; dark: Theme.dark; active: view == "unread";  clicked => { root.sel-collection = -1; root.view = "unread";  root.set-view("unread"); } } }
-                VerticalLayout { alignment: center; HdrChip { label: "Comics";    min-width: 90px;  accent: root.accent; dark: Theme.dark; active: view == "comics";  clicked => { root.sel-collection = -1; root.view = "comics";  root.set-view("comics"); } } }
-                VerticalLayout { alignment: center; HdrChip { icon: Icons.book-open; label: "Series"; min-width: 110px; accent: root.accent; dark: Theme.dark; active: view == "series";  clicked => { root.sel-collection = -1; root.view = "series";  root.set-view("series"); } } }
-                VerticalLayout { alignment: center; HdrChip { icon: Icons.user; label: "Authors"; min-width: 110px; accent: root.accent; dark: Theme.dark; active: view == "authors"; clicked => { root.sel-collection = -1; root.view = "authors"; root.set-view("authors"); } } }
-                VerticalLayout { alignment: center; HdrChip { icon: Icons.folder-open; label: "Shelves"; min-width: 110px; accent: root.accent; dark: Theme.dark; active: view == "collections" || root.sel-collection >= 0; clicked => { root.sel-collection = -1; root.view = "collections"; root.set-view("collections"); } } }
-                if root.sel-collection >= 0: VerticalLayout { alignment: center; HdrChip { icon: Icons.arrow-left; label: "Back"; min-width: 90px; accent: root.accent; dark: Theme.dark; active: false; clicked => { root.sel-collection = -1; root.view = "collections"; root.set-view("collections"); } } }
-                Rectangle { horizontal-stretch: 1; }
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Text { text: "Sort"; color: bk-ink3; font-size: 12px; vertical-alignment: center; } }
-                VerticalLayout { alignment: center; HdrChip {
-                    label: "Title";
-                    min-width: 92px; accent: root.accent; dark: Theme.dark; active: root.sort-mode == "title"; clicked => { root.set-sort("title"); } } }
-                VerticalLayout { alignment: center; HdrChip {
-                    label: "Author";
-                    min-width: 100px; accent: root.accent; dark: Theme.dark; active: root.sort-mode == "author"; clicked => { root.set-sort("author"); } } }
-                VerticalLayout { alignment: center; HdrChip {
-                    label: "Recent";
-                    min-width: 100px; accent: root.accent; dark: Theme.dark; active: root.sort-mode == "recent"; clicked => { root.set-sort("recent"); } } }
-                // Sort direction — click to flip asc/desc on the active sort.
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Rectangle { width: 28px; height: 28px; border-radius: 14px;
-                        background: dirta.has-hover ? bk-hover : transparent;
-                        dirta := TouchArea { mouse-cursor: pointer; clicked => { root.set-sort(root.sort-mode); } }
-                        Text { text: root.sort-dir == "desc" ? "▼" : "▲"; color: root.accent; font-size: 11px;
-                            horizontal-alignment: center; vertical-alignment: center; } } }
-            }
-        }
-
-        // Stats chip-card row — goal ring, time read, streak, in progress
-        // (np.p5.books.stats). ± nudges the yearly goal. Shown on the All tab.
-        if view == "all" && root.goal-total > 0: Rectangle {
-            height: 76px; horizontal-stretch: 1; background: bk-canvas;
-            HorizontalLayout {
-                padding-left: 28px; padding-right: 28px; padding-top: 14px; padding-bottom: 10px;
-                spacing: 12px; alignment: start;
-                // Goal card — ring + fraction + ± adjust.
-                Rectangle {
-                    horizontal-stretch: 0; border-radius: 14px; background: bk-bar;
-                    border-width: 1px; border-color: bk-hair;
+        // ── main row ────────────────────────────────────────────────────────
+        HorizontalLayout {
+            spacing: 20px; vertical-stretch: 1;
+            // left: toolbar + grid + pagination
+            VerticalLayout {
+                horizontal-stretch: 1; spacing: 16px;
+                // toolbar card
+                Card {
+                    height: 60px;
                     HorizontalLayout {
-                        padding-left: 12px; padding-right: 14px; spacing: 10px; alignment: center;
-                        ring := Rectangle {
-                            width: 40px; height: 40px;
-                            property <float> frac: root.goal-done / max(1, root.goal-total);
-                            Path {
-                                width: 40px; height: 40px; viewbox-width: 40; viewbox-height: 40;
-                                stroke: bk-hair; stroke-width: 4px; fill: transparent;
-                                MoveTo { x: 20; y: 4; }
-                                ArcTo { x: 20; y: 36; radius-x: 16; radius-y: 16; large-arc: true; sweep: true; }
-                                ArcTo { x: 20; y: 4;  radius-x: 16; radius-y: 16; large-arc: true; sweep: true; }
-                            }
-                            if ring.frac > 0.001: Path {
-                                width: 40px; height: 40px; viewbox-width: 40; viewbox-height: 40;
-                                stroke: root.accent; stroke-width: 4px; fill: transparent;
-                                MoveTo { x: 20; y: 4; }
-                                ArcTo {
-                                    x: 20 + 16 * sin(ring.frac * 360deg);
-                                    y: 20 - 16 * cos(ring.frac * 360deg);
-                                    radius-x: 16; radius-y: 16;
-                                    large-arc: ring.frac > 0.5; sweep: true;
-                                }
-                            }
-                        }
-                        VerticalLayout { alignment: center; spacing: 1px;
-                            Text { text: root.goal-done + " / " + root.goal-total; color: bk-ink; font-size: 17px; font-weight: 700; }
-                            Text { text: "2026 goal"; color: bk-ink3; font-size: 11px; } }
-                        VerticalLayout { alignment: center; spacing: 3px;
-                            Rectangle { width: 22px; height: 22px; border-radius: 11px;
-                                background: gp2.has-hover ? bk-chiph : transparent;
-                                border-width: 1px; border-color: bk-hair;
-                                gp2 := TouchArea { mouse-cursor: pointer; clicked => { root.goal-adjust(1); } }
-                                AppIcon { source: Icons.plus; tint: bk-ink2; width: 11px; height: 11px; } }
-                            Rectangle { width: 22px; height: 22px; border-radius: 11px;
-                                background: gm2.has-hover ? bk-chiph : transparent;
-                                border-width: 1px; border-color: bk-hair;
-                                gm2 := TouchArea { mouse-cursor: pointer; clicked => { root.goal-adjust(-1); } }
-                                Text { text: "−"; color: bk-ink2; font-size: 13px; horizontal-alignment: center; vertical-alignment: center; } } }
-                    }
-                }
-                if root.stat-time != "": Rectangle {
-                    horizontal-stretch: 0; border-radius: 14px; background: bk-bar; border-width: 1px; border-color: bk-hair;
-                    HorizontalLayout { padding-left: 16px; padding-right: 16px; alignment: center;
-                        VerticalLayout { alignment: center; spacing: 1px;
-                            Text { text: root.stat-time; color: bk-ink; font-size: 17px; font-weight: 700; }
-                            Text { text: "Time read"; color: bk-ink3; font-size: 11px; } } } }
-                if root.streak-days > 0: Rectangle {
-                    horizontal-stretch: 0; border-radius: 14px; background: bk-bar; border-width: 1px; border-color: bk-hair;
-                    HorizontalLayout { padding-left: 16px; padding-right: 16px; alignment: center;
-                        VerticalLayout { alignment: center; spacing: 1px;
-                            Text { text: root.streak-days + (root.streak-days == 1 ? " day" : " days"); color: bk-ink; font-size: 17px; font-weight: 700; }
-                            Text { text: "Streak"; color: bk-ink3; font-size: 11px; } } } }
-                Rectangle {
-                    horizontal-stretch: 0; border-radius: 14px; background: bk-bar; border-width: 1px; border-color: bk-hair;
-                    HorizontalLayout { padding-left: 16px; padding-right: 16px; alignment: center;
-                        VerticalLayout { alignment: center; spacing: 1px;
-                            Text { text: root.in-progress-count + ""; color: bk-ink; font-size: 17px; font-weight: 700; }
-                            Text { text: "In progress"; color: bk-ink3; font-size: 11px; } } } }
-                Rectangle { horizontal-stretch: 1; }
-                if root.export-status != "": VerticalLayout { alignment: center;
-                    Text { text: root.export-status; color: root.accent; font-size: 12px; overflow: elide; } }
-            }
-        }
-
-        // ── SERIES GRID ──────────────────────────────────────────────────────
-        if view == "series": ScrollView {
-            vertical-stretch: 1; horizontal-stretch: 1;
-            VerticalLayout {
-                padding-left: 32px; padding-right: 32px; padding-top: 22px; padding-bottom: 36px;
-                Rectangle {
-                    horizontal-stretch: 1;
-                    property <int> cols: max(2, floor(self.width / 176px));
-                    property <length> scell: (self.width - (cols - 1) * col-gap) / cols;
-                    height: ceil(root.series.length / cols) * 230px;
-                    for s[sidx] in root.series: Rectangle {
-                        x: mod(sidx, parent.cols) * (parent.scell + col-gap);
-                        y: floor(sidx / parent.cols) * 230px;
-                        width: parent.scell; height: 230px;
-                        VerticalLayout {
-                            spacing: 6px;
-                            // Cover
+                        padding-left: 14px; padding-right: 14px; spacing: 8px;
+                        // Status chips.
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            FilterChip { label: "All"; active: root.active-quick == "all" || root.active-quick == "";
+                                clicked => { root.quick-filter("all"); } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            FilterChip { label: "Reading"; active: root.active-quick == "reading";
+                                clicked => { root.quick-filter("reading"); } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            FilterChip { label: "Unread"; active: root.active-quick == "unread";
+                                clicked => { root.quick-filter("unread"); } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            FilterChip { label: "Favorites"; active: root.active-quick == "favorites";
+                                clicked => { root.quick-filter("favorites"); } } }
+                        Rectangle { horizontal-stretch: 1; }
+                        // File type dropdown.
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Text { text: "File type"; color: BookTheme.ink-dim; font-size: 12px; vertical-alignment: center; } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            ComboBox {
+                                model: root.file-type-options;
+                                selected(v) => { root.set-file-type(v); }
+                            } }
+                        // Sort dropdown.
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Text { text: "Sort by"; color: BookTheme.ink-dim; font-size: 12px; vertical-alignment: center; } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            ComboBox {
+                                model: root.sort-options;
+                                selected(v) => { root.set-sort(v); }
+                            } }
+                        // View toggle.
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            HorizontalLayout { spacing: 2px;
+                                grid-btn := Rectangle { width: 34px; height: 34px; border-radius: 8px;
+                                    background: root.view-mode == "grid" ? BookTheme.tint-violet : transparent;
+                                    AppIcon { source: Icons.layout-grid;
+                                        tint: root.view-mode == "grid" ? BookTheme.accent : BookTheme.ink-dim;
+                                        width: 18px; height: 18px; }
+                                    TouchArea { mouse-cursor: pointer; clicked => { root.set-view-mode("grid"); } } }
+                                list-btn := Rectangle { width: 34px; height: 34px; border-radius: 8px;
+                                    background: root.view-mode == "list" ? BookTheme.tint-violet : transparent;
+                                    AppIcon { source: Icons.list-music;
+                                        tint: root.view-mode == "list" ? BookTheme.accent : BookTheme.ink-dim;
+                                        width: 18px; height: 18px; }
+                                    TouchArea { mouse-cursor: pointer; clicked => { root.set-view-mode("list"); } } }
+                            } }
+                        // Filters button.
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
                             Rectangle {
-                                width: 160px; height: 200px;
-                                x: (parent.width - self.width) / 2;
-                                border-radius: 10px; clip: true;
-                                background: bk-cover;
-                                drop-shadow-blur: ssta.has-hover ? 18px : 8px;
-                                drop-shadow-color: #00000040;
-                                drop-shadow-offset-y: 4px;
-                                Image { source: s.cover; image-fit: cover; width: parent.width; height: parent.height; }
-                                ssta := TouchArea { mouse-cursor: pointer; clicked => { root.series-open(s.id); } }
-                            }
-                            Text { text: s.name; color: bk-ink; font-size: 14px; font-weight: 700;
-                                overflow: elide; horizontal-alignment: center; }
-                            Text { text: s.book-count + " books"; color: bk-ink2; font-size: 11px;
-                                horizontal-alignment: center; }
-                        }
+                                height: 36px; border-radius: 18px; background: fta.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                                border-width: 1.5px; border-color: BookTheme.accent.with-alpha(0.35);
+                                HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 6px; alignment: center;
+                                    VerticalLayout { alignment: center;
+                                        AppIcon { source: Icons.sliders; tint: BookTheme.accent; width: 15px; height: 15px; } }
+                                    Text { text: "Filters"; color: BookTheme.accent; font-size: 13px; font-weight: 700; vertical-alignment: center; } }
+                                fta := TouchArea { mouse-cursor: pointer; }
+                            } }
                     }
                 }
-            }
-        }
-
-        // ── AUTHORS GRID (np.p4.books.library — author pages) ───────────────
-        if view == "authors": ScrollView {
-            vertical-stretch: 1; horizontal-stretch: 1;
-            VerticalLayout {
-                padding-left: 32px; padding-right: 32px; padding-top: 22px; padding-bottom: 36px;
-                Rectangle {
-                    horizontal-stretch: 1;
-                    property <int> cols: max(2, floor(self.width / 216px));
-                    property <length> acell: (self.width - (cols - 1) * col-gap) / cols;
-                    height: ceil(root.authors.length / cols) * 150px;
-                    for a[aidx] in root.authors: Rectangle {
-                        x: mod(aidx, parent.cols) * (parent.acell + col-gap);
-                        y: floor(aidx / parent.cols) * 150px;
-                        width: parent.acell; height: 136px;
-                        border-radius: 14px;
-                        background: asta.has-hover ? bk-hover : bk-bar;
-                        border-width: 1px; border-color: bk-hair;
-                        asta := TouchArea { mouse-cursor: pointer;
-                            // Author page = the library filtered to this author.
-                            clicked => { root.sel-collection = -1; root.view = "all"; root.query = a.name; root.search(a.name); root.set-view("all"); } }
-                        VerticalLayout {
+                // Author page banner (shown when filtered to one author).
+                if root.active-author != "": HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Rectangle { width: 40px; height: 40px; border-radius: 20px; background: BookTheme.tint-pink;
+                            AppIcon { source: Icons.user; tint: #e0518f; width: 20px; height: 20px; } } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 1px;
+                        Text { text: "Books by " + root.active-author; color: BookTheme.ink;
+                            font-size: 20px; font-weight: 800; overflow: elide; }
+                        Text { text: root.book-count + (root.book-count == 1 ? " book" : " books");
+                            color: BookTheme.ink-dim; font-size: 12px; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Rectangle {
+                            height: 38px; border-radius: 19px; background: cba.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                            border-width: 1.5px; border-color: BookTheme.hairline;
+                            HorizontalLayout { padding-left: 14px; padding-right: 16px; spacing: 6px; alignment: center;
+                                VerticalLayout { alignment: center;
+                                    AppIcon { source: Icons.x; tint: BookTheme.ink-dim; width: 14px; height: 14px; } }
+                                Text { text: "All books"; color: BookTheme.ink; font-size: 13px;
+                                    font-weight: 600; vertical-alignment: center; } }
+                            cba := TouchArea { mouse-cursor: pointer; clicked => { root.open-author(""); } }
+                        } }
+                }
+                // grid (scrollable)
+                sv := ScrollView {
+                    vertical-stretch: 1;
+                    // Reset scroll to top when the page changes (ScrollView keeps a
+                    // stale viewport-y otherwise).
+                    property <int> watch-page: root.page;
+                    changed watch-page => { sv.viewport-y = 0; }
+                    grid := Rectangle {
+                        property <length> gap: 14px;
+                        property <length> cell-w: 316px;
+                        property <int> cols: Math.max(1, Math.floor((self.width + gap) / (cell-w + gap)));
+                        property <length> cell-h: 134px;
+                        width: sv.visible-width;
+                        height: Math.ceil(tiles.length / cols) * (cell-h + gap);
+                        for tile[idx] in root.tiles: GridTile {
+                            x: Math.mod(idx, grid.cols) * (grid.cell-w + grid.gap);
+                            y: Math.floor(idx / grid.cols) * (grid.cell-h + grid.gap);
+                            width: grid.cell-w; height: grid.cell-h;
+                            tile: tile;
+                            open => { root.open-details(tile.id); }
+                            favorite => { root.toggle-favorite(tile.id); }
+                            menu => { root.card-menu-action(tile.id, "menu"); }
+                            rate(v) => { root.set-rating(tile.id, v); }
+                            open-author => { root.open-author(tile.author); }
+                        }
+                        if tiles.length == 0: VerticalLayout {
                             alignment: center; spacing: 8px;
                             HorizontalLayout { alignment: center;
-                                Rectangle { width: 56px; height: 56px; border-radius: 28px; background: #1a73e8;
-                                    AppIcon { source: Icons.user; tint: #ffffff; width: 24px; height: 24px; } } }
-                            Text { text: a.name == "" ? "Unknown author" : a.name; color: bk-ink; font-size: 13px; font-weight: 700;
-                                overflow: elide; horizontal-alignment: center; }
-                            Text { text: a.book-count + (a.book-count == 1 ? " book" : " books"); color: bk-ink2; font-size: 11px;
-                                horizontal-alignment: center; }
+                                AppIcon { source: root.filtered ? Icons.search : Icons.book-open;
+                                    tint: BookTheme.ink-dim; width: 48px; height: 48px; } }
+                            Text {
+                                text: root.filtered ? "No books match your filters" : "No books here";
+                                color: BookTheme.ink; font-size: 16px;
+                                font-weight: 700; horizontal-alignment: center; }
+                            Text {
+                                text: root.filtered ? "Try clearing a filter or search"
+                                    : "Add a folder to start your library";
+                                color: BookTheme.ink-dim; font-size: 13px; horizontal-alignment: center; }
                         }
                     }
                 }
+                // pagination
+                if root.page-count > 1: HorizontalLayout {
+                    alignment: center; spacing: 12px;
+                    prev := Rectangle { width: 36px; height: 36px; border-radius: 18px;
+                        background: root.page > 1 ? BookTheme.card : BookTheme.pill-bg;
+                        border-width: 1px; border-color: BookTheme.hairline;
+                        AppIcon { source: Icons.chevron-left; tint: BookTheme.ink; width: 18px; height: 18px; }
+                        TouchArea { mouse-cursor: pointer;
+                            clicked => { if (root.page > 1) { root.set-page(root.page - 1); } } } }
+                    Text { text: root.page + " / " + root.page-count; color: BookTheme.ink;
+                        font-size: 14px; font-weight: 600; vertical-alignment: center; }
+                    next := Rectangle { width: 36px; height: 36px; border-radius: 18px;
+                        background: root.page < root.page-count ? BookTheme.card : BookTheme.pill-bg;
+                        border-width: 1px; border-color: BookTheme.hairline;
+                        AppIcon { source: Icons.chevron-right; tint: BookTheme.ink; width: 18px; height: 18px; }
+                        TouchArea { mouse-cursor: pointer;
+                            clicked => { if (root.page < root.page-count) { root.set-page(root.page + 1); } } } }
+                }
             }
-        }
-
-        // ── SHELVES (collections) GRID ───────────────────────────────────────
-        if view == "collections": ScrollView {
-            vertical-stretch: 1; horizontal-stretch: 1;
-            VerticalLayout {
-                padding-left: 32px; padding-right: 32px; padding-top: 22px; padding-bottom: 36px;
-                Rectangle {
-                    horizontal-stretch: 1;
-                    property <int> cols: max(2, floor(self.width / 176px));
-                    property <length> ccell: (self.width - (cols - 1) * col-gap) / cols;
-                    height: ceil(root.collections.length / cols) * 230px;
-                    for c[cidx] in root.collections: Rectangle {
-                        x: mod(cidx, parent.cols) * (parent.ccell + col-gap);
-                        y: floor(cidx / parent.cols) * 230px;
-                        width: parent.ccell; height: 230px;
+            // right rail
+            Card {
+                width: 300px;
+                ScrollView {
+                    VerticalLayout {
+                        padding: 18px; spacing: 20px; alignment: start;
+                        RailBlock { title: "QUICK FILTERS";
+                            for q[i] in root.quick-filters: RailRow {
+                                label: q.label; count: q.count; active: root.active-quick == q.key;
+                                icon: q.key == "reading" ? Icons.book-open
+                                    : q.key == "finished" ? Icons.check
+                                    : q.key == "unread" ? Icons.circle
+                                    : q.key == "favorites" ? Icons.star
+                                    : Icons.layout-grid;
+                                icon-tint: q.key == "reading" ? #3a86ff
+                                    : q.key == "finished" ? #2fbf71
+                                    : q.key == "favorites" ? #f5a623
+                                    : BookTheme.accent;
+                                clicked => { root.quick-filter(q.key); } } }
+                        RailBlock { title: "FILE TYPES";
+                            for ft[i] in root.file-types: RailRow {
+                                label: ft.label; count: ft.count; active: root.active-file-type == ft.key;
+                                icon: Icons.book-open; icon-tint: BookTheme.accent;
+                                clicked => { root.set-file-type(ft.key); } } }
+                        // Genres — colored chips + "View all".
                         VerticalLayout {
                             spacing: 6px;
-                            Rectangle {
-                                width: 160px; height: 200px;
-                                x: (parent.width - self.width) / 2;
-                                border-radius: 10px; clip: true;
-                                background: bk-cover;
-                                drop-shadow-blur: csta.has-hover ? 18px : 8px;
-                                drop-shadow-color: #00000040;
-                                drop-shadow-offset-y: 4px;
-                                Image { source: c.cover; image-fit: cover; width: parent.width; height: parent.height; }
-                                if c.book-count == 0: AppIcon { source: Icons.folder-open; width: 40px; height: 40px; }
-                                csta := TouchArea { mouse-cursor: pointer;
-                                    clicked => { root.sel-collection = c.id; root.collection-open(c.id); } }
-                            }
-                            Text { text: c.name; color: bk-ink; font-size: 14px; font-weight: 700;
-                                overflow: elide; horizontal-alignment: center; }
-                            Text { text: c.book-count + " books"; color: bk-ink2; font-size: 11px;
-                                horizontal-alignment: center; }
-                        }
-                    }
-                }
-            }
-        }
-
-        if view == "collections" && root.collections.length == 0: Rectangle {
-            vertical-stretch: 1; horizontal-stretch: 1;
-            VerticalLayout {
-                alignment: center; spacing: 14px;
-                HorizontalLayout { alignment: center;
-                    Rectangle { width: 96px; height: 96px; border-radius: 16px; background: bk-empty;
-                        AppIcon { source: Icons.folder-open; width: 42px; height: 42px; } } }
-                Text { text: "No shelves yet"; color: bk-ink; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
-                Text { text: "Hover a book cover and hit + to file it on a shelf."; color: bk-ink3; font-size: 13px; horizontal-alignment: center; }
-            }
-        }
-
-        // ── BOOK TILE GRID (all / reading / unread / comics / shelf drill-in) ─
-        if grid-view && tiles.length > 0: ScrollView {
-            vertical-stretch: 1; horizontal-stretch: 1;
-            VerticalLayout {
-                padding-left: 32px; padding-right: 32px; padding-top: 22px; padding-bottom: 36px;
-                spacing: 8px;
-                // Series drill-in strip — reading-order row for an opened series.
-                if root.series-strip.length > 0: Rectangle {
-                    height: 258px; border-radius: 16px; background: bk-bar;
-                    border-width: 1px; border-color: bk-hair;
-                    VerticalLayout {
-                        padding: 18px; spacing: 12px;
-                        HorizontalLayout {
-                            spacing: 12px;
-                            Text { text: root.series-strip-title; color: bk-ink; font-family: "Georgia"; font-size: 18px; font-weight: 700; vertical-alignment: center; }
-                            Text { text: root.series-strip-sub; color: bk-ink3; font-size: 12px; vertical-alignment: center; }
-                            Rectangle { horizontal-stretch: 1; }
-                            Text { text: root.series-strip-done + " of " + root.series-strip-total + " finished"; color: bk-ink3; font-size: 12px; vertical-alignment: center; }
-                            Rectangle { width: 110px; height: 5px; y: (parent.height - self.height)/2; border-radius: 3px; background: bk-hair;
-                                Rectangle { x: 0; y: 0; height: parent.height; width: root.series-strip-total > 0 ? parent.width * root.series-strip-done / root.series-strip-total : 0; border-radius: 3px; background: root.accent; } }
-                        }
-                        ScrollView {
-                            vertical-stretch: 1;
-                            Rectangle {
-                                width: root.series-strip.length * 156px; height: 186px;
-                                for b[i] in root.series-strip: Rectangle {
-                                    x: i * 156px; width: 138px; height: 186px;
-                                    VerticalLayout {
-                                        spacing: 6px;
-                                        Rectangle {
-                                            width: 138px; height: 150px; border-radius: 6px; clip: true; background: bk-cover;
-                                            drop-shadow-blur: 8px; drop-shadow-color: #00000040; drop-shadow-offset-y: 4px;
-                                            if b.has-cover: Image { source: b.thumb; image-fit: cover; width: parent.width; height: parent.height; }
-                                            if !b.has-cover: GenCover { title: b.title; author: ""; tint: b.tint; dark: dk; width: parent.width; height: parent.height; }
-                                            Rectangle { x: 0; y: 0; width: 6px; height: parent.height; background: #00000030; }
-                                            // #n badge
-                                            Rectangle { x: 8px; y: parent.height - 26px; width: 30px; height: 18px; border-radius: 9px; background: #000000a8;
-                                                Text { text: "#" + b.num; color: #fff; font-size: 10px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
-                                            if b.next-up: Rectangle { x: parent.width - 62px; y: 7px; width: 54px; height: 18px; border-radius: 9px; background: #f4b400;
-                                                Text { text: "Next up"; color: #3a2f00; font-size: 10px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
-                                            if b.finished: Rectangle { x: parent.width - 28px; y: 7px; width: 20px; height: 20px; border-radius: 10px; background: root.accent;
-                                                AppIcon { source: Icons.check; tint: #fff; width: 12px; height: 12px; } }
-                                            if b.frac > 0.001 && !b.finished: Rectangle { x: 0; y: parent.height - 5px; width: parent.width; height: 5px; background: #00000033;
-                                                Rectangle { x: 0; y: 0; height: parent.height; width: parent.width * b.frac; background: #f4b400; } }
-                                            stta := TouchArea { mouse-cursor: pointer; clicked => { root.series-strip-open(b.index); } }
-                                        }
-                                        Text { text: b.title; color: bk-ink; font-size: 12px; font-weight: 600; overflow: elide; horizontal-alignment: center; }
-                                        Text { text: b.status; color: bk-ink2; font-size: 11px; overflow: elide; horizontal-alignment: center; }
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-                Rectangle {
-                    horizontal-stretch: 1;
-                    property <int> cols: max(2, floor(self.width / 168px));
-                    property <length> cell: (self.width - (cols - 1) * col-gap) / cols;
-                    height: ceil(tiles.length / cols) * row-h;
-                    for tile[idx] in root.tiles: Rectangle {
-                        x: mod(idx, parent.cols) * (parent.cell + col-gap);
-                        y: floor(idx / parent.cols) * row-h;
-                        width: parent.cell; height: row-h;
-                        VerticalLayout {
-                            spacing: 8px;
-                            // cover
-                            Rectangle {
-                                width: parent.width * 0.86; height: cover-h;
-                                x: (parent.width - self.width) / 2;
-                                border-radius: 5px; clip: true;
-                                background: bk-cover;
-                                drop-shadow-blur: ta.has-hover ? 20px : 9px;
-                                drop-shadow-color: #00000044;
-                                drop-shadow-offset-y: 6px;
-                                if tile.has-cover: Image { source: tile.thumb; image-fit: cover; width: parent.width; height: parent.height; }
-                                if !tile.has-cover: GenCover { title: tile.title; author: tile.author; tint: tile.tint; dark: dk; width: parent.width; height: parent.height; }
-                                // spine shading
-                                Rectangle { x: 0; y: 0; width: 6px; height: parent.height; background: #00000030; }
-                                // format chip
-                                Rectangle {
-                                    x: parent.width - self.width - 6px; y: 6px;
-                                    width: fmt.preferred-width + 12px; height: 18px; border-radius: 9px;
-                                    background: #000000aa;
-                                    fmt := Text { text: tile.format; color: #fff; font-size: 9px; font-weight: 700;
-                                        horizontal-alignment: center; vertical-alignment: center; }
-                                }
-                                // finished tick
-                                if tile.finished: Rectangle {
-                                    x: 6px; y: 6px; width: 22px; height: 22px; border-radius: 11px; background: #1a73e8;
-                                    AppIcon { source: Icons.check; tint: #fff; width: 13px; height: 13px; }
-                                }
-                                // progress bar
-                                if tile.progress > 0.001 && !tile.finished: Rectangle {
-                                    x: 0; y: parent.height - 5px; width: parent.width; height: 5px; background: #00000033;
-                                    Rectangle { x: 0; y: 0; height: parent.height; width: parent.width * tile.progress;
-                                        background: #f4b400; }
-                                }
-                                ta := TouchArea { mouse-cursor: pointer; clicked => { root.open-detail(tile.index); } }
-                                // Hover actions — declared after `ta` so they sit
-                                // above it in z-order and actually receive clicks.
-                                // fetch-meta (top) + add-to-shelf (below).
-                                if ta.has-hover: Rectangle {
-                                    x: parent.width - 32px; y: 28px;
-                                    width: 26px; height: 26px; border-radius: 13px;
-                                    background: #000000a8;
-                                    TouchArea { mouse-cursor: pointer;
-                                        clicked => { root.fetch-meta(tile.index); } }
-                                    Text { text: "⊕"; color: #ffffff; font-size: 13px;
-                                        horizontal-alignment: center; vertical-alignment: center; }
-                                }
-                                if ta.has-hover: Rectangle {
-                                    x: parent.width - 32px; y: 58px;
-                                    width: 26px; height: 26px; border-radius: 13px;
-                                    background: #000000a8;
-                                    TouchArea { mouse-cursor: pointer;
-                                        clicked => { root.shelf-pick-idx = tile.index; } }
-                                    AppIcon { source: Icons.plus; tint: #ffffff; width: 13px; height: 13px; }
-                                }
-                            }
-                            Text { text: tile.title; color: bk-ink; font-size: 12px; font-weight: 600; overflow: elide;
-                                horizontal-alignment: center; }
-                            Text { text: tile.author; color: bk-ink2; font-size: 10px; overflow: elide;
-                                horizontal-alignment: center; }
-                        }
-                    }
-                }
-            }
-        }
-
-        if grid-view && tiles.length == 0: Rectangle {
-            vertical-stretch: 1; horizontal-stretch: 1;
-            VerticalLayout {
-                alignment: center; spacing: 14px;
-                HorizontalLayout { alignment: center;
-                    Rectangle { width: 96px; height: 96px; border-radius: 16px; background: bk-empty;
-                        AppIcon { source: Icons.book-open; width: 42px; height: 42px; } } }
-                Text { text: view == "all" ? "Your shelves are empty" : "Nothing here yet"; color: bk-ink; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
-                Text { text: "Add a folder with EPUB, CBZ, CBR, PDF, MOBI, AZW3 or FB2 files to build your reading library."; color: bk-ink3; font-size: 13px; horizontal-alignment: center; }
-                HorizontalLayout { alignment: center;
-                    Rectangle { width: 150px; height: 42px; border-radius: 21px; background: #1a73e8;
-                        horizontal-stretch: 0; vertical-stretch: 0;
-                        TouchArea { mouse-cursor: pointer; clicked => { root.add-folder(); } }
-                        Text { text: "+ Add books"; color: #ffffff; font-size: 13px; font-weight: 600;
-                            horizontal-alignment: center; vertical-alignment: center; } } }
-            }
-        }
-
-        if view == "series" && root.series.length == 0: Rectangle {
-            vertical-stretch: 1; horizontal-stretch: 1;
-            VerticalLayout {
-                alignment: center; spacing: 14px;
-                HorizontalLayout { alignment: center;
-                    Rectangle { width: 96px; height: 96px; border-radius: 16px; background: bk-empty;
-                        AppIcon { source: Icons.book-open; width: 42px; height: 42px; } } }
-                Text { text: "No series found"; color: bk-ink; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
-                Text { text: "Series are detected automatically from your book metadata."; color: bk-ink3; font-size: 13px; horizontal-alignment: center; }
-            }
-        }
-    }
-
-    // ── Book detail sheet (np.p4.books) ──────────────────────────────────────
-    if root.detail-idx >= 0: Rectangle {
-        background: #00000073;
-        TouchArea { clicked => { root.detail-idx = -1; } }
-        Rectangle {
-            x: (parent.width - 660px) / 2; y: (parent.height - 430px) / 2;
-            width: 660px; height: 430px; background: bk-bar; border-radius: 18px;
-            border-width: 1px; border-color: bk-hair;
-            drop-shadow-blur: 40px; drop-shadow-color: #00000066; drop-shadow-offset-y: 14px;
-            TouchArea { }  // swallow inside clicks
-            HorizontalLayout {
-                padding: 26px; spacing: 24px;
-                Rectangle {
-                    width: 172px; height: 258px; border-radius: 8px; clip: true; background: bk-cover; horizontal-stretch: 0;
-                    drop-shadow-blur: 20px; drop-shadow-color: #00000055; drop-shadow-offset-y: 8px;
-                    if root.detail.has-cover: Image { source: root.detail.thumb; image-fit: cover; width: parent.width; height: parent.height; }
-                    if !root.detail.has-cover: GenCover { title: root.detail.title; author: root.detail.author; tint: root.detail.tint; dark: dk; width: parent.width; height: parent.height; }
-                }
-                VerticalLayout {
-                    spacing: 6px; horizontal-stretch: 1;
-                    Text { text: root.detail.eyebrow; color: root.accent; font-size: 11px; font-weight: 700; letter-spacing: 1.2px; }
-                    Text { text: root.detail.title; color: bk-ink; font-family: "Georgia"; font-size: 24px; font-weight: 700; wrap: word-wrap; }
-                    Text { text: root.detail.author; color: bk-ink2; font-size: 14px; }
-                    HorizontalLayout {
-                        spacing: 6px; alignment: start;
-                        for c in [root.detail.format, root.detail.size, root.detail.pages, root.detail.shelf]: Rectangle {
-                            horizontal-stretch: 0; height: 22px; border-radius: 10px; border-width: 1px; border-color: bk-hair;
-                            HorizontalLayout { padding-left: 10px; padding-right: 10px;
-                                Text { text: c; color: bk-ink3; font-size: 11px; font-weight: 600; vertical-alignment: center; } }
-                        }
-                    }
-                    Text { text: root.detail.desc; color: bk-ink3; font-size: 13px; wrap: word-wrap; }
-                    if root.detail.has-progress: Rectangle {
-                        height: 6px; border-radius: 3px; background: bk-hair;
-                        Rectangle { x: 0; y: 0; height: parent.height; width: parent.width * root.detail.frac; border-radius: 3px; background: #f4b400; } }
-                    if root.detail.has-progress: HorizontalLayout {
-                        Text { text: root.detail.page-label; color: bk-ink3; font-size: 12px; }
-                        Rectangle { horizontal-stretch: 1; }
-                        Text { text: root.detail.left-label; color: bk-ink3; font-size: 12px; } }
-                    Rectangle { vertical-stretch: 1; }
-                    HorizontalLayout {
-                        spacing: 8px; alignment: start;
-                        Rectangle { horizontal-stretch: 0; width: 96px; height: 36px; border-radius: 18px; background: root.accent;
-                            TouchArea { mouse-cursor: pointer; clicked => { root.detail-idx = -1; root.open-book(root.detail.index); } }
-                            Text { text: "▶ Read"; color: #fff; font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
-                        Rectangle { horizontal-stretch: 0; width: 122px; height: 36px; border-radius: 18px; background: transparent; border-width: 1px; border-color: bk-hair;
-                            TouchArea { mouse-cursor: pointer; clicked => { root.mark-finished(root.detail.index); root.detail-idx = -1; } }
-                            Text { text: "✓ Mark finished"; color: bk-ink; font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
-                        Rectangle { horizontal-stretch: 0; width: 82px; height: 36px; border-radius: 18px; background: transparent; border-width: 1px; border-color: bk-hair;
-                            TouchArea { mouse-cursor: pointer; clicked => { root.shelf-pick-idx = root.detail.index; } }
-                            Text { text: "+ Shelf"; color: bk-ink; font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
-                        Rectangle { horizontal-stretch: 0; width: 60px; height: 36px; border-radius: 18px; background: transparent; border-width: 1px; border-color: bk-hair;
-                            TouchArea { mouse-cursor: pointer; clicked => { root.fetch-meta(root.detail.index); } }
-                            Text { text: "⊛ Meta"; color: bk-ink; font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
-                        Rectangle { horizontal-stretch: 0; width: 82px; height: 36px; border-radius: 18px; background: transparent; border-width: 1px; border-color: #c0392b59;
-                            TouchArea { mouse-cursor: pointer; clicked => { root.remove-book(root.detail.index); root.detail-idx = -1; } }
-                            Text { text: "Remove"; color: #c0392b; font-size: 13px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } }
-                    }
-                }
-            }
-            Rectangle { x: parent.width - 44px; y: 12px; width: 32px; height: 32px; border-radius: 16px;
-                background: sx.has-hover ? bk-hover : transparent;
-                sx := TouchArea { mouse-cursor: pointer; clicked => { root.detail-idx = -1; } }
-                Text { text: "✕"; color: bk-ink2; font-size: 14px; horizontal-alignment: center; vertical-alignment: center; } }
-        }
-    }
-
-    // ── Add-to-shelf popup (np.p4.books.library — collections) ───────────────
-    if root.shelf-pick-idx >= 0: Rectangle {
-        background: #00000055;
-        TouchArea { clicked => { root.shelf-pick-idx = -1; } }
-        Rectangle {
-            x: (parent.width - 380px) / 2; y: (parent.height - 360px) / 2;
-            width: 380px; height: 360px;
-            background: bk-bar; border-radius: 16px;
-            border-width: 1px; border-color: bk-hair;
-            drop-shadow-blur: 28px; drop-shadow-color: #00000050; drop-shadow-offset-y: 8px;
-            TouchArea { } // swallow clicks inside the card
-            VerticalLayout {
-                padding: 18px; spacing: 12px;
-                Text { text: "Add to shelf"; color: bk-ink; font-size: 17px; font-weight: 700; }
-                // Existing shelves
-                ScrollView {
-                    vertical-stretch: 1;
-                    VerticalLayout {
-                        spacing: 6px;
-                        for c in root.collections: Rectangle {
-                            height: 38px; border-radius: 10px;
-                            background: pta.has-hover ? bk-hover : transparent;
-                            pta := TouchArea { mouse-cursor: pointer;
-                                clicked => { root.add-to-collection(root.shelf-pick-idx, c.name); root.shelf-pick-idx = -1; } }
                             HorizontalLayout {
-                                padding-left: 10px; padding-right: 10px; spacing: 8px;
-                                Text { text: c.name; color: bk-ink; font-size: 13px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
-                                Text { text: c.book-count + ""; color: bk-ink2; font-size: 12px; vertical-alignment: center; }
+                                Text { text: "GENRES"; color: BookTheme.ink-dim; font-size: 11px;
+                                    font-weight: 700; letter-spacing: 0.6px; horizontal-stretch: 1;
+                                    vertical-alignment: center; }
+                                Text { text: "View all"; color: BookTheme.accent; font-size: 11px;
+                                    font-weight: 700; vertical-alignment: center; }
                             }
+                            for g[i] in root.genres: GenreChip {
+                                label: g.label; count: g.count; active: root.active-genre == g.key;
+                                hue: root.genre-hues[Math.mod(i, root.genre-hues.length)];
+                                clicked => { root.genre-filter(g.key); } }
                         }
-                        if root.collections.length == 0: Text { text: "No shelves yet — create one below.";
-                            color: bk-ink2; font-size: 12px; }
-                    }
-                }
-                // New shelf
-                HorizontalLayout {
-                    spacing: 8px;
-                    nsname := LineEdit { placeholder-text: "New shelf name…"; horizontal-stretch: 1;
-                        accepted(t) => { if (t != "") { root.add-to-collection(root.shelf-pick-idx, t); root.shelf-pick-idx = -1; } } }
-                    Rectangle {
-                        width: 84px; height: 36px; border-radius: 18px; background: #1a73e8;
-                        TouchArea { mouse-cursor: pointer;
-                            clicked => { if (nsname.text != "") { root.add-to-collection(root.shelf-pick-idx, nsname.text); root.shelf-pick-idx = -1; } } }
-                        Text { text: "Create"; color: #ffffff; font-size: 13px; font-weight: 600;
-                            horizontal-alignment: center; vertical-alignment: center; }
-                    }
-                    Rectangle {
-                        width: 84px; height: 36px; border-radius: 18px; background: bk-hair;
-                        TouchArea { mouse-cursor: pointer; clicked => { root.shelf-pick-idx = -1; } }
-                        Text { text: "Cancel"; color: bk-ink; font-size: 13px; font-weight: 600;
-                            horizontal-alignment: center; vertical-alignment: center; }
+                        Rectangle { height: 4px; }
                     }
                 }
             }

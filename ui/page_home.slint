@@ -483,6 +483,7 @@ component PhotoSlideshow inherits Rectangle {
 // clickable tile in the Books/Cloud/Tools rows.
 component HomeTileBox inherits Rectangle {
     in property <color> hilite: Theme.text-dim;
+    out property <bool> hovered: tta.has-hover;
     callback clicked();
     border-radius: 10px;
     background: tta.has-hover ? Theme.panel : Theme.panel-2;
@@ -538,6 +539,11 @@ component BookRow inherits RowCard {
     property <int> shown: root.covers.length;
     area := Rectangle {
         width: 100%; height: 100%;
+        // Which cover the cursor is over → drawn again as a top-z overlay so
+        // the hovered thumb sits in front of its neighbours + the title pill,
+        // fully visible. Set on enter always; clear only if still the current
+        // one, so A-leave/B-enter is order-safe (either order → B wins).
+        property <int> hover-idx: -1;
         // 9:16 tile — as tall as fits while four across (3 covers + "+N") still fit.
         property <length> tile-h: Math.min(self.height, ((self.width - 24px) / 4) * 16 / 9);
         property <length> tile-w: self.tile-h * 9 / 16;
@@ -550,12 +556,29 @@ component BookRow inherits RowCard {
             source: Icons.book-off; tint: root.accent.with-alpha(0.55);
             width: Math.min(area.height * 0.6, 72px); height: self.width;
             x: (area.width - self.width) / 2; y: (area.height - self.height) / 2; }
+        // Bookshelf pull: the hovered cover lifts up (and the one you leave
+        // settles back) so the thumb under the cursor reads as pulled forward.
         for bc[i] in root.covers: HomeTileBox {
             width: area.tile-w; height: area.tile-h;
-            x: i * (area.tile-w + area.gap); y: (area.height - self.height) / 2;
+            x: i * (area.tile-w + area.gap);
+            y: (area.height - self.height) / 2 - (self.hovered ? 12px : 0px);
+            animate y { duration: 160ms; easing: ease-out; }
             hilite: root.accent; clip: true;
             clicked => { root.open-book(i); }
+            changed hovered => { area.hover-idx = self.hovered ? i : (area.hover-idx == i ? -1 : area.hover-idx); }
             Image { source: bc; image-fit: cover; width: 100%; height: 100%; }
+        }
+        // Top-z copy of the hovered cover — no TouchArea (events pass through to
+        // the base tile below, so it doesn't steal hover → no flicker), drawn
+        // last so it clears the title pill and reads fully.
+        if area.hover-idx >= 0 && area.hover-idx < root.covers.length: Rectangle {
+            width: area.tile-w; height: area.tile-h;
+            x: area.hover-idx * (area.tile-w + area.gap);
+            y: (area.height - self.height) / 2 - 12px;
+            border-radius: 10px; clip: true;
+            border-width: 2px; border-color: root.accent;
+            drop-shadow-blur: 18px; drop-shadow-color: #00000088; drop-shadow-offset-y: 6px;
+            Image { source: root.covers[area.hover-idx]; image-fit: cover; width: 100%; height: 100%; }
         }
         // "+N" tile → opens the Books section (handled by RowCard.clicked).
         // Same 9:16 size as the cover tiles so all four pills read uniform.
@@ -569,8 +592,6 @@ component BookRow inherits RowCard {
     }
 }
 
-// Backend → brand colour (rclone backend names). Keeps the cloud glyph consistent
-// per provider without bundling trademarked logos.
 component CloudGlyph inherits AppIcon {
     in property <string> backend;
     source: Icons.cloud; width: 46px; height: 46px;
@@ -586,8 +607,7 @@ component CloudGlyph inherits AppIcon {
         : Theme.sec-cloud;
 }
 
-// Cloud card — 3 remote tiles (centred brand-tinted glyph + name + backend) + "+N",
-// equal width to fill the card. Each remote opens that remote in the Cloud page.
+
 component CloudRow inherits RowCard {
     in property <[HomeRemote]> remotes;
     in property <int> total;
@@ -910,7 +930,8 @@ export component HomePage inherits Rectangle {
                     spacing: 10px; vertical-stretch: 1;
                     BookRow { horizontal-stretch: 1; icon: Icons.book-open; accent: Theme.sec-books; name: "Books";
                         covers: root.book-covers; total: root.stats.books;
-                        stat: root.stats.books + " books · " + root.stats.books-reading + " reading";
+                        stat: root.stats.books + " books" + (root.stats.books-reading > 0
+                            ? " · " + root.stats.books-reading + " reading" : "");
                         clicked => { root.open-section("books"); } open-book(i) => { root.open-book-item(i); } }
                     CloudRow { horizontal-stretch: 1; icon: Icons.cloud; accent: Theme.sec-cloud; name: "Cloud";
                         remotes: root.cloud-remotes; total: root.stats.cloud-remotes; stat: "";
@@ -943,10 +964,10 @@ export component HomePage inherits Rectangle {
                             HorizontalLayout { spacing: 6px;
                                 HomeChip { label: "All"; emphasized: root.cont-filter == "all"; accent: Theme.sec-music;
                                     clicked => { root.cont-menu-idx = -1; root.cont-filter = "all"; root.continue-filter("all"); } }
-                                HomeChip { label: "Videos"; emphasized: root.cont-filter == "video"; accent: Theme.sec-videos;
-                                    clicked => { root.cont-menu-idx = -1; root.cont-filter = "video"; root.continue-filter("video"); } }
                                 HomeChip { label: "Books"; emphasized: root.cont-filter == "book"; accent: Theme.sec-books;
                                     clicked => { root.cont-menu-idx = -1; root.cont-filter = "book"; root.continue-filter("book"); } }
+                                HomeChip { label: "Videos"; emphasized: root.cont-filter == "video"; accent: Theme.sec-videos;
+                                    clicked => { root.cont-menu-idx = -1; root.cont-filter = "video"; root.continue-filter("video"); } }
                                 HomeChip { label: "Podcasts"; emphasized: root.cont-filter == "podcast"; accent: #8b5cf6;
                                     clicked => { root.cont-menu-idx = -1; root.cont-filter = "podcast"; root.continue-filter("podcast"); } }
                                 HomeChip { label: "Audiobooks"; emphasized: root.cont-filter == "audiobook"; accent: #3b82f6;
@@ -964,8 +985,7 @@ export component HomePage inherits Rectangle {
                             vertical-alignment: center; }
                         for r[i] in root.continue-rows: ccard := Rectangle {
                             width: root.cont-slot-w; border-radius: 10px;
-                            property <color> kaccent: r.kind == "book" ? Theme.sec-books
-                                : r.kind == "video" ? Theme.sec-videos
+                            property <color> kaccent: r.kind == "video" ? Theme.sec-videos
                                 : r.kind == "podcast" ? #8b5cf6 : #3b82f6;
                             background: cta.has-hover ? Theme.panel : Theme.panel.with-alpha(0.6);
                             border-width: 1px;
@@ -988,7 +1008,7 @@ export component HomePage inherits Rectangle {
                                         background: ccard.kaccent.with-alpha(0.15);
                                         if r.cover.width > 0: Image { source: r.cover; image-fit: cover; width: 100%; height: 100%; }
                                         if r.cover.width == 0: AppIcon {
-                                            source: r.kind == "book" ? Icons.book-open : r.kind == "video" ? Icons.film : r.kind == "podcast" ? Icons.mic : Icons.headphones;
+                                            source: r.kind == "video" ? Icons.film : r.kind == "podcast" ? Icons.mic : Icons.headphones;
                                             tint: ccard.kaccent; width: 22px; height: 22px;
                                             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
                                     }
@@ -1022,12 +1042,12 @@ export component HomePage inherits Rectangle {
                                         VerticalLayout {
                                             padding-left: 9px; padding-right: 9px; padding-top: 4px; padding-bottom: 5px; spacing: 3px;
                                             Text { text: r.sub; color: Theme.dark ? #ffffff : Theme.text;
-                                                font-size: 11px; font-weight: 600; overflow: elide; }
+                                                font-size: 14px; font-weight: 600; overflow: elide; }
                                             if r.frac >= 0: Rectangle {
-                                                height: 4px; border-radius: 2px;
+                                                height: 12px; border-radius: 6px;
                                                 background: Theme.dark ? #ffffff.with-alpha(0.25) : ccard.kaccent.with-alpha(0.18);
                                                 Rectangle { x: 0; y: 0; width: parent.width * Math.clamp(r.frac, 0, 1);
-                                                    height: 100%; border-radius: 2px;
+                                                    height: 100%; border-radius: 6px;
                                                     background: Theme.dark ? #ffffff : ccard.kaccent; }
                                             }
                                         }
@@ -1045,9 +1065,9 @@ export component HomePage inherits Rectangle {
                                 tagrow := HorizontalLayout {
                                     padding-left: 7px; padding-right: 7px;
                                     Text {
-                                        text: r.kind == "book" ? "BOOK"
-                                            : r.kind == "video" ? "VIDEO"
-                                            : r.kind == "podcast" ? "PODCAST" : "AUDIOBOOK";
+                                        text: r.kind == "video" ? "VIDEO"
+                                            : r.kind == "podcast" ? "PODCAST"
+                                            : r.kind == "book" ? "BOOK" : "AUDIOBOOK";
                                         color: ccard.kaccent; font-size: 8px; font-weight: 800;
                                         letter-spacing: 0.6px; vertical-alignment: center;
                                     }

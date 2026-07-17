@@ -7171,7 +7171,6 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tulipix-ai",
- "tulipix-books",
  "tulipix-common",
  "tulipix-core",
  "tulipix-hot",
@@ -7197,13 +7196,15 @@ name = "tulipix-books"
 version = "0.6.0"
 dependencies = [
  "anyhow",
- "reqwest",
- "serde",
- "serde_json",
+ "image",
+ "mobi",
+ "sha2",
  "sqlx",
  "tempfile",
  "tokio",
  "tulipix-core",
+ "walkdir",
+ "zip",
 ]
 
 [[package]]
@@ -7381,20 +7382,13 @@ name = "tulipix-sec-books"
 version = "0.6.0"
 dependencies = [
  "anyhow",
- "image",
- "mobi",
- "reqwest",
- "serde_json",
- "sha2",
+ "rfd",
  "slint",
- "sqlx",
  "tokio",
+ "tracing",
  "tulipix-books",
  "tulipix-common",
- "tulipix-core",
  "tulipix-ui",
- "walkdir",
- "zip",
 ]
 
 [[package]]

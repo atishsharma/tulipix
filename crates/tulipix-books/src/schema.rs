@@ -1,140 +1,105 @@
-//! Books-specific schema overlay on top of the shared `items` proxy table.
-//!
-//! `book_meta` hangs off `items` by `item_id`; `series` / `collections` /
-//! `bookmarks` / `toc` carry their own identity. Reading progress, bookmarks
-//! and scraped metadata survive a file move because they key on `item_id`.
+//! books.db schema — standalone (no cross-DB FKs). Idempotent.
 
 use anyhow::Result;
 use sqlx::SqlitePool;
 
-pub const BOOKS_SCHEMA: &str = r#"
-CREATE TABLE IF NOT EXISTS series (
-    id    INTEGER PRIMARY KEY AUTOINCREMENT,
-    name  TEXT NOT NULL UNIQUE,
-    sort_name TEXT
-);
-
-CREATE TABLE IF NOT EXISTS book_meta (
-    item_id      INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
-    format       TEXT    NOT NULL,        -- 'epub' | 'cbz' | 'cbr' | 'pdf'
-    title        TEXT,
-    author       TEXT,
-    series_id    INTEGER REFERENCES series(id) ON DELETE SET NULL,
-    series_index REAL,
-    description  TEXT,
-    cover_path   TEXT,
-    publisher    TEXT,
-    published    INTEGER,
-    language     TEXT,
-    page_count   INTEGER,
-    is_comic     INTEGER NOT NULL DEFAULT 0,
-    rtl          INTEGER NOT NULL DEFAULT 0,   -- manga right-to-left
-    isbn         TEXT,
-    comicvine_id INTEGER,
-    added        INTEGER NOT NULL DEFAULT 0
-);
-CREATE INDEX IF NOT EXISTS book_meta_series_idx ON book_meta(series_id, series_index);
-CREATE INDEX IF NOT EXISTS book_meta_author_idx ON book_meta(author);
-CREATE INDEX IF NOT EXISTS book_meta_comic_idx  ON book_meta(is_comic);
-
-CREATE TABLE IF NOT EXISTS collections (
-    id   INTEGER PRIMARY KEY AUTOINCREMENT,
-    name TEXT NOT NULL UNIQUE
-);
-
-CREATE TABLE IF NOT EXISTS collection_items (
-    collection_id INTEGER NOT NULL REFERENCES collections(id) ON DELETE CASCADE,
-    item_id       INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    PRIMARY KEY (collection_id, item_id)
-);
-
-CREATE TABLE IF NOT EXISTS toc (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_id  INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    idx      INTEGER NOT NULL,
-    title    TEXT    NOT NULL,
-    href     TEXT,            -- EPUB spine href / anchor
-    page     INTEGER,         -- PDF/CBZ page index
-    UNIQUE(item_id, idx)
-);
-CREATE INDEX IF NOT EXISTS toc_item_idx ON toc(item_id, idx);
-
-CREATE TABLE IF NOT EXISTS reading_progress (
-    item_id     INTEGER PRIMARY KEY REFERENCES items(id) ON DELETE CASCADE,
-    -- EPUB: CFI/locator string; comics/PDF: page index as text.
-    locator     TEXT,
-    page        INTEGER NOT NULL DEFAULT 0,
-    total_pages INTEGER,
-    finished    INTEGER NOT NULL DEFAULT 0,
-    updated     INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS reading_progress_updated_idx ON reading_progress(updated DESC);
-
-CREATE TABLE IF NOT EXISTS bookmarks (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    item_id  INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    locator  TEXT,
-    page     INTEGER,
-    note     TEXT,
-    created  INTEGER NOT NULL
-);
-CREATE INDEX IF NOT EXISTS bookmarks_item_idx ON bookmarks(item_id);
-
--- np.p5.books.stats — per-day reading time. `day` is unix epoch days (UTC) so
--- streak math is plain integer adjacency, no date parsing.
-CREATE TABLE IF NOT EXISTS reading_sessions (
-    item_id INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
-    day     INTEGER NOT NULL,
-    seconds INTEGER NOT NULL DEFAULT 0,
-    PRIMARY KEY (item_id, day)
-);
-CREATE INDEX IF NOT EXISTS reading_sessions_day_idx ON reading_sessions(day DESC);
-
--- Small typed prefs for the books section (yearly goal, …).
-CREATE TABLE IF NOT EXISTS book_prefs (
-    key   TEXT PRIMARY KEY,
-    value TEXT NOT NULL
-);
-"#;
-
 pub async fn apply(pool: &SqlitePool) -> Result<()> {
-    sqlx::raw_sql(BOOKS_SCHEMA).execute(pool).await?;
-    // Migration for DBs created before colour-coded bookmarks. SQLite has no
-    // ADD COLUMN IF NOT EXISTS; a duplicate-column error means it's done.
-    let _ = sqlx::raw_sql("ALTER TABLE bookmarks ADD COLUMN color TEXT").execute(pool).await;
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS books (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            path        TEXT    NOT NULL UNIQUE,
+            format      TEXT    NOT NULL,
+            title       TEXT    NOT NULL,
+            author      TEXT    NOT NULL DEFAULT '',
+            genre       TEXT    NOT NULL DEFAULT '',
+            series      TEXT    NOT NULL DEFAULT '',
+            published   TEXT    NOT NULL DEFAULT '',
+            rating      REAL    NOT NULL DEFAULT 0,
+            size_bytes  INTEGER NOT NULL DEFAULT 0,
+            cover_path  TEXT    NOT NULL DEFAULT '',
+            added_at    INTEGER NOT NULL,
+            favorite    INTEGER NOT NULL DEFAULT 0,
+            finished    INTEGER NOT NULL DEFAULT 0,
+            rtl         INTEGER NOT NULL DEFAULT 0,
+            missing     INTEGER NOT NULL DEFAULT 0
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS progress (
+            book_id        INTEGER PRIMARY KEY REFERENCES books(id) ON DELETE CASCADE,
+            page           INTEGER NOT NULL DEFAULT 0,
+            total_pages    INTEGER NOT NULL DEFAULT 0,
+            char_offset    INTEGER NOT NULL DEFAULT 0,
+            percent        REAL    NOT NULL DEFAULT 0,
+            time_read_secs INTEGER NOT NULL DEFAULT 0,
+            updated_at     INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS bookmarks (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id     INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+            page        INTEGER NOT NULL,
+            char_offset INTEGER NOT NULL DEFAULT 0,
+            note        TEXT    NOT NULL DEFAULT '',
+            color       TEXT    NOT NULL DEFAULT '',
+            created_at  INTEGER NOT NULL,
+            UNIQUE(book_id, page)
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS annotations (
+            id          INTEGER PRIMARY KEY AUTOINCREMENT,
+            book_id     INTEGER NOT NULL REFERENCES books(id) ON DELETE CASCADE,
+            page        INTEGER NOT NULL,
+            char_offset INTEGER NOT NULL DEFAULT 0,
+            selected    TEXT    NOT NULL DEFAULT '',
+            note        TEXT    NOT NULL DEFAULT '',
+            color       TEXT    NOT NULL DEFAULT '#6c4df6',
+            created_at  INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Configured scan roots for the Books section ("Add books" folders).
+    sqlx::query(
+        "CREATE TABLE IF NOT EXISTS book_folders (
+            path     TEXT PRIMARY KEY,
+            added_at INTEGER NOT NULL
+        )",
+    )
+    .execute(pool)
+    .await?;
+
+    // Older DBs may predate the rating column — add it best-effort (errors when
+    // it already exists, which is fine).
+    let _ = sqlx::query("ALTER TABLE books ADD COLUMN rating REAL NOT NULL DEFAULT 0")
+        .execute(pool)
+        .await;
+
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_books_title  ON books(title)")
+        .execute(pool)
+        .await?;
+    sqlx::query("CREATE INDEX IF NOT EXISTS idx_books_author ON books(author)")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
-#[cfg(test)]
-pub(crate) mod tests {
-    use super::*;
-    use tulipix_core::db::{apply_proxy_schema, DbHandle};
-
-    pub(crate) async fn open_pool() -> (tempfile::TempDir, SqlitePool) {
-        let tmp = tempfile::tempdir().unwrap();
-        let path = tmp.path().join("books.db");
-        let url = format!("sqlite://{}?mode=rwc", path.display());
-        let h = DbHandle { section: "books".into(), path, url };
-        let pool = h.pool().await.unwrap();
-        apply_proxy_schema(&pool, "books").await.unwrap();
-        apply(&pool).await.unwrap();
-        (tmp, pool)
-    }
-
-    /// Insert an `items` row + `book_meta` of a given format; return item id.
-    pub(crate) async fn add_book(pool: &SqlitePool, path: &str, format: &str, comic: bool) -> i64 {
-        sqlx::query("INSERT INTO items (abs_path, inode, size, mtime, section, added, updated) VALUES (?, 0, 1, 0, 'books', 0, 0)")
-            .bind(path).execute(pool).await.unwrap();
-        let id: i64 = sqlx::query_scalar("SELECT id FROM items WHERE abs_path = ?").bind(path).fetch_one(pool).await.unwrap();
-        sqlx::query("INSERT INTO book_meta (item_id, format, is_comic) VALUES (?,?,?)")
-            .bind(id).bind(format).bind(comic as i64).execute(pool).await.unwrap();
-        id
-    }
-
-    #[tokio::test]
-    async fn schema_applies_idempotently() {
-        let (_t, pool) = open_pool().await;
-        apply(&pool).await.unwrap();
-        let _: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM book_meta").fetch_one(&pool).await.unwrap();
-    }
+/// Unix now, seconds.
+pub fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
 }

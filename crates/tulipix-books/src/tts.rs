@@ -1,48 +1,95 @@
-//! `np.p4.books.tts` — local AI text-to-speech (instant audiobook).
-//!
-//! Piper / Kokoro ONNX read EPUB/PDF/text aloud offline. Inference runs in the
-//! worker; this owns the engine selection, the per-engine model id, and the
-//! sentence chunking that keeps each synth call small enough for low latency
-//! and clean sentence-boundary pauses.
+//! Read-aloud text prep. Splits book text into sentences for the read-along
+//! highlighter (Phase 1) and, later, for Kokoro TTS synthesis (Phase 2). Pure
+//! functions — no engine here yet.
 
-use serde::{Deserialize, Serialize};
-
-#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
-pub enum Engine { Piper, Kokoro }
-
-impl Engine {
-    pub fn default_voice(self) -> &'static str {
-        match self { Engine::Piper => "en_US-amy-medium", Engine::Kokoro => "af_sky" }
-    }
-    pub fn model_file(self, voice: &str) -> String {
-        match self {
-            Engine::Piper => format!("{voice}.onnx"),
-            Engine::Kokoro => format!("kokoro-v0_19.onnx#{voice}"),
-        }
-    }
+/// One spoken unit: the sentence text plus its char offset in the source, so a
+/// click on a sentence can map back to a reading position.
+#[derive(Debug, Clone)]
+pub struct Sentence {
+    pub text: String,
+    pub char_start: usize,
 }
 
-/// Split text into TTS-sized chunks at sentence boundaries, never exceeding
-/// `max_chars`. Sentence enders: `. ! ?` followed by whitespace.
-pub fn chunk_sentences(text: &str, max_chars: usize) -> Vec<String> {
-    let max = max_chars.max(1);
+/// Split `text` into sentences. Breaks after `.`, `!`, `?` (and `…`) when
+/// followed by whitespace, with a light guard against common abbreviations and
+/// decimals so "Mr. Smith" / "3.5" don't split. Paragraph breaks always split.
+pub fn sentences(text: &str) -> Vec<Sentence> {
+    let chars: Vec<char> = text.chars().collect();
     let mut out = Vec::new();
-    let mut cur = String::new();
-    let flush = |cur: &mut String, out: &mut Vec<String>| {
-        let t = cur.trim();
-        if !t.is_empty() { out.push(t.to_string()); }
-        cur.clear();
-    };
-    let bytes: Vec<char> = text.chars().collect();
-    for (i, &c) in bytes.iter().enumerate() {
-        cur.push(c);
-        let is_end = matches!(c, '.' | '!' | '?') && bytes.get(i + 1).is_none_or(|n| n.is_whitespace());
-        if is_end || cur.chars().count() >= max {
-            flush(&mut cur, &mut out);
+    let mut start = 0usize; // char index of the current sentence start
+    let mut i = 0usize;
+    let n = chars.len();
+
+    let flush = |out: &mut Vec<Sentence>, s: usize, e: usize| {
+        let t: String = chars_range(text, s, e).trim().to_string();
+        if !t.is_empty() {
+            out.push(Sentence { text: t, char_start: s });
         }
+    };
+
+    while i < n {
+        let c = chars[i];
+        let is_end = matches!(c, '.' | '!' | '?' | '…');
+        // Two consecutive newlines → paragraph boundary.
+        let para_break = c == '\n' && chars.get(i + 1) == Some(&'\n');
+        if is_end {
+            // Skip decimals like "3.14" and single-letter abbreviations.
+            let prev = if i > 0 { chars[i - 1] } else { ' ' };
+            let next = chars.get(i + 1).copied().unwrap_or(' ');
+            let decimal = c == '.' && prev.is_ascii_digit() && next.is_ascii_digit();
+            let abbrev = c == '.' && is_abbrev(&chars, start, i);
+            if !decimal && !abbrev {
+                // Consume trailing quotes/brackets, then require whitespace/eof.
+                let mut j = i + 1;
+                while j < n && matches!(chars[j], '"' | '\'' | '”' | '’' | ')' | ']') {
+                    j += 1;
+                }
+                if j >= n || chars[j].is_whitespace() {
+                    flush(&mut out, start, j);
+                    start = j;
+                    i = j;
+                    continue;
+                }
+            }
+        } else if para_break {
+            flush(&mut out, start, i);
+            start = i + 1;
+        }
+        i += 1;
     }
-    flush(&mut cur, &mut out);
+    flush(&mut out, start, n);
     out
+}
+
+/// True when the token ending at `end` (exclusive of the '.') is a known
+/// abbreviation ("Mr", "Dr", "St", "vs", …) so we don't split after it.
+fn is_abbrev(chars: &[char], start: usize, end: usize) -> bool {
+    // Grab the alphabetic run immediately before the dot.
+    let mut b = end;
+    while b > start && chars[b - 1].is_alphabetic() {
+        b -= 1;
+    }
+    let word: String = chars[b..end].iter().collect::<String>().to_lowercase();
+    // Single letter (initials) or common title/abbr.
+    word.chars().count() == 1
+        || matches!(
+            word.as_str(),
+            "mr" | "mrs" | "ms" | "dr" | "st" | "vs" | "etc" | "jr" | "sr" | "prof" | "inc" | "ltd" | "no" | "vol"
+        )
+}
+
+/// Char-index substring (chars, not bytes) of `s`.
+fn chars_range(s: &str, start: usize, end: usize) -> String {
+    s.chars().skip(start).take(end.saturating_sub(start)).collect()
+}
+
+/// Rough spoken duration (ms) for a sentence at `wpm` words/min and `speed`
+/// multiplier — used to pace the read-along highlight before real audio.
+pub fn speak_ms(sentence: &str, wpm: f32, speed: f32) -> u64 {
+    let words = sentence.split_whitespace().count().max(1) as f32;
+    let base = words / (wpm.max(60.0) * speed.max(0.25)) * 60_000.0;
+    // Small floor so very short lines still get a beat.
+    (base as u64).max(350)
 }
 
 #[cfg(test)]
@@ -50,21 +97,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn splits_on_sentences() {
-        let c = chunk_sentences("Hello world. How are you? I am fine!", 1000);
-        assert_eq!(c, vec!["Hello world.", "How are you?", "I am fine!"]);
+    fn splits_basic() {
+        let s = sentences("Hello world. This is a test! Really? Yes.");
+        assert_eq!(s.len(), 4);
+        assert_eq!(s[0].text, "Hello world.");
+        assert_eq!(s[2].text, "Really?");
     }
 
     #[test]
-    fn respects_max_chars() {
-        let c = chunk_sentences("aaaaaaaaaa bbbbbbbbbb cccccc", 10);
-        assert!(c.iter().all(|s| s.chars().count() <= 10));
-        assert!(c.len() >= 3);
+    fn keeps_abbrev_and_decimal() {
+        let s = sentences("Mr. Smith paid 3.5 dollars. Done.");
+        assert_eq!(s.len(), 2);
+        assert!(s[0].text.starts_with("Mr. Smith"));
     }
 
     #[test]
-    fn voice_defaults() {
-        assert_eq!(Engine::Piper.default_voice(), "en_US-amy-medium");
-        assert!(Engine::Piper.model_file("en_US-amy-medium").ends_with(".onnx"));
+    fn char_start_maps_back() {
+        let s = sentences("One. Two.");
+        assert_eq!(s[1].char_start, 5);
     }
 }

@@ -43,7 +43,7 @@ renderer-femtovg = ["slint/renderer-femtovg"]
 # interpreter-backed LiveReloadingComponent that re-reads .slint at runtime —
 # the build must ALSO run with SLINT_LIVE_PREVIEW=1 so the slint compiler
 # emits the live-preview glue (see vendor/i-slint-compiler/generator/rust.rs).
-dev-reload = ["dep:notify", "slint/live-preview", "tulipix-ui/dev-reload", "tulipix-sec-tools/dev-reload", "tulipix-sec-photos/dev-reload", "tulipix-sec-music/dev-reload", "tulipix-sec-videos/dev-reload", "tulipix-sec-cloud/dev-reload", "tulipix-sec-books/dev-reload"]
+dev-reload = ["dep:notify", "slint/live-preview", "tulipix-ui/dev-reload", "tulipix-sec-tools/dev-reload", "tulipix-sec-photos/dev-reload", "tulipix-sec-music/dev-reload", "tulipix-sec-videos/dev-reload", "tulipix-sec-cloud/dev-reload"]
 
 # Dev-only Rust hot-patch. Routes section wire-up through the tulipix-hot dylib
 # (loaded by hot-lib-reloader): edit section callback logic, rebuild that small
@@ -96,7 +96,6 @@ tulipix-photos = { path = "../tulipix-photos" }
 tulipix-videos = { path = "../tulipix-videos" }
 tulipix-player = { path = "../tulipix-player" }
 tulipix-music = { path = "../tulipix-music" }
-tulipix-books = { path = "../tulipix-books" }
 tulipix-sec-tools = { path = "../tulipix-sec-tools" }
 tulipix-sec-photos = { path = "../tulipix-sec-photos" }
 tulipix-sec-music = { path = "../tulipix-sec-music" }

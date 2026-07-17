@@ -25,9 +25,9 @@ tulipix-core = { path = "../tulipix-core" }
 tulipix-photos = { path = "../tulipix-photos" }
 tulipix-videos = { path = "../tulipix-videos" }
 tulipix-music = { path = "../tulipix-music" }
-tulipix-books = { path = "../tulipix-books" }
 tulipix-cloud = { path = "../tulipix-cloud" }
 tulipix-tools = { path = "../tulipix-tools" }
+tulipix-books = { path = "../tulipix-books" }
 
 # PR_SET_PDEATHSIG in mpv_die_with_parent (playback core) — Linux-only.
 [target.'cfg(target_os = "linux")'.dependencies]

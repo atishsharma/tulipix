@@ -474,11 +474,12 @@ fn main() -> Result<()> {
         if let Some(w) = w.upgrade() { refresh_library_silent(&w); }
     });
 
-    // ── Books: library view tabs + reader (np.p4.books.*) — see wire_books() ──
-    tulipix_sec_books::wire_books(&window);
-
     // ── Cloud: rclone remotes CRUD + remote-tree browse (np.p4.cloud.*) ──
     tulipix_sec_cloud::wire(&window);
+
+    // ── Books: Book Home page (Continue Reading hero, stats, library grid,
+    // filter chips) + the reader. Callbacks land on `window.on_books_*`.
+    tulipix_sec_books::wire(&window);
 
     // Tools section wiring lives in the tulipix-sec-tools crate. Under the `hot`
     // feature it is routed through the tulipix-hot dylib so the callbacks can be
@@ -1005,27 +1006,28 @@ fn main() -> Result<()> {
             let _ = weak.upgrade_in_event_loop(|w| kick_home_continue(&w));
         });
     });
-    // Home Books card → open that book in the in-app reader.
-    let wb = window.as_weak();
+    // Home Books card → open that book in the reader by its library id (the
+    // row index maps to the id stashed when the covers were loaded). Routing
+    // through the existing books-open-details callback reuses the reader's
+    // parse/paginate/resume path — no id-less re-open.
+    let wbh = window.as_weak();
     window.on_home_open_book_item(move |idx| {
-        let entry = recent_home_books().lock().ok().and_then(|g| g.get(idx as usize).cloned());
-        if let Some((id, path)) = entry { tulipix_sec_books::open_book_path(wb.clone(), path, id); }
+        let Some(w0) = wbh.upgrade() else { return; };
+        let id = recent_home_books().lock().ok()
+            .and_then(|g| g.get(idx as usize).copied());
+        if let Some(id) = id { w0.invoke_books_open_details(id as i32); }
     });
     // Home Tools card → select that tool category in the Tools page.
     let wt = window.as_weak();
     window.on_home_open_tool(move |cat| {
         if let Some(w0) = wt.upgrade() { w0.set_tools_category(cat); }
     });
-    // CONTINUE strip — chip filter re-pushes the cached rows; a card click on a
-    // book resumes it in the reader (podcast/audiobook routing lives in .slint).
+    // CONTINUE strip — chip filter re-pushes the cached rows
+    // (podcast/audiobook routing lives in .slint).
     let wcf = window.as_weak();
     window.on_home_continue_filter(move |f| {
         if let Ok(mut g) = home_cont_filter().lock() { *g = f.to_string(); }
         push_home_continue(&wcf);
-    });
-    let wcb = window.as_weak();
-    window.on_home_continue_book(move |id, path| {
-        tulipix_sec_books::open_book_path(wcb.clone(), PathBuf::from(path.to_string()), id as i64);
     });
     // CONTINUE video card → resume in the external mpv window at the saved
     // position (item_id keeps watch_progress tracking across the resume, the
@@ -3644,8 +3646,6 @@ fn resync_after_fs_change(weak: slint::Weak<MainWindow>) {
         // Videos — active category grid.
         let vcat = w.get_video_category().to_string();
         kick_video_refresh(w.as_weak(), vcat);
-        // Books — rebuilt from the DB.
-        tulipix_sec_books::refresh_books(&w);
     });
 }
 
@@ -4161,35 +4161,6 @@ fn kick_home_stats(w: &MainWindow) {
             let Ok(pool) = pool_for("radio").await else { return 0; };
             count(pool, "SELECT COUNT(*) FROM radio_stations").await
         };
-        let books_f = async {
-            let Ok(pool) = pool_for("books").await else { return (0, 0, (0i64, 0i64), None); };
-            let nb = sum_items(pool.clone()).await;
-            let books = count(pool.clone(), "SELECT COUNT(*) FROM items").await;
-            let reading = count(pool.clone(),
-                "SELECT COUNT(*) FROM reading_progress \
-                 WHERE finished = 0 AND (page > 0 OR locator IS NOT NULL)").await;
-            // Continue card: newest in-progress book.
-            let cont = sqlx::query_as::<_, (String, String, i64, Option<i64>)>(
-                "SELECT COALESCE(NULLIF(bm.title, ''), ''), i.abs_path, rp.page, rp.total_pages \
-                 FROM reading_progress rp \
-                 JOIN items i ON i.id = rp.item_id \
-                 LEFT JOIN book_meta bm ON bm.item_id = rp.item_id \
-                 WHERE rp.finished = 0 AND (rp.page > 0 OR rp.locator IS NOT NULL) \
-                 ORDER BY rp.updated DESC LIMIT 1")
-                .fetch_optional(&pool).await.ok().flatten()
-                .map(|(title, path, page, total)| {
-                    let name = if title.is_empty() {
-                        std::path::Path::new(&path).file_stem()
-                            .map(|f| f.to_string_lossy().into_owned()).unwrap_or(path.clone())
-                    } else { title };
-                    (format!("📖 {name}"),
-                     match total {
-                         Some(t) if t > 0 => format!("page {page} · {}%", (page * 100) / t),
-                         _ => format!("page {page}"),
-                     })
-                });
-            (books, reading, nb, cont)
-        };
         let cloud_f = async {
             let Ok(pool) = pool_for("cloud").await else { return 0; };
             count(pool, "SELECT COUNT(*) FROM remotes").await
@@ -4199,8 +4170,18 @@ fn kick_home_stats(w: &MainWindow) {
             (count(pool.clone(), "SELECT COUNT(*) FROM jobs WHERE state = 'running'").await,
              count(pool, "SELECT COUNT(*) FROM jobs WHERE state = 'queued'").await)
         };
-        let (photos, videos, music, podcasts, radio, books, cloud, tools) =
-            tokio::join!(photos_f, videos_f, music_f, podcasts_f, radio_f, books_f, cloud_f, tools_f);
+        // Books — total library count + how many are currently in progress
+        // (a reading_progress row with real forward progress, book still here).
+        let books_f = async {
+            let Ok(pool) = pool_for("books").await else { return (0, 0); };
+            (count(pool.clone(), "SELECT COUNT(*) FROM books WHERE missing = 0").await,
+             count(pool,
+                "SELECT COUNT(*) FROM progress p JOIN books b ON b.id = p.book_id \
+                 WHERE b.finished = 0 AND b.missing = 0 \
+                       AND (p.page > 0 OR p.char_offset > 0 OR p.percent > 0)").await)
+        };
+        let (photos, videos, music, podcasts, radio, cloud, tools, books) =
+            tokio::join!(photos_f, videos_f, music_f, podcasts_f, radio_f, cloud_f, tools_f, books_f);
         let mut total_items: i64 = 0;
         let mut total_bytes: i64 = 0;
         let mut add = |(n, b): (i64, i64)| { total_items += n; total_bytes += b; };
@@ -4211,8 +4192,8 @@ fn kick_home_stats(w: &MainWindow) {
         s.podcasts = podcasts.0;
         if let Some((c, sub)) = podcasts.1 { s.continue2 = c.into(); s.continue2_sub = sub.into(); }
         s.radio = radio;
-        s.books = books.0; s.books_reading = books.1; add(books.2);
-        if let Some((c, sub)) = books.3 { s.continue1 = c.into(); s.continue1_sub = sub.into(); }
+        s.books = books.0;
+        s.books_reading = books.1;
         s.cloud_remotes = cloud;
         s.tools_jobs = tools.0;
         if tools.1 > 0 { s.tools_note = format!("{} queued", tools.1).into(); }
@@ -4241,15 +4222,16 @@ fn kick_home_stats(w: &MainWindow) {
 // click on the centre tile can open that exact item (viewer / player).
 static RECENT_HOME_PHOTOS: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();
 static RECENT_HOME_VIDEOS: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();
+// Recent book ids mirroring the Home Books row order — books open by library id
+// (not path), so a click on a cover routes straight to that book in the reader.
+static RECENT_HOME_BOOKS: std::sync::OnceLock<std::sync::Mutex<Vec<i64>>> = std::sync::OnceLock::new();
 fn recent_home_photos() -> &'static std::sync::Mutex<Vec<PathBuf>> {
     RECENT_HOME_PHOTOS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 fn recent_home_videos() -> &'static std::sync::Mutex<Vec<PathBuf>> {
     RECENT_HOME_VIDEOS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
-// (item_id, abs_path) for the Home Books row, so a cover click opens that book.
-static RECENT_HOME_BOOKS: std::sync::OnceLock<std::sync::Mutex<Vec<(i64, PathBuf)>>> = std::sync::OnceLock::new();
-fn recent_home_books() -> &'static std::sync::Mutex<Vec<(i64, PathBuf)>> {
+fn recent_home_books() -> &'static std::sync::Mutex<Vec<i64>> {
     RECENT_HOME_BOOKS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
 
@@ -4321,27 +4303,32 @@ fn kick_home_videos(w: &MainWindow) {
     });
 }
 
-/// Load recent book covers for the Home Books row (newest first).
+/// Load the 10 most-recently-added book covers for the Home Books row. Book
+/// covers are already extracted image files (no thumb render needed), so this
+/// just loads them straight off disk. The book ids are stashed in row order so
+/// a cover click opens that exact book by library id in the reader.
 fn kick_home_books(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("books").await else { return; };
-        let rows = sqlx::query_as::<_, (String, i64, String)>(
-            "SELECT bm.cover_path, bm.item_id, i.abs_path FROM book_meta bm JOIN items i ON i.id = bm.item_id \
-             WHERE bm.cover_path IS NOT NULL AND bm.cover_path <> '' ORDER BY i.added DESC LIMIT 3")
+        // Newest first, only books with a real cover on disk — an empty cover
+        // slot would break the id ↔ row-index alignment the click relies on.
+        let rows = sqlx::query_as::<_, (i64, String)>(
+            "SELECT id, cover_path FROM books \
+             WHERE missing = 0 AND cover_path != '' ORDER BY added_at DESC LIMIT 10")
             .fetch_all(&pool).await.unwrap_or_default();
-        // Mirror the cover order so a click on tile N opens the matching book.
         if let Ok(mut g) = recent_home_books().lock() {
-            *g = rows.iter().map(|(_, id, p)| (*id, PathBuf::from(p))).collect();
+            *g = rows.iter().map(|(id, _)| *id).collect();
         }
-        let covers: Vec<String> = rows.into_iter().map(|(c, _, _)| c).collect();
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let imgs: Vec<slint::Image> = covers.iter()
-                .filter_map(|c| slint::Image::load_from_path(std::path::Path::new(c)).ok()).collect();
+            let imgs: Vec<slint::Image> = rows.iter()
+                .filter_map(|(_, p)| slint::Image::load_from_path(std::path::Path::new(p)).ok())
+                .collect();
             w.set_home_book_covers(slint::ModelRc::new(slint::VecModel::from(imgs)));
         });
     });
 }
+
 
 /// Load cloud remotes (name + backend + storage usage) for the Home Cloud row.
 fn kick_home_cloud(w: &MainWindow) {
@@ -4473,30 +4460,36 @@ fn kick_home_continue(w: &MainWindow) {
         let books_f = async {
             let mut rows: Vec<HomeContRow> = Vec::new();
             let Ok(pool) = pool_for("books").await else { return rows; };
-            let items = sqlx::query_as::<_, (i64, String, String, String, i64, Option<i64>, Option<String>, i64)>(
-                "SELECT rp.item_id, COALESCE(NULLIF(bm.title, ''), ''), COALESCE(bm.author, ''), \
-                        i.abs_path, rp.page, rp.total_pages, bm.cover_path, COALESCE(rp.updated, 0) \
-                 FROM reading_progress rp \
-                 JOIN items i ON i.id = rp.item_id \
-                 LEFT JOIN book_meta bm ON bm.item_id = rp.item_id \
-                 WHERE rp.finished = 0 AND (rp.page > 0 OR rp.locator IS NOT NULL) \
-                 ORDER BY rp.updated DESC LIMIT 4")
+            let items = sqlx::query_as::<_, (i64, String, String, String, i64, i64, f64, String, i64)>(
+                "SELECT b.id, b.title, b.author, b.path, p.page, p.total_pages, p.percent, \
+                        b.cover_path, COALESCE(p.updated_at, 0) \
+                 FROM progress p \
+                 JOIN books b ON b.id = p.book_id \
+                 WHERE b.finished = 0 AND b.missing = 0 \
+                       AND (p.page > 0 OR p.char_offset > 0 OR p.percent > 0) \
+                 ORDER BY p.updated_at DESC LIMIT 4")
                 .fetch_all(&pool).await.unwrap_or_default();
-            for (id, title, author, path, page, total, cover, ts) in items {
+            for (id, title, author, path, page, total, percent, cover, ts) in items {
                 let name = if title.is_empty() {
                     std::path::Path::new(&path).file_stem()
                         .map(|f| f.to_string_lossy().into_owned()).unwrap_or_else(|| path.clone())
                 } else { title };
-                let frac = match total {
-                    Some(t) if t > 0 => (page as f32 / t as f32).clamp(0.0, 1.0),
-                    _ => -1.0,
+                let frac = if total > 0 {
+                    (page as f32 / total as f32).clamp(0.0, 1.0)
+                } else if percent > 0.0 {
+                    (percent as f32 / 100.0).clamp(0.0, 1.0)
+                } else {
+                    -1.0
                 };
-                let sub = match total {
-                    Some(t) if t > 0 => format!("Page {page}/{t}"),
-                    _ => format!("page {page}"),
+                let sub = if total > 0 {
+                    format!("Page {page}/{total}")
+                } else if percent > 0.0 {
+                    format!("{}%", percent.round() as i64)
+                } else {
+                    format!("page {page}")
                 };
                 let cover = tulipix_sec_music::decode_art_px(
-                    cover.filter(|c| !c.is_empty()).map(PathBuf::from)).await;
+                    Some(cover).filter(|c| !c.is_empty()).map(PathBuf::from)).await;
                 rows.push(HomeContRow { kind: "book", title: name, author, sub, frac, cover, id, path, ts });
             }
             rows
@@ -4629,8 +4622,8 @@ fn kick_home_continue(w: &MainWindow) {
             rows
         };
         let (b, p, a, v) = tokio::join!(books_f, podcasts_f, audiobooks_f, videos_f);
-        let mut rows: Vec<HomeContRow> = b;
-        rows.extend(p); rows.extend(a); rows.extend(v);
+        let mut rows: Vec<HomeContRow> = Vec::new();
+        rows.extend(b); rows.extend(p); rows.extend(a); rows.extend(v);
         // Drop user-dismissed items, then "All" interleaves by recency.
         let dismissed = home_cont_dismissed().lock().map(|g| g.clone()).unwrap_or_default();
         rows.retain(|r| !dismissed.contains(&home_cont_dismiss_key(r.kind, r.id, &r.path)));
@@ -4994,7 +4987,8 @@ fn voice_route(w: &MainWindow, target: &str, text: &str) {
     match target {
         "photos"   => { w.set_photos_query(t.clone()); w.invoke_photo_search(t); }
         "videos"   => { w.set_video_query(t.clone());  w.invoke_video_search(t); }
-        "books"    => { w.set_book_query(t.clone());   w.invoke_book_search(t); }
+        // "books" — section torn out pending redesign (newbook22/newreader);
+        // voice search routing will be re-wired with the new Books UI.
         "cloud"    => { w.set_cloud_query(t.clone());  w.invoke_cloud_search(t); }
         "tools"    => { w.set_tools_query(t.clone());  w.invoke_tools_search(t); }
         "music"    => { w.set_music_query(t.clone());  w.invoke_music_search(t); }
@@ -5506,10 +5500,8 @@ fn kick_section_scan(
             };
 
             // 2b) Per-section side effects (EXIF for photos, video_meta seed).
-            // For books: extract real metadata + cover (np.p4.books.scan) — the
-            // cover replaces the synthetic Book placeholder thumb below.
-            let mut book_cover: Option<PathBuf> = None;
-            let mut book_label: Option<String> = None;
+            let book_cover: Option<PathBuf> = None;
+            let book_label: Option<String> = None;
             if section == "photos" {
                 let _ = tulipix_photos::exif::ingest(&pool, id).await;
             } else if section == "videos" {
@@ -5525,34 +5517,6 @@ fn kick_section_scan(
                     let pool2 = pool.clone();
                     let path2 = p.to_owned();
                     tokio::spawn(async move { scrape_video_tmdb(pool2, id, path2).await; });
-                }
-            } else if section == "books" {
-                let pb = p.clone();
-                if let Ok(Some(ing)) = tokio::task::spawn_blocking(move || tulipix_sec_books::ingest_file(&pb)).await {
-                    let cover = ing.cover.as_ref().map(|c| c.to_string_lossy().into_owned());
-                    let _ = sqlx::query(
-                        "INSERT INTO book_meta (item_id, format, title, author, language, is_comic, rtl, page_count, cover_path)
-                         VALUES (?,?,?,?,?,?,?,?,?)
-                         ON CONFLICT(item_id) DO UPDATE SET format=excluded.format, title=excluded.title,
-                            author=excluded.author, language=excluded.language, is_comic=excluded.is_comic,
-                            rtl=excluded.rtl, page_count=excluded.page_count, cover_path=excluded.cover_path",
-                    )
-                    .bind(id).bind(ing.format).bind(&ing.title).bind(&ing.author).bind(&ing.language)
-                    .bind(ing.is_comic as i64).bind(ing.rtl as i64).bind(ing.page_count).bind(&cover)
-                    .execute(&pool).await;
-                    // Auto-assign a detected series, but only when this book has
-                    // none yet — never clobber a manual assignment (np.p4.books).
-                    if let Some(sname) = ing.series.clone() {
-                        let cur: Option<i64> = sqlx::query_scalar::<_, Option<i64>>(
-                            "SELECT series_id FROM book_meta WHERE item_id = ?")
-                            .bind(id).fetch_optional(&pool).await.ok().flatten().flatten();
-                        if cur.is_none() {
-                            let _ = tulipix_books::library::assign_series(
-                                &pool, id, &sname, ing.series_index.unwrap_or(1.0)).await;
-                        }
-                    }
-                    book_cover = ing.cover;
-                    book_label = ing.title;
                 }
             }
 
@@ -5667,13 +5631,7 @@ fn kick_section_scan(
                     // then refresh the views (np.p4.music.tags).
                     ingest_music_tags(w.as_weak());
                 }
-                "books"  => {
-                    // book_meta + covers were written during the scan side-effect;
-                    // rebuild the active library view from the DB (progress, view
-                    // filter, real titles/authors).
-                    let _ = (paths, out, n);
-                    tulipix_sec_books::refresh_books(&w);
-                }
+                "books"  => { let _ = (paths, out, n); }
                 _ => {}
             }
             let model = w.get_library_rows();

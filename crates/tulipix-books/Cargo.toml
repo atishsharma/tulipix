@@ -5,20 +5,22 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 
+# Books engine — no UI. Scans EPUB / PDF / CBZ / CBR / MOBI / AZW3 into a
+# standalone books.db, extracts metadata + covers, parses EPUB into reflowable
+# text, paginates it, parses TOC, renders PDF/comic pages (pdftoppm / zip /
+# unrar), and owns reading progress + bookmarks + annotations + library queries.
+
 [dependencies]
 anyhow.workspace = true
-serde.workspace = true
-serde_json.workspace = true
 tokio = { workspace = true }
 sqlx.workspace = true
-reqwest = { workspace = true, features = ["json"] }
 tulipix-core = { path = "../tulipix-core" }
+zip = { version = "2.4", default-features = false, features = ["deflate"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+mobi = "0.8"
+sha2 = "0.10"
+walkdir = "2"
 
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true, features = ["macros", "rt-multi-thread"] }
-
-# False positives: exif is the `kamadak-exif` crate; md-5→`md5`; reqwest
-# used via full path; tulipix-* are optional deps pulled in by feature flags.
-[package.metadata.cargo-machete]
-ignored = ["reqwest"]
