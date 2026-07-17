@@ -22,6 +22,12 @@ pub struct BookRow {
     pub rating: f64,
     pub summary: String,
     pub summary_fetched_at: i64,
+    #[sqlx(default)]
+    pub published: String,
+    #[sqlx(default)]
+    pub net_rating: f64,
+    #[sqlx(default)]
+    pub trashed: i64,
     pub percent: f64,
     pub last_read: i64,
 }
@@ -82,15 +88,21 @@ pub struct Filter {
 pub async fn list(pool: &SqlitePool, f: &Filter) -> Result<Vec<BookRow>> {
     // The "missing" status surfaces broken-path books (so the grid badge can
     // render + user can relink); every other view hides them.
-    let missing_clause = if f.status == "missing" { "b.missing = 1" } else { "b.missing = 0" };
+    // Trash is its own view; missing surfaces broken paths; everything else
+    // hides both trashed and missing books.
+    let base_clause = match f.status.as_str() {
+        "trashed" => "b.trashed = 1",
+        "missing" => "b.missing = 1 AND b.trashed = 0",
+        _ => "b.missing = 0 AND b.trashed = 0",
+    };
     let mut sql = format!(
         "SELECT b.id, b.path, b.format, b.title, b.author, b.genre, b.series,
                 b.cover_path, b.size_bytes, b.added_at, b.finished, b.favorite, b.missing,
-                b.rating, b.summary, b.summary_fetched_at,
+                b.rating, b.summary, b.summary_fetched_at, b.published, b.net_rating, b.trashed,
                 COALESCE(p.percent, 0.0) AS percent,
                 COALESCE(p.updated_at, 0) AS last_read
          FROM books b LEFT JOIN progress p ON p.book_id = b.id
-         WHERE {missing_clause}",
+         WHERE {base_clause}",
     );
     let mut binds: Vec<String> = Vec::new();
     if !f.format.is_empty() {
@@ -150,7 +162,7 @@ pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<BookRow>> {
     Ok(sqlx::query_as(
         "SELECT b.id, b.path, b.format, b.title, b.author, b.genre, b.series,
                 b.cover_path, b.size_bytes, b.added_at, b.finished, b.favorite, b.missing,
-                b.rating, b.summary, b.summary_fetched_at,
+                b.rating, b.summary, b.summary_fetched_at, b.published, b.net_rating,
                 COALESCE(p.percent, 0.0) AS percent,
                 COALESCE(p.updated_at, 0) AS last_read
          FROM books b LEFT JOIN progress p ON p.book_id = b.id
@@ -171,15 +183,49 @@ pub async fn set_rating(pool: &SqlitePool, id: i64, rating: f64) -> Result<()> {
     Ok(())
 }
 
-/// Cache a fetched online summary on the book (R1 book-detail popup).
-pub async fn set_summary(pool: &SqlitePool, id: i64, summary: &str) -> Result<()> {
-    sqlx::query("UPDATE books SET summary = ?, summary_fetched_at = ? WHERE id = ?")
-        .bind(summary)
-        .bind(crate::schema::now())
-        .bind(id)
-        .execute(pool)
-        .await?;
+/// Cache fetched online metadata (P6). Only overwrites a field when the new
+/// value is non-empty, so a partial fetch never wipes existing data. Always
+/// stamps `summary_fetched_at` so the backfill won't retry this book.
+pub async fn set_metadata(
+    pool: &SqlitePool,
+    id: i64,
+    summary: &str,
+    published: &str,
+    net_rating: f64,
+) -> Result<()> {
+    sqlx::query(
+        "UPDATE books SET
+            summary   = CASE WHEN ? != '' THEN ? ELSE summary   END,
+            published = CASE WHEN ? != '' THEN ? ELSE published END,
+            net_rating = CASE WHEN ? > 0  THEN ? ELSE net_rating END,
+            summary_fetched_at = ?
+         WHERE id = ?",
+    )
+    .bind(summary)
+    .bind(summary)
+    .bind(published)
+    .bind(published)
+    .bind(net_rating)
+    .bind(net_rating)
+    .bind(crate::schema::now())
+    .bind(id)
+    .execute(pool)
+    .await?;
     Ok(())
+}
+
+/// Books that have never had an online-metadata fetch, oldest-added first, up
+/// to `limit`. Drives the background backfill so tiles show real publication
+/// dates without opening each book.
+pub async fn needs_metadata(pool: &SqlitePool, limit: i64) -> Result<Vec<(i64, String, String)>> {
+    Ok(sqlx::query_as(
+        "SELECT id, title, author FROM books
+         WHERE missing = 0 AND trashed = 0 AND summary_fetched_at = 0
+         ORDER BY added_at ASC LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?)
 }
 
 /// Point a book at a new file path + clear its missing flag (relink a moved
@@ -197,7 +243,7 @@ pub async fn relink(pool: &SqlitePool, id: i64, new_path: &str) -> Result<()> {
 pub async fn authors(pool: &SqlitePool) -> Result<Vec<String>> {
     Ok(sqlx::query_scalar(
         "SELECT DISTINCT author FROM books
-         WHERE missing = 0 AND author != '' ORDER BY author COLLATE NOCASE",
+         WHERE missing = 0 AND trashed = 0 AND author != '' ORDER BY author COLLATE NOCASE",
     )
     .fetch_all(pool)
     .await?)
@@ -206,7 +252,7 @@ pub async fn authors(pool: &SqlitePool) -> Result<Vec<String>> {
 /// Distinct formats present in the library (for the format chips row).
 pub async fn formats(pool: &SqlitePool) -> Result<Vec<String>> {
     Ok(sqlx::query_scalar(
-        "SELECT DISTINCT format FROM books WHERE missing = 0 ORDER BY format",
+        "SELECT DISTINCT format FROM books WHERE missing = 0 AND trashed = 0 ORDER BY format",
     )
     .fetch_all(pool)
     .await?)
@@ -216,7 +262,7 @@ pub async fn formats(pool: &SqlitePool) -> Result<Vec<String>> {
 pub async fn format_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>> {
     Ok(sqlx::query_as(
         "SELECT format, COUNT(*) FROM books
-         WHERE missing = 0 AND format != '' GROUP BY format ORDER BY COUNT(*) DESC",
+         WHERE missing = 0 AND trashed = 0 AND format != '' GROUP BY format ORDER BY COUNT(*) DESC",
     )
     .fetch_all(pool)
     .await?)
@@ -226,7 +272,7 @@ pub async fn format_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>> {
 pub async fn genre_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>> {
     Ok(sqlx::query_as(
         "SELECT genre, COUNT(*) FROM books
-         WHERE missing = 0 AND genre != '' GROUP BY genre ORDER BY COUNT(*) DESC",
+         WHERE missing = 0 AND trashed = 0 AND genre != '' GROUP BY genre ORDER BY COUNT(*) DESC",
     )
     .fetch_all(pool)
     .await?)
@@ -236,7 +282,7 @@ pub async fn genre_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>> {
 pub async fn genres(pool: &SqlitePool) -> Result<Vec<String>> {
     Ok(sqlx::query_scalar(
         "SELECT DISTINCT genre FROM books
-         WHERE missing = 0 AND genre != '' ORDER BY genre COLLATE NOCASE",
+         WHERE missing = 0 AND trashed = 0 AND genre != '' ORDER BY genre COLLATE NOCASE",
     )
     .fetch_all(pool)
     .await?)
@@ -273,12 +319,54 @@ pub async fn remove(pool: &SqlitePool, id: i64) -> Result<()> {
     Ok(())
 }
 
+/// Soft-delete: flag trashed, remember where the file came from, and point the
+/// row at its new location inside the Trash dir. The caller moves the file.
+pub async fn trash(pool: &SqlitePool, id: i64, orig: &str, new_path: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE books SET trashed = 1, trashed_at = ?, orig_path = ?, path = ? WHERE id = ?",
+    )
+    .bind(crate::schema::now())
+    .bind(orig)
+    .bind(new_path)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// Restore a trashed book: return its stored `orig_path` (caller moves the file
+/// back), clear the trashed flag, and repoint the row.
+pub async fn restore(pool: &SqlitePool, id: i64) -> Result<String> {
+    let orig: String = sqlx::query_scalar("SELECT orig_path FROM books WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .unwrap_or_default();
+    let target = if orig.is_empty() { None } else { Some(orig.clone()) };
+    sqlx::query(
+        "UPDATE books SET trashed = 0, trashed_at = 0, orig_path = '',
+                path = COALESCE(?, path) WHERE id = ?",
+    )
+    .bind(target)
+    .bind(id)
+    .execute(pool)
+    .await?;
+    Ok(orig)
+}
+
+/// Count of books currently in the Trash (for the toolbar chip badge).
+pub async fn trashed_count(pool: &SqlitePool) -> Result<i64> {
+    Ok(sqlx::query_scalar("SELECT COUNT(*) FROM books WHERE trashed = 1")
+        .fetch_one(pool)
+        .await?)
+}
+
 /// Series with book counts, most-populous first (rail + grouping). Only series
 /// with 2+ books (a single-book "series" isn't one).
 pub async fn series_counts(pool: &SqlitePool) -> Result<Vec<(String, i64)>> {
     Ok(sqlx::query_as(
         "SELECT series, COUNT(*) FROM books
-         WHERE missing = 0 AND series != ''
+         WHERE missing = 0 AND trashed = 0 AND series != ''
          GROUP BY series HAVING COUNT(*) >= 2 ORDER BY COUNT(*) DESC, series COLLATE NOCASE",
     )
     .fetch_all(pool)
@@ -425,7 +513,7 @@ pub async fn reading_totals(pool: &SqlitePool) -> Result<(i64, i64, i64, i64)> {
         .await?;
     let days: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM reading_days").fetch_one(pool).await?;
     let finished: i64 =
-        sqlx::query_scalar("SELECT COUNT(*) FROM books WHERE missing = 0 AND finished = 1")
+        sqlx::query_scalar("SELECT COUNT(*) FROM books WHERE missing = 0 AND trashed = 0 AND finished = 1")
             .fetch_one(pool)
             .await?;
     let started: i64 = sqlx::query_scalar(
@@ -441,7 +529,7 @@ pub async fn time_per_book(pool: &SqlitePool, limit: i64) -> Result<Vec<(String,
     Ok(sqlx::query_as(
         "SELECT b.title, p.time_read_secs
          FROM progress p JOIN books b ON b.id = p.book_id
-         WHERE b.missing = 0 AND p.time_read_secs > 0
+         WHERE b.missing = 0 AND b.trashed = 0 AND p.time_read_secs > 0
          ORDER BY p.time_read_secs DESC LIMIT ?",
     )
     .bind(limit)

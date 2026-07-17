@@ -46,10 +46,13 @@ export struct BookTile {
     hue: color,
     rating: float,
     missing: bool,
+    trashed: bool,
 }
 
-// Hero "Continue Reading" card. `present` false → empty-state hero.
+// Hero "Continue Reading" card. `present` false → empty-state hero. One slide
+// of the up-to-5-book slider; Rust swaps the active slide on `hero-slide`.
 export struct BooksHero {
+    id: int,
     present: bool,
     title: string,
     author: string,
@@ -59,6 +62,10 @@ export struct BooksHero {
     total: int,
     percent: float,
     time-left: string,
+    // Decorative illustration (right side); the card picks the variant that
+    // matches the current theme so it reads on both light and dark cards.
+    art-light: image,
+    art-dark: image,
 }
 
 // One of the four stat cards (2×2).
@@ -113,10 +120,11 @@ component PillButton inherits Rectangle {
     in property <string> label;
     in property <image> icon;
     in property <bool> filled: false;
+    in property <bool> compact: false; // tighter header-bar sizing
     in property <color> accent: BookTheme.accent;
     callback clicked();
-    height: 40px;
-    border-radius: 20px;
+    height: compact ? 38px : 40px;
+    border-radius: self.height / 2;
     horizontal-stretch: 0;
     background: filled ? accent : BookTheme.card;
     border-width: filled ? 0px : 1.5px;
@@ -124,10 +132,12 @@ component PillButton inherits Rectangle {
     property <color> ink: filled ? #ffffff : accent;
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
-        padding-left: 16px; padding-right: 18px; spacing: 8px; alignment: center;
+        padding-left: compact ? 14px : 16px; padding-right: compact ? 15px : 18px;
+        spacing: compact ? 7px : 8px; alignment: center;
         VerticalLayout { alignment: center;
-            if root.icon.width > 0: AppIcon { source: root.icon; tint: root.ink; width: 18px; height: 18px; } }
-        Text { text: root.label; color: root.ink; font-size: 14px; font-weight: 700;
+            if root.icon.width > 0: AppIcon { source: root.icon; tint: root.ink;
+                width: compact ? 16px : 18px; height: compact ? 16px : 18px; } }
+        Text { text: root.label; color: root.ink; font-size: compact ? 13px : 14px; font-weight: 700;
             vertical-alignment: center; }
     }
     states [ hover when ta.has-hover: { background: filled ? accent.darker(0.08) : BookTheme.pill-bg; } ]
@@ -154,6 +164,56 @@ component FilterChip inherits Rectangle {
     }
     states [ hover when ta.has-hover && !active: { background: BookTheme.track; } ]
     animate background { duration: 100ms; }
+}
+
+// A collection/series row on the Collections / Series pages.
+component EntryCard inherits Rectangle {
+    in property <string> label;
+    in property <int> count;
+    in property <image> icon;
+    in property <bool> deletable: false;
+    callback clicked();
+    callback deleted();
+    height: 54px; border-radius: 12px;
+    background: eta.has-hover ? BookTheme.pill-bg : BookTheme.card;
+    border-width: 1px; border-color: BookTheme.hairline;
+    eta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 14px; padding-right: 12px; spacing: 12px; alignment: start;
+        VerticalLayout { alignment: center;
+            Rectangle { width: 34px; height: 34px; border-radius: 10px; background: BookTheme.tint-violet;
+                AppIcon { source: root.icon; tint: BookTheme.accent; width: 17px; height: 17px; } } }
+        VerticalLayout { alignment: center; horizontal-stretch: 1;
+            Text { text: root.label; color: BookTheme.ink; font-size: 14px; font-weight: 700; overflow: elide; }
+            Text { text: root.count + (root.count == 1 ? " book" : " books");
+                color: BookTheme.ink-dim; font-size: 11px; } }
+        if root.deletable: VerticalLayout { alignment: center;
+            Rectangle { width: 30px; height: 30px; border-radius: 8px;
+                background: dta.has-hover ? #e0518f.with-alpha(0.14) : transparent;
+                AppIcon { source: Icons.trash; tint: #d6336c; width: 15px; height: 15px; }
+                dta := TouchArea { mouse-cursor: pointer; clicked => { root.deleted(); } } } }
+        VerticalLayout { alignment: center;
+            AppIcon { source: Icons.chevron-right; tint: BookTheme.ink-dim; width: 16px; height: 16px; } }
+    }
+}
+
+// One row in the tile's ⋮ context menu.
+component MenuItem inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> danger: false;
+    callback clicked();
+    height: 34px; border-radius: 8px;
+    background: mta.has-hover ? (danger ? #e0518f.with-alpha(0.12) : BookTheme.pill-bg) : transparent;
+    property <color> ink: danger ? #d6336c : BookTheme.ink;
+    mta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 12px; spacing: 9px; alignment: start;
+        VerticalLayout { alignment: center;
+            AppIcon { source: root.icon; tint: root.ink; width: 15px; height: 15px; } }
+        Text { text: root.label; color: root.ink; font-size: 13px; font-weight: 500;
+            vertical-alignment: center; }
+    }
 }
 
 // Left cover artwork. When there's no cover image, draws a generated cover
@@ -271,12 +331,18 @@ component Stars inherits HorizontalLayout {
 // ── book grid tile (horizontal card: cover-left + details-right) ───────────────
 component GridTile inherits Rectangle {
     in property <BookTile> tile;
+    in property <[CollChip]> collections: [];
     callback open();
     callback favorite();
-    callback menu();
     callback rate(float);
     callback open-author();
+    callback open-location();
+    callback ask-delete();
+    callback restore();
+    callback delete-perm();
+    callback add-collection(int); // add this book to collection id
     border-radius: 14px;
+    clip: true; // keep every child inside the tile (meta row was overflowing)
     background: BookTheme.card;
     border-width: 1px;
     border-color: ta.has-hover ? BookTheme.accent.with-alpha(0.35) : BookTheme.hairline;
@@ -285,66 +351,139 @@ component GridTile inherits Rectangle {
     drop-shadow-color: BookTheme.shadow;
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
     HorizontalLayout {
-        padding: 14px; spacing: 14px;
-        // Cover.
+        padding: 13px; spacing: 13px;
+        // Cover (bigger thumb).
         Rectangle {
-            width: 74px;
-            Cover { width: 100%; height: 106px; source: tile.cover; percent: tile.percent;
+            width: 88px;
+            Cover { width: 100%; height: 124px; source: tile.cover; percent: tile.percent;
                 format: tile.format; title: tile.title; author: tile.author; hue: tile.hue; }
         }
-        // Details column.
+        // Details column. Meta cluster (date · rating · type · actions) is pinned
+        // to the bottom so it lines up across tiles; the title flexes above it.
         VerticalLayout {
             alignment: start; spacing: 4px; horizontal-stretch: 1;
-            // Title (leave room for the ⋮ button on its right).
+            // Title — up to 3 lines, shrinks if the cell is short.
             HorizontalLayout {
-                Text { text: tile.title; color: BookTheme.ink; font-size: 14px; font-weight: 700;
-                    wrap: word-wrap; overflow: elide; horizontal-stretch: 1; }
+                Rectangle { horizontal-stretch: 1; max-height: 48px; clip: true;
+                    Text { text: tile.title; width: 100%; color: BookTheme.ink; font-size: 14px;
+                        font-weight: 700; wrap: word-wrap; overflow: elide; } }
                 Rectangle { width: 26px; }
             }
-            // Author — click opens the author page.
+            // Author — plain text (2 lines), hover tints it for easy clicking.
             Rectangle {
-                height: 16px;
-                Text { text: tile.author; width: 100%; color: autht.has-hover ? BookTheme.accent : BookTheme.ink-dim;
-                    font-size: 12px; font-weight: 500; overflow: elide; vertical-alignment: center; }
+                height: 30px; clip: true;
+                HorizontalLayout {
+                    Text { text: tile.author; horizontal-stretch: 1;
+                        color: autht.has-hover ? BookTheme.accent : BookTheme.ink-dim;
+                        font-size: 12px; font-weight: 600; wrap: word-wrap; overflow: elide;
+                        vertical-alignment: center; } }
                 autht := TouchArea { mouse-cursor: pointer; clicked => { root.open-author(); } }
             }
-            // Format badge + date.
-            HorizontalLayout {
-                alignment: start; spacing: 8px;
-                Rectangle {
-                    height: 18px; border-radius: 6px; background: BookTheme.pill-bg;
-                    HorizontalLayout { padding-left: 7px; padding-right: 7px;
-                        Text { text: tile.format; color: BookTheme.ink-dim; font-size: 9px;
-                            font-weight: 700; vertical-alignment: center; } }
-                }
-                if tile.date != "": HorizontalLayout {
-                    spacing: 4px;
-                    VerticalLayout { alignment: center;
-                        AppIcon { source: Icons.calendar; tint: BookTheme.ink-dim; width: 11px; height: 11px; } }
-                    Text { text: tile.date; color: BookTheme.ink-dim; font-size: 10px; vertical-alignment: center; }
+            // Push the meta cluster to the bottom (consistent across tiles).
+            Rectangle { vertical-stretch: 1; }
+            // Publication date line.
+            Text { text: "Publication Date : " + (tile.date != "" ? tile.date : "—");
+                color: BookTheme.ink-dim; font-size: 11px; font-weight: 500;
+                overflow: elide; }
+            // Full-width rating pill — stars spread across the whole width.
+            Rectangle {
+                height: 26px; border-radius: 13px;
+                background: tile.rating > 0 ? #f5a623.with-alpha(0.16) : BookTheme.pill-bg;
+                HorizontalLayout {
+                    padding-left: 14px; padding-right: 14px; alignment: space-between;
+                    for i in [1, 2, 3, 4, 5]: TouchArea {
+                        width: 22px; mouse-cursor: pointer;
+                        clicked => { root.rate(i == root.tile.rating ? 0 : i); }
+                        AppIcon { source: i <= root.tile.rating ? Icons.star-filled : Icons.star;
+                            tint: i <= root.tile.rating ? #f5a623 : BookTheme.ink-dim.with-alpha(0.55);
+                            width: 18px; height: 18px;
+                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                    }
                 }
             }
-            // Local rating (click a star to set).
+            // File type (left) · add-to-collection (⊕) · favorite (♥) (right).
             HorizontalLayout {
-                alignment: start; spacing: 6px;
-                Stars { rating: tile.rating; rate(v) => { root.rate(v); } }
-                if tile.rating > 0: Text { text: tile.rating; color: BookTheme.ink-dim;
-                    font-size: 11px; font-weight: 600; vertical-alignment: center; }
+                spacing: 6px; alignment: space-between;
+                VerticalLayout { alignment: center;
+                    Rectangle {
+                        height: 20px; border-radius: 6px; background: BookTheme.pill-bg;
+                        HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                            Text { text: tile.format; color: BookTheme.ink-dim; font-size: 10px;
+                                font-weight: 700; vertical-alignment: center; } }
+                    } }
+                HorizontalLayout { spacing: 2px; alignment: end;
+                    // ⊕ add-to-collection.
+                    Rectangle { width: 26px; height: 26px; border-radius: 8px;
+                        background: plusta.has-hover ? BookTheme.pill-bg : transparent;
+                        AppIcon { source: Icons.plus; tint: BookTheme.ink-dim; width: 16px; height: 16px;
+                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                        plusta := TouchArea { mouse-cursor: pointer; clicked => { coll-add.show(); } }
+                        coll-add := PopupWindow {
+                            x: parent.width - 210px; y: parent.height + 4px; width: 210px;
+                            Rectangle {
+                                background: BookTheme.card; border-radius: 12px;
+                                border-width: 1px; border-color: BookTheme.hairline;
+                                drop-shadow-blur: 18px; drop-shadow-color: #00000033;
+                                VerticalLayout {
+                                    padding: 8px; spacing: 2px;
+                                    Text { text: "Add to collection"; color: BookTheme.ink-dim;
+                                        font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+                                    for c in root.collections: MenuItem {
+                                        label: c.name; icon: Icons.bookmark;
+                                        clicked => { root.add-collection(c.id); coll-add.close(); } }
+                                    if root.collections.length == 0: Text {
+                                        text: "No collections yet — create one\nin the Collections tab.";
+                                        color: BookTheme.ink-dim; font-size: 11px; wrap: word-wrap; }
+                                }
+                            }
+                        }
+                    }
+                    // ♥ favorite.
+                    fav-ta := TouchArea {
+                        width: 30px; height: 26px; mouse-cursor: pointer;
+                        clicked => { root.favorite(); }
+                        AppIcon { source: tile.favorite ? Icons.heart-filled : Icons.heart;
+                            tint: tile.favorite ? #e0518f : BookTheme.ink-dim; width: 18px; height: 18px;
+                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                    }
+                }
             }
         }
     }
-    // Overflow menu (top-right).
-    menu-ta := TouchArea {
+    // Overflow context menu (top-right).
+    Rectangle {
         x: parent.width - 34px; y: 10px; width: 26px; height: 26px;
-        mouse-cursor: pointer; clicked => { root.menu(); }
         AppIcon { source: Icons.ellipsis; tint: BookTheme.ink-dim; width: 16px; height: 16px; }
-    }
-    // Bookmark / favorite (bottom-right).
-    fav-ta := TouchArea {
-        x: parent.width - 34px; y: parent.height - 34px; width: 26px; height: 26px;
-        mouse-cursor: pointer; clicked => { root.favorite(); }
-        AppIcon { source: Icons.bookmark;
-            tint: tile.favorite ? BookTheme.accent : BookTheme.ink-dim; width: 16px; height: 16px; }
+        TouchArea { mouse-cursor: pointer; clicked => { ctx-menu.show(); } }
+        ctx-menu := PopupWindow {
+            x: parent.width - 200px; y: parent.height + 4px; width: 200px;
+            Rectangle {
+                background: BookTheme.card; border-radius: 12px;
+                border-width: 1px; border-color: BookTheme.hairline;
+                drop-shadow-blur: 18px; drop-shadow-color: #00000033;
+                VerticalLayout {
+                    padding: 6px; spacing: 2px;
+                    // Library vs. trash view. Delete confirmation is a page-level
+                    // modal (reactive state inside a PopupWindow is unreliable).
+                    if !root.tile.trashed: MenuItem {
+                        label: "Open Location"; icon: Icons.folder-open;
+                        clicked => { root.open-location(); ctx-menu.close(); } }
+                    if !root.tile.trashed: MenuItem {
+                        label: root.tile.favorite ? "Remove Favorite" : "Add to Favorites";
+                        icon: Icons.bookmark;
+                        clicked => { root.favorite(); ctx-menu.close(); } }
+                    if !root.tile.trashed: MenuItem {
+                        label: "Delete from Library"; icon: Icons.trash; danger: true;
+                        clicked => { ctx-menu.close(); root.ask-delete(); } }
+                    if root.tile.trashed: MenuItem {
+                        label: "Restore to Library"; icon: Icons.rotate-ccw;
+                        clicked => { root.restore(); ctx-menu.close(); } }
+                    if root.tile.trashed: MenuItem {
+                        label: "Delete Permanently"; icon: Icons.trash; danger: true;
+                        clicked => { root.delete-perm(); ctx-menu.close(); } }
+                }
+            }
+        }
     }
 }
 
@@ -419,8 +558,17 @@ export component BooksPage inherits Rectangle {
     // Rotating hue palette for the genre chips.
     property <[color]> genre-hues: [#6c4df6, #e0518f, #2fbf71, #f5a623, #3a86ff, #b5179e];
     in property <int> book-count: 0;
+    // Number of books in the CURRENT filter (author banner count, etc.).
+    in property <int> filtered-count: 0;
     in property <int> page: 1;
     in property <int> page-count: 1;
+    // Which main panel is showing: "library" | "collections" | "series".
+    property <string> panel: "library";
+    // Move-to-Trash confirmation modal (-1 = closed).
+    property <int> confirm-trash-id: -1;
+    property <string> confirm-trash-title: "";
+    // Name of the active collection (for its banner); set on pick.
+    property <string> active-collection-name: "";
     in property <string> active-file-type: "";
     in property <string> active-quick: "all";
     in property <string> active-genre: "";
@@ -440,10 +588,21 @@ export component BooksPage inherits Rectangle {
     callback search(string);
     callback resume();
     callback hero-details();
+    // Hero slider: how many in-progress slides, which is active, and step ±1
+    // (Rust swaps `hero` + updates the index).
+    in property <int> hero-count: 0;
+    in property <int> hero-index: 0;
+    callback hero-slide(int);
     callback add-books();
     callback open-details(int);
     callback toggle-favorite(int);
     callback card-menu-action(int, string);
+    // Context-menu actions + Trash.
+    callback open-location(int);
+    callback trash-book(int);
+    callback restore-book(int);
+    callback delete-perm(int);
+    in property <int> trashed-count: 0;
     callback set-file-type(string);
     callback set-sort(string);
     callback set-view-mode(string);
@@ -485,7 +644,9 @@ export component BooksPage inherits Rectangle {
     in property <string> detail-series: "";
     in property <string> detail-size: "";
     in property <string> detail-added: "";
+    in property <string> detail-published: "";
     in property <float> detail-rating: 0;
+    in property <float> detail-net-rating: 0; // fetched average (detail-only)
     in property <float> detail-percent: 0;
     in property <string> detail-summary: "";
     in property <bool> detail-summary-loading: false;
@@ -507,18 +668,21 @@ export component BooksPage inherits Rectangle {
             VerticalLayout { alignment: center; horizontal-stretch: 0;
                 Text { text: "My Library"; color: BookTheme.ink; font-size: 26px; font-weight: 800;
                     vertical-alignment: center; } }
-            // search pill
+            // search box — solid bordered field (was a near-invisible pill)
             Rectangle {
-                horizontal-stretch: 1; max-width: 460px; height: 44px; border-radius: 22px;
-                background: BookTheme.pill-bg;
+                horizontal-stretch: 1; max-width: 460px; height: 42px; border-radius: 21px;
+                background: BookTheme.card;
+                border-width: 1.5px;
+                border-color: ti.has-focus ? BookTheme.accent.with-alpha(0.55) : BookTheme.hairline;
+                animate border-color { duration: 120ms; }
                 HorizontalLayout {
-                    padding-left: 16px; padding-right: 16px; spacing: 10px; alignment: start;
+                    padding-left: 16px; padding-right: 10px; spacing: 10px; alignment: start;
                     VerticalLayout { alignment: center;
                         AppIcon { source: Icons.search; tint: BookTheme.ink-dim; width: 18px; height: 18px; } }
                     Rectangle {
                         horizontal-stretch: 1;
                         // Placeholder sits behind; input is on top in z-order.
-                        if root.search-text == "": Text { text: "Search by title, author, genre";
+                        if root.search-text == "": Text { text: "Search by title, author, genre…";
                             x: 0; color: BookTheme.ink-dim; font-size: 14px;
                             vertical-alignment: center; horizontal-alignment: left; }
                         ti := TextInput {
@@ -531,51 +695,53 @@ export component BooksPage inherits Rectangle {
                         }
                     }
                     // Content-search toggle: search inside book text (FTS).
-                    Rectangle {
-                        width: 30px; height: 30px; border-radius: 8px; y: (parent.height - 30px) / 2;
-                        background: root.search-contents ? BookTheme.accent.with-alpha(0.16) : transparent;
-                        AppIcon { source: Icons.file-text;
-                            tint: root.search-contents ? BookTheme.accent : BookTheme.ink-dim;
-                            width: 17px; height: 17px; }
-                        TouchArea { mouse-cursor: pointer;
-                            clicked => { root.set-search-contents(!root.search-contents); } }
-                    }
+                    VerticalLayout { alignment: center;
+                        Rectangle {
+                            width: 30px; height: 30px; border-radius: 8px;
+                            background: root.search-contents ? BookTheme.accent.with-alpha(0.16) : transparent;
+                            AppIcon { source: Icons.file-text;
+                                tint: root.search-contents ? BookTheme.accent : BookTheme.ink-dim;
+                                width: 17px; height: 17px; }
+                            TouchArea { mouse-cursor: pointer;
+                                clicked => { root.set-search-contents(!root.search-contents); } }
+                        } }
+                    // ⌘K hint badge.
+                    VerticalLayout { alignment: center;
+                        Rectangle { width: 34px; height: 22px; border-radius: 6px; background: BookTheme.pill-bg;
+                            Text { text: "⌘K"; color: BookTheme.ink-dim; font-size: 11px; font-weight: 600;
+                                horizontal-alignment: center; vertical-alignment: center; } } }
                 }
             }
-            PillButton { label: "Stats"; icon: Icons.clock;
+            PillButton { label: "Stats"; icon: Icons.clock; compact: true;
                 clicked => { root.open-stats(); } }
-            PillButton { label: "Add books"; icon: Icons.plus; filled: true;
+            PillButton { label: "Add books"; icon: Icons.plus; filled: true; compact: true;
                 clicked => { root.add-books(); } }
-            // count pill
-            Rectangle { height: 40px; border-radius: 20px; background: BookTheme.card;
-                border-width: 1.5px; border-color: BookTheme.hairline;
-                HorizontalLayout { padding-left: 16px; padding-right: 16px;
-                    Text { text: root.book-count + " books"; color: BookTheme.ink-dim;
-                        font-size: 13px; font-weight: 600; vertical-alignment: center; } } }
         }
 
         // ── hero row ────────────────────────────────────────────────────────
         HorizontalLayout {
             spacing: 20px; height: 210px;
-            // continue-reading card
+            // continue-reading card — slider over up-to-5 in-progress books
             Card {
                 horizontal-stretch: 1;
+                clip: true;
                 if root.hero.present: HorizontalLayout {
                     padding: 16px; spacing: 18px;
                     Cover { width: 130px; source: root.hero.cover;
                         title: root.hero.title; author: root.hero.author; hue: root.hero.hue; }
                     VerticalLayout {
-                        alignment: center; spacing: 6px;
+                        alignment: center; spacing: 6px; horizontal-stretch: 1;
                         Text { text: "CONTINUE READING"; color: BookTheme.accent; font-size: 11px;
                             font-weight: 700; letter-spacing: 1px; }
                         Text { text: root.hero.title; color: BookTheme.ink; font-size: 24px;
                             font-weight: 800; overflow: elide; }
                         Text { text: root.hero.author; color: BookTheme.ink-dim; font-size: 14px;
                             font-weight: 500; overflow: elide; }
-                        // progress
-                        Rectangle { height: 4px; border-radius: 2px; background: BookTheme.track;
-                            Rectangle { x: 0; width: parent.width * root.hero.percent / 100; height: 4px;
-                                border-radius: 2px; background: BookTheme.accent; } }
+                        // progress — thicker (2×) but shorter so the art has room
+                        HorizontalLayout { alignment: start;
+                            Rectangle { width: 280px; height: 10px; border-radius: 5px; background: BookTheme.track;
+                                Rectangle { x: 0; width: parent.width * root.hero.percent / 100; height: 10px;
+                                    border-radius: 5px; background: BookTheme.accent; } } }
                         Text { color: BookTheme.ink-dim; font-size: 12px;
                             text: "Page " + root.hero.page + " of " + root.hero.total + " • "
                                 + Math.round(root.hero.percent) + "%   " + root.hero.time-left; }
@@ -584,9 +750,35 @@ export component BooksPage inherits Rectangle {
                             PillButton { label: "Resume"; icon: Icons.book-open; filled: true;
                                 clicked => { root.resume(); } }
                             PillButton { label: "Details";
-                                clicked => { root.hero-details(); } }
+                                clicked => { root.show-detail(root.hero.id); } }
+                            // slide dots
+                            if root.hero-count > 1: VerticalLayout { alignment: center;
+                                HorizontalLayout { spacing: 5px;
+                                    for i in root.hero-count: Rectangle {
+                                        width: 7px; height: 7px; border-radius: 4px;
+                                        background: i == root.hero-index
+                                            ? BookTheme.accent : BookTheme.track; } } }
                         }
                     }
+                    // decorative art (right) — theme-matched variant
+                    if root.hero.art-light.width > 0: VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Image { source: BookTheme.dark ? root.hero.art-dark : root.hero.art-light;
+                            image-fit: contain; width: 220px; height: 170px; } }
+                }
+                // ← / → slider arrows (only when >1 in-progress book)
+                if root.hero.present && root.hero-count > 1: Rectangle {
+                    x: 8px; y: (parent.height - 34px) / 2; width: 34px; height: 34px; border-radius: 17px;
+                    background: la.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                    border-width: 1px; border-color: BookTheme.hairline;
+                    AppIcon { source: Icons.chevron-left; tint: BookTheme.ink; width: 18px; height: 18px; }
+                    la := TouchArea { mouse-cursor: pointer; clicked => { root.hero-slide(-1); } }
+                }
+                if root.hero.present && root.hero-count > 1: Rectangle {
+                    x: parent.width - 42px; y: (parent.height - 34px) / 2; width: 34px; height: 34px; border-radius: 17px;
+                    background: ra.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                    border-width: 1px; border-color: BookTheme.hairline;
+                    AppIcon { source: Icons.chevron-right; tint: BookTheme.ink; width: 18px; height: 18px; }
+                    ra := TouchArea { mouse-cursor: pointer; clicked => { root.hero-slide(1); } }
                 }
                 if !root.hero.present: VerticalLayout {
                     alignment: center; spacing: 6px;
@@ -638,54 +830,39 @@ export component BooksPage inherits Rectangle {
                     height: 60px;
                     HorizontalLayout {
                         padding-left: 14px; padding-right: 14px; spacing: 8px;
-                        // Status chips.
+                        // Status chips. Tabs are mutually exclusive: "All" only
+                        // lights up when no series/collection/author filter is on.
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
-                            FilterChip { label: "All"; active: root.active-quick == "all" || root.active-quick == "";
-                                clicked => { root.quick-filter("all"); } } }
+                            FilterChip { label: "All";
+                                active: root.panel == "library" && (root.active-quick == "all" || root.active-quick == "")
+                                    && root.active-series == "" && root.active-collection == 0 && root.active-author == "";
+                                clicked => { root.panel = "library"; root.quick-filter("all"); } } }
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
-                            FilterChip { label: "Reading"; active: root.active-quick == "reading";
-                                clicked => { root.quick-filter("reading"); } } }
+                            FilterChip { label: "Reading"; active: root.panel == "library" && root.active-quick == "reading";
+                                clicked => { root.panel = "library"; root.quick-filter("reading"); } } }
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
-                            FilterChip { label: "Unread"; active: root.active-quick == "unread";
-                                clicked => { root.quick-filter("unread"); } } }
+                            FilterChip { label: "Unread"; active: root.panel == "library" && root.active-quick == "unread";
+                                clicked => { root.panel = "library"; root.quick-filter("unread"); } } }
+                        // Collections page (left of Favorites).
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
-                            FilterChip { label: "Favorites"; active: root.active-quick == "favorites";
-                                clicked => { root.quick-filter("favorites"); } } }
+                            FilterChip { label: "Collections"; count: root.collections.length;
+                                active: root.panel == "collections";
+                                clicked => { root.panel = "collections"; } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            FilterChip { label: "Favorites"; active: root.panel == "library" && root.active-quick == "favorites";
+                                clicked => { root.panel = "library"; root.quick-filter("favorites"); } } }
+                        // Series page (left of Trash).
+                        if root.series.length > 0: VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            FilterChip { label: "Series"; count: root.series.length;
+                                active: root.panel == "series";
+                                clicked => { root.panel = "series"; } } }
+                        // Trash view (soft-deleted books; restore from the ⋮ menu).
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            FilterChip { label: "Trash"; count: root.trashed-count;
+                                active: root.panel == "library" && root.active-quick == "trashed";
+                                clicked => { root.panel = "library"; root.quick-filter("trashed"); } } }
                         Rectangle { horizontal-stretch: 1; }
-                        // File type dropdown.
-                        VerticalLayout { alignment: center; horizontal-stretch: 0;
-                            Text { text: "File type"; color: BookTheme.ink-dim; font-size: 12px; vertical-alignment: center; } }
-                        VerticalLayout { alignment: center; horizontal-stretch: 0;
-                            ComboBox {
-                                model: root.file-type-options;
-                                selected(v) => { root.set-file-type(v); }
-                            } }
-                        // Sort dropdown.
-                        VerticalLayout { alignment: center; horizontal-stretch: 0;
-                            Text { text: "Sort by"; color: BookTheme.ink-dim; font-size: 12px; vertical-alignment: center; } }
-                        VerticalLayout { alignment: center; horizontal-stretch: 0;
-                            ComboBox {
-                                model: root.sort-options;
-                                current-index: root.sort-index;
-                                selected(v) => { root.set-sort(v); }
-                            } }
-                        // View toggle.
-                        VerticalLayout { alignment: center; horizontal-stretch: 0;
-                            HorizontalLayout { spacing: 2px;
-                                grid-btn := Rectangle { width: 34px; height: 34px; border-radius: 8px;
-                                    background: root.view-mode == "grid" ? BookTheme.tint-violet : transparent;
-                                    AppIcon { source: Icons.layout-grid;
-                                        tint: root.view-mode == "grid" ? BookTheme.accent : BookTheme.ink-dim;
-                                        width: 18px; height: 18px; }
-                                    TouchArea { mouse-cursor: pointer; clicked => { root.set-view-mode("grid"); } } }
-                                list-btn := Rectangle { width: 34px; height: 34px; border-radius: 8px;
-                                    background: root.view-mode == "list" ? BookTheme.tint-violet : transparent;
-                                    AppIcon { source: Icons.list-music;
-                                        tint: root.view-mode == "list" ? BookTheme.accent : BookTheme.ink-dim;
-                                        width: 18px; height: 18px; }
-                                    TouchArea { mouse-cursor: pointer; clicked => { root.set-view-mode("list"); } } }
-                            } }
-                        // Filters button.
+                        // Filters button — now holds File type + Sort in a popover.
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
                             Rectangle {
                                 height: 36px; border-radius: 18px; background: fta.has-hover ? BookTheme.pill-bg : BookTheme.card;
@@ -694,7 +871,32 @@ export component BooksPage inherits Rectangle {
                                     VerticalLayout { alignment: center;
                                         AppIcon { source: Icons.sliders; tint: BookTheme.accent; width: 15px; height: 15px; } }
                                     Text { text: "Filters"; color: BookTheme.accent; font-size: 13px; font-weight: 700; vertical-alignment: center; } }
-                                fta := TouchArea { mouse-cursor: pointer; }
+                                fta := TouchArea { mouse-cursor: pointer; clicked => { filters-popup.show(); } }
+                                filters-popup := PopupWindow {
+                                    // no-auto-close: a ComboBox opens its own popup, which would
+                                    // otherwise count as an outside-click and dismiss this one.
+                                    close-policy: no-auto-close;
+                                    x: parent.width - 260px; y: parent.height + 6px; width: 260px;
+                                    Rectangle {
+                                        background: BookTheme.card; border-radius: 12px;
+                                        border-width: 1px; border-color: BookTheme.hairline;
+                                        drop-shadow-blur: 16px; drop-shadow-color: #0000002e;
+                                        VerticalLayout {
+                                            padding: 14px; spacing: 8px;
+                                            Text { text: "File type"; color: BookTheme.ink-dim; font-size: 12px; font-weight: 600; }
+                                            ComboBox { model: root.file-type-options;
+                                                selected(v) => { root.set-file-type(v); } }
+                                            Text { text: "Sort by"; color: BookTheme.ink-dim; font-size: 12px; font-weight: 600; }
+                                            ComboBox { model: root.sort-options; current-index: root.sort-index;
+                                                selected(v) => { root.set-sort(v); } }
+                                            Rectangle { height: 2px; }
+                                            Rectangle { height: 36px; border-radius: 18px; background: BookTheme.accent;
+                                                Text { text: "Apply"; color: #ffffff; font-size: 13px; font-weight: 700;
+                                                    horizontal-alignment: center; vertical-alignment: center; }
+                                                TouchArea { mouse-cursor: pointer; clicked => { filters-popup.close(); } } }
+                                        }
+                                    }
+                                }
                             } }
                         // Pagination (moved from below the grid) — prev · p/N · next.
                         if root.page-count > 1: VerticalLayout { alignment: center; horizontal-stretch: 0;
@@ -725,7 +927,7 @@ export component BooksPage inherits Rectangle {
                     VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 1px;
                         Text { text: "Books by " + root.active-author; color: BookTheme.ink;
                             font-size: 20px; font-weight: 800; overflow: elide; }
-                        Text { text: root.book-count + (root.book-count == 1 ? " book" : " books");
+                        Text { text: root.filtered-count + (root.filtered-count == 1 ? " book" : " books");
                             color: BookTheme.ink-dim; font-size: 12px; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
                         Rectangle {
@@ -739,8 +941,54 @@ export component BooksPage inherits Rectangle {
                             cba := TouchArea { mouse-cursor: pointer; clicked => { root.open-author(""); } }
                         } }
                 }
-                // grid (scrollable)
-                sv := ScrollView {
+                // Series filter banner.
+                if root.panel == "library" && root.active-series != "": HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Rectangle { width: 40px; height: 40px; border-radius: 20px; background: BookTheme.tint-violet;
+                            AppIcon { source: Icons.book-open; tint: BookTheme.accent; width: 20px; height: 20px; } } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 1px;
+                        Text { text: "Series · " + root.active-series; color: BookTheme.ink;
+                            font-size: 20px; font-weight: 800; overflow: elide; }
+                        Text { text: root.filtered-count + (root.filtered-count == 1 ? " book" : " books");
+                            color: BookTheme.ink-dim; font-size: 12px; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Rectangle {
+                            height: 38px; border-radius: 19px; background: sba.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                            border-width: 1.5px; border-color: BookTheme.hairline;
+                            HorizontalLayout { padding-left: 14px; padding-right: 16px; spacing: 6px; alignment: center;
+                                VerticalLayout { alignment: center;
+                                    AppIcon { source: Icons.x; tint: BookTheme.ink-dim; width: 14px; height: 14px; } }
+                                Text { text: "All books"; color: BookTheme.ink; font-size: 13px;
+                                    font-weight: 600; vertical-alignment: center; } }
+                            sba := TouchArea { mouse-cursor: pointer; clicked => { root.quick-filter("all"); } }
+                        } }
+                }
+                // Collection filter banner.
+                if root.panel == "library" && root.active-collection > 0: HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Rectangle { width: 40px; height: 40px; border-radius: 20px; background: BookTheme.tint-violet;
+                            AppIcon { source: Icons.bookmark; tint: BookTheme.accent; width: 20px; height: 20px; } } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 1px;
+                        Text { text: "Collection · " + root.active-collection-name; color: BookTheme.ink;
+                            font-size: 20px; font-weight: 800; overflow: elide; }
+                        Text { text: root.filtered-count + (root.filtered-count == 1 ? " book" : " books");
+                            color: BookTheme.ink-dim; font-size: 12px; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Rectangle {
+                            height: 38px; border-radius: 19px; background: cbb.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                            border-width: 1.5px; border-color: BookTheme.hairline;
+                            HorizontalLayout { padding-left: 14px; padding-right: 16px; spacing: 6px; alignment: center;
+                                VerticalLayout { alignment: center;
+                                    AppIcon { source: Icons.x; tint: BookTheme.ink-dim; width: 14px; height: 14px; } }
+                                Text { text: "All books"; color: BookTheme.ink; font-size: 13px;
+                                    font-weight: 600; vertical-alignment: center; } }
+                            cbb := TouchArea { mouse-cursor: pointer; clicked => { root.quick-filter("all"); } }
+                        } }
+                }
+                // grid (scrollable) — only in the library panel
+                if root.panel == "library": sv := ScrollView {
                     vertical-stretch: 1;
                     // Reset scroll to top when the page changes (ScrollView keeps a
                     // stale viewport-y otherwise).
@@ -761,11 +1009,16 @@ export component BooksPage inherits Rectangle {
                             y: Math.floor(idx / grid.cols) * (grid.cell-h + grid.gap);
                             width: grid.cell-w; height: grid.cell-h;
                             tile: tile;
+                            collections: root.collections;
+                            add-collection(cid) => { root.collection-toggle(tile.id, cid); }
                             open => { root.show-detail(tile.id); }
                             favorite => { root.toggle-favorite(tile.id); }
-                            menu => { root.card-menu-action(tile.id, "menu"); }
                             rate(v) => { root.set-rating(tile.id, v); }
                             open-author => { root.open-author(tile.author); }
+                            open-location => { root.open-location(tile.id); }
+                            ask-delete => { root.confirm-trash-id = tile.id; root.confirm-trash-title = tile.title; }
+                            restore => { root.restore-book(tile.id); }
+                            delete-perm => { root.delete-perm(tile.id); }
                         }
                         if tiles.length == 0: VerticalLayout {
                             alignment: center; spacing: 8px;
@@ -781,6 +1034,44 @@ export component BooksPage inherits Rectangle {
                                     : "Add a folder to start your library";
                                 color: BookTheme.ink-dim; font-size: 13px; horizontal-alignment: center; }
                         }
+                    }
+                }
+                // Collections page.
+                if root.panel == "collections": VerticalLayout {
+                    vertical-stretch: 1; spacing: 12px;
+                    HorizontalLayout { spacing: 8px;
+                        newcol := LineEdit { placeholder-text: "New collection…"; horizontal-stretch: 1;
+                            accepted(t) => { root.collection-create(t); self.text = ""; } }
+                        Rectangle { width: 96px; height: 36px; border-radius: 10px; background: BookTheme.accent;
+                            HorizontalLayout { alignment: center; spacing: 6px;
+                                VerticalLayout { alignment: center;
+                                    AppIcon { source: Icons.plus; tint: #ffffff; width: 15px; height: 15px; } }
+                                Text { text: "Create"; color: #ffffff; font-size: 13px; font-weight: 700;
+                                    vertical-alignment: center; } }
+                            TouchArea { mouse-cursor: pointer;
+                                clicked => { root.collection-create(newcol.text); newcol.text = ""; } } }
+                    }
+                    clsv := ScrollView { vertical-stretch: 1;
+                        VerticalLayout { width: clsv.visible-width; spacing: 8px;
+                            for c in root.collections: EntryCard {
+                                label: c.name; count: c.count; icon: Icons.bookmark;
+                                clicked => { root.active-collection-name = c.name; root.collection-filter(c.id); root.panel = "library"; }
+                                deletable: true;
+                                deleted => { root.collection-delete(c.id); } }
+                            if root.collections.length == 0: Text { text: "No collections yet — create one above.";
+                                color: BookTheme.ink-dim; font-size: 13px; }
+                        }
+                    }
+                }
+                // Series page.
+                if root.panel == "series": srsv := ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout { width: srsv.visible-width; spacing: 8px;
+                        for sr in root.series: EntryCard {
+                            label: sr.label; count: sr.count; icon: Icons.book-open;
+                            clicked => { root.series-filter(sr.key); root.panel = "library"; } }
+                        if root.series.length == 0: Text { text: "No series in your library.";
+                            color: BookTheme.ink-dim; font-size: 13px; }
                     }
                 }
             }
@@ -823,38 +1114,41 @@ export component BooksPage inherits Rectangle {
                                 hue: root.genre-hues[Math.mod(i, root.genre-hues.length)];
                                 clicked => { root.genre-filter(g.key); } }
                         }
-                        // Series (2+ books) — filter like genres.
-                        if root.series.length > 0: RailBlock { title: "SERIES";
-                            for sr in root.series: RailRow {
-                                label: sr.label; count: sr.count; active: root.active-series == sr.key;
-                                icon: Icons.book-open; icon-tint: BookTheme.accent;
-                                clicked => { root.series-filter(sr.key); } } }
-                        // Collections — user shelves + inline create.
-                        VerticalLayout {
-                            spacing: 6px;
-                            Text { text: "COLLECTIONS"; color: BookTheme.ink-dim; font-size: 11px;
-                                font-weight: 700; letter-spacing: 0.6px; vertical-alignment: center; }
-                            for c in root.collections: RailRow {
-                                label: c.name; count: c.count; active: root.active-collection == c.id;
-                                icon: Icons.bookmark; icon-tint: BookTheme.accent;
-                                clicked => { root.collection-filter(c.id); } }
-                            HorizontalLayout {
-                                spacing: 6px;
-                                newcol := LineEdit {
-                                    placeholder-text: "New collection…";
-                                    horizontal-stretch: 1;
-                                    accepted(t) => { root.collection-create(t); self.text = ""; }
-                                }
-                                Rectangle {
-                                    width: 34px; height: 34px; border-radius: 8px; background: BookTheme.accent;
-                                    AppIcon { source: Icons.plus; tint: #ffffff; width: 16px; height: 16px; }
-                                    TouchArea { mouse-cursor: pointer;
-                                        clicked => { root.collection-create(newcol.text); newcol.text = ""; } }
-                                }
-                            }
-                        }
+                        // Series + Collections moved to the toolbar dropdowns.
                         Rectangle { height: 4px; }
                     }
+                }
+            }
+        }
+    }
+
+    // ── Move-to-Trash confirmation modal ───────────────────────────────────────
+    if root.confirm-trash-id >= 0: Rectangle {
+        width: 100%; height: 100%; background: #00000066;
+        TouchArea { clicked => { root.confirm-trash-id = -1; } }
+        Rectangle {
+            x: (root.width - self.width) / 2; y: (root.height - self.height) / 2;
+            width: 380px; height: 190px; border-radius: 18px; background: BookTheme.card;
+            drop-shadow-blur: 30px; drop-shadow-color: #00000044;
+            TouchArea {} // swallow clicks so the backdrop doesn't dismiss
+            VerticalLayout {
+                padding: 22px; spacing: 10px;
+                Text { text: "Move to Trash?"; color: BookTheme.ink; font-size: 18px; font-weight: 800; }
+                Text { text: root.confirm-trash-title; color: BookTheme.ink-dim; font-size: 13px;
+                    wrap: word-wrap; overflow: elide; horizontal-stretch: 1; }
+                Text { text: "The file moves to the app Trash. You can restore it later.";
+                    color: BookTheme.ink-dim; font-size: 12px; wrap: word-wrap; }
+                Rectangle { vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end;
+                    Rectangle { width: 100px; height: 38px; border-radius: 10px; background: BookTheme.pill-bg;
+                        Text { text: "Cancel"; color: BookTheme.ink; font-size: 13px; font-weight: 700;
+                            horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea { mouse-cursor: pointer; clicked => { root.confirm-trash-id = -1; } } }
+                    Rectangle { width: 130px; height: 38px; border-radius: 10px; background: #d6336c;
+                        Text { text: "Move to Trash"; color: #ffffff; font-size: 13px; font-weight: 700;
+                            horizontal-alignment: center; vertical-alignment: center; }
+                        TouchArea { mouse-cursor: pointer;
+                            clicked => { root.trash-book(root.confirm-trash-id); root.confirm-trash-id = -1; } } }
                 }
             }
         }
@@ -916,11 +1210,24 @@ export component BooksPage inherits Rectangle {
                         + (root.detail-added != "" ? "  ·  " + root.detail-added : "");
                     color: BookTheme.ink-dim; font-size: 12px; wrap: word-wrap;
                 }
+                Text { text: "Publication Date : " + (root.detail-published != "" ? root.detail-published : "—");
+                    color: BookTheme.ink-dim; font-size: 12px; }
                 if root.detail-series != "": Text { text: "Series: " + root.detail-series;
                     color: BookTheme.accent; font-size: 12px; font-weight: 600;
                     TouchArea { mouse-cursor: pointer;
                         clicked => { root.detail-open = false; root.series-filter(root.detail-series); } } }
-                Stars { rating: root.detail-rating; rate(v) => { root.set-rating(root.detail-id, v); } }
+                HorizontalLayout { spacing: 12px; alignment: start;
+                    VerticalLayout { alignment: center;
+                        Stars { rating: root.detail-rating; rate(v) => { root.set-rating(root.detail-id, v); } } }
+                    // Fetched average rating (read-only) — detail popup only.
+                    if root.detail-net-rating > 0: VerticalLayout { alignment: center;
+                        Rectangle { height: 22px; border-radius: 11px; background: #f5a623.with-alpha(0.16);
+                            HorizontalLayout { padding-left: 9px; padding-right: 9px; spacing: 4px; alignment: center;
+                                VerticalLayout { alignment: center;
+                                    AppIcon { source: Icons.star-filled; tint: #f5a623; width: 12px; height: 12px; } }
+                                Text { text: Math.round(root.detail-net-rating * 10) / 10 + " avg";
+                                    color: #cf8a12; font-size: 11px; font-weight: 700; vertical-alignment: center; } } } }
+                }
                 if root.detail-percent > 0: Text {
                     text: Math.round(root.detail-percent * 100) + "% read";
                     color: BookTheme.ink-dim; font-size: 12px;

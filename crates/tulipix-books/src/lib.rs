@@ -88,3 +88,42 @@ pub fn short_hash(s: &str) -> String {
     let h = Sha256::digest(s.as_bytes());
     h.iter().take(8).map(|b| format!("{b:02x}")).collect()
 }
+
+/// Decode a standard-base64 string (whitespace ignored). Small enough to avoid
+/// a base64 crate dependency — used only for the embedded hero art.
+fn b64_decode(s: &str) -> Vec<u8> {
+    fn val(c: u8) -> Option<u8> {
+        match c {
+            b'A'..=b'Z' => Some(c - b'A'),
+            b'a'..=b'z' => Some(c - b'a' + 26),
+            b'0'..=b'9' => Some(c - b'0' + 52),
+            b'+' => Some(62),
+            b'/' => Some(63),
+            _ => None,
+        }
+    }
+    let mut out = Vec::with_capacity(s.len() * 3 / 4);
+    let (mut buf, mut bits) = (0u32, 0u32);
+    for &c in s.as_bytes() {
+        if c == b'=' {
+            break;
+        }
+        let Some(v) = val(c) else { continue };
+        buf = (buf << 6) | v as u32;
+        bits += 6;
+        if bits >= 8 {
+            bits -= 8;
+            out.push((buf >> bits) as u8);
+        }
+    }
+    out
+}
+
+/// Decode a base64 PNG into `(rgba8, width, height)` for `Image::from_rgba8`.
+/// Returns `None` on any decode failure (the caller falls back to no art).
+pub fn decode_png_b64(b64: &str) -> Option<(Vec<u8>, u32, u32)> {
+    let bytes = b64_decode(b64);
+    let img = image::load_from_memory(&bytes).ok()?.to_rgba8();
+    let (w, h) = (img.width(), img.height());
+    Some((img.into_raw(), w, h))
+}

@@ -42,37 +42,54 @@ pub async fn remove_folder(pool: &SqlitePool, path: &str) -> Result<()> {
 /// Scan every configured folder. Blocking file work (walk, metadata, covers)
 /// runs on the calling thread — callers wrap in `spawn_blocking`/task.
 pub async fn scan_all(pool: &SqlitePool) -> Result<ScanReport> {
+    scan_all_progress(pool, |_, _, _| {}).await
+}
+
+/// Like [`scan_all`] but reports progress: `on_progress(total, done, title)` is
+/// called once per candidate file (title = the file being processed), so the UI
+/// can show a real bar + the entries as they land instead of a 0→100 jump.
+pub async fn scan_all_progress<F>(pool: &SqlitePool, on_progress: F) -> Result<ScanReport>
+where
+    F: Fn(u32, u32, &str) + Send,
+{
     let mut report = ScanReport::default();
     let roots = folders(pool).await?;
     let mut seen: Vec<String> = Vec::new();
 
+    // Collect every candidate file up front so `total` is known for the bar.
+    let mut all_files: Vec<PathBuf> = Vec::new();
     for root in &roots {
-        let files: Vec<PathBuf> = WalkDir::new(root)
-            .follow_links(false)
-            .into_iter()
-            .filter_map(|e| e.ok())
-            .filter(|e| e.file_type().is_file())
-            .map(|e| e.into_path())
-            .filter(|p| format_of(p).is_some())
-            .collect();
-        for f in files {
-            let path_str = f.display().to_string();
-            seen.push(path_str.clone());
-            let known: Option<i64> =
-                sqlx::query_scalar("SELECT id FROM books WHERE path = ?")
-                    .bind(&path_str)
-                    .fetch_optional(pool)
-                    .await?;
-            if let Some(id) = known {
-                sqlx::query("UPDATE books SET missing = 0 WHERE id = ?")
-                    .bind(id)
-                    .execute(pool)
-                    .await?;
-                continue;
-            }
-            add_one(pool, &f).await?;
-            report.added += 1;
+        all_files.extend(
+            WalkDir::new(root)
+                .follow_links(false)
+                .into_iter()
+                .filter_map(|e| e.ok())
+                .filter(|e| e.file_type().is_file())
+                .map(|e| e.into_path())
+                .filter(|p| format_of(p).is_some()),
+        );
+    }
+    let total = all_files.len() as u32;
+
+    for (i, f) in all_files.iter().enumerate() {
+        let path_str = f.display().to_string();
+        seen.push(path_str.clone());
+        let title = f.file_stem().and_then(|s| s.to_str()).unwrap_or("");
+        on_progress(total, i as u32 + 1, title);
+        let known: Option<i64> =
+            sqlx::query_scalar("SELECT id FROM books WHERE path = ?")
+                .bind(&path_str)
+                .fetch_optional(pool)
+                .await?;
+        if let Some(id) = known {
+            sqlx::query("UPDATE books SET missing = 0 WHERE id = ?")
+                .bind(id)
+                .execute(pool)
+                .await?;
+            continue;
         }
+        add_one(pool, f).await?;
+        report.added += 1;
     }
 
     // Flag rows whose file is gone (only those under a configured root —

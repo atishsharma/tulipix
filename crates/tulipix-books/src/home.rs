@@ -9,6 +9,8 @@ use sqlx::SqlitePool;
 pub struct HomeData {
     /// Most recently read, unfinished book (hero card). None = empty-state hero.
     pub continue_reading: Option<(BookRow, i64, i64)>, // (book, page, total_pages)
+    /// Up to 5 most-recently-read in-progress books, for the hero slider.
+    pub slider: Vec<(BookRow, i64, i64)>, // (book, page, total_pages)
     pub recently_added: Vec<BookRow>,
     pub in_progress: Vec<BookRow>,
     pub stats: Stats,
@@ -32,7 +34,7 @@ const ROW_SQL: &str =
             COALESCE(p.percent, 0.0) AS percent,
             COALESCE(p.updated_at, 0) AS last_read
      FROM books b LEFT JOIN progress p ON p.book_id = b.id
-     WHERE b.missing = 0";
+     WHERE b.missing = 0 AND b.trashed = 0";
 
 pub async fn load(pool: &SqlitePool) -> Result<HomeData> {
     let hero: Option<BookRow> = sqlx::query_as(&format!(
@@ -62,13 +64,20 @@ pub async fn load(pool: &SqlitePool) -> Result<HomeData> {
     .fetch_all(pool)
     .await?;
 
+    // Slider: page/total for the up-to-5 most recent in-progress books.
+    let mut slider = Vec::new();
+    for b in in_progress.iter().take(5) {
+        let pos = crate::progress::get(pool, b.id).await?.unwrap_or_default();
+        slider.push((b.clone(), pos.page, pos.total_pages));
+    }
+
     let (total, finished): (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COALESCE(SUM(finished), 0) FROM books WHERE missing = 0",
+        "SELECT COUNT(*), COALESCE(SUM(finished), 0) FROM books WHERE missing = 0 AND trashed = 0",
     )
     .fetch_one(pool)
     .await?;
     let authors: i64 = sqlx::query_scalar(
-        "SELECT COUNT(DISTINCT author) FROM books WHERE missing = 0 AND author != ''",
+        "SELECT COUNT(DISTINCT author) FROM books WHERE missing = 0 AND trashed = 0 AND author != ''",
     )
     .fetch_one(pool)
     .await?;
@@ -79,6 +88,7 @@ pub async fn load(pool: &SqlitePool) -> Result<HomeData> {
 
     Ok(HomeData {
         continue_reading,
+        slider,
         recently_added,
         in_progress: in_progress.clone(),
         stats: Stats {

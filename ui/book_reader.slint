@@ -786,6 +786,20 @@ export component BookReader inherits Rectangle {
     callback next-page();
     callback set-single(bool);    // tell the engine to stop even-aligning spreads
     callback report-geom(length, length); // real page px → engine pagination
+    // Debounce geometry reports out of the `changed width/height` pass: calling
+    // report-geom (→ repaginate) synchronously inside a changed callback makes
+    // Slint count the whole repaginate cascade as one long changed chain (and
+    // warn). A one-shot Timer fires it after the current change pass settles.
+    property <length> pending-geom-w: 0;
+    property <length> pending-geom-h: 0;
+    geom-timer := Timer {
+        interval: 16ms;
+        running: false;
+        triggered => {
+            geom-timer.running = false;
+            if (!root.image-mode) { root.report-geom(root.pending-geom-w, root.pending-geom-h); }
+        }
+    }
     callback tts-start();
     callback tts-stop();
     callback tts-play-pause();
@@ -1033,8 +1047,8 @@ export component BookReader inherits Rectangle {
                                 next => { root.next-spread(); }
                                 // Report the real page px so the engine paginates to
                                 // the actual column (fixes clipping / gaps on resize).
-                                changed width => { if (!root.image-mode) { root.report-geom(self.width, self.height); } }
-                                changed height => { if (!root.image-mode) { root.report-geom(self.width, self.height); } }
+                                changed width => { if (!root.image-mode) { root.pending-geom-w = self.width; root.pending-geom-h = self.height; geom-timer.running = true; } }
+                                changed height => { if (!root.image-mode) { root.pending-geom-w = self.width; root.pending-geom-h = self.height; geom-timer.running = true; } }
                             }
                             // Center gutter shadow.
                             if !root.single-page: Rectangle {

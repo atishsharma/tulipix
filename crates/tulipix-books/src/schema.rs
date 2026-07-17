@@ -129,6 +129,12 @@ pub async fn apply(pool: &SqlitePool) -> Result<()> {
         // R1 book-detail popup: cached online summary + when it was fetched.
         "ALTER TABLE books ADD COLUMN summary TEXT NOT NULL DEFAULT ''",
         "ALTER TABLE books ADD COLUMN summary_fetched_at INTEGER NOT NULL DEFAULT 0",
+        // Soft-delete → Trash: flag, when, and the path to restore the file to.
+        "ALTER TABLE books ADD COLUMN trashed INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE books ADD COLUMN trashed_at INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE books ADD COLUMN orig_path TEXT NOT NULL DEFAULT ''",
+        // P6: fetched average rating (0 = unknown); shown in the detail popup.
+        "ALTER TABLE books ADD COLUMN net_rating REAL NOT NULL DEFAULT 0",
     ] {
         let _ = sqlx::query(alter).execute(pool).await;
     }

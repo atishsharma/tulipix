@@ -4,6 +4,8 @@
 //! Every `window.on_books_*` callback is registered here. tulipix-app calls
 //! [`wire`] once at startup.
 
+mod hero_art;
+
 use slint::{ComponentHandle, Model, VecModel};
 use std::cell::{Cell, RefCell};
 use std::rc::Rc;
@@ -116,6 +118,31 @@ const TTS_VOICES: [(&str, &str); 4] = [
     ("Adam (M)", "am_adam"),
 ];
 
+/// Socket of the read-aloud mpv currently playing a sentence. The synth worker
+/// (a blocking thread) stores it after spawning mpv; the event loop reads it to
+/// send `quit` so a pause/seek/stop takes effect mid-sentence instead of at the
+/// next sentence boundary. Cross-thread, so it can't live in the thread-local
+/// `TTS` state.
+static TTS_SOCK: std::sync::OnceLock<std::sync::Mutex<Option<std::path::PathBuf>>> =
+    std::sync::OnceLock::new();
+fn tts_sock() -> &'static std::sync::Mutex<Option<std::path::PathBuf>> {
+    TTS_SOCK.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Quit the current read-aloud mpv over IPC — graceful (WirePlumber-safe:
+/// SIGKILL-ing a PipeWire client mid link-activation wedges the session), so
+/// pause/seek land instantly. No-op if nothing is playing.
+fn tts_stop_audio() {
+    let sock = tts_sock().lock().ok().and_then(|mut g| g.take());
+    if let Some(s) = sock {
+        use std::io::Write;
+        if let Ok(mut c) = tulipix_common::mpv_ipc::connect(&s) {
+            let _ = c.write_all(b"{\"command\":[\"quit\"]}\n");
+        }
+        tulipix_common::mpv_ipc::cleanup(&s);
+    }
+}
+
 /// Kokoro voice id for a UI label (defaults to the first voice).
 fn voice_id(label: &str) -> &'static str {
     TTS_VOICES.iter().find(|(l, _)| *l == label).map(|(_, id)| *id).unwrap_or(TTS_VOICES[0].1)
@@ -222,6 +249,9 @@ pub fn wire(window: &MainWindow) {
     // hold it here and rebuild the [`Filter`] from window props on each refresh.
     let sort_idx = Rc::new(Cell::new(tulipix_books::prefs::load_sort()));
 
+    // Decode the embedded hero-art pack once (light + dark variants).
+    load_hero_art();
+
     // Restore the persisted grid/list view preference + sort order.
     window.set_books_view_mode(tulipix_books::prefs::load_view_mode().into());
     window.set_books_sort_index(sort_idx.get() as i32);
@@ -255,7 +285,11 @@ pub fn wire(window: &MainWindow) {
     let s = sort_idx.clone();
     window.on_books_quick_filter(move |k| {
         if let Some(w) = w.upgrade() {
+            // Tabs are mutually exclusive: a status tab clears series/collection/author.
             w.set_books_active_quick(k);
+            w.set_books_active_series("".into());
+            w.set_books_active_collection(0);
+            w.set_books_active_author("".into());
             w.set_books_page(1);
         }
         books_refresh(w.clone(), s.get());
@@ -279,6 +313,9 @@ pub fn wire(window: &MainWindow) {
     window.on_books_open_author(move |author| {
         if let Some(w) = w.upgrade() {
             w.set_books_active_author(author);
+            w.set_books_active_quick("all".into());
+            w.set_books_active_series("".into());
+            w.set_books_active_collection(0);
             w.set_books_page(1);
         }
         books_refresh(w.clone(), s.get());
@@ -292,6 +329,10 @@ pub fn wire(window: &MainWindow) {
             let cur = w.get_books_active_series().to_string();
             let next = if cur == name.as_str() { String::new() } else { name.to_string() };
             w.set_books_active_series(next.into());
+            // Exclusive: clear status/collection/author so a series stands alone.
+            w.set_books_active_quick("all".into());
+            w.set_books_active_collection(0);
+            w.set_books_active_author("".into());
             w.set_books_page(1);
         }
         books_refresh(w.clone(), s.get());
@@ -304,6 +345,10 @@ pub fn wire(window: &MainWindow) {
         if let Some(w) = w.upgrade() {
             let cur = w.get_books_active_collection();
             w.set_books_active_collection(if cur == id { 0 } else { id });
+            // Exclusive: clear status/series/author.
+            w.set_books_active_quick("all".into());
+            w.set_books_active_series("".into());
+            w.set_books_active_author("".into());
             w.set_books_page(1);
         }
         books_refresh(w.clone(), s.get());
@@ -396,6 +441,19 @@ pub fn wire(window: &MainWindow) {
         books_card_menu(w.clone(), id as i64, action.to_string(), s.get());
     });
 
+    // Context-menu: open the file's folder, move to Trash, restore, purge.
+    let w = window.as_weak();
+    window.on_books_open_location(move |id| { books_open_location(w.clone(), id as i64); });
+    let w = window.as_weak();
+    let s = sort_idx.clone();
+    window.on_books_trash(move |id| { books_trash(w.clone(), id as i64, s.get()); });
+    let w = window.as_weak();
+    let s = sort_idx.clone();
+    window.on_books_restore(move |id| { books_restore(w.clone(), id as i64, s.get()); });
+    let w = window.as_weak();
+    let s = sort_idx.clone();
+    window.on_books_delete_perm(move |id| { books_delete_perm(w.clone(), id as i64, s.get()); });
+
     // Book detail popup (R1): show metadata, fetch/cache online summary.
     let w = window.as_weak();
     window.on_books_show_detail(move |id| { books_show_detail(w.clone(), id as i64); });
@@ -406,11 +464,32 @@ pub fn wire(window: &MainWindow) {
     // Open a book from a grid tile.
     let w = window.as_weak();
     window.on_books_open_details(move |id| { books_open(w.clone(), id as i64); });
-    // Hero "Continue reading" + cover click both resume the in-progress book.
+    // Hero "Continue reading" resumes the active slider slide.
     let w = window.as_weak();
-    window.on_books_resume(move || { books_resume(w.clone()); });
+    window.on_books_resume(move || {
+        let id = SLIDER.with(|s| s.borrow().get(SLIDER_IX.with(|c| c.get())).map(|h| h.id as i64));
+        match id {
+            Some(id) => books_open(w.clone(), id),
+            None => books_resume(w.clone()),
+        }
+    });
     let w = window.as_weak();
     window.on_books_hero_details(move || { books_resume(w.clone()); });
+    // Hero slider: step ±1, wrapping, swapping the active slide (no DB hit).
+    let w = window.as_weak();
+    window.on_books_hero_slide(move |delta| {
+        let Some(w) = w.upgrade() else { return };
+        SLIDER.with(|s| {
+            let s = s.borrow();
+            let n = s.len();
+            if n == 0 { return; }
+            let cur = SLIDER_IX.with(|c| c.get());
+            let ni = (cur as i64 + delta as i64).rem_euclid(n as i64) as usize;
+            SLIDER_IX.with(|c| c.set(ni));
+            w.set_books_hero(s[ni].clone());
+            w.set_books_hero_index(ni as i32);
+        });
+    });
 
     // Reader chrome: back saves progress + refreshes the home hero.
     let w = window.as_weak();
@@ -609,8 +688,9 @@ pub fn wire(window: &MainWindow) {
     let w = window.as_weak();
     window.on_books_add(move || { books_add_folder(w.clone()); });
 
-    // Initial paint.
+    // Initial paint + background metadata backfill (publication dates etc.).
     books_refresh(window.as_weak(), 0);
+    books_backfill_metadata(window.as_weak());
 }
 
 /// Map a sort label from the dropdown back to a [`Sort`] index.
@@ -628,7 +708,7 @@ fn sort_index_of(label: &str) -> usize {
 fn filter_from(w: &MainWindow, sort_idx: usize) -> Filter {
     let quick = w.get_books_active_quick().to_string();
     let status = match quick.as_str() {
-        "reading" | "finished" | "unread" | "favorites" | "missing" => quick,
+        "reading" | "finished" | "unread" | "favorites" | "missing" | "trashed" => quick,
         _ => String::new(), // "all"
     };
     Filter {
@@ -676,11 +756,13 @@ fn books_refresh(weak: slint::Weak<MainWindow>, sort_idx: usize) {
         let genres = library::genre_counts(&pool).await.unwrap_or_default();
         let series = library::series_counts(&pool).await.unwrap_or_default();
         let colls = library::collections(&pool).await.unwrap_or_default();
+        let trashed = library::trashed_count(&pool).await.unwrap_or(0);
         let _ = weak.upgrade_in_event_loop(move |w| {
             apply_home(&w, &home);
             apply_grid(&w, &rows);
             apply_chips(&w, &formats, &genres, &home);
             apply_series_collections(&w, &series, &colls);
+            w.set_books_trashed_count(trashed as i32);
         });
     });
 }
@@ -706,24 +788,25 @@ fn apply_series_collections(
 
 /// Push hero + the 2×2 stats strip.
 fn apply_home(w: &MainWindow, home: &HomeData) {
-    let hero = match &home.continue_reading {
-        Some((b, page, total)) => {
-            let pct = if *total > 0 { *page as f32 / *total as f32 } else { b.percent as f32 };
-            BooksHero {
-                present: true,
-                title: b.title.clone().into(),
-                author: b.author.clone().into(),
-                cover: load_cover(&b.cover_path),
-                hue: cover_hue(&b.title),
-                page: *page as i32,
-                total: *total as i32,
-                percent: pct.clamp(0.0, 1.0),
-                time_left: time_left_label(*page, *total),
-            }
-        }
-        None => BooksHero { present: false, ..Default::default() },
-    };
-    w.set_books_hero(hero);
+    // Build the hero-slider slides from the up-to-5 in-progress books.
+    let arts = HERO_ART.with(|a| a.borrow().clone());
+    let slides: Vec<BooksHero> = home
+        .slider
+        .iter()
+        .enumerate()
+        .map(|(i, (b, page, total))| {
+            let art = arts
+                .get(i % arts.len().max(1))
+                .cloned()
+                .unwrap_or_else(|| (slint::Image::default(), slint::Image::default()));
+            hero_from(b, *page, *total, art)
+        })
+        .collect();
+    SLIDER.with(|s| *s.borrow_mut() = slides.clone());
+    SLIDER_IX.with(|c| c.set(0));
+    w.set_books_hero(slides.first().cloned().unwrap_or_default());
+    w.set_books_hero_count(slides.len() as i32);
+    w.set_books_hero_index(0);
 
     // Stat identities (icons/labels/colors) live in the .slint; only the four
     // values flow through, in order: Total Books, Authors, In Progress, Completed.
@@ -759,6 +842,7 @@ fn fmt_date(secs: i64) -> slint::SharedString {
 /// Push the filtered library grid (paginated) + book / page counts.
 fn apply_grid(w: &MainWindow, rows: &[BookRow]) {
     let total = rows.len();
+    w.set_books_filtered_count(total as i32);
     let page_count = ((total + PAGE_SIZE - 1) / PAGE_SIZE).max(1);
     let page = (w.get_books_page().max(1) as usize).min(page_count);
     w.set_books_page(page as i32);
@@ -776,11 +860,12 @@ fn apply_grid(w: &MainWindow, rows: &[BookRow]) {
             percent: b.percent as f32,
             favorite: b.favorite != 0,
             format: b.format.to_uppercase().into(),
-            // Card date: last-read when the book has been opened, else added.
-            date: if b.last_read > 0 { fmt_date(b.last_read) } else { fmt_date(b.added_at) },
+            // Card date = fetched publication date (empty → tile shows "—").
+            date: b.published.clone().into(),
             hue: cover_hue(&b.title),
             rating: b.rating as f32,
             missing: b.missing != 0,
+            trashed: b.trashed != 0,
         })
         .collect();
     w.set_books_tiles(VecModel::from_slice(&tiles));
@@ -855,6 +940,7 @@ fn books_show_detail(weak: slint::Weak<MainWindow>, id: i64) {
         let Ok(Some(b)) = library::get(&pool, id).await else { return };
         let colls = library::collections(&pool).await.unwrap_or_default();
         let mine = library::book_collections(&pool, id).await.unwrap_or_default();
+        let need_fetch = b.summary_fetched_at == 0;
         let _ = weak.upgrade_in_event_loop(move |w| {
             push_detail_collections(&w, &colls, &mine);
             w.set_books_detail_id(b.id as i32);
@@ -867,16 +953,24 @@ fn books_show_detail(weak: slint::Weak<MainWindow>, id: i64) {
             w.set_books_detail_series(b.series.clone().into());
             w.set_books_detail_size(fmt_size(b.size_bytes).into());
             w.set_books_detail_added(fmt_date(b.added_at));
+            w.set_books_detail_published(b.published.clone().into());
             w.set_books_detail_rating(b.rating as f32);
+            w.set_books_detail_net_rating(b.net_rating as f32);
             w.set_books_detail_percent(b.percent as f32);
             w.set_books_detail_summary(b.summary.clone().into());
             w.set_books_detail_summary_loading(false);
             w.set_books_detail_open(true);
         });
+        // Lazily fetch metadata the first time this book's detail opens.
+        if need_fetch {
+            books_fetch_summary(weak, id);
+        }
     });
 }
 
-/// Fetch an online summary for the detail popup, cache it in the DB, and show it.
+/// Fetch online metadata (summary · publication date · avg rating) for the
+/// detail popup across the 5-source chain, cache it in the DB, and show it.
+/// Falls back to the local file's publication date when the web has none.
 fn books_fetch_summary(weak: slint::Weak<MainWindow>, id: i64) {
     if let Some(w) = weak.upgrade() {
         if w.get_books_detail_id() as i64 == id {
@@ -886,18 +980,67 @@ fn books_fetch_summary(weak: slint::Weak<MainWindow>, id: i64) {
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("books").await else { return };
         let Ok(Some(b)) = library::get(&pool, id).await else { return };
-        let summary = tulipix_books::summary::fetch(&b.title, &b.author).await;
-        if let Some(s) = &summary {
-            let _ = library::set_summary(&pool, id, s).await;
+        let mut m = tulipix_books::summary::fetch_meta(&b.title, &b.author).await;
+        // Fall back to the file's own publication date (epub dc:date / pdf).
+        if m.published.is_empty() {
+            m.published = tulipix_books::metadata::extract(std::path::Path::new(&b.path), &b.format).published;
         }
-        let text = summary.unwrap_or_else(|| "No summary found online.".into());
+        let _ = library::set_metadata(&pool, id, &m.summary, &m.published, m.rating).await;
+        let summary = if m.summary.is_empty() { "No summary found online.".to_string() } else { m.summary };
+        let published = m.published.clone();
+        let net = m.rating as f32;
         let _ = weak.upgrade_in_event_loop(move |w| {
             // Only update if the popup is still on this book.
             if w.get_books_detail_id() as i64 == id {
-                w.set_books_detail_summary(text.into());
+                w.set_books_detail_summary(summary.into());
+                w.set_books_detail_published(published.into());
+                w.set_books_detail_net_rating(net);
                 w.set_books_detail_summary_loading(false);
             }
         });
+        // Refresh the grid so the tile's publication-date pill updates too.
+        books_refresh(weak, 0);
+    });
+}
+
+/// Single-flight guard so overlapping triggers (startup + post-scan) don't run
+/// concurrent backfill loops.
+static BACKFILL_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Background: fetch online metadata for every book that has never been fetched,
+/// in small throttled batches, refreshing the grid so publication-date pills
+/// fill in progressively. Idempotent (each book is stamped after one attempt).
+fn books_backfill_metadata(weak: slint::Weak<MainWindow>) {
+    use std::sync::atomic::Ordering::SeqCst;
+    if BACKFILL_RUNNING.swap(true, SeqCst) {
+        return; // already draining the queue
+    }
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = pool_for("books").await {
+            loop {
+                let batch = library::needs_metadata(&pool, 8).await.unwrap_or_default();
+                if batch.is_empty() {
+                    break;
+                }
+                for (id, title, author) in batch {
+                    let mut m = tulipix_books::summary::fetch_meta(&title, &author).await;
+                    if m.published.is_empty() {
+                        if let Ok(Some(b)) = library::get(&pool, id).await {
+                            m.published = tulipix_books::metadata::extract(
+                                std::path::Path::new(&b.path),
+                                &b.format,
+                            )
+                            .published;
+                        }
+                    }
+                    let _ = library::set_metadata(&pool, id, &m.summary, &m.published, m.rating).await;
+                    // Be polite to the public APIs.
+                    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+                }
+                books_refresh(weak.clone(), 0);
+            }
+        }
+        BACKFILL_RUNNING.store(false, SeqCst);
     });
 }
 
@@ -1086,11 +1229,104 @@ fn books_card_menu(weak: slint::Weak<MainWindow>, id: i64, action: String, sort_
     });
 }
 
+/// Move a file, falling back to copy+remove across filesystems (rename fails
+/// with EXDEV when src/dst are on different mounts).
+fn move_file(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
+    if let Some(parent) = dst.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    match std::fs::rename(src, dst) {
+        Ok(()) => Ok(()),
+        Err(_) => {
+            std::fs::copy(src, dst)?;
+            std::fs::remove_file(src)?;
+            Ok(())
+        }
+    }
+}
+
+/// The app's Trash directory (`<cache>/Trash`), created on demand.
+fn trash_dir() -> Option<std::path::PathBuf> {
+    let d = tulipix_books::cache_dir()?.join("Trash");
+    std::fs::create_dir_all(&d).ok()?;
+    Some(d)
+}
+
+/// Open the folder holding a book's file in the OS file manager.
+fn books_open_location(weak: slint::Weak<MainWindow>, id: i64) {
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("books").await else { return };
+        let Ok(Some(b)) = library::get(&pool, id).await else { return };
+        let path = std::path::PathBuf::from(&b.path);
+        let dir = path.parent().map(|p| p.to_path_buf()).unwrap_or(path);
+        let _ = weak; // no UI update needed
+        open_url(&dir.to_string_lossy());
+    });
+}
+
+/// Soft-delete: move the file into the Trash dir and flag the row trashed.
+fn books_trash(weak: slint::Weak<MainWindow>, id: i64, sort_idx: usize) {
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = pool_for("books").await {
+            if let Ok(Some(b)) = library::get(&pool, id).await {
+                let src = std::path::PathBuf::from(&b.path);
+                // Best-effort file move into Trash; the row is flagged regardless
+                // so the library always updates even if the move can't happen.
+                let new_path = match trash_dir() {
+                    Some(dir) => {
+                        let name = src.file_name().map(|n| n.to_string_lossy().to_string())
+                            .unwrap_or_else(|| format!("book-{id}"));
+                        let dst = dir.join(format!("{id}_{name}"));
+                        if move_file(&src, &dst).is_ok() {
+                            dst.to_string_lossy().into_owned()
+                        } else {
+                            b.path.clone()
+                        }
+                    }
+                    None => b.path.clone(),
+                };
+                let _ = library::trash(&pool, id, &b.path, &new_path).await;
+            }
+        }
+        books_refresh(weak, sort_idx);
+    });
+}
+
+/// Restore a trashed book: move its file back and clear the trashed flag.
+fn books_restore(weak: slint::Weak<MainWindow>, id: i64, sort_idx: usize) {
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = pool_for("books").await {
+            if let Ok(Some(b)) = library::get(&pool, id).await {
+                let cur = std::path::PathBuf::from(&b.path); // Trash location
+                if let Ok(orig) = library::restore(&pool, id).await {
+                    if !orig.is_empty() {
+                        let _ = move_file(&cur, std::path::Path::new(&orig));
+                    }
+                }
+            }
+        }
+        books_refresh(weak, sort_idx);
+    });
+}
+
+/// Permanently delete a trashed book: remove its file + purge the DB row.
+fn books_delete_perm(weak: slint::Weak<MainWindow>, id: i64, sort_idx: usize) {
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = pool_for("books").await {
+            if let Ok(Some(b)) = library::get(&pool, id).await {
+                let _ = std::fs::remove_file(&b.path);
+            }
+            let _ = library::remove(&pool, id).await;
+        }
+        books_refresh(weak, sort_idx);
+    });
+}
+
 /// One-row books scan-progress model for the shared ScanProgressCard.
-fn books_scan_row(total: i32, added: i32, active: bool) -> ScanProgress {
+fn books_scan_row(label: &str, total: i32, added: i32, active: bool) -> ScanProgress {
     ScanProgress {
         section: "books".into(),
-        label: "Books".into(),
+        label: label.into(),
         total,
         added,
         failed: 0,
@@ -1106,24 +1342,43 @@ fn books_add_folder(weak: slint::Weak<MainWindow>) {
     handle.spawn(async move {
         let Some(dir) = rfd::AsyncFileDialog::new().pick_folder().await else { return };
         let path = dir.path().to_string_lossy().to_string();
-        // Show the loading popup (indeterminate while the scan walks the folder).
+        // Show the loading popup (indeterminate until the walk yields a total).
         let _ = weak.upgrade_in_event_loop(|w| {
-            w.set_scan_progress(VecModel::from_slice(&[books_scan_row(0, 0, true)]));
+            w.set_scan_progress(VecModel::from_slice(&[books_scan_row("Scanning…", 0, 0, true)]));
             w.set_scan_active(true);
         });
         let mut added = 0i32;
         if let Ok(pool) = pool_for("books").await {
             let _ = tulipix_books::scan::add_folder(&pool, &path).await;
-            let report = tulipix_books::scan::scan_all(&pool).await;
+            // Stream per-file progress into the shared popup (bar + current title),
+            // throttled to ~1% steps so big libraries don't flood the event loop.
+            let weak_cb = weak.clone();
+            let report = tulipix_books::scan::scan_all_progress(&pool, move |total, done, title| {
+                let step = (total / 100).max(1);
+                if done % step == 0 || done == total {
+                    let title = title.to_string();
+                    let _ = weak_cb.upgrade_in_event_loop(move |w| {
+                        w.set_scan_progress(VecModel::from_slice(&[books_scan_row(
+                            &title, total as i32, done as i32, true,
+                        )]));
+                        w.set_scan_active(true);
+                    });
+                }
+            })
+            .await;
             added = report.map(|r| r.added as i32).unwrap_or(0);
             books_refresh(weak.clone(), 0);
+            // Fetch online metadata for the newly-added books in the background.
+            books_backfill_metadata(weak.clone());
             // Index contents for library-wide search in the background (slow for
             // big libraries; resumable so a partial run picks up next time).
             let _ = tulipix_books::scan::index_contents(&pool).await;
         }
         // Mark done; keep the popup up briefly with the count, then auto-hide.
         let _ = weak.upgrade_in_event_loop(move |w| {
-            w.set_scan_progress(VecModel::from_slice(&[books_scan_row(added.max(1), added, false)]));
+            w.set_scan_progress(VecModel::from_slice(&[books_scan_row(
+                "Done", added.max(1), added, false,
+            )]));
             w.set_scan_active(false);
             let weak2 = w.as_weak();
             slint::Timer::single_shot(std::time::Duration::from_secs(4), move || {
@@ -1170,6 +1425,62 @@ fn load_cover(path: &str) -> slint::Image {
     let img = slint::Image::load_from_path(std::path::Path::new(path)).unwrap_or_default();
     COVER_CACHE.with(|c| c.borrow_mut().insert(path.to_string(), img.clone()));
     img
+}
+
+thread_local! {
+    /// The hero slider's built slides (up to 5 in-progress books) + which is
+    /// active, so `hero-slide` can swap `books-hero` with no DB round-trip.
+    static SLIDER: RefCell<Vec<BooksHero>> = const { RefCell::new(Vec::new()) };
+    static SLIDER_IX: Cell<usize> = const { Cell::new(0) };
+    /// Decorative hero illustrations `(light, dark)` per slide, rotated by index.
+    /// Filled once from the embedded base64 pack; slider renders fine if empty.
+    static HERO_ART: RefCell<Vec<(slint::Image, slint::Image)>> = const { RefCell::new(Vec::new()) };
+}
+
+/// Decode the embedded base64 PNG hero-art pack into `(light, dark)` images.
+fn load_hero_art() {
+    let to_img = |b64: &str| -> slint::Image {
+        let Some((rgba, w, h)) = tulipix_books::decode_png_b64(b64) else {
+            return slint::Image::default();
+        };
+        let mut buf = slint::SharedPixelBuffer::<slint::Rgba8Pixel>::new(w, h);
+        for (i, p) in buf.make_mut_slice().iter_mut().enumerate() {
+            let o = i * 4;
+            *p = slint::Rgba8Pixel { r: rgba[o], g: rgba[o + 1], b: rgba[o + 2], a: rgba[o + 3] };
+        }
+        slint::Image::from_rgba8(buf)
+    };
+    let arts: Vec<(slint::Image, slint::Image)> = hero_art::HERO_ART_LIGHT
+        .iter()
+        .zip(hero_art::HERO_ART_DARK.iter())
+        .map(|(l, d)| (to_img(l), to_img(d)))
+        .collect();
+    HERO_ART.with(|a| *a.borrow_mut() = arts);
+}
+
+/// Build one hero-slider slide from a book row + saved position. `percent` is
+/// 0‥100 so the card's `%` label reads true (the bar divides by 100).
+fn hero_from(
+    b: &BookRow,
+    page: i64,
+    total: i64,
+    art: (slint::Image, slint::Image),
+) -> BooksHero {
+    let frac = if total > 0 { page as f32 / total as f32 } else { b.percent as f32 };
+    BooksHero {
+        id: b.id as i32,
+        present: true,
+        title: b.title.clone().into(),
+        author: b.author.clone().into(),
+        cover: load_cover(&b.cover_path),
+        hue: cover_hue(&b.title),
+        page: page as i32,
+        total: total as i32,
+        percent: (frac * 100.0).clamp(0.0, 100.0),
+        time_left: time_left_label(page, total),
+        art_light: art.0,
+        art_dark: art.1,
+    }
 }
 
 // ── Reader (Phase 3) ─────────────────────────────────────────────────────────
@@ -1354,8 +1665,10 @@ fn nav_image(w: &MainWindow, weak: slint::Weak<MainWindow>, page: usize) {
                     .flatten()
             }
         };
-        let left = render_at(pos).await;
-        let right = if has_right { render_at(pos + 1).await } else { None };
+        // Render both pages of the spread concurrently (was sequential .await).
+        let (left, right) = tokio::join!(render_at(pos), async {
+            if has_right { render_at(pos + 1).await } else { None }
+        });
         let _ = weak.upgrade_in_event_loop(move |w| {
             let load = |o: Option<std::path::PathBuf>| {
                 o.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default()
@@ -1363,6 +1676,16 @@ fn nav_image(w: &MainWindow, weak: slint::Weak<MainWindow>, page: usize) {
             w.set_books_reader_left_image(load(left));
             w.set_books_reader_right_image(load(right));
         });
+        // Prefetch the next spread's pages into the disk cache so forward paging
+        // is instant (page_image returns early on a cache hit).
+        for nxt in [pos + 2, pos + 3] {
+            if nxt < total {
+                let (p, f) = (path.clone(), format.clone());
+                tokio::task::spawn_blocking(move || {
+                    let _ = render::page_image(&p, &f, nxt);
+                });
+            }
+        }
     });
 
     // Persist page position (image books have no char offset / session fold).
@@ -1442,10 +1765,9 @@ fn tts_resume(weak: slint::Weak<MainWindow>, generation: u64) {
 }
 
 /// Neural-audio step: synth the current sentence (Kokoro, off-thread), play it
-/// through mpv, then advance the highlight + spread and recurse. ponytail:
-/// pause/seek take effect at the next sentence boundary (no mid-sentence mpv
-/// kill) — a manual seek can briefly overlap one sentence. Upgrade path: hold
-/// the mpv child and kill it on generation bump.
+/// through mpv, then advance the highlight + spread and recurse. The mpv runs
+/// with an IPC socket stored in `tts_sock`, so pause/seek/stop quit it
+/// mid-sentence (see [`tts_stop_audio`]) instead of waiting for the boundary.
 fn tts_audio_step(weak: slint::Weak<MainWindow>, generation: u64) {
     let snap = TTS.with(|t| {
         let t = t.borrow();
@@ -1485,13 +1807,32 @@ fn tts_audio_step(weak: slint::Weak<MainWindow>, generation: u64) {
         .await
         .ok()
         .flatten();
-        // Play it and wait for the end (blocking) on a blocking worker.
+        // Play it and wait for the end (blocking) on a blocking worker. Spawn
+        // mpv with an IPC socket (unique per generation so a seek's new mpv
+        // can't collide with the outgoing one) and stash it so pause/seek can
+        // `quit` it mid-sentence.
         if let Some(path) = wav.clone() {
             let _ = tokio::task::spawn_blocking(move || {
-                let _ = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"))
-                    .args(["--no-video", "--really-quiet", "--no-terminal"])
-                    .arg(&path)
-                    .status();
+                let sock = tulipix_common::mpv_ipc::endpoint(&format!("tulipix-tts-{generation}"));
+                tulipix_common::mpv_ipc::cleanup(&sock);
+                let mut cmd = std::process::Command::new(tulipix_core::thumbs::tool_bin("mpv"));
+                cmd.args(["--no-video", "--really-quiet", "--no-terminal"])
+                    .arg(format!("--input-ipc-server={}", sock.display()))
+                    .arg(&path);
+                tulipix_common::mpv_die_with_parent(&mut cmd);
+                if let Ok(mut child) = cmd.spawn() {
+                    if let Ok(mut g) = tts_sock().lock() {
+                        *g = Some(sock.clone());
+                    }
+                    let _ = child.wait();
+                    // Clear only if still ours (a newer step may have replaced it).
+                    if let Ok(mut g) = tts_sock().lock() {
+                        if g.as_deref() == Some(sock.as_path()) {
+                            *g = None;
+                        }
+                    }
+                }
+                tulipix_common::mpv_ipc::cleanup(&sock);
                 let _ = std::fs::remove_file(&path);
             })
             .await;
@@ -1583,6 +1924,9 @@ fn tts_play_pause(weak: slint::Weak<MainWindow>) {
         }
         (t.playing, t.generation)
     });
+    // Quit the in-flight sentence's mpv: on pause it stops now; on resume the
+    // bumped generation gets a fresh mpv anyway.
+    tts_stop_audio();
     w.set_books_reader_tts_playing(playing);
     if playing {
         tts_resume(weak, g);
@@ -1599,6 +1943,7 @@ fn tts_set_speed(weak: slint::Weak<MainWindow>, idx: i32) {
         }
         (t.playing, t.generation)
     });
+    tts_stop_audio(); // re-synth the current sentence at the new speed now
     w.set_books_reader_tts_speed_index(idx.clamp(0, 3));
     if playing {
         tts_resume(weak, g);
@@ -1669,6 +2014,7 @@ fn tts_jump(weak: slint::Weak<MainWindow>, i: i32) {
         t.generation
     });
     let active = TTS.with(|t| t.borrow().active);
+    tts_stop_audio(); // stop the outgoing sentence so the jump is instant
     w.set_books_reader_tts_active(active as i32);
     w.set_books_reader_tts_playing(true);
     tts_follow_page(&w, weak.clone(), active);
@@ -1682,6 +2028,7 @@ fn tts_stop(weak: slint::Weak<MainWindow>) {
         t.active = 0;
         t.generation += 1;
     });
+    tts_stop_audio();
     if let Some(w) = weak.upgrade() {
         w.set_books_reader_tts_playing(false);
         w.set_books_reader_tts_active(0);

@@ -918,6 +918,15 @@ export component MainWindow inherits Window {
     in-out property <[PhotoTile]> music-tracks-grid: [];
     // Books section state (np.p8.books).
     in-out property <BooksHero> books-hero;
+    in-out property <int> books-hero-count: 0;
+    in-out property <int> books-hero-index: 0;
+    callback books-hero-slide(int);
+    in-out property <int> books-trashed-count: 0;
+    in-out property <int> books-filtered-count: 0;
+    callback books-open-location(int);
+    callback books-trash(int);
+    callback books-restore(int);
+    callback books-delete-perm(int);
     in-out property <[BookTile]> books-tiles: [];
     in-out property <[BookStat]> books-stats: [];
     in-out property <[BookChip]> books-file-types: [];
@@ -967,7 +976,9 @@ export component MainWindow inherits Window {
     in-out property <string> books-detail-series: "";
     in-out property <string> books-detail-size: "";
     in-out property <string> books-detail-added: "";
+    in-out property <string> books-detail-published: "";
     in-out property <float> books-detail-rating: 0;
+    in-out property <float> books-detail-net-rating: 0;
     in-out property <float> books-detail-percent: 0;
     in-out property <string> books-detail-summary: "";
     in-out property <bool> books-detail-summary-loading: false;
@@ -3119,6 +3130,15 @@ callback cloud-go-home();
             if active-section == "books": BooksPage {
                 width: parent.width; height: parent.height;
                 hero: root.books-hero;
+                hero-count: root.books-hero-count;
+                hero-index: root.books-hero-index;
+                hero-slide(d) => { root.books-hero-slide(d); }
+                trashed-count: root.books-trashed-count;
+                filtered-count: root.books-filtered-count;
+                open-location(id) => { root.books-open-location(id); }
+                trash-book(id) => { root.books-trash(id); }
+                restore-book(id) => { root.books-restore(id); }
+                delete-perm(id) => { root.books-delete-perm(id); }
                 tiles: root.books-tiles;
                 stats: root.books-stats;
                 file-types: root.books-file-types;
@@ -3162,7 +3182,9 @@ callback cloud-go-home();
                 detail-series: root.books-detail-series;
                 detail-size: root.books-detail-size;
                 detail-added: root.books-detail-added;
+                detail-published: root.books-detail-published;
                 detail-rating: root.books-detail-rating;
+                detail-net-rating: root.books-detail-net-rating;
                 detail-percent: root.books-detail-percent;
                 detail-summary: root.books-detail-summary;
                 detail-summary-loading: root.books-detail-summary-loading;
