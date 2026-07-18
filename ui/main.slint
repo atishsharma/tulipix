@@ -979,6 +979,8 @@ export component MainWindow inherits Window {
     in-out property <image> books-detail-cover;
     // Baked 3D rendition (Library-card style cover) + favorite state.
     in-out property <image> books-detail-book;
+    in-out property <image> books-detail-book-hero;
+    in-out property <image> books-detail-book-hero-dark;
     in-out property <bool> books-detail-favorite: false;
     in-out property <color> books-detail-hue: #6c4df6;
     in-out property <string> books-detail-format: "";
@@ -1036,6 +1038,7 @@ export component MainWindow inherits Window {
     in-out property <int> books-reader-line-index: 1;
     in-out property <int> books-reader-margin-index: 1;
     in-out property <int> books-reader-typeface: 0;
+    in-out property <int> books-reader-text-align: 1;
     in-out property <float> books-reader-brightness: 1.0;
     in-out property <bool> books-reader-contents-open: true;
     in-out property <[TocRow]> books-reader-toc: [];
@@ -1079,6 +1082,7 @@ export component MainWindow inherits Window {
     callback books-reader-set-line-spacing(int);
     callback books-reader-set-margin(int);
     callback books-reader-set-typeface(int);
+    callback books-reader-set-align(int);
     callback books-reader-toggle-bold();
     callback books-reader-set-theme(string);
     callback books-reader-set-brightness(float);
@@ -1306,6 +1310,11 @@ callback cloud-go-home();
     // the window's fullscreen flag in sync.
     callback request-fullscreen(bool);
     changed viewer-slideshow => { root.request-fullscreen(root.viewer-slideshow); }
+    // Logo-fullscreen mode: sidebar logo toggles borderless OS fullscreen; a
+    // hover strip at the top peeks a minimal title bar (restore ⧉ / close ✕).
+    in-out property <bool> app-fullscreen: false;
+    property <bool> fs-peek: false;
+    callback app-quit();
     // (Re)arm the 5 s idle countdown that auto-starts the slideshow when the
     // setup row is left untouched. Each setup interaction re-arms it.
     callback slideshow-arm();
@@ -2369,6 +2378,11 @@ callback cloud-go-home();
             user-action(a) => { root.user-action(a); }
             section-changed(s) => { root.section-changed(s); }
             theme-cycled => { root.music-theme-changed(); }
+            logo-clicked => {
+                root.app-fullscreen = !root.app-fullscreen;
+                root.fs-peek = false;
+                root.request-fullscreen(root.app-fullscreen);
+            }
         }
 
         ContentSurface {
@@ -3190,6 +3204,8 @@ callback cloud-go-home();
                 detail-author: root.books-detail-author;
                 detail-cover: root.books-detail-cover;
                 detail-book: root.books-detail-book;
+                detail-book-hero: root.books-detail-book-hero;
+                detail-book-hero-dark: root.books-detail-book-hero-dark;
                 detail-favorite <=> root.books-detail-favorite;
                 detail-hue: root.books-detail-hue;
                 detail-format: root.books-detail-format;
@@ -3393,6 +3409,7 @@ callback cloud-go-home();
         line-index: root.books-reader-line-index;
         margin-index: root.books-reader-margin-index;
         typeface: root.books-reader-typeface;
+        text-align: root.books-reader-text-align;
         brightness: root.books-reader-brightness;
         contents-open <=> root.books-reader-contents-open;
         toc: root.books-reader-toc;
@@ -3434,6 +3451,7 @@ callback cloud-go-home();
         set-line-spacing(i) => { root.books-reader-set-line-spacing(i); }
         set-margin(i) => { root.books-reader-set-margin(i); }
         set-typeface(i) => { root.books-reader-set-typeface(i); }
+        set-align(i) => { root.books-reader-set-align(i); }
         toggle-bold => { root.books-reader-toggle-bold(); }
         set-theme(t) => { root.books-reader-set-theme(t); }
         set-brightness(v) => { root.books-reader-set-brightness(v); }
@@ -4167,6 +4185,69 @@ callback cloud-go-home();
         choose-mode(m) => { root.user-action("switch-to-local"); }
         add-library => { root.pick-folder(); }
         finished => { root.onboarding-finished(); }
+    }
+
+    // ── Logo-fullscreen hover title bar ────────────────────────────────────────
+    // In logo-fullscreen the OS decorations are gone; a 3px strip at the very
+    // top peeks a minimal title bar (logo · title · restore · close) on hover.
+    if root.app-fullscreen && !root.fs-peek: TouchArea {
+        x: 0; y: 0; width: 100%; height: 3px;
+        changed has-hover => { if (self.has-hover) { root.fs-peek = true; } }
+    }
+    if root.app-fullscreen && root.fs-peek: Rectangle {
+        x: 0; y: 0; width: 100%; height: 42px;
+        background: Theme.dark ? #161827f2 : #fffffff2;
+        border-color: Theme.outline;
+        border-width: 1px;
+        drop-shadow-blur: 18px;
+        drop-shadow-color: #00000040;
+        // Hide once the pointer has left the bar AND its buttons (250ms grace
+        // so hover hand-off between the bar and a button can't flicker it shut).
+        property <bool> any-hover: fsbar-ta.has-hover || fsr-ta.has-hover || fsx-ta.has-hover;
+        changed any-hover => { fs-hide.running = !self.any-hover; }
+        fs-hide := Timer {
+            interval: 250ms; running: false;
+            triggered => { fs-hide.running = false; root.fs-peek = false; }
+        }
+        fsbar-ta := TouchArea {}
+        // Logo · title · controls as one group, centered in the bar.
+        HorizontalLayout {
+            alignment: center; spacing: 10px;
+            VerticalLayout { alignment: center;
+                Rectangle {
+                    width: 20px; height: 20px; border-radius: 6px; clip: true;
+                    Image { source: @image-url("../resources/appicons/sidebar-default.png");
+                        image-fit: cover; width: 100%; height: 100%; }
+                } }
+            Text {
+                text: "Tulipix";
+                color: Theme.text;
+                font-size: 13px; font-weight: 700;
+                vertical-alignment: center;
+            }
+            VerticalLayout { alignment: center;
+                Rectangle {
+                    width: 30px; height: 30px; border-radius: 8px;
+                    background: fsr-ta.has-hover ? Theme.panel : transparent;
+                    AppIcon { source: Icons.maximize; tint: Theme.text;
+                        width: 14px; height: 14px; }
+                    fsr-ta := TouchArea { mouse-cursor: pointer;
+                        clicked => {
+                            root.app-fullscreen = false;
+                            root.fs-peek = false;
+                            root.request-fullscreen(false);
+                        } }
+                } }
+            VerticalLayout { alignment: center;
+                Rectangle {
+                    width: 30px; height: 30px; border-radius: 8px;
+                    background: fsx-ta.has-hover ? #e0518f33 : transparent;
+                    AppIcon { source: Icons.x; tint: fsx-ta.has-hover ? #e0518f : Theme.text;
+                        width: 14px; height: 14px; }
+                    fsx-ta := TouchArea { mouse-cursor: pointer;
+                        clicked => { root.app-quit(); } }
+                } }
+        }
     }
 }
 

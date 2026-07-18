@@ -198,6 +198,8 @@ component BrandHeader inherits Rectangle {
     in property <int> logo-choice: 0; // 0 default · 1 color · 2 dark · 3 white
     // Seasonal India branding — swaps the DEFAULT mark only (explicit picks win).
     in property <bool> festival: false;
+    // Clicking the mark toggles logo-fullscreen mode (main.slint).
+    callback logo-clicked();
     height: 48px;
     horizontal-stretch: 1;
     HorizontalLayout {
@@ -209,6 +211,7 @@ component BrandHeader inherits Rectangle {
             y: (parent.height - self.height) / 2;
             border-radius: 10px;
             clip: true;
+            TouchArea { mouse-cursor: pointer; clicked => { root.logo-clicked(); } }
             Image {
                 source: root.logo-choice == 1 ? @image-url("../resources/appicons/sidebar-color.png")
                       : root.logo-choice == 2 ? @image-url("../resources/appicons/sidebar-dark.png")
@@ -241,6 +244,7 @@ export component Sidebar inherits Rectangle {
     callback section-changed(string);
     callback user-action(string);
     callback theme-cycled();   // fired after the theme toggle cycles light/dark/OLED (persist)
+    callback logo-clicked();   // logo mark → toggle logo-fullscreen mode
 
     // Cycle the app theme light → dark → OLED → light and persist it.
     function cycle-theme() {
@@ -270,7 +274,8 @@ export component Sidebar inherits Rectangle {
         // Roomier gap between nav tiles — keeps the collapsed icon stack airy.
         spacing: root.collapsed ? 10px : 8px;
 
-        BrandHeader { collapsed: root.collapsed; logo-choice: root.logo-choice; festival: root.festival; }
+        BrandHeader { collapsed: root.collapsed; logo-choice: root.logo-choice; festival: root.festival;
+            logo-clicked => { root.logo-clicked(); } }
 
         Rectangle { height: 10px; horizontal-stretch: 1; background: transparent; }
         NavRow { icon-img: Icons.home; label: "Home"; accent: Theme.sec-home; collapsed: root.collapsed;

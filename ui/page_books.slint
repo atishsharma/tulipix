@@ -72,9 +72,11 @@ export struct BooksHero {
     title: string,
     author: string,
     cover: image,
-    // Cover art pre-baked onto the isometric flat-book mockup (seam tinted
-    // from the cover's own colour). Empty → flat fallback.
+    // Cover art pre-baked onto the tilted hardcover mockup (herocover.png;
+    // spine/back boards tinted from the cover's own colour, theme shadow baked
+    // in). Empty → flat fallback. `book-dark` is the dark-theme rendition.
     book: image,
+    book-dark: image,
     hue: color,
     page: int,
     total: int,
@@ -333,13 +335,10 @@ component Book3D inherits Rectangle {
     property <length> dh: self.dw / self.ar;
     property <length> ox: (self.width - self.dw) / 2;
     property <length> oy: (self.height - self.dh) / 2;
-    // Theme-aware silhouette shadow under the baked book (light glow in
-    // dark themes, dark drop in light) — same canvas geometry as the bake,
-    // so contain-fit keeps them perfectly aligned.
+    // Silhouette shadow under the baked book (same canvas geometry as the
+    // bake, so contain-fit keeps them aligned). One shadow for all themes.
     if root.baked.width > 0: Image {
-        source: BookTheme.dark
-            ? @image-url("../resources/icons/bookhero/bookshadow-dark.png")
-            : @image-url("../resources/icons/bookhero/bookshadow.png");
+        source: @image-url("../resources/icons/bookhero/bookshadow.png");
         image-fit: contain; width: 100%; height: 100%;
     }
     if root.baked.width > 0: Image {
@@ -634,27 +633,20 @@ component GridTile inherits Rectangle {
         }
     }
 
-    // ── List view: 30/50/20 card (cover+badge · title/author/date · controls).
+    // ── List view: 15/55/30 card (cover · title/author/date · rating+controls).
     if root.compact: HorizontalLayout {
         padding: 10px; spacing: 12px;
-        // 30% — cover centered, file-type badge over the thumb (solid fill).
+        // 15% — cover centered (file-type badge moved to the controls block).
         Rectangle {
-            width: (root.width - 44px) * 0.30;
+            width: (root.width - 44px) * 0.15;
             clip: true;
             Book3D {
                 width: 100%; height: 100%;
                 source: tile.cover; baked: tile.book; percent: tile.percent;
                 format: tile.format; title: tile.title; author: tile.author; hue: tile.hue;
             }
-            Rectangle {
-                x: (parent.width - self.width) / 2; y: 4px;
-                width: lfmt-t.preferred-width + 14px; height: 18px;
-                border-radius: 6px; background: BookTheme.accent;
-                lfmt-t := Text { text: tile.format; color: #ffffff; font-size: 9px;
-                    font-weight: 700; x: 7px; y: (parent.height - self.height) / 2; }
-            }
         }
-        // 50% — three rows: title · author · publication date.
+        // 55% — three rows: title · author · publication date.
         VerticalLayout {
             alignment: center; spacing: 3px; horizontal-stretch: 1;
             Text { text: tile.title; color: BookTheme.ink; font-size: 15px;
@@ -665,13 +657,52 @@ component GridTile inherits Rectangle {
             Text { text: "Publication : " + (tile.date != "" ? tile.date : "—");
                 color: BookTheme.ink-dim; font-size: 11px; }
         }
-        // 20% — small rating pill, then ♥ + ⋮.
+        // 30% — rating pill, then file type · ⊕ · ♥ · ⋮.
         VerticalLayout {
             alignment: center; spacing: 6px;
-            width: (root.width - 44px) * 0.20;
-            RatingPill { rating: root.tile.rating; star: 13px; rate(v) => { root.rate(v); } }
+            width: (root.width - 44px) * 0.30;
+            HorizontalLayout { alignment: center;
+                RatingPill { rating: root.tile.rating; star: 13px; rate(v) => { root.rate(v); } } }
             HorizontalLayout {
                 spacing: 8px; alignment: center;
+                // Format badge — violet combo (moved off the cover thumb).
+                VerticalLayout { alignment: center;
+                    Rectangle {
+                        height: 20px; border-radius: 6px;
+                        background: BookTheme.accent.with-alpha(0.10);
+                        border-width: 1px; border-color: BookTheme.accent.with-alpha(0.4);
+                        HorizontalLayout { padding-left: 8px; padding-right: 8px;
+                            Text { text: tile.format; color: BookTheme.accent; font-size: 10px;
+                                font-weight: 700; vertical-alignment: center; } }
+                    } }
+                // ⊕ add-to-collection — green combo, left of ♥.
+                Rectangle {
+                    width: 26px; height: 26px; border-radius: 13px;
+                    background: #2fbf71.with-alpha(lplus-ta.has-hover ? 0.32 : 0.10);
+                    border-width: 1px; border-color: #2fbf71.with-alpha(0.4);
+                    AppIcon { source: Icons.plus; tint: #2fbf71; width: 14px; height: 14px;
+                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                    lplus-ta := TouchArea { mouse-cursor: pointer; clicked => { lcoll-add.show(); } }
+                    lcoll-add := PopupWindow {
+                        x: parent.width - 210px; y: parent.height + 4px; width: 210px;
+                        Rectangle {
+                            background: BookTheme.card; border-radius: 12px;
+                            border-width: 1px; border-color: BookTheme.hairline;
+                            drop-shadow-blur: 18px; drop-shadow-color: #00000033;
+                            VerticalLayout {
+                                padding: 8px; spacing: 2px;
+                                Text { text: "Add to collection"; color: BookTheme.ink-dim;
+                                    font-size: 11px; font-weight: 700; letter-spacing: 0.5px; }
+                                for c in root.collections: MenuItem {
+                                    label: c.name; icon: Icons.bookmark;
+                                    clicked => { root.add-collection(c.id); lcoll-add.close(); } }
+                                if root.collections.length == 0: Text {
+                                    text: "No collections yet — create one\nin the Collections tab.";
+                                    color: BookTheme.ink-dim; font-size: 11px; wrap: word-wrap; }
+                            }
+                        }
+                    }
+                }
                 Rectangle {
                     width: 26px; height: 26px; border-radius: 13px;
                     background: #e0518f.with-alpha(lfav-ta.has-hover ? 0.32 : 0.10);
@@ -846,6 +877,10 @@ export component BooksPage inherits Rectangle {
     in property <image> detail-cover;
     // Baked 3D rendition (same wrapped cover the library card shows).
     in property <image> detail-book;
+    // Flat hero renditions — shown while the cover area is hovered (the
+    // upright book "lays down" into the hero-slider style).
+    in property <image> detail-book-hero;
+    in property <image> detail-book-hero-dark;
     in-out property <bool> detail-favorite: false;
     in property <color> detail-hue: #6c4df6;
     in property <string> detail-format: "";
@@ -946,20 +981,27 @@ export component BooksPage inherits Rectangle {
             Card {
                 horizontal-stretch: 1;
                 clip: true;
-                // Colorful outline keyed to the hero book's hue.
-                border-width: 1.5px;
-                border-color: root.hero.present
-                    ? root.hero.hue.with-alpha(0.5)
-                    : BookTheme.accent.with-alpha(0.4);
+                // No card outline — the hue outline moved onto the cover area.
                 if root.hero.present: HorizontalLayout {
                     padding: 16px; spacing: 18px;
-                    // Cover — baked onto the isometric flat-book mockup when
-                    // art exists; upright Book3D fallback otherwise.
+                    // Cover — baked onto the tilted hardcover mockup when art
+                    // exists (theme-matched rendition); Book3D fallback
+                    // otherwise. Hue outline frames the cover area.
                     if root.hero.book.width > 0: VerticalLayout { alignment: center;
-                        Image { source: root.hero.book; image-fit: contain;
-                            width: 195px; height: 178px; } }
+                        Rectangle {
+                            width: 195px; height: 178px;
+                            border-radius: 14px;
+                            border-width: 1.5px;
+                            border-color: root.hero.hue.with-alpha(0.5);
+                            Image {
+                                source: BookTheme.dark && root.hero.book-dark.width > 0
+                                    ? root.hero.book-dark : root.hero.book;
+                                image-fit: contain; width: 100%; height: 100%; } } }
                     if root.hero.book.width <= 0: Book3D {
                         width: 145px;
+                        border-radius: 14px;
+                        border-width: 1.5px;
+                        border-color: root.hero.hue.with-alpha(0.5);
                         source: root.hero.cover;
                         title: root.hero.title; author: root.hero.author; hue: root.hero.hue; }
                     VerticalLayout {
@@ -974,12 +1016,14 @@ export component BooksPage inherits Rectangle {
                                 font-weight: 800; overflow: elide; } }
                         Text { text: root.hero.author; color: BookTheme.ink-dim; font-size: 14px;
                             font-weight: 500; overflow: elide; }
-                        // progress — gradient fill fading toward the tail (upbook.png)
-                        HorizontalLayout { alignment: start;
-                            Rectangle { width: 280px; height: 8px; border-radius: 4px; background: BookTheme.track;
-                                Rectangle { x: 0; width: parent.width * root.hero.percent / 100; height: 8px;
-                                    border-radius: 4px;
-                                    background: @linear-gradient(90deg, #6c4df6, #b9b0ff); } } }
+                        // progress — thick full-width bar; the track fades out
+                        // as it approaches the illustration on the right.
+                        Rectangle { height: 16px; border-radius: 8px;
+                            background: @linear-gradient(90deg,
+                                BookTheme.track 0%, BookTheme.track 70%, transparent 100%);
+                            Rectangle { x: 0; width: parent.width * root.hero.percent / 100; height: 16px;
+                                border-radius: 8px;
+                                background: @linear-gradient(90deg, #6c4df6, #b9b0ff); } }
                         Text { color: BookTheme.ink-dim; font-size: 12px;
                             text: "Page " + root.hero.page + " of " + root.hero.total + " • "
                                 + Math.round(root.hero.percent) + "%   " + root.hero.time-left; }
@@ -1463,10 +1507,27 @@ export component BooksPage inherits Rectangle {
     }
 
     // ── Book detail popup (R1) ─────────────────────────────────────────────────
+    // Frosted scrim — Slint can't backdrop-blur, so a heavy theme-tinted wash
+    // over a dark dim reads as soft blur of everything behind the popup.
     if root.detail-open: Rectangle {
         width: 100%; height: 100%;
-        background: #00000066;
+        background: #00000055;
+        Rectangle { width: 100%; height: 100%;
+            background: (BookTheme.dark ? #14142077 : #f4f2fa99); }
         TouchArea { clicked => { root.detail-open = false; root.confirm-delete = false; } }
+    }
+    // Escape closes the popup (grabs focus while open).
+    if root.detail-open: FocusScope {
+        width: 0; height: 0;
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                root.detail-open = false;
+                root.confirm-delete = false;
+                return accept;
+            }
+            reject
+        }
     }
     if root.detail-open: Rectangle {
         x: (root.width - self.width) / 2;
@@ -1483,9 +1544,13 @@ export component BooksPage inherits Rectangle {
         HorizontalLayout {
             padding: 22px; spacing: 20px;
             // ── 40%: Library-card style wrapped cover, centered all sides.
-            Rectangle {
+            // Hovering lays the book down into the flat hero rendition
+            // (smaller so the wide mockup never clips the column).
+            dcov := Rectangle {
                 width: (parent.width - 64px) * 0.4;
-                Book3D {
+                property <bool> flat: dcov-ta.has-hover && root.detail-book-hero.width > 0;
+                dcov-ta := TouchArea {}
+                if !dcov.flat: Book3D {
                     width: parent.width; height: parent.height - 16px;
                     x: 0; y: (parent.height - self.height) / 2;
                     source: root.detail-cover;
@@ -1494,6 +1559,15 @@ export component BooksPage inherits Rectangle {
                     title: root.detail-title;
                     author: root.detail-author;
                     hue: root.detail-hue;
+                }
+                if dcov.flat: Image {
+                    source: BookTheme.dark && root.detail-book-hero-dark.width > 0
+                        ? root.detail-book-hero-dark : root.detail-book-hero;
+                    image-fit: contain;
+                    width: parent.width * 0.92;
+                    height: parent.height * 0.92;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
                 }
             }
             // ── 60%: info column.

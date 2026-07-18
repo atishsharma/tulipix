@@ -3314,6 +3314,8 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_error_reload(move || { if let Some(w) = w.upgrade() { w.set_error_open(false); } });
     window.on_error_quit(move || { let _ = slint::quit_event_loop(); });
+    // Close button on the hover title bar in logo-fullscreen mode.
+    window.on_app_quit(move || { let _ = slint::quit_event_loop(); });
 
     // ── Properties window — open containing folder ─────────────────────────
     let w = window.as_weak();
@@ -5510,17 +5512,27 @@ fn kick_section_scan(
             // so a global lock keeps startup-restore of several watched
             // folders from running duplicate concurrent sweeps.
             static BOOKS_SCAN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
-            let _guard = BOOKS_SCAN.lock().await;
+            let guard = BOOKS_SCAN.lock().await;
             let _ = tulipix_books::scan::add_folder(&pool, &root.display().to_string()).await;
             let c2 = counters.clone();
             let weak_p = weak.clone();
+            let weak_g = weak.clone();
             let _ = tulipix_books::scan::scan_all_progress(&pool, move |total, done, _title| {
                 c2.total.store(total as i32, Relaxed);
                 c2.added.store(done as i32, Relaxed);
                 let step = (total / 100).max(1);
                 if done % step == 0 || done == total { flush_progress(&weak_p); }
+                // Live grid: swap freshly-ingested books in every ~10 files
+                // instead of only when the whole sweep finishes.
+                if done % 10 == 0 {
+                    tulipix_sec_books::books_refresh(weak_g.clone(), 0);
+                }
             })
             .await;
+            // Release the scan lock BEFORE the slow content indexing below —
+            // holding it there made a second "Add books" wait behind minutes
+            // of FTS parsing with its progress popup stuck at zero.
+            drop(guard);
             counters.active.store(false, Relaxed);
             flush_progress(&weak);
             let n = list_section_files(&root, section).len() as i32;
@@ -5541,6 +5553,9 @@ fn kick_section_scan(
             tulipix_sec_books::books_backfill_metadata(weak.clone());
             // Content indexing for library-wide search — slow on big
             // libraries but resumable, so a partial run picks up next time.
+            // Own lock so two adds can't double-index the same books.
+            static BOOKS_INDEX: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+            let _ig = BOOKS_INDEX.lock().await;
             let _ = tulipix_books::scan::index_contents(&pool).await;
             return;
         }

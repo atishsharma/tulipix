@@ -42,16 +42,20 @@ pub fn extract(book_path: &Path, format: &str) -> Result<PathBuf> {
 
 /// Grid-tile frame: upright hardcover, 600×830, transparent background.
 const FRAME_TILE: &[u8] = include_bytes!("../../../resources/icons/bookhero/bookframe.png");
-/// Hero frame: isometric flat book, 600×600, transparent background.
-const FRAME_HERO: &[u8] = include_bytes!("../../../resources/icons/bookhero/continueframe.png");
+/// Hero frame: tilted hardcover mockup (herocover.png, downscaled to 600×600,
+/// transparent background). The dark-theme variant is derived at bake time by
+/// darkening this frame, so no second asset ships.
+const FRAME_HERO: &[u8] = include_bytes!("../../../resources/icons/bookhero/herocover-frame.png");
 
 /// Front-face quad of FRAME_TILE — [TL, TR, BR, BL] of the cover art.
 /// Follows the mockup's tilt + perspective (face measured from the frame's
 /// alpha: left edge y 28→790, right edge y 0→829) so the art reaches the
 /// frame's top and bottom instead of floating with gaps.
 const QUAD_TILE: [(f32, f32); 4] = [(12.8, 26.5), (511.4, 0.0), (512.7, 829.0), (12.2, 791.0)];
-/// Top-face quad of FRAME_HERO — art TL maps to the book's left corner.
-const QUAD_HERO: [(f32, f32); 4] = [(46.1, 231.2), (251.6, 99.8), (552.5, 282.4), (340.7, 468.5)];
+/// Front-face quad of FRAME_HERO — [TL, TR, BR, BL] of the cover art
+/// (spine-hinge top, top corner, right corner, hinge bottom). Measured from
+/// the mockup at 800px, scaled ×0.75 to the 600px frame.
+const QUAD_HERO: [(f32, f32); 4] = [(81.0, 149.3), (327.8, 74.3), (578.3, 378.0), (273.0, 480.8)];
 
 /// Average opaque colour of an image, as a hue-preserving multiplier
 /// (max channel normalised to 1.0), saturation-boosted (gamma on the
@@ -137,7 +141,9 @@ fn warp_onto(
 /// change (quad, shadow, tint) makes every cover re-bake; stale
 /// `<stem>_book*/_hero*.png` files are just ignored.
 pub const BOOK_SUFFIX: &str = "_book5";
-pub const HERO_SUFFIX: &str = "_hero2";
+pub const HERO_SUFFIX: &str = "_hero3";
+/// Dark-theme hero rendition (darkened frame + light glow shadow).
+pub const HERO_DARK_SUFFIX: &str = "_hero3d";
 
 /// Cache location of a baked rendition (`suffix` = BOOK_SUFFIX | HERO_SUFFIX).
 pub fn baked_path(flat: &Path, suffix: &str) -> PathBuf {
@@ -234,34 +240,144 @@ pub fn bake_book(flat: &Path) -> Result<PathBuf> {
     Ok(out)
 }
 
-/// Hero bake: cover art wrapped onto the isometric flat-book mockup; the
-/// page-block seam (and soft shadow) is tinted with a vertical gradient of
-/// the cover's own average colour. Cached as `<stem>{HERO_SUFFIX}.png`.
+/// Hero bake: cover art wrapped onto the tilted hardcover mockup, library-card
+/// style — spine + back-board strips tinted from the cover's own colour, and a
+/// theme-matched drop shadow baked into the canvas (dark blur for light theme,
+/// soft glow for dark). Produces BOTH renditions at once:
+/// `<stem>{HERO_SUFFIX}.png` (light) and `<stem>{HERO_DARK_SUFFIX}.png`.
 pub fn bake_hero(flat: &Path) -> Result<PathBuf> {
     let out = baked_path(flat, HERO_SUFFIX);
-    if out.exists() {
+    let out_dark = baked_path(flat, HERO_DARK_SUFFIX);
+    if out.exists() && out_dark.exists() {
         return Ok(out);
     }
     let src = image::open(flat).context("open flat cover")?.to_rgba8();
-    let mut frame = image::load_from_memory(FRAME_HERO).context("frame")?.to_rgba8();
-    // Boosted tint: plain averages of light covers are near-white and left
-    // the page-block seam looking blank — the gamma'd tint keeps a visible
-    // colour gradient on the seam for any cover.
+    let frame = image::load_from_memory(FRAME_HERO).context("frame")?.to_rgba8();
+    let (fw, fh) = frame.dimensions();
     let tint = tint_of_boosted(&src);
-    let h = frame.height().max(1) as f32;
-    for (_, y, p) in frame.enumerate_pixels_mut() {
-        if p[3] == 0 {
-            continue;
+    // Signed side tests against the face-quad edges (hinge TL→BL, top TL→TR).
+    let cross = |a: (f32, f32), b: (f32, f32), x: f32, y: f32| {
+        (x - a.0) * (b.1 - a.1) - (y - a.1) * (b.0 - a.0)
+    };
+    for (dark, path) in [(false, &out), (true, &out_dark)] {
+        // Theme frame: the dark variant is the same mockup pre-darkened, so
+        // the white boards/pages follow the dark theme (bookframe-dark ratio).
+        let mut fr = frame.clone();
+        if dark {
+            for p in fr.pixels_mut() {
+                for c in 0..3 {
+                    p[c] = (p[c] as f32 * 0.52) as u8;
+                }
+            }
         }
-        // Tint strength grows toward the bottom (deeper pages darker).
-        let s = 0.55 + 0.4 * (y as f32 / h);
+        let mut canvas = image::RgbaImage::new(fw, fh);
+        // Baked shadow: the frame's silhouette, nudged down, blurred — dark
+        // drop under the light card, light glow under the dark one.
+        let (col, alpha_k, dy) = if dark { (235u8, 0.5f32, 6u32) } else { (18u8, 0.42f32, 9u32) };
+        let mut sil = image::RgbaImage::new(fw, fh);
+        for (x, y, p) in fr.enumerate_pixels() {
+            if p[3] > 0 && y + dy < fh {
+                sil.put_pixel(x, y + dy, image::Rgba([col, col, col, p[3]]));
+            }
+        }
+        let sil = image::imageops::blur(&sil, 7.0);
+        for (x, y, p) in sil.enumerate_pixels() {
+            if p[3] > 0 {
+                canvas.put_pixel(x, y, image::Rgba([p[0], p[1], p[2], (p[3] as f32 * alpha_k) as u8]));
+            }
+        }
+        // Frame over the shadow (plain alpha-over).
+        for (x, y, p) in fr.enumerate_pixels() {
+            if p[3] == 255 {
+                canvas.put_pixel(x, y, *p);
+            } else if p[3] > 0 {
+                let q = canvas.get_pixel(x, y);
+                let fa = p[3] as f32 / 255.0;
+                canvas.put_pixel(x, y, image::Rgba([
+                    (p[0] as f32 * fa + q[0] as f32 * (1.0 - fa)) as u8,
+                    (p[1] as f32 * fa + q[1] as f32 * (1.0 - fa)) as u8,
+                    (p[2] as f32 * fa + q[2] as f32 * (1.0 - fa)) as u8,
+                    ((fa + q[3] as f32 / 255.0 * (1.0 - fa)) * 255.0) as u8,
+                ]));
+            }
+        }
+        // Board tints, library-card style: spine (left of the hinge line), the
+        // thin board sliver above the top edge, and the back-cover sliver at
+        // the very bottom of the silhouette. The page block stays untinted.
+        {
+            let tint_px = |canvas: &mut image::RgbaImage, x: u32, y: u32| {
+                const S: f32 = 0.85;
+                let px = canvas.get_pixel_mut(x, y);
+                for c in 0..3 {
+                    px[c] = (px[c] as f32 * (1.0 - S + S * tint[c])) as u8;
+                }
+            };
+            for y in 0..fh {
+                for x in 0..fw {
+                    if fr.get_pixel(x, y)[3] <= 200 {
+                        continue;
+                    }
+                    let (xf, yf) = (x as f32, y as f32);
+                    let spine = cross(QUAD_HERO[0], QUAD_HERO[3], xf, yf) < 0.0;
+                    let top = cross(QUAD_HERO[0], QUAD_HERO[1], xf, yf) > 0.0;
+                    if spine || top {
+                        tint_px(&mut canvas, x, y);
+                    }
+                }
+            }
+            // Bottom back-board sliver: last ~6 opaque rows per column.
+            for x in 0..fw {
+                if let Some(y1) = (0..fh).rev().find(|&y| fr.get_pixel(x, y)[3] > 10) {
+                    for y in y1.saturating_sub(5)..=y1 {
+                        if fr.get_pixel(x, y)[3] > 200 {
+                            tint_px(&mut canvas, x, y);
+                        }
+                    }
+                }
+            }
+        }
+        // Shade with the UNdarkened frame in both variants — the mockup's
+        // lighting is what we want on the art; the dark frame's low luminance
+        // would crush the cover to the 0.55 clamp.
+        warp_onto(&mut canvas, &src, QUAD_HERO, Some(&frame));
+        canvas.save(path).context("save baked hero")?;
+    }
+    Ok(out)
+}
+
+// ── Magazine bake: fixed-page (PDF/CBZ/CBR) spread pages ─────────────────────
+// The reader lays rasterised pages full-bleed on the open-book mockup; a flat
+// paste ignores the mockup's paper lighting. These grayscale shade maps are
+// the mockup's own page surfaces (Book_Light.png crops, median-filtered so
+// the decorative frame lines don't print onto the art) — multiplying them
+// over the raster makes the page read as printed on the book.
+
+const PAGE_SHADE_L: &[u8] = include_bytes!("../../../resources/icons/bookhero/pageshade-l.png");
+const PAGE_SHADE_R: &[u8] = include_bytes!("../../../resources/icons/bookhero/pageshade-r.png");
+
+/// Multiply the mockup's page lighting over a rendered page raster. Cached
+/// next to the raster as `<stem>_mag{l|r}.png` (same cache dir, pruned with
+/// it). `right` picks the page side (gutter shadow mirrors).
+pub fn magazine_page(page: &Path, right: bool) -> Result<PathBuf> {
+    let out = baked_path(page, if right { "_magr" } else { "_magl" });
+    if out.exists() {
+        return Ok(out);
+    }
+    let mut img = image::open(page).context("open page raster")?.to_rgba8();
+    let shade = image::load_from_memory(if right { PAGE_SHADE_R } else { PAGE_SHADE_L })
+        .context("shade map")?
+        .to_luma8();
+    let (w, h) = img.dimensions();
+    let (sw, sh) = shade.dimensions();
+    for (x, y, p) in img.enumerate_pixels_mut() {
+        let sx = ((x as u64 * (sw as u64 - 1)) / (w.max(2) as u64 - 1)) as u32;
+        let sy = ((y as u64 * (sh as u64 - 1)) / (h.max(2) as u64 - 1)) as u32;
+        let l = (shade.get_pixel(sx, sy)[0] as f32 / 245.0).clamp(0.62, 1.06);
         for c in 0..3 {
-            let f = 1.0 - s + s * tint[c];
-            p[c] = (p[c] as f32 * f) as u8;
+            p[c] = (p[c] as f32 * l).min(255.0) as u8;
         }
     }
-    warp_onto(&mut frame, &src, QUAD_HERO, None);
-    frame.save(&out).context("save baked hero")?;
+    img.save(&out).context("save magazine page")?;
     Ok(out)
 }
 

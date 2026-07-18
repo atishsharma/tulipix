@@ -67,6 +67,7 @@ struct ReaderPrefs {
     line_idx: u8,  // 0 compact · 1 normal · 2 relaxed
     margin_idx: u8, // 0 narrow · 1 normal · 2 wide
     typeface: u8,  // 0 serif · 1 sans · 2 mono
+    align: u8,     // 0 left · 1 center · 2 right (visual-only, no repaginate)
     bold: bool,
     theme: u8,     // 0 light · 1 sepia · 2 dark · 3 night
     brightness: f32,
@@ -74,14 +75,15 @@ struct ReaderPrefs {
 
 impl Default for ReaderPrefs {
     fn default() -> Self {
-        Self { font_px: 17.0, line_idx: 1, margin_idx: 1, typeface: 0, bold: false, theme: 0, brightness: 1.0 }
+        Self { font_px: 17.0, line_idx: 1, margin_idx: 1, typeface: 2, align: 1, bold: false, theme: 0, brightness: 1.0 }
     }
 }
 
 thread_local! {
     static READER: RefCell<ReaderState> = RefCell::new(ReaderState::default());
+    // typeface 2 = mono (user default); align 1 = centered body text.
     static PREFS: Cell<ReaderPrefs> = const { Cell::new(ReaderPrefs {
-        font_px: 17.0, line_idx: 1, margin_idx: 1, typeface: 0, bold: false, theme: 0, brightness: 1.0,
+        font_px: 17.0, line_idx: 1, margin_idx: 1, typeface: 2, align: 1, bold: false, theme: 0, brightness: 1.0,
     }) };
     // Single-page view: nav steps by 1 and doesn't even-align spreads.
     static SINGLE: Cell<bool> = const { Cell::new(false) };
@@ -210,8 +212,9 @@ fn layout_from(p: &ReaderPrefs) -> Layout {
     if w > 1.0 && h > 1.0 {
         l.page_w_px = w;
         l.page_h_px = h;
-        // PaperPage chrome: 40 top + 20 bottom + 24 folio ≈ 84px; small safety.
-        l.pad_y_px = 92.0;
+        // PaperPage chrome: 40 top + 20 bottom (folio now floats in the top
+        // padding, out of the text flow); small safety.
+        l.pad_y_px = 72.0;
     }
     l
 }
@@ -224,6 +227,7 @@ fn push_prefs(w: &MainWindow, p: &ReaderPrefs) {
     w.set_books_reader_line_index(p.line_idx as i32);
     w.set_books_reader_margin_index(p.margin_idx as i32);
     w.set_books_reader_typeface(p.typeface as i32);
+    w.set_books_reader_text_align(p.align as i32);
     w.set_books_reader_brightness(p.brightness);
     w.set_books_reader_theme(THEMES[p.theme as usize % 4].into());
 }
@@ -666,6 +670,11 @@ pub fn wire(window: &MainWindow) {
         if let Some(w) = w.upgrade() { push_prefs(&w, &PREFS.with(|c| c.get())); reader_repaginate(&w, w.as_weak()); }
     });
     let w = window.as_weak();
+    window.on_books_reader_set_align(move |i| {
+        PREFS.with(|c| { let mut p = c.get(); p.align = i.clamp(0, 2) as u8; c.set(p); });
+        if let Some(w) = w.upgrade() { push_prefs(&w, &PREFS.with(|c| c.get())); }
+    });
+    let w = window.as_weak();
     window.on_books_reader_toggle_bold(move || {
         PREFS.with(|c| { let mut p = c.get(); p.bold = !p.bold; c.set(p); });
         if let Some(w) = w.upgrade() { push_prefs(&w, &PREFS.with(|c| c.get())); }
@@ -978,7 +987,7 @@ fn apply_grid(w: &MainWindow, rows: &[BookRow]) {
             author: clamp_chars(&b.author, 40).into(),
             author_full: b.author.clone().into(),
             cover: load_cover(&b.cover_path),
-            book: book_img(b, false),
+            book: book_img(b, tulipix_books::covers::BOOK_SUFFIX),
             percent: b.percent as f32,
             favorite: b.favorite != 0,
             format: b.format.to_uppercase().into(),
@@ -1099,7 +1108,10 @@ fn books_show_detail(weak: slint::Weak<MainWindow>, id: i64) {
             w.set_books_detail_title(b.title.clone().into());
             w.set_books_detail_author(b.author.clone().into());
             w.set_books_detail_cover(load_cover(&b.cover_path));
-            w.set_books_detail_book(book_img(&b, false));
+            w.set_books_detail_book(book_img(&b, tulipix_books::covers::BOOK_SUFFIX));
+            // Flat hero renditions for the hover cover-swap in the popup.
+            w.set_books_detail_book_hero(book_img(&b, tulipix_books::covers::HERO_SUFFIX));
+            w.set_books_detail_book_hero_dark(book_img(&b, tulipix_books::covers::HERO_DARK_SUFFIX));
             w.set_books_detail_favorite(b.favorite != 0);
             w.set_books_detail_hue(cover_hue(&b.title));
             w.set_books_detail_format(b.format.to_uppercase().into());
@@ -1444,12 +1456,12 @@ fn cover_hue(title: &str) -> slint::Color {
 /// otherwise the generated placeholder's bake (same wrapped-on-mockup look).
 /// Load-only — generation happens at scan time / in the prebake sweep, never
 /// on the event loop.
-fn book_img(b: &BookRow, hero: bool) -> slint::Image {
+fn book_img(b: &BookRow, suffix: &str) -> slint::Image {
     if !b.cover_path.is_empty() {
-        return load_baked(&b.cover_path, hero);
+        return load_baked(&b.cover_path, suffix);
     }
     let ph = tulipix_books::covers::placeholder_path(std::path::Path::new(&b.path));
-    load_baked(&ph.display().to_string(), hero)
+    load_baked(&ph.display().to_string(), suffix)
 }
 
 thread_local! {
@@ -1479,19 +1491,14 @@ fn load_cover(path: &str) -> slint::Image {
 /// pre-bake (scan-time or the one-shot sweep in `books_refresh`) has produced
 /// it; empty image otherwise (UI falls back to frame + flat overlay). Misses
 /// are NOT memoised so tiles pick the bake up as soon as it lands.
-fn load_baked(path: &str, hero: bool) -> slint::Image {
+fn load_baked(path: &str, suffix: &str) -> slint::Image {
     if path.is_empty() {
         return slint::Image::default();
     }
-    let key = format!("{path}#{}", if hero { "hero" } else { "book" });
+    let key = format!("{path}#{suffix}");
     if let Some(img) = COVER_CACHE.with(|c| c.borrow().get(&key).cloned()) {
         return img;
     }
-    let suffix = if hero {
-        tulipix_books::covers::HERO_SUFFIX
-    } else {
-        tulipix_books::covers::BOOK_SUFFIX
-    };
     let baked = tulipix_books::covers::baked_path(std::path::Path::new(path), suffix);
     if !baked.exists() {
         return slint::Image::default();
@@ -1546,7 +1553,8 @@ fn hero_from(
         title: b.title.clone().into(),
         author: b.author.clone().into(),
         cover: load_cover(&b.cover_path),
-        book: book_img(b, true),
+        book: book_img(b, tulipix_books::covers::HERO_SUFFIX),
+        book_dark: book_img(b, tulipix_books::covers::HERO_DARK_SUFFIX),
         hue: cover_hue(&b.title),
         page: page as i32,
         total: total as i32,
@@ -1729,6 +1737,7 @@ fn nav_image(w: &MainWindow, weak: slint::Weak<MainWindow>, page: usize) {
 
     // Rasterise the two pages off-thread (poppler/unrar); decode on UI thread.
     let has_right = pos + 1 < total;
+    let single = SINGLE.with(|c| c.get());
     tokio::runtime::Handle::current().spawn(async move {
         let render_at = |idx: usize| {
             let (p, f) = (path.clone(), format.clone());
@@ -1743,6 +1752,21 @@ fn nav_image(w: &MainWindow, weak: slint::Weak<MainWindow>, page: usize) {
         let (left, right) = tokio::join!(render_at(pos), async {
             if has_right { render_at(pos + 1).await } else { None }
         });
+        // Spread view: bake the mockup's paper lighting over each raster so
+        // the pages read as printed on the open book (magazine look). Single-
+        // page/zoom keeps the clean raster.
+        let (left, right) = if single {
+            (left, right)
+        } else {
+            tokio::task::spawn_blocking(move || {
+                let m = |o: Option<std::path::PathBuf>, r: bool| {
+                    o.map(|p| tulipix_books::covers::magazine_page(&p, r).unwrap_or(p))
+                };
+                (m(left, false), m(right, true))
+            })
+            .await
+            .unwrap_or((None, None))
+        };
         let _ = weak.upgrade_in_event_loop(move |w| {
             let load = |o: Option<std::path::PathBuf>| {
                 o.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default()
@@ -1751,12 +1775,17 @@ fn nav_image(w: &MainWindow, weak: slint::Weak<MainWindow>, page: usize) {
             w.set_books_reader_right_image(load(right));
         });
         // Prefetch the next spread's pages into the disk cache so forward paging
-        // is instant (page_image returns early on a cache hit).
-        for nxt in [pos + 2, pos + 3] {
+        // is instant (page_image returns early on a cache hit). Bake the
+        // magazine lighting ahead too when in spread view.
+        for (i, nxt) in [pos + 2, pos + 3].into_iter().enumerate() {
             if nxt < total {
                 let (p, f) = (path.clone(), format.clone());
                 tokio::task::spawn_blocking(move || {
-                    let _ = render::page_image(&p, &f, nxt);
+                    if let Ok(raster) = render::page_image(&p, &f, nxt) {
+                        if !single {
+                            let _ = tulipix_books::covers::magazine_page(&raster, i == 1);
+                        }
+                    }
                 });
             }
         }
@@ -2257,8 +2286,21 @@ fn nav_chapter(w: &MainWindow, weak: slint::Weak<MainWindow>, delta: i32) {
         if r.pages.is_empty() {
             return None;
         }
-        let cur = r.pages[r.pos.min(r.pages.len() - 1)].chapter as i32;
-        Some(paginate::page_of_chapter(&r.pages, (cur + delta).max(0) as usize))
+        let pos = r.pos.min(r.pages.len() - 1);
+        let cur = r.pages[pos].chapter as i32;
+        // Prev from mid-chapter first snaps to the chapter's own start.
+        let start = paginate::page_of_chapter(&r.pages, cur.max(0) as usize);
+        if delta < 0 && pos > start {
+            return Some(start);
+        }
+        // Clamp at the ends — page_of_chapter's unwrap_or(0) used to throw
+        // "Next" on the last chapter back to the start of the book.
+        let last_ch = r.pages.last().map(|p| p.chapter).unwrap_or(0) as i32;
+        let tgt = (cur + delta).clamp(0, last_ch);
+        if tgt == cur {
+            return None;
+        }
+        Some(paginate::page_of_chapter(&r.pages, tgt as usize))
     });
     if let Some(p) = target {
         nav_to(w, weak, p);
