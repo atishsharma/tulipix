@@ -319,39 +319,34 @@ pub async fn remove(pool: &SqlitePool, id: i64) -> Result<()> {
     Ok(())
 }
 
-/// Soft-delete: flag trashed, remember where the file came from, and point the
-/// row at its new location inside the Trash dir. The caller moves the file.
-pub async fn trash(pool: &SqlitePool, id: i64, orig: &str, new_path: &str) -> Result<()> {
-    sqlx::query(
-        "UPDATE books SET trashed = 1, trashed_at = ?, orig_path = ?, path = ? WHERE id = ?",
-    )
-    .bind(crate::schema::now())
-    .bind(orig)
-    .bind(new_path)
-    .bind(id)
-    .execute(pool)
-    .await?;
+/// Soft-delete: flag the row trashed. The file on disk is left untouched —
+/// the book just moves from the library to the Trash tab.
+pub async fn trash(pool: &SqlitePool, id: i64) -> Result<()> {
+    sqlx::query("UPDATE books SET trashed = 1, trashed_at = ? WHERE id = ?")
+        .bind(crate::schema::now())
+        .bind(id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
-/// Restore a trashed book: return its stored `orig_path` (caller moves the file
-/// back), clear the trashed flag, and repoint the row.
-pub async fn restore(pool: &SqlitePool, id: i64) -> Result<String> {
-    let orig: String = sqlx::query_scalar("SELECT orig_path FROM books WHERE id = ?")
+/// Restore a trashed book: clear the trashed flag (no file to move back —
+/// trashing never touches the disk).
+pub async fn restore(pool: &SqlitePool, id: i64) -> Result<()> {
+    sqlx::query("UPDATE books SET trashed = 0, trashed_at = 0 WHERE id = ?")
         .bind(id)
-        .fetch_optional(pool)
-        .await?
-        .unwrap_or_default();
-    let target = if orig.is_empty() { None } else { Some(orig.clone()) };
-    sqlx::query(
-        "UPDATE books SET trashed = 0, trashed_at = 0, orig_path = '',
-                path = COALESCE(?, path) WHERE id = ?",
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// All non-empty cover paths (for the background 3D pre-bake sweep).
+pub async fn cover_paths(pool: &SqlitePool) -> Result<Vec<String>> {
+    Ok(
+        sqlx::query_scalar("SELECT cover_path FROM books WHERE cover_path != ''")
+            .fetch_all(pool)
+            .await?,
     )
-    .bind(target)
-    .bind(id)
-    .execute(pool)
-    .await?;
-    Ok(orig)
 }
 
 /// Count of books currently in the Trash (for the toolbar chip badge).

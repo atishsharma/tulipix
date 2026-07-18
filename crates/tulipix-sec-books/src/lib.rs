@@ -19,8 +19,12 @@ use tulipix_books::toc::TocEntry;
 use tulipix_common::pool_for;
 use tulipix_ui::*;
 
-/// Books per grid page (full-bleed 4×3 library grid).
-const PAGE_SIZE: usize = 12;
+/// Books per grid page (full-bleed 3×2 library grid / 1×6 list — must match
+/// the `cols`/`rows` split in page_books.slint).
+const PAGE_SIZE: usize = 6;
+
+/// One-shot guard for the background 3D-cover pre-bake sweep.
+static PREBAKE_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 /// Live reader session, owned by the Slint event-loop thread. The async book
 /// loader hands its result in via [`slint::Weak::upgrade_in_event_loop`], and
@@ -750,7 +754,60 @@ fn books_refresh(weak: slint::Weak<MainWindow>, sort_idx: usize) {
             filter.ids = ids;
             filter.query = String::new(); // ids already narrow it; skip LIKE
         }
+        // One-shot background sweep: pre-bake 3D renditions for every existing
+        // cover off-thread, then refresh once so tiles swap in. New books bake
+        // at scan time — page flips themselves never bake.
+        if !PREBAKE_DONE.swap(true, std::sync::atomic::Ordering::SeqCst) {
+            let weak2 = weak.clone();
+            let pool2 = pool.clone();
+            tokio::spawn(async move {
+                let paths: Vec<String> =
+                    library::cover_paths(&pool2).await.unwrap_or_default();
+                let weak_bl = weak2.clone();
+                let baked_new = tokio::task::spawn_blocking(move || {
+                    let mut any = false;
+                    let mut since_refresh = 0u32;
+                    for p in paths {
+                        let cp = std::path::Path::new(&p);
+                        if !cp.exists() {
+                            continue;
+                        }
+                        for suffix in ["_book", "_hero"] {
+                            if !tulipix_books::covers::baked_path(cp, suffix).exists() {
+                                let _ = if suffix == "_hero" {
+                                    tulipix_books::covers::bake_hero(cp)
+                                } else {
+                                    tulipix_books::covers::bake_book(cp)
+                                };
+                                any = true;
+                                since_refresh += 1;
+                            }
+                        }
+                        // Progressive: swap freshly-baked covers in every ~2
+                        // pages instead of only when the whole sweep finishes.
+                        if since_refresh >= 12 {
+                            since_refresh = 0;
+                            let w3 = weak_bl.clone();
+                            let w4 = w3.clone();
+                            let _ = w3.upgrade_in_event_loop(move |_w| {
+                                books_refresh(w4, sort_idx);
+                            });
+                        }
+                    }
+                    any
+                })
+                .await
+                .unwrap_or(false);
+                if baked_new {
+                    let weak3 = weak2.clone();
+                    let _ = weak2.upgrade_in_event_loop(move |_w| {
+                        books_refresh(weak3, sort_idx);
+                    });
+                }
+            });
+        }
         let home = tulipix_books::home::load(&pool).await.unwrap_or_default();
+        let streak = current_streak(&library::reading_days(&pool).await.unwrap_or_default());
         let rows = library::list(&pool, &filter).await.unwrap_or_default();
         let formats = library::format_counts(&pool).await.unwrap_or_default();
         let genres = library::genre_counts(&pool).await.unwrap_or_default();
@@ -758,7 +815,7 @@ fn books_refresh(weak: slint::Weak<MainWindow>, sort_idx: usize) {
         let colls = library::collections(&pool).await.unwrap_or_default();
         let trashed = library::trashed_count(&pool).await.unwrap_or(0);
         let _ = weak.upgrade_in_event_loop(move |w| {
-            apply_home(&w, &home);
+            apply_home(&w, &home, streak);
             apply_grid(&w, &rows);
             apply_chips(&w, &formats, &genres, &home);
             apply_series_collections(&w, &series, &colls);
@@ -786,8 +843,33 @@ fn apply_series_collections(
     w.set_books_collections(VecModel::from_slice(&c));
 }
 
-/// Push hero + the 2×2 stats strip.
-fn apply_home(w: &MainWindow, home: &HomeData) {
+/// Clamp a string to `max` characters, appending "…" when cut.
+fn clamp_chars(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        s.to_string()
+    } else {
+        let mut out: String = s.chars().take(max).collect();
+        out.truncate(out.trim_end().len());
+        out.push('…');
+        out
+    }
+}
+
+/// Current reading streak: consecutive days ending today (or yesterday).
+fn current_streak(read_days: &[i64]) -> i64 {
+    let today = tulipix_books::schema::now() / 86400;
+    let day_set: std::collections::HashSet<i64> = read_days.iter().copied().collect();
+    let mut streak = 0i64;
+    let mut d = if day_set.contains(&today) { today } else { today - 1 };
+    while day_set.contains(&d) {
+        streak += 1;
+        d -= 1;
+    }
+    streak
+}
+
+/// Push hero + the 2×3 stats strip.
+fn apply_home(w: &MainWindow, home: &HomeData, streak: i64) {
     // Build the hero-slider slides from the up-to-5 in-progress books.
     let arts = HERO_ART.with(|a| a.borrow().clone());
     let slides: Vec<BooksHero> = home
@@ -795,8 +877,11 @@ fn apply_home(w: &MainWindow, home: &HomeData) {
         .iter()
         .enumerate()
         .map(|(i, (b, page, total))| {
+            // Art pool: index 0 = the nook illustration (first slide), the
+            // rest pick pseudo-randomly (stable per book) from the pack.
+            let ix = if i == 0 || arts.len() <= 1 { 0 } else { 1 + (b.id as usize % (arts.len() - 1)) };
             let art = arts
-                .get(i % arts.len().max(1))
+                .get(ix)
                 .cloned()
                 .unwrap_or_else(|| (slint::Image::default(), slint::Image::default()));
             hero_from(b, *page, *total, art)
@@ -811,8 +896,27 @@ fn apply_home(w: &MainWindow, home: &HomeData) {
     // Stat identities (icons/labels/colors) live in the .slint; only the four
     // values flow through, in order: Total Books, Authors, In Progress, Completed.
     let s = &home.stats;
-    let val = |n: i64| BookStat { value: n.to_string().into(), ..Default::default() };
-    let stats: Vec<BookStat> = vec![val(s.total), val(s.authors), val(s.in_progress), val(s.finished)];
+    let stat = |n: i64, sub: String| BookStat {
+        value: n.to_string().into(),
+        sub: sub.into(),
+        ..Default::default()
+    };
+    let month = |n: i64| if n > 0 { format!("+{n} this month") } else { String::new() };
+    let text = |v: String, sub: String| BookStat {
+        value: v.into(),
+        sub: sub.into(),
+        ..Default::default()
+    };
+    // Order matches the .slint 2×3 grid: total, authors, reading, finished,
+    // time-read, streak (last two open the reading-stats panel).
+    let stats: Vec<BookStat> = vec![
+        stat(s.total, month(s.added_month)),
+        stat(s.authors, month(s.authors_month)),
+        stat(s.in_progress, format!("{} book{}", s.in_progress, if s.in_progress == 1 { "" } else { "s" })),
+        stat(s.finished, "All time".into()),
+        text(format!("{:.1}h", s.hours_read), "All time".into()),
+        text(format!("{streak}d"), "in a row".into()),
+    ];
     w.set_books_stats(VecModel::from_slice(&stats));
     w.set_books_count(home.stats.total as i32);
 }
@@ -854,9 +958,11 @@ fn apply_grid(w: &MainWindow, rows: &[BookRow]) {
         .iter()
         .map(|b| BookTile {
             id: b.id as i32,
-            title: b.title.clone().into(),
-            author: b.author.clone().into(),
+            title: clamp_chars(&b.title, 60).into(),
+            author: clamp_chars(&b.author, 40).into(),
+            author_full: b.author.clone().into(),
             cover: load_cover(&b.cover_path),
+            book: load_baked(&b.cover_path, false),
             percent: b.percent as f32,
             favorite: b.favorite != 0,
             format: b.format.to_uppercase().into(),
@@ -864,11 +970,23 @@ fn apply_grid(w: &MainWindow, rows: &[BookRow]) {
             date: b.published.clone().into(),
             hue: cover_hue(&b.title),
             rating: b.rating as f32,
+            net_rating: b.net_rating as f32,
             missing: b.missing != 0,
             trashed: b.trashed != 0,
         })
         .collect();
-    w.set_books_tiles(VecModel::from_slice(&tiles));
+    // Update the existing VecModel in place (set_vec) instead of swapping in a
+    // fresh model: the repeater then updates rows without tearing every tile
+    // down. A full model swap deletes the GridTile that hosts a just-used ⋮
+    // PopupWindow and trips slint#6426 ("accessing deleted parent") — the
+    // move-to-trash crash.
+    use slint::Model as _;
+    let model = w.get_books_tiles();
+    if let Some(vm) = model.as_any().downcast_ref::<VecModel<BookTile>>() {
+        vm.set_vec(tiles);
+    } else {
+        w.set_books_tiles(VecModel::from_slice(&tiles));
+    }
 }
 
 /// Push the file-type / genre / quick-filter chip rows (with counts).
@@ -908,8 +1026,26 @@ fn apply_chips(
     w.set_books_quick_filters(VecModel::from_slice(&quick));
 }
 
+/// Patch one visible tile in place (event-loop only) — instant UI feedback
+/// before the DB write + full refresh land.
+fn tile_patch(weak: &slint::Weak<MainWindow>, id: i64, f: impl Fn(&mut BookTile)) {
+    let Some(w) = weak.upgrade() else { return };
+    use slint::Model as _;
+    let model = w.get_books_tiles();
+    for i in 0..model.row_count() {
+        if let Some(mut t) = model.row_data(i) {
+            if t.id as i64 == id {
+                f(&mut t);
+                model.set_row_data(i, t);
+                break;
+            }
+        }
+    }
+}
+
 /// Set a book's local star rating, then refresh (keeps rating-sort order live).
 fn books_set_rating(weak: slint::Weak<MainWindow>, id: i64, rating: f64, sort_idx: usize) {
+    tile_patch(&weak, id, |t| t.rating = rating as f32);
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
         if let Ok(pool) = pool_for("books").await {
@@ -1115,16 +1251,10 @@ fn books_open_stats(weak: slint::Weak<MainWindow>) {
         let (secs, days, finished, started) =
             library::reading_totals(&pool).await.unwrap_or((0, 0, 0, 0));
         let read_days = library::reading_days(&pool).await.unwrap_or_default();
-        let per_book = library::time_per_book(&pool, 8).await.unwrap_or_default();
+        let per_book = library::time_per_book(&pool, 5).await.unwrap_or_default();
         let today = tulipix_books::schema::now() / 86400;
         let day_set: std::collections::HashSet<i64> = read_days.iter().copied().collect();
-        // Current streak: consecutive days ending today (or yesterday).
-        let mut streak = 0i64;
-        let mut d = if day_set.contains(&today) { today } else { today - 1 };
-        while day_set.contains(&d) {
-            streak += 1;
-            d -= 1;
-        }
+        let streak = current_streak(&read_days);
         // 12-week heatmap (84 days, oldest→today).
         let heat: Vec<bool> = (0..84).rev().map(|i| day_set.contains(&(today - i))).collect();
         let _ = weak.upgrade_in_event_loop(move |w| {
@@ -1138,7 +1268,7 @@ fn books_open_stats(weak: slint::Weak<MainWindow>) {
             let rows: Vec<StatBookRow> = per_book
                 .iter()
                 .map(|(title, s)| StatBookRow {
-                    title: title.clone().into(),
+                    title: clamp_chars(title, 70).into(),
                     time: fmt_duration(*s).into(),
                 })
                 .collect();
@@ -1205,6 +1335,7 @@ fn reader_annot_export(weak: slint::Weak<MainWindow>) {
 
 /// Toggle a book's favorite flag, then refresh the grid.
 fn books_toggle_favorite(weak: slint::Weak<MainWindow>, id: i64, sort_idx: usize) {
+    tile_patch(&weak, id, |t| t.favorite = !t.favorite);
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
         if let Ok(pool) = pool_for("books").await {
@@ -1218,38 +1349,18 @@ fn books_toggle_favorite(weak: slint::Weak<MainWindow>, id: i64, sort_idx: usize
 fn books_card_menu(weak: slint::Weak<MainWindow>, id: i64, action: String, sort_idx: usize) {
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
+        // Let the source popup finish tearing down before rows change (slint#6426).
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         if let Ok(pool) = pool_for("books").await {
             match action.as_str() {
                 "favorite" => { let _ = library::toggle_favorite(&pool, id).await; }
-                "remove" => { let _ = library::remove(&pool, id).await; }
+                // "Remove" everywhere = soft delete: flag → Trash tab, file kept.
+                "remove" => { let _ = library::trash(&pool, id).await; }
                 _ => {}
             }
         }
         books_refresh(weak, sort_idx);
     });
-}
-
-/// Move a file, falling back to copy+remove across filesystems (rename fails
-/// with EXDEV when src/dst are on different mounts).
-fn move_file(src: &std::path::Path, dst: &std::path::Path) -> std::io::Result<()> {
-    if let Some(parent) = dst.parent() {
-        let _ = std::fs::create_dir_all(parent);
-    }
-    match std::fs::rename(src, dst) {
-        Ok(()) => Ok(()),
-        Err(_) => {
-            std::fs::copy(src, dst)?;
-            std::fs::remove_file(src)?;
-            Ok(())
-        }
-    }
-}
-
-/// The app's Trash directory (`<cache>/Trash`), created on demand.
-fn trash_dir() -> Option<std::path::PathBuf> {
-    let d = tulipix_books::cache_dir()?.join("Trash");
-    std::fs::create_dir_all(&d).ok()?;
-    Some(d)
 }
 
 /// Open the folder holding a book's file in the OS file manager.
@@ -1264,46 +1375,26 @@ fn books_open_location(weak: slint::Weak<MainWindow>, id: i64) {
     });
 }
 
-/// Soft-delete: move the file into the Trash dir and flag the row trashed.
+/// Soft-delete: flag the row trashed — the book leaves the library grid and
+/// shows in the Trash tab. Never touches the file on disk.
 fn books_trash(weak: slint::Weak<MainWindow>, id: i64, sort_idx: usize) {
     tokio::runtime::Handle::current().spawn(async move {
+        // Let the ⋮ popup finish tearing down before rows change (slint#6426).
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         if let Ok(pool) = pool_for("books").await {
-            if let Ok(Some(b)) = library::get(&pool, id).await {
-                let src = std::path::PathBuf::from(&b.path);
-                // Best-effort file move into Trash; the row is flagged regardless
-                // so the library always updates even if the move can't happen.
-                let new_path = match trash_dir() {
-                    Some(dir) => {
-                        let name = src.file_name().map(|n| n.to_string_lossy().to_string())
-                            .unwrap_or_else(|| format!("book-{id}"));
-                        let dst = dir.join(format!("{id}_{name}"));
-                        if move_file(&src, &dst).is_ok() {
-                            dst.to_string_lossy().into_owned()
-                        } else {
-                            b.path.clone()
-                        }
-                    }
-                    None => b.path.clone(),
-                };
-                let _ = library::trash(&pool, id, &b.path, &new_path).await;
-            }
+            let _ = library::trash(&pool, id).await;
         }
         books_refresh(weak, sort_idx);
     });
 }
 
-/// Restore a trashed book: move its file back and clear the trashed flag.
+/// Restore a trashed book: clear the trashed flag (no file to move back).
 fn books_restore(weak: slint::Weak<MainWindow>, id: i64, sort_idx: usize) {
     tokio::runtime::Handle::current().spawn(async move {
+        // Let the ⋮ popup finish tearing down before rows change (slint#6426).
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         if let Ok(pool) = pool_for("books").await {
-            if let Ok(Some(b)) = library::get(&pool, id).await {
-                let cur = std::path::PathBuf::from(&b.path); // Trash location
-                if let Ok(orig) = library::restore(&pool, id).await {
-                    if !orig.is_empty() {
-                        let _ = move_file(&cur, std::path::Path::new(&orig));
-                    }
-                }
-            }
+            let _ = library::restore(&pool, id).await;
         }
         books_refresh(weak, sort_idx);
     });
@@ -1312,6 +1403,8 @@ fn books_restore(weak: slint::Weak<MainWindow>, id: i64, sort_idx: usize) {
 /// Permanently delete a trashed book: remove its file + purge the DB row.
 fn books_delete_perm(weak: slint::Weak<MainWindow>, id: i64, sort_idx: usize) {
     tokio::runtime::Handle::current().spawn(async move {
+        // Let the ⋮ popup finish tearing down before rows change (slint#6426).
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
         if let Ok(pool) = pool_for("books").await {
             if let Ok(Some(b)) = library::get(&pool, id).await {
                 let _ = std::fs::remove_file(&b.path);
@@ -1427,6 +1520,28 @@ fn load_cover(path: &str) -> slint::Image {
     img
 }
 
+/// Cover art baked onto a book mockup (grid hardcover or hero flat-book).
+/// Read-only on the event loop: serves the disk cache when the background
+/// pre-bake (scan-time or the one-shot sweep in `books_refresh`) has produced
+/// it; empty image otherwise (UI falls back to frame + flat overlay). Misses
+/// are NOT memoised so tiles pick the bake up as soon as it lands.
+fn load_baked(path: &str, hero: bool) -> slint::Image {
+    if path.is_empty() {
+        return slint::Image::default();
+    }
+    let key = format!("{path}#{}", if hero { "hero" } else { "book" });
+    if let Some(img) = COVER_CACHE.with(|c| c.borrow().get(&key).cloned()) {
+        return img;
+    }
+    let suffix = if hero { "_hero" } else { "_book" };
+    let baked = tulipix_books::covers::baked_path(std::path::Path::new(path), suffix);
+    if !baked.exists() {
+        return slint::Image::default();
+    }
+    let img = slint::Image::load_from_path(&baked).unwrap_or_default();
+    COVER_CACHE.with(|c| c.borrow_mut().insert(key, img.clone()));
+    img
+}
 thread_local! {
     /// The hero slider's built slides (up to 5 in-progress books) + which is
     /// active, so `hero-slide` can swap `books-hero` with no DB round-trip.
@@ -1473,6 +1588,7 @@ fn hero_from(
         title: b.title.clone().into(),
         author: b.author.clone().into(),
         cover: load_cover(&b.cover_path),
+        book: load_baked(&b.cover_path, true),
         hue: cover_hue(&b.title),
         page: page as i32,
         total: total as i32,

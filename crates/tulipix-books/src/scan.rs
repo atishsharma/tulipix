@@ -142,6 +142,13 @@ pub async fn add_one(pool: &SqlitePool, path: &Path) -> Result<i64> {
     let cover = covers::extract(path, format)
         .map(|p| p.display().to_string())
         .unwrap_or_default();
+    // Pre-bake the 3D renditions here (scan/add runs off-thread) so the
+    // library grid never has to bake during a page flip.
+    if !cover.is_empty() {
+        let cp = Path::new(&cover);
+        let _ = covers::bake_book(cp);
+        let _ = covers::bake_hero(cp);
+    }
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO books (path, format, title, author, genre, series, published,
                             size_bytes, cover_path, added_at)

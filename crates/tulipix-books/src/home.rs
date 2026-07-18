@@ -23,6 +23,27 @@ pub struct Stats {
     pub finished: i64,
     pub in_progress: i64,
     pub hours_read: f64,
+    /// Books added since the start of the current month.
+    pub added_month: i64,
+    /// Authors whose first book landed this month.
+    pub authors_month: i64,
+}
+
+/// Unix epoch (secs) of the first day of the current month (UTC) — civil date
+/// from days, no chrono dependency.
+fn month_start_epoch() -> i64 {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0);
+    let z = now / 86400 + 719468;
+    let era = z.div_euclid(146097);
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day0 = doy - (153 * mp + 2) / 5; // day-of-month minus one
+    (now / 86400 - day0) * 86400
 }
 
 const SHELF: usize = 12;
@@ -64,9 +85,9 @@ pub async fn load(pool: &SqlitePool) -> Result<HomeData> {
     .fetch_all(pool)
     .await?;
 
-    // Slider: page/total for the up-to-5 most recent in-progress books.
+    // Slider: page/total for the up-to-6 most recent in-progress books.
     let mut slider = Vec::new();
-    for b in in_progress.iter().take(5) {
+    for b in in_progress.iter().take(6) {
         let pos = crate::progress::get(pool, b.id).await?.unwrap_or_default();
         slider.push((b.clone(), pos.page, pos.total_pages));
     }
@@ -85,6 +106,21 @@ pub async fn load(pool: &SqlitePool) -> Result<HomeData> {
         sqlx::query_scalar("SELECT COALESCE(SUM(time_read_secs), 0) FROM progress")
             .fetch_one(pool)
             .await?;
+    let month_start = month_start_epoch();
+    let added_month: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM books WHERE missing = 0 AND trashed = 0 AND added_at >= ?",
+    )
+    .bind(month_start)
+    .fetch_one(pool)
+    .await?;
+    let authors_month: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM (SELECT author FROM books
+         WHERE missing = 0 AND trashed = 0 AND author != ''
+         GROUP BY author HAVING MIN(added_at) >= ?)",
+    )
+    .bind(month_start)
+    .fetch_one(pool)
+    .await?;
 
     Ok(HomeData {
         continue_reading,
@@ -97,6 +133,8 @@ pub async fn load(pool: &SqlitePool) -> Result<HomeData> {
             finished,
             in_progress: in_progress.len() as i64,
             hours_read: secs as f64 / 3600.0,
+            added_month,
+            authors_month,
         },
     })
 }

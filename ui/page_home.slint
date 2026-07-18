@@ -568,9 +568,22 @@ component BookRow inherits RowCard {
             changed hovered => { area.hover-idx = self.hovered ? i : (area.hover-idx == i ? -1 : area.hover-idx); }
             Image { source: bc; image-fit: cover; width: 100%; height: 100%; }
         }
+        // "+N" tile → opens the Books section (handled by RowCard.clicked).
+        // Same 9:16 size + hover lift as the cover tiles, and declared BEFORE
+        // the top-z hover overlay so a lifted neighbour covers it, not the
+        // other way round.
+        if root.total - root.shown > 0: HomeTileBox {
+            width: area.tile-w; height: area.tile-h;
+            x: root.shown * (area.tile-w + area.gap);
+            y: (area.height - self.height) / 2 - (self.hovered ? 12px : 0px);
+            animate y { duration: 160ms; easing: ease-out; }
+            hilite: root.accent; clicked => { root.clicked(); }
+            Text { text: "+" + (root.total - root.shown); color: Theme.text-dim; font-size: 15px; font-weight: 700;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+        }
         // Top-z copy of the hovered cover — no TouchArea (events pass through to
         // the base tile below, so it doesn't steal hover → no flicker), drawn
-        // last so it clears the title pill and reads fully.
+        // last so it clears the title pill, the "+N" tile, and reads fully.
         if area.hover-idx >= 0 && area.hover-idx < root.covers.length: Rectangle {
             width: area.tile-w; height: area.tile-h;
             x: area.hover-idx * (area.tile-w + area.gap);
@@ -579,15 +592,6 @@ component BookRow inherits RowCard {
             border-width: 2px; border-color: root.accent;
             drop-shadow-blur: 18px; drop-shadow-color: #00000088; drop-shadow-offset-y: 6px;
             Image { source: root.covers[area.hover-idx]; image-fit: cover; width: 100%; height: 100%; }
-        }
-        // "+N" tile → opens the Books section (handled by RowCard.clicked).
-        // Same 9:16 size as the cover tiles so all four pills read uniform.
-        if root.total - root.shown > 0: HomeTileBox {
-            width: area.tile-w; height: area.tile-h;
-            x: root.shown * (area.tile-w + area.gap); y: (area.height - self.height) / 2;
-            hilite: root.accent; clicked => { root.clicked(); }
-            Text { text: "+" + (root.total - root.shown); color: Theme.text-dim; font-size: 15px; font-weight: 700;
-                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
         }
     }
 }
