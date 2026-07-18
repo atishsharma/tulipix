@@ -71,25 +71,53 @@ where
     }
     let total = all_files.len() as u32;
 
-    for (i, f) in all_files.iter().enumerate() {
+    // Known files first — one cheap un-missing UPDATE each, no file parsing.
+    let known: std::collections::HashSet<String> =
+        sqlx::query_scalar::<_, String>("SELECT path FROM books")
+            .fetch_all(pool)
+            .await?
+            .into_iter()
+            .collect();
+    let mut done = 0u32;
+    let mut fresh: Vec<PathBuf> = Vec::new();
+    for f in &all_files {
         let path_str = f.display().to_string();
-        seen.push(path_str.clone());
-        let title = f.file_stem().and_then(|s| s.to_str()).unwrap_or("");
-        on_progress(total, i as u32 + 1, title);
-        let known: Option<i64> =
-            sqlx::query_scalar("SELECT id FROM books WHERE path = ?")
+        if known.contains(&path_str) {
+            sqlx::query("UPDATE books SET missing = 0 WHERE path = ?")
                 .bind(&path_str)
-                .fetch_optional(pool)
-                .await?;
-        if let Some(id) = known {
-            sqlx::query("UPDATE books SET missing = 0 WHERE id = ?")
-                .bind(id)
                 .execute(pool)
                 .await?;
-            continue;
+            done += 1;
+            on_progress(total, done, f.file_stem().and_then(|s| s.to_str()).unwrap_or(""));
+        } else {
+            fresh.push(f.clone());
         }
-        add_one(pool, f).await?;
-        report.added += 1;
+        seen.push(path_str);
+    }
+
+    // New files: ingest 4 at a time — per-file metadata/cover/bake work is
+    // blocking-heavy, so a small pool ~4x's the add speed on multi-core.
+    // ponytail: fixed 4 workers (matches the -j 1 build box); make it a
+    // setting if a beefier machine ever wants more.
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
+    let mut set = tokio::task::JoinSet::new();
+    for f in fresh {
+        let sem = sem.clone();
+        let pool = pool.clone();
+        set.spawn(async move {
+            let _permit = sem.acquire_owned().await.ok();
+            let title = f.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+            (title, add_one(&pool, &f).await.is_ok())
+        });
+    }
+    while let Some(res) = set.join_next().await {
+        if let Ok((title, ok)) = res {
+            done += 1;
+            if ok {
+                report.added += 1;
+            }
+            on_progress(total, done, &title);
+        }
     }
 
     // Flag rows whose file is gone (only those under a configured root —
@@ -134,21 +162,34 @@ pub async fn index_contents(pool: &SqlitePool) -> Result<()> {
 }
 
 /// Upsert a single file (also used by drag-drop / file-picker adds).
+/// The blocking file work (metadata parse, cover extract, 3D bake) runs on a
+/// blocking worker so concurrent `add_one`s actually parallelise.
 pub async fn add_one(pool: &SqlitePool, path: &Path) -> Result<i64> {
     let Some(format) = format_of(path) else { anyhow::bail!("unsupported file") };
     let path_str = path.display().to_string();
-    let meta = metadata::extract(path, format);
-    let size = std::fs::metadata(path).map(|m| m.len() as i64).unwrap_or(0);
-    let cover = covers::extract(path, format)
-        .map(|p| p.display().to_string())
-        .unwrap_or_default();
-    // Pre-bake the 3D renditions here (scan/add runs off-thread) so the
-    // library grid never has to bake during a page flip.
-    if !cover.is_empty() {
-        let cp = Path::new(&cover);
-        let _ = covers::bake_book(cp);
-        let _ = covers::bake_hero(cp);
-    }
+    let p = path.to_path_buf();
+    let (meta, size, cover) = tokio::task::spawn_blocking(move || {
+        let meta = metadata::extract(&p, format);
+        let size = std::fs::metadata(&p).map(|m| m.len() as i64).unwrap_or(0);
+        let cover = covers::extract(&p, format)
+            .map(|c| c.display().to_string())
+            .unwrap_or_default();
+        // Pre-bake the 3D renditions here (blocking worker) so the library
+        // grid never has to bake during a page flip. Coverless books get a
+        // generated title-card placeholder baked through the same pipeline.
+        let flat = if cover.is_empty() {
+            covers::placeholder_flat(&p, &meta.title, &meta.author, crate::cover_hue_rgb(&meta.title)).ok()
+        } else {
+            Some(PathBuf::from(&cover))
+        };
+        if let Some(cp) = flat {
+            let _ = covers::bake_book(&cp);
+            let _ = covers::bake_hero(&cp);
+        }
+        (meta, size, cover)
+    })
+    .await
+    .map_err(|e| anyhow::anyhow!("join: {e}"))?;
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO books (path, format, title, author, genre, series, published,
                             size_bytes, cover_path, added_at)

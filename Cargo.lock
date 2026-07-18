@@ -7399,6 +7399,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tulipix-ai",
+ "tulipix-books",
  "tulipix-common",
  "tulipix-core",
  "tulipix-hot",
@@ -7423,6 +7424,7 @@ dependencies = [
 name = "tulipix-books"
 version = "0.6.0"
 dependencies = [
+ "ab_glyph",
  "anyhow",
  "image",
  "lopdf",

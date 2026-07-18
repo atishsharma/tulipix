@@ -25,6 +25,18 @@ pub mod summary;
 pub mod toc;
 pub mod tts;
 
+/// Deterministic cover hue for a book without artwork (hash of the title into
+/// a fixed palette). Shared by the Rust placeholder-cover bake and the UI's
+/// flat fallback so both always agree on a book's colour.
+pub fn cover_hue_rgb(title: &str) -> [u8; 3] {
+    const HUES: [[u8; 3]; 10] = [
+        [108, 77, 246], [224, 81, 143], [47, 191, 113], [245, 166, 35], [58, 134, 255],
+        [239, 71, 111], [17, 138, 178], [131, 56, 236], [255, 107, 107], [32, 201, 151],
+    ];
+    let h = title.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
+    HUES[h as usize % HUES.len()]
+}
+
 /// Lower-case canonical format tag for a path, if it is a supported book.
 pub fn format_of(path: &std::path::Path) -> Option<&'static str> {
     let ext = path.extension()?.to_str()?.to_ascii_lowercase();

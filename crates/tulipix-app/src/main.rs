@@ -179,10 +179,20 @@ fn main() -> Result<()> {
     let window = MainWindow::new()?;
     register_bundled_fonts();
     tulipix_platform::install_menubar(&tulipix_platform::default_menubar());
-    // Tray icon — the compiled-in tulip mark (64px, RGBA-decoded here so the
-    // platform crate needs no image dependency).
-    let tray_icon_rgba = image::load_from_memory(include_bytes!("../../../resources/icons/tulipix-64.png"))
-        .ok().map(|img| { let rgba = img.to_rgba8(); let (w, h) = rgba.dimensions(); (rgba.into_raw(), w, h) });
+    // Seasonal India branding (Aug 1–31 + Jan 15–31, every year): the tray
+    // icon switches for the whole window, and in-app logos DEFAULT to the
+    // India mark (the user can still pick another sidebar logo in Profile).
+    let festival = festival_season();
+    window.set_festival_logo(festival);
+    // Tray icon — the compiled-in mark (RGBA-decoded here so the platform
+    // crate needs no image dependency); India mark during the festival window.
+    let icon_bytes: &[u8] = if festival {
+        include_bytes!("../../../resources/appicons/logo_india.png")
+    } else {
+        include_bytes!("../../../resources/icons/tulipix-64.png")
+    };
+    let tray_icon_rgba = image::load_from_memory(icon_bytes)
+        .ok().map(|img| { let rgba = img.thumbnail(64, 64).to_rgba8(); let (w, h) = rgba.dimensions(); (rgba.into_raw(), w, h) });
     let tray_ok = tulipix_platform::init_tray(tray_icon_rgba);
     TRAY_ACTIVE.store(tray_ok, std::sync::atomic::Ordering::Relaxed);
 
@@ -3129,14 +3139,25 @@ fn main() -> Result<()> {
     window.on_lib_row_remove(move |i| {
         let Some(w) = w.upgrade() else { return; };
         let model = w.get_library_rows();
-        let removed_path = model.row_data(i as usize).map(|r| r.path.to_string());
+        let removed = model.row_data(i as usize).map(|r| (r.path.to_string(), r.section.to_string()));
         let rows: Vec<LibraryRow> = (0..model.row_count())
             .filter(|&j| j != i as usize)
             .filter_map(|j| model.row_data(j))
             .collect();
         w.set_library_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
         // Drop from the watched-folder file if no other row references the path.
-        if let Some(p) = removed_path { forget_watched_folder(&w, &p); }
+        if let Some((p, section)) = removed {
+            forget_watched_folder(&w, &p);
+            // Books register scan roots in their own DB too — unregister so
+            // the next books sweep doesn't re-add the folder's books.
+            if section == "books" {
+                tokio::runtime::Handle::current().spawn(async move {
+                    if let Ok(pool) = pool_for("books").await {
+                        let _ = tulipix_books::scan::remove_folder(&pool, &p).await;
+                    }
+                });
+            }
+        }
         rebuild_scan_rows(&w);
         tracing::info!(index = i, "library row removed");
     });
@@ -3473,6 +3494,20 @@ fn player_close(w: &MainWindow) {
 }
 
 // watched_folders_path / load_watched_folders moved to tulipix_common.
+
+/// True inside the seasonal India-branding windows: Aug 1–31 and Jan 15–31,
+/// every calendar year. Civil date from unix days (no chrono dependency).
+fn festival_season() -> bool {
+    let z = now_secs() / 86400 + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = z - era * 146097;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let d = doy - (153 * mp + 2) / 5 + 1;
+    let m = if mp < 10 { mp + 3 } else { mp - 9 };
+    matches!((m, d), (8, _) | (1, 15..=31))
+}
 
 /// Append `path` to the watched-folder list (deduped) and persist.
 fn persist_watched_folder(path: &std::path::Path) {
@@ -5465,6 +5500,50 @@ fn kick_section_scan(
                 return;
             }
         };
+
+        // Books bypass the generic items scan entirely: books.db has no
+        // `items` table, and the section has its own scanner (metadata chain,
+        // baked 3D covers, FTS). Register the folder there and drive the
+        // shared progress counters so the popup + Watched panels stay live.
+        if section == "books" {
+            // ponytail: scan_all_progress sweeps every registered book folder,
+            // so a global lock keeps startup-restore of several watched
+            // folders from running duplicate concurrent sweeps.
+            static BOOKS_SCAN: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+            let _guard = BOOKS_SCAN.lock().await;
+            let _ = tulipix_books::scan::add_folder(&pool, &root.display().to_string()).await;
+            let c2 = counters.clone();
+            let weak_p = weak.clone();
+            let _ = tulipix_books::scan::scan_all_progress(&pool, move |total, done, _title| {
+                c2.total.store(total as i32, Relaxed);
+                c2.added.store(done as i32, Relaxed);
+                let step = (total / 100).max(1);
+                if done % step == 0 || done == total { flush_progress(&weak_p); }
+            })
+            .await;
+            counters.active.store(false, Relaxed);
+            flush_progress(&weak);
+            let n = list_section_files(&root, section).len() as i32;
+            let lib_id_ui = lib_id.clone();
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                let model = w.get_library_rows();
+                let mut rows: Vec<LibraryRow> = (0..model.row_count())
+                    .map(|i| model.row_data(i).unwrap()).collect();
+                for r in rows.iter_mut() {
+                    if r.id == lib_id_ui.as_str() {
+                        r.r#last_scan = "just now".into();
+                        r.item_count = n;
+                    }
+                }
+                w.set_library_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+            });
+            tulipix_sec_books::books_refresh(weak.clone(), 0);
+            tulipix_sec_books::books_backfill_metadata(weak.clone());
+            // Content indexing for library-wide search — slow on big
+            // libraries but resumable, so a partial run picks up next time.
+            let _ = tulipix_books::scan::index_contents(&pool).await;
+            return;
+        }
 
         // 2) Walk + filter files belonging to this section. No populator —
         // we drive the loop ourselves so per-file failures land in progress.

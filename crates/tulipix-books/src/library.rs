@@ -349,6 +349,17 @@ pub async fn cover_paths(pool: &SqlitePool) -> Result<Vec<String>> {
     )
 }
 
+/// Books with no extracted cover art — input for the placeholder-cover bake
+/// (path, title, author).
+pub async fn coverless_books(pool: &SqlitePool) -> Result<Vec<(String, String, String)>> {
+    Ok(sqlx::query_as(
+        "SELECT path, title, author FROM books
+         WHERE cover_path = '' AND missing = 0 AND trashed = 0",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
 /// Count of books currently in the Trash (for the toolbar chip badge).
 pub async fn trashed_count(pool: &SqlitePool) -> Result<i64> {
     Ok(sqlx::query_scalar("SELECT COUNT(*) FROM books WHERE trashed = 1")

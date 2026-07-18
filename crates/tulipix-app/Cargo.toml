@@ -106,6 +106,7 @@ tulipix-sec-music = { path = "../tulipix-sec-music" }
 tulipix-sec-videos = { path = "../tulipix-sec-videos" }
 tulipix-sec-cloud = { path = "../tulipix-sec-cloud" }
 tulipix-sec-books = { path = "../tulipix-sec-books" }
+tulipix-books = { path = "../tulipix-books" }
 sqlx = { workspace = true }
 reqwest = { workspace = true, features = ["json"] }
 serde_json.workspace = true

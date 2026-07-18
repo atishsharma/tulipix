@@ -689,8 +689,9 @@ pub fn wire(window: &MainWindow) {
     let s = sort_idx.clone();
     window.on_books_reader_more_remove(move || { reader_remove_book(w.clone(), s.get()); });
 
-    let w = window.as_weak();
-    window.on_books_add(move || { books_add_folder(w.clone()); });
+    // "Add books" routes through the shared watched-folder picker
+    // (`pick-folder` in main.slint), so books folders land in the Watched
+    // folders / Auto-scan panels and rescan on startup like music.
 
     // Initial paint + background metadata backfill (publication dates etc.).
     books_refresh(window.as_weak(), 0);
@@ -730,7 +731,7 @@ fn filter_from(w: &MainWindow, sort_idx: usize) -> Filter {
 
 /// Reload the whole Book Home page: hero + stats from `home::load`, the grid
 /// from `library::list` (filtered + paginated), and the chip rows.
-fn books_refresh(weak: slint::Weak<MainWindow>, sort_idx: usize) {
+pub fn books_refresh(weak: slint::Weak<MainWindow>, sort_idx: usize) {
     let (mut filter, content) = match weak.upgrade() {
         Some(w) => (filter_from(&w, sort_idx), w.get_books_search_contents()),
         None => return,
@@ -763,21 +764,36 @@ fn books_refresh(weak: slint::Weak<MainWindow>, sort_idx: usize) {
             tokio::spawn(async move {
                 let paths: Vec<String> =
                     library::cover_paths(&pool2).await.unwrap_or_default();
+                // Coverless books: generate their flat title-card placeholder
+                // first, then bake it through the same pipeline.
+                let coverless: Vec<(String, String, String)> =
+                    library::coverless_books(&pool2).await.unwrap_or_default();
                 let weak_bl = weak2.clone();
                 let baked_new = tokio::task::spawn_blocking(move || {
+                    use tulipix_books::covers;
                     let mut any = false;
                     let mut since_refresh = 0u32;
-                    for p in paths {
-                        let cp = std::path::Path::new(&p);
-                        if !cp.exists() {
-                            continue;
+                    let mut flats: Vec<std::path::PathBuf> = paths
+                        .into_iter()
+                        .map(std::path::PathBuf::from)
+                        .filter(|p| p.exists())
+                        .collect();
+                    for (bp, title, author) in coverless {
+                        let hue = tulipix_books::cover_hue_rgb(&title);
+                        if let Ok(ph) = covers::placeholder_flat(
+                            std::path::Path::new(&bp), &title, &author, hue,
+                        ) {
+                            flats.push(ph);
                         }
-                        for suffix in ["_book", "_hero"] {
-                            if !tulipix_books::covers::baked_path(cp, suffix).exists() {
-                                let _ = if suffix == "_hero" {
-                                    tulipix_books::covers::bake_hero(cp)
+                    }
+                    for cp in flats {
+                        let cp = cp.as_path();
+                        for suffix in [covers::BOOK_SUFFIX, covers::HERO_SUFFIX] {
+                            if !covers::baked_path(cp, suffix).exists() {
+                                let _ = if suffix == covers::HERO_SUFFIX {
+                                    covers::bake_hero(cp)
                                 } else {
-                                    tulipix_books::covers::bake_book(cp)
+                                    covers::bake_book(cp)
                                 };
                                 any = true;
                                 since_refresh += 1;
@@ -962,7 +978,7 @@ fn apply_grid(w: &MainWindow, rows: &[BookRow]) {
             author: clamp_chars(&b.author, 40).into(),
             author_full: b.author.clone().into(),
             cover: load_cover(&b.cover_path),
-            book: load_baked(&b.cover_path, false),
+            book: book_img(b, false),
             percent: b.percent as f32,
             favorite: b.favorite != 0,
             format: b.format.to_uppercase().into(),
@@ -1083,6 +1099,8 @@ fn books_show_detail(weak: slint::Weak<MainWindow>, id: i64) {
             w.set_books_detail_title(b.title.clone().into());
             w.set_books_detail_author(b.author.clone().into());
             w.set_books_detail_cover(load_cover(&b.cover_path));
+            w.set_books_detail_book(book_img(&b, false));
+            w.set_books_detail_favorite(b.favorite != 0);
             w.set_books_detail_hue(cover_hue(&b.title));
             w.set_books_detail_format(b.format.to_uppercase().into());
             w.set_books_detail_genre(b.genre.clone().into());
@@ -1146,7 +1164,7 @@ static BACKFILL_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::Atom
 /// Background: fetch online metadata for every book that has never been fetched,
 /// in small throttled batches, refreshing the grid so publication-date pills
 /// fill in progressively. Idempotent (each book is stamped after one attempt).
-fn books_backfill_metadata(weak: slint::Weak<MainWindow>) {
+pub fn books_backfill_metadata(weak: slint::Weak<MainWindow>) {
     use std::sync::atomic::Ordering::SeqCst;
     if BACKFILL_RUNNING.swap(true, SeqCst) {
         return; // already draining the queue
@@ -1415,87 +1433,23 @@ fn books_delete_perm(weak: slint::Weak<MainWindow>, id: i64, sort_idx: usize) {
     });
 }
 
-/// One-row books scan-progress model for the shared ScanProgressCard.
-fn books_scan_row(label: &str, total: i32, added: i32, active: bool) -> ScanProgress {
-    ScanProgress {
-        section: "books".into(),
-        label: label.into(),
-        total,
-        added,
-        failed: 0,
-        active,
-        last_error: "".into(),
-    }
-}
-
-/// "Add books" → folder picker → scan into the library, showing the shared
-/// scan-progress popup (same dialog other media get when adding a folder).
-fn books_add_folder(weak: slint::Weak<MainWindow>) {
-    let handle = tokio::runtime::Handle::current();
-    handle.spawn(async move {
-        let Some(dir) = rfd::AsyncFileDialog::new().pick_folder().await else { return };
-        let path = dir.path().to_string_lossy().to_string();
-        // Show the loading popup (indeterminate until the walk yields a total).
-        let _ = weak.upgrade_in_event_loop(|w| {
-            w.set_scan_progress(VecModel::from_slice(&[books_scan_row("Scanning…", 0, 0, true)]));
-            w.set_scan_active(true);
-        });
-        let mut added = 0i32;
-        if let Ok(pool) = pool_for("books").await {
-            let _ = tulipix_books::scan::add_folder(&pool, &path).await;
-            // Stream per-file progress into the shared popup (bar + current title),
-            // throttled to ~1% steps so big libraries don't flood the event loop.
-            let weak_cb = weak.clone();
-            let report = tulipix_books::scan::scan_all_progress(&pool, move |total, done, title| {
-                let step = (total / 100).max(1);
-                if done % step == 0 || done == total {
-                    let title = title.to_string();
-                    let _ = weak_cb.upgrade_in_event_loop(move |w| {
-                        w.set_scan_progress(VecModel::from_slice(&[books_scan_row(
-                            &title, total as i32, done as i32, true,
-                        )]));
-                        w.set_scan_active(true);
-                    });
-                }
-            })
-            .await;
-            added = report.map(|r| r.added as i32).unwrap_or(0);
-            books_refresh(weak.clone(), 0);
-            // Fetch online metadata for the newly-added books in the background.
-            books_backfill_metadata(weak.clone());
-            // Index contents for library-wide search in the background (slow for
-            // big libraries; resumable so a partial run picks up next time).
-            let _ = tulipix_books::scan::index_contents(&pool).await;
-        }
-        // Mark done; keep the popup up briefly with the count, then auto-hide.
-        let _ = weak.upgrade_in_event_loop(move |w| {
-            w.set_scan_progress(VecModel::from_slice(&[books_scan_row(
-                "Done", added.max(1), added, false,
-            )]));
-            w.set_scan_active(false);
-            let weak2 = w.as_weak();
-            slint::Timer::single_shot(std::time::Duration::from_secs(4), move || {
-                if let Some(w) = weak2.upgrade() {
-                    let empty: &[ScanProgress] = &[];
-                    w.set_scan_progress(VecModel::from_slice(empty));
-                    w.set_scan_active(false);
-                }
-            });
-        });
-        books_refresh(weak, 0);
-    });
-}
-
-/// Deterministic cover color for a book without artwork — the .slint draws a
-/// generated title/author card on this hue (see `Cover`).
+/// Deterministic cover color for a book without artwork — same palette the
+/// Rust placeholder bake uses (tulipix_books::cover_hue_rgb).
 fn cover_hue(title: &str) -> slint::Color {
-    const HUES: [(u8, u8, u8); 10] = [
-        (108, 77, 246), (224, 81, 143), (47, 191, 113), (245, 166, 35), (58, 134, 255),
-        (239, 71, 111), (17, 138, 178), (131, 56, 236), (255, 107, 107), (32, 201, 151),
-    ];
-    let h = title.bytes().fold(0u32, |a, b| a.wrapping_mul(31).wrapping_add(b as u32));
-    let (r, g, b) = HUES[h as usize % HUES.len()];
+    let [r, g, b] = tulipix_books::cover_hue_rgb(title);
     slint::Color::from_rgb_u8(r, g, b)
+}
+
+/// Baked 3D rendition for a book row: real cover's bake when art exists,
+/// otherwise the generated placeholder's bake (same wrapped-on-mockup look).
+/// Load-only — generation happens at scan time / in the prebake sweep, never
+/// on the event loop.
+fn book_img(b: &BookRow, hero: bool) -> slint::Image {
+    if !b.cover_path.is_empty() {
+        return load_baked(&b.cover_path, hero);
+    }
+    let ph = tulipix_books::covers::placeholder_path(std::path::Path::new(&b.path));
+    load_baked(&ph.display().to_string(), hero)
 }
 
 thread_local! {
@@ -1533,7 +1487,11 @@ fn load_baked(path: &str, hero: bool) -> slint::Image {
     if let Some(img) = COVER_CACHE.with(|c| c.borrow().get(&key).cloned()) {
         return img;
     }
-    let suffix = if hero { "_hero" } else { "_book" };
+    let suffix = if hero {
+        tulipix_books::covers::HERO_SUFFIX
+    } else {
+        tulipix_books::covers::BOOK_SUFFIX
+    };
     let baked = tulipix_books::covers::baked_path(std::path::Path::new(path), suffix);
     if !baked.exists() {
         return slint::Image::default();
@@ -1588,7 +1546,7 @@ fn hero_from(
         title: b.title.clone().into(),
         author: b.author.clone().into(),
         cover: load_cover(&b.cover_path),
-        book: load_baked(&b.cover_path, true),
+        book: book_img(b, true),
         hue: cover_hue(&b.title),
         page: page as i32,
         total: total as i32,

@@ -695,6 +695,8 @@ export component HomePage inherits Rectangle {
     in property <string> greeting: "Welcome";
     in property <string> date-line: "";
     in property <int> logo-choice: 0;
+    // Seasonal India branding — default mark only (explicit picks win).
+    in property <bool> festival: false;
     in property <string> user-secondary: "";
     in property <image> avatar-image;
     in property <bool> music-left: false;          // music block on the left vs right
@@ -805,6 +807,7 @@ export component HomePage inherits Rectangle {
                     source: root.logo-choice == 1 ? @image-url("../resources/appicons/sidebar-color.png")
                           : root.logo-choice == 2 ? @image-url("../resources/appicons/sidebar-dark.png")
                           : root.logo-choice == 3 ? @image-url("../resources/appicons/sidebar-white.png")
+                          : root.festival        ? @image-url("../resources/appicons/logo_india.png")
                           :                         @image-url("../resources/appicons/sidebar-default.png");
                     image-fit: cover; width: 100%; height: 100%;
                 }

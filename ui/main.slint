@@ -273,6 +273,8 @@ component SettingsPage inherits Rectangle {
     callback user-action(string);
     callback profile-save(string /*display name*/, string /*avatar emoji*/, int /*sidebar logo*/);
     in property <int> logo-choice: 0;
+    // Seasonal India branding — the "default" chip previews the India mark.
+    in property <bool> festival: false;
     callback pick-cover-image();
     callback pick-avatar-image();
     in property <string> app-version: "dev";
@@ -665,7 +667,9 @@ component SettingsPage inherits Rectangle {
                             }
                             HorizontalLayout {
                                 spacing: 10px; alignment: center;
-                                LogoChip { logo: @image-url("../resources/appicons/sidebar-default.png");
+                                LogoChip { logo: festival
+                                        ? @image-url("../resources/appicons/logo_india.png")
+                                        : @image-url("../resources/appicons/sidebar-default.png");
                                     selected: sel-logo == 0; clicked => { sel-logo = 0; } }
                                 LogoChip { logo: @image-url("../resources/appicons/sidebar-color.png");
                                     selected: sel-logo == 1; clicked => { sel-logo = 1; } }
@@ -812,6 +816,9 @@ export component MainWindow inherits Window {
     in-out property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local };
     // Sidebar logo pick (np.p1.profile.logo) — 0 default · 1 color · 2 dark · 3 white.
     in-out property <int> app-logo-choice: 0;
+    // Seasonal India branding (Aug 1–31 + Jan 15–31, set by Rust at boot):
+    // logo choice 0 (default) renders the India mark everywhere.
+    in-out property <bool> festival-logo: false;
     // Profile cover/avatar cropper (np.p1.profile.cover).
     in-out property <bool> crop-dialog-open: false;
     in-out property <string> crop-dialog-mode: "cover";
@@ -970,6 +977,9 @@ export component MainWindow inherits Window {
     in-out property <string> books-detail-title: "";
     in-out property <string> books-detail-author: "";
     in-out property <image> books-detail-cover;
+    // Baked 3D rendition (Library-card style cover) + favorite state.
+    in-out property <image> books-detail-book;
+    in-out property <bool> books-detail-favorite: false;
     in-out property <color> books-detail-hue: #6c4df6;
     in-out property <string> books-detail-format: "";
     in-out property <string> books-detail-genre: "";
@@ -988,7 +998,6 @@ export component MainWindow inherits Window {
     callback books-search-changed(string);
     callback books-resume();
     callback books-hero-details();
-    callback books-add();
     callback books-open-details(int);
     callback books-toggle-favorite(int);
     callback books-card-menu(int, string);
@@ -2356,6 +2365,7 @@ callback cloud-go-home();
             active-section <=> root.active-section;
             user: root.user;
             logo-choice: root.app-logo-choice;
+            festival: root.festival-logo;
             user-action(a) => { root.user-action(a); }
             section-changed(s) => { root.section-changed(s); }
             theme-cycled => { root.music-theme-changed(); }
@@ -3060,6 +3070,7 @@ callback cloud-go-home();
                 greeting: root.home-greeting;
                 date-line: root.home-date-line;
                 logo-choice: root.app-logo-choice;
+                festival: root.festival-logo;
                 user-secondary: root.user.secondary;
                 avatar-image: root.user.avatar-image;
                 music-left: root.home-music-left;
@@ -3158,7 +3169,9 @@ callback cloud-go-home();
                 search(q) => { root.books-search-changed(q); }
                 resume => { root.books-resume(); }
                 hero-details => { root.books-hero-details(); }
-                add-books => { root.books-add(); }
+                // Shared watched-folder picker — books folders join the
+                // Watched folders / Auto-scan panels like music folders do.
+                add-books => { root.pick-folder(); }
                 open-details(id) => { root.books-open-details(id); }
                 toggle-favorite(id) => { root.books-toggle-favorite(id); }
                 card-menu-action(id, a) => { root.books-card-menu(id, a); }
@@ -3176,6 +3189,8 @@ callback cloud-go-home();
                 detail-title: root.books-detail-title;
                 detail-author: root.books-detail-author;
                 detail-cover: root.books-detail-cover;
+                detail-book: root.books-detail-book;
+                detail-favorite <=> root.books-detail-favorite;
                 detail-hue: root.books-detail-hue;
                 detail-format: root.books-detail-format;
                 detail-genre: root.books-detail-genre;
@@ -3183,7 +3198,7 @@ callback cloud-go-home();
                 detail-size: root.books-detail-size;
                 detail-added: root.books-detail-added;
                 detail-published: root.books-detail-published;
-                detail-rating: root.books-detail-rating;
+                detail-rating <=> root.books-detail-rating;
                 detail-net-rating: root.books-detail-net-rating;
                 detail-percent: root.books-detail-percent;
                 detail-summary: root.books-detail-summary;
@@ -3240,6 +3255,7 @@ callback cloud-go-home();
                 user-action(a) => { root.user-action(a); }
                 profile-save(n, e, l) => { root.profile-save(n, e, l); }
                 logo-choice: root.app-logo-choice;
+                festival: root.festival-logo;
                 pick-cover-image => { root.pick-cover-image(); }
                 pick-avatar-image => { root.pick-avatar-image(); }
                 app-version: root.app-version;
