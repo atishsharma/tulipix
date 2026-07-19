@@ -100,6 +100,68 @@ pub async fn is_bookmarked(pool: &SqlitePool, book_id: i64, page: i64) -> Result
     Ok(n > 0)
 }
 
+/// Reflow-book bookmark check: any bookmark whose char offset falls inside the
+/// current page's [start, end) range. Page indexes shift on repagination
+/// (font/margin changes); char offsets don't.
+pub async fn is_bookmarked_range(
+    pool: &SqlitePool,
+    book_id: i64,
+    start: i64,
+    end: i64,
+) -> Result<bool> {
+    let n: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM bookmarks
+         WHERE book_id = ? AND char_offset >= ? AND char_offset < ?",
+    )
+    .bind(book_id)
+    .bind(start)
+    .bind(end)
+    .fetch_one(pool)
+    .await?;
+    Ok(n > 0)
+}
+
+/// Reflow-book bookmark toggle keyed by char-offset range; returns new state.
+/// `page` is stored for display only.
+pub async fn toggle_bookmark_range(
+    pool: &SqlitePool,
+    book_id: i64,
+    start: i64,
+    end: i64,
+    page: i64,
+) -> Result<bool> {
+    if is_bookmarked_range(pool, book_id, start, end).await? {
+        sqlx::query(
+            "DELETE FROM bookmarks
+             WHERE book_id = ? AND char_offset >= ? AND char_offset < ?",
+        )
+        .bind(book_id)
+        .bind(start)
+        .bind(end)
+        .execute(pool)
+        .await?;
+        Ok(false)
+    } else {
+        sqlx::query(
+            "INSERT INTO bookmarks (book_id, page, char_offset, created_at)
+             VALUES (?, ?, ?, ?)",
+        )
+        .bind(book_id)
+        .bind(page)
+        .bind(start)
+        .bind(now())
+        .execute(pool)
+        .await?;
+        Ok(true)
+    }
+}
+
+/// Remove one bookmark by row id (bookmarks-panel trash button).
+pub async fn remove_bookmark(pool: &SqlitePool, id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM bookmarks WHERE id = ?").bind(id).execute(pool).await?;
+    Ok(())
+}
+
 /// Toggle bookmark on a page; returns the new state.
 pub async fn toggle_bookmark(
     pool: &SqlitePool,

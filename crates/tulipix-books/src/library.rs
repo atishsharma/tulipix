@@ -28,6 +28,18 @@ pub struct BookRow {
     pub net_rating: f64,
     #[sqlx(default)]
     pub trashed: i64,
+    /// Treat-as-magazine flag (hides reader search; user toggle).
+    #[sqlx(default)]
+    pub magazine: i64,
+    /// Right-to-left page order (manga CBZ/CBR; user toggle).
+    #[sqlx(default)]
+    pub rtl: i64,
+    /// Remembered reader view: -1 unset · 0 odd · 1 even · 2 single.
+    #[sqlx(default)]
+    pub reader_view: i64,
+    /// Total seconds read (progress join; 0 when never opened).
+    #[sqlx(default)]
+    pub time_read: i64,
     pub percent: f64,
     pub last_read: i64,
 }
@@ -163,6 +175,8 @@ pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<BookRow>> {
         "SELECT b.id, b.path, b.format, b.title, b.author, b.genre, b.series,
                 b.cover_path, b.size_bytes, b.added_at, b.finished, b.favorite, b.missing,
                 b.rating, b.summary, b.summary_fetched_at, b.published, b.net_rating,
+                b.magazine, b.rtl, b.reader_view,
+                COALESCE(p.time_read_secs, 0) AS time_read,
                 COALESCE(p.percent, 0.0) AS percent,
                 COALESCE(p.updated_at, 0) AS last_read
          FROM books b LEFT JOIN progress p ON p.book_id = b.id
@@ -300,6 +314,44 @@ pub async fn toggle_favorite(pool: &SqlitePool, id: i64) -> Result<bool> {
         .await?
         .unwrap_or(0);
     Ok(fav != 0)
+}
+
+/// Flip the treat-as-magazine flag; returns the new state.
+pub async fn toggle_magazine(pool: &SqlitePool, id: i64) -> Result<bool> {
+    sqlx::query("UPDATE books SET magazine = 1 - magazine WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    let on: i64 = sqlx::query_scalar("SELECT magazine FROM books WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .unwrap_or(0);
+    Ok(on != 0)
+}
+
+/// Flip the right-to-left (manga) flag; returns the new state.
+pub async fn toggle_rtl(pool: &SqlitePool, id: i64) -> Result<bool> {
+    sqlx::query("UPDATE books SET rtl = 1 - rtl WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    let on: i64 = sqlx::query_scalar("SELECT rtl FROM books WHERE id = ?")
+        .bind(id)
+        .fetch_optional(pool)
+        .await?
+        .unwrap_or(0);
+    Ok(on != 0)
+}
+
+/// Remember the reader view for a book (0 odd · 1 even · 2 single).
+pub async fn set_reader_view(pool: &SqlitePool, id: i64, view: i64) -> Result<()> {
+    sqlx::query("UPDATE books SET reader_view = ? WHERE id = ?")
+        .bind(view)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
 }
 
 /// Remove a book row (file untouched) plus its progress/marks/notes.

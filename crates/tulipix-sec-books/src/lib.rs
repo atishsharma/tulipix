@@ -26,6 +26,11 @@ const PAGE_SIZE: usize = 6;
 /// One-shot guard for the background 3D-cover pre-bake sweep.
 static PREBAKE_DONE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// Monotonic image-nav generation. Bumped on every [`nav_image`]; in-flight
+/// render tasks compare against it and bail when superseded, so scrubbing to a
+/// far page doesn't queue a render for every intermediate page.
+static NAV_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Live reader session, owned by the Slint event-loop thread. The async book
 /// loader hands its result in via [`slint::Weak::upgrade_in_event_loop`], and
 /// every reader callback runs on the same thread — so a thread-local `RefCell`
@@ -51,6 +56,11 @@ struct ReaderState {
     img_path: std::path::PathBuf,
     img_format: String,
     img_total: usize,
+    /// Right-to-left page order (manga): the spread's pages swap sides.
+    img_rtl: bool,
+    /// Per-page extracted text for fixed-page books (pdftotext, lazy — filled
+    /// on first in-book search; empty for comics).
+    img_text: Vec<String>,
     /// 0-based index of the left page of the current spread (even-aligned).
     pos: usize,
     /// Wall-clock start of the current reading burst, folded into `time_read`
@@ -87,6 +97,9 @@ thread_local! {
     }) };
     // Single-page view: nav steps by 1 and doesn't even-align spreads.
     static SINGLE: Cell<bool> = const { Cell::new(false) };
+    // PDF/CBZ spread alignment (when not SINGLE): 1 = odd spreads (pages 1·2,
+    // 3·4…), 2 = even (cover alone, then 2·3, 4·5…) — magazine layout.
+    static SPREAD: Cell<u8> = const { Cell::new(1) };
     // Real rendered page size (px), reported by the Slint PaperPage so pagination
     // matches the on-screen column. (0,0) until first report → Layout defaults.
     static PAGE_GEOM: Cell<(f32, f32)> = const { Cell::new((0.0, 0.0)) };
@@ -187,11 +200,12 @@ fn typeface_family(t: u8) -> &'static str {
         _ => "serif",
     }
 }
-fn typeface_glyph(t: u8) -> f32 {
-    match t {
-        2 => 0.60, // monospace is wider
-        _ => 0.50,
-    }
+// One pagination glyph width for every typeface, sized for the widest (mono):
+// all three fonts paginate to the SAME page count. Serif/sans at 0.50 packed
+// more chars per estimated line than Slint actually renders (centered text +
+// wide glyphs), so their lines wrapped past the mockup page bottom.
+fn typeface_glyph(_t: u8) -> f32 {
+    0.60
 }
 
 /// Build the pagination [`Layout`] from the current prefs. When a real page
@@ -219,7 +233,9 @@ fn layout_from(p: &ReaderPrefs) -> Layout {
     l
 }
 
-/// Push every appearance pref to the reader window props (visual + sheet state).
+/// Push every appearance pref to the reader window props (visual + sheet
+/// state), and persist them (choke point: every pref change routes through
+/// here, so a tiny best-effort file write keeps prefs across restarts).
 fn push_prefs(w: &MainWindow, p: &ReaderPrefs) {
     w.set_books_reader_font_px(p.font_px);
     w.set_books_reader_font_family(typeface_family(p.typeface).into());
@@ -230,6 +246,9 @@ fn push_prefs(w: &MainWindow, p: &ReaderPrefs) {
     w.set_books_reader_text_align(p.align as i32);
     w.set_books_reader_brightness(p.brightness);
     w.set_books_reader_theme(THEMES[p.theme as usize % 4].into());
+    tulipix_books::prefs::save_reader_prefs(
+        p.font_px, p.line_idx, p.margin_idx, p.typeface, p.align, p.bold, p.theme, p.brightness,
+    );
 }
 
 /// Re-paginate the current book from the current prefs, keeping the reading
@@ -256,6 +275,22 @@ pub fn wire(window: &MainWindow) {
     // Sort index is not a UI property (it flows through set-sort by label), so
     // hold it here and rebuild the [`Filter`] from window props on each refresh.
     let sort_idx = Rc::new(Cell::new(tulipix_books::prefs::load_sort()));
+
+    // Restore persisted reader typography/appearance prefs.
+    if let Some((f, l, m, t, a, b, th, br)) = tulipix_books::prefs::load_reader_prefs() {
+        PREFS.with(|c| {
+            c.set(ReaderPrefs {
+                font_px: f.clamp(FONT_MIN, FONT_MAX),
+                line_idx: l.min(2),
+                margin_idx: m.min(2),
+                typeface: t.min(2),
+                align: a.min(2),
+                bold: b,
+                theme: th.min(3),
+                brightness: br.clamp(0.4, 1.0),
+            })
+        });
+    }
 
     // Decode the embedded hero-art pack once (light + dark variants).
     load_hero_art();
@@ -443,6 +478,53 @@ pub fn wire(window: &MainWindow) {
         books_toggle_favorite(w.clone(), id as i64, s.get());
     });
 
+    // Detail popup: treat-as-magazine toggle (hides reader search for PDFs
+    // whose text layer is useless). Applies on the next reader open.
+    let w = window.as_weak();
+    window.on_books_toggle_magazine(move |id| {
+        let weak = w.clone();
+        let id = id as i64;
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("books").await else { return };
+            let on = library::toggle_magazine(&pool, id).await.unwrap_or(false);
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                if w.get_books_detail_id() as i64 == id {
+                    w.set_books_detail_magazine(on);
+                }
+            });
+        });
+    });
+
+    // Detail popup: manga right-to-left page order (CBZ/CBR).
+    let w = window.as_weak();
+    window.on_books_toggle_rtl(move |id| {
+        let weak = w.clone();
+        let id = id as i64;
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("books").await else { return };
+            let on = library::toggle_rtl(&pool, id).await.unwrap_or(false);
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                if w.get_books_detail_id() as i64 == id {
+                    w.set_books_detail_rtl(on);
+                }
+                // Live-apply when this book is open in the reader.
+                let open = READER.with(|r| {
+                    let mut r = r.borrow_mut();
+                    if r.book_id == id && r.is_image {
+                        r.img_rtl = on;
+                        true
+                    } else {
+                        false
+                    }
+                });
+                if open {
+                    let cur = READER.with(|r| r.borrow().pos);
+                    nav_to(&w, w.as_weak(), cur);
+                }
+            });
+        });
+    });
+
     let w = window.as_weak();
     let s = sort_idx.clone();
     window.on_books_card_menu(move |id, action| {
@@ -545,7 +627,30 @@ pub fn wire(window: &MainWindow) {
             nav_to(&w, w.as_weak(), cur + 1);
         }
     });
-    window.on_books_reader_set_single(move |s| { SINGLE.with(|c| c.set(s)); });
+    let w = window.as_weak();
+    window.on_books_reader_set_single(move |s| {
+        SINGLE.with(|c| c.set(s));
+        // Realign + re-render the current spread for the new view mode.
+        if let Some(w) = w.upgrade() {
+            if s {
+                // Force nav_to to refill the continuous column — it may hold a
+                // stale chapter from an earlier single-page session.
+                w.set_books_reader_full_text("".into());
+            }
+            let cur = READER.with(|r| r.borrow().pos);
+            nav_to(&w, w.as_weak(), cur);
+        }
+        save_reader_view();
+    });
+    let w = window.as_weak();
+    window.on_books_reader_set_spread(move |m| {
+        SPREAD.with(|c| c.set(m.clamp(1, 2) as u8));
+        if let Some(w) = w.upgrade() {
+            let cur = READER.with(|r| r.borrow().pos);
+            nav_to(&w, w.as_weak(), cur);
+        }
+        save_reader_view();
+    });
 
     // Real page geometry from the Slint PaperPage → drives pagination so text
     // fills the actual column (no clipping / gaps). Repaginate only on a material
@@ -595,8 +700,24 @@ pub fn wire(window: &MainWindow) {
     let w = window.as_weak();
     window.on_books_reader_jump_chapter(move |chapter| {
         if let Some(w) = w.upgrade() {
-            let np = READER.with(|r| paginate::page_of_chapter(&r.borrow().pages, chapter.max(0) as usize));
+            let np = READER.with(|r| {
+                let r = r.borrow();
+                if r.is_image {
+                    // PDF outline rows carry the 0-based page directly.
+                    chapter.max(0) as usize
+                } else {
+                    paginate::page_of_chapter(&r.pages, chapter.max(0) as usize)
+                }
+            });
             nav_to(&w, w.as_weak(), np);
+        }
+    });
+
+    // Contents-panel live filter: rebuild the TOC rows matching the query.
+    let w = window.as_weak();
+    window.on_books_reader_contents_filter(move |q| {
+        if let Some(w) = w.upgrade() {
+            push_toc_filtered(&w, &q.to_lowercase());
         }
     });
 
@@ -604,17 +725,53 @@ pub fn wire(window: &MainWindow) {
     let w = window.as_weak();
     window.on_books_reader_toggle_bookmark(move || { reader_toggle_bookmark(w.clone()); });
 
-    // Sun button cycles the paper theme (light → sepia → dark → night).
+    // Bookmarks side panel: list / jump / remove.
+    let w = window.as_weak();
+    window.on_books_reader_bookmarks_load(move || { reader_load_bookmarks(w.clone()); });
+    let w = window.as_weak();
+    window.on_books_reader_bookmark_jump(move |page| {
+        if let Some(w) = w.upgrade() {
+            nav_to(&w, w.as_weak(), (page.max(1) - 1) as usize);
+        }
+    });
+    let w = window.as_weak();
+    window.on_books_reader_bookmark_remove(move |id| { reader_bookmark_remove(w.clone(), id as i64); });
+
+    // Ebook zoom slider → font scale (repaginates; PDFs zoom the raster in UI).
+    let w = window.as_weak();
+    window.on_books_reader_set_font_scale(move |z| {
+        let new_px = (17.0 * z).round().clamp(FONT_MIN, FONT_MAX);
+        if PREFS.with(|c| c.get().font_px) == new_px {
+            return;
+        }
+        PREFS.with(|c| {
+            let mut p = c.get();
+            p.font_px = new_px;
+            c.set(p);
+        });
+        if let Some(w) = w.upgrade() {
+            push_prefs(&w, &PREFS.with(|c| c.get()));
+            reader_repaginate(&w, w.as_weak());
+        }
+    });
+
+    // Sun button cycles brightness through the Aa presets (Full → Medium → Dim).
     let w = window.as_weak();
     window.on_books_reader_brightness_cycle(move || {
         if let Some(w) = w.upgrade() {
             let p = PREFS.with(|c| {
                 let mut p = c.get();
-                p.theme = (p.theme + 1) % 4;
+                p.brightness = if p.brightness >= 0.95 {
+                    0.8
+                } else if p.brightness >= 0.75 {
+                    0.6
+                } else {
+                    1.0
+                };
                 c.set(p);
                 p
             });
-            w.set_books_reader_theme(THEMES[p.theme as usize].into());
+            push_prefs(&w, &p);
         }
     });
 
@@ -630,10 +787,13 @@ pub fn wire(window: &MainWindow) {
         if let Some(w) = w.upgrade() {
             let np = READER.with(|r| {
                 let r = r.borrow();
-                r.annots
-                    .iter()
-                    .find(|a| a.id == id as i64)
-                    .map(|a| paginate::page_at_offset(&r.pages, a.start_off as usize))
+                r.annots.iter().find(|a| a.id == id as i64).map(|a| {
+                    if r.is_image {
+                        (a.page.max(1) - 1) as usize
+                    } else {
+                        paginate::page_at_offset(&r.pages, a.start_off as usize)
+                    }
+                })
             });
             if let Some(p) = np { nav_to(&w, w.as_weak(), p); }
         }
@@ -649,6 +809,16 @@ pub fn wire(window: &MainWindow) {
     // In-book search: scan the paginated pages (in memory) for the query.
     let w = window.as_weak();
     window.on_books_reader_search_run(move |q| { reader_search(w.clone(), q.to_string()); });
+    // Search-result click: jump to the page, then highlight the match there.
+    let w = window.as_weak();
+    window.on_books_reader_search_jump(move |screen_page| {
+        if let Some(w) = w.upgrade() {
+            let q = w.get_books_reader_search_query().to_string();
+            let page = (screen_page.max(1) - 1) as usize;
+            nav_to(&w, w.as_weak(), page);
+            search_highlight(w.as_weak(), q, page);
+        }
+    });
     // Aa reading-settings sheet.
     let w = window.as_weak();
     window.on_books_reader_font_dec(move || { reader_step_font(w.clone(), -FONT_STEP); });
@@ -683,12 +853,20 @@ pub fn wire(window: &MainWindow) {
     window.on_books_reader_set_theme(move |t| {
         let idx = THEMES.iter().position(|x| *x == t.as_str()).unwrap_or(0) as u8;
         PREFS.with(|c| { let mut p = c.get(); p.theme = idx; c.set(p); });
-        if let Some(w) = w.upgrade() { w.set_books_reader_theme(t); }
+        if let Some(w) = w.upgrade() {
+            w.set_books_reader_theme(t);
+            push_prefs(&w, &PREFS.with(|c| c.get()));
+            // Fixed-page books re-render: dark/OLED themes invert the raster.
+            if READER.with(|r| r.borrow().is_image) {
+                let cur = READER.with(|r| r.borrow().pos);
+                nav_to(&w, w.as_weak(), cur);
+            }
+        }
     });
     let w = window.as_weak();
     window.on_books_reader_set_brightness(move |v| {
         PREFS.with(|c| { let mut p = c.get(); p.brightness = v.clamp(0.4, 1.0); c.set(p); });
-        if let Some(w) = w.upgrade() { w.set_books_reader_brightness(v.clamp(0.4, 1.0)); }
+        if let Some(w) = w.upgrade() { push_prefs(&w, &PREFS.with(|c| c.get())); }
     });
     // ••• menu: mark the book finished, or remove it from the library.
     let w = window.as_weak();
@@ -1093,6 +1271,19 @@ fn fmt_size(bytes: i64) -> String {
     else { format!("{:.1} GB", b / (KB * KB * KB)) }
 }
 
+/// "3h 12m" style label for total seconds read; empty when never read.
+fn fmt_time_read(secs: i64) -> String {
+    if secs <= 0 {
+        return String::new();
+    }
+    let m = (secs / 60).max(1);
+    if m < 60 {
+        format!("{m}m")
+    } else {
+        format!("{}h {}m", m / 60, m % 60)
+    }
+}
+
 /// Populate + open the detail popup for a book (R1). Loads the row, pushes
 /// metadata + any cached summary.
 fn books_show_detail(weak: slint::Weak<MainWindow>, id: i64) {
@@ -1113,6 +1304,9 @@ fn books_show_detail(weak: slint::Weak<MainWindow>, id: i64) {
             w.set_books_detail_book_hero(book_img(&b, tulipix_books::covers::HERO_SUFFIX));
             w.set_books_detail_book_hero_dark(book_img(&b, tulipix_books::covers::HERO_DARK_SUFFIX));
             w.set_books_detail_favorite(b.favorite != 0);
+            w.set_books_detail_magazine(b.magazine != 0);
+            w.set_books_detail_rtl(b.rtl != 0);
+            w.set_books_detail_time_read(fmt_time_read(b.time_read).into());
             w.set_books_detail_hue(cover_hue(&b.title));
             w.set_books_detail_format(b.format.to_uppercase().into());
             w.set_books_detail_genre(b.genre.clone().into());
@@ -1579,6 +1773,23 @@ fn books_open(weak: slint::Weak<MainWindow>, id: i64) {
         w.set_books_reader_open(true);
         w.set_books_reader_loading(true);
         w.set_books_reader_error("".into());
+        // Clear the previous book's pages right away — otherwise its spread
+        // stays visible behind the loading state and reads as a slow open.
+        w.set_books_reader_title("".into());
+        w.set_books_reader_author("".into());
+        w.set_books_reader_left_text("".into());
+        w.set_books_reader_right_text("".into());
+        w.set_books_reader_left_heading("".into());
+        w.set_books_reader_right_heading("".into());
+        w.set_books_reader_left_image(slint::Image::default());
+        w.set_books_reader_right_image(slint::Image::default());
+        w.set_books_reader_full_text("".into());
+        w.set_books_reader_search_hl(VecModel::from_slice(&[]));
+        // Previous book's bookmark rows must not flash in the panel.
+        w.set_books_reader_bookmarks(VecModel::from_slice(&[]));
+        w.set_books_reader_bookmarked(false);
+        w.set_books_reader_page(1);
+        w.set_books_reader_page_count(1);
     }
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
@@ -1613,9 +1824,14 @@ fn books_open(weak: slint::Weak<MainWindow>, id: i64) {
         if pages.is_empty() {
             return reader_fail(weak, format!("No readable text in this {} file", book.format));
         }
-        let full_text = chapters.join("\n\n");
-        // Index this book's contents for library-wide search (cheap — text in hand).
-        let _ = library::fts_index(&pool, id, &full_text).await;
+        // Index this book's contents for library-wide search — once. Re-joining
+        // + re-inserting a multi-MB body on every open was pure waste. The text
+        // is never pushed to the UI: the continuous column shows one chapter at
+        // a time (a whole-book Text element made it crawl).
+        if !library::fts_has(&pool, id).await.unwrap_or(false) {
+            let full_text = chapters.join("\n\n");
+            let _ = library::fts_index(&pool, id, &full_text).await;
+        }
         let _ = weak.upgrade_in_event_loop(move |w| {
             READER.with(|r| {
                 *r.borrow_mut() = ReaderState {
@@ -1633,16 +1849,24 @@ fn books_open(weak: slint::Weak<MainWindow>, id: i64) {
             });
             w.set_books_reader_title(book.title.clone().into());
             w.set_books_reader_author(book.author.clone().into());
-            w.set_books_reader_full_text(full_text.into());
+            w.set_books_reader_full_text("".into());
+            w.set_books_reader_search_enabled(true);
             w.set_books_reader_image_mode(false);
+            // Contents panel opens by default for ebooks only.
+            w.set_books_reader_contents_open(true);
+            // Remembered per-book view: 2 = single page.
+            let single = book.reader_view == 2;
+            SINGLE.with(|c| c.set(single));
+            w.set_books_reader_force_single(single);
             w.set_books_reader_search_query("".into());
             w.set_books_reader_search_results(VecModel::from_slice(&[]));
             w.set_books_reader_notes(VecModel::from_slice(&[]));
             w.set_books_reader_toc(Rc::new(VecModel::<TocRow>::default()).into());
             w.set_books_reader_loading(false);
             nav_to(&w, w.as_weak(), start);
-            // Load notes up front so the per-page note indicator is accurate.
+            // Load notes + bookmarks up front so indicators/panel are accurate.
             reader_load_notes(w.as_weak());
+            reader_load_bookmarks(w.as_weak());
         });
     });
 }
@@ -1652,14 +1876,20 @@ fn books_open(weak: slint::Weak<MainWindow>, id: i64) {
 async fn open_image_book(weak: slint::Weak<MainWindow>, book: BookRow, start_page: usize) {
     let path = std::path::PathBuf::from(&book.path);
     let format = book.format.clone();
-    let (path, format, total) = tokio::task::spawn_blocking(move || {
+    let (path, format, total, outline) = tokio::task::spawn_blocking(move || {
         // Bound the rendered-page cache before adding more pages to it.
         render::prune_page_cache(512 * 1024 * 1024);
         let total = render::page_count(&path, &format).unwrap_or(0);
-        (path, format, total)
+        // PDF outline (document bookmarks) → Contents panel + chapter pills.
+        let outline = if format == "pdf" && total > 0 {
+            tulipix_books::toc::pdf_outline(&path)
+        } else {
+            Vec::new()
+        };
+        (path, format, total, outline)
     })
     .await
-    .unwrap_or((std::path::PathBuf::new(), String::new(), 0));
+    .unwrap_or((std::path::PathBuf::new(), String::new(), 0, Vec::new()));
     if total == 0 {
         return reader_fail(weak, format!("Could not open this {} file", book.format));
     }
@@ -1672,14 +1902,31 @@ async fn open_image_book(weak: slint::Weak<MainWindow>, book: BookRow, start_pag
                 img_path: path,
                 img_format: format,
                 img_total: total,
+                img_rtl: book.rtl != 0,
+                toc: outline,
                 pos: 0,
                 session_start: Some(std::time::Instant::now()),
                 ..Default::default()
             };
         });
+        // Remembered per-book view (0 odd · 1 even · 2 single; -1 = default).
+        let single = book.reader_view == 2;
+        SINGLE.with(|c| c.set(single));
+        SPREAD.with(|c| c.set(if book.reader_view == 1 { 2 } else { 1 }));
+        w.set_books_reader_force_single(single);
+        w.set_books_reader_spread_mode(if book.reader_view == 1 { 2 } else { 1 });
+        // PDFs don't auto-open the Contents panel (ebooks do).
+        w.set_books_reader_contents_open(false);
         w.set_books_reader_title(book.title.clone().into());
         w.set_books_reader_author(book.author.clone().into());
         w.set_books_reader_full_text("".into());
+        // Comics and magazine PDFs have no useful text search — hide the field.
+        // Magazine = the detail-popup toggle, or a genre that says so.
+        w.set_books_reader_search_enabled(
+            book.format == "pdf"
+                && book.magazine == 0
+                && !book.genre.to_lowercase().contains("magazin"),
+        );
         w.set_books_reader_image_mode(true);
         w.set_books_reader_search_query("".into());
         w.set_books_reader_search_results(VecModel::from_slice(&[]));
@@ -1687,6 +1934,9 @@ async fn open_image_book(weak: slint::Weak<MainWindow>, book: BookRow, start_pag
         w.set_books_reader_toc(Rc::new(VecModel::<TocRow>::default()).into());
         w.set_books_reader_loading(false);
         nav_to(&w, w.as_weak(), start);
+        // Load notes + bookmarks up front so indicators/panel are accurate.
+        reader_load_notes(w.as_weak());
+        reader_load_bookmarks(w.as_weak());
     });
 }
 
@@ -1709,64 +1959,129 @@ fn reader_fail(weak: slint::Weak<MainWindow>, msg: String) {
     });
 }
 
-/// Render the image spread whose left page is `page` (even-aligned): update
-/// folio/percent, rasterise + load the two page images off-thread, save the
-/// page position. Fixed-page (PDF/CBZ/CBR) counterpart to [`nav_to`].
+/// Render the image spread whose left page is `page` (aligned to the current
+/// spread mode): update folio/percent, rasterise + load the page images
+/// off-thread, save the page position. Fixed-page (PDF/CBZ/CBR) counterpart
+/// to [`nav_to`].
 fn nav_image(w: &MainWindow, weak: slint::Weak<MainWindow>, page: usize) {
+    let single = SINGLE.with(|c| c.get());
+    let spread = SPREAD.with(|c| c.get());
     let snap = READER.with(|r| {
         let mut r = r.borrow_mut();
         if r.img_total == 0 {
             return None;
         }
         let last = r.img_total - 1;
-        let pos = if SINGLE.with(|c| c.get()) { page.min(last) } else { page.min(last) & !1 };
+        let p = page.min(last);
+        let pos = if single {
+            p
+        } else if spread == 2 {
+            // Even spreads: cover alone, then 0-based-odd left pages (2·3, 4·5…).
+            if p == 0 { 0 } else { ((p - 1) & !1) + 1 }
+        } else {
+            p & !1
+        };
         r.pos = pos;
-        Some((r.book_id, r.img_path.clone(), r.img_format.clone(), pos, r.img_total))
+        Some((r.book_id, r.img_path.clone(), r.img_format.clone(), pos, r.img_total, r.img_rtl))
     });
-    let Some((book_id, path, format, pos, total)) = snap else { return };
+    let Some((book_id, path, format, pos, total, rtl)) = snap else { return };
+    let has_right = !single && pos + 1 < total && !(spread == 2 && pos == 0);
+    // Manga (RTL): the later page sits on the LEFT side of the spread.
+    let swap = rtl && has_right;
 
-    w.set_books_reader_left_folio(pos as i32 + 1);
-    w.set_books_reader_right_folio(if pos + 1 < total { pos as i32 + 2 } else { 0 });
+    w.set_books_reader_left_folio(if swap { pos as i32 + 2 } else { pos as i32 + 1 });
+    w.set_books_reader_right_folio(if !has_right {
+        0
+    } else if swap {
+        pos as i32 + 1
+    } else {
+        pos as i32 + 2
+    });
     w.set_books_reader_page(pos as i32 + 1);
     w.set_books_reader_page_count(total as i32);
     w.set_books_reader_percent(((pos + 1) as f32 / total as f32).clamp(0.0, 1.0));
-    // Text/chapter chrome is meaningless for fixed-page books.
-    w.set_books_reader_chapter_name("".into());
-    w.set_books_reader_next_chapter_name("".into());
-    w.set_books_reader_bookmarked(false);
+    // Chapter chrome from the PDF outline (empty for comics / plain PDFs).
+    READER.with(|r| {
+        let r = r.borrow();
+        if r.toc.is_empty() {
+            w.set_books_reader_chapter_name("".into());
+            w.set_books_reader_next_chapter_name("".into());
+            return;
+        }
+        let cur = r
+            .toc
+            .iter()
+            .rev()
+            .find(|t| t.chapter >= 0 && (t.chapter as usize) <= pos + has_right as usize);
+        let next = r.toc.iter().find(|t| t.chapter >= 0 && (t.chapter as usize) > pos + has_right as usize);
+        w.set_books_reader_chapter_name(cur.map(|t| t.label.clone()).unwrap_or_default().into());
+        w.set_books_reader_next_chapter_name(next.map(|t| t.label.clone()).unwrap_or_default().into());
+        let cur_ch = cur.map(|t| t.chapter).unwrap_or(-1);
+        let rows: Vec<TocRow> = r
+            .toc
+            .iter()
+            .map(|t| TocRow {
+                label: t.label.clone().into(),
+                page: t.chapter + 1,
+                depth: t.depth,
+                chapter: t.chapter,
+                active: t.chapter == cur_ch,
+            })
+            .collect();
+        w.set_books_reader_toc(Rc::new(VecModel::from(rows)).into());
+    });
+    // Search highlights belong to the previous page.
+    w.set_books_reader_search_hl(VecModel::from_slice(&[]));
 
-    // Rasterise the two pages off-thread (poppler/unrar); decode on UI thread.
-    let has_right = pos + 1 < total;
-    let single = SINGLE.with(|c| c.get());
+    // Bookmark ribbon + note dot for the new left page (page-keyed for PDFs).
+    let has_note = READER.with(|r| {
+        let r = r.borrow();
+        r.annots
+            .iter()
+            .any(|a| a.page == pos as i64 + 1 || (has_right && a.page == pos as i64 + 2))
+    });
+    w.set_books_reader_has_note(has_note);
+    {
+        let weak = weak.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("books").await else { return };
+            let on = progress::is_bookmarked(&pool, book_id, pos as i64).await.unwrap_or(false);
+            let _ = weak.upgrade_in_event_loop(move |w| w.set_books_reader_bookmarked(on));
+        });
+    }
+
+    // Rasterise the pages off-thread (poppler/unrar); decode on UI thread.
+    // Flat Files-style pages — no mockup lighting bake anymore. A generation
+    // stamp drops superseded navs (scrub drags) before they render.
+    use std::sync::atomic::Ordering;
+    let my_gen = NAV_GEN.fetch_add(1, Ordering::SeqCst) + 1;
+    // Dark/OLED reading themes show the inverted (night) raster.
+    let night = PREFS.with(|c| matches!(c.get().theme, 2 | 3));
     tokio::runtime::Handle::current().spawn(async move {
+        if NAV_GEN.load(Ordering::SeqCst) != my_gen {
+            return; // already superseded by a newer nav
+        }
         let render_at = |idx: usize| {
             let (p, f) = (path.clone(), format.clone());
             async move {
-                tokio::task::spawn_blocking(move || render::page_image(&p, &f, idx).ok())
-                    .await
-                    .ok()
-                    .flatten()
+                tokio::task::spawn_blocking(move || {
+                    if night { render::page_image_night(&p, &f, idx).ok() } else { None }
+                        .or_else(|| render::page_image(&p, &f, idx).ok())
+                })
+                .await
+                .ok()
+                .flatten()
             }
         };
         // Render both pages of the spread concurrently (was sequential .await).
         let (left, right) = tokio::join!(render_at(pos), async {
             if has_right { render_at(pos + 1).await } else { None }
         });
-        // Spread view: bake the mockup's paper lighting over each raster so
-        // the pages read as printed on the open book (magazine look). Single-
-        // page/zoom keeps the clean raster.
-        let (left, right) = if single {
-            (left, right)
-        } else {
-            tokio::task::spawn_blocking(move || {
-                let m = |o: Option<std::path::PathBuf>, r: bool| {
-                    o.map(|p| tulipix_books::covers::magazine_page(&p, r).unwrap_or(p))
-                };
-                (m(left, false), m(right, true))
-            })
-            .await
-            .unwrap_or((None, None))
-        };
+        if NAV_GEN.load(Ordering::SeqCst) != my_gen {
+            return; // stale — a newer page is already on its way
+        }
+        // Manga (RTL): later page renders on the left side.
+        let (left, right) = if swap { (right, left) } else { (left, right) };
         let _ = weak.upgrade_in_event_loop(move |w| {
             let load = |o: Option<std::path::PathBuf>| {
                 o.and_then(|p| slint::Image::load_from_path(&p).ok()).unwrap_or_default()
@@ -1774,29 +2089,23 @@ fn nav_image(w: &MainWindow, weak: slint::Weak<MainWindow>, page: usize) {
             w.set_books_reader_left_image(load(left));
             w.set_books_reader_right_image(load(right));
         });
-        // Prefetch the next spread's pages into the disk cache so forward paging
-        // is instant (page_image returns early on a cache hit). Bake the
-        // magazine lighting ahead too when in spread view.
-        for (i, nxt) in [pos + 2, pos + 3].into_iter().enumerate() {
-            if nxt < total {
-                let (p, f) = (path.clone(), format.clone());
-                tokio::task::spawn_blocking(move || {
-                    if let Ok(raster) = render::page_image(&p, &f, nxt) {
-                        if !single {
-                            let _ = tulipix_books::covers::magazine_page(&raster, i == 1);
-                        }
-                    }
-                });
+        // Prefetch neighbours into the disk cache so paging both ways is
+        // instant (page_image returns early on a cache hit). One sequential
+        // background task — six concurrent pdftoppm processes could spike RAM
+        // on huge pages; warm-up order: forward first, then backward.
+        tokio::task::spawn_blocking(move || {
+            for nxt in
+                [pos + 1, pos + 2, pos + 3, pos + 4, pos.wrapping_sub(1), pos.wrapping_sub(2)]
+            {
+                if nxt < total && NAV_GEN.load(Ordering::SeqCst) == my_gen {
+                    let _ = render::page_image(&path, &format, nxt);
+                }
             }
-        }
+        });
     });
 
-    // Persist page position (image books have no char offset / session fold).
-    tokio::runtime::Handle::current().spawn(async move {
-        if let Ok(pool) = pool_for("books").await {
-            let _ = progress::save(&pool, book_id, pos as i64, total as i64, pos as i64, 0).await;
-        }
-    });
+    // Persist page position + fold the reading burst (streak/time stats).
+    persist_progress();
 }
 
 // ── read-aloud (TTS) ──────────────────────────────────────────────────────────
@@ -2183,6 +2492,10 @@ fn nav_to(w: &MainWindow, weak: slint::Weak<MainWindow>, page: usize) {
         left_heading: String,
         right_heading: String,
         chapter_changed: bool,
+        /// Char-offset range of the left page — bookmark checks key on offsets
+        /// (page indexes shift on repagination, offsets don't).
+        bm_start: i64,
+        bm_end: i64,
     }
     let s = READER.with(|r| {
         let mut r = r.borrow_mut();
@@ -2202,6 +2515,8 @@ fn nav_to(w: &MainWindow, weak: slint::Weak<MainWindow>, page: usize) {
             left_heading: page_heading(&r, pos),
             right_heading: page_heading(&r, pos + 1),
             chapter_changed,
+            bm_start: r.pages[pos].char_start as i64,
+            bm_end: r.pages.get(pos + 1).map(|p| p.char_start as i64).unwrap_or(i64::MAX),
         })
     });
     let Some(s) = s else { return };
@@ -2223,6 +2538,33 @@ fn nav_to(w: &MainWindow, weak: slint::Weak<MainWindow>, page: usize) {
     w.set_books_reader_page(s.pos as i32 + 1);
     w.set_books_reader_page_count(s.total as i32);
     w.set_books_reader_percent(((s.pos + 1) as f32 / s.total as f32).clamp(0.0, 1.0));
+
+    // Single-page continuous column: render ONE chapter, not the whole book —
+    // a multi-MB Text element made scrolling/chapter jumps crawl. The scroll
+    // fraction places the viewport at the current page within the chapter.
+    if SINGLE.with(|c| c.get()) {
+        let (chapter_text, title, frac, has_next) = READER.with(|r| {
+            let r = r.borrow();
+            let ch = s.left.chapter;
+            let start = paginate::page_of_chapter(&r.pages, ch);
+            let count = r.pages.iter().filter(|p| p.chapter == ch).count().max(1);
+            let frac = s.pos.saturating_sub(start) as f32 / count.saturating_sub(1).max(1) as f32;
+            (
+                r.chapters.get(ch).cloned().unwrap_or_default(),
+                r.chapter_titles.get(ch).cloned().unwrap_or_default(),
+                frac,
+                ch + 1 < r.chapters.len(),
+            )
+        });
+        w.set_books_reader_full_has_next(has_next);
+        if s.chapter_changed || w.get_books_reader_full_text().is_empty() {
+            // Bold headline above the column; drop a duplicate title line
+            // from the body (EPUB flattens <h1> into the text stream).
+            w.set_books_reader_full_heading(title.clone().into());
+            w.set_books_reader_full_text(strip_heading(&chapter_text, &title).into());
+        }
+        w.set_books_reader_full_frac(frac.clamp(0.0, 1.0));
+    }
 
     READER.with(|r| {
         let r = r.borrow();
@@ -2265,12 +2607,13 @@ fn nav_to(w: &MainWindow, weak: slint::Weak<MainWindow>, page: usize) {
     });
     w.set_books_reader_has_note(has_note);
 
-    // Bookmark indicator for the new left page.
+    // Bookmark indicator for the new left page (offset-range keyed so it
+    // survives repagination).
     let handle = tokio::runtime::Handle::current();
-    let (book_id, pos) = (s.book_id, s.pos);
+    let (book_id, start, end) = (s.book_id, s.bm_start, s.bm_end);
     handle.spawn(async move {
         let Ok(pool) = pool_for("books").await else { return };
-        let on = progress::is_bookmarked(&pool, book_id, pos as i64)
+        let on = progress::is_bookmarked_range(&pool, book_id, start, end)
             .await
             .unwrap_or(false);
         let _ = weak.upgrade_in_event_loop(move |w| w.set_books_reader_bookmarked(on));
@@ -2280,27 +2623,47 @@ fn nav_to(w: &MainWindow, weak: slint::Weak<MainWindow>, page: usize) {
 }
 
 /// Jump to the first page of the previous/next chapter relative to `pos`.
+/// Steps through the TOC's navigable entries (what the Contents panel shows),
+/// not raw spine indices — spine items without a TOC entry made "Next" hop a
+/// page and "Previous" land mid-chapter.
 fn nav_chapter(w: &MainWindow, weak: slint::Weak<MainWindow>, delta: i32) {
     let target = READER.with(|r| {
         let r = r.borrow();
-        if r.pages.is_empty() {
+        // Fixed-page books: TOC entries carry 0-based page numbers directly.
+        let (pos, mut starts): (usize, Vec<usize>) = if r.is_image {
+            if r.img_total == 0 {
+                return None;
+            }
+            (r.pos, r.toc.iter().filter(|t| t.chapter >= 0).map(|t| t.chapter as usize).collect())
+        } else {
+            if r.pages.is_empty() {
+                return None;
+            }
+            let pos = r.pos.min(r.pages.len() - 1);
+            (
+                pos,
+                r.toc
+                    .iter()
+                    .filter(|t| t.chapter >= 0)
+                    .map(|t| paginate::page_of_chapter(&r.pages, t.chapter as usize))
+                    .collect(),
+            )
+        };
+        starts.sort_unstable();
+        starts.dedup();
+        if starts.is_empty() {
             return None;
         }
-        let pos = r.pos.min(r.pages.len() - 1);
-        let cur = r.pages[pos].chapter as i32;
-        // Prev from mid-chapter first snaps to the chapter's own start.
-        let start = paginate::page_of_chapter(&r.pages, cur.max(0) as usize);
-        if delta < 0 && pos > start {
-            return Some(start);
+        let single = SINGLE.with(|c| c.get());
+        if delta > 0 {
+            // Skip starts inside the current spread — their even-aligned nav
+            // target equals `pos` and nothing would visibly move.
+            starts.into_iter().find(|&s| if single { s > pos } else { (s & !1) > pos })
+        } else {
+            // Mid-chapter snaps to the chapter's own start; already at a start
+            // goes to the previous chapter's start.
+            starts.into_iter().rev().find(|&s| s < pos)
         }
-        // Clamp at the ends — page_of_chapter's unwrap_or(0) used to throw
-        // "Next" on the last chapter back to the start of the book.
-        let last_ch = r.pages.last().map(|p| p.chapter).unwrap_or(0) as i32;
-        let tgt = (cur + delta).clamp(0, last_ch);
-        if tgt == cur {
-            return None;
-        }
-        Some(paginate::page_of_chapter(&r.pages, tgt as usize))
     });
     if let Some(p) = target {
         nav_to(w, weak, p);
@@ -2311,20 +2674,87 @@ fn nav_chapter(w: &MainWindow, weak: slint::Weak<MainWindow>, delta: i32) {
 fn reader_toggle_bookmark(weak: slint::Weak<MainWindow>) {
     let snap = READER.with(|r| {
         let r = r.borrow();
+        // Fixed-page books bookmark by raster page (no char offsets).
+        if r.is_image {
+            return (r.img_total > 0).then_some((r.book_id, r.pos as i64, 0, 0, true));
+        }
         if r.pages.is_empty() {
             return None;
         }
+        // Reflow books key by the page's char-offset range so bookmarks
+        // survive repagination (font/margin changes shift page indexes).
         let pos = r.pos.min(r.pages.len() - 1);
-        Some((r.book_id, pos as i64, r.pages[pos].char_start as i64))
+        let start = r.pages[pos].char_start as i64;
+        let end = r.pages.get(pos + 1).map(|p| p.char_start as i64).unwrap_or(i64::MAX);
+        Some((r.book_id, pos as i64, start, end, false))
     });
-    let Some((book_id, page, off)) = snap else { return };
+    let Some((book_id, page, start, end, image)) = snap else { return };
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
         let Ok(pool) = pool_for("books").await else { return };
-        let on = progress::toggle_bookmark(&pool, book_id, page, off)
-            .await
-            .unwrap_or(false);
-        let _ = weak.upgrade_in_event_loop(move |w| w.set_books_reader_bookmarked(on));
+        let on = if image {
+            progress::toggle_bookmark(&pool, book_id, page, 0).await.unwrap_or(false)
+        } else {
+            progress::toggle_bookmark_range(&pool, book_id, start, end, page)
+                .await
+                .unwrap_or(false)
+        };
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_books_reader_bookmarked(on);
+            // Keep the bookmarks panel list in sync with the toggle.
+            reader_load_bookmarks(w.as_weak());
+        });
+    });
+}
+
+/// Load this book's bookmarks into the panel rows. Ebook rows re-derive the
+/// screen page from the stored char offset (repagination-safe); fixed-page
+/// books show the stored raster page.
+fn reader_load_bookmarks(weak: slint::Weak<MainWindow>) {
+    let book_id = READER.with(|r| r.borrow().book_id);
+    if book_id == 0 {
+        return;
+    }
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("books").await else { return };
+        let list = progress::bookmarks(&pool, book_id).await.unwrap_or_default();
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            let rows: Vec<BookmarkRow> = READER.with(|r| {
+                let r = r.borrow();
+                list.iter()
+                    .map(|b| BookmarkRow {
+                        id: b.id as i32,
+                        page: if r.is_image || r.pages.is_empty() {
+                            b.page as i32 + 1
+                        } else {
+                            paginate::page_at_offset(&r.pages, b.char_offset as usize) as i32 + 1
+                        },
+                        note: b.note.clone().into(),
+                    })
+                    .collect()
+            });
+            w.set_books_reader_bookmarks(VecModel::from_slice(&rows));
+        });
+    });
+}
+
+/// Delete one bookmark (panel trash), then refresh the list + the ribbon.
+fn reader_bookmark_remove(weak: slint::Weak<MainWindow>, id: i64) {
+    let (book_id, pos) = READER.with(|r| {
+        let r = r.borrow();
+        (r.book_id, r.pos)
+    });
+    if book_id == 0 {
+        return;
+    }
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("books").await else { return };
+        let _ = progress::remove_bookmark(&pool, id).await;
+        let on = progress::is_bookmarked(&pool, book_id, pos as i64).await.unwrap_or(false);
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_books_reader_bookmarked(on);
+            reader_load_bookmarks(w.as_weak());
+        });
     });
 }
 
@@ -2337,7 +2767,12 @@ fn annot_rows(annots: &[Annotation], pages: &[Page]) -> Vec<AnnotRow> {
         .iter()
         .map(|a| AnnotRow {
             id: a.id as i32,
-            page: paginate::page_at_offset(pages, a.start_off as usize) as i32 + 1,
+            // Fixed-page books (no paginated text) key notes by stored page.
+            page: if pages.is_empty() {
+                a.page as i32
+            } else {
+                paginate::page_at_offset(pages, a.start_off as usize) as i32 + 1
+            },
             snippet: a.snippet.clone().into(),
             note: a.note.clone().into(),
         })
@@ -2360,9 +2795,13 @@ fn reader_load_notes(weak: slint::Weak<MainWindow>) {
                 let mut r = r.borrow_mut();
                 r.annots = list;
                 let pos = r.pos;
-                let has = r.annots.iter().any(|a| {
-                    paginate::page_at_offset(&r.pages, a.start_off as usize) == pos
-                });
+                let has = if r.is_image {
+                    r.annots.iter().any(|a| a.page == pos as i64 + 1 || a.page == pos as i64 + 2)
+                } else {
+                    r.annots.iter().any(|a| {
+                        paginate::page_at_offset(&r.pages, a.start_off as usize) == pos
+                    })
+                };
                 (annot_rows(&r.annots, &r.pages), has)
             });
             w.set_books_reader_notes(VecModel::from_slice(&rows));
@@ -2376,6 +2815,11 @@ fn reader_load_notes(weak: slint::Weak<MainWindow>) {
 fn reader_annot_add(weak: slint::Weak<MainWindow>) {
     let snap = READER.with(|r| {
         let r = r.borrow();
+        // Fixed-page books: whole-page note keyed by raster page number.
+        if r.is_image {
+            return (r.img_total > 0)
+                .then(|| (r.book_id, r.pos as i64 + 1, 0, format!("Page {}", r.pos + 1)));
+        }
         if r.pages.is_empty() {
             return None;
         }
@@ -2470,6 +2914,10 @@ fn reader_search(weak: slint::Weak<MainWindow>, query: String) {
         w.set_books_reader_search_results(VecModel::from_slice(&[]));
         return;
     }
+    // Fixed-page books search their pdftotext-extracted page texts.
+    if READER.with(|r| r.borrow().is_image) {
+        return reader_search_image(weak, q);
+    }
     let rows: Vec<SearchRow> = READER.with(|r| {
         r.borrow()
             .pages
@@ -2487,6 +2935,170 @@ fn reader_search(weak: slint::Weak<MainWindow>, query: String) {
             .collect()
     });
     w.set_books_reader_search_results(VecModel::from_slice(&rows));
+}
+
+/// In-book search for fixed-page books: extract per-page text with pdftotext
+/// (once per book, cached in `ReaderState.img_text`), then scan like the
+/// reflow path. Comics (CBZ/CBR) carry no text → empty results.
+fn reader_search_image(weak: slint::Weak<MainWindow>, q: String) {
+    fn scan(pages: &[String], q: &str) -> Vec<SearchRow> {
+        pages
+            .iter()
+            .enumerate()
+            .filter_map(|(i, t)| {
+                let hay = t.to_lowercase();
+                let pos = hay.find(q)?;
+                Some(SearchRow {
+                    page: i as i32 + 1,
+                    snippet: search_snippet(&hay, pos, q.len()).into(),
+                })
+            })
+            .take(200)
+            .collect()
+    }
+    // Cached text → scan in place (cloning the whole multi-MB Vec on every
+    // keystroke was the old behavior).
+    if READER.with(|r| !r.borrow().img_text.is_empty()) {
+        if let Some(w) = weak.upgrade() {
+            let rows = READER.with(|r| scan(&r.borrow().img_text, &q));
+            w.set_books_reader_search_results(VecModel::from_slice(&rows));
+        }
+        return;
+    }
+    let (path, format) = READER.with(|r| {
+        let r = r.borrow();
+        (r.img_path.clone(), r.img_format.clone())
+    });
+    if format != "pdf" {
+        if let Some(w) = weak.upgrade() {
+            w.set_books_reader_search_results(VecModel::from_slice(&[]));
+        }
+        return;
+    }
+    // First search of this book: extract per-page text off-thread, cache it.
+    tokio::runtime::Handle::current().spawn(async move {
+        let pages = tokio::task::spawn_blocking(move || pdf_page_texts(&path))
+            .await
+            .unwrap_or_default();
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            let rows = scan(&pages, &q);
+            READER.with(|r| r.borrow_mut().img_text = pages);
+            w.set_books_reader_search_results(VecModel::from_slice(&rows));
+        });
+    });
+}
+
+/// Whole-document text split per page (pdftotext form-feed separators).
+fn pdf_page_texts(path: &std::path::Path) -> Vec<String> {
+    match std::process::Command::new("pdftotext")
+        .args(["-upw", "", "-layout"])
+        .arg(path)
+        .arg("-")
+        .output()
+    {
+        Ok(o) if o.status.success() => String::from_utf8_lossy(&o.stdout)
+            .split('\u{c}')
+            .map(|s| s.to_string())
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// After a search-result jump: PDF pages get real word-box highlights
+/// (pdftotext -bbox, normalised to the page size); reflow books flash the
+/// matched snippet in an accent banner (Slint Text can't style substrings).
+fn search_highlight(weak: slint::Weak<MainWindow>, query: String, page: usize) {
+    let q = query.trim().to_lowercase();
+    if q.is_empty() {
+        return;
+    }
+    let snap = READER.with(|r| {
+        let r = r.borrow();
+        if r.is_image {
+            (r.img_format == "pdf").then(|| (true, r.img_path.clone(), r.pos, String::new()))
+        } else {
+            r.pages.get(page).map(|p| (false, std::path::PathBuf::new(), r.pos, p.text.clone()))
+        }
+    });
+    let Some((image, path, pos, text)) = snap else { return };
+    if image {
+        let right = page != pos; // target rendered as the spread's right page
+        tokio::runtime::Handle::current().spawn(async move {
+            let rects = tokio::task::spawn_blocking(move || pdf_word_boxes(&path, page, &q))
+                .await
+                .unwrap_or_default();
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                let rows: Vec<HlRect> = rects
+                    .into_iter()
+                    .map(|(x, y, wd, h)| HlRect { x, y, w: wd, h, right })
+                    .collect();
+                w.set_books_reader_search_hl(VecModel::from_slice(&rows));
+            });
+        });
+    } else if let Some(w) = weak.upgrade() {
+        // Flash pill on the mockup: pre · match · post around the first hit
+        // (lower-cased haystack keeps byte offsets consistent with the find),
+        // anchored to the hit's page half + rough vertical position.
+        let hay = text.to_lowercase();
+        let Some(bp) = hay.find(&q) else { return };
+        let pre_start =
+            hay[..bp].char_indices().rev().take(28).last().map(|(i, _)| i).unwrap_or(0);
+        let end = (bp + q.len()).min(hay.len());
+        let post_end =
+            hay[end..].char_indices().take(36).last().map(|(i, _)| end + i).unwrap_or(hay.len());
+        w.set_books_reader_flash_right(page != pos);
+        w.set_books_reader_flash_frac((bp as f32 / hay.len().max(1) as f32).clamp(0.0, 1.0));
+        w.set_books_reader_flash_word("".into()); // retrigger the banner timer
+        w.set_books_reader_flash_pre(hay[pre_start..bp].replace('\n', " ").into());
+        w.set_books_reader_flash_post(hay[end..post_end].replace('\n', " ").into());
+        w.set_books_reader_flash_word(hay[bp..end].replace('\n', " ").into());
+    }
+}
+
+/// Bounding boxes (normalised 0‥1: x, y, w, h) of words containing `q`'s
+/// first token on 0-based `page` — via `pdftotext -bbox`.
+fn pdf_word_boxes(path: &std::path::Path, page: usize, q: &str) -> Vec<(f32, f32, f32, f32)> {
+    let Some(q1) = q.split_whitespace().next() else { return Vec::new() };
+    let n = (page + 1).to_string();
+    let Ok(out) = std::process::Command::new("pdftotext")
+        .args(["-upw", "", "-bbox", "-f", &n, "-l", &n])
+        .arg(path)
+        .arg("-")
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    let xml = String::from_utf8_lossy(&out.stdout);
+    let attr = |line: &str, key: &str| -> Option<f32> {
+        let i = line.find(key)? + key.len();
+        line[i..].split('"').nth(1)?.parse().ok()
+    };
+    let (mut pw, mut ph) = (0f32, 0f32);
+    let mut rects = Vec::new();
+    for line in xml.lines() {
+        let t = line.trim();
+        if t.starts_with("<page") {
+            pw = attr(t, "width=").unwrap_or(0.0);
+            ph = attr(t, "height=").unwrap_or(0.0);
+        } else if t.starts_with("<word") && pw > 0.0 && ph > 0.0 {
+            let word = t.split('>').nth(1).unwrap_or("").split('<').next().unwrap_or("");
+            if !word.to_lowercase().contains(q1) {
+                continue;
+            }
+            if let (Some(x0), Some(y0), Some(x1), Some(y1)) =
+                (attr(t, "xMin="), attr(t, "yMin="), attr(t, "xMax="), attr(t, "yMax="))
+            {
+                rects.push((x0 / pw, y0 / ph, (x1 - x0) / pw, (y1 - y0) / ph));
+            }
+            if rects.len() >= 100 {
+                break;
+            }
+        }
+    }
+    rects
 }
 
 /// ~30 chars of context on each side of a byte-offset match, on char
@@ -2529,14 +3141,69 @@ fn reader_step_font(weak: slint::Weak<MainWindow>, delta: f32) {
     reader_repaginate(&w, w.as_weak());
 }
 
+/// Rebuild the Contents rows keeping only labels containing `q` (lowercased);
+/// empty query restores the full list. Works for both ebooks and PDF outlines.
+fn push_toc_filtered(w: &MainWindow, q: &str) {
+    READER.with(|r| {
+        let r = r.borrow();
+        let cur = if r.is_image {
+            r.toc
+                .iter()
+                .rev()
+                .find(|t| t.chapter >= 0 && (t.chapter as usize) <= r.pos)
+                .map(|t| t.chapter)
+                .unwrap_or(-1)
+        } else {
+            r.pages
+                .get(r.pos.min(r.pages.len().saturating_sub(1)))
+                .map(|p| p.chapter as i32)
+                .unwrap_or(-1)
+        };
+        let rows: Vec<TocRow> = r
+            .toc
+            .iter()
+            .filter(|t| q.is_empty() || t.label.to_lowercase().contains(q))
+            .map(|t| TocRow {
+                label: t.label.clone().into(),
+                page: if r.is_image {
+                    t.chapter + 1
+                } else {
+                    paginate::page_of_chapter(&r.pages, t.chapter.max(0) as usize) as i32 + 1
+                },
+                depth: t.depth,
+                chapter: t.chapter,
+                active: t.chapter == cur,
+            })
+            .collect();
+        w.set_books_reader_toc(Rc::new(VecModel::from(rows)).into());
+    });
+}
+
+/// Remember the current view mode (single/odd/even) for the open book.
+fn save_reader_view() {
+    let book_id = READER.with(|r| r.borrow().book_id);
+    if book_id == 0 {
+        return;
+    }
+    let view: i64 = if SINGLE.with(|c| c.get()) {
+        2
+    } else if SPREAD.with(|c| c.get()) == 2 {
+        1
+    } else {
+        0
+    };
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = pool_for("books").await {
+            let _ = library::set_reader_view(&pool, book_id, view).await;
+        }
+    });
+}
+
 /// Save the current position and fold the elapsed reading burst into
 /// `time_read_secs`; restarts the session clock so time isn't double-counted.
 fn persist_progress() {
     let snap = READER.with(|r| {
         let mut r = r.borrow_mut();
-        if r.pages.is_empty() {
-            return None;
-        }
         // Fold the reading burst into total time — but cap it: a gap longer than
         // IDLE_CAP means the reader sat open unattended, not active reading.
         const IDLE_CAP: i64 = 300; // 5 min
@@ -2545,6 +3212,17 @@ fn persist_progress() {
             .replace(std::time::Instant::now())
             .map(|t| (t.elapsed().as_secs() as i64).min(IDLE_CAP))
             .unwrap_or(0);
+        // Fixed-page books: position is page-keyed (no char offset). This used
+        // to early-return, so PDFs/comics never accumulated reading time.
+        if r.is_image {
+            if r.img_total == 0 {
+                return None;
+            }
+            return Some((r.book_id, r.pos as i64, r.img_total as i64, 0, secs));
+        }
+        if r.pages.is_empty() {
+            return None;
+        }
         let pos = r.pos.min(r.pages.len() - 1);
         Some((
             r.book_id,

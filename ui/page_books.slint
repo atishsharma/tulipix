@@ -646,16 +646,26 @@ component GridTile inherits Rectangle {
                 format: tile.format; title: tile.title; author: tile.author; hue: tile.hue;
             }
         }
-        // 55% — three rows: title · author · publication date.
+        // 55% — three rows: title (accent) · author (link-blue, underlined,
+        // → author page) · publication date (amber).
         VerticalLayout {
-            alignment: center; spacing: 3px; horizontal-stretch: 1;
-            Text { text: tile.title; color: BookTheme.ink; font-size: 15px;
+            alignment: center; spacing: 4px; horizontal-stretch: 1;
+            Text { text: tile.title; color: BookTheme.accent; font-size: 16px;
                 font-weight: 800; overflow: elide; }
-            Text { text: tile.author; color: BookTheme.ink-dim; font-size: 12px;
-                font-weight: 600; overflow: elide;
-                TouchArea { mouse-cursor: pointer; clicked => { root.open-author(); } } }
+            HorizontalLayout {
+                alignment: start;
+                Rectangle {
+                    VerticalLayout {
+                        spacing: 1px;
+                        Text { text: tile.author; color: #3a86ff; font-size: 13px;
+                            font-weight: 700; overflow: elide; }
+                        Rectangle { height: 1px; background: #3a86ff.with-alpha(0.7); }
+                    }
+                    TouchArea { mouse-cursor: pointer; clicked => { root.open-author(); } }
+                }
+            }
             Text { text: "Publication : " + (tile.date != "" ? tile.date : "—");
-                color: BookTheme.ink-dim; font-size: 11px; }
+                color: #f5a623; font-size: 12px; font-weight: 600; }
         }
         // 30% — rating pill, then file type · ⊕ · ♥ · ⋮.
         VerticalLayout {
@@ -833,6 +843,8 @@ export component BooksPage inherits Rectangle {
     callback add-books();
     callback open-details(int);
     callback toggle-favorite(int);
+    callback toggle-magazine(int);
+    callback toggle-rtl(int);
     callback card-menu-action(int, string);
     // Context-menu actions + Trash.
     callback open-location(int);
@@ -882,6 +894,12 @@ export component BooksPage inherits Rectangle {
     in property <image> detail-book-hero;
     in property <image> detail-book-hero-dark;
     in-out property <bool> detail-favorite: false;
+    // Treat-as-magazine toggle (PDF only): hides the reader's in-book search.
+    in-out property <bool> detail-magazine: false;
+    // Manga right-to-left page order (CBZ/CBR only).
+    in-out property <bool> detail-rtl: false;
+    // "3h 12m" total time read; empty when never opened.
+    in property <string> detail-time-read: "";
     in property <color> detail-hue: #6c4df6;
     in property <string> detail-format: "";
     in property <string> detail-genre: "";
@@ -1608,6 +1626,8 @@ export component BooksPage inherits Rectangle {
                         + (root.detail-added != "" ? "  ·  " + root.detail-added : "");
                     color: BookTheme.ink-dim; font-size: 12px; wrap: word-wrap;
                 }
+                if root.detail-time-read != "": Text { text: "Time read: " + root.detail-time-read;
+                    color: BookTheme.accent; font-size: 12px; font-weight: 700; }
                 Text { text: "Publication Date : " + (root.detail-published != "" ? root.detail-published : "—");
                     color: BookTheme.ink-dim; font-size: 12px; }
                 if root.detail-series != "": Text { text: "Series: " + root.detail-series;
@@ -1639,6 +1659,39 @@ export component BooksPage inherits Rectangle {
                                 root.detail-favorite = !root.detail-favorite;
                                 root.toggle-favorite(root.detail-id); } }
                     }
+                    // Treat-as-magazine toggle (PDF only) — hides the reader's
+                    // in-book search for scanned/layout PDFs.
+                    if root.detail-format == "PDF": VerticalLayout { alignment: center;
+                        Rectangle {
+                            height: 26px; border-radius: 13px;
+                            background: root.detail-magazine ? #f5a623 : #f5a623.with-alpha(dmta.has-hover ? 0.28 : 0.12);
+                            border-width: 1px; border-color: #f5a623.with-alpha(0.5);
+                            HorizontalLayout { padding-left: 10px; padding-right: 10px; alignment: center;
+                                Text { text: root.detail-magazine ? "✓ Magazine" : "Magazine";
+                                    color: root.detail-magazine ? #ffffff : #cf8a12;
+                                    font-size: 11px; font-weight: 700; vertical-alignment: center; } }
+                            dmta := TouchArea { mouse-cursor: pointer;
+                                clicked => {
+                                    root.detail-magazine = !root.detail-magazine;
+                                    root.toggle-magazine(root.detail-id);
+                                } }
+                        } }
+                    // Manga right-to-left toggle (comics only).
+                    if root.detail-format == "CBZ" || root.detail-format == "CBR": VerticalLayout { alignment: center;
+                        Rectangle {
+                            height: 26px; border-radius: 13px;
+                            background: root.detail-rtl ? #e0518f : #e0518f.with-alpha(drta.has-hover ? 0.28 : 0.12);
+                            border-width: 1px; border-color: #e0518f.with-alpha(0.5);
+                            HorizontalLayout { padding-left: 10px; padding-right: 10px; alignment: center;
+                                Text { text: root.detail-rtl ? "✓ RTL" : "RTL";
+                                    color: root.detail-rtl ? #ffffff : #e0518f;
+                                    font-size: 11px; font-weight: 700; vertical-alignment: center; } }
+                            drta := TouchArea { mouse-cursor: pointer;
+                                clicked => {
+                                    root.detail-rtl = !root.detail-rtl;
+                                    root.toggle-rtl(root.detail-id);
+                                } }
+                        } }
                     // Fetched average rating (read-only) — detail popup only.
                     if root.detail-net-rating > 0: VerticalLayout { alignment: center;
                         Rectangle { height: 22px; border-radius: 11px; background: #f5a623.with-alpha(0.16);

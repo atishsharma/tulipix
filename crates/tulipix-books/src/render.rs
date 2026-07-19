@@ -55,12 +55,33 @@ fn cbr_pages(path: &Path) -> Result<Vec<String>> {
         .context("cannot list CBR (need unrar or bsdtar)")
 }
 
+/// Archive page listings are expensive (full zip scan, or an `unrar` process)
+/// and used to re-run on every page render — memoize per book path.
+static ARCHIVE_NAMES: std::sync::OnceLock<
+    std::sync::Mutex<std::collections::HashMap<PathBuf, Vec<String>>>,
+> = std::sync::OnceLock::new();
+
+fn archive_pages(path: &Path, format: &str) -> Result<Vec<String>> {
+    let cache = ARCHIVE_NAMES.get_or_init(Default::default);
+    if let Some(v) = cache.lock().ok().and_then(|m| m.get(path).cloned()) {
+        return Ok(v);
+    }
+    let names = match format {
+        "cbz" => cbz_pages(path)?,
+        "cbr" => cbr_pages(path)?,
+        _ => bail!("not an archive format: {format}"),
+    };
+    if let Ok(mut m) = cache.lock() {
+        m.insert(path.to_path_buf(), names.clone());
+    }
+    Ok(names)
+}
+
 /// Total fixed pages for pdf/cbz/cbr.
 pub fn page_count(path: &Path, format: &str) -> Result<usize> {
     match format {
         "pdf" => pdf_page_count(path),
-        "cbz" => Ok(cbz_pages(path)?.len()),
-        "cbr" => Ok(cbr_pages(path)?.len()),
+        "cbz" | "cbr" => Ok(archive_pages(path, format)?.len()),
         _ => bail!("not a fixed-page format: {format}"),
     }
 }
@@ -118,7 +139,16 @@ pub fn page_image(path: &Path, format: &str, idx: usize) -> Result<PathBuf> {
 /// 150-DPI page and a zoomed 300-DPI page coexist.
 pub fn page_image_dpi(path: &Path, format: &str, idx: usize, dpi: u32) -> Result<PathBuf> {
     let dir = pages_dir(path)?;
-    let cached = dir.join(format!("{idx:05}@{dpi}.png"));
+    // Comics keep the source entry's extension (a webp stored as ".png" relies
+    // on the decoder sniffing content); PDFs always rasterise to PNG.
+    let cached = if format == "pdf" {
+        dir.join(format!("{idx:05}@{dpi}.png"))
+    } else {
+        let names = archive_pages(path, format)?;
+        let name = names.get(idx).context("page out of range")?;
+        let ext = name.rsplit('.').next().unwrap_or("png").to_ascii_lowercase();
+        dir.join(format!("{idx:05}@{dpi}.{ext}"))
+    };
     if cached.exists() {
         return Ok(cached);
     }
@@ -152,7 +182,7 @@ pub fn page_image_dpi(path: &Path, format: &str, idx: usize, dpi: u32) -> Result
             Ok(cached)
         }
         "cbz" => {
-            let names = cbz_pages(path)?;
+            let names = archive_pages(path, format)?;
             let name = names.get(idx).context("page out of range")?;
             let f = std::fs::File::open(path)?;
             let mut z = zip::ZipArchive::new(f)?;
@@ -163,7 +193,7 @@ pub fn page_image_dpi(path: &Path, format: &str, idx: usize, dpi: u32) -> Result
             Ok(cached)
         }
         "cbr" => {
-            let names = cbr_pages(path)?;
+            let names = archive_pages(path, format)?;
             let name = names.get(idx).context("page out of range")?;
             let ok = Command::new("unrar")
                 .args(["p", "-inul"])
@@ -189,6 +219,28 @@ pub fn page_image_dpi(path: &Path, format: &str, idx: usize, dpi: u32) -> Result
         }
         _ => bail!("not a fixed-page format: {format}"),
     }
+}
+
+/// Inverted (night) variant of a rendered page, for the dark/OLED reading
+/// themes — cached next to the day render. Falls back to the caller on any
+/// decode failure (e.g. webp comics: the image crate here only has jpeg/png).
+pub fn page_image_night(path: &Path, format: &str, idx: usize) -> Result<PathBuf> {
+    let day = page_image(path, format, idx)?;
+    let night = day.with_file_name(format!(
+        "{}.night.png",
+        day.file_stem().and_then(|s| s.to_str()).unwrap_or("page")
+    ));
+    if night.exists() {
+        return Ok(night);
+    }
+    let mut img = image::open(&day)?.into_rgba8();
+    for p in img.pixels_mut() {
+        p.0[0] = 255 - p.0[0];
+        p.0[1] = 255 - p.0[1];
+        p.0[2] = 255 - p.0[2];
+    }
+    img.save(&night)?;
+    Ok(night)
 }
 
 /// Prune the rendered-page cache to at most `cap_bytes`, deleting whole

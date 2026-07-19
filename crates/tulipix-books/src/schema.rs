@@ -135,6 +135,14 @@ pub async fn apply(pool: &SqlitePool) -> Result<()> {
         "ALTER TABLE books ADD COLUMN orig_path TEXT NOT NULL DEFAULT ''",
         // P6: fetched average rating (0 = unknown); shown in the detail popup.
         "ALTER TABLE books ADD COLUMN net_rating REAL NOT NULL DEFAULT 0",
+        // Treat-as-magazine flag (detail popup toggle): hides the reader's
+        // in-book search for PDFs whose text layer is useless.
+        "ALTER TABLE books ADD COLUMN magazine INTEGER NOT NULL DEFAULT 0",
+        // rtl predates some DBs (it's in CREATE, but older tables may lack it).
+        "ALTER TABLE books ADD COLUMN rtl INTEGER NOT NULL DEFAULT 0",
+        // Per-book reader view: -1 unset · 0 odd spreads · 1 even spreads ·
+        // 2 single page. Remembered across sessions.
+        "ALTER TABLE books ADD COLUMN reader_view INTEGER NOT NULL DEFAULT -1",
     ] {
         let _ = sqlx::query(alter).execute(pool).await;
     }

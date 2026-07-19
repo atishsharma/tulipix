@@ -126,6 +126,21 @@ fn main() -> Result<()> {
         #[cfg(all(not(feature = "renderer-skia"), feature = "renderer-femtovg"))]
         unsafe { std::env::set_var("SLINT_BACKEND", "winit-femtovg"); }
     }
+    // Desktop environments export GTK_MODULES=appmenu-gtk-module; the GTK file
+    // dialogs (rfd) then print "Failed to load module appmenu-gtk-module" when
+    // the module isn't installed. Strip it before anything touches GTK.
+    if let Ok(m) = std::env::var("GTK_MODULES") {
+        let kept: Vec<&str> =
+            m.split(':').filter(|s| !s.is_empty() && !s.contains("appmenu-gtk-module")).collect();
+        // Safety: top of main, before any threads spawn.
+        unsafe {
+            if kept.is_empty() {
+                std::env::remove_var("GTK_MODULES");
+            } else {
+                std::env::set_var("GTK_MODULES", kept.join(":"));
+            }
+        }
+    }
     tracing_subscriber::fmt()
         .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
         .init();

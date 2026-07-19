@@ -48,6 +48,23 @@ pub fn load(path: &Path) -> Result<Vec<TocEntry>> {
     Ok(Vec::new())
 }
 
+/// PDF outline (document bookmarks) → TOC entries. `chapter` carries the
+/// 0-based PAGE index (fixed-page books have no spine); empty when the PDF
+/// has no outline or lopdf can't parse it.
+pub fn pdf_outline(path: &Path) -> Vec<TocEntry> {
+    let Ok(doc) = lopdf::Document::load(path) else { return Vec::new() };
+    let Ok(toc) = doc.get_toc() else { return Vec::new() };
+    toc.toc
+        .into_iter()
+        .filter(|e| !e.title.trim().is_empty())
+        .map(|e| TocEntry {
+            label: e.title,
+            depth: (e.level as i32 - 1).max(0),
+            chapter: (e.page as i32 - 1).max(0),
+        })
+        .collect()
+}
+
 fn chapter_of(spine: &[String], resolved: &str) -> i32 {
     spine.iter().position(|s| s == resolved).map(|i| i as i32).unwrap_or(-1)
 }

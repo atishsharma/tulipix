@@ -34,7 +34,7 @@ import { ChatOverlay, ChatTurn } from "chat_overlay.slint";
 import { Gated, GateMode } from "gated.slint";
 import { HomePage, HomeStats, HomeRemote, HomeContinue } from "page_home.slint";
 import { BooksPage, BookTile, BooksHero, BookStat, BookChip, CollChip, CollRow, StatBookRow } from "page_books.slint";
-import { BookReader, TocRow, BookmarkRow, SearchRow, AnnotRow } from "book_reader.slint";
+import { BookReader, TocRow, BookmarkRow, SearchRow, AnnotRow, HlRect } from "book_reader.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
 import { AppIcon, Icons } from "icons.slint";
@@ -1002,6 +1002,11 @@ export component MainWindow inherits Window {
     callback books-hero-details();
     callback books-open-details(int);
     callback books-toggle-favorite(int);
+    callback books-toggle-magazine(int);
+    in-out property <bool> books-detail-magazine: false;
+    callback books-toggle-rtl(int);
+    in-out property <bool> books-detail-rtl: false;
+    in-out property <string> books-detail-time-read: "";
     callback books-card-menu(int, string);
     callback books-set-file-type(string);
     callback books-set-sort(string);
@@ -1044,9 +1049,15 @@ export component MainWindow inherits Window {
     in-out property <[TocRow]> books-reader-toc: [];
     in-out property <string> books-reader-search-query;
     in-out property <[SearchRow]> books-reader-search-results: [];
+    in-out property <bool> books-reader-search-enabled: true;
+    in-out property <[BookmarkRow]> books-reader-bookmarks: [];
     in-out property <[AnnotRow]> books-reader-notes: [];
     in-out property <string> books-reader-theme: "light";
     in-out property <string> books-reader-full-text: "";
+    in-out property <string> books-reader-full-heading: "";
+    in-out property <bool> books-reader-full-has-next: false;
+    // Per-book remembered view (engine sets on open; user toggle syncs back).
+    in-out property <bool> books-reader-force-single: false;
     in-out property <bool> books-reader-tts-open: false;
     in-out property <[string]> books-reader-tts-sentences: [];
     in-out property <int> books-reader-tts-active: 0;
@@ -1056,10 +1067,21 @@ export component MainWindow inherits Window {
     in-out property <string> books-reader-tts-voice: "";
     in-out property <bool> books-reader-loading: false;
     in-out property <string> books-reader-error: "";
+    // PDF spread mode: 1 odd spreads (1·2, 3·4…) · 2 even (cover, 2·3…).
+    in-out property <int> books-reader-spread-mode: 1;
+    // Search highlights (PDF word boxes) + ebook search flash banner.
+    in-out property <[HlRect]> books-reader-search-hl: [];
+    in-out property <string> books-reader-flash-pre: "";
+    in-out property <string> books-reader-flash-word: "";
+    in-out property <string> books-reader-flash-post: "";
+    in-out property <float> books-reader-flash-frac: 0;
+    in-out property <bool> books-reader-flash-right: false;
+    // Within-chapter scroll fraction for the continuous single-page column.
+    in-out property <float> books-reader-full-frac: 0;
     // Define-a-word popup (R2).
     in-out property <bool> books-reader-define-open: false;
     in-out property <string> books-reader-define-word: "";
-    in-out property <string> books-reader-define-lang: "es";
+    in-out property <string> books-reader-define-lang: "hi";
     in-out property <bool> books-reader-define-loading: false;
     in-out property <string> books-reader-define-definition: "";
     in-out property <string> books-reader-define-pos: "";
@@ -1070,6 +1092,10 @@ export component MainWindow inherits Window {
     callback books-reader-prev-spread();
     callback books-reader-next-spread();
     callback books-reader-toggle-bookmark();
+    callback books-reader-bookmarks-load();
+    callback books-reader-bookmark-jump(int);
+    callback books-reader-bookmark-remove(int);
+    callback books-reader-set-font-scale(float);
     callback books-reader-annotate();
     callback books-reader-annot-add();
     callback books-reader-annot-jump(int);
@@ -1090,10 +1116,13 @@ export component MainWindow inherits Window {
     callback books-reader-more-mark-finished();
     callback books-reader-more-remove();
     callback books-reader-jump-chapter(int);
+    callback books-reader-contents-filter(string);
     callback books-reader-scrub(int);
     callback books-reader-prev-page();
     callback books-reader-next-page();
     callback books-reader-set-single(bool);
+    callback books-reader-set-spread(int);
+    callback books-reader-search-jump(int);
     callback books-reader-report-geom(length, length);
     callback books-reader-define-run(string, string);
     callback books-open-url(string);
@@ -3188,6 +3217,8 @@ callback cloud-go-home();
                 add-books => { root.pick-folder(); }
                 open-details(id) => { root.books-open-details(id); }
                 toggle-favorite(id) => { root.books-toggle-favorite(id); }
+                toggle-magazine(id) => { root.books-toggle-magazine(id); }
+                toggle-rtl(id) => { root.books-toggle-rtl(id); }
                 card-menu-action(id, a) => { root.books-card-menu(id, a); }
                 set-file-type(k) => { root.books-set-file-type(k); }
                 set-sort(s) => { root.books-set-sort(s); }
@@ -3207,6 +3238,9 @@ callback cloud-go-home();
                 detail-book-hero: root.books-detail-book-hero;
                 detail-book-hero-dark: root.books-detail-book-hero-dark;
                 detail-favorite <=> root.books-detail-favorite;
+                detail-magazine <=> root.books-detail-magazine;
+                detail-rtl <=> root.books-detail-rtl;
+                detail-time-read: root.books-detail-time-read;
                 detail-hue: root.books-detail-hue;
                 detail-format: root.books-detail-format;
                 detail-genre: root.books-detail-genre;
@@ -3415,6 +3449,18 @@ callback cloud-go-home();
         toc: root.books-reader-toc;
         search-query <=> root.books-reader-search-query;
         search-results: root.books-reader-search-results;
+        search-hl: root.books-reader-search-hl;
+        search-enabled: root.books-reader-search-enabled;
+        bookmarks: root.books-reader-bookmarks;
+        flash-pre: root.books-reader-flash-pre;
+        flash-word: root.books-reader-flash-word;
+        flash-post: root.books-reader-flash-post;
+        flash-frac: root.books-reader-flash-frac;
+        flash-right: root.books-reader-flash-right;
+        full-heading: root.books-reader-full-heading;
+        full-has-next: root.books-reader-full-has-next;
+        full-frac: root.books-reader-full-frac;
+        force-single <=> root.books-reader-force-single;
         notes: root.books-reader-notes;
         theme-mode: root.books-reader-theme;
         full-text: root.books-reader-full-text;
@@ -3439,6 +3485,10 @@ callback cloud-go-home();
         prev-spread => { root.books-reader-prev-spread(); }
         next-spread => { root.books-reader-next-spread(); }
         toggle-bookmark => { root.books-reader-toggle-bookmark(); }
+        bookmarks-load => { root.books-reader-bookmarks-load(); }
+        bookmark-jump(p) => { root.books-reader-bookmark-jump(p); }
+        bookmark-remove(id) => { root.books-reader-bookmark-remove(id); }
+        set-font-scale(z) => { root.books-reader-set-font-scale(z); }
         annotate => { root.books-reader-annotate(); }
         annot-add => { root.books-reader-annot-add(); }
         annot-jump(id) => { root.books-reader-annot-jump(id); }
@@ -3446,6 +3496,7 @@ callback cloud-go-home();
         annot-remove(id) => { root.books-reader-annot-remove(id); }
         annot-export => { root.books-reader-annot-export(); }
         search-run(t) => { root.books-reader-search-run(t); }
+        search-jump(p) => { root.books-reader-search-jump(p); }
         font-dec => { root.books-reader-font-dec(); }
         font-inc => { root.books-reader-font-inc(); }
         set-line-spacing(i) => { root.books-reader-set-line-spacing(i); }
@@ -3459,10 +3510,13 @@ callback cloud-go-home();
         more-mark-finished => { root.books-reader-more-mark-finished(); }
         more-remove => { root.books-reader-more-remove(); }
         jump-chapter(i) => { root.books-reader-jump-chapter(i); }
+        contents-filter-changed(t) => { root.books-reader-contents-filter(t); }
         scrub(p) => { root.books-reader-scrub(p); }
         prev-page => { root.books-reader-prev-page(); }
         next-page => { root.books-reader-next-page(); }
         set-single(s) => { root.books-reader-set-single(s); }
+        spread-mode <=> root.books-reader-spread-mode;
+        set-spread(m) => { root.books-reader-set-spread(m); }
         report-geom(w, h) => { root.books-reader-report-geom(w, h); }
         tts-start => { root.books-reader-tts-start(); }
         tts-stop => { root.books-reader-tts-stop(); }
