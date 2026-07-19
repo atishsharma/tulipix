@@ -25,6 +25,9 @@ slint.workspace = true
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true
+# Reader page decode: rasterised pages are decoded on a blocking worker and
+# handed to the UI thread as a SharedPixelBuffer (slint::Image isn't Send).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 tulipix-ui = { path = "../tulipix-ui" }
 tulipix-common = { path = "../tulipix-common" }

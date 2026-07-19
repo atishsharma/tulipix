@@ -97,7 +97,9 @@ pub struct Filter {
     pub sort: Sort,
 }
 
-pub async fn list(pool: &SqlitePool, f: &Filter) -> Result<Vec<BookRow>> {
+/// Build the shared `FROM … WHERE …` tail for a filter, plus its bind values.
+/// Both the count and the page query run off this so they can never disagree.
+fn where_tail(f: &Filter) -> (String, Vec<String>) {
     // The "missing" status surfaces broken-path books (so the grid badge can
     // render + user can relink); every other view hides them.
     // Trash is its own view; missing surfaces broken paths; everything else
@@ -108,12 +110,7 @@ pub async fn list(pool: &SqlitePool, f: &Filter) -> Result<Vec<BookRow>> {
         _ => "b.missing = 0 AND b.trashed = 0",
     };
     let mut sql = format!(
-        "SELECT b.id, b.path, b.format, b.title, b.author, b.genre, b.series,
-                b.cover_path, b.size_bytes, b.added_at, b.finished, b.favorite, b.missing,
-                b.rating, b.summary, b.summary_fetched_at, b.published, b.net_rating, b.trashed,
-                COALESCE(p.percent, 0.0) AS percent,
-                COALESCE(p.updated_at, 0) AS last_read
-         FROM books b LEFT JOIN progress p ON p.book_id = b.id
+        "FROM books b LEFT JOIN progress p ON p.book_id = b.id
          WHERE {base_clause}",
     );
     let mut binds: Vec<String> = Vec::new();
@@ -161,13 +158,42 @@ pub async fn list(pool: &SqlitePool, f: &Filter) -> Result<Vec<BookRow>> {
         binds.push(like.clone());
         binds.push(like);
     }
-    sql.push_str(" ORDER BY ");
-    sql.push_str(f.sort.sql());
+    (sql, binds)
+}
+
+/// One page of the filtered library, plus the unpaged total (for the pager).
+/// Paging happens in SQL — the grid shows 6 tiles, so fetching the whole table
+/// and slicing in Rust meant a full scan per pager click.
+pub async fn list_page(
+    pool: &SqlitePool,
+    f: &Filter,
+    limit: i64,
+    offset: i64,
+) -> Result<(Vec<BookRow>, i64)> {
+    let (tail, binds) = where_tail(f);
+
+    let count_sql = format!("SELECT COUNT(*) {tail}");
+    let mut count_q = sqlx::query_scalar::<_, i64>(&count_sql);
+    for b in &binds {
+        count_q = count_q.bind(b);
+    }
+    let total: i64 = count_q.fetch_one(pool).await?;
+
+    let sql = format!(
+        "SELECT b.id, b.path, b.format, b.title, b.author, b.genre, b.series,
+                b.cover_path, b.size_bytes, b.added_at, b.finished, b.favorite, b.missing,
+                b.rating, b.summary, b.summary_fetched_at, b.published, b.net_rating, b.trashed,
+                COALESCE(p.percent, 0.0) AS percent,
+                COALESCE(p.updated_at, 0) AS last_read
+         {tail} ORDER BY {} LIMIT ? OFFSET ?",
+        f.sort.sql(),
+    );
     let mut q = sqlx::query_as::<_, BookRow>(&sql);
     for b in &binds {
         q = q.bind(b);
     }
-    Ok(q.fetch_all(pool).await?)
+    let rows = q.bind(limit).bind(offset.max(0)).fetch_all(pool).await?;
+    Ok((rows, total))
 }
 
 pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<BookRow>> {
@@ -185,6 +211,96 @@ pub async fn get(pool: &SqlitePool, id: i64) -> Result<Option<BookRow>> {
     .bind(id)
     .fetch_optional(pool)
     .await?)
+}
+
+/// One run of a natural-order sort key: digit runs compare as numbers, the
+/// rest case-insensitively as text.
+#[derive(PartialEq, Eq, PartialOrd, Ord)]
+enum NatPart {
+    Num(u64),
+    Text(String),
+}
+
+/// Split a title into a natural-order key, so "Vol. 2" sorts before "Vol. 10"
+/// (plain lexicographic order gets series volumes backwards past 9).
+fn natural_key(s: &str) -> Vec<NatPart> {
+    let mut out = Vec::new();
+    let mut it = s.chars().peekable();
+    while let Some(&c) = it.peek() {
+        if c.is_ascii_digit() {
+            let mut n = String::new();
+            while let Some(&d) = it.peek() {
+                if !d.is_ascii_digit() {
+                    break;
+                }
+                n.push(d);
+                it.next();
+            }
+            // A run too long for u64 sorts last rather than panicking.
+            out.push(NatPart::Num(n.parse().unwrap_or(u64::MAX)));
+        } else {
+            let mut t = String::new();
+            while let Some(&d) = it.peek() {
+                if d.is_ascii_digit() {
+                    break;
+                }
+                t.extend(d.to_lowercase());
+                it.next();
+            }
+            out.push(NatPart::Text(t));
+        }
+    }
+    out
+}
+
+/// The next book of the same series after `id`, in natural volume order.
+/// Prefers the first unfinished entry; if every later volume is finished,
+/// returns the immediate successor (a deliberate re-read). `None` when the
+/// book has no series or is the last entry.
+pub async fn next_in_series(pool: &SqlitePool, id: i64) -> Result<Option<BookRow>> {
+    let Some(cur) = get(pool, id).await? else { return Ok(None) };
+    if cur.series.trim().is_empty() {
+        return Ok(None);
+    }
+    let mut rows: Vec<BookRow> = sqlx::query_as(
+        "SELECT b.id, b.path, b.format, b.title, b.author, b.genre, b.series,
+                b.cover_path, b.size_bytes, b.added_at, b.finished, b.favorite, b.missing,
+                b.rating, b.summary, b.summary_fetched_at, b.published, b.net_rating, b.trashed,
+                COALESCE(p.percent, 0.0) AS percent,
+                COALESCE(p.updated_at, 0) AS last_read
+         FROM books b LEFT JOIN progress p ON p.book_id = b.id
+         WHERE b.series = ? AND b.missing = 0 AND b.trashed = 0",
+    )
+    .bind(&cur.series)
+    .fetch_all(pool)
+    .await?;
+    rows.sort_by(|a, b| natural_key(&a.title).cmp(&natural_key(&b.title)));
+    let Some(i) = rows.iter().position(|b| b.id == id) else { return Ok(None) };
+    let rest: Vec<BookRow> = rows.into_iter().skip(i + 1).collect();
+    Ok(rest
+        .iter()
+        .find(|b| b.finished == 0)
+        .cloned()
+        .or_else(|| rest.into_iter().next()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::natural_key;
+
+    #[test]
+    fn volumes_sort_numerically_not_lexicographically() {
+        let mut v = vec!["Berserk Vol. 10", "Berserk Vol. 2", "Berserk Vol. 1"];
+        v.sort_by(|a, b| natural_key(a).cmp(&natural_key(b)));
+        assert_eq!(v, ["Berserk Vol. 1", "Berserk Vol. 2", "Berserk Vol. 10"]);
+    }
+
+    #[test]
+    fn ordering_is_case_insensitive_and_handles_bare_numbers() {
+        let mut v = vec!["c03", "C1", "c20", "c2"];
+        v.sort_by(|a, b| natural_key(a).cmp(&natural_key(b)));
+        assert_eq!(v, ["C1", "c2", "c03", "c20"]);
+    }
 }
 
 /// Set a book's local rating (0–5 stars; 0 = unrated).
@@ -401,6 +517,19 @@ pub async fn cover_paths(pool: &SqlitePool) -> Result<Vec<String>> {
     )
 }
 
+/// Repoint books at re-encoded cover files (the one-shot PNG→JPEG flat-cover
+/// migration). Pairs are `(old_path, new_path)`.
+pub async fn repoint_covers(pool: &SqlitePool, pairs: &[(String, String)]) -> Result<()> {
+    for (old, new) in pairs {
+        sqlx::query("UPDATE books SET cover_path = ? WHERE cover_path = ?")
+            .bind(new)
+            .bind(old)
+            .execute(pool)
+            .await?;
+    }
+    Ok(())
+}
+
 /// Books with no extracted cover art — input for the placeholder-cover bake
 /// (path, title, author).
 pub async fn coverless_books(pool: &SqlitePool) -> Result<Vec<(String, String, String)>> {
@@ -498,15 +627,158 @@ pub async fn book_collections(pool: &SqlitePool, book_id: i64) -> Result<Vec<i64
         .await?)
 }
 
+// ── smart collections (saved filters) ─────────────────────────────────────────
+
+/// Save the current view as a named smart collection. Unlike a collection,
+/// this stores the *filter*, so its membership tracks the library.
+pub async fn smart_create(pool: &SqlitePool, name: &str, f: &Filter) -> Result<i64> {
+    let name = name.trim();
+    anyhow::ensure!(!name.is_empty(), "empty smart collection name");
+    let r = sqlx::query(
+        "INSERT INTO smart_collections
+            (name, format, status, author, genre, series, query, sort, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+    )
+    .bind(name)
+    .bind(&f.format)
+    .bind(&f.status)
+    .bind(&f.author)
+    .bind(&f.genre)
+    .bind(&f.series)
+    .bind(&f.query)
+    .bind(f.sort as i64)
+    .bind(crate::schema::now())
+    .execute(pool)
+    .await?;
+    Ok(r.last_insert_rowid())
+}
+
+/// Every smart collection as `(id, name, filter)`.
+pub async fn smart_list(pool: &SqlitePool) -> Result<Vec<(i64, String, Filter)>> {
+    let rows: Vec<(i64, String, String, String, String, String, String, String, i64)> =
+        sqlx::query_as(
+            "SELECT id, name, format, status, author, genre, series, query, sort
+             FROM smart_collections ORDER BY name COLLATE NOCASE",
+        )
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, format, status, author, genre, series, query, sort)| {
+            (
+                id,
+                name,
+                Filter {
+                    format,
+                    status,
+                    author,
+                    genre,
+                    series,
+                    query,
+                    sort: Sort::from_index(sort as usize),
+                    ..Default::default()
+                },
+            )
+        })
+        .collect())
+}
+
+pub async fn smart_delete(pool: &SqlitePool, id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM smart_collections WHERE id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+// ── duplicate detection ───────────────────────────────────────────────────────
+
+/// Collapse a title/author to a comparison key: case, punctuation, articles and
+/// spacing all vary between sources for what is plainly the same book.
+fn dup_key(title: &str, author: &str) -> String {
+    let norm = |s: &str| -> String {
+        let lower = s.to_lowercase();
+        let mut out: String = lower
+            .chars()
+            .map(|c| if c.is_alphanumeric() { c } else { ' ' })
+            .collect::<String>()
+            .split_whitespace()
+            .filter(|w| !matches!(*w, "the" | "a" | "an"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        out.truncate(80);
+        out
+    };
+    format!("{}|{}", norm(title), norm(author))
+}
+
+/// Ids of books that have at least one duplicate.
+///
+/// Two signals, unioned: the same normalised title+author (the same book from
+/// two sources, possibly in different formats), and the same size+format (the
+/// literal same file filed twice). Size alone is not enough — plenty of
+/// distinct books share a byte count.
+pub async fn duplicate_ids(pool: &SqlitePool) -> Result<Vec<i64>> {
+    let rows: Vec<(i64, String, String, i64, String)> = sqlx::query_as(
+        "SELECT id, title, author, size_bytes, format FROM books
+         WHERE missing = 0 AND trashed = 0",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut by_name: std::collections::HashMap<String, Vec<i64>> = std::collections::HashMap::new();
+    let mut by_file: std::collections::HashMap<(i64, String), Vec<i64>> =
+        std::collections::HashMap::new();
+    for (id, title, author, size, format) in rows {
+        let key = dup_key(&title, &author);
+        if !key.trim_matches('|').trim().is_empty() {
+            by_name.entry(key).or_default().push(id);
+        }
+        if size > 0 {
+            by_file.entry((size, format)).or_default().push(id);
+        }
+    }
+    let mut ids: std::collections::BTreeSet<i64> = std::collections::BTreeSet::new();
+    for group in by_name.values().chain(by_file.values()) {
+        if group.len() > 1 {
+            ids.extend(group);
+        }
+    }
+    Ok(ids.into_iter().collect())
+}
+
+#[cfg(test)]
+mod dup_tests {
+    use super::dup_key;
+
+    #[test]
+    fn same_book_different_punctuation_matches() {
+        assert_eq!(
+            dup_key("The Hobbit", "J.R.R. Tolkien"),
+            dup_key("hobbit", "J R R  Tolkien")
+        );
+    }
+
+    #[test]
+    fn different_books_do_not_match() {
+        assert_ne!(dup_key("Dune", "Herbert"), dup_key("Dune Messiah", "Herbert"));
+        assert_ne!(dup_key("Dune", "Herbert"), dup_key("Dune", "Someone Else"));
+    }
+}
+
 // ── full-text search (contents) ───────────────────────────────────────────────
 
 /// Index (or re-index) a book's full text for library-wide search. Cheap when
 /// the text is already in hand (e.g. on open). Replaces any prior rows.
 pub async fn fts_index(pool: &SqlitePool, book_id: i64, body: &str) -> Result<()> {
-    sqlx::query("DELETE FROM book_fts WHERE CAST(book_id AS INTEGER) = ?")
-        .bind(book_id)
-        .execute(pool)
-        .await?;
+    // Only pay for the delete scan when there's actually a row to remove —
+    // on a first index (the common case) this skips it entirely.
+    if fts_has(pool, book_id).await.unwrap_or(false) {
+        sqlx::query("DELETE FROM book_fts WHERE CAST(book_id AS INTEGER) = ?")
+            .bind(book_id)
+            .execute(pool)
+            .await?;
+    }
     if !body.trim().is_empty() {
         sqlx::query("INSERT INTO book_fts (body, book_id) VALUES (?, ?)")
             .bind(body)
@@ -514,18 +786,31 @@ pub async fn fts_index(pool: &SqlitePool, book_id: i64, body: &str) -> Result<()
             .execute(pool)
             .await?;
     }
+    // The flag means "we have processed this book", not "it produced a row" —
+    // otherwise a book with no extractable text would be retried on every
+    // scan, forever.
+    fts_mark(pool, book_id, true).await
+}
+
+/// Record whether a book has been through content indexing.
+pub async fn fts_mark(pool: &SqlitePool, book_id: i64, indexed: bool) -> Result<()> {
+    sqlx::query("UPDATE books SET fts_indexed = ? WHERE id = ?")
+        .bind(i64::from(indexed))
+        .bind(book_id)
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
-/// Is a book already indexed for content search?
+/// Is a book already indexed for content search? Reads the flag on `books`,
+/// not the FTS table — see `fts_indexed` in the schema for why that matters.
 pub async fn fts_has(pool: &SqlitePool, book_id: i64) -> Result<bool> {
-    let n: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM book_fts WHERE CAST(book_id AS INTEGER) = ?",
-    )
-    .bind(book_id)
-    .fetch_one(pool)
-    .await?;
-    Ok(n > 0)
+    let n: i64 = sqlx::query_scalar("SELECT fts_indexed FROM books WHERE id = ?")
+        .bind(book_id)
+        .fetch_optional(pool)
+        .await?
+        .unwrap_or(0);
+    Ok(n != 0)
 }
 
 /// Book ids whose contents match `query` (FTS5 MATCH). Empty query → empty.

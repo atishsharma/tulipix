@@ -115,7 +115,18 @@ pub fn attr(tag_body: &str, name: &str) -> Option<String> {
 pub fn tag_text(xml: &str, tag: &str) -> Option<String> {
     let open = format!("<{tag}");
     let close = format!("</{tag}");
-    let i = xml.find(&open)?;
+    // The tag name has to actually end here: `<Series` must not match
+    // `<SeriesGroup>` (both are real ComicInfo fields, and either can come
+    // first). Same boundary rule `tags()` already applies.
+    let mut base = 0usize;
+    let i = loop {
+        let at = base + xml[base..].find(&open)?;
+        let next = xml[at + open.len()..].chars().next();
+        if matches!(next, Some(c) if c.is_whitespace() || c == '>' || c == '/') {
+            break at;
+        }
+        base = at + open.len();
+    };
     let after = &xml[i..];
     let gt = after.find('>')?;
     let body = &after[gt + 1..];
@@ -133,7 +144,17 @@ pub fn unescape(s: &str) -> String {
     while let Some(i) = rest.find('&') {
         out.push_str(&rest[..i]);
         rest = &rest[i..];
-        let Some(semi) = rest[..rest.len().min(12)].find(';') else {
+        // Entity names are short, so only scan a little way for the closing
+        // ';' — otherwise a bare '&' in prose swallows the rest of the text.
+        // The window is counted in CHARS, not bytes: slicing a byte window can
+        // land inside a multi-byte character and panic (an '&' followed by a
+        // typographic quote is enough to do it).
+        let Some(semi) = rest
+            .char_indices()
+            .take(12)
+            .find(|&(_, c)| c == ';')
+            .map(|(i, _)| i)
+        else {
             out.push('&');
             rest = &rest[1..];
             continue;
@@ -290,6 +311,63 @@ pub fn open(path: &Path) -> Result<EpubDoc> {
     Ok(EpubDoc { opf_dir, opf, spine, manifest })
 }
 
+/// Is this a fixed-layout (pre-paginated) EPUB?
+///
+/// Manga and nearly all magazines sold as EPUB are pre-paginated: each spine
+/// document is a single full-page image, not reflowable prose. Running those
+/// through the paginator produces garbage, so they take the image reader
+/// instead.
+///
+/// Three spellings occur in the wild: an EPUB 3 `<meta property=…>` carrying
+/// the value as element *text*, an EPUB 2 style `<meta name=… content=…/>`,
+/// and a per-spine `properties="rendition:layout-pre-paginated"`.
+pub fn is_fixed_layout(opf: &str) -> bool {
+    if !opf.contains("pre-paginated") {
+        return false;
+    }
+    // Per-spine override — unambiguous on its own.
+    if opf.contains("rendition:layout-pre-paginated") {
+        return true;
+    }
+    // Book-level: the value sits close to the property name, whichever of the
+    // two shapes is used. Windowed by CHARS (never bytes — see `unescape`).
+    match opf.find("rendition:layout") {
+        Some(i) => opf[i..].chars().take(120).collect::<String>().contains("pre-paginated"),
+        None => false,
+    }
+}
+
+/// Zip paths of a fixed-layout EPUB's page images, in spine order — the page
+/// list for the image reader. Spine documents that carry no image are skipped
+/// rather than producing a blank page.
+pub fn fixed_layout_pages(path: &Path) -> Result<Vec<String>> {
+    let doc = open(path)?;
+    let mut z = zip_open(path)?;
+    let mut out = Vec::new();
+    for href in &doc.spine {
+        let Some(html) = zip_string(&mut z, href) else { continue };
+        let dir = match href.rfind('/') {
+            Some(i) => href[..i].to_string(),
+            None => String::new(),
+        };
+        // `<img src>`, or an SVG wrapper's `<image xlink:href>` (the other
+        // common packaging). `attr` requires a whitespace boundary, so plain
+        // "href" can't accidentally match "xlink:href" — try it explicitly.
+        let src = tags(&html, "img")
+            .iter()
+            .find_map(|t| attr(t, "src"))
+            .or_else(|| {
+                tags(&html, "image")
+                    .iter()
+                    .find_map(|t| attr(t, "xlink:href").or_else(|| attr(t, "href")))
+            });
+        if let Some(s) = src {
+            out.push(resolve(&dir, &s));
+        }
+    }
+    Ok(out)
+}
+
 /// Load every spine chapter as plain text.
 pub fn load_chapters(path: &Path) -> Result<Vec<Chapter>> {
     let doc = open(path)?;
@@ -319,6 +397,20 @@ mod tests {
         assert_eq!(attr(t[0], "href").as_deref(), Some("ch1.xhtml"));
         assert_eq!(attr(t[0], "id").as_deref(), Some("a"));
         assert_eq!(resolve("OEBPS/text", "../images/a.png"), "OEBPS/images/a.png");
+    }
+
+    #[test]
+    fn unescape_survives_multibyte_after_bare_ampersand() {
+        // Regression: the entity scan used to slice a fixed 12-BYTE window,
+        // which panics when byte 12 lands inside a multi-byte char. A bare
+        // '&' followed by typographic punctuation is all it takes.
+        assert_eq!(unescape("Tom & Jerry’s day"), "Tom & Jerry’s day");
+        assert_eq!(unescape("&’’’’’’’’’’’’"), "&’’’’’’’’’’’’");
+        assert_eq!(unescape("a & — – … b"), "a & — – … b");
+        // Real entities still decode, including numeric ones.
+        assert_eq!(unescape("A&amp;B &#8217;s &#x2014; end"), "A&B ’s — end");
+        // An unterminated entity-looking run is passed through, not eaten.
+        assert_eq!(unescape("&notarealentityname; x"), "&notarealentityname; x");
     }
 
     #[test]

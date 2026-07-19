@@ -12,26 +12,98 @@ fn cover_path_for(book_path: &Path) -> Result<PathBuf> {
     let root = crate::cache_dir().context("no cache dir")?;
     let d = root.join("covers");
     std::fs::create_dir_all(&d)?;
-    Ok(d.join(format!("{}.png", crate::short_hash(&book_path.display().to_string()))))
+    Ok(d.join(format!("{}.jpg", crate::short_hash(&book_path.display().to_string()))))
 }
 
-/// Extract (or reuse) the cover for a book. Returns the cached PNG path,
+/// Extract (or reuse) the cover for a book. Returns the cached JPEG path,
 /// or Err when the format yields no image.
+///
+/// Flat covers are JPEG (photographic art, no alpha needed) — the baked
+/// renditions stay PNG because the mockup warp needs the alpha channel.
+/// Pre-existing `.png` flats are still served: their absolute path lives in
+/// `books.cover_path` and `baked_path` keys off the file stem either way.
 pub fn extract(book_path: &Path, format: &str) -> Result<PathBuf> {
     let out = cover_path_for(book_path)?;
     if out.exists() {
         return Ok(out);
     }
+    // A cover extracted before the JPEG switch is still perfectly good.
+    let legacy = out.with_extension("png");
+    if legacy.exists() {
+        return Ok(legacy);
+    }
     let bytes = match format {
         "epub" => epub_cover_bytes(book_path)?,
-        "pdf" | "cbz" | "cbr" => render::first_page_bytes(book_path, format)?,
+        f if crate::is_fixed_page(f) => render::first_page_bytes(book_path, format)?,
         "mobi" | "azw3" => mobi_cover_bytes(book_path)?,
+        // FB2 embeds its cover as base64 in a <binary> element.
+        "fb2" => {
+            let xml = crate::fb2::read_xml(book_path)?;
+            crate::fb2::cover_bytes(&xml).context("fb2 has no coverpage")?
+        }
         _ => anyhow::bail!("unknown format {format}"),
     };
     let img = image::load_from_memory(&bytes).context("decode cover")?;
     let img = img.thumbnail(MAX_EDGE, MAX_EDGE * 2);
-    img.save(&out).context("save cover png")?;
+    // to_rgb8: JPEG has no alpha channel to encode.
+    image::DynamicImage::from(img.to_rgb8()).save(&out).context("save cover jpeg")?;
     Ok(out)
+}
+
+/// One-shot migration of a legacy PNG flat cover to JPEG, in place. Returns
+/// the new path, or `None` when there's nothing to do.
+///
+/// This re-encodes the already-extracted ≤480px art — it never re-opens the
+/// book, so it costs a decode + encode per cover rather than a full format
+/// parse. Baked renditions key off the file *stem*, which doesn't change, so
+/// they survive untouched. Callers must write the returned path back to
+/// `books.cover_path`.
+pub fn migrate_flat_to_jpeg(flat: &Path) -> Option<PathBuf> {
+    if flat.extension().and_then(|e| e.to_str()) != Some("png") {
+        return None;
+    }
+    // Generated placeholders stay PNG: `placeholder_path` hardcodes the
+    // `_ph2.png` name, and flat gradient art encodes smaller as PNG anyway.
+    let stem = flat.file_stem()?.to_str()?;
+    if stem.ends_with("_ph2") || stem.contains("_book") || stem.contains("_hero") {
+        return None;
+    }
+    let jpg = flat.with_extension("jpg");
+    if jpg.exists() {
+        // A previous run converted it; just drop the leftover PNG.
+        let _ = std::fs::remove_file(flat);
+        return Some(jpg);
+    }
+    let img = image::open(flat).ok()?;
+    image::DynamicImage::from(img.to_rgb8()).save(&jpg).ok()?;
+    let _ = std::fs::remove_file(flat);
+    Some(jpg)
+}
+
+/// Drop every cached image derived from a book (flat cover, generated
+/// placeholder, and all baked renditions of both). Used when the file changed
+/// on disk — the cache is keyed by the book's path, which did not change, so
+/// stale art would otherwise be served forever.
+pub fn purge_cached(book_path: &Path) {
+    let mut flats: Vec<PathBuf> = Vec::new();
+    if let Ok(p) = cover_path_for(book_path) {
+        flats.push(p.with_extension("png")); // pre-JPEG covers
+        flats.push(p);
+    }
+    flats.push(placeholder_path(book_path));
+    for flat in flats {
+        for suffix in [BOOK_SUFFIX, HERO_SUFFIX, HERO_DARK_SUFFIX] {
+            let _ = std::fs::remove_file(baked_path(&flat, suffix));
+        }
+        let _ = std::fs::remove_file(&flat);
+    }
+    // Rasterised pages of the old file are wrong too.
+    if let Some(root) = crate::cache_dir() {
+        let dir = root
+            .join("pages")
+            .join(crate::short_hash(&book_path.display().to_string()));
+        let _ = std::fs::remove_dir_all(dir);
+    }
 }
 
 // ── 3D bake: warp the flat cover onto blank-book mockups ──────────────────────
@@ -117,11 +189,24 @@ fn warp_onto(
             if cx < 0 || cy < 0 || cx >= cw as i64 || cy >= ch as i64 {
                 continue;
             }
-            let sp = src.get_pixel(
-                ((u * (sw - 1) as f32) as u32).min(sw - 1),
-                ((v * (sh - 1) as f32) as u32).min(sh - 1),
-            );
-            let mut px = *sp;
+            // Bilinear sample: the quad shrinks the art (a 500px-wide cover
+            // onto a ~500px tilted face), so nearest-neighbour visibly
+            // aliased fine cover type and thin rules.
+            let fx = u * (sw - 1) as f32;
+            let fy = v * (sh - 1) as f32;
+            let x0 = (fx.floor() as u32).min(sw - 1);
+            let y0 = (fy.floor() as u32).min(sh - 1);
+            let x1 = (x0 + 1).min(sw - 1);
+            let y1 = (y0 + 1).min(sh - 1);
+            let (tx, ty) = (fx - x0 as f32, fy - y0 as f32);
+            let (p00, p10) = (src.get_pixel(x0, y0), src.get_pixel(x1, y0));
+            let (p01, p11) = (src.get_pixel(x0, y1), src.get_pixel(x1, y1));
+            let mut px = image::Rgba([0u8; 4]);
+            for c in 0..4 {
+                let top = p00[c] as f32 * (1.0 - tx) + p10[c] as f32 * tx;
+                let bot = p01[c] as f32 * (1.0 - tx) + p11[c] as f32 * tx;
+                px[c] = (top * (1.0 - ty) + bot * ty).round() as u8;
+            }
             if let Some(fr) = shade {
                 let f = fr.get_pixel(cx as u32, cy as u32);
                 let lum = (f[0] as f32 * 0.299 + f[1] as f32 * 0.587 + f[2] as f32 * 0.114)

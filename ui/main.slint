@@ -34,7 +34,7 @@ import { ChatOverlay, ChatTurn } from "chat_overlay.slint";
 import { Gated, GateMode } from "gated.slint";
 import { HomePage, HomeStats, HomeRemote, HomeContinue } from "page_home.slint";
 import { BooksPage, BookTile, BooksHero, BookStat, BookChip, CollChip, CollRow, StatBookRow } from "page_books.slint";
-import { BookReader, TocRow, BookmarkRow, SearchRow, AnnotRow, HlRect } from "book_reader.slint";
+import { BookReader, TocRow, BookmarkRow, SearchRow, AnnotRow, HlRect, ThumbRow } from "book_reader.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
 import { AppIcon, Icons } from "icons.slint";
@@ -954,6 +954,8 @@ export component MainWindow inherits Window {
     in-out property <int> books-active-collection: 0;
     in-out property <[BookChip]> books-series: [];
     in-out property <[CollChip]> books-collections: [];
+    // Smart collections — saved filters, membership stays live.
+    in-out property <[CollChip]> books-smart: [];
     in-out property <bool> books-search-contents: false;
     in-out property <[CollRow]> books-detail-collections: [];
     in-out property <bool> books-stats-open: false;
@@ -969,6 +971,9 @@ export component MainWindow inherits Window {
     callback books-collection-create(string);
     callback books-collection-delete(int);
     callback books-collection-toggle(int, int);
+    callback books-smart-create(string);
+    callback books-smart-delete(int);
+    callback books-smart-apply(int);
     callback books-set-search-contents(bool);
     callback books-open-stats();
     // Book detail popup (R1).
@@ -1020,6 +1025,16 @@ export component MainWindow inherits Window {
     // Book Reader overlay state (np.p8.books.reader).
     in-out property <bool> books-reader-open: false;
     in-out property <string> books-reader-title;
+    // Next volume of the open book's series ("" = none / not in a series).
+    in-out property <string> books-reader-next-title;
+    // Long-strip comic (webtoon): fit width, scroll vertically.
+    in-out property <bool> books-reader-webtoon: false;
+    // Crop uniform margins off rasterised pages.
+    in-out property <bool> books-reader-trim: false;
+    // Page-thumbnail navigator (fixed-page books only).
+    in-out property <bool> books-reader-thumbs-open: false;
+    in-out property <[ThumbRow]> books-reader-thumbs: [];
+    in-out property <int> books-reader-thumb-total: 0;
     in-out property <string> books-reader-author;
     in-out property <string> books-reader-left-text;
     in-out property <string> books-reader-right-text;
@@ -1089,6 +1104,14 @@ export component MainWindow inherits Window {
     in-out property <string> books-reader-define-wiki: "";
     in-out property <string> books-reader-define-wiki-url: "";
     callback books-reader-back();
+    // Open the next volume in the current book's series.
+    callback books-reader-open-next();
+    // Thumbnail panel opened → start rendering page previews.
+    callback books-reader-thumbs-load();
+    // Toggle margin trimming on rasterised pages.
+    callback books-reader-set-trim(bool);
+    // Deep zoom wants the current page re-rasterised at N× base DPI.
+    callback books-reader-want-dpi(int);
     callback books-reader-prev-spread();
     callback books-reader-next-spread();
     callback books-reader-toggle-bookmark();
@@ -3259,6 +3282,7 @@ callback cloud-go-home();
                 active-collection: root.books-active-collection;
                 series: root.books-series;
                 collections: root.books-collections;
+                smart: root.books-smart;
                 search-contents <=> root.books-search-contents;
                 detail-collections: root.books-detail-collections;
                 stats-open <=> root.books-stats-open;
@@ -3274,6 +3298,9 @@ callback cloud-go-home();
                 collection-create(cname) => { root.books-collection-create(cname); }
                 collection-delete(cid) => { root.books-collection-delete(cid); }
                 collection-toggle(bid, cid) => { root.books-collection-toggle(bid, cid); }
+                smart-create(sname) => { root.books-smart-create(sname); }
+                smart-delete(sid) => { root.books-smart-delete(sid); }
+                smart-apply(sid) => { root.books-smart-apply(sid); }
                 set-search-contents(on) => { root.books-set-search-contents(on); }
                 open-stats => { root.books-open-stats(); }
             }
@@ -3427,6 +3454,17 @@ callback cloud-go-home();
     if root.books-reader-open: BookReader {
         width: 100%; height: 100%;
         title: root.books-reader-title; author: root.books-reader-author;
+        next-title: root.books-reader-next-title;
+        open-next => { root.books-reader-open-next(); }
+        webtoon: root.books-reader-webtoon;
+        trim: root.books-reader-trim;
+        set-trim(v) => { root.books-reader-set-trim(v); }
+        want-dpi(t) => { root.books-reader-want-dpi(t); }
+        thumbs-open <=> root.books-reader-thumbs-open;
+        thumbs: root.books-reader-thumbs;
+        thumb-total: root.books-reader-thumb-total;
+        thumbs-requested => { root.books-reader-thumbs-load(); }
+        thumb-jump(p) => { root.books-reader-scrub(p); }
         left-text: root.books-reader-left-text; right-text: root.books-reader-right-text;
         left-heading: root.books-reader-left-heading; right-heading: root.books-reader-right-heading;
         image-mode: root.books-reader-image-mode;

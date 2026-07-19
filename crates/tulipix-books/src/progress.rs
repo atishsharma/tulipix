@@ -59,11 +59,23 @@ pub async fn save(
     .bind(now())
     .execute(pool)
     .await?;
-    if total_pages > 0 && page + 1 >= total_pages {
-        sqlx::query("UPDATE books SET finished = 1 WHERE id = ?")
-            .bind(book_id)
-            .execute(pool)
-            .await?;
+    // Track the flag in both directions — re-reading used to leave a book stuck
+    // in "Finished" forever. Un-finishing needs a real move back into the book
+    // (below 90%), not just any position before the last page: flipping back
+    // through the closing pages of a book you just finished shouldn't knock it
+    // out of Finished.
+    if total_pages > 0 {
+        if page + 1 >= total_pages {
+            sqlx::query("UPDATE books SET finished = 1 WHERE id = ? AND finished = 0")
+                .bind(book_id)
+                .execute(pool)
+                .await?;
+        } else if percent < 90.0 {
+            sqlx::query("UPDATE books SET finished = 0 WHERE id = ? AND finished = 1")
+                .bind(book_id)
+                .execute(pool)
+                .await?;
+        }
     }
     Ok(())
 }

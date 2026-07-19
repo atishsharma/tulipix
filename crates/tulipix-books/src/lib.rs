@@ -7,8 +7,11 @@
 //! CBZ/CBR (comic page images), MOBI/AZW3 (text extract via `mobi`).
 
 pub mod annotations;
+pub mod calibre;
+pub mod comicinfo;
 pub mod covers;
 pub mod epub;
+pub mod fb2;
 pub mod home;
 pub mod kokoro;
 pub mod library;
@@ -43,12 +46,28 @@ pub fn format_of(path: &std::path::Path) -> Option<&'static str> {
     match ext.as_str() {
         "epub" => Some("epub"),
         "pdf"  => Some("pdf"),
+        "djvu" | "djv" => Some("djvu"),
         "cbz"  => Some("cbz"),
         "cbr"  => Some("cbr"),
+        "cb7"  => Some("cb7"),
+        "cbt"  => Some("cbt"),
+        "fb2"  => Some("fb2"),
         "mobi" => Some("mobi"),
         "azw3" | "azw" => Some("azw3"),
+        // "<name>.fb2.zip" — the usual distribution form for FictionBook.
+        "zip" => path
+            .file_stem()
+            .and_then(|s| s.to_str())
+            .filter(|s| s.to_ascii_lowercase().ends_with(".fb2"))
+            .map(|_| "fb2"),
         _ => None,
     }
+}
+
+/// Is this a fixed-page (rasterised) format? Those take the image reader
+/// rather than the reflow paginator.
+pub fn is_fixed_page(format: &str) -> bool {
+    matches!(format, "pdf" | "djvu" | "cbz" | "cbr" | "cb7" | "cbt")
 }
 
 /// Per-chapter plain text for a book, ready for [`paginate::paginate`].
@@ -68,6 +87,7 @@ pub fn book_text(path: &std::path::Path, format: &str) -> Vec<String> {
             .map(|m| vec![epub::html_to_text(&m.content_as_string_lossy())])
             .filter(|v| !v[0].trim().is_empty())
             .unwrap_or_default(),
+        "fb2" => book_chapters(path, format).into_iter().map(|(_, t)| t).collect(),
         _ => Vec::new(),
     }
 }
@@ -83,6 +103,7 @@ pub fn book_chapters(path: &std::path::Path, format: &str) -> Vec<(String, Strin
             .into_iter()
             .map(|c| (c.title, c.text))
             .collect(),
+        "fb2" => fb2::read_xml(path).map(|x| fb2::chapters(&x)).unwrap_or_default(),
         _ => book_text(path, format).into_iter().map(|t| (String::new(), t)).collect(),
     }
 }
@@ -102,8 +123,9 @@ pub fn short_hash(s: &str) -> String {
 }
 
 /// Decode a standard-base64 string (whitespace ignored). Small enough to avoid
-/// a base64 crate dependency — used only for the embedded hero art.
-fn b64_decode(s: &str) -> Vec<u8> {
+/// a base64 crate dependency — used for the embedded hero art and for FB2's
+/// inline `<binary>` images.
+pub(crate) fn b64_decode(s: &str) -> Vec<u8> {
     fn val(c: u8) -> Option<u8> {
         match c {
             b'A'..=b'Z' => Some(c - b'A'),

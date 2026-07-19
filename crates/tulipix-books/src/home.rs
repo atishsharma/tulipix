@@ -53,25 +53,12 @@ const ROW_SQL: &str =
             b.cover_path, b.size_bytes, b.added_at, b.finished, b.favorite, b.missing,
             b.rating, b.summary, b.summary_fetched_at,
             COALESCE(p.percent, 0.0) AS percent,
+            COALESCE(p.time_read_secs, 0) AS time_read,
             COALESCE(p.updated_at, 0) AS last_read
      FROM books b LEFT JOIN progress p ON p.book_id = b.id
      WHERE b.missing = 0 AND b.trashed = 0";
 
 pub async fn load(pool: &SqlitePool) -> Result<HomeData> {
-    let hero: Option<BookRow> = sqlx::query_as(&format!(
-        "{ROW_SQL} AND b.finished = 0 AND COALESCE(p.percent, 0) > 0
-         ORDER BY last_read DESC LIMIT 1"
-    ))
-    .fetch_optional(pool)
-    .await?;
-    let continue_reading = match hero {
-        Some(b) => {
-            let pos = crate::progress::get(pool, b.id).await?.unwrap_or_default();
-            Some((b, pos.page, pos.total_pages))
-        }
-        None => None,
-    };
-
     let recently_added: Vec<BookRow> = sqlx::query_as(&format!(
         "{ROW_SQL} ORDER BY b.added_at DESC LIMIT {SHELF}"
     ))
@@ -85,34 +72,47 @@ pub async fn load(pool: &SqlitePool) -> Result<HomeData> {
     .fetch_all(pool)
     .await?;
 
-    // Slider: page/total for the up-to-6 most recent in-progress books.
-    let mut slider = Vec::new();
-    for b in in_progress.iter().take(6) {
-        let pos = crate::progress::get(pool, b.id).await?.unwrap_or_default();
-        slider.push((b.clone(), pos.page, pos.total_pages));
+    // Slider: page/total for the up-to-6 most recent in-progress books, in one
+    // query instead of a `progress::get` per book.
+    let ids: Vec<i64> = in_progress.iter().take(6).map(|b| b.id).collect();
+    let mut pos_by_id: std::collections::HashMap<i64, (i64, i64)> =
+        std::collections::HashMap::new();
+    if !ids.is_empty() {
+        let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let rows: Vec<(i64, i64, i64)> = sqlx::query_as(&format!(
+            "SELECT book_id, page, total_pages FROM progress WHERE book_id IN ({list})"
+        ))
+        .fetch_all(pool)
+        .await?;
+        pos_by_id = rows.into_iter().map(|(id, p, t)| (id, (p, t))).collect();
     }
+    let slider: Vec<(BookRow, i64, i64)> = in_progress
+        .iter()
+        .take(6)
+        .map(|b| {
+            let (page, total) = pos_by_id.get(&b.id).copied().unwrap_or((0, 0));
+            (b.clone(), page, total)
+        })
+        .collect();
+    // The hero card is the most-recently-read in-progress book — which is
+    // exactly the first slider slide, so it needs no query of its own.
+    let continue_reading = slider.first().cloned();
 
-    let (total, finished): (i64, i64) = sqlx::query_as(
-        "SELECT COUNT(*), COALESCE(SUM(finished), 0) FROM books WHERE missing = 0 AND trashed = 0",
+    let month_start = month_start_epoch();
+    let (total, finished, authors, added_month): (i64, i64, i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*),
+                COALESCE(SUM(finished), 0),
+                COUNT(DISTINCT CASE WHEN author != '' THEN author END),
+                COALESCE(SUM(added_at >= ?), 0)
+         FROM books WHERE missing = 0 AND trashed = 0",
     )
-    .fetch_one(pool)
-    .await?;
-    let authors: i64 = sqlx::query_scalar(
-        "SELECT COUNT(DISTINCT author) FROM books WHERE missing = 0 AND trashed = 0 AND author != ''",
-    )
+    .bind(month_start)
     .fetch_one(pool)
     .await?;
     let secs: i64 =
         sqlx::query_scalar("SELECT COALESCE(SUM(time_read_secs), 0) FROM progress")
             .fetch_one(pool)
             .await?;
-    let month_start = month_start_epoch();
-    let added_month: i64 = sqlx::query_scalar(
-        "SELECT COUNT(*) FROM books WHERE missing = 0 AND trashed = 0 AND added_at >= ?",
-    )
-    .bind(month_start)
-    .fetch_one(pool)
-    .await?;
     let authors_month: i64 = sqlx::query_scalar(
         "SELECT COUNT(*) FROM (SELECT author FROM books
          WHERE missing = 0 AND trashed = 0 AND author != ''

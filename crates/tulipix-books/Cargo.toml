@@ -20,10 +20,13 @@ kokoro = ["dep:ort"]
 [dependencies]
 anyhow.workspace = true
 tokio = { workspace = true }
+tracing.workspace = true
 sqlx.workspace = true
 tulipix-core = { path = "../tulipix-core" }
 zip = { version = "2.4", default-features = false, features = ["deflate"] }
-image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp"] }
+# pnm: ddjvu's only portable raster output is PPM, transcoded on the way into
+# the page cache (see render.rs).
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "pnm"] }
 mobi = "0.8"
 sha2 = "0.10"
 # Placeholder-cover text raster (already in the tree via Slint's femtovg).

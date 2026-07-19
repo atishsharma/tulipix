@@ -195,6 +195,8 @@ component FilterChip inherits Rectangle {
 component EntryCard inherits Rectangle {
     in property <string> label;
     in property <int> count;
+    /// Shown instead of the count when `count` is negative.
+    in property <string> subtitle: "Saved view";
     in property <image> icon;
     in property <bool> deletable: false;
     callback clicked();
@@ -210,7 +212,10 @@ component EntryCard inherits Rectangle {
                 AppIcon { source: root.icon; tint: BookTheme.accent; width: 17px; height: 17px; } } }
         VerticalLayout { alignment: center; horizontal-stretch: 1;
             Text { text: root.label; color: BookTheme.ink; font-size: 14px; font-weight: 700; overflow: elide; }
-            Text { text: root.count + (root.count == 1 ? " book" : " books");
+            // count < 0 = "not counted" (a smart collection's membership is a
+            // live query, so there is no number to show without running it).
+            Text { text: root.count < 0 ? root.subtitle
+                    : root.count + (root.count == 1 ? " book" : " books");
                 color: BookTheme.ink-dim; font-size: 11px; } }
         if root.deletable: VerticalLayout { alignment: center;
             Rectangle { width: 30px; height: 30px; border-radius: 8px;
@@ -863,6 +868,11 @@ export component BooksPage inherits Rectangle {
     callback open-author(string);
     // Series / collections / content search / stats.
     callback series-filter(string);
+    // Smart collections — saved filters (see the collections panel).
+    in property <[CollChip]> smart: [];
+    callback smart-create(string);
+    callback smart-delete(int);
+    callback smart-apply(int);
     callback collection-filter(int);
     callback collection-create(string);
     callback collection-delete(int);
@@ -957,6 +967,14 @@ export component BooksPage inherits Rectangle {
                 border-width: 1.5px;
                 border-color: ti.has-focus ? BookTheme.accent.with-alpha(0.55) : BookTheme.hairline;
                 animate border-color { duration: 120ms; }
+                search-debounce := Timer {
+                    interval: 250ms;
+                    running: false;
+                    triggered => {
+                        search-debounce.running = false;
+                        root.search(root.search-text);
+                    }
+                }
                 HorizontalLayout {
                     padding-left: 16px; padding-right: 10px; spacing: 10px;
                     VerticalLayout { alignment: center;
@@ -972,8 +990,11 @@ export component BooksPage inherits Rectangle {
                             vertical-alignment: center;
                             color: BookTheme.ink; font-size: 14px; single-line: true;
                             text <=> root.search-text;
-                            edited => { root.search(self.text); }
-                            accepted => { root.search(self.text); }
+                            // Debounced: each search re-queries the library and
+                            // rebuilds the grid, so firing per keystroke made
+                            // typing lag. Enter still searches immediately.
+                            edited => { search-debounce.running = false; search-debounce.running = true; }
+                            accepted => { search-debounce.running = false; root.search(self.text); }
                         }
                     }
                     // × clear — wipes the query so the results vanish.
@@ -1426,6 +1447,36 @@ export component BooksPage inherits Rectangle {
                                 deletable: true;
                                 deleted => { root.collection-delete(c.id); } }
                             if root.collections.length == 0: Text { text: "No collections yet — create one above.";
+                                color: BookTheme.ink-dim; font-size: 13px; }
+
+                            // Smart collections: a saved *filter*, so new books
+                            // that match join it on their own.
+                            Text { text: "Smart collections"; color: BookTheme.ink;
+                                font-size: 15px; font-weight: 700; }
+                            Text {
+                                text: "Saves the current filters and search, not a fixed list — "
+                                    + "matching books are added automatically.";
+                                color: BookTheme.ink-dim; font-size: 12px; wrap: word-wrap; }
+                            HorizontalLayout { spacing: 8px;
+                                newsmart := LineEdit { placeholder-text: "Name this view…"; horizontal-stretch: 1;
+                                    accepted(t) => { root.smart-create(t); self.text = ""; } }
+                                Rectangle { width: 96px; height: 36px; border-radius: 10px;
+                                    background: smta.has-hover ? BookTheme.accent.with-alpha(0.85) : BookTheme.accent;
+                                    HorizontalLayout { alignment: center; spacing: 6px;
+                                        VerticalLayout { alignment: center;
+                                            AppIcon { source: Icons.bookmark; tint: #ffffff; width: 15px; height: 15px; } }
+                                        Text { text: "Save"; color: #ffffff; font-size: 13px; font-weight: 700;
+                                            vertical-alignment: center; } }
+                                    smta := TouchArea { mouse-cursor: pointer;
+                                        clicked => { root.smart-create(newsmart.text); newsmart.text = ""; } } }
+                            }
+                            for sc in root.smart: EntryCard {
+                                label: sc.name; count: sc.count; icon: Icons.search;
+                                clicked => { root.smart-apply(sc.id); root.panel = "library"; }
+                                deletable: true;
+                                deleted => { root.smart-delete(sc.id); } }
+                            if root.smart.length == 0: Text {
+                                text: "No smart collections yet — filter the library, then save the view.";
                                 color: BookTheme.ink-dim; font-size: 13px; }
                         }
                     }

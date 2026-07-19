@@ -9,20 +9,26 @@ pub mod mpv_ipc;
 pub mod player;
 use tulipix_core::proc::NoWindow;
 use std::path::PathBuf;
-use std::sync::OnceLock;
 
-static PHOTOS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
-static VIDEOS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
-static MUSIC_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
-static CLOUD_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
+/// Per-section pool slot. An *async* once-cell, not `OnceLock`: initialisation
+/// awaits (open + schema + migrations), and several tasks routinely race here
+/// at startup. With check-then-set, every racing caller opened its own pool and
+/// re-applied the whole schema — one library was seen running the same
+/// migration three times at once, fighting for the write lock.
+type PoolCell = tokio::sync::OnceCell<sqlx::SqlitePool>;
+
+static PHOTOS_POOL: PoolCell = PoolCell::const_new();
+static VIDEOS_POOL: PoolCell = PoolCell::const_new();
+static MUSIC_POOL:  PoolCell = PoolCell::const_new();
+static CLOUD_POOL:  PoolCell = PoolCell::const_new();
 // Music sub-sections split out of music.db (no items FK — self-contained).
-static PODCASTS_POOL: OnceLock<sqlx::SqlitePool> = OnceLock::new();
-static RADIO_POOL:    OnceLock<sqlx::SqlitePool> = OnceLock::new();
-static YOUTUBE_POOL:  OnceLock<sqlx::SqlitePool> = OnceLock::new();
+static PODCASTS_POOL: PoolCell = PoolCell::const_new();
+static RADIO_POOL:    PoolCell = PoolCell::const_new();
+static YOUTUBE_POOL:  PoolCell = PoolCell::const_new();
 // Tools job queue (tools.db) — shared by the GUI Tools section + CLI.
-static TOOLS_POOL:    OnceLock<sqlx::SqlitePool> = OnceLock::new();
+static TOOLS_POOL:    PoolCell = PoolCell::const_new();
 // Books library (books.db) — standalone, no items FK.
-static BOOKS_POOL:    OnceLock<sqlx::SqlitePool> = OnceLock::new();
+static BOOKS_POOL:    PoolCell = PoolCell::const_new();
 
 /// Open (or return the cached) SQLite pool for a section, applying its schema
 /// on first open. Both the GUI and CLI go through here so every front-end sees
@@ -40,7 +46,14 @@ pub async fn pool_for(section: &str) -> Result<sqlx::SqlitePool> {
         "books"    => &BOOKS_POOL,
         _ => anyhow::bail!("unknown section"),
     };
-    if let Some(p) = cache.get() { return Ok(p.clone()); }
+    // Exactly one initialiser runs, however many tasks arrive at once; the
+    // rest await its result instead of duplicating the work.
+    cache.get_or_try_init(|| build_pool(section)).await.cloned()
+}
+
+/// Open a section's DB and apply its schema + migrations. Called at most once
+/// per section — `pool_for` owns the caching.
+async fn build_pool(section: &str) -> Result<sqlx::SqlitePool> {
     let handle = tulipix_core::db::DbHandle::open(section)?;
     let pool = handle.init_pool().await?;
     match section {
@@ -95,7 +108,6 @@ pub async fn pool_for(section: &str) -> Result<sqlx::SqlitePool> {
         "books"  => tulipix_books::schema::apply(&pool).await?,
         _ => {}
     }
-    let _ = cache.set(pool.clone());
     Ok(pool)
 }
 

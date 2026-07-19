@@ -7436,6 +7436,7 @@ dependencies = [
  "sqlx",
  "tempfile",
  "tokio",
+ "tracing",
  "tulipix-core",
  "urlencoding",
  "walkdir",
@@ -7617,6 +7618,7 @@ name = "tulipix-sec-books"
 version = "0.6.0"
 dependencies = [
  "anyhow",
+ "image",
  "rfd",
  "slint",
  "tokio",
