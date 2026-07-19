@@ -349,37 +349,70 @@ jobs:
         with:
           files: artifacts/**
           generate_release_notes: true
+          # Created as a DRAFT: assets upload and notes generate, but the
+          # release stays unpublished until reviewed and released by hand.
+          draft: true
           body: |
             ## Highlights
 
-            ### Music Downloader
-            - **Direct-to-library ingest** — downloaded tracks appear instantly with full metadata and cover art; no manual refresh or restart.
-            - **Real per-track cover art** — album/playlist tracks now fetch each track's own release cover (streamed into the queue as it resolves) instead of reusing one shared thumbnail; art is cached on disk so re-resolving a link never re-downloads it.
-            - **Highest-quality covers for every provider** — Spotify embeds the largest available source, Apple Music pulls 3000×3000, covers keep their real image format.
-            - **Pick the main artist** — set the primary artist per track, or bulk-apply per album / per playlist; the library credits only that artist while the full credit list stays in the file tags.
-            - **Bitrate selection** (128–320 kbps) alongside format (opus/m4a/mp3/flac/wav) and file-naming templates.
-            - **"In Library" skip** — tracks you already own aren't downloaded again.
-            - **Sort & paginate the queue** — order by name, length or artist (ascending/descending); large playlists paginate at 25/page.
-            - **Per-track retry** — each track auto-retries up to 3×; failed rows get a one-click **Retry** and color-coded status pills (done / failed / skipped / in library).
-            - **Download & search history** with in-app play and "open in file manager".
-            - Configurable parallel downloads and threads-per-download; live output/activity view; theme-aware UI polished for light, dark and OLED.
+            ### Books — rebuilt
+            The Books section was rewritten end to end: ten formats, two reader
+            engines, and a library that understands series and collections.
 
-            ### Player & Library
-            - Play-from-history shows cover art and links the title/artist to the correct album/artist page.
-            - Equalizer button beside volume; **every** player button has a hover tooltip.
-            - Live delete-sync: removing files from watched (and newly-added) folders updates the library without a restart.
+            - **Ten formats** — EPUB (including fixed-layout manga and magazines),
+              PDF, DjVu, CBZ, CBR, CB7, CBT, MOBI, AZW3 and FB2/FB2.zip.
+            - **Each format reads the way it should** — a reflowing paginator for
+              prose (two-page spread, single page, or a continuous column) and a
+              fixed-page reader for anything rasterised.
+            - **Double-page spreads show whole**, never split down the fold, with
+              the page pairing after them shifting to match.
+            - **Webtoon mode** — long-strip comics fit the width and scroll
+              vertically instead of rendering as an unreadable sliver.
+            - **Right-to-left manga order**, set from the archive's own metadata
+              rather than a manual toggle.
+            - **Page thumbnails** for navigating magazines and comics, which have
+              no chapter structure to aim at.
+            - **Sharpening zoom** — pages re-rasterise at higher resolution as you
+              zoom in, keeping your position instead of snapping back to fitted.
+            - **Margin trim** reclaims the white borders scans waste.
+            - **Read-aloud** via Kokoro neural TTS or espeak, with sentence
+              highlighting; page-anchored notes export as Markdown.
+            - **Next in series**, ordered naturally so volume 2 precedes volume 10.
+            - **ComicInfo.xml** read for series, volume and reading direction.
+            - **Calibre import** — point "Add books" at a Calibre library and its
+              catalogue comes across.
+            - **Smart collections** (saved filters that stay live), duplicate
+              detection, full-text search inside book contents, and reading stats
+              with streaks and a heatmap.
+            - **Baked 3D covers** — artwork warped onto a hardcover mockup.
 
-            ### Fixes & polish
-            - **No more console flash on Windows** — starting a download no longer pops a black `cmd` window (yt-dlp/ffmpeg now spawn with `CREATE_NO_WINDOW`).
-            - **"Open in folder" now opens the right folder on Windows** — Explorer's `/select` argument is passed unquoted so the actual track's folder is revealed instead of a random default directory.
-            - **Downloader counter icons** render everywhere — the ✓ / skipped / ✗ pill uses real icons instead of unicode glyphs that showed as boxes on Windows.
-            - **Provider names tidied** — "YouTube Music" → **YT Music**, "Apple Music" → **Apple**; a YouTube link that isn't tagged music now shows a gentle warning instead of silently treating any video as a song.
-            - **Clear buttons** (with confirmation) and a live count in both the Downloaded and Searches history popups — clears the records only, never your files.
-            - **ggml-tiny model status** reports correctly on installed Windows/macOS builds (was always "Missing" due to a hard-coded dev path); added a **Reset** button for the custom tools directory.
-            - **Home** hides the floating/side mini-player (it already has an embedded player), drops the footer credit, and gives every card a clean, colorful outline.
+            ### Home & lock screen
+            - Redesigned home with a fixed right rail and circular source/action tabs.
+            - **PIN-gated ambient lock screen** with slideshow and now-playing.
+            - Header lyric pill no longer depends on the spectrum toggle.
 
-            ### Packaging
-            - App icon embedded across all platforms — Windows exe + installer, macOS `.app`, and Linux `.desktop`/hicolor launchers — so it no longer looks like a generic app.
-            - Fully self-contained builds: ffmpeg, yt-dlp, mpv, rclone, whisper, exiftool all bundled.
+            ### Music
+            - **Audiobook overhaul** with chapter-level resume.
+            - WirePlumber-safe mpv stop — fixes audio wedging until reboot.
+            - Music prewarm and parallel home fill for faster section loads.
+            - Downloader search improvements.
+
+            ### Performance & correctness
+            - **Library views do far less work** — filter, sort, search and paging
+              no longer re-run a whole page of queries, and results page in SQL
+              instead of being fetched whole.
+            - **Smoother page turns** — page images decode off the UI thread.
+            - **Bounded caches** — the decoded-cover cache no longer grows without
+              limit while browsing a large library.
+            - **Faster startup** — section databases open once instead of racing
+              several initialisations, and a full-text scan that read every book's
+              contents on every launch was removed.
+            - Fixed a crash opening EPUBs that place a multi-byte character at a
+              text-scan boundary.
+
+            ### Under the hood
+            - Books wiring extracted into its own crate; `main()` split into
+              per-section wiring functions.
+            - Dead dependencies pruned.
 
             ---
