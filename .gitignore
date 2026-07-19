@@ -49,6 +49,7 @@ QODER.md
 .qoder/
 .tokengone/
 .antigravitycli/
+.playwright-mcp/
 docs/
 target/
 target-dev/
