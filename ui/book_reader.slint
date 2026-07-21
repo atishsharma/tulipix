@@ -1497,7 +1497,11 @@ export component BookReader inherits Rectangle {
                                     }
                                     edited(t) => {
                                         root.search-idx = -1;
-                                        search-timer.restart();
+                                        // Slint codegen bug: Timer.restart() from a nested
+                                        // scope mis-resolves the timer field (E0609 no field
+                                        // timer0). running false→true restarts the debounce.
+                                        search-timer.running = false;
+                                        search-timer.running = true;
                                         if (t != "") {
                                             root.search-open = true;
                                             root.contents-open = false;
@@ -1983,7 +1987,7 @@ export component BookReader inherits Rectangle {
             if root.search-open: SearchPanel {
                 results: root.search-results;
                 query <=> root.search-query;
-                run(t) => { search-timer.restart(); }
+                run(t) => { search-timer.running = false; search-timer.running = true; }
                 jump(p) => { root.search-jump(p); }
                 close => { root.search-open = false; }
             }
