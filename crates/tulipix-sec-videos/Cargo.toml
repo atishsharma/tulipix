@@ -19,6 +19,13 @@ slint.workspace = true
 tokio.workspace = true
 sqlx = { workspace = true }
 sha2 = "0.10"
+# Stream tab: poster caching for remote search results.
+reqwest = { workspace = true }
+# Stream tab: "Copy link". Slint exposes no clipboard API; arboard is what the
+# upstream TUI uses and is the only cross-platform option here.
+# default features drag in the `image` crate for image-data support, which we
+# never use; the wayland backend is needed though, or copy silently no-ops.
+arboard = { version = "3", default-features = false, features = ["wayland-data-control"] }
 tulipix-ui = { path = "../tulipix-ui" }
 tulipix-common = { path = "../tulipix-common" }
 tulipix-core = { path = "../tulipix-core" }

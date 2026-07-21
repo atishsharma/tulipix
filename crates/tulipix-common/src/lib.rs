@@ -455,6 +455,18 @@ pub fn anime4k_shader_args() -> Option<(String, usize)> {
 /// writeback over the JSON IPC socket. Runs entirely off the UI thread so the
 /// app never blocks on playback (np.p3.player — windowed path).
 pub fn spawn_mpv_windowed(path: PathBuf, resume: Option<f64>, item_id: Option<i64>) {
+    spawn_mpv_windowed_with(path, resume, item_id, Vec::new())
+}
+
+/// As [`spawn_mpv_windowed`], plus caller-supplied mpv flags appended after the
+/// built-in ones. Used by the Stream tab to attach remote subtitle tracks
+/// (`--sub-file=…`), which have no local file to sit beside.
+pub fn spawn_mpv_windowed_with(
+    path: PathBuf,
+    resume: Option<f64>,
+    item_id: Option<i64>,
+    extra_args: Vec<String>,
+) {
     use std::io::{BufRead, BufReader, Write};
     let rt = tokio::runtime::Handle::current();
     // Universal single stream: a new video stops music + any prior video.
@@ -478,6 +490,7 @@ pub fn spawn_mpv_windowed(path: PathBuf, resume: Option<f64>, item_id: Option<i6
                 cmd.arg(format!("--glsl-shaders={chain}"));
             }
         }
+        cmd.args(&extra_args);
         mpv_die_with_parent(&mut cmd);
         let mut child = match cmd.spawn() {
             Ok(c) => c,

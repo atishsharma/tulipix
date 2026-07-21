@@ -766,6 +766,7 @@ export component HomePage inherits Rectangle {
     callback open-zen();
     callback open-search();
     callback add-folder();
+    callback open-stream();        // jump straight to Videos → Stream tab
     callback shuffle-all();
     callback open-download();
     callback random-radio();      // play a random Hindi radio station in the home player
@@ -1188,14 +1189,14 @@ export component HomePage inherits Rectangle {
                     GridLayout {
                         spacing: 10px; vertical-stretch: 1;
                         Row {
-                            CircleAction { tint: #ec4899; icon: Icons.download; label: "Music Downloader";
-                                clicked => { root.open-download(); } }
+                            CircleAction { tint: Theme.sec-videos; icon: Icons.film; label: "Stream";
+                                clicked => { root.open-stream(); } }
                             CircleAction { tint: #8b5cf6; icon: Icons.shuffle; label: "Shuffle All";
                                 clicked => { root.shuffle-all(); } }
                         }
                         Row {
-                            CircleAction { tint: Theme.sec-videos; icon: Icons.folder-open; label: "Add Folder";
-                                clicked => { root.add-folder(); } }
+                            CircleAction { tint: #ec4899; icon: Icons.download; label: "Music Downloader";
+                                clicked => { root.open-download(); } }
                             CircleAction { tint: #14b8a6; icon: Icons.radio; label: "Random Radio";
                                 clicked => { root.random-radio(); } }
                         }

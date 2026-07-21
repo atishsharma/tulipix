@@ -66,3 +66,5 @@ target-win/
 .superpowers/
 # mdl upstream source — kept locally for reference, not shipped to GitHub
 mdl/
+# MovieBox-Tui upstream source — local reference only
+MovieBox-Tui/

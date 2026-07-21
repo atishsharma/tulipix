@@ -7,9 +7,100 @@
 import { ScrollView } from "std-widgets.slint";
 import { HdrChip } from "section_header.slint";
 import { EmptyState } from "empty_state.slint";
-import { Section } from "tokens.slint";
+import { Section, Theme } from "tokens.slint";
 import { AppIcon, Icons } from "icons.slint";
 import { MicBtn } from "voice.slint";
+
+// Video-section palette. Single source of truth for every colour on this page,
+// derived from the app Theme engine so the whole section follows light / dark /
+// OLED. The section identity is the app's indigo Videos accent; filled buttons
+// and highlights use it, with `accent-ink` for legible text/icons on top.
+export global VP {
+    // --- Indigo accent (Theme.sec-videos) + translucent rungs ---
+    out property <color> accent:    Theme.sec-videos;
+    out property <color> accent-hi: Theme.sec-videos.brighter(0.25);
+    out property <color> accent-ink: #ffffff;
+    out property <color> accent-cc: Theme.sec-videos.with-alpha(0.80);
+    out property <color> accent-88: Theme.sec-videos.with-alpha(0.53);
+    out property <color> accent-66: Theme.sec-videos.with-alpha(0.40);
+    out property <color> accent-55: Theme.sec-videos.with-alpha(0.33);
+    out property <color> accent-44: Theme.sec-videos.with-alpha(0.27);
+    out property <color> accent-22: Theme.sec-videos.with-alpha(0.13);
+    out property <color> accent-1f: Theme.sec-videos.with-alpha(0.12);
+    out property <color> accent-1a: Theme.sec-videos.with-alpha(0.10);
+
+    // --- Surfaces ---
+    out property <color> bg:        Theme.bg;
+    out property <color> surface:   Theme.panel;
+    out property <color> surface-2: Theme.panel-2;
+    out property <color> header:    Theme.dark ? (Theme.oled ? #000000 : #131316) : #e7e2f5;
+    out property <color> header-2:  Theme.dark ? (Theme.oled ? #060606 : #18181c) : #ede9f8;
+    out property <color> modal:     Theme.modal;
+    // Poster/thumbnail placeholder well.
+    out property <color> well:      Theme.dark ? (Theme.oled ? #101013 : #2a2a2e) : #d7d2ea;
+    out property <color> scrim:      #000000cc;
+    out property <color> scrim-soft: #00000066;
+
+    // --- Text ---
+    out property <color> text:      Theme.text;
+    out property <color> text-dim:  Theme.text-dim;
+    out property <color> text-mute: Theme.dark ? #8a8a90 : #4f4a63;
+    out property <color> icon:      Theme.text;
+    out property <color> icon-dim:  Theme.dark ? #5a5a62 : #9a94ad;
+    out property <color> ph-icon:   Theme.dark ? #4a4a52 : #b6b0c8;
+
+    // --- Hairlines / fills ---
+    out property <color> hair:      Theme.outline;
+    out property <color> hair-2:    Theme.outline-strong;
+    out property <color> glass:     Theme.glass;
+    out property <color> glass-2:   Theme.glass-strong;
+    out property <color> fill-weak: Theme.dark ? rgba(255,255,255,0.03) : rgba(26,16,64,0.03);
+
+    // --- Kind badges keep their identity across every theme ---
+    out property <color> badge-series: #8b0000cc;
+    out property <color> badge-movie:  #0047abcc;
+    out property <color> badge-ink:    #ffffff;
+    out property <color> danger:       #c0392b;
+    out property <color> danger-hi:    #e04b3a;
+
+    // --- Solid button surfaces ---
+    // Opaque on purpose. The old translucent glass fills vanished on the light
+    // canvas; these are real colours with their own ink, so every button reads
+    // as a solid, coloured control in light / dark / OLED.
+    // Primary CTA = indigo accent. Secondary = an opaque indigo-tinted chip.
+    out property <color> btn:        Theme.sec-videos;
+    out property <color> btn-hi:     Theme.sec-videos.brighter(0.18);
+    // Light values are deliberately saturated so an inactive button reads
+    // clearly against the pale lavender canvas — the earlier faint tint washed
+    // out entirely.
+    out property <color> btn-2:      Theme.dark ? (Theme.oled ? #22263c : #2f3550) : #bcb2ee;
+    out property <color> btn-2-hi:   Theme.dark ? (Theme.oled ? #2d3350 : #3b4266) : #a99dea;
+    out property <color> btn-2-ink:  Theme.dark ? #eceef8 : #241d5e;
+    out property <color> btn-2-edge: Theme.dark ? rgba(255,255,255,0.20) : rgba(36,29,94,0.42);
+    // Input/search field surface — solid so the field is obvious on light too.
+    out property <color> field:      Theme.dark ? (Theme.oled ? #121420 : #20233a) : #ffffff;
+    out property <color> field-edge: Theme.dark ? rgba(255,255,255,0.14) : rgba(47,42,107,0.22);
+
+    // --- Function colours ---
+    // A vibrant set so buttons read as distinct actions instead of one bland
+    // indigo. White ink sits on every one of them in all three themes.
+    out property <color> c-play: #16b364;   // green  — Play
+    out property <color> c-copy: #0ea5e9;   // sky    — Copy link
+    out property <color> c-dl:   #14b8a6;   // teal   — Download
+    out property <color> c-save: #f43f5e;   // rose   — Save / bookmark
+    out property <color> c-back: #d97706;   // amber  — Back (deep enough for white ink)
+    out property <color> c-info: #8b5cf6;   // violet — Open / info
+    out property <color> c-ink:  #ffffff;
+
+    // --- Detail-column list rows ---
+    // Solid colour fills carrying WHITE text/icons, so the picker lists stay
+    // legible on the light canvas (dark text on a pale tint washed out).
+    out property <color> row:      Theme.dark ? (Theme.oled ? #1f2338 : #2b3048) : #6f66c9;
+    out property <color> row-hi:   Theme.dark ? (Theme.oled ? #2a2f4c : #363c5a) : #5f56bd;
+    out property <color> row-edge: Theme.dark ? rgba(255,255,255,0.16) : rgba(36,29,94,0.35);
+    out property <color> row-ink:  #ffffff;
+    out property <color> row-ink2: rgba(255,255,255,0.80);
+}
 
 // Richer than PhotoTile — carries playback state so a poster can paint a
 // resume bar, a watched check, and the star badge.
@@ -43,36 +134,89 @@ export struct DiscoverCard {
     is-movie: bool,
 }
 
+// ── Stream tab (remote catalogue) ────────────────────────────────────────
+// One search result. `id` is the backend's subject id, opaque to the UI.
+export struct StreamCard {
+    id: string,
+    title: string,
+    year: string,
+    poster: image,
+    is-series: bool,
+    seasons: int,   // >1 when the catalogue split the show across subjects
+    meta: string,     // "2024 · Drama · ★ 8.7" — filled for Saved cards
+    overview: string, // synopsis — filled for Saved cards
+}
+
+// A pickable option in the detail pane — currently the language cuts ("dubs"),
+// each of which is its own subject id.
+export struct StreamChip { id: string, label: string, active: bool }
+
+// One playable file. `index` maps back to the resolved list held in Rust.
+export struct StreamFileRow {
+    index: int,
+    label: string,     // "1080p"
+    sub: string,       // "2.1 GB · hevc"
+    uploader: string,
+    subs: string,      // "3 subs" / "No subs"
+    has-subs: bool,
+}
+
 component PlexButton inherits Rectangle {
     in property <string> label;
     in property <image> icon;
     in property <bool> filled: false;
+    // Fill colour when `filled` — defaults to the indigo primary, overridden
+    // per action (Play green, Open violet, Remove red …) for colour variety.
+    in property <color> hue: VP.btn;
     callback clicked();
     height: 40px; min-width: 120px;
     horizontal-stretch: 0; vertical-stretch: 0;
     border-radius: 6px;
-    background: filled ? #e5a00d : #ffffff22;
+    background: filled
+        ? (touch.has-hover ? root.hue.brighter(0.18) : root.hue)
+        : (touch.has-hover ? VP.btn-2-hi : VP.btn-2);
     border-width: filled ? 0px : 1px;
-    border-color: #ffffff55;
+    border-color: VP.btn-2-edge;
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout { alignment: center; spacing: 7px;
-        if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: filled ? #1a1a1a : #ffffff; width: 15px; height: 15px; } }
+        if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: filled ? VP.c-ink : VP.btn-2-ink; width: 15px; height: 15px; } }
         Text {
             text: label; font-size: 13px; font-weight: 700;
-            color: filled ? #1a1a1a : #ffffff;
+            color: filled ? VP.c-ink : VP.btn-2-ink;
             vertical-alignment: center;
         }
     }
 }
 
-// Tab chip — the Library/Continue/Starred/Archive/Trash switcher. Now a thin
-// wrapper over the shared HdrChip with the Plex gold theme baked in, so it
-// matches the Photos header pill shape.
-component VideoTab inherits HdrChip {
-    accent: #e5a00d;
-    active-text: #1a1a1a;
-    dark: true;
-    min-width: 88px;
+// Tab chip — the Library/Continue/Starred/Archive/Trash switcher. Self-contained
+// solid pill (was a wrapper over HdrChip, whose baked-in dark idle went invisible
+// on the light canvas). Active = solid indigo; inactive = solid indigo-tint —
+// visible and coloured in light / dark / OLED.
+component VideoTab inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> active: false;
+    // Per-tab colour: active tab fills with it, inactive shows it on the label,
+    // icon and outline — so every tab reads as its own colour, not one indigo.
+    in property <color> hue: VP.accent;
+    callback clicked();
+    height: 36px; min-width: 88px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: self.height / 2;
+    background: root.active ? root.hue : (vt.has-hover ? VP.btn-2-hi : VP.btn-2);
+    border-width: 1px;
+    border-color: root.active ? root.hue : root.hue.with-alpha(0.60);
+    animate background { duration: 140ms; easing: ease-out; }
+    vt := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout { alignment: center;
+        spacing: root.label == "" ? 0px : 7px;
+        padding-left: 12px; padding-right: 12px;
+        if root.icon.width > 0: VerticalLayout { alignment: center;
+            AppIcon { source: root.icon; tint: root.active ? #ffffff : (Theme.dark ? root.hue : root.hue.darker(0.45));
+                width: 15px; height: 15px; } }
+        if root.label != "": Text { text: root.label; font-size: 13px; font-weight: 700;
+            color: root.active ? #ffffff : (Theme.dark ? root.hue : root.hue.darker(0.45)); vertical-alignment: center; }
+    }
 }
 
 component Poster inherits Rectangle {
@@ -86,51 +230,51 @@ component Poster inherits Rectangle {
         Rectangle {
             width: 150px; height: 225px;
             border-radius: 8px; clip: true;
-            background: #2a2a2e;
+            background: VP.well;
             border-width: ta.has-hover ? 2px : 0px;
-            border-color: #e5a00d;
+            border-color: VP.accent;
             Image { source: tile.thumb; image-fit: cover; width: parent.width; height: parent.height; }
 
             // Star badge (top-right).
             if tile.starred: Rectangle {
                 x: parent.width - self.width - 6px; y: 6px;
                 width: 24px; height: 24px; border-radius: 12px;
-                background: #000000aa;
-                AppIcon { source: Icons.star-filled; tint: #e5a00d; width: 14px; height: 14px; }
+                background: VP.scrim;
+                AppIcon { source: Icons.star-filled; tint: VP.accent; width: 14px; height: 14px; }
             }
             // Watched check (top-left).
             if tile.watched: Rectangle {
                 x: 6px; y: 6px;
                 width: 24px; height: 24px; border-radius: 12px;
-                background: #e5a00d;
-                AppIcon { source: Icons.check; tint: #1a1a1a; width: 14px; height: 14px; }
+                background: VP.accent;
+                AppIcon { source: Icons.check; tint: VP.accent-ink; width: 14px; height: 14px; }
             }
             // Duration pill (bottom-right) when known and no resume bar overlap.
             if tile.duration != "": Rectangle {
                 x: parent.width - self.width - 6px; y: parent.height - self.height - 10px;
                 width: dlbl.preferred-width + 12px; height: 18px; border-radius: 9px;
-                background: #000000aa;
-                dlbl := Text { text: tile.duration; color: #ffffff; font-size: 10px; font-weight: 600;
+                background: VP.scrim;
+                dlbl := Text { text: tile.duration; color: VP.badge-ink; font-size: 10px; font-weight: 600;
                     horizontal-alignment: center; vertical-alignment: center; }
             }
             // Episode badge (bottom-left) — TV episodes only.
             if tile.episode > 0: Rectangle {
                 x: 6px; y: parent.height - self.height - 10px;
                 width: eplbl.preferred-width + 12px; height: 18px; border-radius: 9px;
-                background: #e5a00dcc;
+                background: VP.accent-cc;
                 eplbl := Text {
                     text: (tile.season > 0 ? "S" + tile.season : "") + "E" + tile.episode;
-                    color: #1a1a1a; font-size: 10px; font-weight: 800;
+                    color: VP.accent-ink; font-size: 10px; font-weight: 800;
                     horizontal-alignment: center; vertical-alignment: center;
                 }
             }
             // Resume bar (bottom) — only for in-progress, unwatched items.
             if tile.progress > 0.0 && !tile.watched: Rectangle {
                 x: 0; y: parent.height - 4px; width: parent.width; height: 4px;
-                background: #00000066;
+                background: VP.scrim-soft;
                 Rectangle { x: 0; y: 0; height: 4px;
                     width: parent.width * Math.clamp(tile.progress, 0.0, 1.0);
-                    background: #e5a00d; }
+                    background: VP.accent; }
             }
 
             ta := TouchArea {
@@ -145,7 +289,7 @@ component Poster inherits Rectangle {
                 }
             }
         }
-        Text { text: tile.label; color: #e8e8ea; font-size: 12px; font-weight: 500; overflow: elide; width: 150px; }
+        Text { text: tile.label; color: VP.icon; font-size: 12px; font-weight: 500; overflow: elide; width: 150px; }
     }
 }
 
@@ -158,19 +302,19 @@ component ShowCardView inherits Rectangle {
         spacing: 8px;
         Rectangle {
             width: 150px; height: 225px;
-            border-radius: 8px; clip: true; background: #2a2a2e;
-            border-width: ta.has-hover ? 2px : 0px; border-color: #e5a00d;
+            border-radius: 8px; clip: true; background: VP.well;
+            border-width: ta.has-hover ? 2px : 0px; border-color: VP.accent;
             Image { source: show.cover; image-fit: cover; width: parent.width; height: parent.height; }
             // Episode-count badge.
             Rectangle {
                 x: parent.width - self.width - 6px; y: 6px;
-                width: cnt.preferred-width + 14px; height: 22px; border-radius: 11px; background: #000000bb;
-                cnt := Text { text: show.count + " ep"; color: #ffffff; font-size: 10px; font-weight: 700;
+                width: cnt.preferred-width + 14px; height: 22px; border-radius: 11px; background: VP.scrim;
+                cnt := Text { text: show.count + " ep"; color: VP.badge-ink; font-size: 10px; font-weight: 700;
                     horizontal-alignment: center; vertical-alignment: center; }
             }
             ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
         }
-        Text { text: show.title; color: #e8e8ea; font-size: 12px; font-weight: 600; overflow: elide; width: 150px; }
+        Text { text: show.title; color: VP.icon; font-size: 12px; font-weight: 600; overflow: elide; width: 150px; }
     }
 }
 
@@ -185,9 +329,9 @@ component DiscoverCardView inherits Rectangle {
         Rectangle {
             width: 130px; height: 195px;
             border-radius: 8px; clip: true;
-            background: #2a2a2e;
+            background: VP.well;
             border-width: ta.has-hover ? 2px : 0px;
-            border-color: #e5a00d;
+            border-color: VP.accent;
             Image {
                 source: card.poster; image-fit: cover;
                 width: parent.width; height: parent.height;
@@ -196,10 +340,10 @@ component DiscoverCardView inherits Rectangle {
             if card.vote > 0.0: Rectangle {
                 x: parent.width - self.width - 6px; y: 6px;
                 width: vt.preferred-width + 10px; height: 18px;
-                border-radius: 9px; background: #000000cc;
+                border-radius: 9px; background: VP.scrim;
                 vt := Text {
                     text: Math.round(card.vote * 10.0) / 10.0;
-                    color: #e5a00d; font-size: 9px; font-weight: 800;
+                    color: VP.accent; font-size: 9px; font-weight: 800;
                     horizontal-alignment: center; vertical-alignment: center;
                 }
             }
@@ -207,10 +351,10 @@ component DiscoverCardView inherits Rectangle {
             Rectangle {
                 x: 6px; y: 6px;
                 width: kt.preferred-width + 10px; height: 16px;
-                border-radius: 8px; background: card.is-movie ? #0047abcc : #8b0000cc;
+                border-radius: 8px; background: card.is-movie ? VP.badge-movie : VP.badge-series;
                 kt := Text {
                     text: card.is-movie ? "MOVIE" : "SHOW";
-                    color: #ffffff; font-size: 8px; font-weight: 800;
+                    color: VP.badge-ink; font-size: 8px; font-weight: 800;
                     horizontal-alignment: center; vertical-alignment: center;
                 }
             }
@@ -218,9 +362,9 @@ component DiscoverCardView inherits Rectangle {
             if card.release-date != "": Rectangle {
                 x: 0; y: parent.height - self.height;
                 width: parent.width; height: 22px;
-                background: #000000bb;
+                background: VP.scrim;
                 Text {
-                    text: card.release-date; color: #e5e5e5; font-size: 9px; font-weight: 600;
+                    text: card.release-date; color: VP.text; font-size: 9px; font-weight: 600;
                     horizontal-alignment: center; vertical-alignment: center;
                     width: parent.width; height: parent.height;
                 }
@@ -229,11 +373,11 @@ component DiscoverCardView inherits Rectangle {
         }
         // Title (max 2 lines via fixed height + overflow elide on single-line for now).
         Text {
-            text: card.title; color: #c8c8cc; font-size: 10px; font-weight: 600;
+            text: card.title; color: VP.text-dim; font-size: 10px; font-weight: 600;
             overflow: elide; width: 130px;
         }
         if card.year > 0: Text {
-            text: card.year; color: #6a6a72; font-size: 9px;
+            text: card.year; color: VP.text-mute; font-size: 9px;
             width: 130px;
         }
     }
@@ -255,12 +399,12 @@ component DiscoverRail inherits Rectangle {
         // Rail header row.
         HorizontalLayout {
             alignment: start; spacing: 10px;
-            Rectangle { width: 4px; height: 18px; border-radius: 2px; background: #e5a00d;
+            Rectangle { width: 4px; height: 18px; border-radius: 2px; background: VP.accent;
                 horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
-            VerticalLayout { alignment: center; AppIcon { source: icon; tint: #ffffff; width: 16px; height: 16px; } }
-            Text { text: label; color: #ffffff; font-size: 16px; font-weight: 700;
+            VerticalLayout { alignment: center; AppIcon { source: icon; tint: VP.text; width: 16px; height: 16px; } }
+            Text { text: label; color: VP.text; font-size: 16px; font-weight: 700;
                 vertical-alignment: center; }
-            Text { text: items.length + " titles"; color: #6a6a72; font-size: 12px;
+            Text { text: items.length + " titles"; color: VP.text-mute; font-size: 12px;
                 vertical-alignment: center; }
         }
         // Horizontal scroll of cards.
@@ -276,9 +420,433 @@ component DiscoverRail inherits Rectangle {
         }
         if items.length == 0: Rectangle {
             height: 100px;
-            Text { text: "Loading…"; color: #5a5a62; font-size: 13px;
+            Text { text: "Loading…"; color: VP.icon-dim; font-size: 13px;
                 horizontal-alignment: center; vertical-alignment: center;
                 width: parent.width; height: parent.height; }
+        }
+    }
+}
+
+// The Stream search field. One component so the centred landing version and
+// the compact toolbar version cannot drift apart — they differ only in size.
+component StreamSearchField inherits Rectangle {
+    in-out property <string> query;
+    in property <bool> large: false;
+    callback search(string);
+    callback edited(string);
+    height: large ? 56px : 44px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: self.height / 2;
+    background: VP.field;
+    border-width: 1px;
+    border-color: sq.has-focus ? VP.accent : VP.field-edge;
+    HorizontalLayout {
+        padding-left: root.large ? 22px : 18px; padding-right: 10px; spacing: 10px;
+        VerticalLayout { alignment: center;
+            AppIcon { source: Icons.search; tint: VP.text-dim;
+                width: root.large ? 18px : 14px; height: root.large ? 18px : 14px; } }
+        Rectangle { horizontal-stretch: 1;
+            sq := TextInput {
+                width: 100%; height: 100%;
+                text <=> root.query;
+                color: VP.text; font-size: root.large ? 17px : 14px;
+                vertical-alignment: center; single-line: true;
+                accepted => { root.search(self.text); }
+                edited => { root.edited(self.text); }
+            }
+            if root.query == "": Text {
+                text: "Search movies and series"; color: VP.text-dim;
+                font-size: root.large ? 17px : 14px;
+                vertical-alignment: center; height: 100%;
+                visible: !sq.has-focus;
+            }
+        }
+        if root.query != "": Rectangle {
+            width: 28px; height: 28px; border-radius: 14px;
+            horizontal-stretch: 0; vertical-stretch: 0;
+            y: (parent.height - self.height) / 2;
+            background: sclear.has-hover ? VP.btn-2-hi : VP.btn-2;
+            sclear := TouchArea { mouse-cursor: pointer;
+                clicked => { root.query = ""; root.search(""); } }
+            AppIcon { source: Icons.x; tint: VP.btn-2-ink; width: 11px; height: 11px;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+        }
+    }
+}
+
+// A remembered search term on the landing screen.
+component RecentChip inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    height: 36px;
+    horizontal-stretch: 1; vertical-stretch: 0;
+    border-radius: 10px;
+    background: rta.has-hover ? VP.btn-2-hi : VP.btn-2;
+    border-width: 1px; border-color: rta.has-hover ? VP.accent : VP.btn-2-edge;
+    rta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 14px; padding-right: 14px; spacing: 10px;
+        VerticalLayout { alignment: center; horizontal-stretch: 0;
+            AppIcon { source: Icons.search; tint: VP.btn-2-ink; width: 12px; height: 12px; } }
+        VerticalLayout { alignment: center; horizontal-stretch: 1;
+            Text { text: root.label; color: VP.btn-2-ink; font-size: 13px;
+                font-weight: 600; vertical-alignment: center; overflow: elide; } }
+        VerticalLayout { alignment: center; horizontal-stretch: 0;
+            AppIcon { source: Icons.arrow-right; tint: rta.has-hover ? VP.accent : VP.ph-icon;
+                width: 13px; height: 13px; } }
+    }
+}
+
+// One Saved-page card: poster on the left, info + Open on the right.
+component BookmarkCard inherits Rectangle {
+    in property <StreamCard> card;
+    callback open();
+    callback remove();
+    horizontal-stretch: 1; vertical-stretch: 1;
+    border-radius: 12px;
+    background: bcard.has-hover ? VP.surface-2 : VP.surface;
+    border-width: 1px; border-color: bcard.has-hover ? VP.accent-55 : VP.hair;
+    bcard := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
+    HorizontalLayout {
+        padding: 12px; spacing: 12px;
+        // Poster — 30% of the card so the artwork reads.
+        Rectangle {
+            width: (root.width - 36px) * 0.30; horizontal-stretch: 0; vertical-stretch: 1;
+            border-radius: 8px; clip: true; background: VP.well;
+            Image { source: card.poster; image-fit: cover; width: parent.width; height: parent.height; }
+            if card.poster.width == 0: AppIcon {
+                source: card.is-series ? Icons.tv : Icons.film; tint: VP.ph-icon;
+                width: 30px; height: 30px;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            }
+        }
+        // Info side (70%) — badge/title/meta, then summary + Open pinned to the
+        // bottom of this column.
+        Rectangle {
+            horizontal-stretch: 1; vertical-stretch: 1;
+            border-radius: 10px; background: VP.fill-weak;
+            border-width: 1px; border-color: bcard.has-hover ? VP.accent-44 : VP.hair;
+            VerticalLayout {
+                padding: 12px; spacing: 6px;
+                HorizontalLayout { spacing: 6px; vertical-stretch: 0;
+                    Rectangle {
+                        width: kl.preferred-width + 14px; height: 17px; border-radius: 8px;
+                        horizontal-stretch: 0; vertical-stretch: 0;
+                        background: card.is-series ? VP.badge-series : VP.badge-movie;
+                        kl := Text { text: card.is-series ? "SERIES" : "MOVIE";
+                            color: VP.badge-ink; font-size: 8px; font-weight: 800;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: parent.width; height: parent.height; }
+                    }
+                    Rectangle { horizontal-stretch: 1; }
+                    Rectangle {
+                        width: 24px; height: 24px; border-radius: 12px;
+                        horizontal-stretch: 0; vertical-stretch: 0;
+                        background: rmb.has-hover ? VP.danger : VP.btn-2;
+                        rmb := TouchArea { mouse-cursor: pointer; clicked => { root.remove(); } }
+                        AppIcon { source: Icons.x; tint: rmb.has-hover ? VP.badge-ink : VP.btn-2-ink; width: 11px; height: 11px;
+                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                    }
+                }
+                Text { text: card.title; color: VP.text; font-size: 17px; font-weight: 800;
+                    wrap: word-wrap; vertical-stretch: 0; }
+                // Meta line ("2024 · Drama · ★ 8.7"); year alone for old saves.
+                if card.meta != "" || card.year != "": Text {
+                    text: card.meta != "" ? card.meta : card.year;
+                    color: VP.text-dim; font-size: 12px; font-weight: 600; wrap: word-wrap;
+                    vertical-stretch: 0; }
+                // Short synopsis (≤100 chars, trimmed in Rust).
+                if card.overview != "": Text {
+                    text: card.overview; color: VP.text-mute; font-size: 12px;
+                    wrap: word-wrap; vertical-stretch: 0; }
+                // Spacer pushes Open to the bottom of the info column.
+                Rectangle { vertical-stretch: 1; }
+                PlexButton { icon: Icons.play; label: "Open"; filled: bcard.has-hover; hue: VP.c-info;
+                    vertical-stretch: 0; clicked => { root.open(); } }
+            }
+        }
+    }
+}
+
+// Small sort-key chip for the Saved header.
+component SortChip inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    in property <color> hue: VP.accent;   // active fill — one colour per key
+    callback clicked();
+    height: 30px; width: sctext.preferred-width + 22px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: 8px;
+    background: root.active ? root.hue : (scta.has-hover ? VP.btn-2-hi : VP.btn-2);
+    border-width: root.active ? 0px : 1px; border-color: VP.btn-2-edge;
+    scta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    sctext := Text { text: root.label; color: root.active ? #ffffff : VP.btn-2-ink;
+        font-size: 12px; font-weight: 700;
+        horizontal-alignment: center; vertical-alignment: center;
+        width: parent.width; height: parent.height; }
+}
+
+// Back pill — filled amber, matched to the search field height so it aligns.
+component StreamBackBtn inherits Rectangle {
+    in property <string> label: "Back";
+    callback clicked();
+    height: 44px; min-width: 104px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: 22px;
+    background: bkta.has-hover ? VP.c-back.brighter(0.15) : VP.c-back;
+    bkta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        alignment: center; spacing: 6px;
+        padding-left: 14px; padding-right: 16px;
+        VerticalLayout { alignment: center;
+            AppIcon { source: Icons.arrow-left; tint: #3a2a02; width: 15px; height: 15px; } }
+        Text { text: root.label; color: #3a2a02; font-size: 13px; font-weight: 800;
+            vertical-alignment: center; }
+    }
+}
+
+// Square icon action inside a stream row (copy / download).
+component IconBtn inherits Rectangle {
+    in property <image> icon;
+    in property <string> tip: "";
+    // Action colour — icon shows it at rest, the fill takes it on hover.
+    in property <color> hue: VP.accent;
+    callback clicked();
+    width: 38px; height: 38px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: 6px;
+    background: ib.has-hover ? root.hue.brighter(0.15) : root.hue;
+    border-width: 0px;
+    ib := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    AppIcon { source: root.icon; tint: #ffffff; width: 15px; height: 15px;
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+    if ib.has-hover && root.tip != "": Rectangle {
+        y: -26px; height: 22px; width: tiptext.preferred-width + 16px;
+        x: (parent.width - self.width) / 2;
+        border-radius: 6px; background: VP.scrim;
+        tiptext := Text { text: root.tip; color: VP.icon; font-size: 10px;
+            horizontal-alignment: center; vertical-alignment: center;
+            width: parent.width; height: parent.height; }
+    }
+}
+
+// A bordered column in the detail pane, mirroring the TUI's panels: a titled
+// header strip with an optional right-aligned hint, then the content.
+component PanelBox inherits Rectangle {
+    in property <string> title;
+    in property <string> hint: "";
+    border-radius: 10px;
+    background: VP.surface;
+    border-width: 1px;
+    border-color: VP.hair;
+    clip: true;
+    VerticalLayout {
+        spacing: 0px;
+        Rectangle {
+            height: 32px; vertical-stretch: 0; background: VP.fill-weak;
+            HorizontalLayout {
+                padding-left: 12px; padding-right: 12px; spacing: 8px;
+                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Text { text: root.title; color: VP.accent; font-size: 11px;
+                        font-weight: 800; letter-spacing: 0.6px; } }
+                Rectangle { horizontal-stretch: 1; }
+                if root.hint != "": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Text { text: root.hint; color: VP.text-mute; font-size: 10px; font-weight: 600; } }
+            }
+        }
+        Rectangle { horizontal-stretch: 1; vertical-stretch: 1; clip: true;
+            @children
+        }
+    }
+}
+
+// One selectable line in a picker column. The leading marker mirrors the TUI's
+// `>>` cursor so the active row reads at a glance.
+component PickRow inherits Rectangle {
+    in property <string> label;
+    in property <bool> active: false;
+    callback clicked();
+    height: 30px;
+    horizontal-stretch: 1; vertical-stretch: 0;
+    border-radius: 6px;
+    background: root.active ? VP.accent : (prow.has-hover ? VP.row-hi : VP.row);
+    border-width: root.active ? 0px : 1px; border-color: VP.row-edge;
+    prow := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 10px; spacing: 6px;
+        VerticalLayout { alignment: center; horizontal-stretch: 0;
+            Text { text: root.active ? "▸" : " "; color: VP.row-ink;
+                font-size: 12px; font-weight: 800; } }
+        VerticalLayout { alignment: center; horizontal-stretch: 1;
+            Text { text: root.label;
+                color: VP.row-ink;
+                font-size: 12px; font-weight: root.active ? 800 : 600;
+                overflow: elide; } }
+    }
+}
+
+// Search-result poster for the Stream tab. Same 2:3 language as the library
+// posters, with a kind pill instead of playback badges — nothing is downloaded
+// yet, so there is no progress or watched state to show.
+component StreamPoster inherits Rectangle {
+    in property <StreamCard> card;
+    in property <bool> removable: false;
+    callback clicked();
+    callback hovered(bool);
+    callback remove();
+    // Explicit height — without it the card defaulted to 100% of the (tall) grid
+    // container, which dropped the year to the very bottom of the cell once there
+    // was more than one row. 225 poster + 8 gap + 34 pill = one cell.
+    width: 150px; height: 267px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    VerticalLayout {
+        alignment: start; spacing: 8px;
+        Rectangle {
+            width: 150px; height: 225px;
+            border-radius: 8px; clip: true; background: VP.well;
+            border-width: ta.has-hover ? 2px : 0px; border-color: VP.accent;
+            Image { source: card.poster; image-fit: cover; width: parent.width; height: parent.height; }
+            // Placeholder glyph when the poster has not cached yet.
+            if card.poster.width == 0: AppIcon {
+                source: card.is-series ? Icons.tv : Icons.film; tint: VP.ph-icon;
+                width: 34px; height: 34px;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            }
+            Rectangle {
+                x: 6px; y: 6px;
+                width: kind-label.preferred-width + 12px; height: 17px;
+                border-radius: 8px; background: card.is-series ? VP.badge-series : VP.badge-movie;
+                kind-label := Text {
+                    text: card.is-series ? "SERIES" : "MOVIE";
+                    color: VP.badge-ink; font-size: 8px; font-weight: 800;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+            }
+            // Season count — only on shows folded from per-season subjects.
+            if card.seasons > 1: Rectangle {
+                x: parent.width - self.width - 6px; y: 6px;
+                width: seasons-label.preferred-width + 12px; height: 17px;
+                border-radius: 8px; background: VP.scrim;
+                seasons-label := Text {
+                    text: card.seasons + " seasons";
+                    color: VP.accent; font-size: 8px; font-weight: 800;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+            }
+            // Hover scrim with a play cue — these are one click from streaming.
+            if ta.has-hover: Rectangle {
+                width: parent.width; height: parent.height; background: VP.scrim-soft;
+                Rectangle {
+                    width: 46px; height: 46px; border-radius: 23px; background: VP.accent;
+                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                    AppIcon { source: Icons.play; tint: VP.accent-ink; width: 18px; height: 18px;
+                        x: (parent.width - self.width) / 2 + 2px; y: (parent.height - self.height) / 2; }
+                }
+            }
+            ta := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.clicked(); }
+                changed has-hover => { root.hovered(self.has-hover); }
+            }
+            // Remove button — Saved page only, top-right, appears on hover.
+            if root.removable && ta.has-hover: Rectangle {
+                x: parent.width - self.width - 6px; y: 6px;
+                width: 26px; height: 26px; border-radius: 13px;
+                background: rmv.has-hover ? VP.danger : VP.scrim;
+                rmv := TouchArea { mouse-cursor: pointer; clicked => { root.remove(); } }
+                AppIcon { source: Icons.x; tint: VP.text; width: 12px; height: 12px;
+                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+            }
+        }
+        // Title + year together in one solid pill under the poster.
+        Rectangle {
+            width: 150px; height: 34px; border-radius: 10px;
+            background: VP.btn-2; border-width: 1px; border-color: VP.btn-2-edge;
+            HorizontalLayout {
+                padding-left: 10px; padding-right: 10px; spacing: 6px;
+                VerticalLayout { alignment: center; horizontal-stretch: 1;
+                    Text { text: card.title; color: VP.btn-2-ink; font-size: 12px; font-weight: 700;
+                        overflow: elide; } }
+                if card.year != "": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Text { text: card.year; color: VP.btn-2-ink; font-size: 10px; font-weight: 600;
+                        vertical-alignment: center; } }
+            }
+        }
+    }
+}
+
+// One resolved stream: quality on the left, size/codec beneath, Play on the right.
+component StreamFileRowView inherits Rectangle {
+    in property <StreamFileRow> entry;
+    in property <bool> current: false;
+    in property <bool> launching: false;
+    callback play();
+    callback copy-link();
+    callback download();
+    callback select();
+    height: 58px; horizontal-stretch: 1;
+    border-radius: 10px;
+    background: root.current ? VP.accent : (rowta.has-hover ? VP.row-hi : VP.row);
+    border-width: root.current ? 2px : 1px;
+    border-color: root.current ? #ffffff : (rowta.has-hover ? VP.row-ink2 : VP.row-edge);
+    // Clicking the row makes it the current stream; the Play button plays.
+    // Single click selects; a second click within the window plays.
+    dbl-timer := Timer {
+        interval: 320ms; running: false;
+        triggered => { self.running = false; }
+    }
+    rowta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => {
+            if (dbl-timer.running) {
+                dbl-timer.running = false;
+                root.play();
+            } else {
+                root.select();
+                dbl-timer.running = true;
+            }
+        }
+    }
+    HorizontalLayout {
+        padding-left: 16px; padding-right: 12px; spacing: 14px;
+        VerticalLayout { alignment: center; horizontal-stretch: 0;
+            Rectangle {
+                width: 58px; height: 26px; border-radius: 6px; background: #ffffff2e;
+                Text { text: entry.label; color: #ffffff; font-size: 12px; font-weight: 800;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: parent.width; height: parent.height; }
+            }
+        }
+        VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 3px;
+            Text { text: entry.sub != "" ? entry.sub : "Stream"; color: VP.row-ink; font-size: 12px; }
+            if entry.uploader != "": Text { text: "by " + entry.uploader;
+                color: VP.row-ink2; font-size: 10px; }
+        }
+        // Subtitle availability, straight off the resource entry.
+        VerticalLayout { alignment: center; horizontal-stretch: 0;
+            Rectangle {
+                width: 62px; height: 22px; border-radius: 11px;
+                background: entry.has-subs ? #ffffff2e : transparent;
+                Text { text: entry.subs;
+                    color: entry.has-subs ? #ffffff : VP.row-ink2;
+                    font-size: 10px; font-weight: 700;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: parent.width; height: parent.height; }
+            }
+        }
+        // Fixed width so the row lines up with the column headers above.
+        VerticalLayout { alignment: center; horizontal-stretch: 0; width: 208px;
+            HorizontalLayout { spacing: 6px; alignment: end;
+                PlexButton { icon: Icons.play; hue: VP.c-play;
+                    label: root.launching ? "Launching…" : "Play";
+                    filled: root.launching || rowta.has-hover;
+                    min-width: 96px; clicked => { root.play(); } }
+                // Copy + download, the TUI's [C] and [D].
+                IconBtn { icon: Icons.clipboard; tip: "Copy link"; hue: VP.c-copy;
+                    clicked => { root.copy-link(); } }
+                IconBtn { icon: Icons.download; tip: "Download"; hue: VP.c-dl;
+                    clicked => { root.download(); } }
+            }
         }
     }
 }
@@ -310,17 +878,146 @@ export component VideosPage inherits Rectangle {
     callback show-back();         // back to the show cards
     callback refresh-discover();  // trigger TMDB feed refresh
 
+    // ── Stream tab state ──────────────────────────────────────────────────
+    in property <[StreamCard]> stream-results: [];
+    in-out property <string> stream-query: "";
+    in property <bool> stream-busy: false;
+    in property <string> stream-status: "";
+    // Detail pane — populated once a result is opened.
+    in property <bool> stream-detail-open: false;
+    in property <string> stream-title: "";
+    in property <string> stream-meta: "";
+    in property <string> stream-overview: "";
+    in property <image> stream-cover;
+    in property <bool> stream-is-series: false;
+    in property <[StreamChip]> stream-dubs: [];
+    in property <[int]> stream-seasons: [];
+    in property <[int]> stream-episodes: [];
+    in property <int> stream-season: 0;
+    in property <int> stream-episode: 0;
+    in property <[StreamFileRow]> stream-files: [];
+    // Subtitle languages for the current episode; -1 = off.
+    in property <[StreamChip]> stream-subs: [];
+    in property <int> stream-sub-choice: -1;
+    // Resolution rung being fetched. "" = every quality (the default); anything
+    // else narrows the merged, episode-filtered set to that single rung.
+    in-out property <string> stream-resolution: "";
+    // Autocomplete under the search field.
+    in property <[string]> stream-suggestions: [];
+    // Hover preview for the card under the cursor (the TUI's Info Preview).
+    in property <bool> stream-preview-open: false;
+    in property <string> stream-preview-title: "";
+    in property <string> stream-preview-meta: "";
+    in property <string> stream-preview-overview: "";
+    in property <int> stream-preview-seasons: 0;
+    // Download progress.
+    in property <bool> stream-dl-active: false;
+    in property <string> stream-dl-label: "";
+    in property <float> stream-dl-frac: 0.0;
+    // The "current" stream (info-box actions target it); -1 = none.
+    in property <int> stream-current: -1;
+    in property <string> stream-current-label: "";
+    // Bookmarks.
+    in property <bool> stream-bookmarked: false;
+    in property <[StreamCard]> stream-bookmarks: [];
+    // Which sub-view of the Stream tab is showing.
+    in-out property <string> stream-view: "search";   // search | bookmarks
+    // Extra hover-preview fields.
+    in property <bool> stream-preview-is-series: false;
+    in property <string> stream-preview-langs: "";
+    in property <image> stream-preview-cover;
+    // Saved-page pagination (9 per page) + which stream row is launching.
+    in-out property <int> bm-page: 0;
+    in-out property <string> bm-sort: "date";   // date | name | type
+    in-out property <bool> bm-asc: false;
+    in-out property <string> bm-confirm-id: "";  // pending remove confirmation
+    property <int> bm-per-page: 9;
+    property <int> bm-pages: Math.max(1, Math.ceil(root.stream-bookmarks.length / bm-per-page));
+    // Transient launch highlight: the stream index whose Play was just pressed.
+    property <int> launch-idx: -1;
+    // Transient header status visibility (auto-hides after a few seconds).
+    property <bool> status-visible: true;
+    in property <[string]> stream-recent: [];
+    // Landing = nothing to show yet, so the search field takes the centre of
+    // the page. Any result (or an opened title) promotes it into the toolbar.
+    property <bool> stream-landing: !root.stream-detail-open && root.stream-results.length == 0;
+    // Hosts editor — the server list is user-editable, stored one per line.
+    in-out property <bool> stream-hosts-open: false;
+    in-out property <string> stream-hosts-text: "";
+    in property <string> stream-hosts-error: "";
+    in-out property <bool> stream-hosts-saved: false;  // flashes the "Applied" pill
+    callback stream-search(string);
+    callback stream-open(string);      // subject id
+    callback stream-back();
+    callback stream-play(int);         // index into stream-files
+    callback stream-set-dub(string);   // subject id of the chosen language cut
+    callback stream-set-season(int);
+    callback stream-set-episode(int);
+    callback stream-set-sub(int);
+    callback stream-set-resolution(string);
+    callback stream-suggest(string);
+    callback stream-suggest-clear();
+    callback stream-preview(string);   // subject id, "" closes
+    callback stream-copy-link(int);
+    callback stream-download(int);
+    callback stream-download-cancel();
+    callback stream-download-dismiss();
+    callback stream-set-current(int);
+    callback stream-play-current();
+    callback stream-copy-current();
+    callback stream-download-current();
+    callback stream-toggle-bookmark();
+    callback stream-bookmarks-load();
+    callback stream-bookmark-remove(string);
+    callback stream-bookmarks-sort(string, bool);
+    callback stream-recent-clear();
+    callback stream-hosts-opened(); // load the editor's contents on open
+    callback stream-hosts-save(string);
+    callback stream-hosts-reset();
+
     // True when the TV tab should show show-cards rather than episode tiles.
     property <bool> cards-mode: root.kind == "tv" && !root.show-open;
+    // True for the on-disk tabs (TV/Movies/Local). Discover and Stream render
+    // their own bodies, so the library grid and its empty states must sit this
+    // out — otherwise the "No media yet · + Add media" card draws over them.
+    property <bool> local-mode: root.kind != "discover" && root.kind != "stream";
     // True when drilled into a TV show — episodes are grouped by season.
     property <bool> drilled: root.kind == "tv" && root.show-open;
 
-    background: #131316;
+    background: VP.header;
+
+    // Any new header status text shows, then fades after the timer fires.
+    changed stream-status => {
+        root.status-visible = true;
+        status-timer.running = false;
+        status-timer.running = true;
+    }
+    // Header status text auto-hides a few seconds after it appears.
+    status-timer := Timer {
+        interval: 5s; running: false;
+        triggered => { root.status-visible = false; self.running = false; }
+    }
+    // Launch highlight clears itself shortly after a Play is pressed.
+    launch-timer := Timer {
+        interval: 1400ms; running: false;
+        triggered => { root.launch-idx = -1; self.running = false; }
+    }
+    // "Applied" pill on the Hosts Save button flashes, then clears itself.
+    changed stream-hosts-saved => {
+        if (root.stream-hosts-saved) { hosts-saved-timer.running = false; hosts-saved-timer.running = true; }
+    }
+    hosts-saved-timer := Timer {
+        interval: 2500ms; running: false;
+        triggered => { root.stream-hosts-saved = false; self.running = false; }
+    }
 
     // Responsive poster grid metrics.
     property <length> cell-w: 166px;   // poster 150 + 16 gap
     property <length> cell-h: 285px;   // poster 225 + label 44 + 16 gap
     property <int> cols: Math.max(1, Math.floor((self.width - 88px) / cell-w));
+    // Results grid columns: the Stream results view reserves 360px on the right
+    // for the Info Preview panel plus ~90px of padding.
+    property <int> rcols: Math.max(1, Math.floor((self.width - 468px) / cell-w));
 
     function tab-title(c: string) -> string {
         c == "continue" ? "Continue Watching" :
@@ -336,53 +1033,73 @@ export component VideosPage inherits Rectangle {
         "Add a movie or TV folder and Tulipix builds your cinematic library.";
     }
 
+    // Stream backdrop — a cinematic Unsplash still per theme, z-stacked BELOW
+    // the whole page. It is a direct child of the Rectangle root (NOT of the
+    // VerticalLayout below), so it never takes a layout slot; the opaque header
+    // and panels draw over it and the transparent landing shows it through a
+    // theme-matched veil that keeps text legible.
+    if root.kind == "stream": Image {
+        width: 100%; height: 100%; image-fit: cover;
+        source: !Theme.dark
+                ? @image-url("../resources/icons/streamhero/Stream_Light.jpg")
+            : Theme.oled
+                ? @image-url("../resources/icons/streamhero/Stream_OLED.jpg")
+                : @image-url("../resources/icons/streamhero/Stream_Dark.jpg");
+    }
+    if root.kind == "stream": Rectangle {
+        width: 100%; height: 100%;
+        background: !Theme.dark ? #ede9f8b8 : (Theme.oled ? #000000cc : #050614bb);
+    }
+
     VerticalLayout {
         spacing: 0px;
 
         // Row 1 — title · TV/Movies/Local · search · add folder · count pill.
         Rectangle {
-            height: 72px; horizontal-stretch: 1; background: #18181c;
+            height: 72px; horizontal-stretch: 1; background: VP.header-2;
             HorizontalLayout {
                 padding-left: 28px; padding-right: 28px; spacing: 12px;
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     Rectangle { width: 34px; height: 34px; border-radius: 10px;
-                        background: #e5a00d.with-alpha(0.18);
-                        AppIcon { source: Icons.film; tint: #e5a00d; width: 18px; height: 18px;
+                        background: VP.accent.with-alpha(0.18);
+                        AppIcon { source: Icons.film; tint: VP.accent; width: 18px; height: 18px;
                             x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Text { text: "Videos"; color: #ffffff; font-size: 22px; font-weight: 700; } }
+                    Text { text: "Videos"; color: VP.text; font-size: 22px; font-weight: 700; } }
 
                 // Top-level kind tabs (before the search, per request).
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     HorizontalLayout { spacing: 8px;
-                        VideoTab { label: "TV";       active: root.kind == "tv";       clicked => { root.set-kind("tv"); } }
-                        VideoTab { label: "Movies";   active: root.kind == "movies";   clicked => { root.set-kind("movies"); } }
-                        VideoTab { label: "Local";    active: root.kind == "local";    clicked => { root.set-kind("local"); } }
-                        VideoTab { label: "Discover"; active: root.kind == "discover"; clicked => { root.set-kind("discover"); } }
+                        VideoTab { hue: VP.c-info; label: "TV";       active: root.kind == "tv";       clicked => { root.set-kind("tv"); } }
+                        VideoTab { hue: VP.c-save; label: "Movies";   active: root.kind == "movies";   clicked => { root.set-kind("movies"); } }
+                        VideoTab { hue: VP.c-dl; label: "Local";    active: root.kind == "local";    clicked => { root.set-kind("local"); } }
+                        VideoTab { hue: VP.c-back; label: "Discover"; active: root.kind == "discover"; clicked => { root.set-kind("discover"); } }
+                        VideoTab { hue: VP.c-play; label: "Stream";   active: root.kind == "stream";   clicked => { root.set-kind("stream"); } }
                     }
                 }
 
                 Rectangle { horizontal-stretch: 1; }
 
-                // Search box.
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                // Search box. Hidden on Stream, which searches the remote
+                // catalogue from its own field rather than the local library.
+                if root.kind != "stream": VerticalLayout { alignment: center; horizontal-stretch: 0;
                     Rectangle {
-                        width: 360px; height: 44px; border-radius: 22px; background: #ffffff14;
-                        border-width: 1px; border-color: #ffffff22;
+                        width: 360px; height: 44px; border-radius: 22px; background: VP.hair;
+                        border-width: 1px; border-color: VP.glass-2;
                         HorizontalLayout {
                             padding-left: 18px; padding-right: 10px; spacing: 8px;
                             VerticalLayout { alignment: center;
-                                AppIcon { source: Icons.search; tint: #9a9aa2; width: 14px; height: 14px; } }
+                                AppIcon { source: Icons.search; tint: VP.text-dim; width: 14px; height: 14px; } }
                             Rectangle { horizontal-stretch: 1;
                                 qi := TextInput {
                                     width: 100%; height: 100%;
                                     text <=> root.query;
-                                    color: #ffffff; font-size: 14px;
+                                    color: VP.text; font-size: 14px;
                                     vertical-alignment: center; single-line: true;
                                     edited => { root.search(self.text); }
                                 }
                                 if root.query == "": Text {
-                                    text: "Search videos"; color: #9a9aa2; font-size: 14px;
+                                    text: "Search videos"; color: VP.text-dim; font-size: 14px;
                                     vertical-alignment: center; height: 100%;
                                     visible: !qi.has-focus;
                                 }
@@ -390,9 +1107,9 @@ export component VideosPage inherits Rectangle {
                             if root.query != "": Rectangle {
                                 width: 26px; height: 26px; border-radius: 13px;
                                 horizontal-stretch: 0; vertical-stretch: 0; y: (parent.height - self.height) / 2;
-                                background: clearx.has-hover ? #ffffff33 : #ffffff22;
+                                background: clearx.has-hover ? VP.btn-2-hi : VP.btn-2;
                                 clearx := TouchArea { mouse-cursor: pointer; clicked => { root.query = ""; root.search(""); } }
-                                AppIcon { source: Icons.x; tint: #e8e8ea; width: 11px; height: 11px;
+                                AppIcon { source: Icons.x; tint: VP.icon; width: 11px; height: 11px;
                                     x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
                             }
                             VerticalLayout { alignment: center;
@@ -401,43 +1118,75 @@ export component VideosPage inherits Rectangle {
                     }
                 }
 
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    VideoTab { label: "+ Add folder"; active: true; clicked => { root.add-folder(); } } }
+                // Folder + library count are local-library concerns; Stream has
+                // no folders and its own result count.
+                if root.kind != "stream": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    VideoTab { hue: VP.c-play; label: "+ Add folder"; active: true; clicked => { root.add-folder(); } } }
 
                 // Count pill.
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                if root.kind != "stream": VerticalLayout { alignment: center; horizontal-stretch: 0;
                     Rectangle {
-                        height: 44px; border-radius: 22px; background: #e5a00d;
+                        height: 44px; border-radius: 22px; background: VP.accent;
                         HorizontalLayout { padding-left: 16px; padding-right: 16px;
-                            Text { text: root.item-count + " videos"; color: #1a1a1a; font-size: 12px; font-weight: 800; vertical-alignment: center; } }
+                            Text { text: root.item-count + " videos"; color: VP.accent-ink; font-size: 12px; font-weight: 800; vertical-alignment: center; } }
+                    }
+                }
+
+                // Stream: Saved + Hosts, right side of the header.
+                if root.kind == "stream": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    VideoTab {
+                        hue: VP.c-save;
+                        icon: Icons.bookmark; label: "Saved";
+                        active: root.stream-view == "bookmarks";
+                        clicked => {
+                            if (root.stream-view == "bookmarks") {
+                                root.stream-view = "search";
+                            } else {
+                                root.stream-view = "bookmarks";
+                                root.bm-page = 0;
+                                root.stream-bookmarks-load();
+                            }
+                        }
+                    }
+                }
+                if root.kind == "stream": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    VideoTab {
+                        hue: VP.c-info;
+                        icon: Icons.settings; label: "Hosts";
+                        active: root.stream-hosts-open;
+                        clicked => {
+                            root.stream-hosts-open = !root.stream-hosts-open;
+                            if (root.stream-hosts-open) { root.stream-hosts-opened(); }
+                        }
                     }
                 }
             }
         }
 
         // Row 2 — library sub-tabs (shared across TV/Movies/Local) + clear thumbs.
-        Rectangle {
-            height: 54px; horizontal-stretch: 1; background: #131316;
+        // Stream has no library categories, so it gets its own toolbar instead.
+        if root.kind != "stream": Rectangle {
+            height: 54px; horizontal-stretch: 1; background: VP.header;
             HorizontalLayout {
                 padding-left: 28px; padding-right: 28px; spacing: 8px; alignment: start;
-                VideoTab { label: "Library";  active: root.category == "library";  clicked => { root.set-category("library"); } }
-                VideoTab { label: "Continue"; active: root.category == "continue"; clicked => { root.set-category("continue"); } }
-                VideoTab { label: "Starred";  active: root.category == "starred";  clicked => { root.set-category("starred"); } }
-                VideoTab { label: "Archive";  active: root.category == "archive";  clicked => { root.set-category("archive"); } }
-                VideoTab { label: "Trash";    active: root.category == "trash";    clicked => { root.set-category("trash"); } }
+                VideoTab { hue: VP.accent; label: "Library";  active: root.category == "library";  clicked => { root.set-category("library"); } }
+                VideoTab { hue: VP.c-play; label: "Continue"; active: root.category == "continue"; clicked => { root.set-category("continue"); } }
+                VideoTab { hue: VP.c-back; label: "Starred";  active: root.category == "starred";  clicked => { root.set-category("starred"); } }
+                VideoTab { hue: VP.c-dl; label: "Archive";  active: root.category == "archive";  clicked => { root.set-category("archive"); } }
+                VideoTab { hue: VP.c-save; label: "Trash";    active: root.category == "trash";    clicked => { root.set-category("trash"); } }
                 Rectangle { horizontal-stretch: 1; }
-                VideoTab { icon: Icons.refresh-cw; label: "Clear thumbs"; clicked => { root.clear-thumbs(); } }
+                VideoTab { hue: VP.c-back; icon: Icons.refresh-cw; label: "Clear thumbs"; clicked => { root.clear-thumbs(); } }
             }
         }
 
         // TV drill-in back header.
         if root.kind == "tv" && root.show-open: Rectangle {
-            height: 44px; horizontal-stretch: 1; background: #131316;
+            height: 44px; horizontal-stretch: 1; background: VP.header;
             HorizontalLayout {
                 padding-left: 28px; spacing: 10px; alignment: start;
-                VideoTab { icon: Icons.chevron-left; label: "Shows"; clicked => { root.show-back(); } }
+                VideoTab { hue: VP.accent; icon: Icons.chevron-left; label: "Shows"; clicked => { root.show-back(); } }
                 VerticalLayout { alignment: center;
-                    Text { text: root.show-title; color: #ffffff; font-size: 15px; font-weight: 700; } }
+                    Text { text: root.show-title; color: VP.text; font-size: 15px; font-weight: 700; } }
             }
         }
 
@@ -451,9 +1200,9 @@ export component VideosPage inherits Rectangle {
                 if root.next-up.length > 0: VerticalLayout {
                     spacing: 14px;
                     HorizontalLayout { alignment: start; spacing: 8px;
-                        Rectangle { width: 4px; height: 20px; border-radius: 2px; background: #e5a00d;
+                        Rectangle { width: 4px; height: 20px; border-radius: 2px; background: VP.accent;
                             horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
-                        Text { text: "Next Up"; color: #ffffff; font-size: 18px; font-weight: 700; } }
+                        Text { text: "Next Up"; color: VP.text; font-size: 18px; font-weight: 700; } }
                     Flickable {
                         height: cell-h; viewport-width: root.next-up.length * cell-w;
                         for tile[idx] in root.next-up: Poster {
@@ -465,9 +1214,9 @@ export component VideosPage inherits Rectangle {
                     }
                 }
                 HorizontalLayout { alignment: start; spacing: 8px;
-                    Rectangle { width: 4px; height: 20px; border-radius: 2px; background: #e5a00d;
+                    Rectangle { width: 4px; height: 20px; border-radius: 2px; background: VP.accent;
                         horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
-                    Text { text: "TV Shows"; color: #ffffff; font-size: 18px; font-weight: 700; } }
+                    Text { text: "TV Shows"; color: VP.text; font-size: 18px; font-weight: 700; } }
                 Rectangle {
                     horizontal-stretch: 1;
                     height: Math.ceil(shows.length / cols) * cell-h;
@@ -483,10 +1232,10 @@ export component VideosPage inherits Rectangle {
         if root.cards-mode && shows.length == 0: VerticalLayout {
             alignment: center; spacing: 14px;
             HorizontalLayout { alignment: center;
-                Rectangle { width: 96px; height: 96px; border-radius: 20px; background: #e5a00d22;
+                Rectangle { width: 96px; height: 96px; border-radius: 20px; background: VP.accent-22;
                     AppIcon { source: Icons.tv; width: 42px; height: 42px; } } }
-            Text { text: "No TV shows"; color: #ffffff; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
-            Text { text: "Name episode files like 'Show S01E01.mkv' in a per-show folder; they group here."; color: #a0a0a6; font-size: 13px; horizontal-alignment: center; }
+            Text { text: "No TV shows"; color: VP.text; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+            Text { text: "Name episode files like 'Show S01E01.mkv' in a per-show folder; they group here."; color: VP.text-dim; font-size: 13px; horizontal-alignment: center; }
         }
 
         // Drilled-in TV show — episodes grouped by season (np.p3.episodes).
@@ -499,11 +1248,11 @@ export component VideosPage inherits Rectangle {
                     spacing: 14px;
                     HorizontalLayout {
                         alignment: start; spacing: 8px;
-                        Rectangle { width: 4px; height: 20px; border-radius: 2px; background: #e5a00d;
+                        Rectangle { width: 4px; height: 20px; border-radius: 2px; background: VP.accent;
                             horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
-                        Text { text: season.label; color: #ffffff; font-size: 18px; font-weight: 700; }
+                        Text { text: season.label; color: VP.text; font-size: 18px; font-weight: 700; }
                         Text { text: season.tiles.length + (season.tiles.length == 1 ? " episode" : " episodes");
-                            color: #8a8a90; font-size: 12px; font-weight: 600; vertical-alignment: center; }
+                            color: VP.text-mute; font-size: 12px; font-weight: 600; vertical-alignment: center; }
                     }
                     Rectangle {
                         horizontal-stretch: 1;
@@ -522,13 +1271,13 @@ export component VideosPage inherits Rectangle {
         if root.drilled && seasons.length == 0: VerticalLayout {
             alignment: center; spacing: 14px;
             HorizontalLayout { alignment: center;
-                Rectangle { width: 96px; height: 96px; border-radius: 20px; background: #e5a00d22;
+                Rectangle { width: 96px; height: 96px; border-radius: 20px; background: VP.accent-22;
                     AppIcon { source: Icons.tv; width: 42px; height: 42px; } } }
-            Text { text: "No episodes"; color: #ffffff; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
-            Text { text: "This show has no episodes in the current tab."; color: #a0a0a6; font-size: 13px; horizontal-alignment: center; }
+            Text { text: "No episodes"; color: VP.text; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+            Text { text: "This show has no episodes in the current tab."; color: VP.text-dim; font-size: 13px; horizontal-alignment: center; }
         }
 
-        if !root.cards-mode && !root.drilled && tiles.length > 0: ScrollView {
+        if root.local-mode && !root.cards-mode && !root.drilled && tiles.length > 0: ScrollView {
             vertical-stretch: 1; horizontal-stretch: 1;
             VerticalLayout {
                 spacing: 0px;
@@ -536,24 +1285,24 @@ export component VideosPage inherits Rectangle {
                 // Featured hero — Local Library only, first item as a wide backdrop.
                 if root.category == "library" && root.kind == "local": Rectangle {
                     height: 360px; horizontal-stretch: 1; clip: true;
-                    background: #0c0c0e;
+                    background: VP.bg;
                     Image {
                         source: root.tiles[0].thumb; image-fit: cover;
                         width: parent.width; height: parent.height;
                         opacity: 0.55;
                     }
                     Rectangle { width: parent.width; height: parent.height;
-                        background: @linear-gradient(0deg, #131316 4%, transparent 60%); }
+                        background: @linear-gradient(0deg, VP.header 4%, transparent 60%); }
                     Rectangle { width: parent.width; height: parent.height;
-                        background: @linear-gradient(90deg, #131316cc 0%, transparent 55%); }
+                        background: @linear-gradient(90deg, VP.header 0%, transparent 55%); }
                     VerticalLayout {
                         padding: 44px; alignment: end; spacing: 14px;
-                        Text { text: "FEATURED"; color: #e5a00d; font-size: 11px; font-weight: 800; letter-spacing: 2px; }
-                        Text { text: root.tiles[0].label; color: #ffffff; font-size: 34px; font-weight: 800; overflow: elide; }
-                        Text { text: item-count + " titles in your library"; color: #c8c8cc; font-size: 13px; }
+                        Text { text: "FEATURED"; color: VP.accent; font-size: 11px; font-weight: 800; letter-spacing: 2px; }
+                        Text { text: root.tiles[0].label; color: VP.text; font-size: 34px; font-weight: 800; overflow: elide; }
+                        Text { text: item-count + " titles in your library"; color: VP.text-dim; font-size: 13px; }
                         HorizontalLayout {
                             spacing: 12px; alignment: start;
-                            PlexButton { icon: Icons.play; label: "Play"; filled: true; clicked => { root.tile-clicked(root.tiles[0].index); } }
+                            PlexButton { icon: Icons.play; label: "Play"; filled: true; hue: VP.c-play; clicked => { root.tile-clicked(root.tiles[0].index); } }
                             PlexButton { label: "+ Add media"; clicked => { root.add-folder(); } }
                         }
                     }
@@ -565,9 +1314,9 @@ export component VideosPage inherits Rectangle {
                     spacing: 14px;
                     HorizontalLayout {
                         alignment: start; spacing: 8px;
-                        Rectangle { width: 4px; height: 20px; border-radius: 2px; background: #e5a00d;
+                        Rectangle { width: 4px; height: 20px; border-radius: 2px; background: VP.accent;
                             horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
-                        Text { text: root.tab-title(root.category); color: #ffffff; font-size: 18px; font-weight: 700; }
+                        Text { text: root.tab-title(root.category); color: VP.text; font-size: 18px; font-weight: 700; }
                     }
                     Rectangle {
                         horizontal-stretch: 1;
@@ -586,7 +1335,7 @@ export component VideosPage inherits Rectangle {
 
         // Empty states (np.p1.ds.empty-state): the library tab gets the frosted
         // EmptyState card (accent halo + CTA); other tabs keep the plain note.
-        if !root.cards-mode && !root.drilled && tiles.length == 0 && root.kind != "discover" && root.category == "library": VerticalLayout {
+        if root.local-mode && !root.cards-mode && !root.drilled && tiles.length == 0 && root.category == "library": VerticalLayout {
             alignment: center;
             HorizontalLayout { alignment: center;
                 EmptyState {
@@ -598,15 +1347,15 @@ export component VideosPage inherits Rectangle {
                     cta-clicked => { root.add-folder(); }
                 } }
         }
-        if !root.cards-mode && !root.drilled && tiles.length == 0 && root.kind != "discover" && root.category != "library": VerticalLayout {
+        if root.local-mode && !root.cards-mode && !root.drilled && tiles.length == 0 && root.category != "library": VerticalLayout {
             alignment: center; spacing: 14px;
             HorizontalLayout {
                 alignment: center;
-                Rectangle { width: 96px; height: 96px; border-radius: 20px; background: #e5a00d22;
+                Rectangle { width: 96px; height: 96px; border-radius: 20px; background: VP.accent-22;
                     AppIcon { source: Icons.film; width: 42px; height: 42px; } }
             }
-            Text { text: "Nothing here"; color: #ffffff; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
-            Text { text: root.empty-msg(root.category); color: #a0a0a6; font-size: 13px; horizontal-alignment: center; }
+            Text { text: "Nothing here"; color: VP.text; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
+            Text { text: root.empty-msg(root.category); color: VP.text-dim; font-size: 13px; horizontal-alignment: center; }
         }
 
         // ── Discover feed (np.p3.discover) — four TMDB rails ──────────────
@@ -620,10 +1369,10 @@ export component VideosPage inherits Rectangle {
                     padding-left: 32px; padding-right: 32px; padding-bottom: 16px;
                     alignment: space-between;
                     VerticalLayout { alignment: center;
-                        Text { text: "TMDB Trending & Upcoming"; color: #6a6a72; font-size: 11px;
+                        Text { text: "TMDB Trending & Upcoming"; color: VP.text-mute; font-size: 11px;
                             font-weight: 700; letter-spacing: 1.5px; } }
                     VerticalLayout { alignment: center;
-                        VideoTab { icon: Icons.refresh-cw; label: "Refresh"; clicked => { root.refresh-discover(); } }
+                        VideoTab { hue: VP.c-dl; icon: Icons.refresh-cw; label: "Refresh"; clicked => { root.refresh-discover(); } }
                     }
                 }
 
@@ -632,23 +1381,830 @@ export component VideosPage inherits Rectangle {
                     items: root.discover-trending-movies;
                     card-clicked(id) => { /* future: open movie detail */ }
                 }
-                Rectangle { height: 1px; background: #ffffff0a; horizontal-stretch: 1; }
+                Rectangle { height: 1px; background: VP.fill-weak; horizontal-stretch: 1; }
                 DiscoverRail {
                     label: "Trending TV Shows"; icon: Icons.tv;
                     items: root.discover-trending-shows;
                     card-clicked(id) => { }
                 }
-                Rectangle { height: 1px; background: #ffffff0a; horizontal-stretch: 1; }
+                Rectangle { height: 1px; background: VP.fill-weak; horizontal-stretch: 1; }
                 DiscoverRail {
                     label: "Upcoming Movies"; icon: Icons.film;
                     items: root.discover-upcoming;
                     card-clicked(id) => { }
                 }
-                Rectangle { height: 1px; background: #ffffff0a; horizontal-stretch: 1; }
+                Rectangle { height: 1px; background: VP.fill-weak; horizontal-stretch: 1; }
                 DiscoverRail {
                     label: "On The Air"; icon: Icons.rss;
                     items: root.discover-on-air;
                     card-clicked(id) => { }
+                }
+            }
+        }
+
+        // ── Stream (remote catalogue) ─────────────────────────────────────
+        // Search bar, then either the results grid or the opened title's
+        // detail pane. The Hosts editor drops in under the toolbar.
+        if root.kind == "stream": VerticalLayout {
+            spacing: 0px;
+            vertical-stretch: 1; horizontal-stretch: 1;
+
+            // Toolbar — only once there is something on screen. On the landing
+            // screen the search field lives in the centre instead (below).
+            if !root.stream-landing && root.stream-view == "search": Rectangle {
+                height: 66px; horizontal-stretch: 1; vertical-stretch: 0; background: VP.header;
+                HorizontalLayout {
+                    padding-left: 28px; padding-right: 28px; spacing: 12px; alignment: start;
+                    // Back — to the detail's results (when in detail), or from
+                    // results to the landing screen. Consistent size + gold fill.
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        StreamBackBtn {
+                            label: root.stream-detail-open ? "Results" : "Back";
+                            clicked => {
+                                if (root.stream-detail-open) {
+                                    root.stream-back();
+                                } else {
+                                    root.stream-query = "";
+                                    root.stream-search("");
+                                }
+                            }
+                        }
+                    }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        StreamSearchField {
+                            width: 420px;
+                            query <=> root.stream-query;
+                            search(q) => { root.stream-suggest-clear(); root.stream-search(q); }
+                            edited(q) => { root.stream-suggest(q); }
+                        }
+                    }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        PlexButton { icon: Icons.search; label: "Search"; filled: true;
+                            clicked => { root.stream-search(root.stream-query); } } }
+                    // Status line — auto-hides a few seconds after it changes.
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        if root.status-visible: Text { text: root.stream-status;
+                            color: root.stream-busy ? VP.accent : VP.text-mute;
+                            font-size: 12px; font-weight: 600; overflow: elide; } }
+                }
+            }
+            // Indeterminate activity strip — a request is in flight.
+            if root.stream-busy: Rectangle {
+                height: 2px; horizontal-stretch: 1; background: VP.accent-44;
+            }
+
+            // Download progress. Stays until dismissed by the next download.
+            if root.stream-dl-label != "": Rectangle {
+                height: 46px; horizontal-stretch: 1; vertical-stretch: 0;
+                background: VP.header-2;
+                HorizontalLayout {
+                    padding-left: 28px; padding-right: 28px; spacing: 14px;
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        AppIcon { source: Icons.download;
+                            tint: root.stream-dl-active ? VP.accent : VP.text-mute;
+                            width: 15px; height: 15px; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 5px;
+                        Text { text: root.stream-dl-label; color: VP.text-dim;
+                            font-size: 11px; font-weight: 600; overflow: elide; }
+                        if root.stream-dl-active: Rectangle {
+                            height: 4px; border-radius: 2px; background: VP.hair;
+                            Rectangle { x: 0; y: 0; height: 4px; border-radius: 2px;
+                                width: parent.width * Math.clamp(root.stream-dl-frac, 0.0, 1.0);
+                                background: VP.accent; }
+                        }
+                    }
+                    if root.stream-dl-active: VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        VideoTab { label: "Cancel";
+                            clicked => { root.stream-download-cancel(); } } }
+                    // Dismiss a finished row now (it also auto-hides after a few s).
+                    if !root.stream-dl-active: VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Rectangle {
+                            width: 28px; height: 28px; border-radius: 14px;
+                            background: dlx.has-hover ? VP.btn-2-hi : VP.btn-2;
+                            dlx := TouchArea { mouse-cursor: pointer;
+                                clicked => { root.stream-download-dismiss(); } }
+                            AppIcon { source: Icons.x; tint: VP.icon; width: 11px; height: 11px;
+                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                        }
+                    }
+                }
+            }
+
+            // Results — grid on the left, a full-height Info Preview panel
+            // pinned to the right that fills on hover (TUI's Results │ Info split).
+            // The panel reserves its width so the grid never reflows.
+            if root.stream-view == "search" && !root.stream-detail-open && root.stream-results.length > 0: HorizontalLayout {
+                vertical-stretch: 1; horizontal-stretch: 1; spacing: 0px;
+                // Grid.
+                ScrollView {
+                    horizontal-stretch: 1; vertical-stretch: 1;
+                    VerticalLayout {
+                        padding-left: 44px; padding-right: 24px;
+                        padding-top: 24px; padding-bottom: 36px; spacing: 14px;
+                        HorizontalLayout { alignment: start; spacing: 8px;
+                            Rectangle { width: 4px; height: 20px; border-radius: 2px; background: VP.accent;
+                                horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
+                            Text { text: "Results"; color: VP.text; font-size: 18px; font-weight: 700; }
+                            Text { text: root.stream-results.length + " titles"; color: VP.text-mute;
+                                font-size: 12px; vertical-alignment: center; } }
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            height: Math.ceil(root.stream-results.length / rcols) * cell-h;
+                            for card[idx] in root.stream-results: StreamPoster {
+                                x: Math.mod(idx, rcols) * cell-w;
+                                y: Math.floor(idx / rcols) * cell-h;
+                                card: card;
+                                clicked => { root.stream-open(card.id); }
+                                hovered(on) => { root.stream-preview(on ? card.id : ""); }
+                            }
+                        }
+                    }
+                }
+                // Full-height Info Preview side panel.
+                Rectangle {
+                    width: 360px; horizontal-stretch: 0; vertical-stretch: 1;
+                    background: VP.surface;
+                    border-width: 1px; border-color: VP.hair;
+                    ScrollView {
+                        width: 100%; height: 100%;
+                        VerticalLayout {
+                            padding: 22px; spacing: 12px; alignment: start;
+                            HorizontalLayout { alignment: start; spacing: 8px;
+                                Text { text: "INFO PREVIEW"; color: VP.accent; font-size: 10px;
+                                    font-weight: 800; letter-spacing: 1.4px; vertical-alignment: center; }
+                            }
+                            if !root.stream-preview-open: Text {
+                                text: "Hover a title to see details.";
+                                color: VP.text-mute; font-size: 12px; wrap: word-wrap;
+                            }
+                            // Poster first — big thumb above the title.
+                            if root.stream-preview-open: Rectangle {
+                                width: 100%; height: 400px;
+                                border-radius: 10px; clip: true; background: VP.well;
+                                horizontal-stretch: 1; vertical-stretch: 0;
+                                Image { source: root.stream-preview-cover; image-fit: cover;
+                                    width: parent.width; height: parent.height; }
+                                if root.stream-preview-cover.width == 0: AppIcon {
+                                    source: root.stream-preview-is-series ? Icons.tv : Icons.film;
+                                    tint: VP.ph-icon; width: 40px; height: 40px;
+                                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                                }
+                            }
+                            if root.stream-preview-open: Rectangle {
+                                height: 20px;
+                                width: kindpill.preferred-width + 16px;
+                                horizontal-stretch: 0;
+                                border-radius: 10px;
+                                background: root.stream-preview-is-series ? VP.badge-series : VP.badge-movie;
+                                kindpill := Text {
+                                    text: root.stream-preview-is-series ? "SERIES" : "MOVIE";
+                                    color: VP.text; font-size: 9px; font-weight: 800;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                    width: parent.width; height: parent.height;
+                                }
+                            }
+                            if root.stream-preview-open: Text {
+                                text: root.stream-preview-title; color: VP.text;
+                                font-size: 20px; font-weight: 800; wrap: word-wrap;
+                            }
+                            if root.stream-preview-open && root.stream-preview-meta != "": Text {
+                                text: root.stream-preview-meta; color: VP.text-dim; font-size: 12px;
+                                font-weight: 600; wrap: word-wrap;
+                            }
+                            if root.stream-preview-open && root.stream-preview-seasons > 0: Text {
+                                text: root.stream-preview-seasons + " season" + (root.stream-preview-seasons == 1 ? "" : "s");
+                                color: VP.accent; font-size: 12px; font-weight: 700;
+                            }
+                            if root.stream-preview-open && root.stream-preview-langs != "": VerticalLayout {
+                                spacing: 4px;
+                                Text { text: "AUDIO"; color: VP.text-mute; font-size: 9px;
+                                    font-weight: 800; letter-spacing: 1.2px; }
+                                Text { text: root.stream-preview-langs; color: VP.text-dim;
+                                    font-size: 12px; wrap: word-wrap; }
+                            }
+                            if root.stream-preview-open && root.stream-preview-overview != "": VerticalLayout {
+                                spacing: 4px;
+                                Text { text: "SYNOPSIS"; color: VP.text-mute; font-size: 9px;
+                                    font-weight: 800; letter-spacing: 1.2px; }
+                                Text { text: root.stream-preview-overview; color: VP.text-dim;
+                                    font-size: 12px; wrap: word-wrap; }
+                            }
+                        }
+                    }
+                }
+            }
+            // Landing screen — the search field sits in the middle of the page
+            // with recent terms beneath it, and moves up into the toolbar as
+            // soon as there are results to show.
+            if root.stream-landing && root.stream-view == "search": VerticalLayout {
+                alignment: center; spacing: 0px;
+                vertical-stretch: 1; horizontal-stretch: 1;
+
+                // Frosted double-outline frame around the field + recent list.
+                // Two rings with a gap between them (outer indigo-tinted, inner
+                // subtle) over a translucent theme fill, so the backdrop shows
+                // through like frosted glass.
+                HorizontalLayout { alignment: center;
+                    Rectangle {
+                        width: 640px; horizontal-stretch: 0; vertical-stretch: 0;
+                        border-radius: 22px;
+                        background: !Theme.dark ? #ffffffc4 : (Theme.oled ? #0c0c12c4 : #14162ac4);
+                        border-width: 1.5px; border-color: VP.accent-44;
+                        // This padding is the GAP between the outer and inner ring.
+                        VerticalLayout { padding: 7px;
+                            Rectangle {
+                                border-radius: 16px; background: transparent;
+                                border-width: 1px; border-color: VP.glass-2;
+                                VerticalLayout {
+                                    padding: 26px; spacing: 0px;
+
+                                    // Header — search icon, title, subtitle — now
+                                    // inside the box, above the field.
+                                    HorizontalLayout { alignment: center;
+                                        Rectangle { width: 72px; height: 72px; border-radius: 20px;
+                                            background: VP.accent-22;
+                                            horizontal-stretch: 0; vertical-stretch: 0;
+                                            AppIcon { source: Icons.search; tint: VP.accent; width: 30px; height: 30px;
+                                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } }
+                                    Rectangle { height: 14px; }
+                                    Text { text: root.stream-busy ? "Searching…" : "Stream";
+                                        color: VP.text; font-size: 26px; font-weight: 800;
+                                        horizontal-alignment: center; }
+                                    Rectangle { height: 8px; }
+                                    Text { text: "Find a movie or series and play it straight away.";
+                                        color: VP.text-dim; font-size: 13px; horizontal-alignment: center; }
+                                    Rectangle { height: 22px; }
+
+                                    // The centred field.
+                                    HorizontalLayout { alignment: center;
+                                        StreamSearchField {
+                                            width: 560px; large: true;
+                                            query <=> root.stream-query;
+                                            search(q) => { root.stream-suggest-clear(); root.stream-search(q); }
+                                            edited(q) => { root.stream-suggest(q); }
+                                        }
+                                    }
+
+                                    // Autocomplete, directly beneath the field.
+                                    if root.stream-suggestions.length > 0: Rectangle { height: 8px; }
+                                    if root.stream-suggestions.length > 0: HorizontalLayout {
+                                        alignment: center;
+                                        Rectangle {
+                                            width: 560px;
+                                            height: Math.min(root.stream-suggestions.length, 6) * 34px + 10px;
+                                            horizontal-stretch: 0; vertical-stretch: 0;
+                                            border-radius: 12px; background: VP.modal;
+                                            border-width: 1px; border-color: VP.glass-2;
+                                            clip: true;
+                                            VerticalLayout {
+                                                padding: 5px; alignment: start;
+                                                for name in root.stream-suggestions: PickRow {
+                                                    label: name;
+                                                    clicked => {
+                                                        root.stream-query = name;
+                                                        root.stream-suggest-clear();
+                                                        root.stream-search(name);
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    }
+
+                                    // Status only matters here when something went wrong.
+                                    if root.stream-status != "": Rectangle { height: 14px; }
+                                    if root.stream-status != "": Text {
+                                        text: root.stream-status;
+                                        color: root.stream-busy ? VP.accent : VP.text-mute;
+                                        font-size: 12px; font-weight: 600; horizontal-alignment: center;
+                                    }
+
+                                    // Recent searches.
+                                    if root.stream-recent.length > 0: Rectangle { height: 24px; }
+                                    if root.stream-recent.length > 0: HorizontalLayout {
+                                        alignment: center; spacing: 10px;
+                                        Text { text: "RECENT"; color: VP.text-mute; font-size: 10px;
+                                            font-weight: 800; letter-spacing: 1.5px; vertical-alignment: center; }
+                                        Rectangle {
+                                            width: 54px; height: 22px; border-radius: 11px;
+                                            horizontal-stretch: 0; vertical-stretch: 0;
+                                            background: clr.has-hover ? VP.btn-2-hi : VP.btn-2;
+                                            clr := TouchArea { mouse-cursor: pointer;
+                                                clicked => { root.stream-recent-clear(); } }
+                                            Text { text: "Clear"; color: clr.has-hover ? VP.icon : VP.text-mute;
+                                                font-size: 10px; font-weight: 700;
+                                                horizontal-alignment: center; vertical-alignment: center;
+                                                width: parent.width; height: parent.height; }
+                                        }
+                                    }
+                                    if root.stream-recent.length > 0: Rectangle { height: 10px; }
+                                    // One past search per line (max 5, kept by the backend).
+                                    if root.stream-recent.length > 0: HorizontalLayout {
+                                        alignment: center;
+                                        VerticalLayout {
+                                            width: 560px; spacing: 6px;
+                                            for term in root.stream-recent: RecentChip {
+                                                label: term;
+                                                clicked => { root.stream-query = term; root.stream-search(term); }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── Saved page — clean 3×3 grid, 9 per page, header pagination. ──
+            if root.stream-view == "bookmarks": VerticalLayout {
+                vertical-stretch: 1; horizontal-stretch: 1; spacing: 0px;
+                // Second header — title, sort controls, pagination.
+                Rectangle {
+                    height: 66px; horizontal-stretch: 1; vertical-stretch: 0; background: VP.header;
+                    HorizontalLayout {
+                        padding-left: 28px; padding-right: 28px; spacing: 12px; alignment: start;
+                        // Back to where the user came from (search / results).
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Rectangle {
+                                width: 34px; height: 34px; border-radius: 17px;
+                                background: bkbm.has-hover ? VP.accent : VP.btn-2;
+                                bkbm := TouchArea { mouse-cursor: pointer;
+                                    clicked => { root.stream-view = "search"; } }
+                                AppIcon { source: Icons.arrow-left;
+                                    tint: bkbm.has-hover ? VP.accent-ink : VP.icon; width: 16px; height: 16px;
+                                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                            }
+                        }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            AppIcon { source: Icons.bookmark; tint: VP.accent; width: 20px; height: 20px; } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Text { text: "Saved"; color: VP.text; font-size: 22px; font-weight: 800; } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Text { text: root.stream-bookmarks.length + " title" + (root.stream-bookmarks.length == 1 ? "" : "s");
+                                color: VP.text-mute; font-size: 12px; vertical-alignment: center; } }
+
+                        // Sort controls — key chips + direction toggle.
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            HorizontalLayout { spacing: 6px;
+                                Text { text: "SORT"; color: VP.text-mute; font-size: 9px; font-weight: 800;
+                                    letter-spacing: 1.2px; vertical-alignment: center; }
+                                SortChip { label: "Date"; hue: VP.c-info; active: root.bm-sort == "date";
+                                    clicked => { root.bm-sort = "date"; root.bm-page = 0;
+                                        root.stream-bookmarks-sort("date", root.bm-asc); } }
+                                SortChip { label: "Name"; hue: VP.c-dl; active: root.bm-sort == "name";
+                                    clicked => { root.bm-sort = "name"; root.bm-page = 0;
+                                        root.stream-bookmarks-sort("name", root.bm-asc); } }
+                                SortChip { label: "Type"; hue: VP.c-back; active: root.bm-sort == "type";
+                                    clicked => { root.bm-sort = "type"; root.bm-page = 0;
+                                        root.stream-bookmarks-sort("type", root.bm-asc); } }
+                                // Ascending / descending toggle.
+                                Rectangle {
+                                    width: 34px; height: 30px; border-radius: 8px;
+                                    horizontal-stretch: 0; vertical-stretch: 0;
+                                    background: dirbtn.has-hover ? VP.btn-2-hi : VP.btn-2;
+                                    dirbtn := TouchArea { mouse-cursor: pointer;
+                                        clicked => { root.bm-asc = !root.bm-asc; root.bm-page = 0;
+                                            root.stream-bookmarks-sort(root.bm-sort, root.bm-asc); } }
+                                    AppIcon { source: root.bm-asc ? Icons.arrow-up : Icons.arrow-down;
+                                        tint: VP.accent; width: 14px; height: 14px;
+                                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                                }
+                            }
+                        }
+
+                        Rectangle { horizontal-stretch: 1; }
+
+                        // Pagination — moved here from the app header.
+                        if root.bm-pages > 1: VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            HorizontalLayout { spacing: 6px;
+                                Rectangle {
+                                    width: 34px; height: 34px; border-radius: 8px;
+                                    background: prevbm.has-hover ? VP.btn-2-hi : VP.btn-2;
+                                    opacity: root.bm-page > 0 ? 1.0 : 0.4;
+                                    prevbm := TouchArea { mouse-cursor: pointer;
+                                        clicked => { if (root.bm-page > 0) { root.bm-page -= 1; } } }
+                                    AppIcon { source: Icons.chevron-left; tint: VP.icon; width: 15px; height: 15px;
+                                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                                }
+                                VerticalLayout { alignment: center;
+                                    Text { text: (root.bm-page + 1) + " / " + root.bm-pages;
+                                        color: VP.text-dim; font-size: 12px; font-weight: 700;
+                                        vertical-alignment: center; } }
+                                Rectangle {
+                                    width: 34px; height: 34px; border-radius: 8px;
+                                    background: nextbm.has-hover ? VP.btn-2-hi : VP.btn-2;
+                                    opacity: root.bm-page + 1 < root.bm-pages ? 1.0 : 0.4;
+                                    nextbm := TouchArea { mouse-cursor: pointer;
+                                        clicked => { if (root.bm-page + 1 < root.bm-pages) { root.bm-page += 1; } } }
+                                    AppIcon { source: Icons.chevron-right; tint: VP.icon; width: 15px; height: 15px;
+                                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                                }
+                            }
+                        }
+                    }
+                }
+                // 3×3 grid of horizontal cards.
+                if root.stream-bookmarks.length > 0: VerticalLayout {
+                    vertical-stretch: 1; horizontal-stretch: 1;
+                    padding-left: 44px; padding-right: 44px;
+                    padding-top: 24px; padding-bottom: 24px; spacing: 18px;
+                    for rowidx in [0, 1, 2]: HorizontalLayout {
+                        vertical-stretch: 1; horizontal-stretch: 1; spacing: 18px;
+                        for colidx in [0, 1, 2]: Rectangle {
+                            horizontal-stretch: 1; vertical-stretch: 1;
+                            property <int> slot: root.bm-page * root.bm-per-page + rowidx * 3 + colidx;
+                            if self.slot < root.stream-bookmarks.length: BookmarkCard {
+                                card: root.stream-bookmarks[parent.slot];
+                                open => { root.stream-view = "search"; root.stream-open(root.stream-bookmarks[parent.slot].id); }
+                                // X asks first — the actual removal happens in the
+                                // confirmation dialog below.
+                                remove => { root.bm-confirm-id = root.stream-bookmarks[parent.slot].id; }
+                            }
+                        }
+                    }
+                }
+                if root.stream-bookmarks.length == 0: VerticalLayout {
+                    alignment: center; spacing: 14px; vertical-stretch: 1;
+                    HorizontalLayout { alignment: center;
+                        Rectangle { width: 84px; height: 84px; border-radius: 22px; background: VP.accent-22;
+                            horizontal-stretch: 0; vertical-stretch: 0;
+                            AppIcon { source: Icons.bookmark; tint: VP.accent; width: 34px; height: 34px;
+                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } }
+                    Text { text: "Nothing saved yet"; color: VP.text; font-size: 22px;
+                        font-weight: 700; horizontal-alignment: center; }
+                    Text { text: "Open a title and press the bookmark button to save it here.";
+                        color: VP.text-dim; font-size: 13px; horizontal-alignment: center; }
+                }
+            }
+
+            // Detail pane — the TUI's layout: a Subject Info block on top, then
+            // the picker columns along the bottom. Movies get two columns
+            // (Audio/Dub · Streams); series get four (Audio/Dub · Seasons ·
+            // Episodes · Streams). Every column is a vertical list, so a show
+            // with 24 episodes reads as a list rather than one endless row.
+            if root.stream-detail-open && root.stream-view == "search": VerticalLayout {
+                vertical-stretch: 1; horizontal-stretch: 1;
+                padding-left: 28px; padding-right: 28px;
+                padding-top: 18px; padding-bottom: 22px; spacing: 16px;
+
+                // ── Subject Info — poster, metadata, synopsis, Audio/Dub, and
+                // the play/save actions all live here now.
+                Rectangle {
+                    vertical-stretch: 0; horizontal-stretch: 1;
+                    height: 278px;
+                    border-radius: 12px; background: VP.surface;
+                    border-width: 1px; border-color: VP.hair;
+                    HorizontalLayout {
+                        padding: 18px; spacing: 22px; alignment: start;
+                        Rectangle {
+                            width: 158px; height: 230px; border-radius: 8px; clip: true;
+                            background: VP.well; horizontal-stretch: 0; vertical-stretch: 0;
+                            Image { source: root.stream-cover; image-fit: cover;
+                                width: parent.width; height: parent.height; }
+                            if root.stream-cover.width == 0: AppIcon {
+                                source: root.stream-is-series ? Icons.tv : Icons.film; tint: VP.ph-icon;
+                                width: 32px; height: 32px;
+                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                            }
+                        }
+                        VerticalLayout {
+                            spacing: 8px; horizontal-stretch: 1;
+                            // Title row + bookmark button.
+                            HorizontalLayout { spacing: 12px; vertical-stretch: 0;
+                                VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                    Text { text: root.stream-title; color: VP.text; font-size: 30px;
+                                        font-weight: 800; overflow: elide; } }
+                                VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                    Rectangle {
+                                        width: 40px; height: 40px; border-radius: 8px;
+                                        background: root.stream-bookmarked ? VP.c-save : (bm.has-hover ? VP.btn-2-hi : VP.btn-2);
+                                        border-width: 1px;
+                                        border-color: root.stream-bookmarked ? VP.c-save : VP.c-save.with-alpha(0.55);
+                                        bm := TouchArea { mouse-cursor: pointer;
+                                            clicked => { root.stream-toggle-bookmark(); } }
+                                        AppIcon { source: Icons.bookmark;
+                                            tint: root.stream-bookmarked ? #ffffff : (Theme.dark ? VP.c-save : VP.c-save.darker(0.3));
+                                            width: 17px; height: 17px;
+                                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                                    }
+                                }
+                            }
+                            if root.stream-meta != "": Text { text: root.stream-meta;
+                                color: VP.text-dim; font-size: 14px; font-weight: 600; overflow: elide; }
+                            // Synopsis — clipped to the space above the actions so a
+                            // long summary can't shove the play row off the box.
+                            Rectangle {
+                                horizontal-stretch: 1; vertical-stretch: 1; clip: true;
+                                Text { x: 0; y: 0; width: parent.width;
+                                    text: root.stream-overview; color: VP.text-dim; font-size: 14px;
+                                    wrap: word-wrap; }
+                            }
+
+                            // Actions on the current stream — pinned to the bottom
+                            // edge; always ready because the top stream auto-selects
+                            // on every episode load.
+                            HorizontalLayout { spacing: 8px; alignment: start; vertical-stretch: 0;
+                                PlexButton { icon: Icons.play; min-width: 240px; hue: VP.c-play;
+                                    label: (root.launch-idx >= 0 && root.launch-idx == root.stream-current)
+                                        ? "Launching…"
+                                        : (root.stream-current-label != "" ? "Play " + root.stream-current-label : "Play");
+                                    filled: true;
+                                    clicked => {
+                                        root.launch-idx = root.stream-current;
+                                        launch-timer.running = false; launch-timer.running = true;
+                                        root.stream-play-current();
+                                    } }
+                                IconBtn { icon: Icons.clipboard; tip: "Copy link"; hue: VP.c-copy;
+                                    clicked => { root.stream-copy-current(); } }
+                                IconBtn { icon: Icons.download; tip: "Download"; hue: VP.c-dl;
+                                    clicked => { root.stream-download-current(); } }
+                            }
+                        }
+                    }
+                }
+
+                // ── Picker columns ────────────────────────────────────────
+                HorizontalLayout {
+                    vertical-stretch: 1; horizontal-stretch: 1; spacing: 14px;
+
+                    // Audio + Seasons — one column, two stacked cards (Seasons
+                    // only for series; on a movie Audio fills the column).
+                    VerticalLayout {
+                        width: 168px; horizontal-stretch: 0; spacing: 14px;
+                        // Top card: Audio. Fixed height on a series (Seasons sits
+                        // below); fills the column on a movie.
+                        if root.stream-is-series: PanelBox {
+                            title: "Audio";
+                            vertical-stretch: 0; height: 210px;
+                            ScrollView {
+                                width: 100%; height: 100%;
+                                VerticalLayout {
+                                    alignment: start; padding: 6px;
+                                    if root.stream-dubs.length == 0: PickRow {
+                                        label: "Original"; active: true;
+                                    }
+                                    for dub in root.stream-dubs: PickRow {
+                                        label: dub.label; active: dub.active;
+                                        clicked => { root.stream-set-dub(dub.id); }
+                                    }
+                                }
+                            }
+                        }
+                        if !root.stream-is-series: PanelBox {
+                            title: "Audio";
+                            vertical-stretch: 1;
+                            ScrollView {
+                                width: 100%; height: 100%;
+                                VerticalLayout {
+                                    alignment: start; padding: 6px;
+                                    if root.stream-dubs.length == 0: PickRow {
+                                        label: "Original"; active: true;
+                                    }
+                                    for dub in root.stream-dubs: PickRow {
+                                        label: dub.label; active: dub.active;
+                                        clicked => { root.stream-set-dub(dub.id); }
+                                    }
+                                }
+                            }
+                        }
+                        // Bottom card: Seasons — series only.
+                        if root.stream-is-series: PanelBox {
+                            title: "Seasons";
+                            vertical-stretch: 1;
+                            ScrollView {
+                                width: 100%; height: 100%;
+                                VerticalLayout {
+                                    alignment: start; padding: 6px;
+                                    for se in root.stream-seasons: PickRow {
+                                        label: "Season " + se;
+                                        active: se == root.stream-season;
+                                        clicked => { root.stream-set-season(se); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Episodes — series only, one row each.
+                    if root.stream-is-series: PanelBox {
+                        title: "Episodes";
+                        hint: root.stream-episodes.length + "";
+                        width: 168px; horizontal-stretch: 0;
+                        ScrollView {
+                            width: 100%; height: 100%;
+                            VerticalLayout {
+                                alignment: start; padding: 6px;
+                                for ep in root.stream-episodes: PickRow {
+                                    label: "Episode " + ep;
+                                    active: ep == root.stream-episode;
+                                    clicked => { root.stream-set-episode(ep); }
+                                }
+                            }
+                        }
+                    }
+
+                    // Quality + Subtitles — one column, two stacked cards.
+                    VerticalLayout {
+                        width: 168px; horizontal-stretch: 0; spacing: 14px;
+                        // Top card: Resolution.
+                        PanelBox {
+                            title: "Resolution";
+                            vertical-stretch: 0; height: 210px;
+                            VerticalLayout {
+                                width: 100%; height: 100%;
+                                alignment: start; padding: 6px;
+                                PickRow { label: "1080p"; active: root.stream-resolution == "1080";
+                                    clicked => { root.stream-set-resolution("1080"); } }
+                                PickRow { label: "720p"; active: root.stream-resolution == "720";
+                                    clicked => { root.stream-set-resolution("720"); } }
+                                PickRow { label: "480p"; active: root.stream-resolution == "480";
+                                    clicked => { root.stream-set-resolution("480"); } }
+                                PickRow { label: "360p"; active: root.stream-resolution == "360";
+                                    clicked => { root.stream-set-resolution("360"); } }
+                                PickRow { label: "All qualities"; active: root.stream-resolution == "";
+                                    clicked => { root.stream-set-resolution(""); } }
+                            }
+                        }
+                        // Bottom card: Subtitles.
+                        PanelBox {
+                            title: "Subtitles";
+                            hint: root.stream-subs.length + "";
+                            vertical-stretch: 1;
+                            ScrollView {
+                                width: 100%; height: 100%;
+                                VerticalLayout {
+                                    alignment: start; padding: 6px;
+                                    PickRow { label: "Off"; active: root.stream-sub-choice < 0;
+                                        clicked => { root.stream-set-sub(-1); } }
+                                    for sub[subidx] in root.stream-subs: PickRow {
+                                        label: sub.label;
+                                        active: root.stream-sub-choice == subidx;
+                                        clicked => { root.stream-set-sub(subidx); }
+                                    }
+                                    if root.stream-subs.length == 0: Rectangle {
+                                        height: 40px;
+                                        Text { text: "None for this episode"; color: VP.icon-dim;
+                                            font-size: 10px; wrap: word-wrap;
+                                            horizontal-alignment: center; vertical-alignment: center;
+                                            width: parent.width; height: parent.height; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Streams — fills whatever is left.
+                    PanelBox {
+                        title: "Streams";
+                        hint: root.stream-files.length + " available";
+                        horizontal-stretch: 1;
+                        VerticalLayout {
+                            width: 100%; height: 100%; spacing: 0px;
+
+                            // Column headers, matching the TUI's stream table.
+                            if root.stream-files.length > 0: Rectangle {
+                                height: 26px; vertical-stretch: 0;
+                                HorizontalLayout {
+                                    padding-left: 16px; padding-right: 16px; spacing: 14px;
+                                    Text { text: "RES"; width: 58px; horizontal-stretch: 0;
+                                        color: VP.text-mute; font-size: 9px; font-weight: 800;
+                                        letter-spacing: 1.2px; vertical-alignment: center; }
+                                    Text { text: "SIZE · CODEC"; horizontal-stretch: 1;
+                                        color: VP.text-mute; font-size: 9px; font-weight: 800;
+                                        letter-spacing: 1.2px; vertical-alignment: center; }
+                                    Text { text: "SUBS"; width: 62px; horizontal-stretch: 0;
+                                        color: VP.text-mute; font-size: 9px; font-weight: 800;
+                                        letter-spacing: 1.2px; vertical-alignment: center; }
+                                    Rectangle { width: 208px; horizontal-stretch: 0; }
+                                }
+                            }
+
+                            ScrollView {
+                                horizontal-stretch: 1; vertical-stretch: 1;
+                                VerticalLayout {
+                                    alignment: start; padding: 8px; spacing: 8px;
+                                    for f in root.stream-files: StreamFileRowView {
+                                        entry: f;
+                                        current: f.index == root.stream-current;
+                                        launching: f.index == root.launch-idx;
+                                        select => { root.stream-set-current(f.index); }
+                                        play => {
+                                            root.launch-idx = f.index;
+                                            launch-timer.running = false; launch-timer.running = true;
+                                            root.stream-play(f.index);
+                                        }
+                                        copy-link => { root.stream-copy-link(f.index); }
+                                        download => { root.stream-download(f.index); }
+                                    }
+                                }
+                            }
+
+                            if root.stream-files.length == 0: Rectangle {
+                                vertical-stretch: 1; horizontal-stretch: 1;
+                                Text {
+                                    text: root.stream-busy ? "Finding streams…" : "No playable streams here — try another episode or language.";
+                                    color: VP.text-mute; font-size: 13px; wrap: word-wrap;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                    width: parent.width - 40px; height: parent.height;
+                                    x: 20px;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+    }
+
+    // Remove-confirmation dialog — a true overlay z-stacked over the whole page:
+    // a direct child of the Rectangle root (NOT the VerticalLayout above), so it
+    // never takes a layout slot. Fills the page and centres its card on top.
+    if root.stream-view == "bookmarks" && root.bm-confirm-id != "": Rectangle {
+        background: VP.scrim;
+        scrim := TouchArea { clicked => { root.bm-confirm-id = ""; } }
+        Rectangle {
+            width: 380px; height: 170px; border-radius: 14px;
+            background: VP.modal; border-width: 1px; border-color: VP.hair-2;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            // Swallow clicks so tapping the card doesn't dismiss.
+            TouchArea {}
+            VerticalLayout {
+                padding: 22px; spacing: 12px;
+                Text { text: "Remove from Saved?"; color: VP.text;
+                    font-size: 17px; font-weight: 800; vertical-stretch: 0; }
+                Text { text: "This takes the title out of your Saved list. You can add it again anytime.";
+                    color: VP.text-dim; font-size: 12px; wrap: word-wrap; vertical-stretch: 1; }
+                HorizontalLayout { spacing: 10px; alignment: end; vertical-stretch: 0;
+                    PlexButton { label: "Cancel";
+                        clicked => { root.bm-confirm-id = ""; } }
+                    PlexButton { icon: Icons.x; label: "Remove"; filled: true; hue: VP.danger;
+                        clicked => {
+                            root.stream-bookmark-remove(root.bm-confirm-id);
+                            root.bm-confirm-id = "";
+                        } }
+                }
+            }
+        }
+    }
+
+    // Hosts editor — a centred modal over the whole page (root z-stack), not an
+    // inline panel under the header.
+    if root.stream-hosts-open: Rectangle {
+        background: VP.scrim;
+        hscrim := TouchArea { clicked => { root.stream-hosts-open = false; } }
+        Rectangle {
+            width: 540px; height: 340px; border-radius: 16px;
+            background: VP.modal; border-width: 1px; border-color: VP.hair-2;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            TouchArea {}   // swallow clicks so tapping the card doesn't dismiss
+            VerticalLayout {
+                padding: 22px; spacing: 12px;
+                HorizontalLayout { alignment: start; spacing: 10px; vertical-stretch: 0;
+                    Rectangle { width: 4px; height: 18px; border-radius: 2px; background: VP.accent;
+                        horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
+                    Text { text: "Servers"; color: VP.text; font-size: 16px; font-weight: 800; }
+                    Text { text: "one per line · tried top to bottom";
+                        color: VP.text-mute; font-size: 11px; vertical-alignment: center; } }
+                Rectangle {
+                    vertical-stretch: 1; horizontal-stretch: 1;
+                    border-radius: 10px; background: VP.field;
+                    border-width: 1px; border-color: hostin.has-focus ? VP.accent : VP.field-edge;
+                    clip: true;
+                    hostin := TextInput {
+                        x: 12px; y: 10px;
+                        width: parent.width - 24px; height: parent.height - 20px;
+                        text <=> root.stream-hosts-text;
+                        color: VP.text; font-size: 13px; font-family: "monospace";
+                        single-line: false; wrap: no-wrap;
+                    }
+                }
+                if root.stream-hosts-error != "": Text {
+                    text: root.stream-hosts-error; color: Theme.dark ? #ff8a7a : #b91c1c;
+                    font-size: 12px; wrap: word-wrap; vertical-stretch: 0; }
+                HorizontalLayout { spacing: 10px; alignment: start; vertical-stretch: 0;
+                    // Save button doubles as the progress pill: turns green with
+                    // "Applied ✓" for a couple of seconds once the save lands.
+                    Rectangle {
+                        width: savelay.preferred-width; height: 40px;
+                        horizontal-stretch: 0; vertical-stretch: 0; border-radius: 6px;
+                        background: sv.has-hover ? VP.c-play.brighter(0.18) : VP.c-play;
+                        sv := TouchArea { mouse-cursor: pointer;
+                            clicked => { root.stream-hosts-saved = false; root.stream-hosts-save(root.stream-hosts-text); } }
+                        savelay := HorizontalLayout { alignment: center; spacing: 7px;
+                            padding-left: 16px; padding-right: 16px;
+                            VerticalLayout { alignment: center;
+                                AppIcon { source: root.stream-hosts-saved ? Icons.check : Icons.save;
+                                    tint: #ffffff; width: 15px; height: 15px; } }
+                            Text { text: root.stream-hosts-saved ? "Applied ✓" : "Save"; color: #ffffff;
+                                font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                        }
+                    }
+                    PlexButton { icon: Icons.rotate-ccw; label: "Reset"; hue: VP.c-back;
+                        clicked => { root.stream-hosts-reset(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                    PlexButton { label: "Close";
+                        clicked => { root.stream-hosts-open = false; } }
                 }
             }
         }

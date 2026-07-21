@@ -24,6 +24,7 @@ pub mod scan;
 pub mod schema;
 pub mod skip_intro;
 pub mod star_archive_trash;
+pub mod stream;
 pub mod sub_local;
 pub mod sub_manual;
 pub mod sub_opensubtitles;

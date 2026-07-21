@@ -613,12 +613,72 @@ fn main() -> Result<()> {
         if let Ok(mut g) = video_kind().lock() { *g = k.to_string(); }
         if let Ok(mut g) = video_show().lock() { *g = None; } // leave any drilled show
         w0.set_video_show_title("".into());
-        if k.as_str() == "discover" {
-            kick_discover_refresh(w.clone());
-        } else {
-            kick_video_refresh(w.clone(), w0.get_video_category().to_string());
+        match k.as_str() {
+            "discover" => kick_discover_refresh(w.clone()),
+            // Stream is search-driven: no catalogue requests until the user
+            // asks for something. Only the local recent-search list loads.
+            "stream" => { stream_recent_load(w.clone()); stream_prune_caches(); }
+            _ => kick_video_refresh(w.clone(), w0.get_video_category().to_string()),
         }
     });
+
+    // Stream tab (remote catalogue) — all handlers live in tulipix_sec_videos::stream.
+    let w = window.as_weak();
+    window.on_video_stream_search(move |q| stream_search(w.clone(), q.to_string()));
+    let w = window.as_weak();
+    window.on_video_stream_open(move |id| stream_open(w.clone(), id.to_string()));
+    let w = window.as_weak();
+    window.on_video_stream_back(move || stream_back(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_play(move |i| stream_play(w.clone(), i));
+    let w = window.as_weak();
+    window.on_video_stream_set_dub(move |id| stream_set_dub(w.clone(), id.to_string()));
+    let w = window.as_weak();
+    window.on_video_stream_set_season(move |s| stream_set_season(w.clone(), s));
+    let w = window.as_weak();
+    window.on_video_stream_set_episode(move |e| stream_set_episode(w.clone(), e));
+    let w = window.as_weak();
+    window.on_video_stream_set_sub(move |i| stream_set_sub(w.clone(), i));
+    let w = window.as_weak();
+    window.on_video_stream_set_resolution(move |r| stream_set_resolution(w.clone(), r));
+    let w = window.as_weak();
+    window.on_video_stream_suggest(move |q| stream_suggest(w.clone(), q.to_string()));
+    let w = window.as_weak();
+    window.on_video_stream_suggest_clear(move || stream_suggest_clear(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_preview(move |id| stream_preview(w.clone(), id.to_string()));
+    let w = window.as_weak();
+    window.on_video_stream_copy_link(move |i| stream_copy_link(w.clone(), i));
+    let w = window.as_weak();
+    window.on_video_stream_download(move |i| stream_download(w.clone(), i));
+    let w = window.as_weak();
+    window.on_video_stream_download_cancel(move || stream_download_cancel(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_download_dismiss(move || stream_download_dismiss(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_set_current(move |i| stream_set_current(w.clone(), i));
+    let w = window.as_weak();
+    window.on_video_stream_play_current(move || stream_play_current(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_copy_current(move || stream_copy_current(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_download_current(move || stream_download_current(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_toggle_bookmark(move || stream_toggle_bookmark(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_bookmarks_load(move || stream_bookmarks_load(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_bookmark_remove(move |id| stream_bookmark_remove(w.clone(), id.to_string()));
+    let w = window.as_weak();
+    window.on_video_stream_bookmarks_sort(move |k, a| stream_bookmarks_sort(w.clone(), k.to_string(), a));
+    let w = window.as_weak();
+    window.on_video_stream_recent_clear(move || stream_recent_clear(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_hosts_load(move || stream_hosts_load(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_hosts_save(move |t| stream_hosts_save(w.clone(), t.to_string()));
+    let w = window.as_weak();
+    window.on_video_stream_hosts_reset(move || stream_hosts_reset(w.clone()));
 
     let w = window.as_weak();
     window.on_video_refresh_discover(move || {

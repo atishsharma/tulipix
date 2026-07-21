@@ -7,6 +7,11 @@ use std::path::PathBuf;
 use tulipix_ui::*;
 use tulipix_common::*;
 
+// Stream tab (remote catalogue search + playback). Kept in its own file — it
+// shares nothing with the local-library queries below except the window.
+pub mod stream;
+pub use stream::*;
+
 // Map video tile index → absolute path so a click can hand the file to mpv.
 // Rebuilt by kick_video_refresh to match whatever tab is on screen.
 pub static VIDEO_PATHS: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();

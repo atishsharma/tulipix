@@ -8,7 +8,7 @@ import { PhotosPage, PhotoGroup, FolderRow, PersonCard, ThingChip, AlbumCard, Me
 import { PhotoEditor } from "photo_editor.slint";
 import { SharedHero, HeroRect } from "shared_element.slint";
 import { MilestoneConfetti } from "empty_state.slint";
-import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard } from "page_videos.slint";
+import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard, StreamCard, StreamChip, StreamFileRow } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
 import { MusicPage, MusicFullscreen, MusicMini, PodcastMini, BookMini } from "page_music.slint";
 import { MusicSongRow, DownloaderRow, DlHistoryEntry, DlSearchEntry, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
@@ -878,6 +878,76 @@ export component MainWindow inherits Window {
     callback video-show-drill(int);
     callback video-show-back();
     callback video-refresh-discover();
+    // Stream tab (remote catalogue) — populated by tulipix_sec_videos::stream.
+    in-out property <[StreamCard]> video-stream-results: [];
+    in-out property <string> video-stream-query: "";
+    in-out property <bool> video-stream-busy: false;
+    in-out property <string> video-stream-status: "";
+    in-out property <bool> video-stream-detail-open: false;
+    in-out property <string> video-stream-title: "";
+    in-out property <string> video-stream-meta: "";
+    in-out property <string> video-stream-overview: "";
+    in-out property <image> video-stream-cover;
+    in-out property <bool> video-stream-is-series: false;
+    in-out property <[StreamChip]> video-stream-dubs: [];
+    in-out property <[int]> video-stream-seasons: [];
+    in-out property <[int]> video-stream-episodes: [];
+    in-out property <int> video-stream-season: 0;
+    in-out property <int> video-stream-episode: 0;
+    in-out property <[StreamFileRow]> video-stream-files: [];
+    in-out property <[string]> video-stream-recent: [];
+    in-out property <[StreamChip]> video-stream-subs: [];
+    in-out property <int> video-stream-sub-choice: -1;
+    in-out property <string> video-stream-resolution: "";
+    in-out property <[string]> video-stream-suggestions: [];
+    in-out property <bool> video-stream-preview-open: false;
+    in-out property <string> video-stream-preview-title: "";
+    in-out property <string> video-stream-preview-meta: "";
+    in-out property <string> video-stream-preview-overview: "";
+    in-out property <int> video-stream-preview-seasons: 0;
+    in-out property <bool> video-stream-dl-active: false;
+    in-out property <string> video-stream-dl-label: "";
+    in-out property <float> video-stream-dl-frac: 0.0;
+    in-out property <int> video-stream-current: -1;
+    in-out property <string> video-stream-current-label: "";
+    in-out property <bool> video-stream-bookmarked: false;
+    in-out property <[StreamCard]> video-stream-bookmarks: [];
+    in-out property <string> video-stream-view: "search";
+    in-out property <bool> video-stream-preview-is-series: false;
+    in-out property <string> video-stream-preview-langs: "";
+    in-out property <image> video-stream-preview-cover;
+    in-out property <bool> video-stream-hosts-open: false;
+    in-out property <string> video-stream-hosts-text: "";
+    in-out property <string> video-stream-hosts-error: "";
+    in-out property <bool> video-stream-hosts-saved: false;
+    callback video-stream-search(string);
+    callback video-stream-open(string);
+    callback video-stream-back();
+    callback video-stream-play(int);
+    callback video-stream-set-dub(string);
+    callback video-stream-set-season(int);
+    callback video-stream-set-episode(int);
+    callback video-stream-set-sub(int);
+    callback video-stream-set-resolution(string);
+    callback video-stream-suggest(string);
+    callback video-stream-suggest-clear();
+    callback video-stream-preview(string);
+    callback video-stream-copy-link(int);
+    callback video-stream-download(int);
+    callback video-stream-download-cancel();
+    callback video-stream-download-dismiss();
+    callback video-stream-set-current(int);
+    callback video-stream-play-current();
+    callback video-stream-copy-current();
+    callback video-stream-download-current();
+    callback video-stream-toggle-bookmark();
+    callback video-stream-bookmarks-load();
+    callback video-stream-bookmark-remove(string);
+    callback video-stream-bookmarks-sort(string, bool);
+    callback video-stream-recent-clear();
+    callback video-stream-hosts-load();
+    callback video-stream-hosts-save(string);
+    callback video-stream-hosts-reset();
     // Right-click context menu for video posters — its own overlay state so it
     // doesn't collide with the photo grid's menu.
     in-out property <bool> vctx-open: false;
@@ -2539,7 +2609,76 @@ callback cloud-go-home();
                 discover-trending-shows: root.video-discover-shows;
                 discover-upcoming: root.video-discover-upcoming;
                 discover-on-air: root.video-discover-on-air;
-                refresh-discover => { root.video-refresh-discover(); } }
+                refresh-discover => { root.video-refresh-discover(); }
+                stream-results: root.video-stream-results;
+                stream-query <=> root.video-stream-query;
+                stream-busy: root.video-stream-busy;
+                stream-status: root.video-stream-status;
+                stream-detail-open: root.video-stream-detail-open;
+                stream-title: root.video-stream-title;
+                stream-meta: root.video-stream-meta;
+                stream-overview: root.video-stream-overview;
+                stream-cover: root.video-stream-cover;
+                stream-is-series: root.video-stream-is-series;
+                stream-dubs: root.video-stream-dubs;
+                stream-seasons: root.video-stream-seasons;
+                stream-episodes: root.video-stream-episodes;
+                stream-season: root.video-stream-season;
+                stream-episode: root.video-stream-episode;
+                stream-files: root.video-stream-files;
+                stream-recent: root.video-stream-recent;
+                stream-subs: root.video-stream-subs;
+                stream-sub-choice: root.video-stream-sub-choice;
+                stream-resolution <=> root.video-stream-resolution;
+                stream-suggestions: root.video-stream-suggestions;
+                stream-preview-open: root.video-stream-preview-open;
+                stream-preview-title: root.video-stream-preview-title;
+                stream-preview-meta: root.video-stream-preview-meta;
+                stream-preview-overview: root.video-stream-preview-overview;
+                stream-preview-seasons: root.video-stream-preview-seasons;
+                stream-dl-active: root.video-stream-dl-active;
+                stream-dl-label: root.video-stream-dl-label;
+                stream-dl-frac: root.video-stream-dl-frac;
+                stream-current: root.video-stream-current;
+                stream-current-label: root.video-stream-current-label;
+                stream-bookmarked: root.video-stream-bookmarked;
+                stream-bookmarks: root.video-stream-bookmarks;
+                stream-view <=> root.video-stream-view;
+                stream-preview-is-series: root.video-stream-preview-is-series;
+                stream-preview-langs: root.video-stream-preview-langs;
+                stream-preview-cover: root.video-stream-preview-cover;
+                stream-hosts-open <=> root.video-stream-hosts-open;
+                stream-hosts-text <=> root.video-stream-hosts-text;
+                stream-hosts-error: root.video-stream-hosts-error;
+                stream-hosts-saved <=> root.video-stream-hosts-saved;
+                stream-search(q) => { root.video-stream-search(q); }
+                stream-open(id) => { root.video-stream-open(id); }
+                stream-back => { root.video-stream-back(); }
+                stream-play(i) => { root.video-stream-play(i); }
+                stream-set-dub(id) => { root.video-stream-set-dub(id); }
+                stream-set-season(s) => { root.video-stream-set-season(s); }
+                stream-set-episode(e) => { root.video-stream-set-episode(e); }
+                stream-set-sub(i) => { root.video-stream-set-sub(i); }
+                stream-set-resolution(r) => { root.video-stream-set-resolution(r); }
+                stream-suggest(q) => { root.video-stream-suggest(q); }
+                stream-suggest-clear => { root.video-stream-suggest-clear(); }
+                stream-preview(id) => { root.video-stream-preview(id); }
+                stream-copy-link(i) => { root.video-stream-copy-link(i); }
+                stream-download(i) => { root.video-stream-download(i); }
+                stream-download-cancel => { root.video-stream-download-cancel(); }
+                stream-download-dismiss => { root.video-stream-download-dismiss(); }
+                stream-set-current(i) => { root.video-stream-set-current(i); }
+                stream-play-current => { root.video-stream-play-current(); }
+                stream-copy-current => { root.video-stream-copy-current(); }
+                stream-download-current => { root.video-stream-download-current(); }
+                stream-toggle-bookmark => { root.video-stream-toggle-bookmark(); }
+                stream-bookmarks-load => { root.video-stream-bookmarks-load(); }
+                stream-bookmark-remove(id) => { root.video-stream-bookmark-remove(id); }
+                stream-bookmarks-sort(k, a) => { root.video-stream-bookmarks-sort(k, a); }
+                stream-recent-clear => { root.video-stream-recent-clear(); }
+                stream-hosts-opened => { root.video-stream-hosts-load(); }
+                stream-hosts-save(t) => { root.video-stream-hosts-save(t); }
+                stream-hosts-reset => { root.video-stream-hosts-reset(); } }
             if active-section == "music" || music-prewarmed: MusicPage { width: parent.width; height: parent.height; visible: root.active-section == "music"; item-count: root.music-song-total; tiles: root.music-tracks-grid;
                 np-title: root.music-np-title; np-sub: root.music-np-sub; np-art: root.music-np-art; playing: root.music-playing;
                 player-mode: root.music-player-mode;
@@ -3195,6 +3334,9 @@ callback cloud-go-home();
                 open-zen => { root.music-fullscreen = true; }
                 open-search => { root.palette-open = true; }
                 add-folder => { root.pick-folder(); }
+                // Jump straight to Videos → Stream. set-video-kind (not a bare
+                // property set) so the backend warms the tab.
+                open-stream => { root.set-video-kind("stream"); root.video-kind = "stream"; root.active-section = "videos"; root.section-changed("videos"); }
                 shuffle-all => { root.music-shuffle-all(); }
                 // Music Downloader lives in Music → My Music → Downloader tab;
                 // set-lib-tab (not a bare property set) so the backend refreshes it.
