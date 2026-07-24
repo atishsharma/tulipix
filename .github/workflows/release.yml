@@ -414,6 +414,31 @@ jobs:
               with streaks and a heatmap.
             - **Baked 3D covers** — artwork warped onto a hardcover mockup.
 
+            ### Videos — the Stream tab
+            A remote catalogue browsed from inside the Videos section, using the
+            same players, queues and databases as everything local.
+
+            - **Search with suggestions** and paged results, over a user-editable
+              host list with a health check that tests each server in place and
+              can reorder them fastest-first.
+            - **A landing screen** carrying Continue Watching, trending titles and
+              trending vertical dramas — cached in the app database and refreshed
+              twice a day rather than on every visit.
+            - **Detail pane** per title: seasons, episodes (named where the
+              catalogue names them), audio cuts, resolutions and subtitle tracks,
+              each as its own column.
+            - **Sticky quality** — 720p until you play something else, and every
+              later episode arms the rung you last chose.
+            - **Resume and autoplay** — where you stopped is written back per
+              episode, the next one starts on its own, and the one after that
+              resolves in the background so choosing it is instant.
+            - **Downloads page** — a queue that survives a restart: retry, cancel,
+              reveal in the file manager, delete, and a live bar per job. The
+              subtitle you picked is fetched with the video and plays back with it.
+            - **Bookmarks** with new-episode badges, and a **History** page with
+              per-row resume.
+            - **Cast** to a DLNA renderer, watch the trailer, copy the direct link.
+
             ### Home & lock screen
             - Redesigned home with a fixed right rail and circular source/action tabs.
             - **PIN-gated ambient lock screen** with slideshow and now-playing.
@@ -439,8 +464,12 @@ jobs:
               text-scan boundary.
 
             ### Under the hood
-            - Books wiring extracted into its own crate; `main()` split into
-              per-section wiring functions.
+            - Books and Videos wiring extracted into their own crates; `main()`
+              split into per-section wiring functions.
+            - Stream state lives in `videos.db`: watch progress, bookmarks, the
+              download ledger, resolved streams and the cached landing rows.
             - Dead dependencies pruned.
+            - Linux release builds link with thin LTO — the fat-LTO link of the
+              whole program was killing the CI runner outright.
 
             ---
