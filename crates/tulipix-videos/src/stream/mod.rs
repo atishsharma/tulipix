@@ -15,6 +15,7 @@ pub mod bookmarks;
 pub mod cache;
 pub mod client;
 pub mod crypto;
+pub mod progress;
 
 pub use client::{StreamClient, StreamError, DEFAULT_HOSTS};
 
@@ -269,9 +270,8 @@ pub fn split_season_suffix(title: &str) -> (String, Option<i64>) {
     let t = title.trim().trim_end_matches(|c: char| c == '-' || c == ':' || c == '.').trim();
 
     // "… Season 5" / "… Season Two" / "… Part 2" / "… Part III"
-    let lower = t.to_lowercase();
     for word in [" season ", " part ", " series "] {
-        if let Some(pos) = lower.rfind(word) {
+        if let Some(pos) = rfind_ci(t, word) {
             let tail = t[pos + word.len()..].trim();
             if let Some(n) = parse_number(tail) {
                 return (trim_tail(&t[..pos]), Some(n));
@@ -293,6 +293,20 @@ pub fn split_season_suffix(title: &str) -> (String, Option<i64>) {
     }
 
     (t.to_string(), None)
+}
+
+/// Byte offset of the last case-insensitive occurrence of an ASCII `needle`.
+///
+/// Searching `t.to_lowercase()` and then slicing `t` with the offsets it returns
+/// is not the same string: `'İ'` lowercases to two chars (three bytes) where the
+/// original is two, so a title like `"İİ Season 2"` produced an offset past the
+/// end of `t` — an out-of-bounds slice, i.e. a panic on a catalogue title we do
+/// not control. Titles are attacker/server-supplied, so match on `t` itself.
+fn rfind_ci(hay: &str, needle: &str) -> Option<usize> {
+    hay.char_indices().rev().map(|(i, _)| i).find(|&i| {
+        // `get` yields None for a window that runs off the end or splits a char.
+        hay.get(i..i + needle.len()).is_some_and(|w| w.eq_ignore_ascii_case(needle))
+    })
 }
 
 fn trim_tail(s: &str) -> String {
@@ -877,6 +891,95 @@ pub mod prefer {
     }
 }
 
+/// Which stream to play when the user has not picked a row.
+///
+/// Every episode of a show offers a different set of files, so "the one below
+/// the cursor" cannot carry over. What carries over is the *rung*: the quality
+/// of the last stream actually launched. Nothing launched yet means 720p — high
+/// enough to look right, low enough to start quickly on a slow line.
+pub mod quality {
+    use super::StreamFile;
+    use tulipix_core::settings::Settings;
+
+    /// Rung used until the user's own choice supersedes it.
+    pub const DEFAULT_RESOLUTION: i64 = 720;
+
+    /// Sticky rung: the quality of the last stream the user actually played.
+    pub const STICKY_KEY: &str = "stream.play_res";
+    /// The quality *filter* in the detail pane ("" = every rung).
+    pub const FILTER_KEY: &str = "stream.resolution";
+
+    /// Index of the file whose rung `keep` accepts and that `better` ranks above
+    /// every other. Ties go to the earlier entry — within a rung the list
+    /// arrives best-offer-first.
+    fn pick_where(
+        files: &[StreamFile],
+        keep: impl Fn(i64) -> bool,
+        better: impl Fn(i64, i64) -> bool,
+    ) -> Option<usize> {
+        let mut best: Option<(usize, i64)> = None;
+        for (idx, f) in files.iter().enumerate() {
+            if keep(f.resolution) && best.is_none_or(|(_, r)| better(f.resolution, r)) {
+                best = Some((idx, f.resolution));
+            }
+        }
+        best.map(|(idx, _)| idx)
+    }
+
+    /// Index of the file to arm, or `None` when there is nothing to play.
+    ///
+    /// Order: the sticky rung, then 720p, then the rung nearest 720 — preferring
+    /// the one below, because defaulting *up* to 4K on a title that happens to
+    /// skip 720 is not what "720p by default" means. The last fallback catches
+    /// files that carry no rung at all.
+    pub fn pick(files: &[StreamFile], sticky: Option<i64>) -> Option<usize> {
+        let exact = |want: i64| files.iter().position(|f| f.resolution == want);
+        sticky
+            .filter(|r| *r > 0)
+            .and_then(exact)
+            .or_else(|| exact(DEFAULT_RESOLUTION))
+            // highest rung below 720
+            .or_else(|| pick_where(files, |r| r > 0 && r < DEFAULT_RESOLUTION, |a, b| a > b))
+            // else the lowest rung above it
+            .or_else(|| pick_where(files, |r| r > DEFAULT_RESOLUTION, |a, b| a < b))
+            // else anything playable at all
+            .or_else(|| pick_where(files, |_| true, |a, b| a > b))
+    }
+
+    /// The remembered rung, or `None` when the user has never played anything.
+    pub fn sticky() -> Option<i64> {
+        Settings::load()
+            .unwrap_or_default()
+            .text(STICKY_KEY)
+            .trim()
+            .parse::<i64>()
+            .ok()
+            .filter(|r| *r > 0)
+    }
+
+    /// Remember the rung of a stream that was just launched. Rung 0 ("Auto")
+    /// carries no information, so it is not recorded.
+    pub fn remember(resolution: i64) {
+        if resolution <= 0 {
+            return;
+        }
+        let mut s = Settings::load().unwrap_or_default();
+        s.advanced.insert(STICKY_KEY.to_string(), resolution.to_string());
+        let _ = s.save();
+    }
+
+    /// The persisted quality filter ("" = every rung).
+    pub fn filter() -> String {
+        Settings::load().unwrap_or_default().text(FILTER_KEY).trim().to_string()
+    }
+
+    pub fn set_filter(res: &str) {
+        let mut s = Settings::load().unwrap_or_default();
+        s.advanced.insert(FILTER_KEY.to_string(), res.trim().to_string());
+        let _ = s.save();
+    }
+}
+
 /// Recent search terms, shown on the Stream landing screen. Same settings-file
 /// storage as [`hosts`] — newline-separated, newest first.
 pub mod recent {
@@ -1252,6 +1355,43 @@ mod tests {
         // "Part" followed by a word that is not a number is not a season
         assert_eq!(split("Part of the Deal"), ("Part of the Deal".into(), None));
         assert_eq!(split("A Season for Love"), ("A Season for Love".into(), None));
+    }
+
+    /// A title whose lowercase form is *longer* in bytes than the original used
+    /// to slice `t` with offsets taken from the lowercased copy — out of bounds,
+    /// and with `panic = "abort"` in release that took the whole app down.
+    #[test]
+    fn season_suffix_split_survives_titles_that_grow_when_lowercased() {
+        let split = |t: &str| split_season_suffix(t);
+        assert_eq!(split("İİ Season 2"), ("İİ".into(), Some(2)));
+        assert_eq!(split("Diriliş Ertuğrul Season 5"), ("Diriliş Ertuğrul".into(), Some(5)));
+        assert_eq!(split("İstanbul"), ("İstanbul".into(), None));
+        // Marker matching stays case-insensitive.
+        assert_eq!(split("Dark SEASON 3"), ("Dark".into(), Some(3)));
+    }
+
+    #[test]
+    fn stream_pick_prefers_sticky_then_720_then_below_then_best() {
+        let f = |res: i64| StreamFile { resolution: res, url: format!("u{res}"), ..Default::default() };
+        let full = vec![f(1080), f(720), f(480), f(360)];
+
+        // Sticky wins outright.
+        assert_eq!(quality::pick(&full, Some(1080)), Some(0));
+        assert_eq!(quality::pick(&full, Some(480)), Some(2));
+        // Nothing played yet → 720p.
+        assert_eq!(quality::pick(&full, None), Some(1));
+        // Sticky rung absent from this episode → fall back to 720p.
+        assert_eq!(quality::pick(&full, Some(2160)), Some(1));
+
+        // No 720p: take the best rung under it before reaching upward.
+        let gap = vec![f(1080), f(480), f(360)];
+        assert_eq!(quality::pick(&gap, None), Some(1), "480 beats 1080 as the 720 stand-in");
+        // Nothing under 720 either → the lowest rung above it, not the highest.
+        let high = vec![f(2160), f(1080)];
+        assert_eq!(quality::pick(&high, None), Some(1), "1080 is nearest 720, not 2160");
+        // Unlabelled rungs still yield a playable pick.
+        assert_eq!(quality::pick(&[f(0), f(0)], None), Some(0));
+        assert_eq!(quality::pick(&[], None), None);
     }
 
     #[test]

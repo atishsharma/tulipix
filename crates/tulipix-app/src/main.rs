@@ -617,7 +617,11 @@ fn main() -> Result<()> {
             "discover" => kick_discover_refresh(w.clone()),
             // Stream is search-driven: no catalogue requests until the user
             // asks for something. Only the local recent-search list loads.
-            "stream" => { stream_recent_load(w.clone()); stream_prune_caches(); }
+            "stream" => {
+                stream_recent_load(w.clone());
+                stream_prefs_load(w.clone());
+                stream_prune_caches();
+            }
             _ => kick_video_refresh(w.clone(), w0.get_video_category().to_string()),
         }
     });

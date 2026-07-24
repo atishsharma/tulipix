@@ -467,6 +467,29 @@ pub fn spawn_mpv_windowed_with(
     item_id: Option<i64>,
     extra_args: Vec<String>,
 ) {
+    spawn_mpv_windowed_tracked(path, resume, item_id, extra_args, None)
+}
+
+/// Called once, after mpv exits, with `(position_s, duration_s)`.
+///
+/// Both are zero when mpv never reported them (a stream that failed to open).
+pub type PlaybackEnd = std::sync::Arc<dyn Fn(f64, f64) + Send + Sync + 'static>;
+
+/// As [`spawn_mpv_windowed_with`], plus a hook that receives where playback got
+/// to. `item_id` writes progress into `watch_progress` for a local library item;
+/// `on_end` is the escape hatch for media that has no `items` row — the Stream
+/// tab's remote titles, which record against `stream_progress` instead.
+///
+/// ponytail: progress is reported once, at exit, matching what the local library
+/// has always done. A crash or a kill loses the session. Periodic ticks are a
+/// timer around the same shared cell if that ever matters.
+pub fn spawn_mpv_windowed_tracked(
+    path: PathBuf,
+    resume: Option<f64>,
+    item_id: Option<i64>,
+    extra_args: Vec<String>,
+    on_end: Option<PlaybackEnd>,
+) {
     use std::io::{BufRead, BufReader, Write};
     let rt = tokio::runtime::Handle::current();
     // Universal single stream: a new video stops music + any prior video.
@@ -527,6 +550,9 @@ pub fn spawn_mpv_windowed_with(
         let _ = std::fs::remove_file(&sock);
         let _ = reader.join();
         let (p, d) = pos.lock().map(|g| *g).unwrap_or((0.0, 0.0));
+        if let Some(sink) = on_end {
+            sink(p, d);
+        }
         if let Some(id) = item_id {
             rt.spawn(async move {
                 if let Ok(pool) = pool_for("videos").await {
