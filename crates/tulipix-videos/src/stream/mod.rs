@@ -598,7 +598,20 @@ impl StreamClient {
 
     pub async fn details(&self, subject_id: &str) -> Result<Details, StreamError> {
         let path = format!("/wefeed-mobile-bff/subject-api/get?subjectId={subject_id}");
-        Ok(parse_details(&self.get(&path).await?))
+        let mut payload = self.get(&path).await?;
+        // A series carries its full season list on a separate endpoint; the
+        // `get` payload alone yields only the 1-season resourceDetectors
+        // fallback. Fetch season-info and merge it under "seasons" so
+        // parse_details sees every season. (Upstream MovieBox-Tui get_details.)
+        if is_series(&payload) {
+            let sp = format!("/wefeed-mobile-bff/subject-api/season-info?subjectId={subject_id}");
+            if let Ok(info) = self.get(&sp).await {
+                if let Value::Object(map) = &mut payload {
+                    map.insert("seasons".to_string(), info);
+                }
+            }
+        }
+        Ok(parse_details(&payload))
     }
 
     /// Files for one episode. `season`/`episode` are both 0 for a movie.
@@ -773,6 +786,63 @@ pub mod hosts {
         s.advanced.insert(KEY.to_string(), clean.join("\n"));
         s.save().map_err(|e| format!("Could not save: {e}"))?;
         Ok(clean)
+    }
+}
+
+/// The Stream tab's signing-key editor. The request signature is HMAC-MD5 over
+/// the canonical request keyed by a base64 secret MovieBox bakes into its APK.
+/// It rotates only across MovieBox releases; when it does, every host starts
+/// returning 403/406. This lets the user paste the new key without a rebuild.
+pub mod sign_key {
+    use super::crypto;
+    use tulipix_core::settings::Settings;
+
+    pub const KEY: &str = "stream.sign_key";
+
+    /// Built-in default — the "Reset" value.
+    pub fn default() -> String {
+        crypto::default_sign_key().to_string()
+    }
+
+    /// A key must be non-empty and valid base64 that decodes to some bytes;
+    /// anything else would silently break every signature. Trust boundary — the
+    /// value comes straight from a text box.
+    pub fn validate(raw: &str) -> Result<String, String> {
+        use base64::Engine;
+        let t = raw.trim();
+        if t.is_empty() {
+            return Err("Empty key".into());
+        }
+        // Same lenient padding the signer uses, then require non-empty output.
+        let mut padded = t.to_string();
+        padded.push_str(&"=".repeat((4 - padded.len() % 4) % 4));
+        match base64::engine::general_purpose::STANDARD.decode(&padded) {
+            Ok(bytes) if !bytes.is_empty() => Ok(t.to_string()),
+            Ok(_) => Err("Key decodes to nothing".into()),
+            Err(_) => Err("Not valid base64".into()),
+        }
+    }
+
+    /// Stored key, or the built-in default when unset/blank.
+    pub fn load() -> String {
+        let stored = Settings::load().unwrap_or_default().text(KEY).trim().to_string();
+        if stored.is_empty() { default() } else { stored }
+    }
+
+    /// Validate, persist, and install the key for the running process.
+    pub fn save(raw: &str) -> Result<String, String> {
+        let key = validate(raw)?;
+        let mut s = Settings::load().unwrap_or_default();
+        s.advanced.insert(KEY.to_string(), key.clone());
+        s.save().map_err(|e| format!("Could not save: {e}"))?;
+        crypto::set_sign_key(&key);
+        Ok(key)
+    }
+
+    /// Push the stored key into the signer. Call once at startup so a key saved
+    /// in a prior session is in force before the first request.
+    pub fn apply() {
+        crypto::set_sign_key(&load());
     }
 }
 

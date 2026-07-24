@@ -920,6 +920,9 @@ export component MainWindow inherits Window {
     in-out property <string> video-stream-hosts-text: "";
     in-out property <string> video-stream-hosts-error: "";
     in-out property <bool> video-stream-hosts-saved: false;
+    in-out property <string> video-stream-key-text: "";
+    in-out property <string> video-stream-key-error: "";
+    in-out property <bool> video-stream-key-saved: false;
     callback video-stream-search(string);
     callback video-stream-open(string);
     callback video-stream-back();
@@ -948,6 +951,8 @@ export component MainWindow inherits Window {
     callback video-stream-hosts-load();
     callback video-stream-hosts-save(string);
     callback video-stream-hosts-reset();
+    callback video-stream-key-save(string);
+    callback video-stream-key-reset();
     // Right-click context menu for video posters — its own overlay state so it
     // doesn't collide with the photo grid's menu.
     in-out property <bool> vctx-open: false;
@@ -2651,6 +2656,9 @@ callback cloud-go-home();
                 stream-hosts-text <=> root.video-stream-hosts-text;
                 stream-hosts-error: root.video-stream-hosts-error;
                 stream-hosts-saved <=> root.video-stream-hosts-saved;
+                stream-key-text <=> root.video-stream-key-text;
+                stream-key-error: root.video-stream-key-error;
+                stream-key-saved <=> root.video-stream-key-saved;
                 stream-search(q) => { root.video-stream-search(q); }
                 stream-open(id) => { root.video-stream-open(id); }
                 stream-back => { root.video-stream-back(); }
@@ -2678,7 +2686,9 @@ callback cloud-go-home();
                 stream-recent-clear => { root.video-stream-recent-clear(); }
                 stream-hosts-opened => { root.video-stream-hosts-load(); }
                 stream-hosts-save(t) => { root.video-stream-hosts-save(t); }
-                stream-hosts-reset => { root.video-stream-hosts-reset(); } }
+                stream-hosts-reset => { root.video-stream-hosts-reset(); }
+                stream-key-save(k) => { root.video-stream-key-save(k); }
+                stream-key-reset => { root.video-stream-key-reset(); } }
             if active-section == "music" || music-prewarmed: MusicPage { width: parent.width; height: parent.height; visible: root.active-section == "music"; item-count: root.music-song-total; tiles: root.music-tracks-grid;
                 np-title: root.music-np-title; np-sub: root.music-np-sub; np-art: root.music-np-art; playing: root.music-playing;
                 player-mode: root.music-player-mode;

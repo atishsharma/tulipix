@@ -679,6 +679,10 @@ fn main() -> Result<()> {
     window.on_video_stream_hosts_save(move |t| stream_hosts_save(w.clone(), t.to_string()));
     let w = window.as_weak();
     window.on_video_stream_hosts_reset(move || stream_hosts_reset(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_key_save(move |k| stream_key_save(w.clone(), k.to_string()));
+    let w = window.as_weak();
+    window.on_video_stream_key_reset(move || stream_key_reset(w.clone()));
 
     let w = window.as_weak();
     window.on_video_refresh_discover(move || {

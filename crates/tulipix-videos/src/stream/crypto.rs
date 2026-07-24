@@ -14,6 +14,7 @@ use base64::Engine;
 use hmac::{Hmac, Mac};
 use md5::{Digest, Md5};
 use std::collections::BTreeMap;
+use std::sync::RwLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 use url::Url;
 
@@ -21,6 +22,34 @@ const SECRET_KEY_DEFAULT: &str = "76iRl07s0xSN9jqmEWAt79EBJZulIQIsV64FZr2O";
 const SIGNATURE_BODY_MAX_BYTES: usize = 102_400;
 
 type HmacMd5 = Hmac<Md5>;
+
+/// Runtime override for the request-signing secret. `None` = use the built-in
+/// default. The key is a single app-wide value (MovieBox rotates it in new APK
+/// builds), so a process-global fits the domain — every client signs alike.
+/// Set from the Stream tab → Servers → Signing key editor via [`set_sign_key`].
+static SIGN_KEY: RwLock<Option<String>> = RwLock::new(None);
+
+/// The compiled-in default signing secret — the "Reset" value in the editor.
+pub fn default_sign_key() -> &'static str {
+    SECRET_KEY_DEFAULT
+}
+
+/// Install a runtime signing key. A blank value clears the override, reverting
+/// to [`default_sign_key`]. Takes effect on the next signed request.
+pub fn set_sign_key(key: &str) {
+    let k = key.trim();
+    let mut slot = SIGN_KEY.write().unwrap_or_else(|e| e.into_inner());
+    *slot = if k.is_empty() { None } else { Some(k.to_string()) };
+}
+
+/// The secret in force right now — the override if set, else the default.
+fn active_sign_key() -> String {
+    SIGN_KEY
+        .read()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_else(|| SECRET_KEY_DEFAULT.to_string())
+}
 
 // ---- entropy (rand-free) ----
 
@@ -158,7 +187,7 @@ pub fn generate_x_tr_signature(
     timestamp_ms: u64,
 ) -> String {
     let canonical = build_canonical_string(method, accept, content_type, url, body, timestamp_ms);
-    let secret_bytes = b64_decode(SECRET_KEY_DEFAULT);
+    let secret_bytes = b64_decode(&active_sign_key());
     let mut mac = HmacMd5::new_from_slice(&secret_bytes).expect("HMAC accepts a key of any size");
     mac.update(canonical.as_bytes());
     format!("{}|2|{}", timestamp_ms, b64_encode(&mac.finalize().into_bytes()))
@@ -271,7 +300,12 @@ fn random_uuid() -> String {
 }
 
 pub(crate) fn random_spoofed_ip() -> String {
-    format!("103.241.224.{}", 1 + pick(253))
+    const PREFIXES: &[&str] = &[
+        "103.241", "49.36", "117.195", "106.198", "122.162", "157.32", "182.70", "103.58",
+        "27.60", "59.90",
+    ];
+    let prefix = PREFIXES[pick(PREFIXES.len())];
+    format!("{}.{}.{}", prefix, 1 + pick(253), 1 + pick(253))
 }
 
 #[cfg(test)]

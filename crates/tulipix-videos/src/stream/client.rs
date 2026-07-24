@@ -67,8 +67,16 @@ impl StreamClient {
         if hosts.is_empty() {
             return Err(StreamError::NoHosts);
         }
+        // connect_timeout bounds the cost of a dead host during the sequential
+        // host fan-out; the longer read timeout then only bites on slow-but-alive
+        // hosts. Keep-alive + a small idle pool cut reconnects across calls.
+        // (Client tuning ported from upstream MovieBox-Tui.)
         let client = reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
+            .timeout(std::time::Duration::from_secs(12))
+            .connect_timeout(std::time::Duration::from_secs(3))
+            .tcp_keepalive(std::time::Duration::from_secs(30))
+            .pool_idle_timeout(std::time::Duration::from_secs(90))
+            .pool_max_idle_per_host(4)
             .build()?;
         let (user_agent, client_info) = super::crypto::generate_client_info_and_ua();
         Ok(Self {
@@ -142,6 +150,11 @@ impl StreamClient {
         let mut last_status: Option<u16> = None;
 
         for i in 0..self.hosts.len() {
+            // Small breather before falling to the next host, so a burst of
+            // retries doesn't hammer the pool. (Upstream MovieBox-Tui.)
+            if i > 0 {
+                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+            }
             let idx = (start_idx + i) % self.hosts.len();
             let url = format!("{}{}", self.hosts[idx], path_and_query);
 

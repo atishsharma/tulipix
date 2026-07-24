@@ -161,6 +161,8 @@ async fn client() -> Result<StreamClient, StreamError> {
     if let Some(c) = client_cell().lock().ok().and_then(|g| g.clone()) {
         return Ok(c);
     }
+    // Install any persisted signing key before the first request signs anything.
+    stream::sign_key::apply();
     let c = StreamClient::new(stream::hosts::load())?;
     c.init().await?;
     if let Ok(mut g) = client_cell().lock() {
@@ -1496,12 +1498,44 @@ pub fn stream_recent_clear(weak: slint::Weak<MainWindow>) {
 
 // ---- hosts editor ----
 
-/// Fill the editor with the configured hosts, one per line.
+/// Fill the editor with the configured hosts, one per line — and the current
+/// signing key, since both live in the same modal and open together.
 pub fn stream_hosts_load(weak: slint::Weak<MainWindow>) {
     let text = stream::hosts::load().join("\n");
+    let key = stream::sign_key::load();
     let _ = weak.upgrade_in_event_loop(move |w| {
         w.set_video_stream_hosts_text(text.into());
         w.set_video_stream_hosts_error("".into());
+        w.set_video_stream_key_text(key.into());
+        w.set_video_stream_key_error("".into());
+    });
+}
+
+/// Validate and persist the signing key. On success the running signer switches
+/// to it and the client is rebuilt so `init()` re-runs under the new key.
+pub fn stream_key_save(weak: slint::Weak<MainWindow>, key: String) {
+    match stream::sign_key::save(&key) {
+        Ok(saved) => {
+            stream_invalidate_client();
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_video_stream_key_text(saved.into());
+                w.set_video_stream_key_error("".into());
+                w.set_video_stream_key_saved(true);
+                w.set_video_stream_status("Signing key updated.".into());
+            });
+        }
+        Err(msg) => {
+            let _ = weak.upgrade_in_event_loop(move |w| w.set_video_stream_key_error(msg.into()));
+        }
+    }
+}
+
+/// Drop the built-in default key into the editor. Not persisted until Save.
+pub fn stream_key_reset(weak: slint::Weak<MainWindow>) {
+    let text = stream::sign_key::default();
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        w.set_video_stream_key_text(text.into());
+        w.set_video_stream_key_error("Press Save to apply the default key.".into());
     });
 }
 

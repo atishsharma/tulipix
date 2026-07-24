@@ -669,7 +669,7 @@ component PickRow inherits Rectangle {
     height: 30px;
     horizontal-stretch: 1; vertical-stretch: 0;
     border-radius: 6px;
-    background: root.active ? VP.accent : (prow.has-hover ? VP.row-hi : VP.row);
+    background: root.active ? #ff2323 : (prow.has-hover ? VP.row-hi : VP.row);
     border-width: root.active ? 0px : 1px; border-color: VP.row-edge;
     prow := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
@@ -786,7 +786,7 @@ component StreamFileRowView inherits Rectangle {
     callback select();
     height: 58px; horizontal-stretch: 1;
     border-radius: 10px;
-    background: root.current ? VP.accent : (rowta.has-hover ? VP.row-hi : VP.row);
+    background: root.current ? #ff2323 : (rowta.has-hover ? VP.row-hi : VP.row);
     border-width: root.current ? 2px : 1px;
     border-color: root.current ? #ffffff : (rowta.has-hover ? VP.row-ink2 : VP.row-edge);
     // Clicking the row makes it the current stream; the Play button plays.
@@ -946,6 +946,10 @@ export component VideosPage inherits Rectangle {
     in-out property <string> stream-hosts-text: "";
     in property <string> stream-hosts-error: "";
     in-out property <bool> stream-hosts-saved: false;  // flashes the "Applied" pill
+    // Signing-key editor — same modal as the hosts list.
+    in-out property <string> stream-key-text: "";
+    in property <string> stream-key-error: "";
+    in-out property <bool> stream-key-saved: false;   // flashes the "Applied" pill
     callback stream-search(string);
     callback stream-open(string);      // subject id
     callback stream-back();
@@ -974,6 +978,8 @@ export component VideosPage inherits Rectangle {
     callback stream-hosts-opened(); // load the editor's contents on open
     callback stream-hosts-save(string);
     callback stream-hosts-reset();
+    callback stream-key-save(string);
+    callback stream-key-reset();
 
     // True when the TV tab should show show-cards rather than episode tiles.
     property <bool> cards-mode: root.kind == "tv" && !root.show-open;
@@ -1010,6 +1016,14 @@ export component VideosPage inherits Rectangle {
         interval: 2500ms; running: false;
         triggered => { root.stream-hosts-saved = false; self.running = false; }
     }
+    // Same "Applied" flash for the signing-key Save button.
+    changed stream-key-saved => {
+        if (root.stream-key-saved) { key-saved-timer.running = false; key-saved-timer.running = true; }
+    }
+    key-saved-timer := Timer {
+        interval: 2500ms; running: false;
+        triggered => { root.stream-key-saved = false; self.running = false; }
+    }
 
     // Responsive poster grid metrics.
     property <length> cell-w: 166px;   // poster 150 + 16 gap
@@ -1033,18 +1047,27 @@ export component VideosPage inherits Rectangle {
         "Add a movie or TV folder and Tulipix builds your cinematic library.";
     }
 
-    // Stream backdrop — a cinematic Unsplash still per theme, z-stacked BELOW
-    // the whole page. It is a direct child of the Rectangle root (NOT of the
-    // VerticalLayout below), so it never takes a layout slot; the opaque header
-    // and panels draw over it and the transparent landing shows it through a
-    // theme-matched veil that keeps text legible.
+    // Stream backdrop — a cinematic still per theme, z-stacked BELOW the whole
+    // page. Direct child of the Rectangle root (NOT the VerticalLayout below), so
+    // it never takes a layout slot; the opaque header and panels draw over it and
+    // the transparent landing shows it through a theme-matched veil.
+    //
+    // Two stills per theme (A/B). `bg-alt` flips on every theme change, so each
+    // time a theme is re-entered it shows the other variant — the theme toggle
+    // cycles light→dark→oled and back, and each step lands on a fresh backdrop.
+    property <int> theme-sig: (Theme.dark ? 1 : 0) + (Theme.oled ? 2 : 0);
+    property <bool> bg-alt: false;
+    changed theme-sig => { root.bg-alt = !root.bg-alt; }
     if root.kind == "stream": Image {
         width: 100%; height: 100%; image-fit: cover;
         source: !Theme.dark
-                ? @image-url("../resources/icons/streamhero/Stream_Light.jpg")
+                ? (root.bg-alt ? @image-url("../resources/icons/streamhero/Stream_Light_B.jpg")
+                               : @image-url("../resources/icons/streamhero/Stream_Light_A.jpg"))
             : Theme.oled
-                ? @image-url("../resources/icons/streamhero/Stream_OLED.jpg")
-                : @image-url("../resources/icons/streamhero/Stream_Dark.jpg");
+                ? (root.bg-alt ? @image-url("../resources/icons/streamhero/Stream_OLED_B.jpg")
+                               : @image-url("../resources/icons/streamhero/Stream_OLED_A.jpg"))
+                : (root.bg-alt ? @image-url("../resources/icons/streamhero/Stream_Dark_B.jpg")
+                               : @image-url("../resources/icons/streamhero/Stream_Dark_A.jpg"));
     }
     if root.kind == "stream": Rectangle {
         width: 100%; height: 100%;
@@ -2154,7 +2177,7 @@ export component VideosPage inherits Rectangle {
         background: VP.scrim;
         hscrim := TouchArea { clicked => { root.stream-hosts-open = false; } }
         Rectangle {
-            width: 540px; height: 340px; border-radius: 16px;
+            width: 540px; height: 512px; border-radius: 16px;
             background: VP.modal; border-width: 1px; border-color: VP.hair-2;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             TouchArea {}   // swallow clicks so tapping the card doesn't dismiss
@@ -2202,6 +2225,53 @@ export component VideosPage inherits Rectangle {
                     }
                     PlexButton { icon: Icons.rotate-ccw; label: "Reset"; hue: VP.c-back;
                         clicked => { root.stream-hosts-reset(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+
+                // ── Signing key ────────────────────────────────────────────
+                // The request-signing secret. Only touch this if every server
+                // starts failing after a MovieBox update — paste the new key.
+                Rectangle { height: 1px; background: VP.hair-2; vertical-stretch: 0; }
+                HorizontalLayout { alignment: start; spacing: 10px; vertical-stretch: 0;
+                    Rectangle { width: 4px; height: 18px; border-radius: 2px; background: VP.accent;
+                        horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
+                    Text { text: "Signing key"; color: VP.text; font-size: 16px; font-weight: 800; }
+                    Text { text: "only change if all servers fail after an update";
+                        color: VP.text-mute; font-size: 11px; vertical-alignment: center; } }
+                Rectangle {
+                    height: 40px; horizontal-stretch: 1; vertical-stretch: 0;
+                    border-radius: 10px; background: VP.field;
+                    border-width: 1px; border-color: keyin.has-focus ? VP.accent : VP.field-edge;
+                    clip: true;
+                    keyin := TextInput {
+                        x: 12px; y: 11px;
+                        width: parent.width - 24px; height: parent.height - 22px;
+                        text <=> root.stream-key-text;
+                        color: VP.text; font-size: 13px; font-family: "monospace";
+                        single-line: true;
+                    }
+                }
+                if root.stream-key-error != "": Text {
+                    text: root.stream-key-error; color: Theme.dark ? #ff8a7a : #b91c1c;
+                    font-size: 12px; wrap: word-wrap; vertical-stretch: 0; }
+                HorizontalLayout { spacing: 10px; alignment: start; vertical-stretch: 0;
+                    Rectangle {
+                        width: keysavelay.preferred-width; height: 40px;
+                        horizontal-stretch: 0; vertical-stretch: 0; border-radius: 6px;
+                        background: ksv.has-hover ? VP.c-play.brighter(0.18) : VP.c-play;
+                        ksv := TouchArea { mouse-cursor: pointer;
+                            clicked => { root.stream-key-saved = false; root.stream-key-save(root.stream-key-text); } }
+                        keysavelay := HorizontalLayout { alignment: center; spacing: 7px;
+                            padding-left: 16px; padding-right: 16px;
+                            VerticalLayout { alignment: center;
+                                AppIcon { source: root.stream-key-saved ? Icons.check : Icons.save;
+                                    tint: #ffffff; width: 15px; height: 15px; } }
+                            Text { text: root.stream-key-saved ? "Applied ✓" : "Save key"; color: #ffffff;
+                                font-size: 13px; font-weight: 700; vertical-alignment: center; }
+                        }
+                    }
+                    PlexButton { icon: Icons.rotate-ccw; label: "Reset"; hue: VP.c-back;
+                        clicked => { root.stream-key-reset(); } }
                     Rectangle { horizontal-stretch: 1; }
                     PlexButton { label: "Close";
                         clicked => { root.stream-hosts-open = false; } }
