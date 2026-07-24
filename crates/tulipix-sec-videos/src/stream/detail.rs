@@ -38,8 +38,17 @@ pub fn stream_open(weak: slint::Weak<MainWindow>, subject_id: String) {
         };
         // Split-show subjects hold one season each, so the wire query is still
         // se=1 for them — the season number is only a label here.
-        let episode = if details.is_series || !split.is_empty() { 1 } else { 0 };
-        let wire_season = if split.is_empty() { season } else { 1 };
+        let mut episode = if details.is_series || !split.is_empty() { 1 } else { 0 };
+        let mut wire_season = if split.is_empty() { season } else { 1 };
+        // Opened from History's Play button: resume the episode that row was
+        // about, not the first one. Anything else opens at the top as before.
+        let pending = take_pending_play(&subject_id);
+        if let Some(p) = &pending {
+            if p.episode > 0 {
+                wire_season = p.season.max(0);
+                episode = p.episode;
+            }
+        }
         with_state(|st| st.selection = (wire_season, episode));
         with_state(|st| st.open_id = subject_id.clone());
         with_state(|st| st.season_subjects = split.clone());
@@ -59,6 +68,11 @@ pub fn stream_open(weak: slint::Weak<MainWindow>, subject_id: String) {
         load_watched(&subject_id).await;
         let cover = cache_cover(&details.cover).await;
         push_details(&weak, &details, cover, &subject_id, season);
+        if episode > 1 {
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_video_stream_episode(episode as i32);
+            });
+        }
         with_state(|st| st.details = Some(details.clone()));
         let _ = weak.upgrade_in_event_loop(move |w| w.set_video_stream_bookmarked(saved));
         load_files(weak, epoch, subject_id, wire_season, episode).await;
@@ -381,6 +395,15 @@ fn paint_files(weak: &slint::Weak<MainWindow>, found: &[StreamFile], from_cache:
         .map(|f| if f.resolution > 0 { format!("{}p stream", f.resolution) } else { "stream".into() })
         .unwrap_or_default();
 
+    // Opened from History's Play button: the streams have only just resolved,
+    // so this is the first moment there is anything to play.
+    if let Some(index) = armed {
+        let open = with_state(|st| st.open_id.clone());
+        if take_pending_play(&open).is_some() {
+            stream_play(weak.clone(), index as i32);
+        }
+    }
+
     let res = current_resolution();
     let _ = weak.upgrade_in_event_loop(move |w| {
         let chips: Vec<StreamChip> = tracks
@@ -464,6 +487,15 @@ pub fn stream_back(weak: slint::Weak<MainWindow>) {
 pub fn stream_set_season(weak: slint::Weak<MainWindow>, season: i32) {
     let split = with_state(|st| st.season_subjects.clone());
     if let Some((_, subject)) = split.iter().find(|(n, _)| *n == season as i64) {
+        // Re-register the list against every subject in it before opening the
+        // new one. `stream_open` reads the season map to work out which season
+        // the subject it is given represents; if that entry has gone the show
+        // reopens as a one-season title labelled "Season 1".
+        with_state(|st| {
+            for (_, id) in &split {
+                st.season_map.insert(id.clone(), split.clone());
+            }
+        });
         // Reflect the click straight away; the details fetch fills in the rest.
         let _ = weak.upgrade_in_event_loop(move |w| w.set_video_stream_season(season));
         stream_open(weak, subject.clone());

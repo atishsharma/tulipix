@@ -15,7 +15,9 @@ pub mod bookmarks;
 pub mod cache;
 pub mod client;
 pub mod crypto;
+pub mod downloads;
 pub mod feed;
+pub mod feed_cache;
 pub mod probe;
 pub mod progress;
 
@@ -26,7 +28,8 @@ use serde_json::{json, Value};
 
 // ---- types ----
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SearchHit {
     /// Subject to open. For a show split across per-season subjects this is the
     /// lowest season's subject.
@@ -107,11 +110,18 @@ impl StreamFile {
     /// uploader. Identical URLs count too, for the case where every other field
     /// is blank.
     pub fn is_same_offer(&self, other: &StreamFile) -> bool {
-        self.url == other.url
-            || (self.resolution == other.resolution
-                && self.size == other.size
-                && self.codec == other.codec
-                && self.uploader == other.uploader)
+        if self.url == other.url {
+            return true;
+        }
+        // Collapsing on metadata needs metadata to collapse on. Two entries that
+        // declare nothing but a resolution are two different files — usually
+        // separate mirrors — and treating them as one dropped half the list.
+        let described = !self.size.is_empty() || !self.codec.is_empty() || !self.uploader.is_empty();
+        described
+            && self.resolution == other.resolution
+            && self.size == other.size
+            && self.codec == other.codec
+            && self.uploader == other.uploader
     }
 }
 
@@ -179,11 +189,24 @@ pub(crate) fn hit_of(item: &Value) -> Option<SearchHit> {
     if id.is_empty() {
         return None;
     }
+    // The browse feed names the same fields differently from search — its cards
+    // came back with a working id but no title and no artwork, which is how a
+    // row of blank posters that still open correctly happens.
+    let first = |keys: &[&str]| {
+        keys.iter().map(|k| s(item, k)).find(|v| !v.is_empty()).unwrap_or_default()
+    };
     Some(SearchHit {
         id,
-        title: clean_title(&s(item, "title")),
-        year: year_of(&s(item, "releaseDate")),
-        cover: cover_url(item),
+        title: clean_title(&first(&["title", "name", "subjectName", "seriesName"])),
+        year: year_of(&first(&["releaseDate", "year", "publishDate", "releaseTime"])),
+        cover: {
+            let c = cover_url(item);
+            if c.is_empty() {
+                first(&["image", "imageUrl", "poster", "verticalImage", "coverUrl"])
+            } else {
+                c
+            }
+        },
         is_series: is_series(item),
         season_subjects: Vec::new(),
     })
@@ -221,7 +244,13 @@ pub fn parse_search(payload: &Value, query: &str) -> Vec<SearchHit> {
         if id.is_empty() {
             continue;
         }
-        let (base, season) = split_season_suffix(&clean_title(&s(item, "title")));
+        // Season suffixes are a series thing. Running the split over films too
+        // turned "Dune Part Two" into "Dune", season 2 — the part number is the
+        // title there, not an index.
+        let series = is_series(item);
+        let cleaned = clean_title(&s(item, "title"));
+        let (base, season) =
+            if series { split_season_suffix(&cleaned) } else { (cleaned, None) };
         let related = matches_query(&base, query);
         raws.push(Raw {
             related,
@@ -230,7 +259,7 @@ pub fn parse_search(payload: &Value, query: &str) -> Vec<SearchHit> {
             season,
             year: year_of(&s(item, "releaseDate")),
             cover: cover_url(item),
-            is_series: is_series(item),
+            is_series: series,
         });
     }
 
@@ -1005,9 +1034,14 @@ pub mod prefer {
     }
 
     /// Keep only preferred dubs; return all if none match.
+    ///
+    /// "Original" on its own does not count as a match: a Korean show offering
+    /// `[Original, Korean]` would otherwise be filtered down to `[Original]`,
+    /// hiding the only real language choice it had.
     pub fn dubs(list: Vec<Dub>) -> Vec<Dub> {
         let kept: Vec<Dub> = list.iter().filter(|d| matches(&d.name, DUBS)).cloned().collect();
-        if kept.is_empty() { list } else { kept }
+        let only_original = kept.iter().all(|d| matches(&d.name, &["original"]));
+        if kept.is_empty() || only_original { list } else { kept }
     }
 
     /// Keep only preferred subtitle tracks; return all if none match.
@@ -1181,7 +1215,8 @@ pub mod recent {
     use tulipix_core::settings::Settings;
 
     pub const KEY: &str = "stream.recent";
-    const MAX: usize = 5;
+    /// How many terms the landing block lists.
+    pub const MAX: usize = 6;
 
     pub fn load() -> Vec<String> {
         Settings::load()
@@ -1450,11 +1485,14 @@ mod tests {
 
     #[test]
     fn recent_caps_the_list_and_ignores_blanks() {
-        let long: Vec<String> = (0..10).map(|n| format!("t{n}")).collect();
+        // Written against the cap rather than a hard-coded length: this test
+        // asserted 10 while the cap was 5, so it had been failing unnoticed.
+        let long: Vec<String> = (0..20).map(|n| format!("t{n}")).collect();
         let merged = recent::merge(&long, "new");
-        assert_eq!(merged.len(), 10);
+        assert_eq!(merged.len(), recent::MAX);
         assert_eq!(merged[0], "new");
-        assert_eq!(merged.last().unwrap(), "t8"); // oldest dropped
+        // The newest term plus the first MAX-1 of what was there.
+        assert_eq!(merged.last().unwrap(), &format!("t{}", recent::MAX - 2));
         assert_eq!(recent::merge(&long, "   "), long);
         assert!(recent::merge(&[], "").is_empty());
     }

@@ -161,6 +161,10 @@ fn progress_sink(weak: slint::Weak<MainWindow>) -> Option<PlaybackEnd> {
             if let Ok(pool) = pool_for("videos").await {
                 let _ = stream::progress::record(&pool, &entry).await;
             }
+            // Repaint the landing row now rather than on the next tab visit —
+            // going back after watching something and finding the old position
+            // still on the card reads as the progress not having been kept.
+            stream_feed_load(weak.clone());
             // Watched to the end: line up the next episode the way a streaming
             // app would. Only after the write, so its progress bar is correct.
             if finished {
@@ -212,8 +216,6 @@ async fn cache_subtitle(c: &Caption, idx: usize) -> Option<PathBuf> {
         .map(|ch| if ch.is_alphanumeric() || ch == '-' || ch == ' ' { ch } else { '_' })
         .collect();
     let stem = if lang.trim().is_empty() { format!("Track {}", idx + 1) } else { lang.trim().to_string() };
-    let ext = if c.ext.is_empty() { "srt".to_string() } else { c.ext.clone() };
-    let path = dir.join(format!("{stem}.{ext}"));
 
     let bytes = reqwest::Client::new()
         .get(&c.url)
@@ -228,8 +230,77 @@ async fn cache_subtitle(c: &Caption, idx: usize) -> Option<PathBuf> {
     if bytes.is_empty() {
         return None;
     }
+    // Extension from the content, with the declared one as a hint. mpv decides
+    // whether a `--sub-file` is a subtitle partly by its extension, so a track
+    // the catalogue labels `"TEXT"` (or labels nothing at all) is silently
+    // ignored when that label goes straight into the filename.
+    let path = dir.join(format!("{stem}.{}", subtitle_ext(&bytes, &c.ext)));
     tokio::fs::write(&path, &bytes).await.ok()?;
     Some(path)
+}
+
+/// Subtitle formats mpv loads from a `--sub-file`.
+const SUB_EXTS: [&str; 5] = ["srt", "vtt", "ass", "ssa", "sub"];
+
+/// Save a caption beside a downloaded video as `<video>.<ext>`, so the file
+/// plays with the language that was picked when it was queued. Downloading it at
+/// queue time costs a few KB and puts it in place before the video lands.
+pub async fn save_sidecar_sub(dest: &std::path::Path, c: &Caption) -> Option<PathBuf> {
+    let bytes = reqwest::Client::new()
+        .get(&c.url)
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .bytes()
+        .await
+        .ok()?;
+    if bytes.is_empty() {
+        return None;
+    }
+    if let Some(parent) = dest.parent() {
+        let _ = tokio::fs::create_dir_all(parent).await;
+    }
+    let path = dest.with_extension(subtitle_ext(&bytes, &c.ext));
+    tokio::fs::write(&path, &bytes).await.ok()?;
+    Some(path)
+}
+
+/// mpv flags for a downloaded file's sidecar subtitle, when one was saved with
+/// it. Empty when there is none — `--sub-auto` would then be free to find
+/// whatever else is in the folder, which is what a plain local file should do.
+pub fn sidecar_sub_args(dest: &std::path::Path) -> Vec<String> {
+    let Some(path) = SUB_EXTS.iter().map(|e| dest.with_extension(e)).find(|p| p.exists()) else {
+        return Vec::new();
+    };
+    let mut args = vec![
+        format!("--sub-file={}", path.display()),
+        "--sub-auto=no".to_string(),
+        "--sid=1".to_string(),
+        "--sub-visibility=yes".to_string(),
+    ];
+    args.extend(subtitle_style_args());
+    args
+}
+
+/// What this subtitle actually is. Content wins; the server's own label is used
+/// only when it is one of the formats mpv accepts.
+fn subtitle_ext(bytes: &[u8], declared: &str) -> String {
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(64)]);
+    let head = head.trim_start_matches('\u{feff}').trim_start();
+    if head.starts_with("WEBVTT") {
+        return "vtt".into();
+    }
+    if head.starts_with("[Script Info]") || head.starts_with("[V4+ Styles]") {
+        return "ass".into();
+    }
+    let declared = declared.trim().trim_start_matches('.').to_ascii_lowercase();
+    if SUB_EXTS.contains(&declared.as_str()) {
+        return declared;
+    }
+    // SubRip is the catalogue's usual format and the safest default.
+    "srt".into()
 }
 
 /// mpv flags for the episode's subtitles: the chosen language first (so it is
@@ -256,7 +327,19 @@ async fn subtitle_args(tracks: &[Caption], chosen: Option<usize>) -> (Vec<String
     if attached > 0 {
         // Track 1 is whatever we put first: the picked language, or nothing
         // picked means subtitles stay off until the user turns them on in mpv.
-        args.push(if chosen.is_some() { "--sid=1".to_string() } else { "--sid=no".to_string() });
+        if chosen.is_some() {
+            // Ours are the only external subtitle files in play: without this mpv
+            // also picks up anything sitting next to the media, which for a
+            // remote URL is unpredictable and shifts the track numbering.
+            args.push("--sub-auto=no".to_string());
+            args.push("--sid=1".to_string());
+            // A user mpv.conf carrying `sub-visibility=no` (or `no-sub`) leaves
+            // the track selected but invisible, which looks exactly like
+            // subtitles being broken. Command-line options win over the config.
+            args.push("--sub-visibility=yes".to_string());
+        } else {
+            args.push("--sid=no".to_string());
+        }
     }
     (args, attached)
 }

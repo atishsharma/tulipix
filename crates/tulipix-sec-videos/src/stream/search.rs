@@ -89,6 +89,9 @@ fn run_search(weak: slint::Weak<MainWindow>, query: String, page: usize) {
                 id: h.id.clone(),
                 title: h.title.clone(),
                 line: h.year.clone(),
+                // Result cards carry no resume state.
+                meta: String::new(),
+                note: String::new(),
                 poster,
                 is_series: h.is_series,
                 // A split show advertises its season count on the card.

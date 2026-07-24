@@ -190,8 +190,12 @@ pub async fn history(pool: &SqlitePool, limit: i64) -> Vec<Entry> {
     rows.into_iter().map(entry_of).collect()
 }
 
-/// The Continue Watching row: the most recent unfinished episode of each title,
+/// The Continue Watching row: the most recent unfinished episode of each show,
 /// newest first. One card per show, never one per episode.
+///
+/// Series only. A part-watched film is still in the History page, but it does
+/// not belong on a row about carrying on where you left off — there is no next
+/// episode to carry on to.
 pub async fn continue_watching(pool: &SqlitePool, limit: usize) -> Vec<Entry> {
     if limit == 0 {
         return Vec::new();
@@ -200,7 +204,7 @@ pub async fn continue_watching(pool: &SqlitePool, limit: usize) -> Vec<Entry> {
     // trick; the candidate set is small, so the loop below is the honest version.
     let rows: Vec<Row> = sqlx::query_as(&format!(
         "SELECT {COLUMNS} FROM stream_progress
-         WHERE finished = 0 AND position_s > ?
+         WHERE finished = 0 AND is_series = 1 AND position_s > ?
          ORDER BY updated DESC LIMIT 200"
     ))
     .bind(RESUME_FLOOR_S)
@@ -211,7 +215,7 @@ pub async fn continue_watching(pool: &SqlitePool, limit: usize) -> Vec<Entry> {
     let mut seen = std::collections::HashSet::new();
     let mut out = Vec::new();
     for e in rows.into_iter().map(entry_of) {
-        if seen.insert(e.subject_id.clone()) {
+        if seen.insert(show_key(&e)) {
             out.push(e);
             if out.len() == limit {
                 break;
@@ -219,6 +223,18 @@ pub async fn continue_watching(pool: &SqlitePool, limit: usize) -> Vec<Entry> {
         }
     }
     out
+}
+
+/// What counts as "the same show" in Continue Watching.
+///
+/// The subject id alone is not enough: the catalogue splits a long-running
+/// series into one subject per season, so resuming season 2 after season 1
+/// leaves two ids for one show and the row shows it twice. The season-stripped
+/// title is what a viewer means by the show, so that is the key — falling back
+/// to the id when a row was written without a title.
+fn show_key(e: &Entry) -> String {
+    let base = super::split_season_suffix(e.title.trim()).0;
+    if base.is_empty() { e.subject_id.clone() } else { base.to_lowercase() }
 }
 
 /// Forget one title — every episode of it.
@@ -246,7 +262,11 @@ mod tests {
             subject_id: id.into(),
             season,
             episode,
-            title: "Severance".into(),
+            // Distinct per subject: Continue Watching folds on the title, so a
+            // shared one would make every fixture the same show. The id goes in
+            // front — trailing "s1" would be read as a season marker and folded
+            // away again.
+            title: format!("{id} Severance"),
             cover_url: "https://c/x.jpg".into(),
             is_series: true,
             position_s: pos,
@@ -300,7 +320,7 @@ mod tests {
         let got = get(&pool, "s1", 1, 3).await.unwrap();
         assert_eq!(got.position_s, 120.0);
         assert!(!got.finished);
-        assert_eq!(got.title, "Severance");
+        assert_eq!(got.title, "s1 Severance");
 
         // Same episode again, now watched to the end.
         record(&pool, &mk("s1", 1, 3, 990.0, 1000.0)).await.unwrap();
@@ -324,6 +344,9 @@ mod tests {
         record(&pool, &at(200, mk("s1", 1, 2, 300.0, 1000.0))).await.unwrap(); // in progress
         record(&pool, &at(300, mk("s2", 0, 0, 400.0, 2000.0))).await.unwrap();
         record(&pool, &at(400, mk("s3", 1, 1, 10.0, 1000.0))).await.unwrap(); // false start
+        // A film has no next episode, so it never joins this row.
+        let film = Entry { is_series: false, ..mk("m1", 0, 0, 600.0, 3000.0) };
+        record(&pool, &at(500, film)).await.unwrap();
 
         let cw = continue_watching(&pool, 10).await;
         assert_eq!(cw.len(), 2, "{cw:#?}");
@@ -331,8 +354,23 @@ mod tests {
         let s1 = cw.iter().find(|e| e.subject_id == "s1").unwrap();
         assert_eq!(s1.episode, 2, "the unfinished episode, not the watched one");
         assert!(!cw.iter().any(|e| e.subject_id == "s3"), "a false start is not resumable");
+        assert!(!cw.iter().any(|e| e.subject_id == "m1"), "films stay out of Continue Watching");
 
         assert_eq!(continue_watching(&pool, 1).await.len(), 1, "limit honoured");
+    }
+
+    #[tokio::test]
+    async fn a_split_series_is_one_continue_watching_card() {
+        let (_t, pool) = open_pool().await;
+        // The catalogue hands out a subject per season; both are the same show.
+        let s1 = Entry { title: "Person of Interest".into(), ..mk("p-s1", 1, 4, 300.0, 1000.0) };
+        let s2 = Entry { title: "Person of Interest Season 2".into(), ..mk("p-s2", 2, 1, 300.0, 1000.0) };
+        record(&pool, &at(100, s1)).await.unwrap();
+        record(&pool, &at(200, s2)).await.unwrap();
+
+        let cw = continue_watching(&pool, 10).await;
+        assert_eq!(cw.len(), 1, "one card per show, not per season subject: {cw:#?}");
+        assert_eq!(cw[0].subject_id, "p-s2", "the season most recently watched");
     }
 
     #[tokio::test]

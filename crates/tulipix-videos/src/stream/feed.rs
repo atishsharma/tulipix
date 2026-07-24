@@ -186,6 +186,30 @@ mod tests {
     }
 
     #[test]
+    fn cards_survive_a_feed_that_names_its_fields_differently() {
+        // Same subjects, none of search's field names on them.
+        let payload = json!({"items": [{"title": "Trending", "subjects": [
+            {"subjectId": "a", "name": "Dune", "year": "2024",
+             "image": "https://img/a.jpg", "subjectType": 1},
+            {"subjectId": "b", "seriesName": "Severance", "publishDate": "2022-02-18",
+             "verticalImage": "https://img/b.jpg", "subjectType": 2},
+            {"subjectId": "c", "subjectName": "Loki", "releaseDate": "2021-06-09",
+             "cover": {"url": "https://img/c.jpg"}, "subjectType": 2}
+        ]}]});
+        let items = &parse_feed(&payload)[0].items;
+        assert_eq!(items.len(), 3);
+        assert_eq!(items[0].title, "Dune");
+        assert_eq!(items[0].year, "2024");
+        assert_eq!(items[0].cover, "https://img/a.jpg");
+        assert_eq!(items[1].title, "Severance");
+        assert_eq!(items[1].cover, "https://img/b.jpg");
+        assert!(items[1].is_series);
+        // The search-shaped fields still win when they are there.
+        assert_eq!(items[2].title, "Loki");
+        assert_eq!(items[2].cover, "https://img/c.jpg");
+    }
+
+    #[test]
     fn an_unnamed_row_still_gets_a_heading() {
         let payload = json!({"items": [{"subjects": [
             subject("a", "A"), subject("b", "B"), subject("c", "C")

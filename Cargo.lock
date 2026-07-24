@@ -7783,6 +7783,7 @@ dependencies = [
  "tokio",
  "tulipix-common",
  "tulipix-core",
+ "tulipix-music",
  "tulipix-ui",
  "tulipix-videos",
 ]

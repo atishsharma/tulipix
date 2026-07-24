@@ -172,10 +172,14 @@ pub(crate) fn clear_open_title() {
 // ---- split-season shows ----
 
 /// Record the season lists that came back with a search, keyed by every subject
-/// in each list. Replaces the previous search's entries.
+/// in each list.
+///
+/// Entries accumulate rather than replacing the previous search's: this map is
+/// what tells an open title which season it is, and the next page of results
+/// (or a search run while a title is open) used to wipe the entry under it,
+/// leaving a five-season show looking like a one-season one.
 pub(crate) fn remember_season_maps(hits: &[stream::SearchHit]) {
     with_state(|st| {
-        st.season_map.clear();
         for hit in hits.iter().filter(|h| h.season_subjects.len() > 1) {
             for (_, id) in &hit.season_subjects {
                 st.season_map.insert(id.clone(), hit.season_subjects.clone());
@@ -212,6 +216,59 @@ pub(crate) fn next_epoch() -> u64 {
 
 pub(crate) fn is_current(epoch: u64) -> bool {
     EPOCH.load(std::sync::atomic::Ordering::SeqCst) == epoch
+}
+
+/// The landing row's own generation, kept apart from [`EPOCH`].
+///
+/// The two guard unrelated things: `EPOCH` is "the newest thing the user
+/// clicked", the landing row is a background refresh. Sharing one counter meant
+/// a refresh (on tab open, or after playback wrote progress) silently abandoned
+/// an in-flight detail load — and the autoplay chain abandoned the refresh right
+/// back, so the resume card did not update after an episode finished.
+static FEED_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn next_feed_epoch() -> u64 {
+    FEED_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
+pub(crate) fn is_current_feed(epoch: u64) -> bool {
+    FEED_EPOCH.load(std::sync::atomic::Ordering::SeqCst) == epoch
+}
+
+/// A request to open a title *at a particular episode and start playing* —
+/// History's Play button. Keyed by subject so a request that never resolves
+/// cannot fire against whatever title is opened next.
+#[derive(Debug, Clone)]
+pub(crate) struct PendingPlay {
+    pub subject_id: String,
+    pub season: i64,
+    pub episode: i64,
+}
+
+static PENDING: OnceLock<Mutex<Option<PendingPlay>>> = OnceLock::new();
+fn pending_cell() -> &'static Mutex<Option<PendingPlay>> {
+    PENDING.get_or_init(|| Mutex::new(None))
+}
+
+pub(crate) fn set_pending_play(p: PendingPlay) {
+    if let Ok(mut g) = pending_cell().lock() {
+        *g = Some(p);
+    }
+}
+
+/// Take the pending request if it is for `subject_id`. Any request for a
+/// different title is dropped at the same time — it is stale by definition once
+/// something else has been opened.
+pub(crate) fn take_pending_play(subject_id: &str) -> Option<PendingPlay> {
+    let mut g = pending_cell().lock().ok()?;
+    match g.as_ref() {
+        Some(p) if p.subject_id == subject_id => g.take(),
+        Some(_) => {
+            *g = None;
+            None
+        }
+        None => None,
+    }
 }
 
 /// Reuse the live client, or build one over the configured hosts and warm it up
@@ -273,6 +330,39 @@ fn cover_dir() -> Option<PathBuf> {
     tulipix_core::paths::cache_dir().map(|d| d.join("videos").join("stream"))
 }
 
+/// Extensions a cached poster can have. The decoder picks its format from the
+/// file extension, so a mislabelled file is a decode error, not a picture.
+const COVER_EXTS: [&str; 3] = ["jpg", "png", "webp"];
+
+/// What these bytes actually are, by their magic number — the catalogue serves
+/// PNG and WebP from URLs that end in `.jpg`, and a PNG written to a `.jpg`
+/// path fails to decode with "Illegal start bytes".
+fn image_ext(bytes: &[u8]) -> &'static str {
+    match bytes {
+        [0x89, b'P', b'N', b'G', ..] => "png",
+        [b'R', b'I', b'F', b'F', _, _, _, _, b'W', b'E', b'B', b'P', ..] => "webp",
+        _ => "jpg",
+    }
+}
+
+/// Rename a cached image whose extension disagrees with its own header, and
+/// return the path to use. Anything unreadable is left exactly as it is.
+async fn repair_ext(path: PathBuf, ext: &str) -> PathBuf {
+    use tokio::io::AsyncReadExt;
+    let Ok(mut f) = tokio::fs::File::open(&path).await else { return path };
+    let mut head = [0u8; 12];
+    let Ok(n) = f.read(&mut head).await else { return path };
+    let actual = image_ext(&head[..n]);
+    if actual == ext {
+        return path;
+    }
+    let fixed = path.with_extension(actual);
+    match tokio::fs::rename(&path, &fixed).await {
+        Ok(()) => fixed,
+        Err(_) => path,
+    }
+}
+
 /// Download a remote poster into the cache, keyed by a hash of its URL, and
 /// return the local path. Already-cached files are reused untouched.
 pub(crate) async fn cache_cover(url: &str) -> Option<PathBuf> {
@@ -283,9 +373,15 @@ pub(crate) async fn cache_cover(url: &str) -> Option<PathBuf> {
     use sha2::{Digest, Sha256};
     let mut h = Sha256::new();
     h.update(url.as_bytes());
-    let path = dir.join(format!("{:x}.jpg", h.finalize()));
-    if path.exists() {
-        return Some(path);
+    let stem = format!("{:x}", h.finalize());
+    for ext in COVER_EXTS {
+        let path = dir.join(format!("{stem}.{ext}"));
+        if path.exists() {
+            // Entries cached before the format was sniffed are PNGs sitting in
+            // a .jpg name, which fails to decode. Repair the name in place
+            // rather than re-downloading a file we already have.
+            return Some(repair_ext(path, ext).await);
+        }
     }
     tokio::fs::create_dir_all(&dir).await.ok()?;
     let bytes = reqwest::Client::new()
@@ -298,6 +394,7 @@ pub(crate) async fn cache_cover(url: &str) -> Option<PathBuf> {
         .bytes()
         .await
         .ok()?;
+    let path = dir.join(format!("{stem}.{}", image_ext(&bytes)));
     tokio::fs::write(&path, &bytes).await.ok()?;
     Some(path)
 }
@@ -381,18 +478,22 @@ pub(crate) fn caption_union(files: &[StreamFile]) -> Vec<Caption> {
 /// Push the persisted preferences into the UI. Called when the tab opens, so the
 /// pills show what the state was already initialised with.
 pub fn stream_prefs_load(weak: slint::Weak<MainWindow>) {
-    let res = current_resolution();
-    let (scale, delay, autoplay) =
-        (stream::subs::scale(), stream::subs::delay(), stream::autoplay::enabled());
-    let _ = weak.upgrade_in_event_loop(move |w| {
-        w.set_video_stream_resolution(res.into());
-        w.set_video_stream_sub_scale(scale);
-        w.set_video_stream_sub_delay(delay);
-        w.set_video_stream_autoplay(autoplay);
-        w.set_video_stream_to_library(
+    // Four settings reads, each of which opens and parses the settings file.
+    // Small, but it is still disk work and this runs from a UI callback.
+    tokio::runtime::Handle::current().spawn(async move {
+        let res = current_resolution();
+        let (scale, delay, autoplay) =
+            (stream::subs::scale(), stream::subs::delay(), stream::autoplay::enabled());
+        let to_library =
             tulipix_core::settings::Settings::load().unwrap_or_default().text("stream.dl_dest")
-                != "downloads",
-        );
+                != "downloads";
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_video_stream_resolution(res.into());
+            w.set_video_stream_sub_scale(scale);
+            w.set_video_stream_sub_delay(delay);
+            w.set_video_stream_autoplay(autoplay);
+            w.set_video_stream_to_library(to_library);
+        });
     });
 }
 
@@ -523,6 +624,17 @@ mod tests {
         assert_eq!(truncate_chars("abc", 3), "abc"); // exact length, no ellipsis
         // Multibyte: 4 codepoints capped to 2 must not split a glyph.
         assert_eq!(truncate_chars("héllo", 2), "hé…");
+    }
+
+    #[test]
+    fn cover_extension_follows_the_bytes_not_the_url() {
+        assert_eq!(image_ext(&[0x89, b'P', b'N', b'G', 0x0d, 0x0a]), "png");
+        assert_eq!(image_ext(b"RIFF\0\0\0\0WEBPVP8 "), "webp");
+        assert_eq!(image_ext(&[0xff, 0xd8, 0xff, 0xe0]), "jpg");
+        // Unrecognised bytes stay jpg: the decoder rejects them either way, and
+        // a wrong guess must not create a second cache entry for the same URL.
+        assert_eq!(image_ext(b""), "jpg");
+        assert_eq!(image_ext(b"RIFF"), "jpg");
     }
 
     #[test]
