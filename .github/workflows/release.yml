@@ -35,10 +35,14 @@ jobs:
           sudo docker image prune --all --force 2>/dev/null || true
           sudo swapoff -a || true
           sudo rm -f /mnt/swapfile || true
-          sudo fallocate -l 14G /mnt/swapfile || sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=14336
+          sudo fallocate -l 24G /mnt/swapfile || sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=24576
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
+          # Swapping is the point here — let the kernel use it before it starts
+          # killing processes, and keep some file cache rather than dropping the
+          # pages rustc is about to re-read.
+          sudo sysctl -w vm.swappiness=100 vm.vfs_cache_pressure=50 || true
           echo "=== mem/disk after ==="; free -h; df -h / /mnt
 
       - name: System deps (libmpv link + skia/gl build deps + mpv to bundle)
@@ -54,7 +58,7 @@ jobs:
             libmpv-dev mpv mold cmake ninja-build libgtk-3-dev \
             libfontconfig1-dev libfreetype6-dev libgl1-mesa-dev libegl1-mesa-dev \
             libxkbcommon-dev libwayland-dev \
-            clang libclang-dev llvm-dev python3 lld
+            clang libclang-dev llvm-dev python3 lld time
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
@@ -89,18 +93,42 @@ jobs:
         # rather than dying at ~60 min.
         env:
           FORCE_SKIA_BINARIES_DOWNLOAD: "1"
-          # Two memory fixes for the linux-only OOM (exit 143) that v0.3.0 didn't
-          # hit — the app grew (Music Downloader + a 607KB page_music.slint):
-          #  1. mold -> lld: mold holds the whole link in RAM; the now-bigger app
-          #     + static skia link spiked past the 16 GB runner. lld streams leaner.
-          #     (RUSTFLAGS overrides the committed .cargo/config mold flag.)
-          #  2. -j1: one heavy crate at a time. macOS builds this in 7 GB, so a
-          #     single-crate peak fits the 16 GB linux runner with margin.
-          RUSTFLAGS: "-C link-arg=-fuse-ld=lld"
+          # This job is the one that OOMs (exit 143, "runner received a shutdown
+          # signal", no error in the log — the VM itself dies). macOS builds the
+          # same crate with the same features on a 7 GB M1 runner, so the peak is
+          # not rustc across the workspace: it is the single final unit, where
+          # `lto = "fat"` + `codegen-units = 1` (release profile, right for a
+          # shipped binary) merges the whole program — skia and all — into one
+          # LLVM module and one lld invocation.
+          #
+          #  1. mold -> lld: mold holds the whole link in RAM. (RUSTFLAGS
+          #     overrides the committed .cargo/config mold flag.)
+          #  2. lld --threads=1: a threaded link keeps per-thread arenas alive.
+          #  3. thin LTO + 16 codegen units, Linux-only and via env so the
+          #     committed profile stays fat for local release builds. Thin LTO
+          #     optimizes module-at-a-time instead of loading the program at
+          #     once — this is the actual peak, and the one lever big enough to
+          #     matter. Costs a little binary size and inlining.
+          #  4. -j1: one crate at a time on the way there.
+          # opt-level stays at the profile's "s": smaller code is less for the
+          # LTO step and the linker to chew on, and it is what macOS survives on.
+          RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--threads=1"
           CARGO_BUILD_JOBS: "1"
           CARGO_PROFILE_RELEASE_DEBUG: "false"
-          CARGO_PROFILE_RELEASE_OPT_LEVEL: "2"      # trims rustc/codegen peak vs opt=3
-        run: cargo build --release --locked -p tulipix-app --features full,ai-onnx
+          CARGO_PROFILE_RELEASE_LTO: "thin"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+        run: |
+          # A silent 143 leaves nothing to work from, so log memory while it
+          # runs: the last sample before the kill says whether it was RAM, swap
+          # or disk, and `time -v` reports the peak of the build itself.
+          ( while :; do
+              echo "[mem $(date -u +%H:%M:%S)] $(free -m | awk '/^Mem:/{print "used="$3"M free="$4"M"} /^Swap:/{print "swap="$3"M"}' | tr '\n' ' ')" \
+                   "top=$(ps -eo rss,comm --sort=-rss | awk 'NR==2{printf "%s(%dM)", $2, $1/1024}')"
+              sleep 30
+            done ) &
+          WATCH=$!
+          trap 'kill $WATCH 2>/dev/null || true' EXIT
+          /usr/bin/time -v cargo build --release --locked -p tulipix-app --features full,ai-onnx
 
       - name: Strip
         run: strip target/release/tulipix
@@ -386,6 +414,31 @@ jobs:
               with streaks and a heatmap.
             - **Baked 3D covers** — artwork warped onto a hardcover mockup.
 
+            ### Videos — the Stream tab
+            A remote catalogue browsed from inside the Videos section, using the
+            same players, queues and databases as everything local.
+
+            - **Search with suggestions** and paged results, over a user-editable
+              host list with a health check that tests each server in place and
+              can reorder them fastest-first.
+            - **A landing screen** carrying Continue Watching, trending titles and
+              trending vertical dramas — cached in the app database and refreshed
+              twice a day rather than on every visit.
+            - **Detail pane** per title: seasons, episodes (named where the
+              catalogue names them), audio cuts, resolutions and subtitle tracks,
+              each as its own column.
+            - **Sticky quality** — 720p until you play something else, and every
+              later episode arms the rung you last chose.
+            - **Resume and autoplay** — where you stopped is written back per
+              episode, the next one starts on its own, and the one after that
+              resolves in the background so choosing it is instant.
+            - **Downloads page** — a queue that survives a restart: retry, cancel,
+              reveal in the file manager, delete, and a live bar per job. The
+              subtitle you picked is fetched with the video and plays back with it.
+            - **Bookmarks** with new-episode badges, and a **History** page with
+              per-row resume.
+            - **Cast** to a DLNA renderer, watch the trailer, copy the direct link.
+
             ### Home & lock screen
             - Redesigned home with a fixed right rail and circular source/action tabs.
             - **PIN-gated ambient lock screen** with slideshow and now-playing.
@@ -411,8 +464,12 @@ jobs:
               text-scan boundary.
 
             ### Under the hood
-            - Books wiring extracted into its own crate; `main()` split into
-              per-section wiring functions.
+            - Books and Videos wiring extracted into their own crates; `main()`
+              split into per-section wiring functions.
+            - Stream state lives in `videos.db`: watch progress, bookmarks, the
+              download ledger, resolved streams and the cached landing rows.
             - Dead dependencies pruned.
+            - Linux release builds link with thin LTO — the fat-LTO link of the
+              whole program was killing the CI runner outright.
 
             ---

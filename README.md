@@ -5,7 +5,7 @@
 <h1 align="center">Tulipix</h1>
 
 <p align="center">
-Privacy-first, native, all-in-one media manager — <b>Photos · Videos · Music · Podcasts · Audiobooks · Radio · YouTube · Books · Cloud · Tools</b> — built in Rust with a Slint UI.<br/>
+Privacy-first, native, all-in-one media manager — <b>Photos · Videos · Stream · Music · Podcasts · Audiobooks · Radio · YouTube · Books · Cloud · Tools</b> — built in Rust with a Slint UI.<br/>
 No webview, no accounts, no telemetry: everything lives in local SQLite databases on your machine.
 </p>
 
@@ -151,11 +151,38 @@ The binary is `tulipix` (package `tulipix-app`). Tag-push (`v*`) triggers the fu
 
 ### 🎬 Videos
 
-- Library scanner with TMDB/TVDB metadata, posters and subtitles support; embedded libmpv playback with GPU surface bridge; PiP floating player.
+- Library scanner with TMDB/TVDB metadata, posters and subtitle support; embedded libmpv playback with GPU surface bridge; PiP floating player.
+- Continue Watching, starred / archived / trash tabs, per-item resume, chapters and subtitle word search.
+
+### 📡 Videos — Stream
+
+A remote catalogue browsed from inside the section, with the same players and queues as everything local.
+
+- **Search with suggestions**, paged results, and a landing screen carrying Continue Watching, trending titles and trending vertical dramas — all cached in the app database and refreshed twice a day.
+- **Detail pane** per title: seasons, episodes (named where the catalogue names them), audio cuts, resolutions and subtitle tracks, each as its own column.
+- **Sticky quality** — 720p until you play something else, and every later episode arms the rung you last chose.
+- **Resume and autoplay** — where you stopped is written back per episode, the next one starts on its own, and the one after that is resolved in the background so choosing it is instant.
+- **Downloads page** — a real queue that survives a restart: retry, cancel, reveal in the file manager, delete, and a live bar per job. The subtitle you picked is fetched with the video and plays back with it.
+- **Bookmarks** with new-episode badges, and a **History** page with per-row resume.
+- **Cast** to a DLNA renderer, watch the trailer, or copy the direct link.
+- **Host health check** — the server list is yours to edit, testable in place and sortable fastest-first.
 
 ### 📖 Books
 
-- EPUB + CBZ/comics parser, ComicVine metadata, built-in reader with typography controls + TTS, collections (Reading / Unread / Comics / Series / Authors).
+Rewritten end to end for this release: ten formats, two reader engines, and a library that understands series and collections.
+
+- **Ten formats** — EPUB (including fixed-layout manga and magazines), PDF, DjVu, CBZ, CBR, CB7, CBT, MOBI, AZW3 and FB2/FB2.zip.
+- **Each format reads the way it should** — a reflowing paginator for prose (two-page spread, single page, or a continuous column) and a fixed-page reader for anything rasterised.
+- Double-page spreads show whole rather than split down the fold; **webtoon mode** for long-strip comics; **right-to-left manga order**, taken from the archive's own metadata.
+- **Sharpening zoom** (pages re-rasterise as you zoom, keeping your position), **margin trim**, and page thumbnails for magazines and comics with no chapter structure to aim at.
+- **Read-aloud** via Kokoro neural TTS or espeak, with sentence highlighting; page-anchored notes export as Markdown.
+- **Next in series**, ordered naturally so volume 2 precedes volume 10; ComicInfo.xml read for series, volume and direction.
+- **Calibre import**, smart collections, duplicate detection, full-text search inside book contents, reading stats with streaks and a heatmap.
+- **Baked 3D covers** — artwork warped onto a hardcover mockup, rendered off the UI thread.
+
+### 🔒 Lock screen
+
+- PIN-gated ambient lock screen with slideshow and now-playing, drawn over the whole app.
 
 ### ☁️ Cloud
 
@@ -189,17 +216,20 @@ crates/
   tulipix-core/       db pool, settings, keyring, fs, ipc, prefs, caps
   tulipix-common/     playback core + shared singletons
   tulipix-photos/     photos.db + scanner + EXIF + editor + AI hooks
-  tulipix-videos/     videos.db + scanner + TMDB/TVDB + subs
+  tulipix-videos/     videos.db + scanner + TMDB/TVDB + subs + Stream catalogue
   tulipix-music/      music.db / podcasts.db / radio.db / youtube.db + scanners + tags
-  tulipix-books/      books.db + epub/cbz parser + comicvine
+  tulipix-books/      books.db + ten-format parsers + comicvine
   tulipix-cloud/      cloud.db + rclone driver
   tulipix-player/     libmpv wrapper + GPU surface bridge
   tulipix-ai/         LLM chat, captions, onboarding model catalogue
   tulipix-whisper/    whisper.cpp subprocess + FIFO queue
   tulipix-tools/      background job queue (recording, conversion)
+  tulipix-mdl/        music downloader (native scrapers, direct DB ingest)
   tulipix-platform/   per-OS code (menus, tray, notifications, vibrancy)
   tulipix-plugins/    WASM (wasmtime) + Lua (mlua) sandboxed extension host
-  tulipix-sec-*/      extracted section crates (music, photos, videos, tools, cloud)
+  tulipix-sec-*/      extracted section crates (music, photos, videos, books, tools, cloud)
+  tulipix-ui/         Slint build script + generated UI crate
+  tulipix-hot/        hot-reload harness for the dev run
   tulipix-cli/        headless companion CLI
 tools/
   fetch-resources/    binary fetcher with SHA-256 verification
