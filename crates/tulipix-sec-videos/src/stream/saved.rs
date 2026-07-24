@@ -22,6 +22,10 @@ pub fn stream_toggle_bookmark(weak: slint::Weak<MainWindow>) {
         is_series,
         meta: meta_line(&d),
         overview: d.overview.clone(),
+        // What the show lists today is the baseline; the badge is for what
+        // turns up after this.
+        seen_max_ep: d.seasons.last().map(|s| s.max_ep).unwrap_or(0),
+        latest_max_ep: 0,
     };
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("videos").await else { return };
@@ -49,19 +53,121 @@ pub fn stream_bookmarks_load(weak: slint::Weak<MainWindow>) {
         let _ = weak.upgrade_in_event_loop(move |w| {
             let rows: Vec<StreamCard> = cards
                 .into_iter()
-                .map(|(b, poster)| StreamCard {
-                    id: b.subject_id.into(),
-                    title: b.title.into(),
-                    year: b.year.into(),
-                    poster: load_image(poster),
-                    is_series: b.is_series,
-                    seasons: 0,
-                    meta: b.meta.into(),
-                    overview: truncate_chars(&b.overview, 100).into(),
+                .map(|(b, poster)| {
+                    // `seasons` doubles as the new-episode badge count here, and
+                    // has to be read before the rest of `b` moves into the card.
+                    let badge = if b.has_new() { b.new_count() as i32 } else { 0 };
+                    StreamCard {
+                        id: b.subject_id.into(),
+                        title: b.title.into(),
+                        year: b.year.into(),
+                        poster: load_image(poster),
+                        is_series: b.is_series,
+                        seasons: badge,
+                        meta: b.meta.into(),
+                        overview: truncate_chars(&b.overview, 100).into(),
+                        progress: 0.0,
+                    }
                 })
                 .collect();
             w.set_video_stream_bookmarks(slint::ModelRc::new(slint::VecModel::from(rows)));
         });
+    });
+}
+
+/// Check saved series for episodes added since they were last looked at.
+///
+/// Runs when the Saved page opens, at most once a day per show, and one at a
+/// time — this is background curiosity, not something worth a burst of traffic.
+pub fn stream_bookmarks_refresh(weak: slint::Weak<MainWindow>) {
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("videos").await else { return };
+        let due = stream::bookmarks::due_for_check(&pool, 24 * 60 * 60).await;
+        if due.is_empty() {
+            return;
+        }
+        let Ok(c) = client().await else { return };
+        let mut news = false;
+        for bm in due {
+            let Ok(d) = c.details(&bm.subject_id).await else { continue };
+            let latest = d.seasons.last().map(|s| s.max_ep).unwrap_or(0);
+            if latest <= 0 {
+                continue;
+            }
+            news |= stream::bookmarks::note_latest(&pool, &bm.subject_id, latest)
+                .await
+                .unwrap_or(false);
+        }
+        // Only repaint when something actually changed.
+        if news {
+            stream_bookmarks_load(weak);
+        }
+    });
+}
+
+// ---- watch history ----
+
+/// Fill the History page: everything played, newest first.
+pub fn stream_history_load(weak: slint::Weak<MainWindow>) {
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("videos").await else { return };
+        let entries = stream::progress::history(&pool, 200).await;
+        let covers = cache_covers(entries.iter().map(|e| e.cover_url.clone()).collect()).await;
+        let rows: Vec<(stream::progress::Entry, Option<PathBuf>)> =
+            entries.into_iter().zip(covers).collect();
+
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            let cards: Vec<StreamCard> = rows
+                .into_iter()
+                .map(|(e, poster)| StreamCard {
+                    id: e.subject_id.clone().into(),
+                    title: e.title.clone().into(),
+                    year: history_line(&e).into(),
+                    poster: load_image(poster),
+                    is_series: e.is_series,
+                    seasons: 0,
+                    meta: Default::default(),
+                    overview: Default::default(),
+                    progress: if e.finished { 1.0 } else { e.fraction() as f32 },
+                })
+                .collect();
+            w.set_video_stream_history(slint::ModelRc::new(slint::VecModel::from(cards)));
+        });
+    });
+}
+
+/// "S02E04 · watched" / "S02E04 · 34%" under a history card.
+fn history_line(e: &stream::progress::Entry) -> String {
+    let mut parts: Vec<String> = Vec::new();
+    if e.is_series && (e.season > 0 || e.episode > 0) {
+        parts.push(format!("S{:02}E{:02}", e.season.max(1), e.episode.max(1)));
+    }
+    parts.push(if e.finished {
+        "watched".to_string()
+    } else {
+        format!("{:.0}%", e.fraction() * 100.0)
+    });
+    parts.join("  ·  ")
+}
+
+/// Forget everything on the History page.
+pub fn stream_history_clear(weak: slint::Weak<MainWindow>) {
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = pool_for("videos").await {
+            let _ = stream::progress::clear(&pool).await;
+        }
+        stream_history_load(weak.clone());
+        stream_feed_load(weak);
+    });
+}
+
+/// Forget one title's history.
+pub fn stream_history_remove(weak: slint::Weak<MainWindow>, subject_id: String) {
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = pool_for("videos").await {
+            let _ = stream::progress::remove(&pool, &subject_id).await;
+        }
+        stream_history_load(weak);
     });
 }
 
@@ -111,6 +217,7 @@ mod tests {
             subject_id: id.into(), title: title.into(), year: "2020".into(),
             cover_url: String::new(), is_series: series,
             meta: String::new(), overview: String::new(),
+            seen_max_ep: 0, latest_max_ep: 0,
         };
         // list() is newest-first; simulate [b, a] as that order.
         let base = vec![mk("b", "Zebra", false), mk("a", "Apple", true)];

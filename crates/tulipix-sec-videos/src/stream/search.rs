@@ -10,16 +10,39 @@ pub fn stream_search(weak: slint::Weak<MainWindow>, query: String) {
     // detail so it doesn't stay layered over the results.
     clear_open_title();
     let _ = weak.upgrade_in_event_loop(|w| w.set_video_stream_detail_open(false));
+    with_state(|st| {
+        st.query = query.clone();
+        st.page = 0;
+        st.results.clear();
+    });
     if query.is_empty() {
         let _ = weak.upgrade_in_event_loop(|w| {
             w.set_video_stream_results(slint::ModelRc::new(slint::VecModel::from(Vec::<StreamCard>::new())));
+            w.set_video_stream_more(false);
             w.set_video_stream_status("".into());
             w.set_video_stream_busy(false);
         });
         return;
     }
+    run_search(weak, query, 1);
+}
+
+/// Pull the next page of the search on screen and append it.
+///
+/// The catalogue pages at 20 a time and never says how many there are, so a
+/// short page is the only end-of-results signal there is.
+pub fn stream_search_more(weak: slint::Weak<MainWindow>) {
+    let (query, page) = with_state(|st| (st.query.clone(), st.page));
+    if query.is_empty() || page == 0 {
+        return;
+    }
+    run_search(weak, query, page + 1);
+}
+
+/// Page 1 replaces the grid; later pages append to it.
+fn run_search(weak: slint::Weak<MainWindow>, query: String, page: usize) {
     let epoch = next_epoch(); // also abandons any detail load still in flight
-    set_status(&weak, "Searching…", true);
+    set_status(&weak, if page > 1 { "Loading more…" } else { "Searching…" }, true);
     tokio::runtime::Handle::current().spawn(async move {
         let c = match client().await {
             Ok(c) => c,
@@ -27,8 +50,10 @@ pub fn stream_search(weak: slint::Weak<MainWindow>, query: String) {
         };
         // Remember the term only once a server has actually been reached, so a
         // dead host list does not fill the landing screen with junk.
-        push_recent(&weak, &query);
-        let hits = match c.search(&query, 1).await {
+        if page == 1 {
+            push_recent(&weak, &query);
+        }
+        let hits = match c.search(&query, page).await {
             Ok(h) => h,
             Err(e) => return set_status(&weak, explain(&e), false),
         };
@@ -36,44 +61,69 @@ pub fn stream_search(weak: slint::Weak<MainWindow>, query: String) {
         if !is_current(epoch) {
             return;
         }
-        if hits.is_empty() {
+        if hits.is_empty() && page == 1 {
+            with_state(|st| st.results.clear());
             let _ = weak.upgrade_in_event_loop(|w| {
                 w.set_video_stream_results(slint::ModelRc::new(slint::VecModel::from(Vec::<StreamCard>::new())));
+                w.set_video_stream_more(false);
             });
             return set_status(&weak, "Nothing found.", false);
         }
 
         remember_season_maps(&hits);
+        // A page that came back short is the last one. Folding split seasons and
+        // duplicate dubs shrinks a full page well below `PAGE_LEN`, so the test
+        // is deliberately generous — offering one dead "load more" is a smaller
+        // sin than hiding half the catalogue.
+        let more = hits.len() >= PAGE_LEN / 2;
         let covers = cache_covers(hits.iter().map(|h| h.cover.clone()).collect()).await;
         let host = c.active_host().await;
-        let count = hits.len();
-        let cards: Vec<(stream::SearchHit, Option<PathBuf>)> =
-            hits.into_iter().zip(covers).collect();
         if !is_current(epoch) {
             return; // poster caching is slow; re-check before painting
         }
 
+        let fresh: Vec<CardData> = hits
+            .iter()
+            .zip(covers)
+            .map(|(h, poster)| CardData {
+                id: h.id.clone(),
+                title: h.title.clone(),
+                line: h.year.clone(),
+                poster,
+                is_series: h.is_series,
+                // A split show advertises its season count on the card.
+                seasons: h.season_subjects.len() as i32,
+                progress: 0.0,
+            })
+            .collect();
+
+        let all = with_state(|st| {
+            if page == 1 {
+                st.results = fresh.clone();
+            } else {
+                // The catalogue repeats itself across pages more than it should.
+                for card in &fresh {
+                    if !st.results.iter().any(|c| c.id == card.id) {
+                        st.results.push(card.clone());
+                    }
+                }
+            }
+            st.page = page;
+            st.results.clone()
+        });
+
+        let count = all.len();
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let rows: Vec<StreamCard> = cards
-                .into_iter()
-                .map(|(h, poster)| StreamCard {
-                    id: h.id.into(),
-                    title: h.title.into(),
-                    year: h.year.into(),
-                    poster: load_image(poster),
-                    is_series: h.is_series,
-                    // A split show advertises its season count on the card.
-                    seasons: h.season_subjects.len() as i32,
-                    meta: Default::default(),
-                    overview: Default::default(),
-                })
-                .collect();
-            w.set_video_stream_results(slint::ModelRc::new(slint::VecModel::from(rows)));
+            w.set_video_stream_results(slint::ModelRc::new(slint::VecModel::from(cards_of(&all))));
+            w.set_video_stream_more(more);
             w.set_video_stream_status(format!("{count} results · {host}").into());
             w.set_video_stream_busy(false);
         });
     });
 }
+
+/// What the catalogue returns per page (`perPage` in the search payload).
+const PAGE_LEN: usize = 20;
 
 // ---- search suggestions ----
 

@@ -145,6 +145,29 @@ export struct StreamCard {
     seasons: int,   // >1 when the catalogue split the show across subjects
     meta: string,     // "2024 · Drama · ★ 8.7" — filled for Saved cards
     overview: string, // synopsis — filled for Saved cards
+    progress: float,  // 0..1, drives the bar on Continue Watching / History cards
+}
+
+// One horizontal strip on the landing screen: a heading and its cards.
+export struct StreamRow {
+    title: string,
+    // Continue Watching rows carry progress bars and a "forget" control.
+    resumable: bool,
+    cards: [StreamCard],
+}
+
+// One episode in the detail strip.
+export struct StreamEpisode {
+    number: int,
+    title: string,    // "" when the catalogue never named it
+    progress: float,  // 0..1 of how far through it you are
+}
+
+// One row of the Servers modal's health check.
+export struct StreamHostHealth {
+    host: string,
+    note: string,  // "142 ms" or why it failed
+    ok: bool,
 }
 
 // A pickable option in the detail pane — currently the language cuts ("dubs"),
@@ -662,6 +685,98 @@ component PanelBox inherits Rectangle {
 
 // One selectable line in a picker column. The leading marker mirrors the TUI's
 // `>>` cursor so the active row reads at a glance.
+// One episode in the detail strip: number, the catalogue's name for it where
+// there is one, and a hairline showing how far through it you are.
+component EpisodeRow inherits Rectangle {
+    in property <int> number;
+    in property <string> title;
+    in property <float> progress: 0.0;
+    in property <bool> active: false;
+    callback clicked();
+    height: 34px;
+    horizontal-stretch: 1; vertical-stretch: 0;
+    border-radius: 6px;
+    background: root.active ? #ff2323 : (erow.has-hover ? VP.row-hi : VP.row);
+    border-width: root.active ? 0px : 1px; border-color: VP.row-edge;
+    erow := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 10px; spacing: 6px;
+        VerticalLayout { alignment: center; horizontal-stretch: 0;
+            Text { text: root.number; color: VP.row-ink;
+                font-size: 12px; font-weight: 800; } }
+        VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 3px;
+            Text { text: root.title == "" ? "Episode " + root.number : root.title;
+                color: VP.row-ink;
+                font-size: 12px; font-weight: root.active ? 800 : 600;
+                overflow: elide; }
+            // Hidden entirely at zero, so an unwatched list stays clean.
+            if root.progress > 0.01: Rectangle {
+                height: 2px; border-radius: 1px;
+                background: VP.row-edge;
+                Rectangle {
+                    x: 0; width: parent.width * Math.clamp(root.progress, 0.0, 1.0);
+                    height: 100%; border-radius: 1px;
+                    background: root.progress >= 0.99 ? VP.row-ink.with-alpha(0.45) : #ff2323;
+                }
+            }
+        }
+    }
+}
+
+// A small on/off switch for the Servers modal's preferences.
+component StreamToggle inherits Rectangle {
+    in property <bool> on: false;
+    callback toggled(bool);
+    width: 42px; height: 24px; border-radius: 12px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    background: root.on ? VP.c-play : VP.btn-2;
+    border-width: 1px; border-color: root.on ? VP.c-play : VP.btn-2-edge;
+    tg := TouchArea { mouse-cursor: pointer; clicked => { root.toggled(!root.on); } }
+    Rectangle {
+        y: 3px; x: root.on ? parent.width - self.width - 3px : 3px;
+        width: 18px; height: 18px; border-radius: 9px;
+        background: root.on ? #ffffff : (tg.has-hover ? VP.icon : VP.text-mute);
+        animate x { duration: 120ms; easing: ease-out; }
+    }
+}
+
+// "− label +" — a compact stepper for a numeric preference.
+component StepperPill inherits Rectangle {
+    in property <string> label;
+    callback minus();
+    callback plus();
+    height: 30px; border-radius: 8px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    width: pill-row.preferred-width;
+    background: VP.btn-2; border-width: 1px; border-color: VP.btn-2-edge;
+    pill-row := HorizontalLayout {
+        padding-left: 6px; padding-right: 6px; spacing: 8px;
+        VerticalLayout { alignment: center; horizontal-stretch: 0;
+            Rectangle {
+                width: 20px; height: 20px; border-radius: 6px;
+                background: mn.has-hover ? VP.btn-2-hi : transparent;
+                mn := TouchArea { mouse-cursor: pointer; clicked => { root.minus(); } }
+                Text { text: "−"; color: VP.btn-2-ink; font-size: 14px; font-weight: 800;
+                    width: parent.width; height: parent.height;
+                    horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+        VerticalLayout { alignment: center; horizontal-stretch: 1;
+            Text { text: root.label; color: VP.btn-2-ink; font-size: 11px; font-weight: 700;
+                vertical-alignment: center; } }
+        VerticalLayout { alignment: center; horizontal-stretch: 0;
+            Rectangle {
+                width: 20px; height: 20px; border-radius: 6px;
+                background: pl.has-hover ? VP.btn-2-hi : transparent;
+                pl := TouchArea { mouse-cursor: pointer; clicked => { root.plus(); } }
+                Text { text: "+"; color: VP.btn-2-ink; font-size: 14px; font-weight: 800;
+                    width: parent.width; height: parent.height;
+                    horizontal-alignment: center; vertical-alignment: center; }
+            }
+        }
+    }
+}
+
 component PickRow inherits Rectangle {
     in property <string> label;
     in property <bool> active: false;
@@ -747,6 +862,18 @@ component StreamPoster inherits Rectangle {
                 mouse-cursor: pointer;
                 clicked => { root.clicked(); }
                 changed has-hover => { root.hovered(self.has-hover); }
+            }
+            // How far through, along the bottom edge of the poster — Continue
+            // Watching and History cards only, where progress means something.
+            if card.progress > 0.01: Rectangle {
+                x: 0; y: parent.height - 4px;
+                width: parent.width; height: 4px;
+                background: VP.scrim;
+                Rectangle {
+                    x: 0; height: 100%;
+                    width: parent.width * Math.clamp(card.progress, 0.0, 1.0);
+                    background: card.progress >= 0.99 ? VP.text-mute : VP.accent;
+                }
             }
             // Remove button — Saved page only, top-right, appears on hover.
             if root.removable && ta.has-hover: Rectangle {
@@ -892,7 +1019,7 @@ export component VideosPage inherits Rectangle {
     in property <bool> stream-is-series: false;
     in property <[StreamChip]> stream-dubs: [];
     in property <[int]> stream-seasons: [];
-    in property <[int]> stream-episodes: [];
+    in property <[StreamEpisode]> stream-episodes: [];
     in property <int> stream-season: 0;
     in property <int> stream-episode: 0;
     in property <[StreamFileRow]> stream-files: [];
@@ -950,7 +1077,52 @@ export component VideosPage inherits Rectangle {
     in-out property <string> stream-key-text: "";
     in property <string> stream-key-error: "";
     in-out property <bool> stream-key-saved: false;   // flashes the "Applied" pill
+    // ── Landing screen (hero + browse rows) ──────────────────────────────
+    in property <[StreamRow]> stream-rows: [];
+    in property <bool> stream-hero-open: false;
+    in property <string> stream-hero-id: "";
+    in property <string> stream-hero-title: "";
+    in property <string> stream-hero-meta: "";      // "S02E04 · 18 min left"
+    in property <float> stream-hero-progress: 0.0;
+    in property <image> stream-hero-cover;
+    // More pages of the current search are available.
+    in property <bool> stream-more: false;
+    // Watch history.
+    in property <[StreamCard]> stream-history: [];
+    // Servers modal: health check.
+    in property <[StreamHostHealth]> stream-host-health: [];
+    in property <string> stream-hosts-summary: "";
+    in property <bool> stream-hosts-checking: false;
+    // Hosts in fastest-first order, offered after a check; "" until one runs.
+    in property <string> stream-hosts-ranked: "";
+    // Casting.
+    in property <[string]> stream-cast-devices: [];
+    in property <bool> stream-cast-active: false;
+    in property <string> stream-cast-target: "";
+    in-out property <bool> stream-cast-open: false;
+    // Playback preferences.
+    in property <float> stream-sub-scale: 1.0;
+    in property <float> stream-sub-delay: 0.0;
+    in property <bool> stream-autoplay: true;
+    in property <bool> stream-to-library: true;
     callback stream-search(string);
+    callback stream-search-more();
+    callback stream-feed-load();
+    callback stream-hero-play(string);
+    callback stream-resume-forget(string);
+    callback stream-history-load();
+    callback stream-history-clear();
+    callback stream-history-remove(string);
+    callback stream-download-season();
+    callback stream-trailer();
+    callback stream-cast-discover();
+    callback stream-cast-to(string);
+    callback stream-cast-stop();
+    callback stream-hosts-check(string);
+    callback stream-set-sub-scale(float);
+    callback stream-set-sub-delay(float);
+    callback stream-set-autoplay(bool);
+    callback stream-set-to-library(bool);
     callback stream-open(string);      // subject id
     callback stream-back();
     callback stream-play(int);         // index into stream-files
@@ -1168,6 +1340,22 @@ export component VideosPage inherits Rectangle {
                                 root.stream-view = "bookmarks";
                                 root.bm-page = 0;
                                 root.stream-bookmarks-load();
+                            }
+                        }
+                    }
+                }
+                // Everything played, newest first.
+                if root.kind == "stream": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    VideoTab {
+                        hue: VP.c-info;
+                        icon: Icons.timer; label: "History";
+                        active: root.stream-view == "history";
+                        clicked => {
+                            if (root.stream-view == "history") {
+                                root.stream-view = "search";
+                            } else {
+                                root.stream-view = "history";
+                                root.stream-history-load();
                             }
                         }
                     }
@@ -1541,6 +1729,15 @@ export component VideosPage inherits Rectangle {
                                 hovered(on) => { root.stream-preview(on ? card.id : ""); }
                             }
                         }
+                        // The catalogue pages at 20; pull the next one on demand.
+                        if root.stream-more: HorizontalLayout {
+                            alignment: center; padding-top: 6px; padding-bottom: 18px;
+                            PlexButton {
+                                icon: Icons.chevron-down;
+                                label: root.stream-busy ? "Loading…" : "Load more";
+                                clicked => { root.stream-search-more(); }
+                            }
+                        }
                     }
                 }
                 // Full-height Info Preview side panel.
@@ -1616,10 +1813,122 @@ export component VideosPage inherits Rectangle {
                     }
                 }
             }
+            // ── Cinematic landing — hero + browse rows. ──────────────────────
+            // Shown once there is something to browse; until the feed answers
+            // (or when there are no servers) the centred search box below takes
+            // the page instead.
+            if root.stream-landing && root.stream-view == "search" && root.stream-rows.length > 0:
+            ScrollView {
+                vertical-stretch: 1; horizontal-stretch: 1;
+                VerticalLayout {
+                    padding-bottom: 28px; spacing: 0px; alignment: start;
+
+                    // Search, always reachable without scrolling back up.
+                    Rectangle {
+                        height: 74px; horizontal-stretch: 1; vertical-stretch: 0;
+                        HorizontalLayout {
+                            padding-left: 28px; padding-right: 28px; spacing: 12px; alignment: start;
+                            VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                StreamSearchField {
+                                    query <=> root.stream-query;
+                                    search(q) => { root.stream-suggest-clear(); root.stream-search(q); }
+                                    edited(q) => { root.stream-suggest(q); }
+                                }
+                            }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                PlexButton { icon: Icons.search; label: "Search"; filled: true;
+                                    clicked => { root.stream-search(root.stream-query); } } }
+                        }
+                    }
+
+                    // Hero — the thing you were last watching.
+                    if root.stream-hero-open: Rectangle {
+                        height: 268px; horizontal-stretch: 1; vertical-stretch: 0;
+                        HorizontalLayout {
+                            padding-left: 28px; padding-right: 28px; spacing: 22px;
+                            // Poster card.
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                Rectangle {
+                                    width: 150px; height: 225px;
+                                    border-radius: 12px; clip: true; background: VP.well;
+                                    border-width: 1px; border-color: VP.glass-2;
+                                    Image { source: root.stream-hero-cover; image-fit: cover;
+                                        width: parent.width; height: parent.height; }
+                                    if root.stream-hero-cover.width == 0: AppIcon {
+                                        source: Icons.film; tint: VP.ph-icon; width: 34px; height: 34px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2; }
+                                }
+                            }
+                            // Title, where you left off, and the two things
+                            // worth doing about it.
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 1; spacing: 10px;
+                                Text { text: "CONTINUE WATCHING"; color: VP.accent;
+                                    font-size: 10px; font-weight: 800; letter-spacing: 1.5px; }
+                                Text { text: root.stream-hero-title; color: VP.text;
+                                    font-size: 32px; font-weight: 800; overflow: elide; }
+                                if root.stream-hero-meta != "": Text {
+                                    text: root.stream-hero-meta; color: VP.text-dim;
+                                    font-size: 13px; font-weight: 600; }
+                                // How far in, at a glance.
+                                if root.stream-hero-progress > 0.01: Rectangle {
+                                    width: 320px; height: 4px; border-radius: 2px;
+                                    background: VP.hair;
+                                    horizontal-stretch: 0; vertical-stretch: 0;
+                                    Rectangle {
+                                        x: 0; height: 100%; border-radius: 2px; background: VP.accent;
+                                        width: parent.width * Math.clamp(root.stream-hero-progress, 0.0, 1.0);
+                                    }
+                                }
+                                HorizontalLayout {
+                                    alignment: start; spacing: 10px;
+                                    PlexButton { icon: Icons.play; label: "Resume"; filled: true;
+                                        clicked => { root.stream-hero-play(root.stream-hero-id); } }
+                                    PlexButton { icon: Icons.x; label: "Not now";
+                                        clicked => { root.stream-resume-forget(root.stream-hero-id); } }
+                                }
+                            }
+                        }
+                    }
+
+                    // Browse rows — Continue Watching first, then the feed.
+                    for row in root.stream-rows: VerticalLayout {
+                        padding-top: 14px; spacing: 10px;
+                        HorizontalLayout {
+                            padding-left: 28px; padding-right: 28px; spacing: 10px; alignment: start;
+                            Text { text: row.title; color: VP.text;
+                                font-size: 16px; font-weight: 800; vertical-alignment: center; }
+                            Text { text: row.cards.length + "";
+                                color: VP.text-mute; font-size: 11px; vertical-alignment: center; }
+                        }
+                        // One strip, scrolled sideways.
+                        Rectangle {
+                            height: 280px; horizontal-stretch: 1; vertical-stretch: 0;
+                            ScrollView {
+                                width: 100%; height: 100%;
+                                HorizontalLayout {
+                                    padding-left: 28px; padding-right: 28px; spacing: 14px;
+                                    alignment: start;
+                                    for card in row.cards: StreamPoster {
+                                        card: card;
+                                        removable: row.resumable;
+                                        clicked => { root.stream-open(card.id); }
+                                        hovered(on) => { root.stream-preview(on ? card.id : ""); }
+                                        remove => { root.stream-resume-forget(card.id); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
             // Landing screen — the search field sits in the middle of the page
             // with recent terms beneath it, and moves up into the toolbar as
             // soon as there are results to show.
-            if root.stream-landing && root.stream-view == "search": VerticalLayout {
+            if root.stream-landing && root.stream-view == "search" && root.stream-rows.length == 0:
+            VerticalLayout {
                 alignment: center; spacing: 0px;
                 vertical-stretch: 1; horizontal-stretch: 1;
 
@@ -1732,6 +2041,55 @@ export component VideosPage inherits Rectangle {
                                         }
                                     }
                                 }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── History — everything played, newest first. ────────────────
+            if root.stream-view == "history": VerticalLayout {
+                vertical-stretch: 1; horizontal-stretch: 1; spacing: 0px;
+                Rectangle {
+                    height: 66px; horizontal-stretch: 1; vertical-stretch: 0; background: VP.header;
+                    HorizontalLayout {
+                        padding-left: 28px; padding-right: 28px; spacing: 12px; alignment: start;
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            StreamBackBtn { label: "Back";
+                                clicked => { root.stream-view = "search"; } } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            AppIcon { source: Icons.timer; tint: VP.accent;
+                                width: 20px; height: 20px; } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 1;
+                            Text { text: "History"; color: VP.text;
+                                font-size: 22px; font-weight: 800; } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Text { text: root.stream-history.length + " titles";
+                                color: VP.text-mute; font-size: 12px; vertical-alignment: center; } }
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            PlexButton { icon: Icons.trash; label: "Clear"; hue: VP.danger;
+                                clicked => { root.stream-history-clear(); } } }
+                    }
+                }
+                if root.stream-history.length == 0: VerticalLayout {
+                    alignment: center; vertical-stretch: 1;
+                    Text { text: "Nothing watched yet.";
+                        color: VP.text-mute; font-size: 14px; horizontal-alignment: center; }
+                }
+                if root.stream-history.length > 0: ScrollView {
+                    vertical-stretch: 1; horizontal-stretch: 1;
+                    VerticalLayout {
+                        padding: 28px; spacing: 0px; alignment: start;
+                        Rectangle {
+                            horizontal-stretch: 1;
+                            height: Math.ceil(root.stream-history.length / cols) * cell-h;
+                            for card[idx] in root.stream-history: StreamPoster {
+                                x: Math.mod(idx, cols) * cell-w;
+                                y: Math.floor(idx / cols) * cell-h;
+                                card: card;
+                                removable: true;
+                                clicked => { root.stream-open(card.id); }
+                                remove => { root.stream-history-remove(card.id); }
                             }
                         }
                     }
@@ -1941,6 +2299,25 @@ export component VideosPage inherits Rectangle {
                                     clicked => { root.stream-copy-current(); } }
                                 IconBtn { icon: Icons.download; tip: "Download"; hue: VP.c-dl;
                                     clicked => { root.stream-download-current(); } }
+                                // Whole season, queued one after another.
+                                if root.stream-is-series: IconBtn {
+                                    icon: Icons.list; tip: "Download season"; hue: VP.c-dl;
+                                    clicked => { root.stream-download-season(); } }
+                                IconBtn { icon: Icons.monitor-play;
+                                    tip: root.stream-cast-active
+                                        ? "Casting to " + root.stream-cast-target
+                                        : "Cast to a device";
+                                    hue: VP.c-copy;
+                                    clicked => {
+                                        if (root.stream-cast-active) {
+                                            root.stream-cast-stop();
+                                        } else {
+                                            root.stream-cast-open = true;
+                                            root.stream-cast-discover();
+                                        }
+                                    } }
+                                IconBtn { icon: Icons.film; tip: "Watch the trailer"; hue: VP.c-play;
+                                    clicked => { root.stream-trailer(); } }
                             }
                         }
                     }
@@ -2017,10 +2394,14 @@ export component VideosPage inherits Rectangle {
                             width: 100%; height: 100%;
                             VerticalLayout {
                                 alignment: start; padding: 6px;
-                                for ep in root.stream-episodes: PickRow {
-                                    label: "Episode " + ep;
-                                    active: ep == root.stream-episode;
-                                    clicked => { root.stream-set-episode(ep); }
+                                // Named where the catalogue named it, numbered
+                                // where it did not; the bar is how far in you are.
+                                for ep in root.stream-episodes: EpisodeRow {
+                                    number: ep.number;
+                                    title: ep.title;
+                                    progress: ep.progress;
+                                    active: ep.number == root.stream-episode;
+                                    clicked => { root.stream-set-episode(ep.number); }
                                 }
                             }
                         }
@@ -2171,6 +2552,49 @@ export component VideosPage inherits Rectangle {
         }
     }
 
+    // Cast picker — the renderers found on this network.
+    if root.stream-cast-open: Rectangle {
+        background: VP.scrim;
+        TouchArea { clicked => { root.stream-cast-open = false; } }
+        Rectangle {
+            width: 380px; height: 340px; border-radius: 16px;
+            background: VP.modal; border-width: 1px; border-color: VP.hair-2;
+            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            TouchArea {}   // swallow clicks so tapping the card doesn't dismiss
+            VerticalLayout {
+                padding: 20px; spacing: 12px;
+                HorizontalLayout { spacing: 10px; alignment: start; vertical-stretch: 0;
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        AppIcon { source: Icons.monitor-play; tint: VP.accent;
+                            width: 18px; height: 18px; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 1;
+                        Text { text: "Cast to"; color: VP.text; font-size: 18px; font-weight: 800; } }
+                    PlexButton { icon: Icons.refresh-cw; label: "Scan";
+                        clicked => { root.stream-cast-discover(); } }
+                }
+                Text { text: "DLNA renderers on this network play the stream directly.";
+                    color: VP.text-mute; font-size: 11px; wrap: word-wrap; vertical-stretch: 0; }
+                ScrollView {
+                    vertical-stretch: 1; horizontal-stretch: 1;
+                    VerticalLayout {
+                        alignment: start; spacing: 6px;
+                        if root.stream-cast-devices.length == 0: Text {
+                            text: root.stream-busy ? "Looking…" : "Nothing found yet — press Scan.";
+                            color: VP.text-mute; font-size: 12px; }
+                        for dev in root.stream-cast-devices: PickRow {
+                            label: dev;
+                            active: dev == root.stream-cast-target;
+                            clicked => { root.stream-cast-to(dev); root.stream-cast-open = false; }
+                        }
+                    }
+                }
+                if root.stream-cast-active: PlexButton {
+                    icon: Icons.x; label: "Stop casting"; hue: VP.danger;
+                    clicked => { root.stream-cast-stop(); root.stream-cast-open = false; } }
+            }
+        }
+    }
+
     // Hosts editor — a centred modal over the whole page (root z-stack), not an
     // inline panel under the header.
     if root.stream-hosts-open: Rectangle {
@@ -2225,6 +2649,77 @@ export component VideosPage inherits Rectangle {
                     }
                     PlexButton { icon: Icons.rotate-ccw; label: "Reset"; hue: VP.c-back;
                         clicked => { root.stream-hosts-reset(); } }
+                    // Time every server in the box. A dead one is only known to
+                    // be dead once it times out, so this takes a few seconds.
+                    PlexButton {
+                        icon: Icons.refresh-cw;
+                        label: root.stream-hosts-checking ? "Testing…" : "Test";
+                        hue: VP.c-copy;
+                        clicked => { root.stream-hosts-check(root.stream-hosts-text); } }
+                    // Offered only once a test has run; Save is still what writes.
+                    if root.stream-hosts-ranked != "" && !root.stream-hosts-checking: PlexButton {
+                        icon: Icons.arrow-up; label: "Fastest first"; hue: VP.c-back;
+                        clicked => { root.stream-hosts-text = root.stream-hosts-ranked; } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                // Health, one row per server, after a test.
+                if root.stream-hosts-summary != "": Text {
+                    text: root.stream-hosts-summary; color: VP.text-dim;
+                    font-size: 12px; font-weight: 600; vertical-stretch: 0; }
+                if root.stream-host-health.length > 0: VerticalLayout {
+                    spacing: 4px; vertical-stretch: 0;
+                    for h in root.stream-host-health: Rectangle {
+                        height: 26px; border-radius: 6px; background: VP.row;
+                        border-width: 1px; border-color: VP.row-edge;
+                        HorizontalLayout {
+                            padding-left: 10px; padding-right: 10px; spacing: 8px;
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                Rectangle {
+                                    width: 7px; height: 7px; border-radius: 4px;
+                                    background: h.ok ? VP.c-play : VP.danger; } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                Text { text: h.host; color: VP.row-ink; font-size: 11px;
+                                    font-weight: 600; overflow: elide; } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                Text { text: h.note;
+                                    color: h.ok ? VP.text-dim : VP.text-mute;
+                                    font-size: 11px; font-weight: 700; } }
+                        }
+                    }
+                }
+
+                // ── Playback preferences ───────────────────────────────────
+                Rectangle { height: 1px; background: VP.hair-2; vertical-stretch: 0; }
+                HorizontalLayout { alignment: start; spacing: 18px; vertical-stretch: 0;
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Text { text: "Autoplay next episode"; color: VP.text;
+                            font-size: 12px; font-weight: 700; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        StreamToggle { on: root.stream-autoplay;
+                            toggled(v) => { root.stream-set-autoplay(v); } } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Text { text: "Download into the library"; color: VP.text;
+                            font-size: 12px; font-weight: 700; } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        StreamToggle { on: root.stream-to-library;
+                            toggled(v) => { root.stream-set-to-library(v); } } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                // Subtitle size and timing, applied the next time something plays.
+                HorizontalLayout { alignment: start; spacing: 10px; vertical-stretch: 0;
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        Text { text: "Subtitles"; color: VP.text-dim;
+                            font-size: 12px; font-weight: 700; } }
+                    StepperPill {
+                        label: "Size " + Math.round(root.stream-sub-scale * 100) + "%";
+                        minus => { root.stream-set-sub-scale(root.stream-sub-scale - 0.1); }
+                        plus => { root.stream-set-sub-scale(root.stream-sub-scale + 0.1); }
+                    }
+                    StepperPill {
+                        label: "Offset " + root.stream-sub-delay + "s";
+                        minus => { root.stream-set-sub-delay(root.stream-sub-delay - 0.5); }
+                        plus => { root.stream-set-sub-delay(root.stream-sub-delay + 0.5); }
+                    }
                     Rectangle { horizontal-stretch: 1; }
                 }
 

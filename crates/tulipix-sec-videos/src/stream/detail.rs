@@ -49,6 +49,14 @@ pub fn stream_open(weak: slint::Weak<MainWindow>, subject_id: String) {
             Err(_) => false,
         };
         with_state(|st| st.bookmarked = saved);
+        with_state(|st| st.episodes = details.episodes.clone());
+        // Opening a saved show is what clears its "new episodes" badge.
+        if saved {
+            if let Ok(p) = pool_for("videos").await {
+                let _ = stream::bookmarks::mark_seen(&p, &subject_id).await;
+            }
+        }
+        load_watched(&subject_id).await;
         let cover = cache_cover(&details.cover).await;
         push_details(&weak, &details, cover, &subject_id, season);
         with_state(|st| st.details = Some(details.clone()));
@@ -82,12 +90,15 @@ fn push_details(
     };
     // Episode count for the season actually on screen. Taking `first()` here
     // listed season 1's episodes no matter which season was open.
-    let episodes = episode_numbers(if split.is_empty() {
+    let count = if split.is_empty() {
         max_ep_for(&d.seasons, active_season)
     } else {
         // Split shows carry exactly one season per subject.
         d.seasons.first().map(|s| s.max_ep).unwrap_or(0)
-    });
+    };
+    // Titles and progress are keyed by the season we query with, which for a
+    // split show is always 1 however the chip is labelled.
+    let episodes = episode_rows(if split.is_empty() { active_season } else { 1 }, count);
     let is_series = d.is_series || !split.is_empty();
     // Highlight the language cut we are actually on. Prefer the id we opened
     // with — the payload's own `id` is often absent.
@@ -113,6 +124,32 @@ fn push_details(
         w.set_video_stream_season(active_season as i32);
         w.set_video_stream_episode(if is_series { 1 } else { 0 });
     });
+}
+
+/// Load this title's per-episode progress, so the strip can show how far
+/// through each one you are.
+pub(crate) async fn load_watched(subject_id: &str) {
+    let Ok(pool) = pool_for("videos").await else { return };
+    let seen = stream::progress::for_subject(&pool, subject_id).await;
+    let map = seen
+        .into_iter()
+        .map(|e| ((e.season, e.episode), if e.finished { 1.0 } else { e.fraction() as f32 }))
+        .collect();
+    with_state(|st| st.watched = map);
+}
+
+/// The episode strip for one season: number, name where the catalogue gave one,
+/// and how far through it you are.
+pub(crate) fn episode_rows(season: i64, count: i64) -> Vec<StreamEpisode> {
+    let (titles, watched) = with_state(|st| (st.episodes.clone(), st.watched.clone()));
+    episode_numbers(count)
+        .into_iter()
+        .map(|n| StreamEpisode {
+            number: n,
+            title: stream::episode_title(&titles, season, n as i64).into(),
+            progress: watched.get(&(season, n as i64)).copied().unwrap_or(0.0),
+        })
+        .collect()
 }
 
 /// Episode count for `season`, falling back to the first season when the
@@ -434,7 +471,8 @@ pub fn stream_set_season(weak: slint::Weak<MainWindow>, season: i32) {
     }
 
     let Some(d) = with_state(|st| st.details.clone()) else { return };
-    let episodes = episode_numbers(
+    let episodes = episode_rows(
+        season as i64,
         d.seasons
             .iter()
             .find(|s| s.number == season as i64)

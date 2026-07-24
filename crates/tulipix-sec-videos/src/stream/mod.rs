@@ -20,15 +20,19 @@ use tulipix_common::*;
 use tulipix_ui::*;
 use tulipix_videos::stream::{self, Caption, Details, StreamClient, StreamError, StreamFile};
 
+mod cast;
 mod detail;
 mod download;
+mod feed;
 mod hosts;
 mod play;
 mod saved;
 mod search;
 
+pub use cast::*;
 pub use detail::*;
 pub use download::*;
+pub use feed::*;
 pub use hosts::*;
 pub use play::*;
 pub use saved::*;
@@ -86,6 +90,16 @@ pub(crate) struct StreamState {
     /// Saved-page sort: key ("date"|"name"|"type") and ascending flag.
     pub bm_sort: String,
     pub bm_asc: bool,
+    /// The search on screen, and how many pages of it have been pulled, so
+    /// "load more" continues rather than repeating page 1.
+    pub query: String,
+    pub page: usize,
+    /// Result cards so far — a further page appends to these.
+    pub results: Vec<feed::CardData>,
+    /// Episode titles for the open title, when the catalogue named them.
+    pub episodes: Vec<stream::EpisodeInfo>,
+    /// Per-episode progress for the open title, keyed `(season, episode)`.
+    pub watched: std::collections::HashMap<(i64, i64), f32>,
 }
 
 impl Default for StreamState {
@@ -108,6 +122,11 @@ impl Default for StreamState {
             bookmarked: false,
             bm_sort: "date".to_string(),
             bm_asc: false,
+            query: String::new(),
+            page: 0,
+            results: Vec::new(),
+            episodes: Vec::new(),
+            watched: std::collections::HashMap::new(),
         }
     }
 }
@@ -359,11 +378,52 @@ pub(crate) fn caption_union(files: &[StreamFile]) -> Vec<Caption> {
 
 // ---- preferences ----
 
-/// Push the persisted quality filter into the UI. Called when the tab opens, so
-/// the pill shows the rung the state was already initialised with.
+/// Push the persisted preferences into the UI. Called when the tab opens, so the
+/// pills show what the state was already initialised with.
 pub fn stream_prefs_load(weak: slint::Weak<MainWindow>) {
     let res = current_resolution();
-    let _ = weak.upgrade_in_event_loop(move |w| w.set_video_stream_resolution(res.into()));
+    let (scale, delay, autoplay) =
+        (stream::subs::scale(), stream::subs::delay(), stream::autoplay::enabled());
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        w.set_video_stream_resolution(res.into());
+        w.set_video_stream_sub_scale(scale);
+        w.set_video_stream_sub_delay(delay);
+        w.set_video_stream_autoplay(autoplay);
+        w.set_video_stream_to_library(
+            tulipix_core::settings::Settings::load().unwrap_or_default().text("stream.dl_dest")
+                != "downloads",
+        );
+    });
+}
+
+/// Subtitle size, as a multiplier of mpv's default. Takes effect next play.
+pub fn stream_set_sub_scale(weak: slint::Weak<MainWindow>, scale: f32) {
+    stream::subs::set_scale(scale);
+    let applied = stream::subs::scale();
+    let _ = weak.upgrade_in_event_loop(move |w| w.set_video_stream_sub_scale(applied));
+}
+
+/// Subtitle timing in seconds; positive shows them later.
+pub fn stream_set_sub_delay(weak: slint::Weak<MainWindow>, delay: f32) {
+    stream::subs::set_delay(delay);
+    let applied = stream::subs::delay();
+    let _ = weak.upgrade_in_event_loop(move |w| w.set_video_stream_sub_delay(applied));
+}
+
+/// Whether finishing an episode starts the next one.
+pub fn stream_set_autoplay(weak: slint::Weak<MainWindow>, on: bool) {
+    stream::autoplay::set(on);
+    let _ = weak.upgrade_in_event_loop(move |w| w.set_video_stream_autoplay(on));
+}
+
+/// Whether downloads land in the video library (and get scanned) or in
+/// `~/Downloads`.
+pub fn stream_set_to_library(weak: slint::Weak<MainWindow>, on: bool) {
+    let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
+    s.advanced
+        .insert("stream.dl_dest".to_string(), if on { "library" } else { "downloads" }.to_string());
+    let _ = s.save();
+    let _ = weak.upgrade_in_event_loop(move |w| w.set_video_stream_to_library(on));
 }
 
 // ---- cache housekeeping ----

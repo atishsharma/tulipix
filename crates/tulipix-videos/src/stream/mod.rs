@@ -15,6 +15,8 @@ pub mod bookmarks;
 pub mod cache;
 pub mod client;
 pub mod crypto;
+pub mod feed;
+pub mod probe;
 pub mod progress;
 
 pub use client::{StreamClient, StreamError, DEFAULT_HOSTS};
@@ -53,6 +55,18 @@ pub struct Season {
     pub max_ep: i64,
 }
 
+/// One episode as the catalogue names it. Titles decorate the episode strip;
+/// everything still works when they are absent, which is often.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EpisodeInfo {
+    /// Season it belongs to, or 0 when the payload did not say.
+    pub season: i64,
+    pub number: i64,
+    pub title: String,
+    /// Episode still, if one came with it.
+    pub still: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Details {
     pub id: String,
@@ -68,6 +82,8 @@ pub struct Details {
     pub is_series: bool,
     pub dubs: Vec<Dub>,
     pub seasons: Vec<Season>,
+    /// Named episodes, where the payload carried them.
+    pub episodes: Vec<EpisodeInfo>,
 }
 
 /// One playable file. `url` goes straight to mpv.
@@ -152,6 +168,26 @@ fn is_series(v: &Value) -> bool {
 }
 
 // ---- parsers ----
+
+/// One catalogue subject → a hit, or `None` when it carries no id to open.
+///
+/// The plain mapping, without the dedupe and season-folding [`parse_search`]
+/// layers on top; the browse feed wants subjects exactly as the server groups
+/// them.
+pub(crate) fn hit_of(item: &Value) -> Option<SearchHit> {
+    let id = s(item, "subjectId");
+    if id.is_empty() {
+        return None;
+    }
+    Some(SearchHit {
+        id,
+        title: clean_title(&s(item, "title")),
+        year: year_of(&s(item, "releaseDate")),
+        cover: cover_url(item),
+        is_series: is_series(item),
+        season_subjects: Vec::new(),
+    })
+}
 
 /// Search payload → hits. Shape: `results[0].subjects[]`.
 ///
@@ -470,8 +506,98 @@ pub fn parse_details(payload: &Value) -> Details {
         duration: s(payload, "duration"),
         is_series: series,
         dubs,
+        episodes: if series { parse_episodes(payload) } else { Vec::new() },
         seasons,
     }
+}
+
+/// Named episodes anywhere in a detail payload.
+///
+/// Episode lists live under `seasons.seasons[].episodes[]` on some responses and
+/// beside `resourceDetectors` on others, so this looks for the shape rather than
+/// the path: an object with an episode number that is not itself a subject. An
+/// unrecognised payload simply yields none and the strip falls back to numbers.
+pub fn parse_episodes(payload: &Value) -> Vec<EpisodeInfo> {
+    let mut out: Vec<EpisodeInfo> = Vec::new();
+    collect_episodes(payload, 0, 0, &mut out);
+    out.sort_by_key(|e| (e.season, e.number));
+    out.truncate(1000);
+    out
+}
+
+/// `season` is the season the enclosing block declared: episode entries rarely
+/// repeat it, so without carrying it down every season's episode 1 would look
+/// like the same episode and the later ones would be dropped as duplicates.
+fn collect_episodes(node: &Value, season: i64, depth: usize, out: &mut Vec<EpisodeInfo>) {
+    if depth > 6 || out.len() > 1000 {
+        return;
+    }
+    match node {
+        Value::Array(items) => {
+            for item in items {
+                match episode_of(item, season) {
+                    Some(e) => {
+                        let dup = out.iter().any(|x| x.season == e.season && x.number == e.number);
+                        if !dup {
+                            out.push(e);
+                        }
+                    }
+                    None => collect_episodes(item, season, depth + 1, out),
+                }
+            }
+        }
+        Value::Object(map) => {
+            let here = season_of(node).unwrap_or(season);
+            for child in map.values().filter(|v| v.is_array() || v.is_object()) {
+                collect_episodes(child, here, depth + 1, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The season number this object declares, if any.
+fn season_of(v: &Value) -> Option<i64> {
+    ["se", "season", "seNum", "seasonNum"]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(|x| x.as_i64()))
+        .filter(|n| *n > 0)
+}
+
+fn episode_of(v: &Value, season: i64) -> Option<EpisodeInfo> {
+    // A subject is a title, not an episode, however many episode-ish fields it
+    // happens to carry.
+    if v.get("subjectId").is_some() {
+        return None;
+    }
+    let number = ["ep", "episode", "epNum", "episodeNum"]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(|x| x.as_i64()))
+        .filter(|n| *n > 0)?;
+    let title = ["epName", "episodeName", "title", "name"]
+        .iter()
+        .map(|k| s(v, k))
+        .find(|t| !t.is_empty())
+        .unwrap_or_default();
+    let still = {
+        let c = cover_url(v);
+        if c.is_empty() { s(v, "img") } else { c }
+    };
+    // A bare `{"ep": 3}` with nothing on it is not worth a row.
+    if title.is_empty() && still.is_empty() {
+        return None;
+    }
+    Some(EpisodeInfo { season: season_of(v).unwrap_or(season), number, title, still })
+}
+
+/// Title for one episode, or `""` when the catalogue did not name it. Entries
+/// that did not declare a season match any season.
+pub fn episode_title(list: &[EpisodeInfo], season: i64, number: i64) -> String {
+    list.iter()
+        .find(|e| e.number == number && e.season == season)
+        .or_else(|| list.iter().find(|e| e.number == number && e.season == 0))
+        .map(|e| e.title.clone())
+        .unwrap_or_default()
 }
 
 /// Resource payload → playable files, best resolution first.
@@ -980,6 +1106,75 @@ pub mod quality {
     }
 }
 
+/// Subtitle presentation, handed to mpv as flags at launch. Kept here rather
+/// than in the player because these are the Stream tab's own defaults — remote
+/// subtitles arrive as loose files with no player-side memory of their own.
+pub mod subs {
+    use tulipix_core::settings::Settings;
+
+    pub const SCALE_KEY: &str = "stream.sub_size";
+    pub const DELAY_KEY: &str = "stream.sub_offset";
+
+    /// Text size multiplier. Clamped to what stays legible and on screen.
+    pub fn scale() -> f32 {
+        Settings::load()
+            .unwrap_or_default()
+            .text(SCALE_KEY)
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|v| v.is_finite())
+            .unwrap_or(1.0)
+            .clamp(0.5, 3.0)
+    }
+
+    pub fn set_scale(v: f32) {
+        store(SCALE_KEY, format!("{:.2}", v.clamp(0.5, 3.0)));
+    }
+
+    /// Subtitle timing, in seconds. Positive shows them later.
+    pub fn delay() -> f32 {
+        Settings::load()
+            .unwrap_or_default()
+            .text(DELAY_KEY)
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|v| v.is_finite())
+            .unwrap_or(0.0)
+            .clamp(-30.0, 30.0)
+    }
+
+    pub fn set_delay(v: f32) {
+        store(DELAY_KEY, format!("{:.1}", v.clamp(-30.0, 30.0)));
+    }
+
+    fn store(key: &str, value: String) {
+        let mut s = Settings::load().unwrap_or_default();
+        s.advanced.insert(key.to_string(), value);
+        let _ = s.save();
+    }
+}
+
+/// Whether finishing an episode starts the next one. On by default — that is
+/// what the behaviour is for — but it has to be switchable, because a series
+/// that autoplays when you meant to stop is worse than one that never does.
+pub mod autoplay {
+    use tulipix_core::settings::Settings;
+
+    pub const KEY: &str = "stream.autoplay";
+
+    pub fn enabled() -> bool {
+        Settings::load().unwrap_or_default().text(KEY).trim() != "off"
+    }
+
+    pub fn set(on: bool) {
+        let mut s = Settings::load().unwrap_or_default();
+        s.advanced.insert(KEY.to_string(), if on { "on" } else { "off" }.to_string());
+        let _ = s.save();
+    }
+}
+
 /// Recent search terms, shown on the Stream landing screen. Same settings-file
 /// storage as [`hosts`] — newline-separated, newest first.
 pub mod recent {
@@ -1368,6 +1563,44 @@ mod tests {
         assert_eq!(split("İstanbul"), ("İstanbul".into(), None));
         // Marker matching stays case-insensitive.
         assert_eq!(split("Dark SEASON 3"), ("Dark".into(), Some(3)));
+    }
+
+    #[test]
+    fn episode_titles_are_found_by_shape_not_by_path() {
+        let payload = json!({
+            "subjectType": 2,
+            "seasons": {"seasons": [
+                {"se": 1, "maxEp": 2, "episodes": [
+                    {"ep": 1, "title": "Pilot", "cover": {"url": "https://s/1.jpg"}},
+                    {"ep": 2, "epName": "Cold Open"}
+                ]},
+                {"se": 2, "maxEp": 1, "episodes": [{"ep": 1, "title": "Return"}]}
+            ]}
+        });
+        let d = parse_details(&payload);
+        assert_eq!(d.episodes.len(), 3, "{:#?}", d.episodes);
+        assert_eq!(episode_title(&d.episodes, 1, 1), "Pilot");
+        assert_eq!(episode_title(&d.episodes, 1, 2), "Cold Open");
+        assert_eq!(episode_title(&d.episodes, 2, 1), "Return", "season 2 has its own episode 1");
+        assert_eq!(episode_title(&d.episodes, 9, 9), "", "unnamed episodes are blank, not wrong");
+        assert_eq!(d.episodes[0].still, "https://s/1.jpg");
+    }
+
+    #[test]
+    fn episode_scan_ignores_subjects_and_empty_entries() {
+        // A search-shaped payload must not be read as an episode list.
+        let subjects = json!({"subjectType": 2, "results": [{"subjects": [
+            {"subjectId": "1", "title": "Dune", "ep": 1}
+        ]}]});
+        assert!(parse_details(&subjects).episodes.is_empty());
+        // Numbers with nothing attached carry no information.
+        let bare = json!({"subjectType": 2, "seasons": {"seasons": [
+            {"se": 1, "episodes": [{"ep": 1}, {"ep": 2}]}
+        ]}});
+        assert!(parse_details(&bare).episodes.is_empty());
+        // A movie is never scanned.
+        let movie = json!({"subjectType": 1, "list": [{"ep": 1, "title": "X"}]});
+        assert!(parse_details(&movie).episodes.is_empty());
     }
 
     #[test]

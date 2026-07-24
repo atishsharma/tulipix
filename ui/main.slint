@@ -8,7 +8,7 @@ import { PhotosPage, PhotoGroup, FolderRow, PersonCard, ThingChip, AlbumCard, Me
 import { PhotoEditor } from "photo_editor.slint";
 import { SharedHero, HeroRect } from "shared_element.slint";
 import { MilestoneConfetti } from "empty_state.slint";
-import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard, StreamCard, StreamChip, StreamFileRow } from "page_videos.slint";
+import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard, StreamCard, StreamChip, StreamFileRow, StreamRow, StreamEpisode, StreamHostHealth } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
 import { MusicPage, MusicFullscreen, MusicMini, PodcastMini, BookMini } from "page_music.slint";
 import { MusicSongRow, DownloaderRow, DlHistoryEntry, DlSearchEntry, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
@@ -891,7 +891,7 @@ export component MainWindow inherits Window {
     in-out property <bool> video-stream-is-series: false;
     in-out property <[StreamChip]> video-stream-dubs: [];
     in-out property <[int]> video-stream-seasons: [];
-    in-out property <[int]> video-stream-episodes: [];
+    in-out property <[StreamEpisode]> video-stream-episodes: [];
     in-out property <int> video-stream-season: 0;
     in-out property <int> video-stream-episode: 0;
     in-out property <[StreamFileRow]> video-stream-files: [];
@@ -923,6 +923,44 @@ export component MainWindow inherits Window {
     in-out property <string> video-stream-key-text: "";
     in-out property <string> video-stream-key-error: "";
     in-out property <bool> video-stream-key-saved: false;
+    // Landing screen: hero + browse rows.
+    in-out property <[StreamRow]> video-stream-rows: [];
+    in-out property <bool> video-stream-hero-open: false;
+    in-out property <string> video-stream-hero-id: "";
+    in-out property <string> video-stream-hero-title: "";
+    in-out property <string> video-stream-hero-meta: "";
+    in-out property <float> video-stream-hero-progress: 0.0;
+    in-out property <image> video-stream-hero-cover;
+    in-out property <bool> video-stream-more: false;
+    in-out property <[StreamCard]> video-stream-history: [];
+    in-out property <[StreamHostHealth]> video-stream-host-health: [];
+    in-out property <string> video-stream-hosts-summary: "";
+    in-out property <bool> video-stream-hosts-checking: false;
+    in-out property <string> video-stream-hosts-ranked: "";
+    in-out property <[string]> video-stream-cast-devices: [];
+    in-out property <bool> video-stream-cast-active: false;
+    in-out property <string> video-stream-cast-target: "";
+    in-out property <float> video-stream-sub-scale: 1.0;
+    in-out property <float> video-stream-sub-delay: 0.0;
+    in-out property <bool> video-stream-autoplay: true;
+    in-out property <bool> video-stream-to-library: true;
+    callback video-stream-search-more();
+    callback video-stream-feed-load();
+    callback video-stream-hero-play(string);
+    callback video-stream-resume-forget(string);
+    callback video-stream-history-load();
+    callback video-stream-history-clear();
+    callback video-stream-history-remove(string);
+    callback video-stream-download-season();
+    callback video-stream-trailer();
+    callback video-stream-cast-discover();
+    callback video-stream-cast-to(string);
+    callback video-stream-cast-stop();
+    callback video-stream-hosts-check(string);
+    callback video-stream-set-sub-scale(float);
+    callback video-stream-set-sub-delay(float);
+    callback video-stream-set-autoplay(bool);
+    callback video-stream-set-to-library(bool);
     callback video-stream-search(string);
     callback video-stream-open(string);
     callback video-stream-back();
@@ -2687,6 +2725,43 @@ callback cloud-go-home();
                 stream-hosts-opened => { root.video-stream-hosts-load(); }
                 stream-hosts-save(t) => { root.video-stream-hosts-save(t); }
                 stream-hosts-reset => { root.video-stream-hosts-reset(); }
+                stream-rows: root.video-stream-rows;
+                stream-hero-open: root.video-stream-hero-open;
+                stream-hero-id: root.video-stream-hero-id;
+                stream-hero-title: root.video-stream-hero-title;
+                stream-hero-meta: root.video-stream-hero-meta;
+                stream-hero-progress: root.video-stream-hero-progress;
+                stream-hero-cover: root.video-stream-hero-cover;
+                stream-more: root.video-stream-more;
+                stream-history: root.video-stream-history;
+                stream-host-health: root.video-stream-host-health;
+                stream-hosts-summary: root.video-stream-hosts-summary;
+                stream-hosts-checking: root.video-stream-hosts-checking;
+                stream-hosts-ranked: root.video-stream-hosts-ranked;
+                stream-cast-devices: root.video-stream-cast-devices;
+                stream-cast-active: root.video-stream-cast-active;
+                stream-cast-target: root.video-stream-cast-target;
+                stream-sub-scale: root.video-stream-sub-scale;
+                stream-sub-delay: root.video-stream-sub-delay;
+                stream-autoplay: root.video-stream-autoplay;
+                stream-to-library: root.video-stream-to-library;
+                stream-search-more => { root.video-stream-search-more(); }
+                stream-feed-load => { root.video-stream-feed-load(); }
+                stream-hero-play(id) => { root.video-stream-hero-play(id); }
+                stream-resume-forget(id) => { root.video-stream-resume-forget(id); }
+                stream-history-load => { root.video-stream-history-load(); }
+                stream-history-clear => { root.video-stream-history-clear(); }
+                stream-history-remove(id) => { root.video-stream-history-remove(id); }
+                stream-download-season => { root.video-stream-download-season(); }
+                stream-trailer => { root.video-stream-trailer(); }
+                stream-cast-discover => { root.video-stream-cast-discover(); }
+                stream-cast-to(d) => { root.video-stream-cast-to(d); }
+                stream-cast-stop => { root.video-stream-cast-stop(); }
+                stream-hosts-check(t) => { root.video-stream-hosts-check(t); }
+                stream-set-sub-scale(v) => { root.video-stream-set-sub-scale(v); }
+                stream-set-sub-delay(v) => { root.video-stream-set-sub-delay(v); }
+                stream-set-autoplay(on) => { root.video-stream-set-autoplay(on); }
+                stream-set-to-library(on) => { root.video-stream-set-to-library(on); }
                 stream-key-save(k) => { root.video-stream-key-save(k); }
                 stream-key-reset => { root.video-stream-key-reset(); } }
             if active-section == "music" || music-prewarmed: MusicPage { width: parent.width; height: parent.height; visible: root.active-section == "music"; item-count: root.music-song-total; tiles: root.music-tracks-grid;

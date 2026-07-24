@@ -69,6 +69,58 @@ pub fn stream_hosts_save(weak: slint::Weak<MainWindow>, text: String) {
     }
 }
 
+/// Time every host in the editor and report which ones answer.
+///
+/// Reads the text box, not the saved list, so an edit can be tested before it is
+/// committed. Nothing is written — the user decides whether to reorder.
+pub fn stream_hosts_check(weak: slint::Weak<MainWindow>, text: String) {
+    let hosts: Vec<String> =
+        text.lines().filter_map(|l| stream::hosts::validate(l).ok()).collect();
+    if hosts.is_empty() {
+        let _ = weak.upgrade_in_event_loop(|w| {
+            w.set_video_stream_hosts_error("Nothing to test — add a server first.".into())
+        });
+        return;
+    }
+    let _ = weak.upgrade_in_event_loop(|w| {
+        w.set_video_stream_hosts_checking(true);
+        w.set_video_stream_hosts_error("".into());
+    });
+
+    tokio::runtime::Handle::current().spawn(async move {
+        // A dead host is only known to be dead once it has timed out, so this is
+        // as slow as the slowest entry — hence its own busy flag.
+        let results = stream::probe::probe_all(&hosts).await;
+        let summary = stream::probe::summary(&results);
+        let ranked = stream::probe::rank(&results).join("\n");
+        let rows: Vec<(String, String, bool)> = results
+            .iter()
+            .map(|r| (short_host(&r.host), r.label(), r.ok))
+            .collect();
+
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            let model: Vec<StreamHostHealth> = rows
+                .into_iter()
+                .map(|(host, note, ok)| StreamHostHealth {
+                    host: host.into(),
+                    note: note.into(),
+                    ok,
+                })
+                .collect();
+            w.set_video_stream_host_health(slint::ModelRc::new(slint::VecModel::from(model)));
+            w.set_video_stream_hosts_summary(summary.into());
+            // Offered, not applied: Save is still the only thing that writes.
+            w.set_video_stream_hosts_ranked(ranked.into());
+            w.set_video_stream_hosts_checking(false);
+        });
+    });
+}
+
+/// "https://api5.aoneroom.com" → "api5.aoneroom.com", for a narrow row.
+fn short_host(host: &str) -> String {
+    host.split_once("://").map(|(_, rest)| rest).unwrap_or(host).to_string()
+}
+
 /// Put the built-in list back into the editor. Not persisted until Save, so a
 /// misclick is one Escape away from being harmless.
 pub fn stream_hosts_reset(weak: slint::Weak<MainWindow>) {

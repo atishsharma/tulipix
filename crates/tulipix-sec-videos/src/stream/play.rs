@@ -24,16 +24,98 @@ pub fn stream_play(weak: slint::Weak<MainWindow>, index: i32) {
 
     tokio::runtime::Handle::current().spawn(async move {
         let (tracks, chosen) = with_state(|st| (st.subs.clone(), st.sub_choice));
-        let (args, named) = subtitle_args(&tracks, chosen).await;
-        spawn_mpv_windowed_tracked(PathBuf::from(file.url), None, None, args, progress_sink());
+        let (mut args, named) = subtitle_args(&tracks, chosen).await;
+        args.extend(subtitle_style_args());
+        let resume = resume_point().await;
+        spawn_mpv_windowed_tracked(
+            PathBuf::from(file.url),
+            resume,
+            None,
+            args,
+            progress_sink(weak.clone()),
+        );
+        // The next episode is very likely the next thing wanted: resolve it into
+        // the cache now so switching to it is instant.
+        prefetch_next();
 
-        let msg = match (named, chosen.and_then(|i| tracks.get(i))) {
+        let mut msg = match (named, chosen.and_then(|i| tracks.get(i))) {
             (0, _) => format!("Playing {label} in mpv · no subtitles"),
             (n, Some(c)) => format!("Playing {label} in mpv · {} subtitles · {}", n, c.lang),
             (n, None) => format!("Playing {label} in mpv · {n} subtitles · off"),
         };
+        if let Some(at) = resume {
+            msg.push_str(&format!(" · resumed at {}", fmt_clock(at)));
+        }
         set_status(&weak, msg, false);
     });
+}
+
+/// Where the open episode was left, or `None` to start from the top.
+async fn resume_point() -> Option<f64> {
+    let (subject_id, (season, episode)) = with_state(|st| (st.open_id.clone(), st.selection));
+    if subject_id.is_empty() {
+        return None;
+    }
+    let pool = pool_for("videos").await.ok()?;
+    stream::progress::get(&pool, &subject_id, season, episode).await?.resume_at()
+}
+
+/// mpv flags for the subtitle look the user set (size, timing offset).
+fn subtitle_style_args() -> Vec<String> {
+    let mut out = Vec::new();
+    let scale = stream::subs::scale();
+    if (scale - 1.0).abs() > f32::EPSILON {
+        out.push(format!("--sub-scale={scale:.2}"));
+    }
+    let delay = stream::subs::delay();
+    if delay.abs() > f32::EPSILON {
+        out.push(format!("--sub-delay={delay:.1}"));
+    }
+    out
+}
+
+/// Resolve the next episode's streams in the background, so choosing it paints
+/// from cache. Silent: no status line, no repaint, and any failure is dropped.
+fn prefetch_next() {
+    let Some((subject_id, season, episode)) = next_episode() else { return };
+    let res = current_resolution();
+    tokio::runtime::Handle::current().spawn(async move {
+        let key = stream::cache::Key::new(&subject_id, season, episode, &res);
+        let Ok(pool) = pool_for("videos").await else { return };
+        if stream::cache::load(&pool, &key).await.is_some() {
+            return; // already have it
+        }
+        let Ok(c) = client().await else { return };
+        if let Ok(files) = c
+            .resources(&subject_id, season.max(0) as usize, episode.max(0) as usize, &res)
+            .await
+        {
+            if !files.is_empty() {
+                let _ = stream::cache::store(&pool, &key, &files).await;
+            }
+        }
+    });
+}
+
+/// `(subject, season, episode)` of the episode after the open one, when the
+/// title is a series and the season has one.
+fn next_episode() -> Option<(String, i64, i64)> {
+    let (subject_id, (season, episode), details) =
+        with_state(|st| (st.open_id.clone(), st.selection, st.details.clone()));
+    let d = details?;
+    if subject_id.is_empty() || !d.is_series || episode <= 0 {
+        return None;
+    }
+    // The episode count for the season being played; a split show carries one
+    // season per subject, so its own first entry is the right one.
+    let max_ep = d
+        .seasons
+        .iter()
+        .find(|s| s.number == season)
+        .or_else(|| d.seasons.first())
+        .map(|s| s.max_ep)
+        .unwrap_or(0);
+    (episode < max_ep).then_some((subject_id, season, episode + 1))
 }
 
 /// Snapshot what identifies the episode now playing, and hand back a hook that
@@ -43,7 +125,7 @@ pub fn stream_play(weak: slint::Weak<MainWindow>, index: i32) {
 /// no tokio context — hence the runtime handle captured here, where there is
 /// one. Calling `Handle::current()` inside the hook would panic, and with
 /// `panic = "abort"` that closes the app.
-fn progress_sink() -> Option<PlaybackEnd> {
+fn progress_sink(weak: slint::Weak<MainWindow>) -> Option<PlaybackEnd> {
     let (subject_id, (season, episode)) = with_state(|st| (st.open_id.clone(), st.selection));
     if subject_id.is_empty() {
         return None;
@@ -73,12 +155,48 @@ fn progress_sink() -> Option<PlaybackEnd> {
             duration_s,
             ..Default::default()
         };
+        let finished = stream::progress::is_finished(position_s, duration_s);
+        let weak = weak.clone();
         rt.spawn(async move {
             if let Ok(pool) = pool_for("videos").await {
                 let _ = stream::progress::record(&pool, &entry).await;
             }
+            // Watched to the end: line up the next episode the way a streaming
+            // app would. Only after the write, so its progress bar is correct.
+            if finished {
+                autoplay_next(weak).await;
+            }
         });
     }))
+}
+
+/// Move to the next episode and play it, if the user is still on the same title
+/// and there is one.
+///
+/// Anything else on screen — a different title open, or back at the results —
+/// means the moment has passed and nothing should start playing.
+async fn autoplay_next(weak: slint::Weak<MainWindow>) {
+    if !stream::autoplay::enabled() {
+        return;
+    }
+    let Some((subject_id, season, episode)) = next_episode() else { return };
+    if opened_subject().as_deref() != Some(subject_id.as_str()) {
+        return;
+    }
+    let epoch = next_epoch();
+    with_state(|st| st.selection = (season, episode));
+    let weak2 = weak.clone();
+    let _ = weak.upgrade_in_event_loop(move |w| w.set_video_stream_episode(episode as i32));
+    load_files(weak2.clone(), epoch, subject_id, season, episode).await;
+    if !is_current(epoch) {
+        return;
+    }
+    // load_files armed a stream; play whatever it settled on.
+    let index = current_index();
+    if index >= 0 {
+        set_status(&weak2, format!("Playing episode {episode}…"), true);
+        stream_play(weak2, index);
+    }
 }
 
 /// Cache one subtitle track under a language-derived filename. Returns the local
@@ -141,6 +259,39 @@ async fn subtitle_args(tracks: &[Caption], chosen: Option<usize>) -> (Vec<String
         args.push(if chosen.is_some() { "--sid=1".to_string() } else { "--sid=no".to_string() });
     }
     (args, attached)
+}
+
+// ---- trailer ----
+
+/// Play the title's trailer in the same external mpv the streams use.
+///
+/// `ytdl://ytsearch1:…` hands the lookup to mpv's youtube-dl hook, so the first
+/// result plays directly — no second video pipeline here, and no navigating the
+/// user into another section to find it. Needs yt-dlp on PATH, which the
+/// YouTube section already requires; without it mpv exits and the status says
+/// nothing played.
+pub fn stream_trailer(weak: slint::Weak<MainWindow>) {
+    let Some(d) = with_state(|st| st.details.clone()) else { return };
+    if d.title.is_empty() {
+        return;
+    }
+    let query = [d.title.as_str(), d.year.as_str(), "trailer"]
+        .iter()
+        .filter(|p| !p.is_empty())
+        .cloned()
+        .collect::<Vec<_>>()
+        .join(" ");
+    set_status(&weak, format!("Looking for the {} trailer…", d.title), true);
+    tokio::runtime::Handle::current().spawn(async move {
+        spawn_mpv_windowed_tracked(
+            PathBuf::from(format!("ytdl://ytsearch1:{query}")),
+            None,
+            None,
+            vec!["--ytdl-format=best[height<=1080]".to_string()],
+            None,
+        );
+        set_status(&weak, "Trailer opened in mpv.", false);
+    });
 }
 
 // ---- copy link ----

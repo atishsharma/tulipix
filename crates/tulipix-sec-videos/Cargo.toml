@@ -30,3 +30,7 @@ tulipix-ui = { path = "../tulipix-ui" }
 tulipix-common = { path = "../tulipix-common" }
 tulipix-core = { path = "../tulipix-core" }
 tulipix-videos = { path = "../tulipix-videos" }
+# Stream tab: casting. `tulipix_music::cast` is protocol-only (SSDP datagrams +
+# DLNA SOAP bodies, no audio in it), and a Stream URL is plain HTTP, so the
+# renderer can fetch it directly — no local media server as the music path needs.
+tulipix-music = { path = "../tulipix-music" }
