@@ -103,6 +103,9 @@ pub async fn apply(pool: &SqlitePool) -> Result<()> {
     crate::discover::apply_schema(pool).await?;
     crate::stream::cache::apply_schema(pool).await?;
     crate::stream::bookmarks::apply_schema(pool).await?;
+    crate::stream::progress::apply_schema(pool).await?;
+    crate::stream::feed_cache::apply_schema(pool).await?;
+    crate::stream::downloads::apply_schema(pool).await?;
     // Idempotent migrations — SQLite ignores duplicate-column errors.
     let _ = sqlx::query("ALTER TABLE movies ADD COLUMN poster_local TEXT").execute(pool).await;
     let _ = sqlx::query("ALTER TABLE shows  ADD COLUMN poster_local TEXT").execute(pool).await;

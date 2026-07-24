@@ -15,6 +15,11 @@ pub mod bookmarks;
 pub mod cache;
 pub mod client;
 pub mod crypto;
+pub mod downloads;
+pub mod feed;
+pub mod feed_cache;
+pub mod probe;
+pub mod progress;
 
 pub use client::{StreamClient, StreamError, DEFAULT_HOSTS};
 
@@ -23,7 +28,8 @@ use serde_json::{json, Value};
 
 // ---- types ----
 
-#[derive(Debug, Clone, Default, PartialEq)]
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
 pub struct SearchHit {
     /// Subject to open. For a show split across per-season subjects this is the
     /// lowest season's subject.
@@ -52,6 +58,18 @@ pub struct Season {
     pub max_ep: i64,
 }
 
+/// One episode as the catalogue names it. Titles decorate the episode strip;
+/// everything still works when they are absent, which is often.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct EpisodeInfo {
+    /// Season it belongs to, or 0 when the payload did not say.
+    pub season: i64,
+    pub number: i64,
+    pub title: String,
+    /// Episode still, if one came with it.
+    pub still: String,
+}
+
 #[derive(Debug, Clone, Default, PartialEq)]
 pub struct Details {
     pub id: String,
@@ -67,6 +85,8 @@ pub struct Details {
     pub is_series: bool,
     pub dubs: Vec<Dub>,
     pub seasons: Vec<Season>,
+    /// Named episodes, where the payload carried them.
+    pub episodes: Vec<EpisodeInfo>,
 }
 
 /// One playable file. `url` goes straight to mpv.
@@ -90,11 +110,18 @@ impl StreamFile {
     /// uploader. Identical URLs count too, for the case where every other field
     /// is blank.
     pub fn is_same_offer(&self, other: &StreamFile) -> bool {
-        self.url == other.url
-            || (self.resolution == other.resolution
-                && self.size == other.size
-                && self.codec == other.codec
-                && self.uploader == other.uploader)
+        if self.url == other.url {
+            return true;
+        }
+        // Collapsing on metadata needs metadata to collapse on. Two entries that
+        // declare nothing but a resolution are two different files — usually
+        // separate mirrors — and treating them as one dropped half the list.
+        let described = !self.size.is_empty() || !self.codec.is_empty() || !self.uploader.is_empty();
+        described
+            && self.resolution == other.resolution
+            && self.size == other.size
+            && self.codec == other.codec
+            && self.uploader == other.uploader
     }
 }
 
@@ -152,6 +179,39 @@ fn is_series(v: &Value) -> bool {
 
 // ---- parsers ----
 
+/// One catalogue subject → a hit, or `None` when it carries no id to open.
+///
+/// The plain mapping, without the dedupe and season-folding [`parse_search`]
+/// layers on top; the browse feed wants subjects exactly as the server groups
+/// them.
+pub(crate) fn hit_of(item: &Value) -> Option<SearchHit> {
+    let id = s(item, "subjectId");
+    if id.is_empty() {
+        return None;
+    }
+    // The browse feed names the same fields differently from search — its cards
+    // came back with a working id but no title and no artwork, which is how a
+    // row of blank posters that still open correctly happens.
+    let first = |keys: &[&str]| {
+        keys.iter().map(|k| s(item, k)).find(|v| !v.is_empty()).unwrap_or_default()
+    };
+    Some(SearchHit {
+        id,
+        title: clean_title(&first(&["title", "name", "subjectName", "seriesName"])),
+        year: year_of(&first(&["releaseDate", "year", "publishDate", "releaseTime"])),
+        cover: {
+            let c = cover_url(item);
+            if c.is_empty() {
+                first(&["image", "imageUrl", "poster", "verticalImage", "coverUrl"])
+            } else {
+                c
+            }
+        },
+        is_series: is_series(item),
+        season_subjects: Vec::new(),
+    })
+}
+
 /// Search payload → hits. Shape: `results[0].subjects[]`.
 ///
 /// Duplicates (same title + year + kind under different subject ids) are
@@ -184,7 +244,13 @@ pub fn parse_search(payload: &Value, query: &str) -> Vec<SearchHit> {
         if id.is_empty() {
             continue;
         }
-        let (base, season) = split_season_suffix(&clean_title(&s(item, "title")));
+        // Season suffixes are a series thing. Running the split over films too
+        // turned "Dune Part Two" into "Dune", season 2 — the part number is the
+        // title there, not an index.
+        let series = is_series(item);
+        let cleaned = clean_title(&s(item, "title"));
+        let (base, season) =
+            if series { split_season_suffix(&cleaned) } else { (cleaned, None) };
         let related = matches_query(&base, query);
         raws.push(Raw {
             related,
@@ -193,7 +259,7 @@ pub fn parse_search(payload: &Value, query: &str) -> Vec<SearchHit> {
             season,
             year: year_of(&s(item, "releaseDate")),
             cover: cover_url(item),
-            is_series: is_series(item),
+            is_series: series,
         });
     }
 
@@ -269,9 +335,8 @@ pub fn split_season_suffix(title: &str) -> (String, Option<i64>) {
     let t = title.trim().trim_end_matches(|c: char| c == '-' || c == ':' || c == '.').trim();
 
     // "… Season 5" / "… Season Two" / "… Part 2" / "… Part III"
-    let lower = t.to_lowercase();
     for word in [" season ", " part ", " series "] {
-        if let Some(pos) = lower.rfind(word) {
+        if let Some(pos) = rfind_ci(t, word) {
             let tail = t[pos + word.len()..].trim();
             if let Some(n) = parse_number(tail) {
                 return (trim_tail(&t[..pos]), Some(n));
@@ -293,6 +358,20 @@ pub fn split_season_suffix(title: &str) -> (String, Option<i64>) {
     }
 
     (t.to_string(), None)
+}
+
+/// Byte offset of the last case-insensitive occurrence of an ASCII `needle`.
+///
+/// Searching `t.to_lowercase()` and then slicing `t` with the offsets it returns
+/// is not the same string: `'İ'` lowercases to two chars (three bytes) where the
+/// original is two, so a title like `"İİ Season 2"` produced an offset past the
+/// end of `t` — an out-of-bounds slice, i.e. a panic on a catalogue title we do
+/// not control. Titles are attacker/server-supplied, so match on `t` itself.
+fn rfind_ci(hay: &str, needle: &str) -> Option<usize> {
+    hay.char_indices().rev().map(|(i, _)| i).find(|&i| {
+        // `get` yields None for a window that runs off the end or splits a char.
+        hay.get(i..i + needle.len()).is_some_and(|w| w.eq_ignore_ascii_case(needle))
+    })
 }
 
 fn trim_tail(s: &str) -> String {
@@ -456,8 +535,98 @@ pub fn parse_details(payload: &Value) -> Details {
         duration: s(payload, "duration"),
         is_series: series,
         dubs,
+        episodes: if series { parse_episodes(payload) } else { Vec::new() },
         seasons,
     }
+}
+
+/// Named episodes anywhere in a detail payload.
+///
+/// Episode lists live under `seasons.seasons[].episodes[]` on some responses and
+/// beside `resourceDetectors` on others, so this looks for the shape rather than
+/// the path: an object with an episode number that is not itself a subject. An
+/// unrecognised payload simply yields none and the strip falls back to numbers.
+pub fn parse_episodes(payload: &Value) -> Vec<EpisodeInfo> {
+    let mut out: Vec<EpisodeInfo> = Vec::new();
+    collect_episodes(payload, 0, 0, &mut out);
+    out.sort_by_key(|e| (e.season, e.number));
+    out.truncate(1000);
+    out
+}
+
+/// `season` is the season the enclosing block declared: episode entries rarely
+/// repeat it, so without carrying it down every season's episode 1 would look
+/// like the same episode and the later ones would be dropped as duplicates.
+fn collect_episodes(node: &Value, season: i64, depth: usize, out: &mut Vec<EpisodeInfo>) {
+    if depth > 6 || out.len() > 1000 {
+        return;
+    }
+    match node {
+        Value::Array(items) => {
+            for item in items {
+                match episode_of(item, season) {
+                    Some(e) => {
+                        let dup = out.iter().any(|x| x.season == e.season && x.number == e.number);
+                        if !dup {
+                            out.push(e);
+                        }
+                    }
+                    None => collect_episodes(item, season, depth + 1, out),
+                }
+            }
+        }
+        Value::Object(map) => {
+            let here = season_of(node).unwrap_or(season);
+            for child in map.values().filter(|v| v.is_array() || v.is_object()) {
+                collect_episodes(child, here, depth + 1, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The season number this object declares, if any.
+fn season_of(v: &Value) -> Option<i64> {
+    ["se", "season", "seNum", "seasonNum"]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(|x| x.as_i64()))
+        .filter(|n| *n > 0)
+}
+
+fn episode_of(v: &Value, season: i64) -> Option<EpisodeInfo> {
+    // A subject is a title, not an episode, however many episode-ish fields it
+    // happens to carry.
+    if v.get("subjectId").is_some() {
+        return None;
+    }
+    let number = ["ep", "episode", "epNum", "episodeNum"]
+        .iter()
+        .find_map(|k| v.get(*k).and_then(|x| x.as_i64()))
+        .filter(|n| *n > 0)?;
+    let title = ["epName", "episodeName", "title", "name"]
+        .iter()
+        .map(|k| s(v, k))
+        .find(|t| !t.is_empty())
+        .unwrap_or_default();
+    let still = {
+        let c = cover_url(v);
+        if c.is_empty() { s(v, "img") } else { c }
+    };
+    // A bare `{"ep": 3}` with nothing on it is not worth a row.
+    if title.is_empty() && still.is_empty() {
+        return None;
+    }
+    Some(EpisodeInfo { season: season_of(v).unwrap_or(season), number, title, still })
+}
+
+/// Title for one episode, or `""` when the catalogue did not name it. Entries
+/// that did not declare a season match any season.
+pub fn episode_title(list: &[EpisodeInfo], season: i64, number: i64) -> String {
+    list.iter()
+        .find(|e| e.number == number && e.season == season)
+        .or_else(|| list.iter().find(|e| e.number == number && e.season == 0))
+        .map(|e| e.title.clone())
+        .unwrap_or_default()
 }
 
 /// Resource payload → playable files, best resolution first.
@@ -865,9 +1034,14 @@ pub mod prefer {
     }
 
     /// Keep only preferred dubs; return all if none match.
+    ///
+    /// "Original" on its own does not count as a match: a Korean show offering
+    /// `[Original, Korean]` would otherwise be filtered down to `[Original]`,
+    /// hiding the only real language choice it had.
     pub fn dubs(list: Vec<Dub>) -> Vec<Dub> {
         let kept: Vec<Dub> = list.iter().filter(|d| matches(&d.name, DUBS)).cloned().collect();
-        if kept.is_empty() { list } else { kept }
+        let only_original = kept.iter().all(|d| matches(&d.name, &["original"]));
+        if kept.is_empty() || only_original { list } else { kept }
     }
 
     /// Keep only preferred subtitle tracks; return all if none match.
@@ -877,13 +1051,172 @@ pub mod prefer {
     }
 }
 
+/// Which stream to play when the user has not picked a row.
+///
+/// Every episode of a show offers a different set of files, so "the one below
+/// the cursor" cannot carry over. What carries over is the *rung*: the quality
+/// of the last stream actually launched. Nothing launched yet means 720p — high
+/// enough to look right, low enough to start quickly on a slow line.
+pub mod quality {
+    use super::StreamFile;
+    use tulipix_core::settings::Settings;
+
+    /// Rung used until the user's own choice supersedes it.
+    pub const DEFAULT_RESOLUTION: i64 = 720;
+
+    /// Sticky rung: the quality of the last stream the user actually played.
+    pub const STICKY_KEY: &str = "stream.play_res";
+    /// The quality *filter* in the detail pane ("" = every rung).
+    pub const FILTER_KEY: &str = "stream.resolution";
+
+    /// Index of the file whose rung `keep` accepts and that `better` ranks above
+    /// every other. Ties go to the earlier entry — within a rung the list
+    /// arrives best-offer-first.
+    fn pick_where(
+        files: &[StreamFile],
+        keep: impl Fn(i64) -> bool,
+        better: impl Fn(i64, i64) -> bool,
+    ) -> Option<usize> {
+        let mut best: Option<(usize, i64)> = None;
+        for (idx, f) in files.iter().enumerate() {
+            if keep(f.resolution) && best.is_none_or(|(_, r)| better(f.resolution, r)) {
+                best = Some((idx, f.resolution));
+            }
+        }
+        best.map(|(idx, _)| idx)
+    }
+
+    /// Index of the file to arm, or `None` when there is nothing to play.
+    ///
+    /// Order: the sticky rung, then 720p, then the rung nearest 720 — preferring
+    /// the one below, because defaulting *up* to 4K on a title that happens to
+    /// skip 720 is not what "720p by default" means. The last fallback catches
+    /// files that carry no rung at all.
+    pub fn pick(files: &[StreamFile], sticky: Option<i64>) -> Option<usize> {
+        let exact = |want: i64| files.iter().position(|f| f.resolution == want);
+        sticky
+            .filter(|r| *r > 0)
+            .and_then(exact)
+            .or_else(|| exact(DEFAULT_RESOLUTION))
+            // highest rung below 720
+            .or_else(|| pick_where(files, |r| r > 0 && r < DEFAULT_RESOLUTION, |a, b| a > b))
+            // else the lowest rung above it
+            .or_else(|| pick_where(files, |r| r > DEFAULT_RESOLUTION, |a, b| a < b))
+            // else anything playable at all
+            .or_else(|| pick_where(files, |_| true, |a, b| a > b))
+    }
+
+    /// The remembered rung, or `None` when the user has never played anything.
+    pub fn sticky() -> Option<i64> {
+        Settings::load()
+            .unwrap_or_default()
+            .text(STICKY_KEY)
+            .trim()
+            .parse::<i64>()
+            .ok()
+            .filter(|r| *r > 0)
+    }
+
+    /// Remember the rung of a stream that was just launched. Rung 0 ("Auto")
+    /// carries no information, so it is not recorded.
+    pub fn remember(resolution: i64) {
+        if resolution <= 0 {
+            return;
+        }
+        let mut s = Settings::load().unwrap_or_default();
+        s.advanced.insert(STICKY_KEY.to_string(), resolution.to_string());
+        let _ = s.save();
+    }
+
+    /// The persisted quality filter ("" = every rung).
+    pub fn filter() -> String {
+        Settings::load().unwrap_or_default().text(FILTER_KEY).trim().to_string()
+    }
+
+    pub fn set_filter(res: &str) {
+        let mut s = Settings::load().unwrap_or_default();
+        s.advanced.insert(FILTER_KEY.to_string(), res.trim().to_string());
+        let _ = s.save();
+    }
+}
+
+/// Subtitle presentation, handed to mpv as flags at launch. Kept here rather
+/// than in the player because these are the Stream tab's own defaults — remote
+/// subtitles arrive as loose files with no player-side memory of their own.
+pub mod subs {
+    use tulipix_core::settings::Settings;
+
+    pub const SCALE_KEY: &str = "stream.sub_size";
+    pub const DELAY_KEY: &str = "stream.sub_offset";
+
+    /// Text size multiplier. Clamped to what stays legible and on screen.
+    pub fn scale() -> f32 {
+        Settings::load()
+            .unwrap_or_default()
+            .text(SCALE_KEY)
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|v| v.is_finite())
+            .unwrap_or(1.0)
+            .clamp(0.5, 3.0)
+    }
+
+    pub fn set_scale(v: f32) {
+        store(SCALE_KEY, format!("{:.2}", v.clamp(0.5, 3.0)));
+    }
+
+    /// Subtitle timing, in seconds. Positive shows them later.
+    pub fn delay() -> f32 {
+        Settings::load()
+            .unwrap_or_default()
+            .text(DELAY_KEY)
+            .trim()
+            .parse::<f32>()
+            .ok()
+            .filter(|v| v.is_finite())
+            .unwrap_or(0.0)
+            .clamp(-30.0, 30.0)
+    }
+
+    pub fn set_delay(v: f32) {
+        store(DELAY_KEY, format!("{:.1}", v.clamp(-30.0, 30.0)));
+    }
+
+    fn store(key: &str, value: String) {
+        let mut s = Settings::load().unwrap_or_default();
+        s.advanced.insert(key.to_string(), value);
+        let _ = s.save();
+    }
+}
+
+/// Whether finishing an episode starts the next one. On by default — that is
+/// what the behaviour is for — but it has to be switchable, because a series
+/// that autoplays when you meant to stop is worse than one that never does.
+pub mod autoplay {
+    use tulipix_core::settings::Settings;
+
+    pub const KEY: &str = "stream.autoplay";
+
+    pub fn enabled() -> bool {
+        Settings::load().unwrap_or_default().text(KEY).trim() != "off"
+    }
+
+    pub fn set(on: bool) {
+        let mut s = Settings::load().unwrap_or_default();
+        s.advanced.insert(KEY.to_string(), if on { "on" } else { "off" }.to_string());
+        let _ = s.save();
+    }
+}
+
 /// Recent search terms, shown on the Stream landing screen. Same settings-file
 /// storage as [`hosts`] — newline-separated, newest first.
 pub mod recent {
     use tulipix_core::settings::Settings;
 
     pub const KEY: &str = "stream.recent";
-    const MAX: usize = 5;
+    /// How many terms the landing block lists.
+    pub const MAX: usize = 6;
 
     pub fn load() -> Vec<String> {
         Settings::load()
@@ -1152,11 +1485,14 @@ mod tests {
 
     #[test]
     fn recent_caps_the_list_and_ignores_blanks() {
-        let long: Vec<String> = (0..10).map(|n| format!("t{n}")).collect();
+        // Written against the cap rather than a hard-coded length: this test
+        // asserted 10 while the cap was 5, so it had been failing unnoticed.
+        let long: Vec<String> = (0..20).map(|n| format!("t{n}")).collect();
         let merged = recent::merge(&long, "new");
-        assert_eq!(merged.len(), 10);
+        assert_eq!(merged.len(), recent::MAX);
         assert_eq!(merged[0], "new");
-        assert_eq!(merged.last().unwrap(), "t8"); // oldest dropped
+        // The newest term plus the first MAX-1 of what was there.
+        assert_eq!(merged.last().unwrap(), &format!("t{}", recent::MAX - 2));
         assert_eq!(recent::merge(&long, "   "), long);
         assert!(recent::merge(&[], "").is_empty());
     }
@@ -1252,6 +1588,81 @@ mod tests {
         // "Part" followed by a word that is not a number is not a season
         assert_eq!(split("Part of the Deal"), ("Part of the Deal".into(), None));
         assert_eq!(split("A Season for Love"), ("A Season for Love".into(), None));
+    }
+
+    /// A title whose lowercase form is *longer* in bytes than the original used
+    /// to slice `t` with offsets taken from the lowercased copy — out of bounds,
+    /// and with `panic = "abort"` in release that took the whole app down.
+    #[test]
+    fn season_suffix_split_survives_titles_that_grow_when_lowercased() {
+        let split = |t: &str| split_season_suffix(t);
+        assert_eq!(split("İİ Season 2"), ("İİ".into(), Some(2)));
+        assert_eq!(split("Diriliş Ertuğrul Season 5"), ("Diriliş Ertuğrul".into(), Some(5)));
+        assert_eq!(split("İstanbul"), ("İstanbul".into(), None));
+        // Marker matching stays case-insensitive.
+        assert_eq!(split("Dark SEASON 3"), ("Dark".into(), Some(3)));
+    }
+
+    #[test]
+    fn episode_titles_are_found_by_shape_not_by_path() {
+        let payload = json!({
+            "subjectType": 2,
+            "seasons": {"seasons": [
+                {"se": 1, "maxEp": 2, "episodes": [
+                    {"ep": 1, "title": "Pilot", "cover": {"url": "https://s/1.jpg"}},
+                    {"ep": 2, "epName": "Cold Open"}
+                ]},
+                {"se": 2, "maxEp": 1, "episodes": [{"ep": 1, "title": "Return"}]}
+            ]}
+        });
+        let d = parse_details(&payload);
+        assert_eq!(d.episodes.len(), 3, "{:#?}", d.episodes);
+        assert_eq!(episode_title(&d.episodes, 1, 1), "Pilot");
+        assert_eq!(episode_title(&d.episodes, 1, 2), "Cold Open");
+        assert_eq!(episode_title(&d.episodes, 2, 1), "Return", "season 2 has its own episode 1");
+        assert_eq!(episode_title(&d.episodes, 9, 9), "", "unnamed episodes are blank, not wrong");
+        assert_eq!(d.episodes[0].still, "https://s/1.jpg");
+    }
+
+    #[test]
+    fn episode_scan_ignores_subjects_and_empty_entries() {
+        // A search-shaped payload must not be read as an episode list.
+        let subjects = json!({"subjectType": 2, "results": [{"subjects": [
+            {"subjectId": "1", "title": "Dune", "ep": 1}
+        ]}]});
+        assert!(parse_details(&subjects).episodes.is_empty());
+        // Numbers with nothing attached carry no information.
+        let bare = json!({"subjectType": 2, "seasons": {"seasons": [
+            {"se": 1, "episodes": [{"ep": 1}, {"ep": 2}]}
+        ]}});
+        assert!(parse_details(&bare).episodes.is_empty());
+        // A movie is never scanned.
+        let movie = json!({"subjectType": 1, "list": [{"ep": 1, "title": "X"}]});
+        assert!(parse_details(&movie).episodes.is_empty());
+    }
+
+    #[test]
+    fn stream_pick_prefers_sticky_then_720_then_below_then_best() {
+        let f = |res: i64| StreamFile { resolution: res, url: format!("u{res}"), ..Default::default() };
+        let full = vec![f(1080), f(720), f(480), f(360)];
+
+        // Sticky wins outright.
+        assert_eq!(quality::pick(&full, Some(1080)), Some(0));
+        assert_eq!(quality::pick(&full, Some(480)), Some(2));
+        // Nothing played yet → 720p.
+        assert_eq!(quality::pick(&full, None), Some(1));
+        // Sticky rung absent from this episode → fall back to 720p.
+        assert_eq!(quality::pick(&full, Some(2160)), Some(1));
+
+        // No 720p: take the best rung under it before reaching upward.
+        let gap = vec![f(1080), f(480), f(360)];
+        assert_eq!(quality::pick(&gap, None), Some(1), "480 beats 1080 as the 720 stand-in");
+        // Nothing under 720 either → the lowest rung above it, not the highest.
+        let high = vec![f(2160), f(1080)];
+        assert_eq!(quality::pick(&high, None), Some(1), "1080 is nearest 720, not 2160");
+        // Unlabelled rungs still yield a playable pick.
+        assert_eq!(quality::pick(&[f(0), f(0)], None), Some(0));
+        assert_eq!(quality::pick(&[], None), None);
     }
 
     #[test]

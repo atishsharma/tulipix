@@ -617,7 +617,18 @@ fn main() -> Result<()> {
             "discover" => kick_discover_refresh(w.clone()),
             // Stream is search-driven: no catalogue requests until the user
             // asks for something. Only the local recent-search list loads.
-            "stream" => { stream_recent_load(w.clone()); stream_prune_caches(); }
+            "stream" => {
+                stream_recent_load(w.clone());
+                stream_prefs_load(w.clone());
+                // Landing screen: Continue Watching from the local DB, then the
+                // catalogue's own rows.
+                stream_feed_load(w.clone());
+                // Quiet daily check for new episodes of saved shows.
+                stream_bookmarks_refresh(w.clone());
+                // Pick up anything the last session left mid-download.
+                stream_downloads_resume(w.clone());
+                stream_prune_caches();
+            }
             _ => kick_video_refresh(w.clone(), w0.get_video_category().to_string()),
         }
     });
@@ -683,6 +694,65 @@ fn main() -> Result<()> {
     window.on_video_stream_key_save(move |k| stream_key_save(w.clone(), k.to_string()));
     let w = window.as_weak();
     window.on_video_stream_key_reset(move || stream_key_reset(w.clone()));
+    // Landing row — resume slider + trending picks.
+    let w = window.as_weak();
+    window.on_video_stream_feed_load(move || stream_feed_load(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_search_more(move || stream_search_more(w.clone()));
+    // Downloads page.
+    let w = window.as_weak();
+    window.on_video_stream_downloads_load(move || stream_downloads_load(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_downloads_resume(move || stream_downloads_resume(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_download_play(move |i| stream_download_play(w.clone(), i));
+    let w = window.as_weak();
+    window.on_video_stream_download_retry(move |i| stream_download_retry(w.clone(), i));
+    let w = window.as_weak();
+    window.on_video_stream_download_forget(move |i| stream_download_forget(w.clone(), i));
+    let w = window.as_weak();
+    window.on_video_stream_download_delete_file(move |i| stream_download_delete_file(w.clone(), i));
+    let w = window.as_weak();
+    window.on_video_stream_download_reveal(move |i| stream_download_reveal(w.clone(), i));
+    let w = window.as_weak();
+    window.on_video_stream_downloads_clear(move || stream_downloads_clear(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_downloads_cancel_all(move || stream_downloads_cancel_all(w.clone()));
+    // Watch history.
+    let w = window.as_weak();
+    window.on_video_stream_history_load(move |p| stream_history_load(w.clone(), p));
+    let w = window.as_weak();
+    window.on_video_stream_history_clear(move || stream_history_clear(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_history_remove(move |id, p| {
+        stream_history_remove(w.clone(), id.to_string(), p)
+    });
+    let w = window.as_weak();
+    window.on_video_stream_history_play(move |id, se, ep| {
+        stream_history_play(w.clone(), id.to_string(), se, ep)
+    });
+    // Acquisition + playback extras.
+    let w = window.as_weak();
+    window.on_video_stream_download_season(move || stream_download_season(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_trailer(move || stream_trailer(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_cast_discover(move || stream_cast_discover(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_cast_to(move |d| stream_cast_to(w.clone(), d.to_string()));
+    let w = window.as_weak();
+    window.on_video_stream_cast_stop(move || stream_cast_stop(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_hosts_check(move |t| stream_hosts_check(w.clone(), t.to_string()));
+    // Preferences that only take effect at the next launch.
+    let w = window.as_weak();
+    window.on_video_stream_set_sub_scale(move |v| stream_set_sub_scale(w.clone(), v));
+    let w = window.as_weak();
+    window.on_video_stream_set_sub_delay(move |v| stream_set_sub_delay(w.clone(), v));
+    let w = window.as_weak();
+    window.on_video_stream_set_autoplay(move |on| stream_set_autoplay(w.clone(), on));
+    let w = window.as_weak();
+    window.on_video_stream_set_to_library(move |on| stream_set_to_library(w.clone(), on));
 
     let w = window.as_weak();
     window.on_video_refresh_discover(move || {

@@ -8,7 +8,7 @@ import { PhotosPage, PhotoGroup, FolderRow, PersonCard, ThingChip, AlbumCard, Me
 import { PhotoEditor } from "photo_editor.slint";
 import { SharedHero, HeroRect } from "shared_element.slint";
 import { MilestoneConfetti } from "empty_state.slint";
-import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard, StreamCard, StreamChip, StreamFileRow } from "page_videos.slint";
+import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard, StreamCard, StreamChip, StreamFileRow, StreamEpisode, StreamHostHealth, StreamHistoryRow, StreamDownloadRow } from "page_videos.slint";
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
 import { MusicPage, MusicFullscreen, MusicMini, PodcastMini, BookMini } from "page_music.slint";
 import { MusicSongRow, DownloaderRow, DlHistoryEntry, DlSearchEntry, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
@@ -891,7 +891,7 @@ export component MainWindow inherits Window {
     in-out property <bool> video-stream-is-series: false;
     in-out property <[StreamChip]> video-stream-dubs: [];
     in-out property <[int]> video-stream-seasons: [];
-    in-out property <[int]> video-stream-episodes: [];
+    in-out property <[StreamEpisode]> video-stream-episodes: [];
     in-out property <int> video-stream-season: 0;
     in-out property <int> video-stream-episode: 0;
     in-out property <[StreamFileRow]> video-stream-files: [];
@@ -923,6 +923,52 @@ export component MainWindow inherits Window {
     in-out property <string> video-stream-key-text: "";
     in-out property <string> video-stream-key-error: "";
     in-out property <bool> video-stream-key-saved: false;
+    // Landing row: the resume slider, then the trending picks.
+    in-out property <[StreamCard]> video-stream-resume: [];
+    in-out property <[StreamCard]> video-stream-vertical: [];
+    in-out property <[StreamCard]> video-stream-trending: [];
+    in-out property <bool> video-stream-more: false;
+    in-out property <[StreamDownloadRow]> video-stream-downloads: [];
+    in-out property <int> video-stream-dl-pending: 0;
+    in-out property <[StreamHistoryRow]> video-stream-history: [];
+    in-out property <int> video-stream-history-page: 0;
+    in-out property <int> video-stream-history-pages: 1;
+    in-out property <[StreamHostHealth]> video-stream-host-health: [];
+    in-out property <string> video-stream-hosts-summary: "";
+    in-out property <bool> video-stream-hosts-checking: false;
+    in-out property <string> video-stream-hosts-ranked: "";
+    in-out property <[string]> video-stream-cast-devices: [];
+    in-out property <bool> video-stream-cast-active: false;
+    in-out property <string> video-stream-cast-target: "";
+    in-out property <float> video-stream-sub-scale: 1.0;
+    in-out property <float> video-stream-sub-delay: 0.0;
+    in-out property <bool> video-stream-autoplay: true;
+    in-out property <bool> video-stream-to-library: true;
+    callback video-stream-search-more();
+    callback video-stream-feed-load();
+    callback video-stream-downloads-load();
+    callback video-stream-downloads-resume();
+    callback video-stream-download-play(int);
+    callback video-stream-download-retry(int);
+    callback video-stream-download-forget(int);
+    callback video-stream-download-delete-file(int);
+    callback video-stream-download-reveal(int);
+    callback video-stream-downloads-clear();
+    callback video-stream-downloads-cancel-all();
+    callback video-stream-history-load(int);
+    callback video-stream-history-clear();
+    callback video-stream-history-remove(string, int);
+    callback video-stream-history-play(string, int, int);
+    callback video-stream-download-season();
+    callback video-stream-trailer();
+    callback video-stream-cast-discover();
+    callback video-stream-cast-to(string);
+    callback video-stream-cast-stop();
+    callback video-stream-hosts-check(string);
+    callback video-stream-set-sub-scale(float);
+    callback video-stream-set-sub-delay(float);
+    callback video-stream-set-autoplay(bool);
+    callback video-stream-set-to-library(bool);
     callback video-stream-search(string);
     callback video-stream-open(string);
     callback video-stream-back();
@@ -2687,6 +2733,51 @@ callback cloud-go-home();
                 stream-hosts-opened => { root.video-stream-hosts-load(); }
                 stream-hosts-save(t) => { root.video-stream-hosts-save(t); }
                 stream-hosts-reset => { root.video-stream-hosts-reset(); }
+                stream-trending: root.video-stream-trending;
+                stream-resume: root.video-stream-resume;
+                stream-vertical: root.video-stream-vertical;
+                stream-more: root.video-stream-more;
+                stream-downloads: root.video-stream-downloads;
+                stream-dl-pending: root.video-stream-dl-pending;
+                stream-history: root.video-stream-history;
+                stream-history-page: root.video-stream-history-page;
+                stream-history-pages: root.video-stream-history-pages;
+                stream-host-health <=> root.video-stream-host-health;
+                stream-hosts-summary <=> root.video-stream-hosts-summary;
+                stream-hosts-checking: root.video-stream-hosts-checking;
+                stream-hosts-ranked <=> root.video-stream-hosts-ranked;
+                stream-cast-devices: root.video-stream-cast-devices;
+                stream-cast-active: root.video-stream-cast-active;
+                stream-cast-target: root.video-stream-cast-target;
+                stream-sub-scale: root.video-stream-sub-scale;
+                stream-sub-delay: root.video-stream-sub-delay;
+                stream-autoplay: root.video-stream-autoplay;
+                stream-to-library: root.video-stream-to-library;
+                stream-search-more => { root.video-stream-search-more(); }
+                stream-feed-load => { root.video-stream-feed-load(); }
+                stream-downloads-load => { root.video-stream-downloads-load(); }
+                stream-downloads-resume => { root.video-stream-downloads-resume(); }
+                stream-download-play(i) => { root.video-stream-download-play(i); }
+                stream-download-retry(i) => { root.video-stream-download-retry(i); }
+                stream-download-forget(i) => { root.video-stream-download-forget(i); }
+                stream-download-delete-file(i) => { root.video-stream-download-delete-file(i); }
+                stream-download-reveal(i) => { root.video-stream-download-reveal(i); }
+                stream-downloads-clear => { root.video-stream-downloads-clear(); }
+                stream-downloads-cancel-all => { root.video-stream-downloads-cancel-all(); }
+                stream-history-load(p) => { root.video-stream-history-load(p); }
+                stream-history-clear => { root.video-stream-history-clear(); }
+                stream-history-remove(id, p) => { root.video-stream-history-remove(id, p); }
+                stream-history-play(id, se, ep) => { root.video-stream-history-play(id, se, ep); }
+                stream-download-season => { root.video-stream-download-season(); }
+                stream-trailer => { root.video-stream-trailer(); }
+                stream-cast-discover => { root.video-stream-cast-discover(); }
+                stream-cast-to(d) => { root.video-stream-cast-to(d); }
+                stream-cast-stop => { root.video-stream-cast-stop(); }
+                stream-hosts-check(t) => { root.video-stream-hosts-check(t); }
+                stream-set-sub-scale(v) => { root.video-stream-set-sub-scale(v); }
+                stream-set-sub-delay(v) => { root.video-stream-set-sub-delay(v); }
+                stream-set-autoplay(on) => { root.video-stream-set-autoplay(on); }
+                stream-set-to-library(on) => { root.video-stream-set-to-library(on); }
                 stream-key-save(k) => { root.video-stream-key-save(k); }
                 stream-key-reset => { root.video-stream-key-reset(); } }
             if active-section == "music" || music-prewarmed: MusicPage { width: parent.width; height: parent.height; visible: root.active-section == "music"; item-count: root.music-song-total; tiles: root.music-tracks-grid;

@@ -16,6 +16,9 @@ CREATE TABLE IF NOT EXISTS stream_bookmarks (
     is_series   INTEGER NOT NULL DEFAULT 0,
     meta        TEXT    NOT NULL DEFAULT '',
     overview    TEXT    NOT NULL DEFAULT '',
+    seen_max_ep    INTEGER NOT NULL DEFAULT 0,
+    latest_max_ep  INTEGER NOT NULL DEFAULT 0,
+    checked_at     INTEGER NOT NULL DEFAULT 0,
     added_at    INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS stream_bookmarks_added_idx ON stream_bookmarks(added_at);
@@ -23,14 +26,17 @@ CREATE INDEX IF NOT EXISTS stream_bookmarks_added_idx ON stream_bookmarks(added_
 
 pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(SCHEMA).execute(pool).await?;
-    // Idempotent migrations for DBs created before the info fields existed —
+    // Idempotent migrations for DBs created before these fields existed —
     // SQLite errors (harmlessly) on a duplicate column.
-    let _ = sqlx::query("ALTER TABLE stream_bookmarks ADD COLUMN meta TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
-    let _ = sqlx::query("ALTER TABLE stream_bookmarks ADD COLUMN overview TEXT NOT NULL DEFAULT ''")
-        .execute(pool)
-        .await;
+    for ddl in [
+        "ALTER TABLE stream_bookmarks ADD COLUMN meta TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE stream_bookmarks ADD COLUMN overview TEXT NOT NULL DEFAULT ''",
+        "ALTER TABLE stream_bookmarks ADD COLUMN seen_max_ep INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE stream_bookmarks ADD COLUMN latest_max_ep INTEGER NOT NULL DEFAULT 0",
+        "ALTER TABLE stream_bookmarks ADD COLUMN checked_at INTEGER NOT NULL DEFAULT 0",
+    ] {
+        let _ = sqlx::query(ddl).execute(pool).await;
+    }
     Ok(())
 }
 
@@ -45,6 +51,23 @@ pub struct Bookmark {
     pub meta: String,
     /// Synopsis, so the Saved card looks as filled as the hover preview.
     pub overview: String,
+    /// Episode count the user has already seen listed for this show.
+    pub seen_max_ep: i64,
+    /// Episode count the last refresh found. Ahead of `seen_max_ep` means the
+    /// show has put out something new since the card was last opened.
+    pub latest_max_ep: i64,
+}
+
+impl Bookmark {
+    /// Should the Saved card wear a "new episodes" badge?
+    pub fn has_new(&self) -> bool {
+        self.is_series && self.latest_max_ep > self.seen_max_ep
+    }
+
+    /// How many new episodes, for the badge text.
+    pub fn new_count(&self) -> i64 {
+        (self.latest_max_ep - self.seen_max_ep).max(0)
+    }
 }
 
 fn now_secs() -> i64 {
@@ -79,8 +102,9 @@ pub async fn toggle(pool: &SqlitePool, b: &Bookmark) -> Result<bool> {
     } else {
         sqlx::query(
             "INSERT OR REPLACE INTO stream_bookmarks
-             (subject_id, title, year, cover_url, is_series, meta, overview, added_at)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+             (subject_id, title, year, cover_url, is_series, meta, overview,
+              seen_max_ep, latest_max_ep, checked_at, added_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
         )
         .bind(&b.subject_id)
         .bind(&b.title)
@@ -89,6 +113,11 @@ pub async fn toggle(pool: &SqlitePool, b: &Bookmark) -> Result<bool> {
         .bind(b.is_series as i64)
         .bind(&b.meta)
         .bind(&b.overview)
+        // Saving a show now means everything it lists today is "already seen";
+        // the badge is for what turns up afterwards.
+        .bind(b.seen_max_ep)
+        .bind(b.seen_max_ep)
+        .bind(now_secs())
         .bind(now_secs())
         .execute(pool)
         .await?;
@@ -104,26 +133,82 @@ pub async fn remove(pool: &SqlitePool, subject_id: &str) -> Result<()> {
     Ok(())
 }
 
+type Row = (String, String, String, String, i64, String, String, i64, i64);
+
+const COLUMNS: &str = "subject_id, title, year, cover_url, is_series, meta, overview, \
+                       seen_max_ep, latest_max_ep";
+
+fn bookmark_of(r: Row) -> Bookmark {
+    Bookmark {
+        subject_id: r.0,
+        title: r.1,
+        year: r.2,
+        cover_url: r.3,
+        is_series: r.4 != 0,
+        meta: r.5,
+        overview: r.6,
+        seen_max_ep: r.7,
+        latest_max_ep: r.8,
+    }
+}
+
 /// Newest first.
 pub async fn list(pool: &SqlitePool) -> Vec<Bookmark> {
-    let rows: Vec<(String, String, String, String, i64, String, String)> = sqlx::query_as(
-        "SELECT subject_id, title, year, cover_url, is_series, meta, overview
-         FROM stream_bookmarks ORDER BY added_at DESC",
-    )
+    let rows: Vec<Row> = sqlx::query_as(&format!(
+        "SELECT {COLUMNS} FROM stream_bookmarks ORDER BY added_at DESC"
+    ))
     .fetch_all(pool)
     .await
     .unwrap_or_default();
-    rows.into_iter()
-        .map(|(subject_id, title, year, cover_url, is_series, meta, overview)| Bookmark {
-            subject_id,
-            title,
-            year,
-            cover_url,
-            is_series: is_series != 0,
-            meta,
-            overview,
-        })
-        .collect()
+    rows.into_iter().map(bookmark_of).collect()
+}
+
+/// Saved series that have not been checked for new episodes recently.
+pub async fn due_for_check(pool: &SqlitePool, older_than_secs: i64) -> Vec<Bookmark> {
+    // A negative age means "everything is due" — the refresh-now path, and what
+    // the tests use to avoid waiting out a real interval.
+    let cutoff = now_secs().saturating_sub(older_than_secs);
+    let rows: Vec<Row> = sqlx::query_as(&format!(
+        "SELECT {COLUMNS} FROM stream_bookmarks
+         WHERE is_series = 1 AND checked_at < ? ORDER BY added_at DESC LIMIT 40"
+    ))
+    .bind(cutoff)
+    .fetch_all(pool)
+    .await
+    .unwrap_or_default();
+    rows.into_iter().map(bookmark_of).collect()
+}
+
+/// Record what a refresh found. Returns true when this is news.
+pub async fn note_latest(pool: &SqlitePool, subject_id: &str, latest_max_ep: i64) -> Result<bool> {
+    sqlx::query(
+        "UPDATE stream_bookmarks SET latest_max_ep = ?, checked_at = ? WHERE subject_id = ?",
+    )
+    .bind(latest_max_ep.max(0))
+    .bind(now_secs())
+    .bind(subject_id)
+    .execute(pool)
+    .await?;
+    let seen: Option<i64> =
+        sqlx::query_scalar("SELECT seen_max_ep FROM stream_bookmarks WHERE subject_id = ?")
+            .bind(subject_id)
+            .fetch_optional(pool)
+            .await
+            .ok()
+            .flatten();
+    Ok(seen.is_some_and(|s| latest_max_ep > s))
+}
+
+/// The user has looked at the show — clear its badge.
+pub async fn mark_seen(pool: &SqlitePool, subject_id: &str) -> Result<()> {
+    sqlx::query(
+        "UPDATE stream_bookmarks SET seen_max_ep = MAX(seen_max_ep, latest_max_ep)
+         WHERE subject_id = ?",
+    )
+    .bind(subject_id)
+    .execute(pool)
+    .await?;
+    Ok(())
 }
 
 #[cfg(test)]
@@ -140,7 +225,46 @@ mod tests {
             is_series: true,
             meta: "2024 · Drama".into(),
             overview: "A show.".into(),
+            seen_max_ep: 8,
+            latest_max_ep: 8,
         }
+    }
+
+    #[tokio::test]
+    async fn a_new_episode_raises_a_badge_until_the_show_is_opened() {
+        let (_t, pool) = open_pool().await;
+        toggle(&pool, &mk("a", "Severance")).await.unwrap();
+        assert!(!list(&pool).await[0].has_new(), "saving is not news");
+
+        // Same count on a later check is still not news.
+        assert!(!note_latest(&pool, "a", 8).await.unwrap());
+        assert!(!list(&pool).await[0].has_new());
+
+        assert!(note_latest(&pool, "a", 10).await.unwrap(), "two more episodes");
+        let saved = &list(&pool).await[0];
+        assert!(saved.has_new());
+        assert_eq!(saved.new_count(), 2);
+
+        mark_seen(&pool, "a").await.unwrap();
+        assert!(!list(&pool).await[0].has_new(), "opening the show clears it");
+
+        // An unknown id must not error or invent a row.
+        assert!(!note_latest(&pool, "nope", 99).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn due_for_check_only_returns_stale_series() {
+        let (_t, pool) = open_pool().await;
+        toggle(&pool, &mk("a", "Show")).await.unwrap();
+        let movie = Bookmark { is_series: false, ..mk("b", "Film") };
+        toggle(&pool, &movie).await.unwrap();
+
+        // Just checked, so nothing is due yet.
+        assert!(due_for_check(&pool, 3600).await.is_empty());
+        // Everything checked before "now" is due.
+        let due = due_for_check(&pool, -1).await;
+        assert_eq!(due.len(), 1, "movies never get episode checks");
+        assert_eq!(due[0].subject_id, "a");
     }
 
     #[tokio::test]
