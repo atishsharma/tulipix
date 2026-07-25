@@ -58,7 +58,16 @@ fn safe_filename(raw: &str) -> String {
         .chars()
         .map(|c| if c.is_alphanumeric() || c == '-' || c == '.' { c } else { ' ' })
         .collect();
-    let joined = cleaned.split_whitespace().collect::<Vec<_>>().join("_");
+    // Drop tokens that are nothing but dots. Separators are already gone by
+    // here, so "../.." could not traverse anywhere, but it still leaves names
+    // like ".._.._etc_passwd.mp4", and a title of "." or ".." on its own would
+    // produce a filename the OS refuses. Dots inside a token stay, so "S.W.A.T."
+    // survives as itself.
+    let joined = cleaned
+        .split_whitespace()
+        .filter(|t| !t.chars().all(|c| c == '.'))
+        .collect::<Vec<_>>()
+        .join("_");
     if joined.is_empty() { "stream".to_string() } else { joined }
 }
 
@@ -473,6 +482,10 @@ mod tests {
         assert_eq!(download_name("Dune: Part Two", 0, 0, 720), "Dune_Part_Two_720p.mp4");
         // path separators and quotes must never survive into a filename
         assert_eq!(download_name("../../etc/passwd", 0, 0, 0), "etc_passwd.mp4");
+        // a title that is only dots leaves nothing usable behind
+        assert_eq!(download_name("..", 0, 0, 0), "stream.mp4");
+        // but dots within a word are part of the title
+        assert_eq!(download_name("S.W.A.T.", 1, 1, 0), "S.W.A.T._S01E01.mp4");
         assert_eq!(download_name("", 0, 0, 0), "stream.mp4");
         assert!(!download_name("a/b\\c:d", 2, 10, 480).contains(['/', '\\', ':']));
     }

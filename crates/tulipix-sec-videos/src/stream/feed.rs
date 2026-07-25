@@ -150,13 +150,31 @@ async fn paint_picks(
     publish(weak, cards);
 }
 
+/// There is no documented flag for the short, phone-shaped serials, so both the
+/// trending row and the vertical slider go by the heading the catalogue files
+/// them under. One list, read by both, so the two cannot drift apart.
+fn is_short_form(row: &stream::feed::FeedRow) -> bool {
+    const MARKERS: [&str; 5] = ["short", "vertical", "mini", "quick", "drama"];
+    let heading = row.title.to_lowercase();
+    MARKERS.iter().any(|m| heading.contains(m))
+}
+
 /// Six titles off the top of the feed, series first.
 ///
 /// Series are preferred because the feed's movie entries come through without
 /// usable artwork often enough that a row of them reads as broken; a movie only
 /// appears here when there are not six series to show.
 fn trending_picks(rows: &[stream::feed::FeedRow]) -> Vec<stream::SearchHit> {
-    let flat: Vec<&stream::SearchHit> = rows.iter().flat_map(|r| r.items.iter()).collect();
+    // Short-form rows are left out: the vertical slider below draws from them,
+    // and trending padding itself to six would take their titles first, leaving
+    // that slider empty on exactly the small feeds where it has least to spare.
+    // If the feed is nothing but short-form rows, a trending row of them still
+    // beats no trending row at all.
+    let mut pool: Vec<&stream::feed::FeedRow> = rows.iter().filter(|r| !is_short_form(r)).collect();
+    if pool.is_empty() {
+        pool = rows.iter().collect();
+    }
+    let flat: Vec<&stream::SearchHit> = pool.iter().flat_map(|r| r.items.iter()).collect();
     let mut out: Vec<stream::SearchHit> = Vec::new();
     let take = |keep: &dyn Fn(&stream::SearchHit) -> bool, out: &mut Vec<stream::SearchHit>| {
         for hit in flat.iter().filter(|h| keep(h)) {
@@ -187,7 +205,6 @@ fn vertical_picks(
     rows: &[stream::feed::FeedRow],
     taken: &[stream::SearchHit],
 ) -> Vec<stream::SearchHit> {
-    const MARKERS: [&str; 5] = ["short", "vertical", "mini", "quick", "drama"];
     let spoken_for = |h: &stream::SearchHit| taken.iter().any(|t| t.id == h.id);
 
     let mut out: Vec<stream::SearchHit> = Vec::new();
@@ -200,12 +217,9 @@ fn vertical_picks(
             out.push(hit.clone());
         }
     };
-    for row in rows {
-        let heading = row.title.to_lowercase();
-        if MARKERS.iter().any(|m| heading.contains(m)) {
-            for hit in &row.items {
-                push(hit, &mut out);
-            }
+    for row in rows.iter().filter(|r| is_short_form(r)) {
+        for hit in &row.items {
+            push(hit, &mut out);
         }
     }
     // Nothing filed that way — fall back to whatever the trending row left.
@@ -330,6 +344,15 @@ mod tests {
         let verticals = vertical_picks(&rows, &picks);
         // s2 is already on the trending row, so the slider does not repeat it.
         assert_eq!(verticals.iter().map(|h| h.id.as_str()).collect::<Vec<_>>(), ["v1"]);
+    }
+
+    #[test]
+    fn trending_takes_short_form_rows_only_when_they_are_all_there_is() {
+        let rows = vec![row("Short dramas", vec![hit("v1", true, true), hit("v2", true, true)])];
+        assert_eq!(
+            trending_picks(&rows).iter().map(|h| h.id.as_str()).collect::<Vec<_>>(),
+            ["v1", "v2"]
+        );
     }
 
     #[test]
