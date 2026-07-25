@@ -202,6 +202,33 @@ jobs:
           tar -C stage -czf dist/tulipix-${VERSION}-linux-x86_64.tar.gz tulipix
           ls -la dist/
 
+      # v0.6.0 shipped a tarball whose bundled mpv could not start: its RUNPATH
+      # is '$ORIGIN/../lib' (resources/bin/lib) while the libraries went to
+      # <root>/lib, so every playback attempt silently did nothing unless the app
+      # was launched through tulipix.sh. Nothing caught it, because "the file is
+      # present" was the only thing ever checked. Extract what we are about to
+      # publish and make each bundled tool actually run, with no LD_LIBRARY_PATH
+      # to paper over a layout mistake.
+      - name: Smoke-test the tarball
+        run: |
+          set -euo pipefail
+          rm -rf smoke && mkdir smoke
+          tar -xzf "dist/tulipix-${VERSION}-linux-x86_64.tar.gz" -C smoke
+          BIN=smoke/tulipix/resources/bin/linux-x86_64
+          for tool in ffmpeg ffprobe yt-dlp rclone exiftool; do
+            echo "--- $tool"
+            env -u LD_LIBRARY_PATH "$BIN/$tool" -version >/dev/null 2>&1 \
+              || env -u LD_LIBRARY_PATH "$BIN/$tool" --version >/dev/null 2>&1 \
+              || { echo "::error::bundled $tool cannot run from the tarball layout"; exit 1; }
+          done
+          if [ -x "$BIN/mpv" ]; then
+            env -u LD_LIBRARY_PATH "$BIN/mpv" --version >/dev/null \
+              || { echo "::error::bundled mpv cannot resolve its libraries"; exit 1; }
+          fi
+          test -s "smoke/tulipix/resources/bin/linux-x86_64/ggml-tiny-1.0.bin" \
+            || echo "::warning::whisper model missing from the tarball"
+          echo "tarball smoke test passed"
+
       - uses: actions/upload-artifact@v4
         with:
           name: linux-x86_64
