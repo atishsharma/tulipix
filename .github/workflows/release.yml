@@ -249,7 +249,17 @@ jobs:
 
       - name: "Build (full: embedded-mpv + skia)"
         env:
-          CARGO_BUILD_JOBS: "2"   # cap peak RAM (see linux job note)
+          # Same memory story as the linux job. Fat LTO makes every crate emit
+          # whole-program bitcode into a single codegen unit, and on the 16 GB
+          # runner rustc ran out of memory part way through a large UI crate
+          # ("Allocation failed", then STATUS_ILLEGAL_INSTRUCTION). Thin LTO
+          # with several codegen units keeps each rustc well under the limit
+          # and costs little runtime speed. Set here, not in Cargo.toml, so a
+          # local release build still gets the smaller fat-LTO binary.
+          CARGO_BUILD_JOBS: "1"
+          CARGO_PROFILE_RELEASE_DEBUG: "false"
+          CARGO_PROFILE_RELEASE_LTO: "thin"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
         run: cargo build --release --locked -p tulipix-app --features full,ai-onnx
 
       - name: Assemble dist
