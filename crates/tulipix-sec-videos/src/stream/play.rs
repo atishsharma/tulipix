@@ -217,7 +217,7 @@ async fn cache_subtitle(c: &Caption, idx: usize) -> Option<PathBuf> {
         .collect();
     let stem = if lang.trim().is_empty() { format!("Track {}", idx + 1) } else { lang.trim().to_string() };
 
-    let bytes = reqwest::Client::new()
+    let bytes = tulipix_core::net::http()
         .get(&c.url)
         .send()
         .await
@@ -246,7 +246,7 @@ const SUB_EXTS: [&str; 5] = ["srt", "vtt", "ass", "ssa", "sub"];
 /// plays with the language that was picked when it was queued. Downloading it at
 /// queue time costs a few KB and puts it in place before the video lands.
 pub async fn save_sidecar_sub(dest: &std::path::Path, c: &Caption) -> Option<PathBuf> {
-    let bytes = reqwest::Client::new()
+    let bytes = tulipix_core::net::http()
         .get(&c.url)
         .send()
         .await

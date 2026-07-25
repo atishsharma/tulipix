@@ -497,7 +497,7 @@ fn push_kind(weak: &Weak<MainWindow>, kind: &str) {
 /// newer resolve superseded this one.
 fn stream_art(weak: Weak<MainWindow>, playlist: Playlist, kind: String, generation: u64) {
     tokio::runtime::Handle::current().spawn(async move {
-        let client = reqwest::Client::new();
+        let client = tulipix_core::net::http().clone();
         if kind != "playlist" {
             let url = playlist
                 .artwork_url
@@ -591,7 +591,7 @@ pub fn start_search(weak: Weak<MainWindow>, query: String, provider: String) {
     tokio::runtime::Handle::current().spawn(async move {
         let result = if provider == "Spotify" {
             cli_push(&weak, &format!("▸ searching Spotify: {query}"));
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             match tulipix_mdl::search_spotify(&client, &query, 12).await {
                 Ok(pl) => Ok(pl),
                 Err(e) => {
@@ -633,7 +633,7 @@ pub fn start_resolve(weak: Weak<MainWindow>, url: String) {
     let _ = weak.upgrade_in_event_loop(|w| w.set_music_dl_yt_warn(false));
     cli_push(&weak, &format!("▸ resolving {url}"));
     tokio::runtime::Handle::current().spawn(async move {
-        let client = reqwest::Client::new();
+        let client = tulipix_core::net::http().clone();
         match tulipix_mdl::resolve_url(&client, &url).await {
             Ok(pl) => {
                 cli_push(&weak, &format!("  resolved: {} — {} track(s) [{}]", pl.title, pl.tracks.len(), pl.provider.display_name()));
@@ -806,7 +806,7 @@ pub fn start_download(
         let playlist = match base {
             Some(pl) => pl,
             None => {
-                let client = reqwest::Client::new();
+                let client = tulipix_core::net::http().clone();
                 match tulipix_mdl::resolve_url(&client, &url).await {
                     Ok(pl) => {
                         seed_rows(&pl);
@@ -972,7 +972,7 @@ async fn run_download(
         threads: opts.threads_per_download,
     });
     set_status(&weak, "downloading");
-    let client = reqwest::Client::new();
+    let client = tulipix_core::net::http_stream().clone();
     let dest_for_ingest = opts.dest_dir.clone();
     let progress_weak = weak.clone();
     let on_progress = move |p: Progress| {

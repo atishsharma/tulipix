@@ -88,7 +88,7 @@ impl TmdbDiscover {
         Self {
             api_key: api_key.into(),
             base: "https://api.themoviedb.org/3".into(),
-            http: reqwest::Client::new(),
+            http: tulipix_core::net::http().clone(),
         }
     }
 
@@ -97,7 +97,7 @@ impl TmdbDiscover {
         Self {
             api_key: api_key.into(),
             base: base.into(),
-            http: reqwest::Client::new(),
+            http: tulipix_core::net::http().clone(),
         }
     }
 }

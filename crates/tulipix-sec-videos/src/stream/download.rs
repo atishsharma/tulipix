@@ -415,7 +415,7 @@ async fn download_to(
     if let Some(parent) = part.parent() {
         let _ = tokio::fs::create_dir_all(parent).await;
     }
-    let mut resp = reqwest::Client::new()
+    let mut resp = tulipix_core::net::http_stream()
         .get(url)
         .send()
         .await

@@ -63,7 +63,7 @@ pub struct OpenSubtitlesClient {
 
 impl OpenSubtitlesClient {
     pub fn new(creds: OsCredentials) -> Self {
-        Self { creds, http: reqwest::Client::new() }
+        Self { creds, http: tulipix_core::net::http().clone() }
     }
 
     /// Search by OSDb hash. Empty list = no match.

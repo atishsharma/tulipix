@@ -69,7 +69,7 @@ impl TmdbClient {
             api_key: api_key.into(),
             base: "https://api.themoviedb.org/3".into(),
             image_base: "https://image.tmdb.org/t/p/w500".into(),
-            http: reqwest::Client::new(),
+            http: tulipix_core::net::http().clone(),
         }
     }
 

@@ -41,7 +41,7 @@ pub struct LibreTranslateClient {
 
 impl LibreTranslateClient {
     pub fn new(cfg: TranslateConfig) -> Self {
-        Self { cfg, http: reqwest::Client::new() }
+        Self { cfg, http: tulipix_core::net::http().clone() }
     }
 
     /// Translate one string. Returns the translated text.

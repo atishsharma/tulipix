@@ -384,7 +384,7 @@ pub(crate) async fn cache_cover(url: &str) -> Option<PathBuf> {
         }
     }
     tokio::fs::create_dir_all(&dir).await.ok()?;
-    let bytes = reqwest::Client::new()
+    let bytes = tulipix_core::net::http()
         .get(url)
         .send()
         .await

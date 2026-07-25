@@ -36,7 +36,7 @@ impl PlexThemesProvider {
     pub fn new() -> Self {
         Self {
             base: "https://tvthemes.plexapp.com".into(),
-            http: reqwest::Client::new(),
+            http: tulipix_core::net::http().clone(),
         }
     }
 }

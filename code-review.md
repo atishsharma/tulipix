@@ -28,7 +28,7 @@ licence review). Those are worth doing separately.
 
 ## 1. Build, CI and release · **weakest area**
 
-### P1 — No CI runs the tests, and there are 1,047 of them
+### P1 — No CI runs the tests, and there are 1,047 of them · *fixed*
 
 `.github/workflows/` contains exactly one file: `release.yml`. There is no
 workflow running `cargo test`, `cargo clippy`, or `cargo fmt --check` on push
@@ -56,10 +56,26 @@ jobs:
       - run: cargo test --workspace
 ```
 
-Run it against the lean feature set so it stays fast; the heavy `full,ai-onnx`
-build already has release.yml.
+**Added** as `.github/workflows/ci.yml`, with two deliberate departures from the
+sketch above:
 
-### P1 — Packaging regressions ship silently
+- **No `cargo fmt --check`.** The workspace has 4,494 rustfmt diffs, nearly all
+  of them default rustfmt wanting to explode deliberate one-line bodies into
+  four. Gating on it means a permanently red job or a whole-workspace reformat —
+  neither belongs in a CI file. A tuned `rustfmt.toml` is the way in, and that is
+  a style decision to make on purpose.
+- **Clippy is scoped, not `-D warnings`.** Clippy has never run here, so blanket
+  denial would fail on the first run and train everyone to ignore the job.
+  `-D clippy::correctness -D clippy::suspicious` are the groups that find bugs;
+  style and pedantic are opinions this codebase has already answered. Widen once
+  green.
+
+It also adds a **windows + macos matrix job** that clippies and tests
+`tulipix-platform` on those runners. That exists specifically because the shell
+escaping in §7 is behind `cfg(target_os)`: a Linux build compiles none of it, so
+without this the fixes could regress and nothing would notice.
+
+### P1 — Packaging regressions ship silently · *fixed*
 
 v0.6.0 shipped a tar.gz whose bundled mpv could not start: mpv's RUNPATH is
 `$ORIGIN/../lib` (→ `resources/bin/lib`) while packaging put the libraries in
@@ -78,7 +94,12 @@ for t in ffmpeg ffprobe yt-dlp rclone exiftool; do
 done
 ```
 
-Thirty seconds of CI that would have caught a shipped bug.
+**Added** to `release.yml` as *Smoke-test the tarball*, run on the artifact that
+is about to be published, with `LD_LIBRARY_PATH` unset so a layout mistake cannot
+be papered over. The version-flag fallback chain (`-version`, then `--version`)
+was checked against the real bundled binaries: ffmpeg and ffprobe take the first,
+yt-dlp, rclone and exiftool the second. Thirty seconds of CI that would have
+caught a shipped bug.
 
 ### P2 — Release notes are hardcoded in the workflow
 
@@ -238,7 +259,7 @@ regression — but it is a real gap if you want it closed.
 
 ## 5. Music
 
-### P1 — 62 HTTP call sites with no timeout and no connection reuse
+### P1 — 62 HTTP call sites with no timeout and no connection reuse · *fixed*
 
 `reqwest::Client::new()` appears 62 times across the workspace — 21 in
 `main.rs`, 20 in `sec-music/src/lib.rs`, 5 in `mdl.rs`. Each call builds a
@@ -261,6 +282,22 @@ fn http() -> &'static reqwest::Client {
 
 This is both a robustness fix (no unbounded hangs) and a latency win on the
 metadata paths, which issue many small requests to the same hosts.
+
+**Done** as `tulipix_core::net`, with **two** clients rather than one, because a
+single timeout policy does not fit both shapes:
+
+| | policy | for |
+|---|---|---|
+| `net::http()` | 20 s total, 8 s connect | API calls, metadata, artwork, subtitles |
+| `net::http_stream()` | 10 s connect, 30 s **read**, no total | file transfers |
+
+The split matters: a total timeout on a download would abort a large but
+perfectly healthy transfer. What should be bounded there is *silence*, not
+length. Three sites needed the streaming client — the podcast episode chunk loop
+(`sec-music/src/lib.rs`), the Stream video download (`stream/download.rs`), and
+the client handed to the mdl audio engine (`sec-music/src/mdl.rs`). All 61
+production sites were rewritten; the one in a `#[cfg(test)]` e2e download was
+left alone.
 
 ### P3 — `sec-music/src/lib.rs` is 6,490 lines
 
@@ -481,10 +518,10 @@ a real setting.
 
 | # | Change | Section | Effort | Why now |
 |---|---|---|---|---|
-| 1 | Add `ci.yml` — test + clippy + fmt | §1 | 1 h | 1,047 tests currently gate nothing |
-| ~~2~~ | ~~Fix the shell injections~~ — **done** | §7 | — | 5 sites fixed + tested this session |
-| 3 | Packaging smoke test in release.yml | §1 | 30 min | Would have caught the v0.6.0 dead-mpv ship |
-| 4 | Shared HTTP client + timeouts | §4, §5 | 3–4 h | 62 sites can hang forever; also a latency win |
+| ~~1~~ | ~~Add `ci.yml`~~ — **done** | §1 | — | test + scoped clippy + per-OS matrix |
+| ~~2~~ | ~~Fix the shell injections~~ — **done** | §7 | — | 5 sites fixed + tested |
+| ~~3~~ | ~~Packaging smoke test~~ — **done** | §1 | — | verified against the real bundled tools |
+| ~~4~~ | ~~Shared HTTP client + timeouts~~ — **done** | §4, §5 | — | 61 sites, two timeout policies |
 | 5 | Measure release RSS, then decide | §10 | 15 min | Prevents optimising a debug-only number |
 | 6 | Move `classify_folder` off the main thread | §2 | 1–2 h | Startup scales with library size |
 | 7 | Audit the 26 model swaps | §8 | 2–3 h | Failure mode is a hard abort |
@@ -492,8 +529,13 @@ a real setting.
 | 9 | Carve `wire_music_*` out of `main.rs` | §2, §5 | 1–2 d | Build RAM, compile time, reviewability |
 | 10 | On-demand whisper model / rclone | §1 | 1 d | ~150 MB off the installer |
 
-Items 1–3 are worth doing before any further feature work: they are cheap, and
-each one closes a path by which a defect has *already* reached a release.
+Items 1–4 are done. Each closed a path by which a defect had *already* reached a
+release: untested code, an unescaped shell, an unverified package, an unbounded
+request.
+
+The remaining items are ordered by value, not by ease. Item 5 is deliberately
+first: measuring before optimising is the difference between fixing memory and
+guessing at it.
 
 ---
 

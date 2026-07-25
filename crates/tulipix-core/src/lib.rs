@@ -22,6 +22,7 @@ pub mod logging;
 pub mod mcp;
 pub mod migration;
 pub mod multi_user;
+pub mod net;
 pub mod onboarding;
 pub mod parental;
 pub mod profiles_managed;

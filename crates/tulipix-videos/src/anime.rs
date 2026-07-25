@@ -51,7 +51,7 @@ impl AniListProvider {
     pub fn new() -> Self {
         Self {
             base: "https://graphql.anilist.co".into(),
-            http: reqwest::Client::new(),
+            http: tulipix_core::net::http().clone(),
         }
     }
 }

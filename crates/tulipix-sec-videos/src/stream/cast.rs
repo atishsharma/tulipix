@@ -93,7 +93,7 @@ pub fn stream_cast_to(weak: slint::Weak<MainWindow>, device: String) {
     set_status(&weak, format!("Casting to {device}…"), true);
 
     tokio::runtime::Handle::current().spawn(async move {
-        let client = reqwest::Client::new();
+        let client = tulipix_core::net::http().clone();
         // The device description says where its AVTransport control endpoint is.
         let desc = match client.get(&dev.location).send().await {
             Ok(r) => r.text().await.unwrap_or_default(),
@@ -146,7 +146,7 @@ pub fn stream_cast_stop(weak: slint::Weak<MainWindow>) {
         return;
     };
     tokio::runtime::Handle::current().spawn(async move {
-        let _ = reqwest::Client::new()
+        let _ = tulipix_core::net::http()
             .post(&ctl)
             .header("SOAPACTION", dlna::soap_action_header("Stop"))
             .header(reqwest::header::CONTENT_TYPE, "text/xml; charset=\"utf-8\"")

@@ -1833,7 +1833,7 @@ fn main() -> Result<()> {
             let q = |s: &str| urlencoding(s);
             let mut url = format!("https://lrclib.net/api/search?track_name={}&artist_name={}", q(&name), q(&artist));
             if !album.is_empty() { url.push_str(&format!("&album_name={}", q(&album))); }
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let mut cands: Vec<(bool, String, String, String)> = Vec::new(); // (synced, content, title, sub)
             if let Ok(resp) = client.get(&url)
                 .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
@@ -4710,7 +4710,7 @@ fn kick_home_continue(w: &MainWindow) {
                    AND (e.duration_s IS NULL OR e.duration_s <= 0 OR e.position_s < e.duration_s * 0.95) \
                  ORDER BY COALESCE(e.published, 0) DESC LIMIT 4")
                 .fetch_all(&pool).await.unwrap_or_default();
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             for (id, title, show, pos, dur, ep_img, show_img, ts) in items {
                 if title.is_empty() { continue; }
                 let (frac, sub) = match dur {
@@ -6114,7 +6114,7 @@ fn wire_youtube(window: &MainWindow) {
         w0.set_music_yt_busy(true);
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let dir = yt_thumb_dir();
             let videos = ytdlp_search(&q, 20).await;
             let mut rows = Vec::with_capacity(videos.len());
@@ -6199,7 +6199,7 @@ fn wire_youtube(window: &MainWindow) {
             let rows: Vec<YtVidData> = if !cached.is_empty() {
                 cached.iter().map(yt_channelvid_to_data).collect()
             } else {
-                let client = reqwest::Client::new();
+                let client = tulipix_core::net::http().clone();
                 let dir = yt_thumb_dir();
                 let videos = ytdlp_channel_latest(&cid, 10).await;
                 let mut r = Vec::with_capacity(videos.len());
@@ -6246,7 +6246,7 @@ fn wire_youtube(window: &MainWindow) {
         w0.set_music_yt_busy(true);
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let dir = yt_thumb_dir();
             let videos = ytdlp_channel_latest(&cid, 10).await;
             let mut rows = Vec::with_capacity(videos.len());
@@ -6288,7 +6288,7 @@ fn wire_youtube(window: &MainWindow) {
                 let _ = weak.upgrade_in_event_loop(|w| w.set_music_yt_busy(true));
             }
             // 2. Background fetch fresh top-10, store, then update if changed.
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let dir = yt_thumb_dir();
             let videos = ytdlp_channel_popular(&cid, 10).await;
             let mut fresh = Vec::with_capacity(videos.len());
@@ -6332,7 +6332,7 @@ fn wire_youtube(window: &MainWindow) {
         w0.set_music_yt_busy(true);
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let dir = yt_thumb_dir();
             let videos = ytdlp_channel_search(&cid, &q, 20).await;
             let mut rows = Vec::with_capacity(videos.len());
@@ -6812,7 +6812,7 @@ fn wire_youtube(window: &MainWindow) {
             let url: Option<String> = sqlx::query_scalar("SELECT feed_url FROM podcasts WHERE id = ?")
                 .bind(id as i64).fetch_optional(&pool).await.ok().flatten();
             if let Some(url) = url {
-                let client = reqwest::Client::new();
+                let client = tulipix_core::net::http().clone();
                 if let Ok(resp) = client.get(&url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
                     if let Ok(xml) = resp.text().await {
                         let feed = tulipix_music::podcasts::parse_feed(&xml);
@@ -7077,7 +7077,7 @@ fn wire_youtube(window: &MainWindow) {
             let feeds: Vec<(i64, String)> = sqlx::query_as("SELECT id, feed_url FROM podcasts")
                 .fetch_all(&pool).await.unwrap_or_default();
             let n = feeds.len().max(1);
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let mut total_added: i64 = 0;
             for (i, (pid, url)) in feeds.iter().enumerate() {
                 let before: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM podcast_episodes WHERE podcast_id = ?")
@@ -7130,7 +7130,7 @@ fn wire_youtube(window: &MainWindow) {
         w0.set_music_artist_bio("Fetching…".into());
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let blurb = match tulipix_music::musicbrainz::lookup_artist(&client, &artist).await {
                 Ok(s) => s.artists.iter().max_by_key(|a| a.score)
                     .map(tulipix_music::musicbrainz::artist_blurb)
@@ -7252,7 +7252,7 @@ fn wire_music_metadata(window: &MainWindow) {
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("music").await else { return; };
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let res = fetch_and_store_meta(&pool, &client, item_id, &stem).await;
             let _ = weak.upgrade_in_event_loop(move |w| {
                 match res {
@@ -7285,7 +7285,7 @@ fn wire_music_metadata(window: &MainWindow) {
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("music").await else { return; };
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let total = jobs.len().max(1);
             for (i, (pos, item_id, stem)) in jobs.into_iter().enumerate() {
                 let res = fetch_and_store_meta(&pool, &client, item_id, &stem).await;
@@ -7848,7 +7848,7 @@ fn wire_music_metadata(window: &MainWindow) {
         tokio::runtime::Handle::current().spawn(async move {
             let url = format!("{}/search?q={}", tulipix_music::lyrics::LRCLIB_BASE,
                 q.trim().replace(' ', "+"));
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let results: Vec<serde_json::Value> = match client.get(&url)
                 .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
                 Ok(r) => r.json().await.unwrap_or_default(),
@@ -7987,7 +7987,7 @@ fn wire_music_metadata(window: &MainWindow) {
                 "SELECT al.title, ar.name FROM albums al LEFT JOIN artists ar ON ar.id = al.artist_id WHERE al.id = ?")
                 .bind(album_id).fetch_optional(&pool).await.ok().flatten();
             let Some((title, artist)) = info else { return; };
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let mut ok = false;
             if let Ok(rec) = tulipix_music::musicbrainz::lookup_recording(&client, &artist.clone().unwrap_or_default(), &title).await {
                 if let Some(url) = tulipix_music::musicbrainz::best_cover_url(&rec) {
@@ -8144,7 +8144,7 @@ fn wire_music_p5a(window: &MainWindow) {
         let device = w0.get_music_device().to_string();
         let query = query.to_string();
         tokio::runtime::Handle::current().spawn(async move {
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let index = hp_index(&client).await;
             if index.is_empty() {
                 let _ = weak.upgrade_in_event_loop(|w| w.set_music_hp_status(
@@ -8258,7 +8258,7 @@ fn wire_music_p5a(window: &MainWindow) {
         let stage = w0.get_music_lastfm_stage().to_string();
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             if stage != "pending" {
                 // Stage 1: request token + browser authorize.
                 let params = tulipix_music::scrobble::signed_params(
@@ -8435,7 +8435,7 @@ fn wire_music_p5a(window: &MainWindow) {
             .and_then(|p| p.file_stem().and_then(|s| s.to_str()).map(|s| s.to_string())).unwrap_or_default() } else { String::new() };
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let (aq, tq, _) = if !title_q.trim().is_empty() { (artist_q.clone(), title_q.clone(), None) }
                 else { parse_music_filename(&stem) };
             let search = tulipix_music::musicbrainz::lookup_recording(&client, &aq, &tq).await;
@@ -9564,7 +9564,7 @@ fn wire_music_podcasts(window: &MainWindow) {
                 });
             };
             let Ok(pool) = pool_for("podcasts").await else { fail(weak.clone(), "Database error"); return; };
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let Ok(resp) = client.get(url.trim()).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await
                 else { fail(weak.clone(), "Network error — check the URL"); return; };
             let Ok(xml) = resp.text().await else { fail(weak.clone(), "Could not read the feed"); return; };
@@ -9739,7 +9739,7 @@ fn wire_music_podcasts(window: &MainWindow) {
             let Ok(pool) = pool_for("podcasts").await else { return; };
             let subscribed = sqlx::query_scalar::<_, i64>("SELECT COUNT(*) FROM podcasts WHERE feed_url = ?")
                 .bind(&url).fetch_one(&pool).await.unwrap_or(0) > 0;
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let (mut count, mut latest, mut desc) = (0i32, String::new(), String::new());
             if let Ok(resp) = client.get(&url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
                 if let Ok(xml) = resp.text().await {
@@ -9782,7 +9782,7 @@ fn wire_music_podcasts(window: &MainWindow) {
             let tidx = trend_feed_urls().iter().position(|u| u == &feed_url).map(|p| p as i32).unwrap_or(-1);
             if let Ok(mut g) = cur_trend_idx().lock() { *g = tidx; }
             if let Ok(mut g) = cur_info_feed().lock() { *g = feed_url.clone(); }
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let art = resolve_artwork(&client, &format!("pod-{pid}"), &img).await;
             let _ = weak.upgrade_in_event_loop(move |w| {
                 w.set_music_podcast_info_loading(false);
@@ -9891,7 +9891,7 @@ fn wire_music_podcasts(window: &MainWindow) {
             let Some((title, url, dl, eimg, pid, pimg, show, resume_pos)) = row else { return; };
             if url.is_empty() && dl.is_none() { return; }
             PODCAST_NOW_ID.store(id as i64, std::sync::atomic::Ordering::Relaxed);
-            let client = reqwest::Client::new();
+            let client = tulipix_core::net::http().clone();
             let art = match cache_artwork(&client, &format!("ep-{id}"), &eimg).await {
                 Some(p) => Some(p),
                 None => cache_artwork(&client, &format!("pod-{pid}"), &pimg).await,
