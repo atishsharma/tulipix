@@ -6066,6 +6066,7 @@ version = "0.23.40"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ef86cd5876211988985292b91c96a8f2d298df24e75989a43a3c73f2d4d8168b"
 dependencies = [
+ "log",
  "once_cell",
  "ring",
  "rustls-pki-types",
@@ -7650,6 +7651,7 @@ dependencies = [
  "tulipix-player",
  "tulipix-sec-books",
  "tulipix-sec-cloud",
+ "tulipix-sec-genesis",
  "tulipix-sec-music",
  "tulipix-sec-photos",
  "tulipix-sec-tools",
@@ -7748,6 +7750,18 @@ dependencies = [
  "toml 0.8.2",
  "tracing",
  "walkdir",
+]
+
+[[package]]
+name = "tulipix-genesis"
+version = "0.7.0"
+dependencies = [
+ "anyhow",
+ "sqlx",
+ "tempfile",
+ "tokio",
+ "tulipix-core",
+ "ureq",
 ]
 
 [[package]]
@@ -7880,6 +7894,23 @@ dependencies = [
  "tulipix-common",
  "tulipix-core",
  "tulipix-platform",
+ "tulipix-sec-photos",
+ "tulipix-ui",
+]
+
+[[package]]
+name = "tulipix-sec-genesis"
+version = "0.7.0"
+dependencies = [
+ "slint",
+ "tokio",
+ "tracing",
+ "tulipix-books",
+ "tulipix-common",
+ "tulipix-core",
+ "tulipix-genesis",
+ "tulipix-platform",
+ "tulipix-sec-books",
  "tulipix-sec-photos",
  "tulipix-ui",
 ]
@@ -8197,14 +8228,17 @@ checksum = "dea7109cdcd5864d4eeb1b58a1648dc9bf520360d7af16ec26d0a9354bafcfc0"
 dependencies = [
  "base64",
  "der",
+ "flate2",
  "log",
  "native-tls",
  "percent-encoding",
+ "rustls",
  "rustls-pki-types",
  "socks",
  "ureq-proto",
  "utf8-zero",
  "webpki-root-certs",
+ "webpki-roots",
 ]
 
 [[package]]

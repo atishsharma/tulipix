@@ -846,6 +846,7 @@ export component BooksPage inherits Rectangle {
     in property <int> hero-index: 0;
     callback hero-slide(int);
     callback add-books();
+callback open-genesis();
     callback open-details(int);
     callback toggle-favorite(int);
     callback toggle-magazine(int);
@@ -1009,6 +1010,11 @@ export component BooksPage inherits Rectangle {
                         } }
                 }
             }
+            // Genesis — search and download, left of the local search box.
+            // Outlined, not filled: "Add books" stays the header's one primary
+            // action, so the eye still lands in the same place.
+            PillButton { label: "Genesis"; icon: Icons.download; compact: true;
+                clicked => { root.open-genesis(); } }
             PillButton { label: "Add books"; filled: true; compact: true;
                 clicked => { root.add-books(); } }
         }

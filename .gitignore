@@ -68,3 +68,5 @@ target-win/
 mdl/
 # MovieBox-Tui upstream source — local reference only
 MovieBox-Tui/
+# Tomesole upstream source — local reference only
+Tomesole/

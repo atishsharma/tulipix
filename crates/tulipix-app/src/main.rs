@@ -524,6 +524,12 @@ fn main() -> Result<()> {
     // itself is opened and closed by `section_changed` below, not here.
     tulipix_sec_transfer::wire(&window);
 
+    // ── Genesis: book search and download, a sub-page of Books. Gated from the
+    // first commit rather than retrofitted, so a build that should not carry it
+    // drops the crate entirely instead of shipping it disabled.
+    #[cfg(feature = "genesis")]
+    tulipix_sec_genesis::wire(&window);
+
     // Photo viewer — click a tile to open the original in a full-screen modal,
     // then navigate the library with prev/next (and the slideshow timer).
     let w = window.as_weak();

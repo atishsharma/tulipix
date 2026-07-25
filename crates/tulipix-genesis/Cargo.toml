@@ -1,0 +1,31 @@
+[package]
+name = "tulipix-genesis"
+version.workspace = true
+edition.workspace = true
+# Upstream uses edition-2024 idioms the workspace floor predates. Pinned on the
+# crate rather than bumping the workspace, which would drag every other crate
+# along for one consumer.
+rust-version = "1.91"
+license.workspace = true
+
+# Book search and download. The network and parsing core is a port of Tomesole
+# (https://github.com/ChrisThoma/tomesole, MIT) — see LICENSE-TOMESOLE. Its
+# terminal UI is not ported; `net`/`libgen`/`mirror`/`download`/`html`/`model`/
+# `md5`/`query`/`error` come across close to verbatim, tests included.
+
+[dependencies]
+# Kept blocking, deliberately. `net.rs` validates every redirect hop with
+# ureq's own re-exported `http::Uri` parser — the same parser that opens the
+# connection — and porting to reqwest would reintroduce exactly the
+# parser-disagreement gap that closes. `rustls` is already in the lockfile via
+# reqwest, so the marginal cost is ureq itself. The async bridge is one
+# `spawn_blocking` in tulipix-sec-genesis.
+ureq = "3.3"
+anyhow = { workspace = true }
+sqlx = { workspace = true }
+# Cache directory for the mirror ranking, and the DbHandle behind genesis.db.
+tulipix-core = { path = "../tulipix-core" }
+
+[dev-dependencies]
+tempfile = "3"
+tokio = { workspace = true }

@@ -36,6 +36,7 @@ import { Gated, GateMode } from "gated.slint";
 import { HomePage, HomeStats, HomeRemote, HomeContinue } from "page_home.slint";
 import { BooksPage, BookTile, BooksHero, BookStat, BookChip, CollChip, CollRow, StatBookRow } from "page_books.slint";
 import { BookReader, TocRow, BookmarkRow, SearchRow, AnnotRow, HlRect, ThumbRow } from "book_reader.slint";
+import { GenesisPage, GenesisRow, GenesisTopic } from "page_genesis.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
 import { AppIcon, Icons } from "icons.slint";
@@ -1446,6 +1447,11 @@ callback cloud-go-home();
     in property <bool> transfer-inbox-ok: true;
     in-out property <int> transfer-page: 0;
     in property <int> transfer-pages: 1;
+    // Recent Transfers ordering, as the table's own column index. Newest first
+    // is the default because a transfer log is read from the top.
+    in-out property <int> transfer-sort: 5;
+    in-out property <bool> transfer-sort-desc: true;
+    in property <int> transfer-port: 8420;
     callback transfer-start();
     callback transfer-stop();
     callback transfer-add-files();
@@ -1459,6 +1465,43 @@ callback cloud-go-home();
     callback transfer-open-row(int);
     callback transfer-clear-history();
     callback transfer-set-page(int);
+    callback transfer-set-sort(int, bool);
+    callback transfer-dismiss-upload(int);
+
+    // ── Genesis (Books → book search & download) ────────────────────────────
+    // A sub-page of Books, like the reader: `genesis-open` swaps which of the
+    // two draws, and the section itself never changes.
+    in-out property <bool> genesis-open: false;
+    in property <string> genesis-phase: "idle";
+    in property <string> genesis-status: "";
+    in property <string> genesis-mirror: "";
+    in property <string> genesis-mirror-tone: "ok";
+    in property <string> genesis-error: "";
+    in property <[GenesisRow]> genesis-rows: [];
+    in property <[GenesisTopic]> genesis-topics: [];
+    in property <string> genesis-field: "Any";
+    in property <string> genesis-format: "Any";
+    in property <string> genesis-language: "Any";
+    in property <string> genesis-dest: "";
+    in property <bool> genesis-can-download: true;
+    in property <bool> genesis-busy: false;
+    in property <string> genesis-busy-name: "";
+    in property <float> genesis-busy-pct: 0.0;
+    in property <string> genesis-busy-detail: "";
+    in property <string> genesis-done-name: "";
+    in property <string> genesis-done-detail: "";
+    in-out property <string> genesis-terms: "";
+    callback genesis-enter();
+    callback genesis-back();
+    callback genesis-search();
+    callback genesis-download(string);
+    callback genesis-cancel();
+    callback genesis-toggle-topic(string);
+    callback genesis-cycle-field();
+    callback genesis-cycle-format();
+    callback genesis-cycle-language();
+    callback genesis-retry();
+    callback genesis-open-dest();
 
     in-out property <string> default-cadence: "daily";
 
@@ -3424,6 +3467,9 @@ callback cloud-go-home();
                 inbox-ok: root.transfer-inbox-ok;
                 page: root.transfer-page;
                 pages: root.transfer-pages;
+                sort: root.transfer-sort;
+                sort-desc: root.transfer-sort-desc;
+                port: root.transfer-port;
                 start-sharing() => { root.transfer-start(); }
                 stop-sharing() => { root.transfer-stop(); }
                 add-files() => { root.transfer-add-files(); }
@@ -3437,6 +3483,8 @@ callback cloud-go-home();
                 open-row(i) => { root.transfer-open-row(i); }
                 clear-history() => { root.transfer-clear-history(); }
                 set-page(p) => { root.transfer-set-page(p); }
+                set-sort(c, d) => { root.transfer-set-sort(c, d); }
+                dismiss-upload(id) => { root.transfer-dismiss-upload(id); }
             }
             if active-section == "home": HomePage {
                 width: parent.width; height: parent.height;
@@ -3518,7 +3566,39 @@ callback cloud-go-home();
                 // flip persists (home.music-left) and applies live.
                 toggle-music-side => { root.setting-toggle("home.music-left", !root.home-music-left); }
             }
-            if active-section == "books": BooksPage {
+            if active-section == "books" && root.genesis-open: GenesisPage {
+                width: parent.width; height: parent.height;
+                phase: root.genesis-phase;
+                status: root.genesis-status;
+                mirror: root.genesis-mirror;
+                mirror-tone: root.genesis-mirror-tone;
+                error: root.genesis-error;
+                rows: root.genesis-rows;
+                topics: root.genesis-topics;
+                field: root.genesis-field;
+                format: root.genesis-format;
+                language: root.genesis-language;
+                dest: root.genesis-dest;
+                can-download: root.genesis-can-download;
+                busy: root.genesis-busy;
+                busy-name: root.genesis-busy-name;
+                busy-pct: root.genesis-busy-pct;
+                busy-detail: root.genesis-busy-detail;
+                done-name: root.genesis-done-name;
+                done-detail: root.genesis-done-detail;
+                terms <=> root.genesis-terms;
+                back => { root.genesis-back(); }
+                search => { root.genesis-search(); }
+                download(md5) => { root.genesis-download(md5); }
+                cancel => { root.genesis-cancel(); }
+                toggle-topic(c) => { root.genesis-toggle-topic(c); }
+                cycle-field => { root.genesis-cycle-field(); }
+                cycle-format => { root.genesis-cycle-format(); }
+                cycle-language => { root.genesis-cycle-language(); }
+                retry => { root.genesis-retry(); }
+                open-dest => { root.genesis-open-dest(); }
+            }
+            if active-section == "books" && !root.genesis-open: BooksPage {
                 width: parent.width; height: parent.height;
                 hero: root.books-hero;
                 hero-count: root.books-hero-count;
@@ -3552,6 +3632,10 @@ callback cloud-go-home();
                 // Shared watched-folder picker — books folders join the
                 // Watched folders / Auto-scan panels like music folders do.
                 add-books => { root.pick-folder(); }
+                // Through the callback, not a bare property set: the backend
+                // resolves the destination folder and warms the mirror pool on
+                // the way in.
+                open-genesis => { root.genesis-enter(); }
                 open-details(id) => { root.books-open-details(id); }
                 toggle-favorite(id) => { root.books-toggle-favorite(id); }
                 toggle-magazine(id) => { root.books-toggle-magazine(id); }

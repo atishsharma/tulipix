@@ -62,7 +62,7 @@ run-dev-lite:
       --setenv=CARGO_TARGET_DIR=target-dev-lite \
       nice -n 15 ionice -c3 \
       cargo +nightly {{fast}} run -j 1 -p tulipix-app \
-        --no-default-features --features renderer-femtovg,alloc-mimalloc,dev-reload,ai-onnx
+        --no-default-features --features renderer-femtovg,alloc-mimalloc,dev-reload,ai-onnx,genesis
 
 # Sub-2s error feedback loop: `bacon` runs `cargo check` on every save (no
 # codegen, no link, incremental) in the dev-reload feature set + target-dev dir,

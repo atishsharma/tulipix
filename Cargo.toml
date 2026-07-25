@@ -30,6 +30,8 @@ members = [
     "crates/tulipix-sec-cloud",
     "crates/tulipix-sec-books",
     "crates/tulipix-books",
+    "crates/tulipix-genesis",
+    "crates/tulipix-sec-genesis",
     "crates/tulipix-hot",
     "crates/tulipix-cli",
     "tools/fetch-resources",

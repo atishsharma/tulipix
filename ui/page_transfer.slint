@@ -22,7 +22,9 @@ export struct TransferFile { id: int, name: string, size: string, kind: string }
 export struct TransferDevice { token: string, label: string, seen: string }
 
 // One upload in flight (or just finished). `state` is active | done | failed.
-export struct TransferUp { name: string, size: string, pct: float, state: string }
+// A success clears itself after a few seconds; a failure stays until dismissed,
+// which is what `id` is for.
+export struct TransferUp { id: int, name: string, size: string, pct: float, state: string }
 
 // One row of the ledger. `direction` is in | out; `missing` greys a row whose
 // file has since been moved or deleted rather than hiding it.
@@ -91,6 +93,44 @@ component RowBtn inherits Rectangle {
     }
 }
 
+// ── destructive action, for the one button that throws data away ────────────
+// Quiet until the pointer is on it, then it commits to red. Ghost-by-default
+// keeps it from competing with the card title it sits beside, and the colour
+// arriving on hover is the last warning before the confirm dialog.
+component DangerBtn inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <bool> enabled: true;
+    callback clicked();
+    height: 34px; min-width: 124px; border-radius: 10px;
+    opacity: root.enabled ? 1.0 : 0.4;
+    background: !root.enabled ? transparent
+        : (touch.has-hover ? Theme.error.with-alpha(0.14) : Theme.error.with-alpha(0.05));
+    border-width: 1px;
+    border-color: touch.has-hover && root.enabled
+        ? Theme.error.with-alpha(0.55) : Theme.error.with-alpha(0.24);
+    animate background, border-color { duration: 130ms; }
+    touch := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { if (root.enabled) { root.clicked(); } }
+    }
+    HorizontalLayout {
+        alignment: center; spacing: 7px;
+        padding-left: 13px; padding-right: 14px;
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            AppIcon { source: root.icon; colorize: Theme.error; width: 14px; height: 14px; }
+        }
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Text {
+                text: root.label; color: Theme.error; font-size: 12px; font-weight: 700;
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
 // ── the card the three panes are built from ─────────────────────────────────
 // A tinted circular glyph, a title, a one-line subtitle, then whatever the
 // caller puts inside. Same shape every time so the eye can skip the chrome.
@@ -99,6 +139,12 @@ component Card inherits Rectangle {
     in property <string> subtitle;
     in property <image> icon;
     in property <color> tint: Theme.transfer-accent;
+    // An optional control pinned to the right of the title row. Empty label
+    // means no button, which is every card but Recent Transfers.
+    in property <string> action;
+    in property <image> action-icon;
+    in property <bool> action-enabled: true;
+    callback action-clicked();
     border-radius: Theme.radius-lg;
     background: Theme.panel;
     border-width: 1px; border-color: Theme.outline;
@@ -128,8 +174,138 @@ component Card inherits Rectangle {
                     wrap: word-wrap;
                 }
             }
+            if root.action != "": VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                DangerBtn {
+                    label: root.action;
+                    icon: root.action-icon;
+                    enabled: root.action-enabled;
+                    clicked => { root.action-clicked(); }
+                }
+            }
         }
         @children
+    }
+}
+
+// ── one section of the Help panel ───────────────────────────────────────────
+// Body text is pre-wrapped prose with its own newlines, so it is one Text with
+// word-wrap rather than a list — the platform steps are sentences, not bullets,
+// and splitting them into rows would need a model per block for no gain.
+component HelpBlock inherits Rectangle {
+    in property <string> title;
+    in property <string> body;
+    in property <image> icon;
+    in property <color> tint: Theme.transfer-accent;
+    height: self.preferred-height;
+    border-radius: 12px;
+    background: Theme.panel-2;
+    border-width: 1px; border-color: Theme.outline;
+    VerticalLayout {
+        padding: 14px; spacing: 9px;
+        HorizontalLayout {
+            spacing: 10px;
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                Rectangle {
+                    width: 26px; height: 26px; border-radius: 8px;
+                    background: root.tint.with-alpha(0.16);
+                    AppIcon {
+                        source: root.icon; colorize: root.tint; width: 14px; height: 14px;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+            }
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 1;
+                Text {
+                    text: root.title; color: Theme.text; font-size: 13.5px; font-weight: 700;
+                    vertical-alignment: center;
+                }
+            }
+        }
+        Text {
+            text: root.body; color: Theme.text-dim; font-size: 12px;
+            wrap: word-wrap;
+        }
+    }
+}
+
+// ── one pagination step ─────────────────────────────────────────────────────
+// Disabled rather than hidden at the ends, so the pair does not jump sideways
+// when it reaches the first or last page.
+component PageBtn inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    // Chevron after the label instead of before it, for Next.
+    in property <bool> trailing: false;
+    in property <bool> enabled: true;
+    callback clicked();
+    horizontal-stretch: 0; height: 32px; min-width: 104px; border-radius: 9px;
+    opacity: root.enabled ? 1.0 : 0.35;
+    background: touch.has-hover && root.enabled ? Theme.panel-2 : transparent;
+    border-width: 1px; border-color: Theme.outline;
+    touch := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { if (root.enabled) { root.clicked(); } }
+    }
+    HorizontalLayout {
+        alignment: center; spacing: 6px;
+        padding-left: 11px; padding-right: 11px;
+        if !root.trailing: VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            AppIcon { source: root.icon; colorize: Theme.text-dim; width: 13px; height: 13px; }
+        }
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Text {
+                text: root.label; color: Theme.text; font-size: 11.5px; font-weight: 600;
+                vertical-alignment: center;
+            }
+        }
+        if root.trailing: VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            AppIcon { source: root.icon; colorize: Theme.text-dim; width: 13px; height: 13px; }
+        }
+    }
+}
+
+// ── one sortable column header ──────────────────────────────────────────────
+// The arrow only appears on the active column: six idle chevrons would read as
+// six dropdowns. Hover lifts the label so the whole strip still says "clickable"
+// before anything has been sorted.
+component SortHead inherits Rectangle {
+    in property <string> label;
+    in property <int> index;
+    in property <int> active;
+    in property <bool> desc;
+    in property <bool> numeric: false;
+    callback clicked();
+    property <bool> on: root.active == root.index;
+    horizontal-stretch: 0;
+    background: touch.has-hover ? Theme.outline.with-alpha(0.35) : transparent;
+    border-radius: 7px;
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 6px; padding-right: 6px; spacing: 4px;
+        alignment: root.numeric ? end : start;
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Text {
+                text: root.label;
+                color: root.on ? Theme.transfer-accent
+                    : (touch.has-hover ? Theme.text : Theme.text-dim);
+                font-size: 11px; font-weight: 700; vertical-alignment: center;
+            }
+        }
+        if root.on: VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            AppIcon {
+                source: root.desc ? Icons.chevron-down : Icons.chevron-up;
+                colorize: Theme.transfer-accent; width: 12px; height: 12px;
+            }
+        }
     }
 }
 
@@ -245,13 +421,21 @@ component IfaceChip inherits Rectangle {
 }
 
 // ── one progress row for an upload in flight ────────────────────────────────
+// A success disappears on its own a few seconds after it lands — the permanent
+// record is the Recent Transfers row below. A failure has no timer: it is the
+// one thing here worth reading late, so it waits to be dismissed.
 component UploadRow inherits Rectangle {
     in property <TransferUp> up;
-    height: 58px; border-radius: 11px;
-    background: Theme.panel-2;
+    callback dismiss();
+    property <bool> failed: root.up.state == "failed";
+    height: root.failed ? 76px : 58px;
+    border-radius: 11px;
+    background: root.failed ? Theme.error.with-alpha(0.07) : Theme.panel-2;
+    border-width: root.failed ? 1px : 0px;
+    border-color: Theme.error.with-alpha(0.28);
     property <color> tint:
         root.up.state == "done"   ? Theme.ok :
-        root.up.state == "failed" ? Theme.error :
+        root.failed               ? Theme.error :
                                     Theme.transfer-accent;
     VerticalLayout {
         padding: 11px; spacing: 6px;
@@ -263,7 +447,7 @@ component UploadRow inherits Rectangle {
             }
             Text {
                 text: root.up.state == "done"   ? "Done"
-                    : root.up.state == "failed" ? "Failed"
+                    : root.failed               ? "Failed"
                     : Math.round(root.up.pct * 100) + "%";
                 color: root.tint; font-size: 11.5px; font-weight: 700;
                 horizontal-stretch: 0; vertical-alignment: center;
@@ -278,7 +462,36 @@ component UploadRow inherits Rectangle {
                 animate width { duration: 200ms; easing: ease-out; }
             }
         }
-        Text { text: root.up.size; color: Theme.text-dim; font-size: 10.5px; }
+        if !root.failed: Text {
+            text: root.up.size; color: Theme.text-dim; font-size: 10.5px;
+        }
+        // The phone is the sender, so nothing on this end can re-pull the file.
+        // Saying where the retry actually lives beats a button that cannot work.
+        if root.failed: HorizontalLayout {
+            spacing: 8px;
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 1;
+                Text {
+                    text: "Send it again from the phone";
+                    color: Theme.text-dim; font-size: 10.5px; overflow: elide;
+                }
+            }
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                Rectangle {
+                    height: 22px; min-width: 62px; border-radius: 7px;
+                    background: dis.has-hover ? Theme.error.with-alpha(0.16) : transparent;
+                    border-width: 1px; border-color: Theme.error.with-alpha(0.35);
+                    dis := TouchArea { mouse-cursor: pointer; clicked => { root.dismiss(); } }
+                    Text {
+                        text: "Dismiss"; color: Theme.error;
+                        font-size: 10.5px; font-weight: 600;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: parent.width; height: parent.height;
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -336,6 +549,11 @@ export component TransferPage inherits Rectangle {
     in property <bool> inbox-ok: true;
     in property <int> page: 0;
     in property <int> pages: 1;
+    // Which column the ledger is ordered by, as the visual index:
+    // Name 0 | Size 1 | Type 2 | Status 3 | From/To 4 | Time 5.
+    in property <int> sort: 5;
+    in property <bool> sort-desc: true;
+    in property <int> port: 8420;
 
     // `start` / `stop` would shadow LayoutAlignment.start inside this file.
     callback start-sharing();
@@ -351,6 +569,24 @@ export component TransferPage inherits Rectangle {
     callback open-row(int);
     callback clear-history();
     callback set-page(int);
+    callback set-sort(int, bool);
+    callback dismiss-upload(int);
+
+    // Modal state. Both dialogs are drawn after the main layout so they land on
+    // top — Slint z-order follows declaration order.
+    property <bool> confirm-clear: false;
+    property <bool> help-open: false;
+
+    // A second click on the active column flips direction; a first click on a
+    // new one starts from the reading most people want — newest, biggest,
+    // A-first — rather than always ascending.
+    function sort-clicked(col: int) {
+        if (root.sort == col) {
+            root.set-sort(col, !root.sort-desc);
+        } else {
+            root.set-sort(col, col == 1 || col == 5);
+        }
+    }
 
     property <color> accent: Theme.transfer-accent;
     property <color> send-tint: #6366f1;    // indigo — giving
@@ -464,6 +700,40 @@ export component TransferPage inherits Rectangle {
                                     text: root.running ? "Sharing active" : "Not sharing";
                                     color: root.running ? Theme.ok : Theme.text-dim;
                                     font-size: 12px; font-weight: 700; vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+                // Help sits beside the one control that matters, because the
+                // moment a person needs it is the moment sharing looks on and
+                // the phone still says it cannot connect.
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Rectangle {
+                        height: 34px; min-width: 92px; border-radius: 17px;
+                        background: helper.has-hover ? Theme.panel-2 : transparent;
+                        border-width: 1px; border-color: Theme.outline;
+                        helper := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.help-open = true; }
+                        }
+                        HorizontalLayout {
+                            padding-left: 13px; padding-right: 14px; spacing: 7px;
+                            alignment: center;
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                AppIcon {
+                                    source: Icons.info; colorize: Theme.text-dim;
+                                    width: 15px; height: 15px;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Text {
+                                    text: "Help"; color: Theme.text;
+                                    font-size: 12.5px; font-weight: 700;
+                                    vertical-alignment: center;
                                 }
                             }
                         }
@@ -608,17 +878,12 @@ export component TransferPage inherits Rectangle {
                             PlatformChip { label: "Linux"; }
                         }
 
+                        // The firewall advice used to live here. It is the one
+                        // failure the desktop cannot detect, so it earned a
+                        // permanent strip — but it only matters once, and it
+                        // sat in the card a working setup looks at every day.
+                        // It is in Help now, alongside the other platforms.
                         Rectangle { vertical-stretch: 1; background: transparent; }
-
-                        // The one failure the desktop cannot detect: the bind
-                        // succeeds, the status says "Serving", and a
-                        // default-deny firewall drops the phone's packets.
-                        if root.hint != "": NoteStrip {
-                            title: "Phone cannot connect?";
-                            body: root.hint;
-                            icon: Icons.shield;
-                            tint: Theme.warn;
-                        }
                     }
 
                     // ── Send ────────────────────────────────────────────────
@@ -791,7 +1056,10 @@ export component TransferPage inherits Rectangle {
                             tint: Theme.error;
                         }
 
-                        for u in root.uploads: UploadRow { up: u; }
+                        for u in root.uploads: UploadRow {
+                            up: u;
+                            dismiss => { root.dismiss-upload(u.id); }
+                        }
 
                         HorizontalLayout {
                             spacing: 8px;
@@ -822,45 +1090,58 @@ export component TransferPage inherits Rectangle {
                 // ── Recent Transfers, full width ────────────────────────────
                 Card {
                     title: "Recent transfers";
-                    subtitle: "Sent and received, newest first. A greyed row is a file that has since moved.";
+                    subtitle: "Sent and received. Click a column to sort. A greyed row is a file that has since moved.";
                     icon: Icons.clock;
                     tint: root.accent;
+                    // Nothing to clear when the table is empty, so the button
+                    // says so rather than sitting there live and doing nothing.
+                    action: "Clear history";
+                    action-icon: Icons.trash;
+                    action-enabled: root.rows.length > 0;
+                    action-clicked => { root.confirm-clear = true; }
 
                     // Column header. Widths are repeated on every row below —
                     // Slint has no grid that spans a repeater, so the two must
                     // be kept in step by hand.
+                    //
+                    // Sorting runs in SQL over the whole ledger, not over the
+                    // ten rows on screen: sorting a page in place would only
+                    // shuffle that page and leave the rest of the table alone.
                     Rectangle {
                         height: 34px; border-radius: 9px; background: Theme.panel-2;
                         HorizontalLayout {
                             padding-left: 12px; padding-right: 12px; spacing: 12px;
-                            Text {
-                                text: "Name"; color: Theme.text-dim; font-size: 11px;
-                                font-weight: 700; horizontal-stretch: 1; vertical-alignment: center;
+                            SortHead {
+                                label: "Name"; index: 0; horizontal-stretch: 1;
+                                active: root.sort; desc: root.sort-desc;
+                                clicked => { root.sort-clicked(0); }
                             }
-                            Text {
-                                text: "Type"; color: Theme.text-dim; font-size: 11px;
-                                font-weight: 700; min-width: 150px; horizontal-stretch: 0;
-                                vertical-alignment: center;
+                            // Size sits beside the filename it describes rather
+                            // than three columns away.
+                            SortHead {
+                                label: "Size"; index: 1; min-width: 110px; numeric: true;
+                                active: root.sort; desc: root.sort-desc;
+                                clicked => { root.sort-clicked(1); }
                             }
-                            Text {
-                                text: "Status"; color: Theme.text-dim; font-size: 11px;
-                                font-weight: 700; min-width: 160px; horizontal-stretch: 0;
-                                vertical-alignment: center;
+                            SortHead {
+                                label: "Type"; index: 2; min-width: 150px;
+                                active: root.sort; desc: root.sort-desc;
+                                clicked => { root.sort-clicked(2); }
                             }
-                            Text {
-                                text: "Size"; color: Theme.text-dim; font-size: 11px;
-                                font-weight: 700; min-width: 110px; horizontal-stretch: 0;
-                                horizontal-alignment: right; vertical-alignment: center;
+                            SortHead {
+                                label: "Status"; index: 3; min-width: 160px;
+                                active: root.sort; desc: root.sort-desc;
+                                clicked => { root.sort-clicked(3); }
                             }
-                            Text {
-                                text: "From / To"; color: Theme.text-dim; font-size: 11px;
-                                font-weight: 700; min-width: 190px; horizontal-stretch: 0;
-                                vertical-alignment: center;
+                            SortHead {
+                                label: "From / To"; index: 4; min-width: 190px;
+                                active: root.sort; desc: root.sort-desc;
+                                clicked => { root.sort-clicked(4); }
                             }
-                            Text {
-                                text: "Time"; color: Theme.text-dim; font-size: 11px;
-                                font-weight: 700; min-width: 140px; horizontal-stretch: 0;
-                                vertical-alignment: center;
+                            SortHead {
+                                label: "Time"; index: 5; min-width: 140px;
+                                active: root.sort; desc: root.sort-desc;
+                                clicked => { root.sort-clicked(5); }
                             }
                             Rectangle { width: 34px; horizontal-stretch: 0; background: transparent; }
                         }
@@ -918,6 +1199,15 @@ export component TransferPage inherits Rectangle {
                                 }
                             }
 
+                            // Size — kept next to the name it belongs to.
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Text {
+                                    text: r.size; color: Theme.text; font-size: 12px;
+                                    min-width: 110px; horizontal-alignment: right;
+                                }
+                            }
+
                             // Type — which way it went.
                             HorizontalLayout {
                                 min-width: 150px; horizontal-stretch: 0; spacing: 7px;
@@ -961,13 +1251,6 @@ export component TransferPage inherits Rectangle {
                             }
 
                             VerticalLayout {
-                                alignment: center; horizontal-stretch: 0;
-                                Text {
-                                    text: r.size; color: Theme.text; font-size: 12px;
-                                    min-width: 110px; horizontal-alignment: right;
-                                }
-                            }
-                            VerticalLayout {
                                 alignment: center; horizontal-stretch: 0; spacing: 2px;
                                 Text {
                                     text: r.direction == "in" ? "From" : "To"; color: Theme.text-dim;
@@ -1006,29 +1289,27 @@ export component TransferPage inherits Rectangle {
                         }
                     }
 
-                    HorizontalLayout {
-                        spacing: 8px; alignment: start;
-                        RowBtn {
-                            label: "Previous";
-                            clicked => { if (root.page > 0) { root.set-page(root.page - 1); } }
+                    // Pagination. Hidden outright on a single page — a Previous
+                    // and Next that can never do anything is just noise.
+                    if root.pages > 1: HorizontalLayout {
+                        spacing: 8px; alignment: center;
+                        PageBtn {
+                            label: "Previous"; icon: Icons.chevron-left;
+                            enabled: root.page > 0;
+                            clicked => { root.set-page(root.page - 1); }
                         }
                         VerticalLayout {
                             alignment: center; horizontal-stretch: 0;
                             Text {
                                 text: "Page " + (root.page + 1) + " of " + root.pages;
-                                color: Theme.text-dim; font-size: 11.5px;
+                                color: Theme.text-dim; font-size: 11.5px; font-weight: 600;
+                                vertical-alignment: center;
                             }
                         }
-                        RowBtn {
-                            label: "Next";
-                            clicked => {
-                                if (root.page + 1 < root.pages) { root.set-page(root.page + 1); }
-                            }
-                        }
-                        Rectangle { horizontal-stretch: 1; background: transparent; }
-                        RowBtn {
-                            label: "Clear history"; tint: Theme.error;
-                            clicked => { root.clear-history(); }
+                        PageBtn {
+                            label: "Next"; icon: Icons.chevron-right; trailing: true;
+                            enabled: root.page + 1 < root.pages;
+                            clicked => { root.set-page(root.page + 1); }
                         }
                     }
                 }
@@ -1048,6 +1329,248 @@ export component TransferPage inherits Rectangle {
                         Text {
                             text: "Transfers go straight between your devices — no relay, no account, nothing stored on a server.";
                             color: Theme.text-dim; font-size: 11.5px; vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── modals ──────────────────────────────────────────────────────────────
+    // Declared after the layout, which is what puts them on top: Slint paints in
+    // declaration order. The scrim's own TouchArea both dims the page and eats
+    // clicks meant for what is behind it.
+
+    if root.confirm-clear: Rectangle {
+        background: #000000.with-alpha(0.55);
+        TouchArea { clicked => { root.confirm-clear = false; } }
+        Rectangle {
+            width: min(430px, parent.width - 48px);
+            height: self.preferred-height;
+            border-radius: Theme.radius-lg;
+            background: Theme.panel;
+            border-width: 1px; border-color: Theme.outline;
+            drop-shadow-blur: 40px; drop-shadow-color: #00000055;
+            // Without this the click would fall through to the scrim and close
+            // the dialog the moment anyone touched it.
+            TouchArea { }
+            VerticalLayout {
+                padding: 24px; spacing: 16px;
+                HorizontalLayout {
+                    spacing: 14px;
+                    VerticalLayout {
+                        alignment: start; horizontal-stretch: 0;
+                        Rectangle {
+                            width: 44px; height: 44px; border-radius: 22px;
+                            background: Theme.error.with-alpha(0.14);
+                            AppIcon {
+                                source: Icons.trash; colorize: Theme.error;
+                                width: 20px; height: 20px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1; spacing: 6px; alignment: center;
+                        Text {
+                            text: "Clear transfer history?";
+                            color: Theme.text; font-size: 17px; font-weight: 700;
+                            wrap: word-wrap;
+                        }
+                        // The distinction worth spelling out: this is a log, and
+                        // people reach for it expecting a delete.
+                        Text {
+                            text: "This erases the record of what was sent and received. "
+                                + "The files themselves are not touched, and paired devices stay paired.";
+                            color: Theme.text-dim; font-size: 12.5px; wrap: word-wrap;
+                        }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.outline; }
+                HorizontalLayout {
+                    spacing: 10px; alignment: end;
+                    Rectangle {
+                        height: 36px; min-width: 92px; border-radius: 10px;
+                        background: cancel-t.has-hover ? Theme.panel-2 : transparent;
+                        border-width: 1px; border-color: Theme.outline;
+                        cancel-t := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.confirm-clear = false; }
+                        }
+                        Text {
+                            text: "Cancel"; color: Theme.text;
+                            font-size: 12.5px; font-weight: 600;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: parent.width; height: parent.height;
+                        }
+                    }
+                    Rectangle {
+                        height: 36px; min-width: 124px; border-radius: 10px;
+                        background: wipe-t.has-hover
+                            ? Theme.error : Theme.error.with-alpha(0.88);
+                        wipe-t := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                root.confirm-clear = false;
+                                root.clear-history();
+                            }
+                        }
+                        Text {
+                            text: "Clear history"; color: #ffffff;
+                            font-size: 12.5px; font-weight: 700;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: parent.width; height: parent.height;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    if root.help-open: Rectangle {
+        background: #000000.with-alpha(0.55);
+        TouchArea { clicked => { root.help-open = false; } }
+        Rectangle {
+            width: min(620px, parent.width - 48px);
+            height: min(640px, parent.height - 48px);
+            border-radius: Theme.radius-lg;
+            background: Theme.panel;
+            border-width: 1px; border-color: Theme.outline;
+            drop-shadow-blur: 40px; drop-shadow-color: #00000055;
+            TouchArea { }
+            VerticalLayout {
+                padding: 0px;
+                // Header, outside the scroll so the close button stays put.
+                HorizontalLayout {
+                    padding: 20px; spacing: 13px;
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        Rectangle {
+                            width: 42px; height: 42px; border-radius: 21px;
+                            background: root.accent.with-alpha(0.14);
+                            AppIcon {
+                                source: Icons.info; colorize: root.accent;
+                                width: 20px; height: 20px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 1; spacing: 3px;
+                        Text {
+                            text: "Connecting a device";
+                            color: Theme.text; font-size: 17px; font-weight: 700;
+                        }
+                        Text {
+                            text: "Anything with a browser works. No app to install on the other end.";
+                            color: Theme.text-dim; font-size: 12px; wrap: word-wrap;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        Rectangle {
+                            width: 32px; height: 32px; border-radius: 9px;
+                            background: closeh.has-hover ? Theme.panel-2 : transparent;
+                            closeh := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.help-open = false; }
+                            }
+                            AppIcon {
+                                source: Icons.x; colorize: Theme.text-dim;
+                                width: 15px; height: 15px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+                    }
+                }
+                Rectangle { height: 1px; background: Theme.outline; }
+
+                helpsv := ScrollView {
+                    vertical-stretch: 1;
+                    viewport-width: self.width;
+                    viewport-height: helpbody.preferred-height;
+                    init => { self.viewport-y = 0; }
+
+                    helpbody := VerticalLayout {
+                        width: parent.width;
+                        padding: 20px; spacing: 14px;
+
+                        HelpBlock {
+                            title: "Start here";
+                            tint: root.accent;
+                            icon: Icons.wifi;
+                            body: "1.  Press Start sharing on this computer.\n"
+                                + "2.  Put both devices on the same Wi-Fi, or tether one to the other's hotspot.\n"
+                                + "3.  Scan the QR code, or type the address into any browser.\n"
+                                + "4.  Enter the 6-digit PIN. The QR skips this — it carries a single-use key that lasts 60 seconds.";
+                        }
+
+                        // The live one, with this machine's real port and link
+                        // substituted in. It sits first because a person opening
+                        // this panel is almost always already stuck.
+                        if root.hint != "": HelpBlock {
+                            title: "Phone says it cannot connect";
+                            tint: Theme.warn;
+                            icon: Icons.shield;
+                            body: root.hint;
+                        }
+
+                        HelpBlock {
+                            title: "Windows";
+                            tint: #0ea5e9;
+                            icon: Icons.monitor-play;
+                            body: "Windows Firewall asks once, on the very first bind, and dismissing that dialog silently blocks every connection afterwards — with no second prompt.\n\n"
+                                + "Fix it at Settings → Privacy & security → Windows Security → Firewall & network protection → Allow an app through firewall, and tick Tulipix for Private networks.\n\n"
+                                + "If the network is marked Public, either switch it to Private or open TCP " + root.port + " directly.";
+                        }
+
+                        HelpBlock {
+                            title: "macOS";
+                            tint: #a78bfa;
+                            icon: Icons.command;
+                            body: "macOS asks for Local Network permission the first time an app talks to the LAN. Denied once, it never asks again.\n\n"
+                                + "Turn it on at System Settings → Privacy & Security → Local Network → Tulipix.\n\n"
+                                + "Then check System Settings → Network → Firewall. If it is on, either allow incoming connections for Tulipix or make sure Block all incoming connections is off.";
+                        }
+
+                        HelpBlock {
+                            title: "Linux";
+                            tint: #22c55e;
+                            icon: Icons.wrench;
+                            body: "A default-deny firewall drops the phone's packets before they reach the app, and this end cannot tell — the bind succeeded either way.\n\n"
+                                + "ufw:       sudo ufw allow in on <interface> to any port " + root.port + " proto tcp\n"
+                                + "firewalld: sudo firewall-cmd --add-port=" + root.port + "/tcp\n\n"
+                                + "Scope the rule to the one link rather than opening the port everywhere — otherwise it follows the laptop onto the next network it joins.";
+                        }
+
+                        HelpBlock {
+                            title: "Android";
+                            tint: #84cc16;
+                            icon: Icons.download;
+                            body: "Any browser works. Chrome, Firefox and Samsung Internet are all fine.\n\n"
+                                + "Using this phone as the hotspot: the laptop is a client on the phone's network, so pick the hotspot address from THIS NETWORK on the Connection card — that is the one the phone can reach.\n\n"
+                                + "Downloads land in the browser's own folder, usually Downloads. Some Android builds warn about files from a “not secure” page; that is the plain-HTTP notice, not a problem with the file.";
+                        }
+
+                        HelpBlock {
+                            title: "iPhone and iPad";
+                            tint: #f472b6;
+                            icon: Icons.upload;
+                            body: "Safari works, and the Camera app scans the QR straight into it.\n\n"
+                                + "Turn off Private Wi-Fi Address for this network if the connection is refused after it worked once — a rotating address invalidates the paired device.\n\n"
+                                + "Uploading photos: pick Photo Library in the file picker. iOS converts HEIC to JPEG on the way out unless Settings → Photos → Transfer to Mac or PC is set to Keep Originals.";
+                        }
+
+                        HelpBlock {
+                            title: "Still nothing";
+                            tint: Theme.text-dim;
+                            icon: Icons.triangle-alert;
+                            body: "Client isolation — an “AP isolation” or “guest network” setting on the router — blocks devices from seeing each other at all, and no firewall change on either end will fix it. A phone hotspot is the quickest way around it.\n\n"
+                                + "A VPN on either device routes traffic away from the local network. Turn it off and try again.\n\n"
+                                + "Corporate and campus Wi-Fi very often has isolation on by design. Expect it to fail there.";
                         }
                     }
                 }

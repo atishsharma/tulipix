@@ -236,6 +236,21 @@ pub fn wire(window: &MainWindow) {
         w.set_transfer_page(page);
         load_history(&w, page as usize);
     });
+
+    let w = window.as_weak();
+    window.on_transfer_set_sort(move |col, desc| {
+        let Some(w) = w.upgrade() else { return };
+        w.set_transfer_sort(col);
+        w.set_transfer_sort_desc(desc);
+        // Back to page one: staying on page four of a differently-ordered table
+        // shows rows that have nothing to do with what was just clicked.
+        w.set_transfer_page(0);
+        load_history(&w, 0);
+    });
+
+    window.on_transfer_dismiss_upload(move |id| {
+        let _ = with(|svc| svc.dismiss_upload(id.max(0) as u64));
+    });
 }
 
 /// Called from tulipix-app's `on_section_changed`.
@@ -368,6 +383,15 @@ fn refresh(w: &MainWindow) {
     });
     w.set_transfer_status(status_line(&snap).into());
     w.set_transfer_hint(firewall_hint(&snap).into());
+    // The Help panel interpolates the real port into every platform's advice —
+    // a rule written for the wrong port is worse than no rule. Before the first
+    // bind there is no live port, and the panel is readable then too, so it
+    // falls back to the fixed one the next start will ask for.
+    w.set_transfer_port(if snap.port == 0 {
+        tulipix_transfer::PORT as i32
+    } else {
+        snap.port as i32
+    });
     w.set_transfer_attempts(attempts_line(&snap).into());
 
     let files: Vec<TransferFile> = snap
@@ -406,6 +430,7 @@ fn refresh(w: &MainWindow) {
         .uploads
         .iter()
         .map(|u| TransferUp {
+            id: u.id as i32,
             name: u.name.clone().into(),
             size: human_size(u.total.max(u.done)).into(),
             pct: if u.total == 0 { 0.0 } else { (u.done as f32 / u.total as f32).min(1.0) },
@@ -472,10 +497,16 @@ fn attempts_line(snap: &tulipix_transfer::Snapshot) -> String {
     parts.join("\n")
 }
 
-/// The thing to check when the desktop says "Serving" and the phone says it
-/// cannot connect. Every platform has one silent way to swallow the packets,
-/// and in every case the bind succeeded, so nothing upstream can detect it —
-/// the honest move is to name the fix with the real port in it.
+/// The one fix worth trying first, for *this* machine, with its real port and
+/// its real interface in it.
+///
+/// The Help panel carries static advice for every platform; this is the block
+/// that cannot be static, because a firewall rule naming the wrong port or the
+/// wrong link is worse than no rule at all. It supplies the heading, so this
+/// starts straight in on the answer.
+///
+/// Only meaningful while sharing: before the first bind there is no interface
+/// chosen and no port to name.
 fn firewall_hint(snap: &tulipix_transfer::Snapshot) -> String {
     if !snap.running {
         return String::new();
@@ -494,25 +525,27 @@ fn firewall_hint(snap: &tulipix_transfer::Snapshot) -> String {
             .map(|(name, _)| name.as_str())
             .unwrap_or("wlan0");
         format!(
-            "Phone says it cannot connect? A default-deny firewall (ufw, firewalld) drops this \
-             before it reaches the app, and the desktop cannot tell — the bind succeeded either \
-             way. Open the port on that one link:\n\
+            "A default-deny firewall (ufw, firewalld) drops this before it reaches the app, and \
+             the desktop cannot tell — the bind succeeded either way.\n\n\
+             Run this, for the link you are actually sharing on:\n\n\
              sudo ufw allow in on {iface} to any port {port} proto tcp"
         )
     }
     #[cfg(target_os = "windows")]
     {
         format!(
-            "Phone says it cannot connect? Windows Firewall asks once, on the first bind, and \
-             dismissing that dialog silently blocks every later connection. Allow Tulipix for \
-             private networks, or open TCP {port}."
+            "Windows Firewall asks once, on the first bind, and dismissing that dialog silently \
+             blocks every later connection — it never asks again.\n\n\
+             Allow Tulipix for private networks, or open TCP {port}. See the Windows section \
+             below for where that setting lives."
         )
     }
     #[cfg(target_os = "macos")]
     {
         format!(
-            "Phone says it cannot connect? Check System Settings → Privacy & Security → Local \
-             Network and allow Tulipix; also confirm the firewall is not blocking TCP {port}."
+            "macOS asks for Local Network permission once, and a denied prompt never returns.\n\n\
+             Allow Tulipix at System Settings → Privacy & Security → Local Network, then confirm \
+             the firewall is not blocking TCP {port}."
         )
     }
 }
@@ -552,9 +585,14 @@ fn load_history(w: &MainWindow, page: usize) {
     let Some(pool) = with(|svc| svc.pool()).flatten() else {
         return;
     };
+    // Ordering is the database's job — the ten rows on screen are a window onto
+    // the whole table, so sorting them in place would only reshuffle the window.
+    let sort = tulipix_transfer::ledger::Sort::from_index(w.get_transfer_sort());
+    let desc = w.get_transfer_sort_desc();
     let weak = w.as_weak();
     spawn(async move {
-        let entries = tulipix_transfer::ledger::recent(&pool, page).await.unwrap_or_default();
+        let entries =
+            tulipix_transfer::ledger::recent(&pool, page, sort, desc).await.unwrap_or_default();
         let total = tulipix_transfer::ledger::count(&pool).await.unwrap_or(0);
         type Row = (String, String, String, String, String, String, String, String, String, bool);
         let rows: Vec<Row> = entries

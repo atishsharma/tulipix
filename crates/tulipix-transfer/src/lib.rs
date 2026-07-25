@@ -41,6 +41,8 @@ pub struct DeviceRow {
 
 /// One upload in flight (or just finished).
 pub struct UploadRow {
+    /// Server-side upload id, so a failed row can name itself to `dismiss_upload`.
+    pub id: u64,
     pub name: String,
     pub total: u64,
     pub done: u64,
@@ -269,6 +271,16 @@ impl TransferService {
         lock(&st.tray).clear();
     }
 
+    /// Drop a finished upload from the Receive pane by hand.
+    ///
+    /// Successes clear themselves after [`server::DONE_LINGER`]; this is what
+    /// clears a failure, which otherwise stays put on purpose. An upload still
+    /// in flight is left alone — the row is the only sign it is happening.
+    pub fn dismiss_upload(&self, id: u64) {
+        let Some(st) = self.state() else { return };
+        lock(&st.uploads).retain(|u| u.id != id || u.state == "active");
+    }
+
     /// The URL behind the QR: `http://{ip}:{port}/?k={key}`, where the key is
     /// single-use and lives 60 seconds. Presenting it is equivalent to entering
     /// the PIN, so the PIN itself is never in the code — a photo of the screen
@@ -341,9 +353,14 @@ impl TransferService {
                 .collect();
             (devices, auth.wrong_attempts())
         };
+        // A finished upload clears itself after a few seconds; a failed one
+        // stays until it is dismissed. Filtering here rather than sweeping on a
+        // timer keeps the desktop and the phone reading the same list.
         let uploads = lock(&run.state.uploads)
             .iter()
+            .filter(|u| u.visible())
             .map(|u| UploadRow {
+                id: u.id,
                 name: u.name.clone(),
                 total: u.total,
                 done: u.done,

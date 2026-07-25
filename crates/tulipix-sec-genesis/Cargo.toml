@@ -1,0 +1,33 @@
+[package]
+name = "tulipix-sec-genesis"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Genesis wiring: the bridge between tulipix-genesis — which is blocking and
+# knows nothing about Slint — and every `window.on_genesis_*` callback.
+# tulipix-app calls `wire(&window)` once at startup.
+
+[features]
+dev-reload = ["tulipix-ui/dev-reload"]
+# Dev-only: lets `cargo check -p tulipix-sec-genesis` satisfy slint's winit
+# backend renderer requirement in isolation (the app normally selects it).
+_check = ["slint/renderer-skia", "slint/renderer-skia-opengl"]
+
+[dependencies]
+slint.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tulipix-ui = { path = "../tulipix-ui" }
+tulipix-common = { path = "../tulipix-common" }
+tulipix-core = { path = "../tulipix-core" }
+# For `replace_rows`: the results table is redrawn by buttons living inside its
+# own rows, which is exactly the slint#6426 case that helper exists for.
+tulipix-sec-photos = { path = "../tulipix-sec-photos" }
+tulipix-platform = { path = "../tulipix-platform" }
+tulipix-genesis = { path = "../tulipix-genesis" }
+# The post-download rescan and the library-folder lookup that decides where a
+# download is allowed to land.
+tulipix-books = { path = "../tulipix-books" }
+tulipix-sec-books = { path = "../tulipix-sec-books" }

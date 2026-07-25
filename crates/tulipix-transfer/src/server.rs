@@ -43,6 +43,13 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// How long a finished upload stays on screen before it clears itself.
+///
+/// Only successes expire. A failure is the one thing worth reading late, so it
+/// stays until it is dismissed by hand — the Recent Transfers row below is the
+/// permanent record either way.
+pub const DONE_LINGER: std::time::Duration = std::time::Duration::from_secs(12);
+
 /// One upload in flight, for the Receive pane and `/api/status`.
 #[derive(Clone, Debug)]
 pub struct Upload {
@@ -53,6 +60,22 @@ pub struct Upload {
     /// "active" | "done" | "failed"
     pub state: &'static str,
     pub peer: String,
+    /// When it stopped moving. `None` while still active.
+    pub finished: Option<std::time::Instant>,
+}
+
+impl Upload {
+    /// Whether the Receive pane and the phone should still be drawing this.
+    ///
+    /// Time-based rather than a sweep on a timer: there is no tick inside the
+    /// server, and filtering at read time means the desktop and the phone
+    /// agree without either of them mutating shared state to do it.
+    pub fn visible(&self) -> bool {
+        match (self.state, self.finished) {
+            ("done", Some(at)) => at.elapsed() < DONE_LINGER,
+            _ => true,
+        }
+    }
 }
 
 pub struct AppState {
@@ -353,6 +376,7 @@ async fn status(State(st): State<Shared>, headers: HeaderMap) -> Response {
     let files = lock(&st.tray).items().len();
     let uploads: Vec<serde_json::Value> = lock(&st.uploads)
         .iter()
+        .filter(|u| u.visible())
         .map(|u| {
             serde_json::json!({
                 "name": u.name, "total": u.total, "done": u.done, "state": u.state,
@@ -498,6 +522,7 @@ async fn upload(
         done: 0,
         state: "active",
         peer: peer_ip.clone(),
+        finished: None,
     });
 
     let mut stream = body.into_data_stream();
@@ -552,6 +577,7 @@ fn finish_upload(st: &AppState, id: u64, state: &'static str) {
     let mut uploads = lock(&st.uploads);
     if let Some(u) = uploads.iter_mut().find(|u| u.id == id) {
         u.state = state;
+        u.finished = Some(std::time::Instant::now());
         if state == "done" {
             u.total = u.done;
         }
@@ -593,6 +619,30 @@ mod tests {
 
     fn client() -> reqwest::Client {
         reqwest::Client::builder().cookie_store(true).build().unwrap()
+    }
+
+    fn upload_at(state: &'static str, finished: Option<std::time::Instant>) -> Upload {
+        Upload {
+            id: 1,
+            name: "a.mp3".into(),
+            total: 10,
+            done: 10,
+            state,
+            peer: "10.0.0.2".into(),
+            finished,
+        }
+    }
+
+    #[test]
+    fn a_finished_upload_clears_itself_but_a_failed_one_stays() {
+        let now = std::time::Instant::now();
+        let stale = now.checked_sub(DONE_LINGER * 2).expect("clock is past the epoch");
+
+        assert!(upload_at("active", None).visible(), "an upload in flight is always shown");
+        assert!(upload_at("done", Some(now)).visible(), "a success shows for a while");
+        assert!(!upload_at("done", Some(stale)).visible(), "a success expires");
+        // The one row worth reading late — it never expires on its own.
+        assert!(upload_at("failed", Some(stale)).visible(), "a failure stays until dismissed");
     }
 
     #[tokio::test]
