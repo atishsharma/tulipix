@@ -45,8 +45,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y --no-install-recommends \
             mold libgtk-3-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev
+      # --no-fail-fast: cargo stops at the first failing test binary, so one
+      # broken crate hides every other failure and each push reveals only the
+      # next one. Three pre-existing failures surfaced this way, one at a time.
       - run: >
-          cargo test -p tulipix-core -p tulipix-videos -p tulipix-music -p tulipix-photos
+          cargo test --no-fail-fast -p tulipix-core -p tulipix-videos -p tulipix-music -p tulipix-photos
           -p tulipix-books -p tulipix-tools -p tulipix-cloud -p tulipix-player
           -p tulipix-whisper -p tulipix-ai -p tulipix-mdl -p tulipix-platform
           -p tulipix-plugins -p tulipix-cli
@@ -121,8 +124,8 @@ jobs:
           CARGO_PROFILE_TEST_DEBUG: "false"
           CARGO_PROFILE_DEV_DEBUG: "false"
         run: >
-          cargo test -p tulipix-sec-videos -p tulipix-sec-books -p tulipix-sec-music
-          -p tulipix-app --no-default-features --features tulipix-app/renderer-femtovg
+          cargo test --no-fail-fast -p tulipix-sec-videos -p tulipix-sec-books
+          -p tulipix-sec-music -p tulipix-app --no-default-features --features tulipix-app/renderer-femtovg
 
   # tulipix-platform is where the per-OS shell integration lives: the AppleScript
   # trash call, the PowerShell one, explorer.exe launches, assoc/ftype. All of it
