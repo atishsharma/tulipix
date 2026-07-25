@@ -56,7 +56,7 @@ jobs:
           # the feature set — that build REQUIRES clang (GN toolchain) and libclang
           # (bindgen). Their absence is what failed the Skia step ~7 min in.
           sudo apt-get install -y --no-install-recommends \
-            libmpv-dev mpv mold cmake ninja-build \
+            libmpv-dev mpv mold cmake ninja-build libdbus-1-dev \
             libfontconfig1-dev libfreetype6-dev libgl1-mesa-dev libegl1-mesa-dev \
             libxkbcommon-dev libwayland-dev \
             clang libclang-dev llvm-dev python3 lld time
