@@ -26,7 +26,6 @@ pub mod onboarding;
 pub mod parental;
 pub mod profiles_managed;
 pub mod paths;
-pub mod perf;
 pub mod populator;
 pub mod power_aware;
 pub mod prefs;

@@ -111,6 +111,12 @@ fn clear_lib_busy(weak: &slint::Weak<MainWindow>) {
 }
 
 static APP_START: OnceLock<std::time::Instant> = OnceLock::new();
+/// Milliseconds from process start to the first turn of the event loop, frozen
+/// once. Without this the "Startup to ready" row measured `APP_START.elapsed()`
+/// at the moment the panel was built, so it reported how long the app had been
+/// running — an hour-old session claimed a 3,600,000 ms startup and lit the
+/// warning light every time.
+static READY_MS: OnceLock<u64> = OnceLock::new();
 
 fn main() -> Result<()> {
     let _ = APP_START.set(std::time::Instant::now());
@@ -3503,6 +3509,15 @@ fn main() -> Result<()> {
         });
     }
 
+    // Freeze "startup to ready" on the first turn of the event loop: every
+    // blocking setup call above has returned by then and the window is about to
+    // paint, which is what the number is supposed to describe.
+    slint::Timer::single_shot(std::time::Duration::ZERO, || {
+        let ms = APP_START.get().map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);
+        let _ = READY_MS.set(ms);
+        tracing::info!(startup_ms = ms, "ready");
+    });
+
     // Launch filling the screen (maximised, decorations kept) rather than a
     // small floating window.
     window.window().set_maximized(true);
@@ -4967,11 +4982,6 @@ fn seed_settings_panels(w: &MainWindow) {
         stat("Allocator", allocator_name(), "ok"),
         stat("Resident memory", &format!("{} MB", rss_mb()), if rss_mb() < 300 { "ok" } else { "warn" }),
         stat("Thumbnail cache", &format!("{} MB", cache_mb), "muted"),
-        stat("GPU texture budget", "200 MB LRU", "ok"),
-        stat("Off-main-thread IO/decode", "Enforced", "ok"),
-        stat("Disk-IO throttle", "Auto (rotational detect)", "ok"),
-        stat("Viewport prefetch", "Velocity-aware", "ok"),
-        stat("120 Hz / VRR", "Frame budget 8.3 ms", "ok"),
         tog(&s, "power-aware", true, "Battery / network aware", "Pause background scanning on battery or metered connections"),
         hdr("BUNDLED TOOLS"),
         // Universal override — look for mpv / yt-dlp / ffmpeg / ffprobe / etc. in
@@ -5007,8 +5017,6 @@ fn seed_settings_panels(w: &MainWindow) {
         stat("Frames > 16 ms (session)", &SLOW_FRAMES.load(std::sync::atomic::Ordering::Relaxed).to_string(),
              if SLOW_FRAMES.load(std::sync::atomic::Ordering::Relaxed) < 60 { "ok" } else { "warn" }),
         hdr("BUILD & LOCALE"),
-        stat("Installer size budget", "< 400 MB (Linux)", "ok"),
-        stat("cargo-bloat CI gate", "Per-crate tracked", "ok"),
         // Per-crate lazy-load state (np.p1.perf.lazy-crate): compiled-in or
         // excluded from this binary, per feature flag.
         stat("whisper (lazy-whisper)", if cfg!(feature = "lazy-whisper") { "Compiled — loads on first use" } else { "Not in this binary" },
@@ -5019,8 +5027,6 @@ fn seed_settings_panels(w: &MainWindow) {
              if cfg!(feature = "lazy-plugins") { "ok" } else { "muted" }),
         stat("ONNX editor ops (ai-onnx)", if cfg!(feature = "ai-onnx") { "Compiled" } else { "Not in this binary" },
              if cfg!(feature = "ai-onnx") { "ok" } else { "muted" }),
-        stat("Localisation", "Fluent .ftl · en", "ok"),
-        stat("RTL layout", "Auto-mirror per locale", "ok"),
         stat("Adaptive layout", "Desktop breakpoints", "ok"),
         stat("Player embedding", "Out-of-process mpv — isolation by design (embedded GL parked: froze Intel iGPUs)", "ok"),
         // Format-support audit (np.p4.music.formats) — the claim table.
@@ -5224,8 +5230,12 @@ fn allocator_name() -> &'static str {
     else { "system malloc" }
 }
 
+/// Time to ready, frozen at the first turn of the event loop. Falls back to the
+/// live elapsed time only while startup is still in progress.
 fn startup_ms() -> u64 {
-    APP_START.get().map(|t| t.elapsed().as_millis() as u64).unwrap_or(0)
+    READY_MS.get().copied().unwrap_or_else(|| {
+        APP_START.get().map(|t| t.elapsed().as_millis() as u64).unwrap_or(0)
+    })
 }
 
 /// Resident set size in MB from /proc/self/statm (Linux). 0 elsewhere.

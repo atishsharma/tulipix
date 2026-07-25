@@ -5,7 +5,7 @@
 //! thumb renderer pops the next id off the queue. Priority order:
 //!   1. Hovered id (highest — bump to front)
 //!   2. Visible viewport, near-centre first
-//!   3. Predicted-scroll lookahead (driven by tulipix-core::perf::prefetch)
+//!   3. Predicted-scroll lookahead
 //!   4. Stale (already rendered but item rev bumped)
 //!
 //! Eviction runs every time the cache crosses `CACHE_CAP_BYTES` (5 GB).
