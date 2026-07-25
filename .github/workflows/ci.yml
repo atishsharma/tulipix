@@ -99,7 +99,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             mold libdbus-1-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev \
             libgl1-mesa-dev libegl1-mesa-dev libwayland-dev
-      - run: cargo check -p tulipix-app --no-default-features --features renderer-femtovg
+      # `genesis` is opt-in and lives behind --no-default-features here, so it
+      # has to be named explicitly or tulipix-sec-genesis is never compiled by
+      # any job — which is exactly how four type errors in it reached a push.
+      - run: cargo check -p tulipix-app --no-default-features --features renderer-femtovg,genesis
 
   # The UI-glue crates' own tests (~30). They need a renderer selected, which
   # only tulipix-app's features can do, so the app is built alongside them and
@@ -153,8 +156,9 @@ jobs:
           sampler=$!
           trap 'kill $sampler 2>/dev/null' EXIT
           cargo test --no-fail-fast -p tulipix-sec-videos -p tulipix-sec-books \
-            -p tulipix-sec-music -p tulipix-app \
-            --no-default-features --features tulipix-app/renderer-femtovg
+            -p tulipix-sec-music -p tulipix-sec-transfer -p tulipix-sec-genesis \
+            -p tulipix-app \
+            --no-default-features --features tulipix-app/renderer-femtovg,tulipix-app/genesis
 
   # tulipix-platform is where the per-OS shell integration lives: the AppleScript
   # trash call, the PowerShell one, explorer.exe launches, assoc/ftype. All of it
