@@ -21,6 +21,14 @@ pub fn sentences(text: &str) -> Vec<Sentence> {
     let n = chars.len();
 
     let flush = |out: &mut Vec<Sentence>, s: usize, e: usize| {
+        // `text` is trimmed, so char_start has to skip the same leading
+        // whitespace. Reporting the pre-trim index made the two fields disagree:
+        // a sentence after "One. " began at the space, so read-aloud highlighting
+        // started a character early — and more than one after a paragraph break.
+        let mut s = s;
+        while s < e && chars[s].is_whitespace() {
+            s += 1;
+        }
         let t: String = chars_range(text, s, e).trim().to_string();
         if !t.is_empty() {
             out.push(Sentence { text: t, char_start: s });
