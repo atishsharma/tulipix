@@ -8883,8 +8883,18 @@ fn wire_music_p6(window: &MainWindow) {
     window.set_app_version(env!("CARGO_PKG_VERSION").into());
     window.on_open_url(move |url| {
         let url = url.to_string();
+        // Only ever hand the OS a web URL. This callback is generic, and some of
+        // what reaches it is remote data (stream metadata, feeds, book
+        // metadata); without the scheme check a value like `C:\payload.exe` or
+        // `file://…` would be launched as readily as a link.
+        if !(url.starts_with("http://") || url.starts_with("https://")) {
+            tracing::warn!(%url, "refusing to open non-web url");
+            return;
+        }
+        // explorer.exe, not `cmd /C start`: cmd re-parses its command line after
+        // argv splitting, so `&`, `|` and `^` inside a URL became new commands.
         #[cfg(target_os = "windows")]
-        let r = std::process::Command::new("cmd").args(["/C", "start", "", &url]).spawn();
+        let r = std::process::Command::new("explorer.exe").arg(&url).spawn();
         #[cfg(target_os = "macos")]
         let r = std::process::Command::new("open").arg(&url).spawn();
         #[cfg(all(unix, not(target_os = "macos")))]

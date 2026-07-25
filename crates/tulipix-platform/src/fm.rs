@@ -7,6 +7,40 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
+// ─── Escaping for the few places a script string is unavoidable ──────────────
+//
+// Filenames are attacker-controlled in the ordinary case — a download, a shared
+// drive, a synced cloud folder — so anything interpolated into a script must be
+// escaped for that script's rules. These helpers are compiled and tested on
+// every platform even though each is called from a single per-OS branch: an
+// escaping bug here is a command-execution bug, and it should not be
+// discoverable only on the OS that ships it.
+
+/// Escape for a double-quoted AppleScript literal, where `"` and `\` are live.
+/// Backslash first, or it escapes the escapes.
+#[allow(dead_code)]
+fn applescript_quote(s: &str) -> String {
+    s.replace('\\', r"\\").replace('"', "\\\"")
+}
+
+/// Escape for a single-quoted PowerShell literal. Such a string expands
+/// nothing, so the quote is the only metacharacter, and doubling it is
+/// PowerShell's escape.
+#[allow(dead_code)]
+fn powershell_quote(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+/// Whether a token may be interpolated into a `cmd.exe` command line.
+///
+/// cmd re-parses its command line *after* argv splitting and offers no quoting
+/// that reliably survives it, so escaping is not an option: only inert tokens
+/// may go through. `extra` lists punctuation allowed beyond ASCII alphanumerics.
+#[allow(dead_code)]
+fn cmd_token_ok(s: &str, extra: &str) -> bool {
+    !s.is_empty() && s.chars().all(|c| c.is_ascii_alphanumeric() || extra.contains(c))
+}
+
 /// Reveal a path in the OS file manager (file selected, not just folder opened).
 pub fn reveal_in_file_manager(path: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
@@ -56,8 +90,13 @@ pub fn reveal_in_file_manager(path: &Path) -> Result<()> {
 pub fn open_default(path: &Path) -> Result<()> {
     #[cfg(target_os = "macos")]
     { Command::new("open").arg(path).status()?; }
+    // `cmd /C start "" <path>` used to run this. cmd re-parses its command line
+    // after argv splitting, so a file named `a&calc.mp3` — an ordinary name for
+    // a download or a file off a shared drive — ran `calc`. explorer.exe opens
+    // the same default-app path but receives the argument through CreateProcess
+    // with no shell to reinterpret it.
     #[cfg(target_os = "windows")]
-    { Command::new("cmd").args(["/C", "start", "", path.to_str().unwrap_or("")]).status()?; }
+    { Command::new("explorer.exe").arg(path).status()?; }
     #[cfg(target_os = "linux")]
     { Command::new("xdg-open").arg(path).status()?; }
     Ok(())
@@ -109,11 +148,21 @@ pub fn enumerate_open_with(path: &Path) -> Vec<OpenWithApp> {
     #[cfg(target_os = "windows")]
     {
         // `cmd /c assoc .<ext>` → `.<ext>=PerceivedType`; `ftype <key>` → exec.
+        // Both are cmd builtins, so cmd is unavoidable here — which means both
+        // interpolated values must be inert first. An extension is whatever
+        // follows the last dot in a filename the user did not choose, so
+        // `x.mp4&calc` would otherwise run `calc`.
         let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("");
-        if !ext.is_empty() {
+        if cmd_token_ok(ext, "") {
             let assoc = Command::new("cmd").args(["/C", &format!("assoc .{ext}")]).output();
             if let Ok(a) = assoc {
-                if let Some(progid) = String::from_utf8_lossy(&a.stdout).split('=').nth(1).map(|s| s.trim().to_string()) {
+                if let Some(progid) = String::from_utf8_lossy(&a.stdout).split('=').nth(1)
+                    .map(|s| s.trim().to_string())
+                    // The ProgID comes back from the registry, which a local
+                    // installer writes — hold it to the same bar before it goes
+                    // back through cmd.
+                    .filter(|p| cmd_token_ok(p, ".-_"))
+                {
                     let ft = Command::new("cmd").args(["/C", &format!("ftype {progid}")]).output();
                     if let Ok(ft) = ft {
                         let exec = String::from_utf8_lossy(&ft.stdout).split('=').nth(1).map(|s| s.trim().to_string()).unwrap_or_default();
@@ -214,10 +263,10 @@ pub fn move_to_trash(path: &Path) -> Result<()> {
     if !path.exists() { return Err(anyhow!("trash target missing: {}", path.display())); }
     #[cfg(target_os = "macos")]
     {
-        let osa = format!(
-            "tell application \"Finder\" to delete POSIX file \"{}\"",
-            path.display()
-        );
+        // Without escaping, a file named `x" & (do shell script "…") & "`
+        // closes the literal and runs whatever it likes.
+        let quoted = applescript_quote(&path.display().to_string());
+        let osa = format!("tell application \"Finder\" to delete POSIX file \"{quoted}\"");
         let status = Command::new("osascript").args(["-e", &osa]).status()?;
         if !status.success() { return Err(anyhow!("osascript trash failed")); }
         return Ok(());
@@ -235,9 +284,16 @@ pub fn move_to_trash(path: &Path) -> Result<()> {
     {
         // PowerShell shell COM call. The `recyclebin` verb deletes via the Explorer
         // shell so the file lands in Recycle Bin with full restore metadata.
+        //
+        // Without escaping, a file named `x'; calc; '.mp3` closed the literal and
+        // ran arbitrary commands.
+        //
+        // SHFileOperationW with FOF_ALLOWUNDO would remove the shell from this
+        // path entirely; it needs the Win32_UI_Shell feature on the `windows`
+        // crate and careful double-NUL buffer handling.
         let ps = format!(
             "Add-Type -AssemblyName Microsoft.VisualBasic; [Microsoft.VisualBasic.FileIO.FileSystem]::DeleteFile('{}', 'OnlyErrorDialogs', 'SendToRecycleBin')",
-            path.display()
+            powershell_quote(&path.display().to_string())
         );
         let status = Command::new("powershell").args(["-NoProfile", "-Command", &ps]).status()?;
         if !status.success() { return Err(anyhow!("PowerShell recycle bin call failed")); }
@@ -289,5 +345,59 @@ mod tests {
         let apps = enumerate_open_with(Path::new("/tmp/x.jpg"));
         assert!(!apps.is_empty());
         assert_eq!(apps[0].name, "System default");
+    }
+
+    // The trash paths hand a filename to a script interpreter, so a name that
+    // closes the literal used to run commands. These run on every platform, not
+    // just the one whose branch calls them.
+    /// Quotes that actually terminate a literal — escaped ones skipped, and a
+    /// `\\` pair consumed so it cannot be mistaken for an escape.
+    fn unescaped_quotes(s: &str) -> usize {
+        let b = s.as_bytes();
+        let (mut n, mut i) = (0, 0);
+        while i < b.len() {
+            match b[i] {
+                b'\\' => { i += 2; continue; }
+                b'"' => n += 1,
+                _ => {}
+            }
+            i += 1;
+        }
+        n
+    }
+
+    #[test] fn applescript_quote_neutralises_a_breakout_filename() {
+        let evil = r#"x" & (do shell script "calc") & ""#;
+        assert_eq!(unescaped_quotes(evil), 4, "payload should break out unescaped");
+        // Escaped, none of its quotes can close the literal.
+        assert_eq!(unescaped_quotes(&applescript_quote(evil)), 0);
+        // Assembled, only the two quote pairs the template itself adds remain.
+        let script = format!(
+            "tell application \"Finder\" to delete POSIX file \"{}\"",
+            applescript_quote(evil)
+        );
+        assert_eq!(unescaped_quotes(&script), 4, "{script}");
+    }
+
+    #[test] fn applescript_quote_escapes_backslashes_before_quotes() {
+        // A trailing backslash must not end up escaping the closing quote the
+        // caller appends.
+        assert_eq!(applescript_quote(r"C:\dir\"), r"C:\\dir\\");
+        assert_eq!(applescript_quote(r#"a\"b"#), r#"a\\\"b"#);
+    }
+
+    #[test] fn powershell_quote_doubles_single_quotes() {
+        assert_eq!(powershell_quote("x'; calc; '.mp3"), "x''; calc; ''.mp3");
+        assert_eq!(powershell_quote("plain.mp3"), "plain.mp3");
+    }
+
+    #[test] fn cmd_token_rejects_metacharacters() {
+        assert!(cmd_token_ok("mp4", ""));
+        assert!(!cmd_token_ok("mp4&calc", ""));
+        assert!(!cmd_token_ok("mp4|calc", ""));
+        assert!(!cmd_token_ok("", ""), "empty must not reach cmd");
+        // ProgIDs legitimately carry dots, dashes and underscores.
+        assert!(cmd_token_ok("WMP11.AssocFile.MP4", ".-_"));
+        assert!(!cmd_token_ok("WMP11.AssocFile.MP4&calc", ".-_"));
     }
 }
