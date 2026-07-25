@@ -117,16 +117,29 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             mold libdbus-1-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev \
             libgl1-mesa-dev libegl1-mesa-dev libwayland-dev
-      # This job was OOM-killed (exit 143) at first: unlike check-app it codegens
-      # and links real test binaries for tulipix-app and every sec crate, which
-      # is the heaviest thing in CI after a release build. Debug info off and one
-      # codegen job at a time is what brought the release link under the runner's
-      # memory, and it works here for the same reason.
+      # Unlike check-app, this job codegens and links real test binaries for
+      # tulipix-app and every sec crate — the heaviest thing in CI after a
+      # release build, and it has been OOM-killed (exit 143) twice. Debug info
+      # off and one codegen unit at a time cut the peak but not far enough: the
+      # runner has 16 GB and no swap, so a single rustc over the limit takes the
+      # whole runner down mid-crate. Swap does not make the build slower unless
+      # it is actually needed; without it the job dies outright.
+      - name: Give the runner swap
+        run: |
+          sudo fallocate -l 10G /swapfile
+          sudo chmod 600 /swapfile
+          sudo mkswap /swapfile
+          sudo swapon /swapfile
+          free -h
       - name: Test the UI-glue crates
         env:
           CARGO_BUILD_JOBS: "1"
           CARGO_PROFILE_TEST_DEBUG: "false"
           CARGO_PROFILE_DEV_DEBUG: "false"
+          # Fewer codegen units means fewer LLVM modules alive at once. It costs
+          # some parallelism, which this job has already given up via -j 1.
+          CARGO_PROFILE_TEST_CODEGEN_UNITS: "4"
+          CARGO_PROFILE_DEV_CODEGEN_UNITS: "4"
         run: >
           cargo test --no-fail-fast -p tulipix-sec-videos -p tulipix-sec-books
           -p tulipix-sec-music -p tulipix-app --no-default-features --features tulipix-app/renderer-femtovg
