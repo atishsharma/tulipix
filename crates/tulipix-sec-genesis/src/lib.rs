@@ -722,11 +722,10 @@ mod tests {
 
     #[test]
     fn the_default_topics_are_the_two_worth_searching() {
-        let on: Vec<&str> = default_topics()
-            .iter()
-            .filter(|t| t.on)
-            .map(|t| t.code.as_str())
-            .collect();
+        // `into_iter`, not `iter`: borrowing out of the temporary the call
+        // returns leaves the refs dangling at the end of the statement.
+        let on: Vec<String> =
+            default_topics().into_iter().filter(|t| t.on).map(|t| t.code).collect();
         assert_eq!(on, ["libgen", "fiction"]);
     }
 
