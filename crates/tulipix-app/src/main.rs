@@ -8650,7 +8650,12 @@ fn wire_music_p6(window: &MainWindow) {
             let _ = weak.upgrade_in_event_loop(move |w| {
                 use slint::{ModelRc, VecModel};
                 let groups = dedupe_groups_from_paths(group_data);
-                w.set_photo_dedupe_groups(ModelRc::new(VecModel::from(groups)));
+                // In place, not a model swap: this runs from a per-row button, and
+                // replacing the model deletes the tile that button lives on
+                // (slint#6426 — the books move-to-trash crash).
+                if let Some(groups) = replace_rows(&w.get_photo_dedupe_groups(), groups) {
+                    w.set_photo_dedupe_groups(ModelRc::new(VecModel::from(groups)));
+                }
             });
         });
     });
@@ -8667,7 +8672,12 @@ fn wire_music_p6(window: &MainWindow) {
             let _ = weak.upgrade_in_event_loop(move |w| {
                 use slint::{ModelRc, VecModel};
                 let groups = dedupe_groups_from_paths(group_data);
-                w.set_photo_dedupe_groups(ModelRc::new(VecModel::from(groups)));
+                // In place, not a model swap: this runs from a per-row button, and
+                // replacing the model deletes the tile that button lives on
+                // (slint#6426 — the books move-to-trash crash).
+                if let Some(groups) = replace_rows(&w.get_photo_dedupe_groups(), groups) {
+                    w.set_photo_dedupe_groups(ModelRc::new(VecModel::from(groups)));
+                }
             });
         });
     });
@@ -8691,7 +8701,12 @@ fn wire_music_p6(window: &MainWindow) {
             let _ = weak.upgrade_in_event_loop(move |w| {
                 use slint::{ModelRc, VecModel};
                 let groups = dedupe_groups_from_paths(group_data);
-                w.set_photo_dedupe_groups(ModelRc::new(VecModel::from(groups)));
+                // In place, not a model swap: this runs from a per-row button, and
+                // replacing the model deletes the tile that button lives on
+                // (slint#6426 — the books move-to-trash crash).
+                if let Some(groups) = replace_rows(&w.get_photo_dedupe_groups(), groups) {
+                    w.set_photo_dedupe_groups(ModelRc::new(VecModel::from(groups)));
+                }
             });
         });
     });

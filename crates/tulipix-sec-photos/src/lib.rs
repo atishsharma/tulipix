@@ -229,6 +229,28 @@ pub async fn load_dedupe_groups(pool: &sqlx::SqlitePool) -> Vec<(i32, String, Pa
     out
 }
 
+/// Replace a model's rows in place, when the property already holds a `VecModel`.
+///
+/// Swapping in a fresh `ModelRc` tears down every repeater tile. That is fine for
+/// a page-level load, but when the swap is triggered *by a row* — the dedupe
+/// keep/both/trash buttons — it deletes the tile hosting the control that fired
+/// it, which is slint#6426 ("accessing deleted parent"): the crash the books grid
+/// hit on move-to-trash, fixed there the same way. Mutating the existing model
+/// leaves the tiles alive.
+///
+/// Returns the rows back when the property does not hold a `VecModel` yet (the
+/// first population), so the caller can install one.
+pub fn replace_rows<T: Clone + 'static>(model: &slint::ModelRc<T>, rows: Vec<T>) -> Option<Vec<T>> {
+    use slint::Model as _;
+    match model.as_any().downcast_ref::<slint::VecModel<T>>() {
+        Some(vm) => {
+            vm.set_vec(rows);
+            None
+        }
+        None => Some(rows),
+    }
+}
+
 /// Build `Vec<DedupeGroup>` from path tuples on the UI thread (where slint::Image is safe).
 pub fn dedupe_groups_from_paths(data: Vec<(i32, String, PathBuf, PathBuf, String, String)>) -> Vec<DedupeGroup> {
     data.into_iter().map(|(cluster_id, kind, lp, rp, ll, rl)| DedupeGroup {
