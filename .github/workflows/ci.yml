@@ -1,0 +1,105 @@
+# Fast feedback on every push: formatting, lints, the test suite, and a
+# compile check of the per-OS code that a Linux runner cannot see.
+#
+# Deliberately not a release build. release.yml already does the heavy
+# embedded-mpv + skia builds and takes over an hour; this is meant to finish in
+# minutes, so it uses the lean femtovg feature set and skips packaging.
+
+name: ci
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keep CI off the committed mold/cranelift fast path: those are local dev
+  # settings and mold is not installed on the runner for every job.
+  CARGO_INCREMENTAL: "0"
+
+# No `cargo fmt --check` job. The codebase has a consistent house style that
+# default rustfmt disagrees with in 4,494 places — mostly compact one-line
+# bodies it wants to explode to four lines. Gating on it would mean either a
+# permanently red job or a reformat of the whole workspace, and neither is a
+# decision a CI file should make. A tuned rustfmt.toml would be the way in.
+
+jobs:
+  # The workspace's tests live in the domain crates and need no GUI, no mpv and
+  # no skia. tulipix-app is excluded on purpose: it holds 3 tests but pulls the
+  # whole UI toolchain, and it gets its own check job below. tulipix-hot is a
+  # hot-reload shim that only builds under the dev-reload feature.
+  test:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { key: ci-test }
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev
+      - run: cargo test --workspace --exclude tulipix-app --exclude tulipix-hot
+
+  clippy:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
+      - uses: Swatinem/rust-cache@v2
+        with: { key: ci-clippy }
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev
+      # Scoped rather than `-D warnings`. Clippy has never run in CI here, so
+      # denying every lint would fail on day one and teach everyone to ignore
+      # the job. correctness and suspicious are the groups that find real bugs;
+      # style and pedantic are opinions this codebase has already answered. Widen
+      # once these are green and quiet.
+      - run: >
+          cargo clippy --workspace --exclude tulipix-app --exclude tulipix-hot --all-targets --
+          -A warnings -D clippy::correctness -D clippy::suspicious
+
+  # Compile-check the app itself in the lean renderer configuration. `check`
+  # rather than `build`: this is about catching type errors in main.rs, and a
+  # full link of the app is what makes release.yml slow and memory-hungry.
+  check-app:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with: { key: ci-app }
+      - name: System deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgtk-3-dev libfontconfig1-dev libfreetype6-dev libxkbcommon-dev \
+            libgl1-mesa-dev libegl1-mesa-dev libwayland-dev
+      - run: cargo check -p tulipix-app --no-default-features --features renderer-femtovg
+
+  # tulipix-platform is where the per-OS shell integration lives: the AppleScript
+  # trash call, the PowerShell one, explorer.exe launches, assoc/ftype. All of it
+  # is behind cfg(target_os), so a Linux build compiles none of it — the shell
+  # escaping fixes could regress and nothing on Linux would notice. One small
+  # crate per OS is cheap and covers exactly that gap.
+  check-os-branches:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with: { components: clippy }
+      - uses: Swatinem/rust-cache@v2
+        with: { key: ci-os-${{ matrix.os }} }
+      - run: >
+          cargo clippy -p tulipix-platform --all-targets --
+          -A warnings -D clippy::correctness -D clippy::suspicious
+      - run: cargo test -p tulipix-platform
