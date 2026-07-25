@@ -271,17 +271,21 @@ mod tests {
     #[tokio::test]
     async fn history_paginates_newest_first() {
         let (_t, pool) = open_pool().await;
-        for i in 0..25 {
+        // Derived from HISTORY_PAGE_SIZE rather than hardcoded: this test asserted
+        // 20 rows a page, which stopped being true when the constant arrived with
+        // the v4 pagination work, and nothing ran it to say so.
+        let n = HISTORY_PAGE_SIZE + 10; // one full page plus a partial one
+        for i in 0..n {
             record_download(&pool, &format!("T{i}"), "A", None, Some("Spotify"), &format!("/m/{i}.opus"))
                 .await
                 .unwrap();
         }
         let (rows, pages) = history_page(&pool, 0).await.unwrap();
-        assert_eq!(rows.len(), 20);
+        assert_eq!(rows.len() as i64, HISTORY_PAGE_SIZE);
         assert_eq!(pages, 2);
-        assert_eq!(rows[0].title, "T24"); // newest first
+        assert_eq!(rows[0].title, format!("T{}", n - 1)); // newest first
         let (rows2, _) = history_page(&pool, 1).await.unwrap();
-        assert_eq!(rows2.len(), 5);
+        assert_eq!(rows2.len() as i64, n - HISTORY_PAGE_SIZE);
     }
 
     #[tokio::test]
