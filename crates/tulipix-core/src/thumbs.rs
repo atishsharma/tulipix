@@ -128,9 +128,53 @@ pub fn tool_bin(name: &str) -> PathBuf {
     let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
     if let Some(dir) = tool_dir() {
         let cand = dir.join(format!("{name}{ext}"));
-        if cand.exists() && is_native_executable(&cand) { return cand; }
+        if cand.exists() && is_native_executable(&cand) && starts(&cand) { return cand; }
     }
     bundled_bin(name).unwrap_or_else(|| PathBuf::from(name))
+}
+
+/// Whether a binary actually starts, as opposed to merely being a native
+/// executable file.
+///
+/// A bundled tool whose shared libraries are missing passes every static check:
+/// the file exists, and its magic bytes say ELF. It execs fine too — the
+/// dynamic loader is what fails, after the spawn has already been reported as
+/// successful, so the caller sees a tool that launched and instantly vanished
+/// with no error anywhere. That is what a mislaid `lib/` directory in a release
+/// tarball did to mpv: playback silently did nothing while a working
+/// `/usr/bin/mpv` sat unused on PATH.
+///
+/// Run the candidate once and treat only "command not executable" (127) as
+/// broken. The flag is irrelevant — a binary that links will exit with some
+/// other status even if it dislikes the argument, and one that cannot link
+/// never reaches its own argument parsing. Answers are cached, so each tool
+/// costs at most one probe per session.
+fn starts(path: &Path) -> bool {
+    use crate::proc::NoWindow;
+    static PROBED: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<PathBuf, bool>>,
+    > = std::sync::OnceLock::new();
+    let cell = PROBED.get_or_init(Default::default);
+    if let Ok(g) = cell.lock() {
+        if let Some(&known) = g.get(path) { return known; }
+    }
+    // 127 is the unix "could not execute" status; windows reports a missing DLL
+    // as STATUS_DLL_NOT_FOUND / STATUS_DLL_INIT_FAILED instead.
+    const BROKEN: [i32; 3] = [127, 0xC000_0135u32 as i32, 0xC000_0142u32 as i32];
+    let ok = match std::process::Command::new(path)
+        .arg("--version")
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .no_window()
+        .status()
+    {
+        Ok(st) => !st.code().is_some_and(|c| BROKEN.contains(&c)),
+        // Could not even be spawned (not executable, wrong arch).
+        Err(_) => false,
+    };
+    if let Ok(mut g) = cell.lock() { g.insert(path.to_path_buf(), ok); }
+    ok
 }
 
 /// Path to a bundled per-OS binary used by thumb renderers (ffmpeg, exiftool).
@@ -140,7 +184,9 @@ pub fn tool_bin(name: &str) -> PathBuf {
 /// `<repo>/resources/...`) resolve.
 fn bundled_bin(name: &str) -> Option<PathBuf> {
     let ext = if cfg!(target_os = "windows") { ".exe" } else { "" };
-    walk_bundled(&format!("{name}{ext}")).filter(|p| is_native_executable(p))
+    walk_bundled(&format!("{name}{ext}"))
+        .filter(|p| is_native_executable(p))
+        .filter(|p| starts(p))
 }
 
 /// Path to any bundled per-OS file (e.g. the whisper model) — same walk as

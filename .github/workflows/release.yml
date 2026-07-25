@@ -181,11 +181,23 @@ jobs:
             cp AppDir/usr/bin/mpv stage/tulipix/resources/bin/linux-x86_64/
             mkdir -p stage/tulipix/lib
             cp -a AppDir/usr/lib/. stage/tulipix/lib/
+            # The bundled mpv is built with RUNPATH '$ORIGIN/../lib', which from
+            # resources/bin/linux-x86_64/ means resources/bin/lib — not the lib/
+            # directory above. Without this link mpv only resolves its libraries
+            # when started through the launcher below, so anyone running the
+            # binary or the .desktop entry directly got no playback at all and no
+            # error (v0.6.0). A relative symlink costs nothing and makes the
+            # bundled mpv self-sufficient however the app was started.
+            ln -s ../../lib stage/tulipix/resources/bin/lib
             printf '%s\n' '#!/bin/sh' \
               'DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)' \
               'export LD_LIBRARY_PATH="$DIR/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"' \
               'exec "$DIR/tulipix" "$@"' > stage/tulipix/tulipix.sh
             chmod +x stage/tulipix/tulipix.sh
+            # The shipped .desktop is the distro one (Exec=tulipix, correct for
+            # deb/rpm). This layout needs the launcher, since the app itself
+            # links libmpv out of lib/ on hosts that have no system copy.
+            sed -i 's|^Exec=tulipix$|Exec=./tulipix.sh|' stage/tulipix/tulipix.desktop
           fi
           tar -C stage -czf dist/tulipix-${VERSION}-linux-x86_64.tar.gz tulipix
           ls -la dist/
