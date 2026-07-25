@@ -98,7 +98,10 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with: { components: clippy }
       - uses: Swatinem/rust-cache@v2
-        with: { key: ci-os-${{ matrix.os }} }
+        with:
+          # Quoted/block form: a `${{ }}` inside a YAML flow mapping parses `{{`
+          # as a nested mapping and breaks the file.
+          key: ci-os-${{ matrix.os }}
       - run: >
           cargo clippy -p tulipix-platform --all-targets --
           -A warnings -D clippy::correctness -D clippy::suspicious
