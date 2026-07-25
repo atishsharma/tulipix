@@ -2,7 +2,7 @@
 // Both light + extra-dark themes; switch via Theme.dark in-out property.
 // WCAG: extra-dark bg #050614 + text #f8faff = ~17.8:1 (AAA).
 
-export enum Section { photos, videos, music, books, cloud, tools, settings }
+export enum Section { photos, videos, music, books, cloud, tools, transfer, settings }
 
 export global Theme {
     in-out property <bool> dark: true;
@@ -48,6 +48,9 @@ export global Theme {
     out property <color> sec-books:    #10b981; // emerald
     out property <color> sec-cloud:    #14b8a6; // teal
     out property <color> sec-tools:    #06b6d4; // cyan
+    // Orange is the one hue the six sections above leave free, so a glance at
+    // the accent is enough to say which section you are looking at.
+    out property <color> sec-transfer: #f97316; // orange
     out property <color> sec-settings: #94a3b8; // slate
 
     // Tools section identity — cyan→sky gradient ramp (run button, chips,
@@ -55,6 +58,12 @@ export global Theme {
     // Bright + saturated so the accent reads as text on a light canvas too.
     out property <color> tools-accent:   #06b6d4; // cyan
     out property <color> tools-accent-2: #0ea5e9; // sky
+
+    // Transfer section identity — orange→amber ramp (QR card, PIN, progress
+    // bars, the Start/Stop button). `transfer-accent` == sec-transfer for the
+    // sidebar.
+    out property <color> transfer-accent:   #f97316; // orange
+    out property <color> transfer-accent-2: #fbbf24; // amber
 
     // --- Neutral surface ramp ---
     // Sections whose light identity is the Google-neutral white/grey palette
@@ -128,6 +137,7 @@ export global Accent {
         section == Section.books    ? Theme.sec-books :
         section == Section.cloud    ? Theme.sec-cloud :
         section == Section.tools    ? Theme.sec-tools :
+        section == Section.transfer ? Theme.sec-transfer :
                                       Theme.sec-settings;
 
     out property <{x: float, y: float}> orb-corner:
@@ -137,6 +147,7 @@ export global Accent {
         section == Section.books    ? { x: 0.85, y: 0.85 } :
         section == Section.cloud    ? { x: 0.50, y: 0.50 } :
         section == Section.tools    ? { x: 0.80, y: 0.50 } :
+        section == Section.transfer ? { x: 0.20, y: 0.50 } :
                                       { x: 0.50, y: 0.50 };
 }
 
@@ -156,6 +167,7 @@ export global Tokens {
     out property <color> sec-books: Theme.sec-books;
     out property <color> sec-cloud: Theme.sec-cloud;
     out property <color> sec-tools: Theme.sec-tools;
+    out property <color> sec-transfer: Theme.sec-transfer;
     out property <length> radius-md: Theme.radius-md;
     out property <length> radius-lg: Theme.radius-lg;
     out property <length> sidebar-w: Theme.sidebar-w;

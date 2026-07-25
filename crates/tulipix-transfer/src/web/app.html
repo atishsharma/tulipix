@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Tulipix Transfer</title>
+<link rel="stylesheet" href="/app.css">
+</head>
+<body>
+
+<header class="appbar">
+  <span class="brand">Tulipix Transfer</span>
+  <span class="chip" id="chip" hidden>paired</span>
+</header>
+
+<main class="body">
+
+  <!-- 1 — PIN. Shown until a cookie exists; every 401 sends us back here. -->
+  <section id="viewPin">
+    <p class="pin-prompt">Enter the six digits shown on the desktop.</p>
+    <div class="pin-boxes" id="pinBoxes"></div>
+    <p class="pin-note" id="pinNote">Scanning the QR instead skips this step.</p>
+    <div class="keypad" id="keypad"></div>
+  </section>
+
+  <!-- 2 — what the desktop is offering -->
+  <section id="viewFiles" hidden>
+    <div class="section-label" id="filesLabel">Shared right now</div>
+    <ul class="files" id="files"></ul>
+    <p class="empty" id="filesEmpty" hidden>
+      Nothing is being shared yet. Add files on the desktop and they appear here.
+    </p>
+  </section>
+
+  <!-- 3 — sending files the other way -->
+  <section id="viewUpload" hidden>
+    <div class="drop" id="drop">
+      <div class="drop-title">Send files to the desktop</div>
+      <div class="drop-sub">Drop them here, or pick them from the phone.</div>
+      <button class="drop-btn" type="button" id="pickBtn">Choose files</button>
+      <input type="file" id="picker" multiple hidden>
+    </div>
+    <div class="section-label" id="sendingLabel" hidden>Sending</div>
+    <div class="files" id="uploads"></div>
+    <div class="dest">Arriving in the desktop's inbox — nothing is sorted or renamed.</div>
+  </section>
+
+</main>
+
+<nav class="tabs" id="tabs" hidden>
+  <button class="tab" type="button" data-view="files" aria-selected="true">Download</button>
+  <button class="tab" type="button" data-view="upload" aria-selected="false">Upload</button>
+</nav>
+
+<script src="/app.js"></script>
+</body>
+</html>

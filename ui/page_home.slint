@@ -767,7 +767,6 @@ export component HomePage inherits Rectangle {
     callback open-search();
     callback add-folder();
     callback open-stream();        // jump straight to Videos → Stream tab
-    callback shuffle-all();
     callback open-download();
     callback random-radio();      // play a random Hindi radio station in the home player
     callback toggle-music-side(); // header button: flip the music card left/right
@@ -1183,7 +1182,7 @@ export component HomePage inherits Rectangle {
                 VerticalLayout {
                     padding: 14px; spacing: 10px;
                     HorizontalLayout {
-                        TitlePill { icon: Icons.zap; accent: Theme.sec-videos; name: "Quick Actions"; }
+                        TitlePill { icon: Icons.zap; accent: Theme.sec-videos; name: "Quick Launch"; }
                         Rectangle { horizontal-stretch: 1; }
                     }
                     GridLayout {
@@ -1191,8 +1190,11 @@ export component HomePage inherits Rectangle {
                         Row {
                             CircleAction { tint: Theme.sec-videos; icon: Icons.film; label: "Stream";
                                 clicked => { root.open-stream(); } }
-                            CircleAction { tint: #8b5cf6; icon: Icons.shuffle; label: "Shuffle All";
-                                clicked => { root.shuffle-all(); } }
+                            // open-section, not a bare property set: it routes
+                            // through section-changed, which is what binds the
+                            // transfer port on the way in.
+                            CircleAction { tint: Theme.sec-transfer; icon: Icons.share; label: "Transfer";
+                                clicked => { root.open-section("transfer"); } }
                         }
                         Row {
                             CircleAction { tint: #ec4899; icon: Icons.download; label: "Music Downloader";

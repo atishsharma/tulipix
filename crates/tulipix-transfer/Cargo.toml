@@ -1,0 +1,30 @@
+[package]
+name = "tulipix-transfer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Local file transfer over Wi-Fi / hotspot: the desktop serves a small web page,
+# a phone browser downloads what is shared and uploads into the inbox. No Slint
+# types cross this boundary, so the whole crate runs in CI's light `test` job.
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+futures-util.workspace = true
+getrandom.workspace = true
+if-addrs.workspace = true
+serde_json.workspace = true
+sqlx.workspace = true
+# `net` for the listener: the workspace default trims tokio to what the media
+# crates use, and nothing there binds a socket.
+tokio = { workspace = true, features = ["net"] }
+tracing.workspace = true
+tulipix-core = { path = "../tulipix-core" }
+
+[dev-dependencies]
+filetime = "0.2"
+tempfile = "3"
+reqwest = { workspace = true, features = ["cookies"] }
+tokio = { workspace = true, features = ["macros", "rt", "rt-multi-thread"] }

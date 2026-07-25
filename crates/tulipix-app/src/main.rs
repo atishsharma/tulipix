@@ -520,6 +520,10 @@ fn main() -> Result<()> {
     #[cfg(feature = "hot")]
     crate::hot::wire_and_watch(&window);
 
+    // ── Transfer: the LAN web server, the share tray and the inbox. The port
+    // itself is opened and closed by `section_changed` below, not here.
+    tulipix_sec_transfer::wire(&window);
+
     // Photo viewer — click a tile to open the original in a full-screen modal,
     // then navigate the library with prev/next (and the slideshow timer).
     let w = window.as_weak();
@@ -1340,6 +1344,9 @@ fn main() -> Result<()> {
 
     window.on_section_changed(move |s| {
         let Some(w0) = w.upgrade() else { return; };
+        // Transfer binds its port on the way in and drops it on the way out, so
+        // it needs to hear about every section change, not just its own.
+        tulipix_sec_transfer::section_changed(&w0, s.as_str());
         if s.as_str() == "home" {
             // Fresh greeting (time of day) + counts on every Home landing.
             set_home_greeting_now(&w0);
@@ -3528,6 +3535,8 @@ fn main() -> Result<()> {
     kill_all_mpv();
     // Tear down any rclone mounts spun up for the cloud section.
     tulipix_sec_cloud::cloud_unmount_all();
+    // Close the transfer port if the window was shut while the section was open.
+    tulipix_sec_transfer::shutdown();
 
     // Persist gate-hit counter on shutdown
     if let Some(cache) = dirs_default().map(|d| d.join("cache")) {

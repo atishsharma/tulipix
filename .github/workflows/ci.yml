@@ -56,7 +56,7 @@ jobs:
           cargo test --no-fail-fast -p tulipix-core -p tulipix-videos -p tulipix-music -p tulipix-photos
           -p tulipix-books -p tulipix-tools -p tulipix-cloud -p tulipix-player
           -p tulipix-whisper -p tulipix-ai -p tulipix-mdl -p tulipix-platform
-          -p tulipix-plugins -p tulipix-cli
+          -p tulipix-plugins -p tulipix-cli -p tulipix-transfer
 
   clippy:
     runs-on: ubuntu-24.04
@@ -80,7 +80,7 @@ jobs:
           cargo clippy -p tulipix-core -p tulipix-videos -p tulipix-music -p tulipix-photos
           -p tulipix-books -p tulipix-tools -p tulipix-cloud -p tulipix-player
           -p tulipix-whisper -p tulipix-ai -p tulipix-mdl -p tulipix-platform
-          -p tulipix-plugins -p tulipix-cli --all-targets --
+          -p tulipix-plugins -p tulipix-cli -p tulipix-transfer --all-targets --
           -A warnings -D clippy::correctness -D clippy::suspicious
 
   # Compile-check the app itself in the lean renderer configuration. `check`

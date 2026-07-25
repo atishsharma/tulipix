@@ -1,0 +1,1057 @@
+// Transfer section — the desktop half of "a phone on the same Wi-Fi opens a
+// URL". Three cards across the top, one per question a person actually has:
+//
+//   Connection — how do I get in?      QR, address, PIN, what it works with.
+//   Send       — how do I give a file? One big target.
+//   Receive    — where do files land?  The inbox, and what is arriving.
+//
+// Recent Transfers is a real table below them, full width.
+//
+// Identity: orange→amber (Theme.transfer-accent → transfer-accent-2). It is the
+// one hue the six existing sections — violet, indigo, pink, emerald, teal,
+// cyan — leave free, so a glance at the accent says which section this is.
+import { Theme } from "tokens.slint";
+import { ScrollView } from "std-widgets.slint";
+import { AppIcon, Icons } from "icons.slint";
+
+// One file the desktop is offering. `id` is the tray id, never a path — the
+// phone cannot name a file on disk at all.
+export struct TransferFile { id: int, name: string, size: string, kind: string }
+
+// One phone that has authenticated, until its 48 hours are up.
+export struct TransferDevice { token: string, label: string, seen: string }
+
+// One upload in flight (or just finished). `state` is active | done | failed.
+export struct TransferUp { name: string, size: string, pct: float, state: string }
+
+// One row of the ledger. `direction` is in | out; `missing` greys a row whose
+// file has since been moved or deleted rather than hiding it.
+// `stamp` rather than `when`, which is a Slint keyword.
+export struct TransferRow {
+    direction: string, name: string, path: string, size: string,
+    peer: string, status: string, stamp: string,
+    kind: string, kindlabel: string, missing: bool,
+}
+
+// One address a phone could reach. Both a hotspot and a Wi-Fi link commonly
+// qualify at once, so this is a picker rather than a guess.
+export struct TransferIface { name: string, ip: string }
+
+// ── gradient action button ──────────────────────────────────────────────────
+component ActionButton inherits Rectangle {
+    in property <string> label;
+    in property <bool> primary: true;
+    in property <bool> enabled: true;
+    in property <image> icon;
+    callback clicked();
+    height: 40px; min-width: 118px; border-radius: 10px;
+    background: primary
+        ? (enabled ? @linear-gradient(135deg, Theme.transfer-accent, Theme.transfer-accent-2) : Theme.panel-2)
+        : (touch.has-hover ? Theme.panel-2 : transparent);
+    border-width: primary ? 0px : 1px;
+    border-color: Theme.outline;
+    opacity: enabled ? 1.0 : 0.5;
+    touch := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { if (root.enabled) { root.clicked(); } }
+    }
+    HorizontalLayout {
+        alignment: center; spacing: 7px;
+        padding-left: 14px; padding-right: 14px;
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            AppIcon {
+                source: root.icon; width: 15px; height: 15px;
+                colorize: root.primary ? #ffffff : Theme.text-dim;
+            }
+        }
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Text {
+                text: root.label; color: root.primary ? #ffffff : Theme.text;
+                font-size: 13px; font-weight: 700; vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// ── small text button for per-row actions ───────────────────────────────────
+component RowBtn inherits Rectangle {
+    in property <string> label;
+    in property <color> tint: Theme.text-dim;
+    callback clicked();
+    horizontal-stretch: 0; height: 28px; min-width: 64px; border-radius: 8px;
+    background: touch.has-hover ? Theme.panel-2 : transparent;
+    border-width: 1px;
+    border-color: root.tint == Theme.error ? Theme.error.with-alpha(0.4) : Theme.outline;
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    Text {
+        text: root.label; color: root.tint; font-size: 11.5px; font-weight: 600;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+}
+
+// ── the card the three panes are built from ─────────────────────────────────
+// A tinted circular glyph, a title, a one-line subtitle, then whatever the
+// caller puts inside. Same shape every time so the eye can skip the chrome.
+component Card inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <image> icon;
+    in property <color> tint: Theme.transfer-accent;
+    border-radius: Theme.radius-lg;
+    background: Theme.panel;
+    border-width: 1px; border-color: Theme.outline;
+    drop-shadow-blur: 20px;
+    drop-shadow-color: #00000012;
+    VerticalLayout {
+        padding: 20px; spacing: 16px;
+        HorizontalLayout {
+            spacing: 13px;
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                Rectangle {
+                    width: 44px; height: 44px; border-radius: 22px;
+                    background: root.tint.with-alpha(0.14);
+                    AppIcon {
+                        source: root.icon; colorize: root.tint; width: 21px; height: 21px;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+            }
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 1; spacing: 3px;
+                Text { text: root.title; color: Theme.text; font-size: 17px; font-weight: 700; }
+                if root.subtitle != "": Text {
+                    text: root.subtitle; color: Theme.text-dim; font-size: 12.5px;
+                    wrap: word-wrap;
+                }
+            }
+        }
+        @children
+    }
+}
+
+// ── the tinted footer strip each card ends on ───────────────────────────────
+component NoteStrip inherits Rectangle {
+    in property <string> title;
+    in property <string> body;
+    in property <string> chip;
+    in property <image> icon;
+    in property <color> tint: Theme.ok;
+    border-radius: 12px;
+    background: root.tint.with-alpha(0.10);
+    border-width: 1px; border-color: root.tint.with-alpha(0.22);
+    HorizontalLayout {
+        padding: 12px; spacing: 11px;
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Rectangle {
+                width: 30px; height: 30px; border-radius: 15px;
+                background: root.tint.with-alpha(0.18);
+                AppIcon {
+                    source: root.icon; colorize: root.tint; width: 15px; height: 15px;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 1; spacing: 2px;
+            Text { text: root.title; color: Theme.text; font-size: 12.5px; font-weight: 700; }
+            if root.body != "": Text {
+                text: root.body; color: Theme.text-dim; font-size: 11px; wrap: word-wrap;
+            }
+        }
+        if root.chip != "": VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Rectangle {
+                height: 22px; min-width: 54px; border-radius: 11px;
+                background: root.tint.with-alpha(0.20);
+                Text {
+                    text: root.chip; color: root.tint; font-size: 10.5px; font-weight: 700;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: parent.width; height: parent.height;
+                }
+            }
+        }
+    }
+}
+
+// ── a read-only field the value can be selected out of ──────────────────────
+// Slint has no clipboard API to call, but a TextInput handles Ctrl+C itself —
+// so the value is selectable rather than sitting behind a copy button that
+// could not work.
+component ValueField inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <length> size: 13px;
+    in property <color> tone: Theme.text;
+    in property <int> weight: 600;
+    height: 46px; border-radius: 10px;
+    background: Theme.panel-2;
+    border-width: 1px; border-color: Theme.outline;
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px; spacing: 8px;
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 1;
+            TextInput {
+                text: root.value; read-only: true; single-line: true;
+                color: root.tone; font-size: root.size; font-weight: root.weight;
+                selection-background-color: Theme.transfer-accent.with-alpha(0.3);
+                vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// ── one platform chip under the QR ──────────────────────────────────────────
+component PlatformChip inherits Rectangle {
+    in property <string> label;
+    height: 26px; horizontal-stretch: 0; border-radius: 13px;
+    background: Theme.panel-2;
+    border-width: 1px; border-color: Theme.outline;
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 10px; alignment: center;
+        Text {
+            text: root.label; color: Theme.text-dim; font-size: 11px; font-weight: 600;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// ── one interface chip in the address picker ────────────────────────────────
+component IfaceChip inherits Rectangle {
+    in property <TransferIface> iface;
+    in property <bool> active: false;
+    callback clicked();
+    height: 28px; horizontal-stretch: 0; border-radius: 14px;
+    background: root.active ? Theme.transfer-accent.with-alpha(0.18) : Theme.panel-2;
+    border-width: 1px;
+    border-color: root.active ? Theme.transfer-accent : Theme.outline;
+    touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 11px; padding-right: 11px; spacing: 6px; alignment: center;
+        Text {
+            text: root.iface.ip; color: root.active ? Theme.transfer-accent : Theme.text;
+            font-size: 11.5px; font-weight: 700; vertical-alignment: center;
+        }
+        Text {
+            text: root.iface.name; color: Theme.text-dim; font-size: 10.5px;
+            vertical-alignment: center;
+        }
+    }
+}
+
+// ── one progress row for an upload in flight ────────────────────────────────
+component UploadRow inherits Rectangle {
+    in property <TransferUp> up;
+    height: 58px; border-radius: 11px;
+    background: Theme.panel-2;
+    property <color> tint:
+        root.up.state == "done"   ? Theme.ok :
+        root.up.state == "failed" ? Theme.error :
+                                    Theme.transfer-accent;
+    VerticalLayout {
+        padding: 11px; spacing: 6px;
+        HorizontalLayout {
+            spacing: 8px;
+            Text {
+                text: root.up.name; color: Theme.text; font-size: 12.5px;
+                overflow: elide; horizontal-stretch: 1; vertical-alignment: center;
+            }
+            Text {
+                text: root.up.state == "done"   ? "Done"
+                    : root.up.state == "failed" ? "Failed"
+                    : Math.round(root.up.pct * 100) + "%";
+                color: root.tint; font-size: 11.5px; font-weight: 700;
+                horizontal-stretch: 0; vertical-alignment: center;
+            }
+        }
+        Rectangle {
+            height: 4px; border-radius: 2px; background: Theme.outline;
+            Rectangle {
+                x: 0; y: 0; height: parent.height; border-radius: 2px;
+                width: parent.width * (root.up.state == "done" ? 1.0 : root.up.pct);
+                background: root.tint;
+                animate width { duration: 200ms; easing: ease-out; }
+            }
+        }
+        Text { text: root.up.size; color: Theme.text-dim; font-size: 10.5px; }
+    }
+}
+
+// ── one row of the shared-files tray ────────────────────────────────────────
+component TrayRow inherits Rectangle {
+    in property <TransferFile> file;
+    in property <color> accent;
+    callback remove();
+    height: 52px; border-radius: 11px;
+    background: touch.has-hover ? Theme.panel-2 : Theme.panel-2.with-alpha(0.6);
+    touch := TouchArea { }
+    HorizontalLayout {
+        padding-left: 11px; padding-right: 11px; spacing: 11px;
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Rectangle {
+                width: 32px; height: 32px; border-radius: 9px;
+                background: root.accent.with-alpha(0.15);
+                Text {
+                    text: root.file.kind; color: root.accent;
+                    font-size: 9px; font-weight: 800;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: parent.width; height: parent.height;
+                }
+            }
+        }
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 1; spacing: 2px;
+            Text { text: root.file.name; color: Theme.text; font-size: 12.5px; overflow: elide; }
+            Text { text: root.file.size; color: Theme.text-dim; font-size: 10.5px; }
+        }
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            RowBtn { label: "Remove"; clicked => { root.remove(); } }
+        }
+    }
+}
+
+export component TransferPage inherits Rectangle {
+    in property <bool> running: false;
+    in property <string> status: "";
+    in property <string> hint: "";
+    in property <string> attempts: "";
+    in property <string> url: "";
+    in property <string> pin: "";
+    in property <image> qr;
+    in property <[TransferFile]> files: [];
+    in property <string> total: "";
+    in property <[TransferDevice]> devices: [];
+    in property <[TransferUp]> uploads: [];
+    in property <[TransferRow]> rows: [];
+    in property <[TransferIface]> ifaces: [];
+    in property <string> iface: "";
+    in property <string> inbox: "";
+    in property <bool> inbox-ok: true;
+    in property <int> page: 0;
+    in property <int> pages: 1;
+
+    // `start` / `stop` would shadow LayoutAlignment.start inside this file.
+    callback start-sharing();
+    callback stop-sharing();
+    callback add-files();
+    callback add-folder();
+    callback remove(int);
+    callback clear();
+    callback forget(string);
+    callback set-iface(string);
+    callback pick-inbox();
+    callback open-inbox();
+    callback open-row(int);
+    callback clear-history();
+    callback set-page(int);
+
+    property <color> accent: Theme.transfer-accent;
+    property <color> send-tint: #6366f1;    // indigo — giving
+    property <color> recv-tint: Theme.ok;   // green  — getting
+
+    // Three equal columns, sized here rather than left to `horizontal-stretch`.
+    // A stretch factor only divides *leftover* space, and these cards have very
+    // different preferred widths — the QR block makes Connection wide and the
+    // drop zone makes Send narrow — so stretching handed Connection ~910px and
+    // Send ~320px. Pinning min == max is what actually forces equal columns.
+    property <length> gutter: 20px;
+    // 44px of body padding, two gutters, and 16px of headroom for the
+    // ScrollView's own scrollbar — without that last term three exact thirds
+    // overflow by a few pixels and earn a horizontal scrollbar.
+    property <length> col-w: max(300px, (root.width - 44px - 2 * root.gutter - 16px) / 3);
+
+    background: transparent;
+
+    VerticalLayout {
+        spacing: 0px;
+
+        // ── header: identity, live address, the one control that opens or
+        // closes the port ───────────────────────────────────────────────────
+        Rectangle {
+            height: 76px; horizontal-stretch: 1; background: Theme.panel;
+            border-width: 1px; border-color: Theme.outline;
+            HorizontalLayout {
+                padding-left: 26px; padding-right: 26px; spacing: 14px;
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Rectangle {
+                        width: 40px; height: 40px; border-radius: 12px;
+                        background: root.accent.with-alpha(0.16);
+                        AppIcon {
+                            source: Icons.share; colorize: root.accent; width: 20px; height: 20px;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Text { text: "Transfer"; color: Theme.text; font-size: 23px; font-weight: 700; }
+                }
+                // The bind error, verbatim, when there is one — a silent
+                // failure here is indistinguishable from a dismissed firewall
+                // prompt.
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 1;
+                    HorizontalLayout {
+                        spacing: 8px; alignment: start;
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            AppIcon {
+                                source: Icons.link; colorize: Theme.text-dim;
+                                width: 14px; height: 14px;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 1;
+                            Text {
+                                text: root.status; color: Theme.text-dim; font-size: 12.5px;
+                                overflow: elide; wrap: no-wrap;
+                            }
+                        }
+                    }
+                }
+                if root.running: VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Rectangle {
+                        height: 28px; min-width: 88px; border-radius: 14px;
+                        background: Theme.ok.with-alpha(0.14);
+                        HorizontalLayout {
+                            padding-left: 11px; padding-right: 12px; spacing: 6px; alignment: center;
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                AppIcon {
+                                    source: Icons.wifi; colorize: Theme.ok;
+                                    width: 13px; height: 13px;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Text {
+                                    text: "Online"; color: Theme.ok;
+                                    font-size: 11.5px; font-weight: 700; vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Rectangle {
+                        height: 34px; min-width: 130px; border-radius: 17px;
+                        background: root.running ? Theme.ok.with-alpha(0.10) : Theme.panel-2;
+                        border-width: 1px;
+                        border-color: root.running ? Theme.ok.with-alpha(0.35) : Theme.outline;
+                        HorizontalLayout {
+                            padding-left: 13px; padding-right: 14px; spacing: 8px; alignment: center;
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Rectangle {
+                                    width: 8px; height: 8px; border-radius: 4px;
+                                    background: root.running ? Theme.ok : Theme.text-dim;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Text {
+                                    text: root.running ? "Sharing active" : "Not sharing";
+                                    color: root.running ? Theme.ok : Theme.text-dim;
+                                    font-size: 12px; font-weight: 700; vertical-alignment: center;
+                                }
+                            }
+                        }
+                    }
+                }
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Rectangle {
+                        height: 34px; min-width: 118px; border-radius: 17px;
+                        background: root.running
+                            ? (stopper.has-hover ? Theme.error.with-alpha(0.16) : Theme.error.with-alpha(0.10))
+                            : @linear-gradient(135deg, Theme.transfer-accent, Theme.transfer-accent-2);
+                        border-width: root.running ? 1px : 0px;
+                        border-color: Theme.error.with-alpha(0.35);
+                        stopper := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => {
+                                if (root.running) { root.stop-sharing(); } else { root.start-sharing(); }
+                            }
+                        }
+                        Text {
+                            text: root.running ? "Stop sharing" : "Start sharing";
+                            color: root.running ? Theme.error : #ffffff;
+                            font-size: 12.5px; font-weight: 700;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: parent.width; height: parent.height;
+                        }
+                    }
+                }
+            }
+        }
+
+        sv := ScrollView {
+            horizontal-stretch: 1; vertical-stretch: 1;
+            viewport-width: self.width;
+            viewport-height: body.preferred-height;
+            // Every page in this app opens at the top; a ScrollView otherwise
+            // keeps whatever viewport-y it had the last time it was alive.
+            init => { self.viewport-y = 0; }
+
+            body := VerticalLayout {
+                width: parent.width;
+                padding: 22px; spacing: 20px;
+
+                // ── the three cards ─────────────────────────────────────────
+                HorizontalLayout {
+                    spacing: root.gutter;
+
+                    // ── Connection ──────────────────────────────────────────
+                    Card {
+                        min-width: root.col-w; max-width: root.col-w;
+                        title: "Connection";
+                        subtitle: "Scan the code, or type the address and PIN.";
+                        icon: Icons.link;
+                        tint: root.accent;
+
+                        HorizontalLayout {
+                            spacing: 16px;
+                            // The QR carries a single-use pairing key, not the
+                            // PIN — a photo of this screen taken later is
+                            // worthless.
+                            Rectangle {
+                                width: 168px; height: 168px; horizontal-stretch: 0;
+                                border-radius: 14px;
+                                background: root.running ? #ffffff : Theme.panel-2;
+                                border-width: 1px; border-color: Theme.outline;
+                                if root.running: Image {
+                                    source: root.qr; image-fit: contain;
+                                    width: parent.width - 14px; height: parent.height - 14px;
+                                    x: 7px; y: 7px;
+                                }
+                                if !root.running: Text {
+                                    text: "Not sharing"; color: Theme.text-dim; font-size: 12px;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                    width: parent.width; height: parent.height;
+                                }
+                            }
+                            VerticalLayout {
+                                horizontal-stretch: 1; spacing: 10px; alignment: start;
+                                VerticalLayout {
+                                    spacing: 5px;
+                                    Text {
+                                        text: "ADDRESS"; color: Theme.text-dim;
+                                        font-size: 10px; letter-spacing: 1.3px; font-weight: 700;
+                                    }
+                                    ValueField {
+                                        value: root.running ? root.url : "—";
+                                        size: 13px; tone: root.accent; weight: 700;
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 5px;
+                                    Text {
+                                        text: "PIN"; color: Theme.text-dim;
+                                        font-size: 10px; letter-spacing: 1.3px; font-weight: 700;
+                                    }
+                                    ValueField {
+                                        value: root.running ? root.pin : "——————";
+                                        size: 22px; tone: root.accent; weight: 800;
+                                    }
+                                }
+                                // Somebody grinding the PIN is silent from this
+                                // end otherwise: the guesser gets a 429 and the
+                                // desktop shows nothing.
+                                if root.attempts != "": Text {
+                                    text: root.attempts; color: Theme.error;
+                                    font-size: 11px; font-weight: 600; wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        // Both a hotspot and a Wi-Fi link commonly qualify;
+                        // only the person holding the phone knows which.
+                        if root.ifaces.length > 1: VerticalLayout {
+                            spacing: 7px;
+                            Text {
+                                text: "THIS NETWORK"; color: Theme.text-dim;
+                                font-size: 10px; letter-spacing: 1.3px; font-weight: 700;
+                            }
+                            HorizontalLayout {
+                                spacing: 6px; alignment: start;
+                                for f in root.ifaces: IfaceChip {
+                                    iface: f;
+                                    active: f.ip == root.iface;
+                                    clicked => { root.set-iface(f.ip); }
+                                }
+                            }
+                        }
+
+                        Rectangle { height: 1px; background: Theme.outline; }
+                        Text {
+                            text: "Works on any device with a browser";
+                            color: Theme.text-dim; font-size: 11px;
+                            horizontal-alignment: center;
+                        }
+                        HorizontalLayout {
+                            spacing: 6px; alignment: center;
+                            PlatformChip { label: "Android"; }
+                            PlatformChip { label: "iOS"; }
+                            PlatformChip { label: "Windows"; }
+                            PlatformChip { label: "macOS"; }
+                            PlatformChip { label: "Linux"; }
+                        }
+
+                        Rectangle { vertical-stretch: 1; background: transparent; }
+
+                        // The one failure the desktop cannot detect: the bind
+                        // succeeds, the status says "Serving", and a
+                        // default-deny firewall drops the phone's packets.
+                        if root.hint != "": NoteStrip {
+                            title: "Phone cannot connect?";
+                            body: root.hint;
+                            icon: Icons.shield;
+                            tint: Theme.warn;
+                        }
+                    }
+
+                    // ── Send ────────────────────────────────────────────────
+                    Card {
+                        min-width: root.col-w; max-width: root.col-w;
+                        title: "Send";
+                        subtitle: "Share files with the phone — never the library.";
+                        icon: Icons.upload;
+                        tint: root.send-tint;
+
+                        // A click target, not a drop target: Slint has no
+                        // OS-level file drop, and a zone that says "drag here"
+                        // and then ignores a drag is worse than no zone.
+                        Rectangle {
+                            min-height: 176px; border-radius: 14px;
+                            background: pick.has-hover
+                                ? root.send-tint.with-alpha(0.07) : Theme.panel-2.with-alpha(0.5);
+                            border-width: 1.5px;
+                            border-color: pick.has-hover
+                                ? root.send-tint : Theme.outline-strong;
+                            pick := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.add-files(); }
+                            }
+                            VerticalLayout {
+                                alignment: center; spacing: 12px;
+                                padding-left: 18px; padding-right: 18px;
+                                HorizontalLayout {
+                                    alignment: center;
+                                    Rectangle {
+                                        width: 62px; height: 62px; border-radius: 31px;
+                                        background: @linear-gradient(135deg,
+                                            root.send-tint, root.send-tint.brighter(20%));
+                                        AppIcon {
+                                            source: Icons.upload; colorize: #ffffff;
+                                            width: 26px; height: 26px;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                    }
+                                }
+                                Text {
+                                    text: "Choose files to share";
+                                    color: Theme.text; font-size: 14px; font-weight: 600;
+                                    horizontal-alignment: center;
+                                }
+                                Text {
+                                    text: "They stay on this machine — the phone pulls them over the link.";
+                                    color: Theme.text-dim; font-size: 11.5px;
+                                    horizontal-alignment: center; wrap: word-wrap;
+                                }
+                                HorizontalLayout {
+                                    alignment: center; spacing: 8px;
+                                    ActionButton {
+                                        label: "Choose files"; icon: Icons.folder-open;
+                                        clicked => { root.add-files(); }
+                                    }
+                                    ActionButton {
+                                        label: "Choose folder"; primary: false;
+                                        icon: Icons.folder;
+                                        clicked => { root.add-folder(); }
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.files.length > 0: HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 1;
+                                Text {
+                                    text: root.total; color: Theme.text-dim;
+                                    font-size: 11.5px; font-weight: 600;
+                                }
+                            }
+                            RowBtn { label: "Clear all"; clicked => { root.clear(); } }
+                        }
+                        for f in root.files: TrayRow {
+                            file: f; accent: root.send-tint;
+                            remove => { root.remove(f.id); }
+                        }
+
+                        Rectangle { vertical-stretch: 1; background: transparent; }
+
+                        NoteStrip {
+                            title: root.devices.length == 0
+                                ? "No phone has paired yet"
+                                : root.devices.length + " phone(s) paired";
+                            body: "A phone stays paired for 48 hours, then types the PIN again.";
+                            icon: Icons.users;
+                            tint: root.send-tint;
+                        }
+                        for d in root.devices: Rectangle {
+                            height: 46px; border-radius: 11px; background: Theme.panel-2;
+                            HorizontalLayout {
+                                padding-left: 12px; padding-right: 12px; spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 1; spacing: 2px;
+                                    Text { text: d.label; color: Theme.text; font-size: 12.5px; }
+                                    Text {
+                                        text: "last seen " + d.seen; color: Theme.text-dim;
+                                        font-size: 10.5px;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    RowBtn {
+                                        label: "Forget"; tint: Theme.error;
+                                        clicked => { root.forget(d.token); }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── Receive ─────────────────────────────────────────────
+                    Card {
+                        min-width: root.col-w; max-width: root.col-w;
+                        title: "Receive";
+                        subtitle: "Everything the phone sends lands here, flat.";
+                        icon: Icons.download;
+                        tint: root.recv-tint;
+
+                        Rectangle {
+                            height: 46px; border-radius: 10px; background: Theme.panel-2;
+                            border-width: 1px;
+                            border-color: root.inbox-ok ? Theme.outline : Theme.error;
+                            HorizontalLayout {
+                                padding-left: 12px; padding-right: 8px; spacing: 8px;
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 1;
+                                    Text {
+                                        text: root.inbox; color: Theme.text; font-size: 12px;
+                                        overflow: elide; vertical-alignment: center;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    Rectangle {
+                                        width: 32px; height: 32px; border-radius: 9px;
+                                        background: openfold.has-hover ? Theme.panel : transparent;
+                                        openfold := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.open-inbox(); }
+                                        }
+                                        AppIcon {
+                                            source: Icons.folder-open; colorize: root.recv-tint;
+                                            width: 16px; height: 16px;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        if root.inbox-ok: NoteStrip {
+                            title: root.uploads.length == 0
+                                ? "Ready to receive" : "Receiving";
+                            body: root.uploads.length == 0
+                                ? "Files the phone sends will appear here."
+                                : "One at a time — parallel writes to one disk are slower.";
+                            icon: Icons.check;
+                            tint: root.recv-tint;
+                        }
+                        if !root.inbox-ok: NoteStrip {
+                            title: "That folder cannot be written to";
+                            body: "Uploads are refused until it can. Downloads still work.";
+                            icon: Icons.triangle-alert;
+                            tint: Theme.error;
+                        }
+
+                        for u in root.uploads: UploadRow { up: u; }
+
+                        HorizontalLayout {
+                            spacing: 8px;
+                            ActionButton {
+                                label: "Change location"; primary: false; icon: Icons.map-pin;
+                                clicked => { root.pick-inbox(); }
+                            }
+                            ActionButton {
+                                label: "Open folder"; primary: false; icon: Icons.folder;
+                                clicked => { root.open-inbox(); }
+                            }
+                        }
+
+                        Rectangle { vertical-stretch: 1; background: transparent; }
+
+                        // Deliberately not "end-to-end encrypted": this is
+                        // plain HTTP on the local network, and saying otherwise
+                        // in the one place a person checks would be a lie.
+                        NoteStrip {
+                            title: "Local network only";
+                            body: "Direct device to device, no relay, no server, nothing stored off this machine. Plain HTTP, so the browser will say “not secure”.";
+                            icon: Icons.shield;
+                            tint: root.recv-tint;
+                        }
+                    }
+                }
+
+                // ── Recent Transfers, full width ────────────────────────────
+                Card {
+                    title: "Recent transfers";
+                    subtitle: "Sent and received, newest first. A greyed row is a file that has since moved.";
+                    icon: Icons.clock;
+                    tint: root.accent;
+
+                    // Column header. Widths are repeated on every row below —
+                    // Slint has no grid that spans a repeater, so the two must
+                    // be kept in step by hand.
+                    Rectangle {
+                        height: 34px; border-radius: 9px; background: Theme.panel-2;
+                        HorizontalLayout {
+                            padding-left: 12px; padding-right: 12px; spacing: 12px;
+                            Text {
+                                text: "Name"; color: Theme.text-dim; font-size: 11px;
+                                font-weight: 700; horizontal-stretch: 1; vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Type"; color: Theme.text-dim; font-size: 11px;
+                                font-weight: 700; min-width: 150px; horizontal-stretch: 0;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Status"; color: Theme.text-dim; font-size: 11px;
+                                font-weight: 700; min-width: 160px; horizontal-stretch: 0;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Size"; color: Theme.text-dim; font-size: 11px;
+                                font-weight: 700; min-width: 110px; horizontal-stretch: 0;
+                                horizontal-alignment: right; vertical-alignment: center;
+                            }
+                            Text {
+                                text: "From / To"; color: Theme.text-dim; font-size: 11px;
+                                font-weight: 700; min-width: 190px; horizontal-stretch: 0;
+                                vertical-alignment: center;
+                            }
+                            Text {
+                                text: "Time"; color: Theme.text-dim; font-size: 11px;
+                                font-weight: 700; min-width: 140px; horizontal-stretch: 0;
+                                vertical-alignment: center;
+                            }
+                            Rectangle { width: 34px; horizontal-stretch: 0; background: transparent; }
+                        }
+                    }
+
+                    if root.rows.length == 0: Rectangle {
+                        height: 64px;
+                        Text {
+                            text: "Nothing yet. Sent and received files are both recorded here.";
+                            color: Theme.text-dim; font-size: 12px;
+                            horizontal-alignment: center; vertical-alignment: center;
+                            width: parent.width; height: parent.height;
+                        }
+                    }
+
+                    for r[i] in root.rows: Rectangle {
+                        height: 60px; border-radius: 10px;
+                        background: rowtouch.has-hover ? Theme.panel-2 : transparent;
+                        opacity: r.missing ? 0.55 : 1.0;
+                        rowtouch := TouchArea {
+                            mouse-cursor: r.path == "" ? default : pointer;
+                            clicked => { if (r.path != "") { root.open-row(i); } }
+                        }
+                        HorizontalLayout {
+                            padding-left: 12px; padding-right: 12px; spacing: 12px;
+
+                            // Name — icon tile, filename, what kind of file.
+                            HorizontalLayout {
+                                horizontal-stretch: 1; spacing: 11px;
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    Rectangle {
+                                        width: 34px; height: 34px; border-radius: 10px;
+                                        background: (r.direction == "in" ? root.recv-tint : root.accent)
+                                            .with-alpha(0.14);
+                                        Text {
+                                            text: r.kind;
+                                            color: r.direction == "in" ? root.recv-tint : root.accent;
+                                            font-size: 9px; font-weight: 800;
+                                            horizontal-alignment: center; vertical-alignment: center;
+                                            width: parent.width; height: parent.height;
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 1; spacing: 2px;
+                                    Text {
+                                        text: r.name; color: Theme.text; font-size: 12.5px;
+                                        font-weight: 600; overflow: elide;
+                                    }
+                                    Text {
+                                        text: r.kindlabel; color: Theme.text-dim; font-size: 10.5px;
+                                        overflow: elide;
+                                    }
+                                }
+                            }
+
+                            // Type — which way it went.
+                            HorizontalLayout {
+                                min-width: 150px; horizontal-stretch: 0; spacing: 7px;
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    AppIcon {
+                                        source: r.direction == "in" ? Icons.arrow-down : Icons.arrow-up;
+                                        colorize: r.direction == "in" ? root.recv-tint : root.accent;
+                                        width: 15px; height: 15px;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 1;
+                                    Text {
+                                        text: r.direction == "in" ? "Received" : "Sent";
+                                        color: r.direction == "in" ? root.recv-tint : root.accent;
+                                        font-size: 12px; font-weight: 600; vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            // Status.
+                            HorizontalLayout {
+                                min-width: 160px; horizontal-stretch: 0; spacing: 7px;
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    AppIcon {
+                                        source: r.status == "ok" ? Icons.check : Icons.triangle-alert;
+                                        colorize: r.status == "ok" ? Theme.ok : Theme.error;
+                                        width: 15px; height: 15px;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 1;
+                                    Text {
+                                        text: r.status == "ok" ? "Completed" : r.status;
+                                        color: r.status == "ok" ? Theme.ok : Theme.error;
+                                        font-size: 12px; font-weight: 600; vertical-alignment: center;
+                                    }
+                                }
+                            }
+
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Text {
+                                    text: r.size; color: Theme.text; font-size: 12px;
+                                    min-width: 110px; horizontal-alignment: right;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0; spacing: 2px;
+                                Text {
+                                    text: r.direction == "in" ? "From" : "To"; color: Theme.text-dim;
+                                    font-size: 10px; min-width: 190px;
+                                }
+                                Text {
+                                    text: r.peer; color: Theme.text; font-size: 11.5px;
+                                    font-weight: 600; min-width: 190px;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Text {
+                                    text: r.stamp; color: Theme.text-dim; font-size: 11.5px;
+                                    min-width: 140px;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Rectangle {
+                                    width: 34px; height: 34px; border-radius: 9px;
+                                    background: reveal.has-hover ? Theme.panel : transparent;
+                                    opacity: r.path == "" ? 0.25 : 1.0;
+                                    reveal := TouchArea {
+                                        mouse-cursor: r.path == "" ? default : pointer;
+                                        clicked => { if (r.path != "") { root.open-row(i); } }
+                                    }
+                                    AppIcon {
+                                        source: Icons.folder-open; colorize: Theme.text-dim;
+                                        width: 15px; height: 15px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px; alignment: start;
+                        RowBtn {
+                            label: "Previous";
+                            clicked => { if (root.page > 0) { root.set-page(root.page - 1); } }
+                        }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Text {
+                                text: "Page " + (root.page + 1) + " of " + root.pages;
+                                color: Theme.text-dim; font-size: 11.5px;
+                            }
+                        }
+                        RowBtn {
+                            label: "Next";
+                            clicked => {
+                                if (root.page + 1 < root.pages) { root.set-page(root.page + 1); }
+                            }
+                        }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                        RowBtn {
+                            label: "Clear history"; tint: Theme.error;
+                            clicked => { root.clear-history(); }
+                        }
+                    }
+                }
+
+                // ── footer ──────────────────────────────────────────────────
+                HorizontalLayout {
+                    alignment: center; spacing: 8px;
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        AppIcon {
+                            source: Icons.shield; colorize: Theme.text-dim;
+                            width: 14px; height: 14px;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        Text {
+                            text: "Transfers go straight between your devices — no relay, no account, nothing stored on a server.";
+                            color: Theme.text-dim; font-size: 11.5px; vertical-alignment: center;
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

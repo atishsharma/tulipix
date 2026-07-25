@@ -309,6 +309,10 @@ export component Sidebar inherits Rectangle {
             active: root.active-section == "tools";
             clicked => { root.active-section = "tools"; root.section-changed("tools"); }
         }
+        NavRow { icon-img: Icons.share; label: "Transfer"; accent: Theme.sec-transfer; collapsed: root.collapsed;
+            active: root.active-section == "transfer";
+            clicked => { root.active-section = "transfer"; root.section-changed("transfer"); }
+        }
 
         // Bottom spacer pushes user card + footer dock to the bottom.
         Rectangle { vertical-stretch: 1; horizontal-stretch: 1; background: transparent; }

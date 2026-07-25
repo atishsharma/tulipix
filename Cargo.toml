@@ -21,7 +21,9 @@ members = [
     "crates/tulipix-platform",
     "crates/tulipix-plugins",
     "crates/tulipix-tools",
+    "crates/tulipix-transfer",
     "crates/tulipix-sec-tools",
+    "crates/tulipix-sec-transfer",
     "crates/tulipix-sec-photos",
     "crates/tulipix-sec-music",
     "crates/tulipix-sec-videos",
@@ -61,6 +63,20 @@ keyring = "3"
 sha2 = "0.10"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 wasmtime = { version = "26", default-features = false, features = ["runtime", "cranelift"] }
+# Transfer section. axum's default features drag in `form`, `multipart`
+# (→ multer) and the tracing hooks; uploads are raw-body PUTs, so none of that
+# is used. Everything under axum — hyper 1.x, http, http-body, tower, bytes,
+# tokio-util, futures-util — is already in the lockfile via reqwest, so the
+# real marginal cost is axum + axum-core + matchit + mime.
+axum = { version = "0.8", default-features = false, features = ["http1", "tokio", "query"] }
+fast_qr = { version = "0.12", default-features = false }
+if-addrs = "0.13"
+# Already in the tree under reqwest; named directly so the transfer crate can
+# stream a request body and a file without pulling a second async-stream stack.
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+# Already in the tree under rustls. Used for the PIN, pairing keys and tokens —
+# no separate RNG crate.
+getrandom = "0.2"
 mlua = { version = "0.10", features = ["lua54", "vendored", "send", "serialize"] }
 
 # NOTE: the Cranelift debug-codegen backend is a Linux-only / nightly-only

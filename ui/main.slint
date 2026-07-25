@@ -14,6 +14,7 @@ import { MusicPage, MusicFullscreen, MusicMini, PodcastMini, BookMini } from "pa
 import { MusicSongRow, DownloaderRow, DlHistoryEntry, DlSearchEntry, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
 import { CloudPage, CloudRemote, CloudEntry, CloudJob, CloudUsage, CloudXfer } from "page_cloud.slint";
 import { ToolsPage, ToolOpRow, ToolField, QueueJob, ToolStatus, DownloadItem, ToolInfoRow, ToolDiffRow, TrimSeg } from "page_tools.slint";
+import { TransferPage, TransferFile, TransferDevice, TransferUp, TransferRow, TransferIface } from "page_transfer.slint";
 import { ThemePicker, ThemeChoice } from "theme_picker.slint";
 import { UserState } from "user_card.slint";
 import { CropDialog } from "crop_dialog.slint";
@@ -1423,6 +1424,42 @@ callback cloud-go-home();
     callback tools-trim-del-seg(int);
     callback tools-trim-join();
     callback tools-trim-close();
+
+    // ── Transfer state (see crates/tulipix-sec-transfer) ────────────────────
+    // The server is bound only while this section is open, so everything here
+    // is empty the rest of the time by design.
+    in property <bool> transfer-running: false;
+    in property <string> transfer-status: "";
+    in property <string> transfer-hint: "";
+    in property <string> transfer-attempts: "";
+    in property <string> transfer-url: "";
+    in property <string> transfer-pin: "";
+    in property <image> transfer-qr;
+    in property <[TransferFile]> transfer-files: [];
+    in property <string> transfer-total: "";
+    in property <[TransferDevice]> transfer-devices: [];
+    in property <[TransferUp]> transfer-uploads: [];
+    in property <[TransferRow]> transfer-rows: [];
+    in property <[TransferIface]> transfer-ifaces: [];
+    in property <string> transfer-iface: "";
+    in property <string> transfer-inbox: "";
+    in property <bool> transfer-inbox-ok: true;
+    in-out property <int> transfer-page: 0;
+    in property <int> transfer-pages: 1;
+    callback transfer-start();
+    callback transfer-stop();
+    callback transfer-add-files();
+    callback transfer-add-folder();
+    callback transfer-remove(int);
+    callback transfer-clear();
+    callback transfer-forget(string);
+    callback transfer-set-iface(string);
+    callback transfer-pick-inbox();
+    callback transfer-open-inbox();
+    callback transfer-open-row(int);
+    callback transfer-clear-history();
+    callback transfer-set-page(int);
+
     in-out property <string> default-cadence: "daily";
 
     // Scan progress (one row per section currently scanning).
@@ -2448,6 +2485,7 @@ callback cloud-go-home();
         active-section == "books"    ? Section.books :
         active-section == "cloud"    ? Section.cloud :
         active-section == "tools"    ? Section.tools :
+        active-section == "transfer" ? Section.transfer :
         active-section == "settings" ? Section.settings :
                                        Section.photos;
 
@@ -3366,6 +3404,40 @@ callback cloud-go-home();
                 trim-join() => { root.tools-trim-join(); }
                 trim-close() => { root.tools-trim-close(); }
             }
+            if active-section == "transfer": TransferPage {
+                width: parent.width; height: parent.height;
+                running: root.transfer-running;
+                status: root.transfer-status;
+                hint: root.transfer-hint;
+                attempts: root.transfer-attempts;
+                url: root.transfer-url;
+                pin: root.transfer-pin;
+                qr: root.transfer-qr;
+                files: root.transfer-files;
+                total: root.transfer-total;
+                devices: root.transfer-devices;
+                uploads: root.transfer-uploads;
+                rows: root.transfer-rows;
+                ifaces: root.transfer-ifaces;
+                iface: root.transfer-iface;
+                inbox: root.transfer-inbox;
+                inbox-ok: root.transfer-inbox-ok;
+                page: root.transfer-page;
+                pages: root.transfer-pages;
+                start-sharing() => { root.transfer-start(); }
+                stop-sharing() => { root.transfer-stop(); }
+                add-files() => { root.transfer-add-files(); }
+                add-folder() => { root.transfer-add-folder(); }
+                remove(i) => { root.transfer-remove(i); }
+                clear() => { root.transfer-clear(); }
+                forget(t) => { root.transfer-forget(t); }
+                set-iface(ip) => { root.transfer-set-iface(ip); }
+                pick-inbox() => { root.transfer-pick-inbox(); }
+                open-inbox() => { root.transfer-open-inbox(); }
+                open-row(i) => { root.transfer-open-row(i); }
+                clear-history() => { root.transfer-clear-history(); }
+                set-page(p) => { root.transfer-set-page(p); }
+            }
             if active-section == "home": HomePage {
                 width: parent.width; height: parent.height;
                 stats: root.home-stats;
@@ -3438,7 +3510,6 @@ callback cloud-go-home();
                 // Jump straight to Videos → Stream. set-video-kind (not a bare
                 // property set) so the backend warms the tab.
                 open-stream => { root.set-video-kind("stream"); root.video-kind = "stream"; root.active-section = "videos"; root.section-changed("videos"); }
-                shuffle-all => { root.music-shuffle-all(); }
                 // Music Downloader lives in Music → My Music → Downloader tab;
                 // set-lib-tab (not a bare property set) so the backend refreshes it.
                 open-download => { root.music-view = "mymusic"; root.music-set-lib-tab("downloader"); root.active-section = "music"; root.section-changed("music"); }

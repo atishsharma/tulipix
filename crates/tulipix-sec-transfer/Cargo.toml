@@ -1,0 +1,35 @@
+[package]
+name = "tulipix-sec-transfer"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+# Transfer-section wiring: the QR, the share tray, the inbox picker, the Recent
+# Transfers list and every `window.on_transfer_*` callback. tulipix-app calls
+# `wire(&window)` once at startup and `section_changed(&window, s)` from the
+# sidebar hook, which is what binds and drops the port.
+
+[features]
+# Forward live-reload to the UI crate so a dev-reload app build keeps the
+# generated UI types in sync (slint/live-preview swaps them out).
+dev-reload = ["tulipix-ui/dev-reload"]
+# Dev-only: lets `cargo check -p tulipix-sec-transfer` satisfy slint's winit
+# backend renderer requirement in isolation (the app normally selects it).
+_check = ["slint/renderer-skia", "slint/renderer-skia-opengl"]
+
+[dependencies]
+slint.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+fast_qr.workspace = true
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+tulipix-ui = { path = "../tulipix-ui" }
+tulipix-common = { path = "../tulipix-common" }
+tulipix-core = { path = "../tulipix-core" }
+# For `replace_rows`: every list here is redrawn by a button that lives inside
+# one of its own rows, which is exactly the slint#6426 case that helper exists
+# for. Same reason tulipix-sec-cloud depends on it.
+tulipix-sec-photos = { path = "../tulipix-sec-photos" }
+tulipix-platform = { path = "../tulipix-platform" }
+tulipix-transfer = { path = "../tulipix-transfer" }
