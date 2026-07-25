@@ -45,7 +45,11 @@ pub async fn similar(pool: &SqlitePool, seed: i64, k: usize) -> Result<Vec<(i64,
         .bind(seed.0).bind(&model).fetch_all(pool).await?;
     let mut scored: Vec<(i64, f32)> = rows.into_iter()
         .map(|(id, b)| (id, cosine(&seed.1, &from_bytes(&b)))).collect();
-    scored.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap());
+    // total_cmp, not partial_cmp().unwrap(): a stored vector is raw bytes from
+    // the DB and every bit pattern decodes to a valid f32, so a corrupt row can
+    // yield NaN. partial_cmp then returns None and the unwrap aborts the process
+    // (release builds use panic = "abort"). total_cmp orders NaN instead.
+    scored.sort_by(|a, b| b.1.total_cmp(&a.1));
     scored.truncate(k);
     Ok(scored)
 }
@@ -54,6 +58,18 @@ pub async fn similar(pool: &SqlitePool, seed: i64, k: usize) -> Result<Vec<(i64,
 mod tests {
     use super::*;
     use crate::schema::tests::{open_pool, add_track};
+
+    #[test]
+    fn nan_scores_sort_without_panicking() {
+        // A corrupt embedding blob decodes to NaN — every bit pattern is a valid
+        // f32 — and NaN through partial_cmp().unwrap() used to abort the process.
+        let mut scored: Vec<(i64, f32)> = vec![(1, 0.5), (2, f32::NAN), (3, 0.9)];
+        scored.sort_by(|a, b| b.1.total_cmp(&a.1));
+        assert_eq!(scored.len(), 3);
+        // Real scores still rank correctly among themselves.
+        let real: Vec<i64> = scored.iter().filter(|(_, s)| !s.is_nan()).map(|(i, _)| *i).collect();
+        assert_eq!(real, vec![3, 1]);
+    }
 
     #[test]
     fn bytes_roundtrip_and_cosine() {

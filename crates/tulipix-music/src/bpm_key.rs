@@ -14,7 +14,9 @@ pub fn bpm_from_beats(beat_times_s: &[f64]) -> Option<f64> {
     if beat_times_s.len() < 2 { return None; }
     let mut iv: Vec<f64> = beat_times_s.windows(2).map(|w| w[1] - w[0]).filter(|d| *d > 0.0).collect();
     if iv.is_empty() { return None; }
-    iv.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    // The `> 0.0` filter above already drops NaN, so this cannot panic today —
+    // total_cmp keeps it that way if the filter ever changes.
+    iv.sort_by(|a, b| a.total_cmp(b));
     let median = iv[iv.len() / 2];
     Some(60.0 / median)
 }

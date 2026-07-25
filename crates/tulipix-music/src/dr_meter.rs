@@ -13,7 +13,9 @@ use sqlx::SqlitePool;
 pub fn dr_score(block_rms_dbfs: &[f64], peak_dbfs: f64) -> Option<f64> {
     if block_rms_dbfs.is_empty() { return None; }
     let mut sorted = block_rms_dbfs.to_vec();
-    sorted.sort_by(|a, b| b.partial_cmp(a).unwrap()); // loudest first
+    // total_cmp: this is a pub fn taking arbitrary f64s, and partial_cmp on a NaN
+    // returns None, so the old unwrap turned one bad block value into an abort.
+    sorted.sort_by(|a, b| b.total_cmp(a)); // loudest first
     let take = (sorted.len() as f64 * 0.2).ceil().max(1.0) as usize;
     let loud_mean = sorted[..take].iter().sum::<f64>() / take as f64;
     Some((peak_dbfs - loud_mean).max(0.0))
@@ -43,6 +45,14 @@ pub async fn most_compressed(pool: &SqlitePool, max_dr: f64, limit: i64) -> Resu
 mod tests {
     use super::*;
     use crate::schema::tests::{open_pool, add_track};
+
+    #[test]
+    fn a_nan_block_does_not_abort_the_sort() {
+        // partial_cmp().unwrap() panicked here, which in a release build (panic =
+        // "abort") takes the whole app down rather than skewing one number.
+        let blocks = vec![-15.0, f64::NAN, -40.0, -50.0];
+        let _ = dr_score(&blocks, -1.0);
+    }
 
     #[test]
     fn wide_dynamics_score_higher() {
