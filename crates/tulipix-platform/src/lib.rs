@@ -342,7 +342,7 @@ pub fn init_tray(icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
             }
         };
         rt.block_on(async move {
-            match linux_tray::TulipixTray { icon, tx }.spawn().await {
+            match (linux_tray::TulipixTray { icon, tx }).spawn().await {
                 Ok(handle) => {
                     // Park: the handle must outlive the service, and dropping it
                     // would remove the icon.
