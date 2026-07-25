@@ -24,7 +24,13 @@ pub fn stream_open(weak: slint::Weak<MainWindow>, subject_id: String) {
 
         // A split show ("Person of Interest S1".."S5") gets its season list from
         // the search grouping; a normal one from its own payload.
-        let split = siblings_of(&subject_id);
+        let mut split = siblings_of(&subject_id);
+        if split.is_empty() && details.is_series && details.seasons.len() <= 1 {
+            split = regroup_seasons(&c, &details.title, &subject_id).await;
+            if !is_current(epoch) {
+                return;
+            }
+        }
         let season = if !split.is_empty() {
             split
                 .iter()
@@ -77,6 +83,31 @@ pub fn stream_open(weak: slint::Weak<MainWindow>, subject_id: String) {
         let _ = weak.upgrade_in_event_loop(move |w| w.set_video_stream_bookmarked(saved));
         load_files(weak, epoch, subject_id, wire_season, episode).await;
     });
+}
+
+/// Recover the season grouping for a split show opened from outside search.
+///
+/// The catalogue splits some series into one subject per season, and the list
+/// tying those subjects together is only ever built while parsing search
+/// results. A show opened from Bookmarks, History, Continue Watching or the
+/// feed therefore arrives with no grouping at all and reads as a one-season
+/// title, with the other seasons unreachable. Searching its own base title
+/// rebuilds the set.
+///
+/// Only a series claiming a single season gets here, so a genuinely short show
+/// costs one request and is left exactly as it was. The grouping is remembered
+/// for the rest of the session, so reopening the same show does not search
+/// again.
+async fn regroup_seasons(c: &StreamClient, title: &str, subject_id: &str) -> Vec<(i64, String)> {
+    let base = stream::split_season_suffix(title).0;
+    if base.is_empty() {
+        return Vec::new();
+    }
+    let Ok(hits) = c.search(&base, 1).await else {
+        return Vec::new();
+    };
+    remember_season_maps(&hits);
+    siblings_of(subject_id)
 }
 
 /// Paint the detail pane (everything except the file list).
