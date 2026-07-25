@@ -3023,12 +3023,13 @@ fn main() -> Result<()> {
     });
 
     // ── Chat assistant overlay (np.p1.llm.chat) ────────────────────────────
-    // AI execution crate is off by default; the overlay is fully wired and
-    // explains how to enable it rather than failing silently.
+    // The overlay is wired; the engine behind it is not. It used to point at
+    // `--features lazy-ai-ep`, which linked tulipix-ai without connecting it to
+    // anything, so the flag could never have made this work. Say what is true.
     window.set_chat_turns(slint::ModelRc::new(slint::VecModel::from(vec![ChatTurn {
         role: "assistant".into(),
-        content: "Hi! I can search and act on your library once the AI engine is enabled \
-                  (Settings → AI Models, or build with --features lazy-ai-ep).".into(),
+        content: "Hi! Once a model is configured in Settings → AI Models I can search \
+                  and act on your library.".into(),
     }])));
     let w = window.as_weak();
     window.on_chat_submit(move |q| {
@@ -5019,12 +5020,10 @@ fn seed_settings_panels(w: &MainWindow) {
         hdr("BUILD & LOCALE"),
         // Per-crate lazy-load state (np.p1.perf.lazy-crate): compiled-in or
         // excluded from this binary, per feature flag.
-        stat("whisper (lazy-whisper)", if cfg!(feature = "lazy-whisper") { "Compiled — loads on first use" } else { "Not in this binary" },
-             if cfg!(feature = "lazy-whisper") { "ok" } else { "muted" }),
-        stat("AI exec providers (lazy-ai-ep)", if cfg!(feature = "lazy-ai-ep") { "Compiled — loads on first use" } else { "Not in this binary" },
-             if cfg!(feature = "lazy-ai-ep") { "ok" } else { "muted" }),
-        stat("Plugin sandboxes (lazy-plugins)", if cfg!(feature = "lazy-plugins") { "Compiled — loads on first use" } else { "Not in this binary" },
-             if cfg!(feature = "lazy-plugins") { "ok" } else { "muted" }),
+        // The lazy-whisper / lazy-ai-ep / lazy-plugins rows are gone with their
+        // features: they claimed the crates "load on first use", but nothing in
+        // the workspace ever called them. Speech-to-text is the bundled
+        // whisper-cli binary, reported under BUNDLED TOOLS above.
         stat("ONNX editor ops (ai-onnx)", if cfg!(feature = "ai-onnx") { "Compiled" } else { "Not in this binary" },
              if cfg!(feature = "ai-onnx") { "ok" } else { "muted" }),
         stat("Adaptive layout", "Desktop breakpoints", "ok"),
@@ -5035,10 +5034,10 @@ fn seed_settings_panels(w: &MainWindow) {
                  let gaps = tulipix_music::formats::gapless_gaps();
                  format!("{} — gapless unverified: {}", all.join(" · "), gaps.join(", "))
              }, "ok"),
-        hdr("PLUGINS"),
-        stat("Plugin engine (WASM / Lua)",
-             if cfg!(feature = "lazy-plugins") { "ABI v0 — runtimes compiled, load on first use" } else { "ABI v0 ready — rebuild with --features lazy-plugins to load" },
-             if cfg!(feature = "lazy-plugins") { "ok" } else { "muted" }),
+        // The PLUGINS section is gone too. tulipix-plugins defines an ABI and no
+        // host ever loads it, its wasmtime and mlua runtimes are behind features
+        // nothing enables, and the row invited a rebuild with a flag that only
+        // added unreachable code. Reinstate it when a plugin can actually run.
         act("open-logs", "Open log folder", "tracing JSON logs with daily rotation", "Open"),
     ];
     sys.shrink_to_fit();

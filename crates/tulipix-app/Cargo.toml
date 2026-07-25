@@ -65,15 +65,19 @@ books-tts = ["tulipix-sec-books/kokoro"]
 alloc-mimalloc = ["dep:mimalloc"]
 alloc-jemalloc = ["dep:tikv-jemallocator"]
 
-# Lazy subsystem feature flags. The app reads matching env vars at runtime
-# (TULIPIX_ENABLE_WHISPER=1 …) and only resolves the crate's entrypoints on
-# first call, so the cold-start path does not pay their startup cost.
-lazy-whisper = ["dep:tulipix-whisper"]
-lazy-ai-ep   = ["dep:tulipix-ai"]
-lazy-plugins = ["dep:tulipix-plugins"]
+# There were three "lazy subsystem" flags here — lazy-whisper, lazy-ai-ep and
+# lazy-plugins — described as resolving their crate's entrypoints on first call
+# behind TULIPIX_ENABLE_* env vars. No such env var is read anywhere, and
+# tulipix_whisper, tulipix_ai and tulipix_plugins have no call sites in the
+# workspace at all, so the flags only linked 2,191 lines of unreachable code into
+# every packaged build. Whisper is in fact used through the bundled whisper-cli
+# binary, not the crate.
+#
+# The crates remain in the workspace with their tests; they are simply not linked
+# until something calls them. Re-add a dependency at the point of use.
 
-# Convenience: turn everything on (used for the official packaging build).
-full = ["lazy-whisper", "lazy-ai-ep", "lazy-plugins"]
+# Convenience alias for the packaging build: everything that is actually wired.
+full = ["ai-onnx"]
 
 [dependencies]
 slint.workspace = true
@@ -117,17 +121,14 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 sha2 = "0.10"
 kamadak-exif = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
-tulipix-whisper = { path = "../tulipix-whisper", optional = true }
-tulipix-ai = { path = "../tulipix-ai", optional = true }
-tulipix-plugins = { path = "../tulipix-plugins", optional = true }
 
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 mimalloc = { version = "0.1", default-features = false, optional = true }
 tikv-jemallocator = { version = "0.6", optional = true }
 
-# PR_SET_PDEATHSIG (mpv_die_with_parent) is the only libc use — Linux-only.
-[target.'cfg(target_os = "linux")'.dependencies]
-libc = "0.2"
+# libc was declared here for PR_SET_PDEATHSIG, but mpv_die_with_parent lives in
+# tulipix-common and that is where the dependency belongs; this crate never
+# named libc.
 
 # raw-window-handle pins to Slint 1.8's rwh (0.6); used to hand the native HWND
 # to souvlaki — SMTC on Windows panics without one.
@@ -174,7 +175,8 @@ mpv = "*"
 fuse3 = "*"
 perl = "*"
 
-# False positives: exif is the `kamadak-exif` crate; md-5→`md5`; reqwest
-# used via full path; tulipix-* are optional deps pulled in by feature flags.
+# False positive: `exif` is the lib name of the `kamadak-exif` crate. The
+# tulipix-ai / tulipix-plugins / tulipix-whisper entries are gone with the
+# dependencies themselves — they were not false positives, they were unused.
 [package.metadata.cargo-machete]
-ignored = ["kamadak-exif", "tulipix-ai", "tulipix-hot", "tulipix-plugins", "tulipix-whisper"]
+ignored = ["kamadak-exif", "tulipix-hot"]
