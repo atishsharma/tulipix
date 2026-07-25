@@ -119,17 +119,22 @@ jobs:
             libgl1-mesa-dev libegl1-mesa-dev libwayland-dev
       # Unlike check-app, this job codegens and links real test binaries for
       # tulipix-app and every sec crate — the heaviest thing in CI after a
-      # release build, and it has been OOM-killed (exit 143) twice. Debug info
-      # off and one codegen unit at a time cut the peak but not far enough: the
-      # runner has 16 GB and no swap, so a single rustc over the limit takes the
-      # whole runner down mid-crate. Swap does not make the build slower unless
-      # it is actually needed; without it the job dies outright.
-      - name: Give the runner swap
+      # release build, and it has died at exit 143 twice, the second time seven
+      # minutes into one crate with the runner itself shutting down.
+      #
+      # The image already ships a 4 GB /swapfile (a first attempt to create one
+      # failed with "Text file busy"), so the kill happened with ~20 GB
+      # available, which is more than a single rustc should ever want. Add room
+      # on /mnt, the large ephemeral disk, and measure instead of guessing
+      # again: the sampler below prints the trajectory as it goes, so even a
+      # killed job leaves evidence of how close to the limit it got.
+      - name: Give the runner more swap
         run: |
-          sudo fallocate -l 10G /swapfile
-          sudo chmod 600 /swapfile
-          sudo mkswap /swapfile
-          sudo swapon /swapfile
+          sudo fallocate -l 12G /mnt/swapfile
+          sudo chmod 600 /mnt/swapfile
+          sudo mkswap /mnt/swapfile
+          sudo swapon /mnt/swapfile
+          swapon --show
           free -h
       - name: Test the UI-glue crates
         env:
@@ -140,9 +145,16 @@ jobs:
           # some parallelism, which this job has already given up via -j 1.
           CARGO_PROFILE_TEST_CODEGEN_UNITS: "4"
           CARGO_PROFILE_DEV_CODEGEN_UNITS: "4"
-        run: >
-          cargo test --no-fail-fast -p tulipix-sec-videos -p tulipix-sec-books
-          -p tulipix-sec-music -p tulipix-app --no-default-features --features tulipix-app/renderer-femtovg
+        run: |
+          ( while sleep 20; do
+              free -m | awk 'NR==2 {printf "mem: used %sM avail %sM", $3, $7}'
+              free -m | awk 'NR==3 {printf "  swap: used %sM\n", $3}'
+            done ) &
+          sampler=$!
+          trap 'kill $sampler 2>/dev/null' EXIT
+          cargo test --no-fail-fast -p tulipix-sec-videos -p tulipix-sec-books \
+            -p tulipix-sec-music -p tulipix-app \
+            --no-default-features --features tulipix-app/renderer-femtovg
 
   # tulipix-platform is where the per-OS shell integration lives: the AppleScript
   # trash call, the PowerShell one, explorer.exe launches, assoc/ftype. All of it
