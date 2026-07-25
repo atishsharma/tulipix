@@ -23,7 +23,6 @@ kokoro = ["tulipix-books/kokoro"]
 [dependencies]
 slint.workspace = true
 tokio.workspace = true
-anyhow.workspace = true
 tracing.workspace = true
 # Reader page decode: rasterised pages are decoded on a blocking worker and
 # handed to the UI thread as a SharedPixelBuffer (slint::Image isn't Send).
