@@ -139,20 +139,25 @@ archive = "none"
 latest = true
 
 # ffmpeg + ffprobe — bundled on every OS for the self-contained release build.
-# johnvansickle (Linux) + gyan.dev (Windows) rolling stable URLs; martin-riedl.de static
+# BtbN (Linux) + gyan.dev (Windows) rolling stable URLs; martin-riedl.de static
 # builds for macOS (ffmpeg/ffprobe ship as separate zips there — see the
 # `ffprobe` binary block below). Archives keep exes under `bin/`; they are
 # flattened to resources/bin/<os-arch>/.
+#
+# Linux used to pull johnvansickle.com, which sits behind a filter that answers
+# CI clients with 415 often enough to fail a release build. BtbN publishes the
+# same kind of static GPL build through GitHub releases, which the rest of this
+# manifest already depends on.
 [[binary]]
 name = "ffmpeg"
 version = "latest"
 [[binary.sources]]
 os = "linux"
 arch = "x86_64"
-url = "https://johnvansickle.com/ffmpeg/releases/ffmpeg-release-amd64-static.tar.xz"
+url = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-linux64-gpl.tar.xz"
 sha256 = "latest"
 archive = "tar.xz"
-extract = ["ffmpeg", "ffprobe"]
+extract = ["bin/ffmpeg", "bin/ffprobe"]
 latest = true
 [[binary.sources]]
 os = "macos"
