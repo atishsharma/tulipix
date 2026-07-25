@@ -7,9 +7,10 @@ license.workspace = true
 
 [features]
 default = []
-# Tray + global accelerator requires libxdo on Linux; default off to keep
-# headless CI green. Packaging targets enable it explicitly.
-tray = ["dep:tray-icon", "dep:gtk"]
+# Tray. Two backends, because the crates differ per OS: ksni speaks the
+# StatusNotifierItem D-Bus protocol directly on Linux, tray-icon covers
+# Windows and macOS. Default off to keep headless CI green.
+tray = ["dep:ksni", "dep:tokio", "dep:tray-icon"]
 
 [dependencies]
 anyhow.workspace = true
@@ -19,20 +20,30 @@ serde_json.workspace = true
 keyring.workspace = true
 # Used by share.rs (caps gate) on every platform — must not be Linux-only.
 tulipix-core = { path = "../tulipix-core" }
-# default-features off drops the libxdo (xdotool) link dep — absent on this
-# box and unneeded on Wayland; only bare-X11 menu positioning degrades.
-tray-icon = { version = "0.19", optional = true, default-features = false }
-
-# The tray's Linux backend is GTK; the dedicated tray thread calls gtk::init
-# + gtk::main itself (Slint owns the real main thread).
+# Linux tray: StatusNotifierItem over D-Bus, spoken directly. zbus 5 is already
+# in the tree via ashpd (rfd's xdg-portal backend), so this adds no new stack —
+# and it removes GTK from the Linux build entirely, including the libgtk-3-dev
+# build dependency.
 [target.'cfg(target_os = "linux")'.dependencies]
-gtk = { version = "0.18", optional = true }
+ksni = { version = "0.3", optional = true }
+# ksni's default backend is tokio, and zbus follows whichever runtime feature is
+# enabled across the graph — the app is tokio-based and zbus/tokio is already on,
+# so matching it keeps one runtime in the build instead of dragging async-io in
+# alongside. tokio itself is already a dependency of fifteen other crates here.
+tokio = { workspace = true, optional = true }
 
 # muda's Linux backend needs a GTK window to attach to; Slint's winit backend
 # has none, so the Linux menubar path can never work — keeping muda out of the
 # Linux build drops the whole GTK3/glib/cairo/pango stack (~45 crates).
+#
+# tray-icon is here for the same reason: its Linux backend is unconditionally
+# libappindicator (platform_impl maps linux straight to gtk/mod.rs, and the `gtk`
+# feature gates only the dependency, not the module), so on Linux it would drag in
+# the gtk-rs 0.18 stack — 21 crates, eight of them carrying "no longer maintained"
+# advisories. default-features off drops the libxdo (xdotool) link dep.
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 muda = { version = "0.15", default-features = false }
+tray-icon = { version = "0.19", optional = true, default-features = false }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.58", features = [

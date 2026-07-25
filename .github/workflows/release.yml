@@ -49,13 +49,14 @@ jobs:
         run: |
           sudo apt-get update
           # mold: the committed .cargo/config.toml links Linux builds with it.
-          # libgtk-3-dev: rfd file dialogs (pulls cairo/pango/gdk).
+          # No libgtk-3-dev: rfd talks to xdg-desktop-portal and the tray is ksni
+          # (D-Bus StatusNotifierItem), so nothing in the Linux build links GTK.
           # clang + libclang-dev + python3: skia-bindings (slint renderer-skia)
           # builds Skia from source with GN/Ninja when no prebuilt binary matches
           # the feature set — that build REQUIRES clang (GN toolchain) and libclang
           # (bindgen). Their absence is what failed the Skia step ~7 min in.
           sudo apt-get install -y --no-install-recommends \
-            libmpv-dev mpv mold cmake ninja-build libgtk-3-dev \
+            libmpv-dev mpv mold cmake ninja-build \
             libfontconfig1-dev libfreetype6-dev libgl1-mesa-dev libegl1-mesa-dev \
             libxkbcommon-dev libwayland-dev \
             clang libclang-dev llvm-dev python3 lld time

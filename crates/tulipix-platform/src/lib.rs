@@ -16,9 +16,10 @@ use keyring::Entry;
 use muda::{accelerator::{Accelerator, Code, Modifiers}, Menu, MenuEvent, MenuItem, PredefinedMenuItem, Submenu};
 #[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::str::FromStr;
-#[cfg(any(target_os = "windows", target_os = "macos", feature = "tray"))]
+#[cfg(any(target_os = "windows", target_os = "macos"))]
 use std::cell::RefCell;
-#[cfg(feature = "tray")]
+// tray-icon is a Windows/macOS dependency only — Linux uses ksni (see below).
+#[cfg(all(feature = "tray", not(target_os = "linux")))]
 use tray_icon::{menu::Menu as TrayMenu, TrayIcon, TrayIconBuilder};
 
 pub fn init_window_chrome() {
@@ -224,49 +225,135 @@ pub fn drain_menu_events<F: FnMut(&str)>(_handler: F) {}
 
 // ── Tray icon ──────────────────────────────────────────────────────────
 
-#[cfg(feature = "tray")]
+#[cfg(all(feature = "tray", not(target_os = "linux")))]
 thread_local! {
     static TRAY: RefCell<Option<TrayIcon>> = const { RefCell::new(None) };
+}
+
+// ── Linux tray: StatusNotifierItem over D-Bus ────────────────────────────────
+//
+// This used to be tray-icon, whose Linux backend is libappindicator and therefore
+// GTK: it needed `gtk::init` plus a `gtk::main` loop parked on a dedicated thread
+// just to service D-Bus, and it pulled 21 gtk-rs crates into the build (eight of
+// them unmaintained) along with a libgtk-3-dev build dependency. ksni speaks the
+// same StatusNotifierItem protocol directly over zbus, which the tree already has
+// via ashpd, so none of that is needed.
+//
+// Menu clicks are pushed onto a channel so `drain_tray_events` keeps the exact
+// interface the app polls, unchanged.
+#[cfg(all(feature = "tray", target_os = "linux"))]
+mod linux_tray {
+    use std::sync::mpsc::{channel, Receiver, Sender};
+    use std::sync::{Mutex, OnceLock};
+
+    pub struct TulipixTray {
+        pub icon: Vec<ksni::Icon>,
+        pub tx: Sender<&'static str>,
+    }
+
+    impl ksni::Tray for TulipixTray {
+        fn id(&self) -> String {
+            "tulipix".into()
+        }
+        fn title(&self) -> String {
+            "Tulipix".into()
+        }
+        // Falls back to the themed name when no pixmap was decoded.
+        fn icon_name(&self) -> String {
+            if self.icon.is_empty() { "tulipix".into() } else { String::new() }
+        }
+        fn icon_pixmap(&self) -> Vec<ksni::Icon> {
+            self.icon.clone()
+        }
+        fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
+            use ksni::menu::StandardItem;
+            vec![
+                StandardItem {
+                    label: "Open Tulipix".into(),
+                    activate: Box::new(|t: &mut Self| { let _ = t.tx.send("tray.open"); }),
+                    ..Default::default()
+                }
+                .into(),
+                StandardItem {
+                    label: "Quit".into(),
+                    activate: Box::new(|t: &mut Self| { let _ = t.tx.send("tray.quit"); }),
+                    ..Default::default()
+                }
+                .into(),
+            ]
+        }
+    }
+
+    /// Receiver end of the menu-click channel, read by `drain_tray_events`.
+    pub fn events() -> &'static Mutex<Option<Receiver<&'static str>>> {
+        static EV: OnceLock<Mutex<Option<Receiver<&'static str>>>> = OnceLock::new();
+        EV.get_or_init(|| Mutex::new(None))
+    }
+
+    pub fn new_channel() -> Sender<&'static str> {
+        let (tx, rx) = channel();
+        if let Ok(mut g) = events().lock() {
+            *g = Some(rx);
+        }
+        tx
+    }
+
+    /// RGBA (what `image` produces) → ARGB32 network byte order (what the SNI
+    /// spec wants). Rotating each pixel right by one byte moves A into front.
+    pub fn to_argb(mut rgba: Vec<u8>, w: u32, h: u32) -> Option<ksni::Icon> {
+        if rgba.len() != (w as usize) * (h as usize) * 4 {
+            return None;
+        }
+        for px in rgba.chunks_exact_mut(4) {
+            px.rotate_right(1);
+        }
+        Some(ksni::Icon { width: w as i32, height: h as i32, data: rgba })
+    }
 }
 
 /// Install a tray icon with Open / Quit items. Returns false if the platform
 /// rejected creation (some Wayland compositors have no StatusNotifier host) or
 /// if the `tray` feature is off.
 ///
-/// Linux: tray-icon's backend is GTK (libappindicator/SNI) and panics unless
-/// `gtk::init` ran on the calling thread — and it needs a GTK main loop to
-/// service DBus. Slint/winit owns the real main thread, so the tray lives on
-/// its own dedicated GTK thread; menu events still arrive via the global
-/// MenuEvent channel that `drain_tray_events` polls.
+/// Linux: served by ksni on the app's existing tokio runtime — no GTK, no
+/// dedicated main loop. The returned handle is kept for the process lifetime
+/// because dropping it withdraws the tray item.
 #[cfg(all(feature = "tray", target_os = "linux"))]
 pub fn init_tray(icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
+    use ksni::TrayMethods;
     static STARTED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) { return true; }
-    let ok = std::thread::Builder::new().name("tulipix-tray".into()).spawn(move || {
-        if gtk::init().is_err() {
-            tracing::warn!("tray: gtk::init failed — no tray on this session");
-            return;
-        }
-        let menu = TrayMenu::new();
-        let open = tray_icon::menu::MenuItem::with_id("tray.open", "Open Tulipix", true, None);
-        let quit = tray_icon::menu::MenuItem::with_id("tray.quit", "Quit", true, None);
-        if menu.append(&open).is_err() || menu.append(&quit).is_err() { return; }
-        let mut b = TrayIconBuilder::new().with_menu(Box::new(menu)).with_tooltip("Tulipix");
-        if let Some((rgba, w, h)) = icon_rgba {
-            match tray_icon::Icon::from_rgba(rgba, w, h) {
-                Ok(i) => b = b.with_icon(i),
-                Err(e) => tracing::warn!(error = %e, "tray icon decode"),
+    if STARTED.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        return true;
+    }
+    let icon = icon_rgba
+        .and_then(|(rgba, w, h)| linux_tray::to_argb(rgba, w, h))
+        .map(|i| vec![i])
+        .unwrap_or_default();
+    let tx = linux_tray::new_channel();
+    let handle = std::thread::Builder::new().name("tulipix-tray".into()).spawn(move || {
+        // Its own current-thread runtime: init_tray is called during startup on
+        // the UI thread, and the tray's D-Bus service should not depend on the
+        // shared runtime's scheduling for something that lives this long.
+        let rt = match tokio::runtime::Builder::new_current_thread().enable_all().build() {
+            Ok(rt) => rt,
+            Err(e) => {
+                tracing::warn!(error = %e, "tray: runtime build failed");
+                return;
             }
-        }
-        match b.build() {
-            Ok(t) => {
-                TRAY.with(|cell| *cell.borrow_mut() = Some(t));
-                gtk::main(); // park forever servicing the SNI DBus connection
+        };
+        rt.block_on(async move {
+            match linux_tray::TulipixTray { icon, tx }.spawn().await {
+                Ok(handle) => {
+                    // Park: the handle must outlive the service, and dropping it
+                    // would remove the icon.
+                    std::mem::forget(handle);
+                    std::future::pending::<()>().await;
+                }
+                Err(e) => tracing::warn!(error = %e, "tray: no StatusNotifier host"),
             }
-            Err(e) => tracing::warn!(error = %e, "tray init failed"),
-        }
-    }).is_ok();
-    ok
+        });
+    });
+    handle.is_ok()
 }
 
 #[cfg(all(feature = "tray", not(target_os = "linux")))]
@@ -299,7 +386,19 @@ pub fn init_tray(_icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
     false
 }
 
-#[cfg(feature = "tray")]
+/// Deliver any pending tray menu clicks as ids ("tray.open" / "tray.quit").
+/// Same contract on every OS; only the source differs — a channel fed by ksni's
+/// activate callbacks on Linux, tray-icon's global MenuEvent queue elsewhere.
+#[cfg(all(feature = "tray", target_os = "linux"))]
+pub fn drain_tray_events<F: FnMut(&str)>(mut handler: F) {
+    let Ok(guard) = linux_tray::events().lock() else { return };
+    let Some(rx) = guard.as_ref() else { return };
+    while let Ok(id) = rx.try_recv() {
+        handler(id);
+    }
+}
+
+#[cfg(all(feature = "tray", not(target_os = "linux")))]
 pub fn drain_tray_events<F: FnMut(&str)>(mut handler: F) {
     use tray_icon::menu::MenuEvent as TrayMenuEvent;
     while let Ok(ev) = TrayMenuEvent::receiver().try_recv() {
