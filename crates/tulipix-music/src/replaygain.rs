@@ -36,7 +36,10 @@ pub fn parse_ebur128_integrated(out: &str) -> Option<f64> {
 /// tag-derived or computed `replaygain_track`. Returns `(item_id, path)`.
 pub async fn untagged(pool: &SqlitePool) -> Result<Vec<(i64, String)>> {
     Ok(sqlx::query_as(
-        "SELECT tm.item_id, i.path FROM track_meta tm
+        // items stores the file location in abs_path; there is no `path` column,
+        // so this query failed outright ("no such column: i.path") and the
+        // ReplayGain scan could never find a single track to analyse.
+        "SELECT tm.item_id, i.abs_path FROM track_meta tm
          JOIN items i ON i.id = tm.item_id
          WHERE tm.replaygain_track IS NULL AND tm.is_stream = 0",
     ).fetch_all(pool).await?)
