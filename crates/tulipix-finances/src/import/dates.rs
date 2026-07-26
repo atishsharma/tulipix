@@ -240,7 +240,9 @@ mod tests {
     fn impossible_dates_are_refused_rather_than_clamped() {
         assert!(parse("31/02/2026", DateFormat::DayFirst).is_err());
         assert!(parse("00/07/2026", DateFormat::DayFirst).is_err());
-        assert!(parse("05/13/2026", DateFormat::MonthFirst).is_err());
+        // Month 13 read month-first. `05/13/2026` would be a perfectly good
+        // 13 May, so it does not test anything.
+        assert!(parse("13/05/2026", DateFormat::MonthFirst).is_err());
         assert!(parse("05/07", DateFormat::DayFirst).is_err());
     }
 

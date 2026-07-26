@@ -163,6 +163,18 @@ CREATE TABLE IF NOT EXISTS import_presets (
     account_id  INTEGER REFERENCES accounts(id),
     created_at  INTEGER NOT NULL
 );
+
+-- Which rows are sample data, so they can be removed exactly.
+--
+-- A side table rather than a `demo` column on eight tables: a flag would have to
+-- be excluded by every SUM in the section, and the one that got forgotten would
+-- put invented money into a real total. Nothing here is referenced by any query
+-- that computes a figure — it is only ever read to decide what to delete.
+CREATE TABLE IF NOT EXISTS demo_rows (
+    kind   TEXT    NOT NULL,                        -- accounts|transactions|…
+    row_id INTEGER NOT NULL,
+    PRIMARY KEY (kind, row_id)
+);
 "#;
 
 /// The two holding accounts that keep lending out of spend totals.
@@ -293,7 +305,10 @@ mod tests {
         .fetch_one(&pool)
         .await
         .unwrap();
-        assert_eq!(tables, 11);
+        // Every CREATE TABLE in SCHEMA, demo_rows included. A count rather than a
+        // name list on purpose: it fails when a table is added without a thought
+        // about migration, which is the mistake worth catching.
+        assert_eq!(tables, 12);
     }
 
     #[tokio::test]

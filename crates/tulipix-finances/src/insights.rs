@@ -11,7 +11,9 @@
 //! streaming service you have not opened in three months.
 
 use anyhow::Result;
-use chrono::NaiveDate;
+// Datelike for `with_day`: the previous month is reached by stepping back from
+// the first of this one, which is the one date operation `date` has no helper for.
+use chrono::{Datelike, NaiveDate};
 use sqlx::SqlitePool;
 
 use crate::date;
@@ -197,7 +199,7 @@ pub async fn flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
     }
 
     // ── unused subscriptions (the cross-section one) ─────────────────────────
-    out.extend(unused_subscription_flags(pool, today).await?);
+    out.extend(unused_subscription_flags(pool, today, last_video_playback().await).await?);
 
     // ── stale dues ──────────────────────────────────────────────────────────
     for d in dues::list(pool, Some(dues::Status::Open)).await? {
@@ -258,16 +260,22 @@ pub async fn flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
 
 /// Video subscriptions being paid for while Videos sits unopened.
 ///
-/// Reads `watch_progress` out of `videos.db`. Every failure — no database, no
-/// table, an older schema — is treated as "no signal", because a missing
-/// cross-section read must not break the Insights tab.
+/// `last_playback` comes from [`last_video_playback`], which reads
+/// `watch_progress` out of `videos.db`. It is a parameter rather than a read
+/// inside here so this stays a pure function of the two databases' contents: as
+/// an ambient read it answered differently on a machine that happens to have a
+/// `videos.db`, which is exactly what a test cannot control.
 ///
 /// A subscription counts as video-shaped when it sits under the Entertainment
 /// category tree, which the user controls. There is deliberately no hardcoded list
 /// of streaming brands: it would be wrong within a year and it would silently miss
 /// whatever the user actually subscribes to.
-pub async fn unused_subscription_flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
-    let Some(last) = last_video_playback().await else { return Ok(Vec::new()) };
+pub async fn unused_subscription_flags(
+    pool: &SqlitePool,
+    today: NaiveDate,
+    last_playback: Option<NaiveDate>,
+) -> Result<Vec<Flag>> {
+    let Some(last) = last_playback else { return Ok(Vec::new()) };
     let idle = date::days_between(last, today);
     if idle < UNUSED_DAYS {
         return Ok(Vec::new());
@@ -379,6 +387,11 @@ pub struct Snapshot {
     pub liquid_minor: i64,
     pub debt_minor: i64,
     pub spent_this_month_minor: i64,
+    /// The same figure for the previous calendar month, so the strip can say
+    /// whether this month is worse. `None` when there is no previous month on
+    /// record — a first month has nothing to be up or down against, and "+100%"
+    /// is arithmetic rather than information.
+    pub spent_last_month_minor: Option<i64>,
     pub income_this_month_minor: i64,
     pub owed_to_me_minor: i64,
     pub i_owe_minor: i64,
@@ -400,10 +413,30 @@ pub async fn snapshot(pool: &SqlitePool, today: NaiveDate) -> Result<Snapshot> {
     let (from, to) = date::month_bounds(&period)?;
     let acct = accounts::totals(pool).await?;
     let due = dues::totals(pool).await?;
+
+    // Previous month, and only if something was actually posted in it: an empty
+    // month would make this month's spending look like a spike when the truth is
+    // that the ledger only started here.
+    let prev = date::month_bounds(&date::ym(
+        today.with_day(1).unwrap_or(today).pred_opt().unwrap_or(today),
+    ))?;
+    let prev_rows: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM transactions WHERE occurred_on BETWEEN ? AND ?")
+            .bind(&prev.0)
+            .bind(&prev.1)
+            .fetch_one(pool)
+            .await?;
+    let spent_last_month_minor = if prev_rows > 0 {
+        Some(txn::spent_between(pool, &prev.0, &prev.1).await?)
+    } else {
+        None
+    };
+
     Ok(Snapshot {
         liquid_minor: acct.liquid_minor,
         debt_minor: acct.debt_minor,
         spent_this_month_minor: txn::spent_between(pool, &from, &to).await?,
+        spent_last_month_minor,
         income_this_month_minor: txn::income_between(pool, &from, &to).await?,
         owed_to_me_minor: due.owed_to_me_minor,
         i_owe_minor: due.i_owe_minor,
@@ -653,15 +686,60 @@ mod tests {
 
     #[tokio::test]
     async fn the_unused_subscription_flag_stays_silent_with_no_playback_data() {
-        // No videos.db in a test environment, so this must simply say nothing
-        // rather than failing the Insights tab.
+        // With no videos.db — or one with an empty watch_progress — this must say
+        // nothing rather than accusing the user of not watching what they pay for.
         let p = pool().await;
         let mut r = recur::NewRecurrence::subscription("JioHotstar", 29_900, "2026-08-15");
         r.category_id = Some(cat(&p, "Subscriptions").await);
         recur::create(&p, &r).await.unwrap();
-        assert!(unused_subscription_flags(&p, d("2026-07-26")).await.unwrap().is_empty());
+        let today = d("2026-07-26");
+        assert!(unused_subscription_flags(&p, today, None).await.unwrap().is_empty());
+        // Watched yesterday: also silent, and this is the case that would fire
+        // wrongly if the idle comparison were the wrong way round.
+        assert!(
+            unused_subscription_flags(&p, today, Some(d("2026-07-25"))).await.unwrap().is_empty()
+        );
         // And the whole flag set still builds.
-        assert!(!flags(&p, d("2026-07-26")).await.unwrap().is_empty());
+        assert!(!flags(&p, today).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_subscription_unwatched_for_two_months_is_flagged() {
+        let p = pool().await;
+        let mut r = recur::NewRecurrence::subscription("JioHotstar", 29_900, "2026-08-15");
+        r.category_id = Some(cat(&p, "Subscriptions").await);
+        recur::create(&p, &r).await.unwrap();
+
+        let today = d("2026-07-26");
+        let stale = today - chrono::Duration::days(UNUSED_DAYS + 30);
+        let f = unused_subscription_flags(&p, today, Some(stale)).await.unwrap();
+        assert_eq!(f.len(), 1);
+        assert_eq!(f[0].title, "JioHotstar — paid, not watched");
+        assert_eq!(f[0].severity, Severity::Warn);
+        // The yearly figure is the argument, so it has to be in the body.
+        assert!(f[0].detail.contains(&money::format_minor(29_900 * 12, "INR")));
+    }
+
+    #[tokio::test]
+    async fn last_months_spending_is_only_reported_when_last_month_exists() {
+        let p = pool().await;
+        let acct = bank(&p, 50_000_000).await;
+        txn::post(&p, &NewTxn::expense(acct, 2_000_000, "INR", "2026-07-05", "Veg")).await.unwrap();
+
+        // Only July on record: there is no June to be up or down against, and a
+        // month compared against an empty one reads as a spike that never happened.
+        let july = snapshot(&p, d("2026-07-26")).await.unwrap();
+        assert_eq!(july.spent_last_month_minor, None);
+
+        txn::post(&p, &NewTxn::expense(acct, 1_500_000, "INR", "2026-06-11", "Veg")).await.unwrap();
+        let again = snapshot(&p, d("2026-07-26")).await.unwrap();
+        assert_eq!(again.spent_last_month_minor, Some(1_500_000));
+        assert_eq!(again.spent_this_month_minor, 2_000_000, "July is unchanged by the June row");
+
+        // January looks back across the year boundary, not to month zero.
+        txn::post(&p, &NewTxn::expense(acct, 900_000, "INR", "2025-12-30", "Veg")).await.unwrap();
+        let jan = snapshot(&p, d("2026-01-15")).await.unwrap();
+        assert_eq!(jan.spent_last_month_minor, Some(900_000));
     }
 
     #[tokio::test]

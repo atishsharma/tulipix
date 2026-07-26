@@ -1530,6 +1530,8 @@ callback cloud-go-home();
     in property <[FinFlag]> fin-flags: [];
     // Bills and subscriptions due inside the alert lead. Drives the sidebar badge.
     in property <int> fin-badge: 0;
+    // Sample data is still on screen. Drives the banner that says so.
+    in property <bool> fin-demo: false;
     in-out property <string> fin-sheet: "";
     in property <string> fin-sheet-title: "";
     in property <string> fin-sheet-hint: "";
@@ -1578,6 +1580,7 @@ callback cloud-go-home();
     callback fin-accept-proposal(int);
     callback fin-import-pick();
     callback fin-scan-receipt();
+    callback fin-demo-remove();
     callback fin-submit-again();
     callback fin-refresh();
     callback fin-enter();
@@ -3650,6 +3653,7 @@ callback cloud-go-home();
                 cal-low-point: root.fin-cal-low-point;
                 flags: root.fin-flags;
                 badge: root.fin-badge;
+                demo: root.fin-demo;
                 sheet <=> root.fin-sheet;
                 sheet-title: root.fin-sheet-title;
                 sheet-hint: root.fin-sheet-hint;
@@ -3696,6 +3700,7 @@ callback cloud-go-home();
                 accept-proposal(i) => { root.fin-accept-proposal(i); }
                 import-pick() => { root.fin-import-pick(); }
                 scan-receipt() => { root.fin-scan-receipt(); }
+                demo-remove() => { root.fin-demo-remove(); }
                 submit-again() => { root.fin-submit-again(); }
                 refresh() => { root.fin-refresh(); }
             }

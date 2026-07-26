@@ -411,6 +411,19 @@ pub fn wire(window: &MainWindow) {
     });
 
     let w = window.as_weak();
+    window.on_fin_demo_remove(move || {
+        let Some(w) = w.upgrade() else { return };
+        let weak = w.as_weak();
+        spawn(async move {
+            let Ok(pool) = pool().await else { return };
+            if let Err(e) = tulipix_finances::demo::remove_all(&pool).await {
+                tracing::warn!("finances: could not remove the sample data: {e}");
+            }
+            let _ = weak.upgrade_in_event_loop(|w| refresh(&w));
+        });
+    });
+
+    let w = window.as_weak();
     window.on_fin_scan_receipt(move || {
         let Some(w) = w.upgrade() else { return };
         scan_receipt(&w);
@@ -1403,6 +1416,7 @@ pub fn refresh(window: &MainWindow) {
 
         // Insights and the badge.
         let flags = insights::flags(&pool, today).await.unwrap_or_default();
+        let demo = tulipix_finances::demo::present(&pool).await.unwrap_or(false);
         let badge = obligations::badge_count(&pool, today, tulipix_finances::lead_days())
             .await
             .unwrap_or(0);
@@ -1486,6 +1500,7 @@ pub fn refresh(window: &MainWindow) {
             put!(get_fin_account_names, set_fin_account_names, account_names);
             put!(get_fin_category_names, set_fin_category_names, category_names);
 
+            w.set_fin_demo(demo);
             w.set_fin_spent_total(spent_total.into());
             w.set_fin_month_label(month_label.into());
             w.set_fin_txn_page(page_index);

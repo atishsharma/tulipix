@@ -357,6 +357,17 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<()> {
         .bind(id)
         .execute(pool)
         .await?;
+    // And stop claiming the obligation, which is about to be cascaded away with
+    // the recurrence. Without this the DELETE below fails on the foreign key from
+    // transactions.obligation_id — an auto-posting subscription cannot be deleted
+    // at all once it has posted once.
+    sqlx::query(
+        "UPDATE transactions SET obligation_id = NULL
+          WHERE obligation_id IN (SELECT id FROM obligations WHERE recurrence_id = ?)",
+    )
+    .bind(id)
+    .execute(pool)
+    .await?;
     sqlx::query("DELETE FROM recurrences WHERE id = ?").bind(id).execute(pool).await?;
     Ok(())
 }
@@ -929,9 +940,17 @@ mod tests {
         delete(&p, id).await.unwrap();
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM transactions").fetch_one(&p).await.unwrap();
         assert_eq!(n, 1, "the ₹649 really did leave the account");
-        let orphan: Option<i64> =
-            sqlx::query_scalar("SELECT recurrence_id FROM transactions").fetch_one(&p).await.unwrap();
-        assert!(orphan.is_none());
+        // Both links have to be dropped, not just the template one: the
+        // obligation is cascaded away with the recurrence, so a transaction still
+        // pointing at it makes the delete fail on a foreign key.
+        let (recurrence, obligation): (Option<i64>, Option<i64>) =
+            sqlx::query_as("SELECT recurrence_id, obligation_id FROM transactions")
+                .fetch_one(&p)
+                .await
+                .unwrap();
+        assert!(recurrence.is_none());
+        assert!(obligation.is_none());
+        assert_eq!(accounts::balance(&p, acct).await.unwrap(), 10_000_000 - 64_900);
     }
 
     #[tokio::test]

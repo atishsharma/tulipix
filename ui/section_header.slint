@@ -42,6 +42,10 @@ export component HdrChip inherits Rectangle {
     // row stay compact yet still surface each tab's name on demand.
     in property <bool> collapsible: false;
     out property <bool> revealed: touch.has-hover || active;
+    // Trailing count ("Bills 9"). Dimmer and smaller than the label, because it is
+    // a quantity rather than a name. 0 hides it, and a collapsed chip drops it with
+    // the label so an icon-only chip stays square.
+    in property <int> count: 0;
     callback clicked();
     height: 36px; min-width: 84px;
     horizontal-stretch: 0; vertical-stretch: 0;
@@ -80,6 +84,11 @@ export component HdrChip inherits Rectangle {
         if root.label != "" && (!root.collapsible || root.revealed): Text {
             text: label; font-size: 13px; font-weight: has-grad ? 700 : 600;
             color: root.lbl-color;
+            vertical-alignment: center;
+        }
+        if root.count > 0 && (!root.collapsible || root.revealed): Text {
+            text: "\{root.count}"; font-size: 10.5px; font-weight: 800;
+            color: root.lbl-color.with-alpha(0.6);
             vertical-alignment: center;
         }
     }

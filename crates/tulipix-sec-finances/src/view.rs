@@ -32,24 +32,58 @@ use tulipix_finances::{
 };
 use tulipix_ui::*;
 
-/// Palette for the spend breakdown.
+/// Fallback palette for the spend breakdown, for categories the design did not
+/// name.
 ///
 /// Fixed order rather than a hash of the category name: the same category keeps
 /// the same colour between months, which is what makes two months comparable at a
-/// glance. A category's own stored colour wins when it has one.
+/// glance.
 const SLICE_HUES: &[u32] = &[
     0xFF84cc16, 0xFFfacc15, 0xFF06b6d4, 0xFF8b5cf6, 0xFFec4899, 0xFF10b981, 0xFFf97316,
     0xFF6366f1, 0xFF14b8a6, 0xFFf43f5e,
 ];
 
-fn hue(i: usize, stored: Option<&str>) -> slint::Color {
+/// Colours for the categories the section seeds itself.
+///
+/// Ahead of the ordinal palette, so the default set of categories always gets the
+/// hue the design assigned it — loans pink, food lime, utilities yellow — however
+/// the months happen to order them. Matched on a lowercase prefix rather than
+/// equality so "Food & drink" and "Food" land on the same colour, and anything
+/// unrecognised (a category the user made) falls through to the ordinal palette.
+const NAMED_HUES: &[(&str, u32)] = &[
+    ("loan", 0xFFf472b6),
+    ("emi", 0xFFf472b6),
+    ("food", 0xFF84cc16),
+    ("grocer", 0xFF84cc16),
+    ("eating out", 0xFFa3e635),
+    ("home", 0xFFfacc15),
+    ("rent", 0xFFfacc15),
+    ("utilit", 0xFFfacc15),
+    ("shop", 0xFF22d3ee),
+    ("health", 0xFFa78bfa),
+    ("subscription", 0xFFfb923c),
+    ("entertainment", 0xFFfb923c),
+    ("transport", 0xFF38bdf8),
+    ("fuel", 0xFF38bdf8),
+    ("income", 0xFF16a34a),
+    ("salary", 0xFF16a34a),
+];
+
+/// A category's colour: its own stored one, then the named palette, then the
+/// ordinal fallback.
+fn category_hue(i: usize, name: &str, stored: Option<&str>) -> slint::Color {
     if let Some(css) = stored
         && let Some(c) = parse_hex(css)
     {
         return c;
     }
-    let argb = SLICE_HUES[i % SLICE_HUES.len()];
-    slint::Color::from_argb_encoded(argb)
+    let lower = name.to_lowercase();
+    for (key, argb) in NAMED_HUES {
+        if lower.starts_with(key) {
+            return slint::Color::from_argb_encoded(*argb);
+        }
+    }
+    slint::Color::from_argb_encoded(SLICE_HUES[i % SLICE_HUES.len()])
 }
 
 /// `#rrggbb` or `#aarrggbb`. Returns `None` on anything else rather than
@@ -84,32 +118,72 @@ fn opt(v: Option<String>) -> SharedString {
 
 pub fn stats(snap: &Snapshot, base: &str) -> Vec<FinStat> {
     let f = |m: i64| money::format_minor(m, base);
+    // Month-on-month change in spending, as a signed figure and a direction. Up is
+    // the bad direction here — this labels spending, not growth.
+    let (delta, delta_up) = match snap.spent_last_month_minor {
+        Some(prev) => {
+            let d = snap.spent_this_month_minor - prev;
+            if d == 0 {
+                (String::new(), false)
+            } else {
+                (format!("{} vs last month", f(d.abs())), d > 0)
+            }
+        }
+        None => (String::new(), false),
+    };
     vec![
         FinStat {
             label: s("LIQUID"),
             value: s(f(snap.liquid_minor)),
             sub: s("Bank, cash and wallets"),
             tone: s(if snap.liquid_minor < 0 { "bad" } else { "flat" }),
+            delta: s(""),
+            delta_up: false,
         },
         FinStat {
             label: s("SPENT THIS MONTH"),
             value: s(f(snap.spent_this_month_minor)),
             sub: s("Transfers and lending excluded"),
             tone: s("flat"),
+            delta: s(delta),
+            delta_up,
         },
         FinStat {
             label: s("SAVED THIS MONTH"),
             value: s(f(snap.saved_this_month_minor())),
-            sub: s(format!("{} in", f(snap.income_this_month_minor))),
+            // The rate as well as the figure: ₹23,637 saved means something
+            // different on ₹40,000 of income than on ₹1,38,000.
+            sub: s(match saved_pct(snap) {
+                Some(p) => format!("{p} of {} in", f(snap.income_this_month_minor)),
+                None => format!("{} in", f(snap.income_this_month_minor)),
+            }),
             tone: s(if snap.saved_this_month_minor() >= 0 { "ok" } else { "bad" }),
+            delta: s(""),
+            delta_up: false,
         },
         FinStat {
             label: s("DEBT"),
             value: s(f(snap.debt_minor)),
             sub: s("Cards and loans"),
             tone: s(if snap.debt_minor > 0 { "warn" } else { "flat" }),
+            delta: s(""),
+            delta_up: false,
         },
     ]
+}
+
+/// Share of this month's income that survived, to one decimal place.
+///
+/// Integer arithmetic in tenths of a percent — the whole crate's rule is that
+/// money never touches a float, and a percentage *of* money is close enough to
+/// money to keep the rule. `None` when there is no income to be a share of.
+fn saved_pct(snap: &Snapshot) -> Option<String> {
+    if snap.income_this_month_minor <= 0 {
+        return None;
+    }
+    let tenths =
+        snap.saved_this_month_minor() as i128 * 1000 / snap.income_this_month_minor as i128;
+    Some(format!("{}.{}%", tenths / 10, (tenths % 10).abs()))
 }
 
 /// Category slices, each carrying its own ring segment.
@@ -133,7 +207,7 @@ pub fn slices(rows: &[CategorySpend], base: &str) -> Vec<FinCatSlice> {
                 amount: s(money::format_minor(r.base_minor, base)),
                 pct,
                 path: s(arc_path(acc, pct)),
-                hue: hue(i, r.color.as_deref()),
+                hue: category_hue(i, &r.name, r.color.as_deref()),
             };
             acc += pct;
             out
@@ -257,6 +331,9 @@ pub fn txns(rows: &[TxnRow], base: &str, show_running: bool) -> Vec<FinTxnRow> {
                 _ => t.description.clone(),
             }),
             category: opt(t.category_name.clone()),
+            // The same colour the donut gives this category, so a row in the
+            // ledger and a slice in the chart are recognisably the same thing.
+            cat_hue: category_hue(0, t.category_name.as_deref().unwrap_or(""), None),
             account: s(&t.account_name),
             source: s(source_label(&t.source)),
             amount: s(format!(
@@ -684,6 +761,74 @@ mod tests {
         assert!(parse_hex("#ff84cc16").is_some());
         assert!(parse_hex("lime").is_none());
         assert!(parse_hex("#abc").is_none());
+    }
+
+    #[test]
+    fn the_named_categories_keep_their_designed_colour_whatever_their_position() {
+        // Position 7 in the fallback palette is indigo; Food is lime wherever it
+        // lands, which is what makes two months' donuts comparable.
+        let food = category_hue(7, "Food", None);
+        assert_eq!((food.red(), food.green(), food.blue()), (0x84, 0xcc, 0x16));
+        // Prefix, not equality: a user who renamed it still gets the lime.
+        assert_eq!(category_hue(0, "Food & drink", None), food);
+        // Unnamed falls through to the ordinal palette, and keeps its slot.
+        assert_eq!(category_hue(2, "Aquarium supplies", None), category_hue(2, "Whatever", None));
+        // A stored colour still wins over both.
+        let stored = category_hue(0, "Food", Some("#ff0000"));
+        assert_eq!((stored.red(), stored.green(), stored.blue()), (0xff, 0, 0));
+    }
+
+    #[test]
+    fn the_savings_rate_is_a_share_of_income_and_never_invented() {
+        let snap = |income: i64, spent: i64| Snapshot {
+            liquid_minor: 0,
+            debt_minor: 0,
+            spent_this_month_minor: spent,
+            spent_last_month_minor: None,
+            income_this_month_minor: income,
+            owed_to_me_minor: 0,
+            i_owe_minor: 0,
+            subscriptions_yearly_minor: 0,
+            open_obligations: 0,
+        };
+        // The mockup's figure: ₹23,637 saved out of ₹1,38,000 in.
+        assert_eq!(saved_pct(&snap(13_800_000, 11_436_300)).as_deref(), Some("17.1%"));
+        // No income is no rate, not 0% and not a division by zero.
+        assert_eq!(saved_pct(&snap(0, 5_000)), None);
+        // Overspent: the sign belongs on the whole figure, not on the decimal.
+        assert_eq!(saved_pct(&snap(10_000, 15_000)).as_deref(), Some("-50.0%"));
+    }
+
+    #[test]
+    fn the_spend_delta_is_absolute_with_a_direction_and_silent_on_a_first_month() {
+        let snap = |this: i64, last: Option<i64>| Snapshot {
+            liquid_minor: 0,
+            debt_minor: 0,
+            spent_this_month_minor: this,
+            spent_last_month_minor: last,
+            income_this_month_minor: 0,
+            owed_to_me_minor: 0,
+            i_owe_minor: 0,
+            subscriptions_yearly_minor: 0,
+            open_obligations: 0,
+        };
+        let spent = |s: &Snapshot| stats(s, "INR")[1].clone();
+
+        // Nothing to compare against — no pill at all, rather than "+100%".
+        assert_eq!(spent(&snap(500_000, None)).delta, "");
+        // Unchanged is not news either.
+        assert_eq!(spent(&snap(500_000, Some(500_000))).delta, "");
+
+        let up = spent(&snap(521_000, Some(500_000)));
+        assert!(up.delta_up, "spending more has to read as the bad direction");
+        assert!(up.delta.contains("210"), "got {}", up.delta);
+        // The figure is unsigned: the arrow and the colour carry the direction, so
+        // a minus sign next to a down arrow would say it twice.
+        assert!(!up.delta.contains('-'), "got {}", up.delta);
+
+        let down = spent(&snap(400_000, Some(500_000)));
+        assert!(!down.delta_up);
+        assert!(!down.delta.contains('-'), "got {}", down.delta);
     }
 
     #[test]

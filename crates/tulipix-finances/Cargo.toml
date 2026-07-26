@@ -12,6 +12,11 @@ license.workspace = true
 [dependencies]
 anyhow = { workspace = true }
 sqlx = { workspace = true }
+# Only for the two places something is deliberately swallowed: sample data that
+# could not be seeded, and a sample row kept back because the user has built on
+# it. Both must not fail the operation around them, and both are worth a line in
+# the log rather than silence.
+tracing = { workspace = true }
 # DbHandle behind finances.db, alongside genesis.db and the section DBs.
 tulipix-core = { path = "../tulipix-core" }
 # The spec asked for `time`; `chrono` is what this workspace already uses (four

@@ -282,6 +282,18 @@ OFXHEADER:100
 </OFX>
 ";
 
+    /// An OFX statement with no row in common with `HDFC`.
+    ///
+    /// Needed because `QFX` above is deliberately the same two charges as the CSV,
+    /// to test dedup across formats — so importing both leaves nothing tagged
+    /// `ofx` to look at.
+    const QFX_OTHER: &str = "\
+OFXHEADER:100
+<OFX><CURDEF>INR
+<STMTTRN><DTPOSTED>20260802<TRNAMT>-3284.00<NAME>BESCOM POWER</STMTTRN>
+</OFX>
+";
+
     async fn pool() -> SqlitePool {
         let p = SqlitePool::connect("sqlite::memory:").await.unwrap();
         schema::apply_schema(&p).await.unwrap();
@@ -360,9 +372,11 @@ OFXHEADER:100
         assert_eq!(got.added, 3);
         assert_eq!(got.duplicates, 0);
 
-        assert_eq!(txn::spent_between(&p, "2026-07-01", "2026-07-31").await.unwrap(), 68_900);
+        // Swiggy ₹340 plus Netflix ₹649. The salary is income and must not appear
+        // in the spend total.
+        assert_eq!(txn::spent_between(&p, "2026-07-01", "2026-07-31").await.unwrap(), 98_900);
         assert_eq!(txn::income_between(&p, "2026-07-01", "2026-07-31").await.unwrap(), 5_000_000);
-        assert_eq!(accounts::balance(&p, acct).await.unwrap(), 5_000_000 - 68_900);
+        assert_eq!(accounts::balance(&p, acct).await.unwrap(), 5_000_000 - 98_900);
     }
 
     #[tokio::test]
@@ -378,7 +392,7 @@ OFXHEADER:100
 
         let all = txn::page(&p, &TxnFilter::default(), TxnSort::Date, true, 0).await.unwrap();
         assert_eq!(all.total, 3);
-        assert_eq!(accounts::balance(&p, acct).await.unwrap(), 5_000_000 - 68_900);
+        assert_eq!(accounts::balance(&p, acct).await.unwrap(), 5_000_000 - 98_900);
     }
 
     #[tokio::test]
@@ -402,7 +416,8 @@ Date,Narration,Withdrawal Amt.,Deposit Amt.,Closing Balance
         let p = pool().await;
         let acct = bank(&p).await;
         ingest(&p, acct, &preview(HDFC, "INR", None, None).unwrap()).await.unwrap();
-        ingest(&p, acct, &preview(QFX, "INR", None, None).unwrap()).await.unwrap();
+        let ofx = ingest(&p, acct, &preview(QFX_OTHER, "INR", None, None).unwrap()).await.unwrap();
+        assert_eq!(ofx.added, 1, "a row that is genuinely new");
 
         let sources: Vec<String> =
             sqlx::query_scalar("SELECT DISTINCT source FROM transactions ORDER BY source")

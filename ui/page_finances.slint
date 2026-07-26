@@ -24,6 +24,10 @@
 import { Theme } from "tokens.slint";
 import { ScrollView, LineEdit, ComboBox, Switch } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
+// The same header primitives Photos · Videos · Music · Books · Cloud · Tools use.
+// This section had its own chip and its own search box; two headers built from one
+// set of parts is the reason every page in the app reads as the same app.
+import { HdrChip, HdrSearch, CountPill } from "section_header.slint";
 
 // ── section surface tokens ──────────────────────────────────────────────────
 // Derived from the app theme rather than hardcoded, so light/dark/OLED all work
@@ -31,6 +35,14 @@ import { AppIcon, Icons } from "icons.slint";
 export global FinTheme {
     out property <color> accent:   Theme.finances-accent;
     out property <color> accent-2: Theme.finances-accent-2;
+    // The section's identity gradient: lime → yellow at 135°, on every active tab,
+    // primary button and filled bar. One brush rather than each site composing its
+    // own, so the ramp cannot drift between the header and the body.
+    out property <brush> accent-grad: @linear-gradient(135deg, Theme.finances-accent, Theme.finances-accent-2);
+    // Ink for text sitting *on* the accent. Lime is a light hue: white on it fails
+    // contrast, so anything filled with the gradient gets this instead.
+    out property <color> on-accent: #1a2e05;
+    out property <bool>  light:     !Theme.dark;
     out property <color> canvas:   Theme.atmosphere;
     out property <color> card:     Theme.panel;
     out property <color> card-2:   Theme.panel-2;
@@ -50,7 +62,18 @@ export global FinTheme {
 // ── data shapes ─────────────────────────────────────────────────────────────
 
 // One tile in the Overview strip. `tone` is ok | warn | bad | flat.
-export struct FinStat { label: string, value: string, sub: string, tone: string }
+//
+// `delta` is a change against the previous month, shown as a pill instead of the
+// `sub` line when there is one. Empty when there is no month to compare against —
+// a first-month "+100%" is arithmetic, not information.
+export struct FinStat {
+    label: string,
+    value: string,
+    sub: string,
+    tone: string,
+    delta: string,
+    delta-up: bool,
+}
 
 export struct FinAccountRow {
     id: int,
@@ -69,6 +92,9 @@ export struct FinTxnRow {
     date: string,
     description: string,
     category: string,
+    // The colour this category has in the donut. Carried per row so a tag in the
+    // ledger and a slice in the chart are visibly the same category.
+    cat-hue: color,
     account: string,
     source: string,        // Manual | CSV | OFX | OCR | Recurrence
     amount: string,
@@ -297,35 +323,63 @@ component Pill inherits Rectangle {
     }
 }
 
-component Chip inherits Rectangle {
-    in property <string> label;
-    in property <bool> on: false;
-    in property <int> badge: 0;
-    callback clicked();
-    horizontal-stretch: 0;
-    height: 32px;
-    border-radius: 16px;
-    background: root.on ? FinTheme.accent.with-alpha(0.18) : FinTheme.pill-bg;
-    border-width: 1.5px;
-    border-color: root.on ? FinTheme.accent.with-alpha(0.5) : transparent;
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    HorizontalLayout {
-        padding-left: 14px; padding-right: 14px; spacing: 7px; alignment: center;
-        Text {
-            text: root.label;
-            color: root.on ? FinTheme.accent : (ta.has-hover ? FinTheme.ink : FinTheme.ink-dim);
-            font-size: 12.5px; font-weight: 600; vertical-alignment: center;
-        }
-        if root.badge > 0: VerticalLayout {
-            alignment: center; horizontal-stretch: 0;
-            Pill { label: "\{root.badge}"; hue: FinTheme.bad; solid: true; }
-        }
+// The 32px rounded square that opens a list row — the mockup's `.logo`.
+//
+// The mockup fills it with a brand colour and an initial (Netflix red "N", HDFC
+// blue "H"). Neither is available here: the app has no brand table, and Slint has
+// no way to take the first character of a string. So the tile carries what this
+// section *does* know — what kind of thing the row is — as an icon on a wash of
+// its meaning colour. Same shape and rhythm in the row, and it stays correct for
+// a merchant nobody has a logo for.
+component Tile inherits Rectangle {
+    in property <image> icon;
+    in property <color> hue: FinTheme.accent;
+    in property <length> size: 32px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    min-width: root.size; max-width: root.size;
+    min-height: root.size; max-height: root.size;
+    border-radius: root.size / 3.2;
+    background: root.hue.with-alpha(FinTheme.light ? 0.20 : 0.16);
+    AppIcon {
+        source: root.icon;
+        tint: FinTheme.light ? root.hue.darker(0.25) : root.hue;
+        width: root.size / 2; height: root.size / 2;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
     }
-    animate background, border-color { duration: 120ms; }
 }
 
+// Section tab — the shared header chip with this section's gradient baked in.
+//
+// All nine carry the same lime→yellow ramp rather than a colour each: the accent
+// is the section's identity, and nine hues in one row would compete with the
+// category colours in the charts below, which *are* meaningful.
+//
+// `collapsible` is what lets nine tabs live on one row: icon-only at rest,
+// expanding to icon + name on hover or when active. Same behaviour as the Music
+// header, which solved this first.
+component FinTab inherits HdrChip {
+    in property <bool> compact: false;
+    has-grad: true;
+    tint: FinTheme.accent;
+    grad: FinTheme.accent-grad;
+    active-text: FinTheme.on-accent;
+    dark: !FinTheme.light;
+    light-theme: FinTheme.light;
+    collapsible: root.compact;
+    min-width: root.compact ? (self.revealed ? root.wide : 44px) : root.wide;
+    animate min-width { duration: 200ms; easing: ease-out; }
+    // Width when the label is showing. Per-tab because "Subscriptions" and "Dues"
+    // do not want the same pill.
+    in property <length> wide: 104px;
+}
+
+// Pill button. Secondary is a glass fill with a hairline border, primary is the
+// section gradient — the mockup's `.hbtn` / `.hbtn.solid` pair. An optional
+// leading icon, because a header button with a label and no icon reads as a link.
 component Btn inherits Rectangle {
     in property <string> label;
+    in property <image> icon;
     in property <bool> primary: false;
     in property <bool> danger: false;
     in property <bool> enabled: true;
@@ -336,24 +390,35 @@ component Btn inherits Rectangle {
     border-radius: root.h / 2;
     property <color> hue: root.danger ? FinTheme.bad : FinTheme.accent;
     background: !root.enabled ? FinTheme.pill-bg
-              : root.primary ? (ta.has-hover ? root.hue.darker(0.12) : root.hue)
-              : (ta.has-hover ? FinTheme.pill-bg.with-alpha(0.9) : transparent);
-    border-width: root.primary ? 0px : 1.5px;
+              : root.primary
+                ? (root.danger
+                    ? (ta.has-hover ? root.hue.darker(0.12) : root.hue)
+                    // Hover deepens to the flat accent, so the press has feedback
+                    // the gradient alone cannot give.
+                    : (ta.has-hover ? FinTheme.accent : FinTheme.accent-grad))
+              : (ta.has-hover ? FinTheme.pill-bg.with-alpha(0.95) : FinTheme.pill-bg);
+    border-width: root.primary ? 0px : 1px;
     border-color: root.primary ? transparent
-                : (root.enabled ? root.hue.with-alpha(0.45) : FinTheme.hairline);
+                : (root.danger ? root.hue.with-alpha(0.45) : FinTheme.hairline);
     ta := TouchArea {
         mouse-cursor: root.enabled ? pointer : default;
         clicked => { if (root.enabled) { root.clicked(); } }
     }
+    // Lime is a light accent, so a primary button needs dark ink on it to stay
+    // readable — white on #84cc16 fails contrast.
+    property <color> ink: !root.enabled ? FinTheme.ink-dim
+        : root.primary ? (root.danger ? #ffffff : FinTheme.on-accent)
+        : (root.danger ? root.hue : (ta.has-hover ? FinTheme.ink : FinTheme.ink-dim));
     HorizontalLayout {
-        padding-left: 16px; padding-right: 16px; alignment: center;
+        padding-left: root.icon.width > 0 ? 14px : 16px;
+        padding-right: 16px;
+        spacing: 8px; alignment: center;
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            AppIcon { source: root.icon; tint: root.ink; width: 16px; height: 16px; }
+        }
         Text {
-            text: root.label;
-            // Lime is a light accent, so a primary button needs dark text on it
-            // to stay readable — white on #84cc16 fails contrast.
-            color: !root.enabled ? FinTheme.ink-dim
-                 : root.primary ? (root.danger ? #ffffff : #14210a)
-                 : root.hue;
+            text: root.label; color: root.ink;
             font-size: 13px; font-weight: 700; vertical-alignment: center;
         }
     }
@@ -404,10 +469,17 @@ component CardTitle inherits HorizontalLayout {
 
 // A progress bar that can go past 100%. Over-budget has to be visible, so the
 // overflow is drawn in the alarm colour rather than clamped away.
+//
+// The fill picks its own tone from how full it is — over 100% alarms, 85% and up
+// warns, below that it is the caller's hue. A bar at 93% that looks identical to
+// one at 40% is a bar that failed to say the only thing it was drawn to say.
+// `toned: false` opts out, for the bars that measure progress rather than burn
+// (loan repayment, where 93% paid off is good news).
 component Bar inherits Rectangle {
     in property <int> pct: 0;
     in property <color> hue: FinTheme.accent;
     in property <length> thickness: 8px;
+    in property <bool> toned: true;
     min-height: root.thickness; max-height: root.thickness;
     horizontal-stretch: 1;
     border-radius: root.thickness / 2;
@@ -418,8 +490,37 @@ component Bar inherits Rectangle {
         width: parent.width * Math.min(100, Math.max(0, root.pct)) / 100;
         height: parent.height;
         border-radius: parent.border-radius;
-        background: root.pct > 100 ? FinTheme.bad : root.hue;
+        background: root.pct > 100 ? FinTheme.bad
+                  : (root.toned && root.pct >= 85) ? FinTheme.warn : root.hue;
         animate width { duration: 260ms; easing: ease-out; }
+    }
+}
+
+// The mockup's `.delta` — a signed change on a tinted ground, with an arrow.
+// Up is red and down is green because this only ever labels spending: an arrow
+// that means "more" is bad news here, and colouring by direction rather than by
+// meaning is how a dashboard ends up congratulating you for overspending.
+component Delta inherits Rectangle {
+    in property <string> label;
+    in property <bool> up: false;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    min-height: 22px; max-height: 22px;
+    // Sized off the label with no layout in between, like `Pill`: a layout would
+    // set `l.width` from this width and this width from `l.width`, which is the
+    // binding loop this file is one wrong line away from at all times.
+    min-width: l.width + 33px; max-width: l.width + 33px;
+    border-radius: 11px;
+    property <color> hue: root.up ? FinTheme.bad : FinTheme.good;
+    background: root.hue.with-alpha(0.16);
+    AppIcon {
+        source: root.up ? Icons.trending-up : Icons.trending-down;
+        tint: root.hue; width: 13px; height: 13px;
+        x: 8px; y: (parent.height - self.height) / 2;
+    }
+    l := Text {
+        x: 25px; y: (parent.height - self.height) / 2;
+        text: root.label; color: root.hue;
+        font-size: 11.5px; font-weight: 700;
     }
 }
 
@@ -657,7 +758,11 @@ component NeedsRow inherits Rectangle {
         padding-left: 12px; padding-right: 12px; spacing: 12px;
         VerticalLayout {
             alignment: center; horizontal-stretch: 0;
-            Rectangle { width: 4px; height: 30px; border-radius: 2px; background: root.hue; }
+            Tile {
+                hue: root.hue;
+                icon: root.item.kind == "subscription" ? Icons.repeat
+                    : root.item.kind == "bill" ? Icons.receipt : Icons.calendar-clock;
+            }
         }
         VerticalLayout {
             alignment: center; horizontal-stretch: 1; spacing: 2px;
@@ -667,11 +772,11 @@ component NeedsRow inherits Rectangle {
             }
             Text {
                 text: root.item.status == "overdue"
-                        ? "\{-root.item.days} days overdue · \{root.item.due}"
-                        : (root.item.days == 0 ? "Due today · \{root.item.due}"
-                        : (root.item.days == 1 ? "Due tomorrow · \{root.item.due}"
-                        : "In \{root.item.days} days · \{root.item.due}"));
-                color: root.hue; font-size: 11px; font-weight: 600;
+                        ? "was due \{root.item.due} · unpaid"
+                        : (root.item.days == 0 ? "\{root.item.due} · due today"
+                        : (root.item.days == 1 ? "\{root.item.due} · due tomorrow"
+                        : "\{root.item.due} · mark paid"));
+                color: FinTheme.ink-dim; font-size: 11px;
             }
         }
         VerticalLayout {
@@ -683,6 +788,16 @@ component NeedsRow inherits Rectangle {
                 // Italic marks the figure as a guess as well as the tilde does,
                 // for anyone who reads shape before punctuation.
                 font-italic: root.item.is-estimate;
+            }
+        }
+        // How long there is, as a pill rather than prose — the whole point of the
+        // list is scanning down this column.
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Pill {
+                hue: root.hue;
+                label: root.item.status == "overdue" ? "\{-root.item.days}d late"
+                     : (root.item.days == 0 ? "today" : "\{root.item.days}d");
             }
         }
         VerticalLayout {
@@ -751,6 +866,11 @@ export component FinancesPage inherits Rectangle {
     // Which of the nine views is showing.
     in-out property <string> tab: "overview";
 
+    // Half-window guard: below this the nine tabs collapse to icon-only and
+    // expand on hover. 1210px is where the widest row (Subscriptions and Dues
+    // showing their counts) stops fitting beside the header's own controls.
+    property <bool> tabs-compact: root.width < 1210px;
+
     // Strip + charts
     in property <[FinStat]> stats;
     in property <[FinCatSlice]> slices;
@@ -806,6 +926,9 @@ export component FinancesPage inherits Rectangle {
     in property <string> cal-low-point: "";
     in property <[FinFlag]> flags;
     in property <int> badge: 0;
+    // Sample data is still on screen. Never hidden: invented money that does not
+    // announce itself is the one thing this section must not do.
+    in property <bool> demo: false;
 
     // Sheet — one modal at a time, named by a string for the same reason `tab`
     // is a string: two booleans can be true at once and a name cannot.
@@ -860,6 +983,7 @@ export component FinancesPage inherits Rectangle {
     callback accept-proposal(int);
     callback import-pick();
     callback scan-receipt();
+    callback demo-remove();
     // Saves and reopens a blank form of the same kind, for entering several
     // things in a row.
     callback submit-again();
@@ -872,73 +996,159 @@ export component FinancesPage inherits Rectangle {
         padding: 18px;
         spacing: 14px;
 
+        // ── row 1 · badge · title · search · actions ────────────────────────
         HorizontalLayout {
             spacing: 12px;
             VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
+                // Gradient-filled, like every other section's header badge. The
+                // icon is dark-on-accent rather than accent-on-wash: it is the one
+                // place the section states its colour at full strength.
                 Rectangle {
                     width: 44px; height: 44px; border-radius: 13px;
-                    background: FinTheme.accent.with-alpha(0.16);
+                    background: FinTheme.accent-grad;
                     AppIcon {
-                        source: Icons.wallet; tint: FinTheme.accent;
-                        width: 24px; height: 24px;
+                        source: Icons.wallet; tint: FinTheme.on-accent;
+                        width: 23px; height: 23px;
                         x: (parent.width - self.width) / 2;
                         y: (parent.height - self.height) / 2;
                     }
                 }
             }
             VerticalLayout {
-                alignment: center; horizontal-stretch: 1; spacing: 2px;
+                alignment: center; horizontal-stretch: 0; spacing: 2px;
                 Text { text: "Finances"; color: FinTheme.ink; font-size: 21px; font-weight: 800; }
                 Text {
                     text: "Offline. No bank sync, no accounts — nothing here leaves this machine.";
                     color: FinTheme.ink-dim; font-size: 11.5px;
                 }
             }
+            Rectangle { horizontal-stretch: 1; background: transparent; }
+            // Search is the ledger's search wherever it is typed: there is one
+            // table underneath all nine tabs, so a second "search everything" box
+            // would be the same query with a different name. Typing here goes to
+            // the tab that can show the answer.
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                HdrSearch {
+                    width: 260px;
+                    dark: !FinTheme.light;
+                    outline: true;
+                    placeholder: "Search transactions";
+                    query <=> root.txn-search;
+                    edited(q) => {
+                        if (root.tab != "txns") { root.set-tab("txns"); }
+                        root.txn-filter();
+                    }
+                    cleared => { root.txn-filter(); }
+                }
+            }
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                CountPill {
+                    accent: FinTheme.accent;
+                    text-color: FinTheme.on-accent;
+                    seg1: root.txn-total == 1 ? "1 transaction" : "\{root.txn-total} transactions";
+                    seg2: root.month-label;
+                }
+            }
             VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
                 HorizontalLayout {
                     spacing: 8px;
-                    Btn { label: "Import statement"; clicked => { root.import-pick(); } }
-                    Btn { label: "Scan receipt"; clicked => { root.scan-receipt(); } }
-                    Btn { label: "Add"; primary: true; clicked => { root.open-sheet("txn", 0); } }
+                    Btn { label: "Import"; icon: Icons.upload; h: 44px;
+                        clicked => { root.import-pick(); } }
+                    // Not the receipt icon: that one is the Bills tab, and two
+                    // different things wearing one icon is worse than either
+                    // wearing a slightly loose one.
+                    Btn { label: "Scan"; icon: Icons.image; h: 44px;
+                        clicked => { root.scan-receipt(); } }
+                    Btn { label: "Add"; icon: Icons.plus; h: 44px; primary: true;
+                        clicked => { root.open-sheet("txn", 0); } }
                     IconBtn { icon: Icons.settings; tip: "Exchange rates";
                         clicked => { root.open-sheet("rates", 0); } }
                 }
             }
         }
 
-        // ── two chip rows ───────────────────────────────────────────────────
-        // Nine tabs wrap at 1280px. Accepted in preference to grouping them,
-        // which would bury half the section a click deeper.
-        VerticalLayout {
-            spacing: 8px;
+        // ── sample-data banner ──────────────────────────────────────────────
+        // Above the tabs, so it is on screen whichever tab is open. The section
+        // seeds one month of plausible finances on a first run, because nine empty
+        // tabs are indistinguishable from nine broken ones — but money the app
+        // invented has to say so, every time it is shown.
+        if root.demo: Rectangle {
+            border-radius: 12px;
+            background: FinTheme.accent.with-alpha(0.12);
+            border-width: 1px;
+            border-color: FinTheme.accent.with-alpha(0.35);
             HorizontalLayout {
-                spacing: 8px; alignment: start;
-                Chip { label: "Overview"; on: root.tab == "overview";
-                    clicked => { root.set-tab("overview"); } }
-                Chip { label: "Transactions"; on: root.tab == "txns";
-                    clicked => { root.set-tab("txns"); } }
-                Chip { label: "Bills"; on: root.tab == "bills"; badge: root.badge;
-                    clicked => { root.set-tab("bills"); } }
-                Chip { label: "Subscriptions"; on: root.tab == "subs";
-                    clicked => { root.set-tab("subs"); } }
-                Chip { label: "Dues"; on: root.tab == "dues";
-                    clicked => { root.set-tab("dues"); } }
-                Rectangle { horizontal-stretch: 1; background: transparent; }
+                padding: 12px; spacing: 10px;
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    AppIcon {
+                        source: Icons.bell; tint: FinTheme.accent;
+                        width: 16px; height: 16px;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 1; spacing: 2px;
+                    Text {
+                        text: "This is sample data, not your money.";
+                        color: FinTheme.ink; font-size: 12.5px; font-weight: 700;
+                    }
+                    Text {
+                        text: "Each part disappears as you add your own — a real account clears the sample accounts, a real bill clears the sample bills.";
+                        color: FinTheme.ink-dim; font-size: 11px; wrap: word-wrap;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Btn { label: "Remove all of it"; clicked => { root.demo-remove(); } }
+                }
             }
-            HorizontalLayout {
-                spacing: 8px; alignment: start;
-                Chip { label: "Accounts"; on: root.tab == "accounts";
-                    clicked => { root.set-tab("accounts"); } }
-                Chip { label: "Budgets"; on: root.tab == "budgets";
-                    clicked => { root.set-tab("budgets"); } }
-                Chip { label: "Calendar"; on: root.tab == "calendar";
-                    clicked => { root.set-tab("calendar"); } }
-                Chip { label: "Insights"; on: root.tab == "insights";
-                    clicked => { root.set-tab("insights"); } }
-                Rectangle { horizontal-stretch: 1; background: transparent; }
-            }
+        }
+
+        // ── row 2 · the nine tabs, on one row ───────────────────────────────
+        // Two rows put half the section below a fold that moved with the window.
+        // One row, and below 1210px the tabs collapse to their icons and re-expand
+        // on hover — the same rule the Music header uses, so the two sections
+        // behave identically at the same window width.
+        HorizontalLayout {
+            spacing: 8px; alignment: start;
+            FinTab { label: "Overview"; icon: Icons.pie-chart; wide: 110px;
+                compact: root.tabs-compact; active: root.tab == "overview";
+                clicked => { root.set-tab("overview"); } }
+            FinTab { label: "Transactions"; icon: Icons.trending-up; wide: 134px;
+                compact: root.tabs-compact; active: root.tab == "txns";
+                clicked => { root.set-tab("txns"); } }
+            // The only count that is a warning rather than an inventory: it is
+            // what needs the user, which is why the sidebar badge shows it too.
+            FinTab { label: "Bills"; icon: Icons.receipt; wide: root.badge > 0 ? 104px : 88px;
+                compact: root.tabs-compact; active: root.tab == "bills"; count: root.badge;
+                clicked => { root.set-tab("bills"); } }
+            FinTab { label: "Subscriptions"; icon: Icons.repeat;
+                wide: root.subs.length > 0 ? 152px : 138px;
+                compact: root.tabs-compact; active: root.tab == "subs";
+                count: root.subs.length;
+                clicked => { root.set-tab("subs"); } }
+            FinTab { label: "Dues"; icon: Icons.users;
+                wide: root.dues.length > 0 ? 100px : 84px;
+                compact: root.tabs-compact; active: root.tab == "dues";
+                count: root.dues.length;
+                clicked => { root.set-tab("dues"); } }
+            FinTab { label: "Accounts"; icon: Icons.credit-card; wide: 112px;
+                compact: root.tabs-compact; active: root.tab == "accounts";
+                clicked => { root.set-tab("accounts"); } }
+            FinTab { label: "Budgets"; icon: Icons.sliders; wide: 108px;
+                compact: root.tabs-compact; active: root.tab == "budgets";
+                clicked => { root.set-tab("budgets"); } }
+            FinTab { label: "Calendar"; icon: Icons.calendar; wide: 112px;
+                compact: root.tabs-compact; active: root.tab == "calendar";
+                clicked => { root.set-tab("calendar"); } }
+            FinTab { label: "Insights"; icon: Icons.sparkles; wide: 106px;
+                compact: root.tabs-compact; active: root.tab == "insights";
+                clicked => { root.set-tab("insights"); } }
+            Rectangle { horizontal-stretch: 1; background: transparent; }
         }
 
         // ── body ────────────────────────────────────────────────────────────
@@ -977,9 +1187,13 @@ export component FinancesPage inherits Rectangle {
                                     font-size: 22px; font-weight: 800;
                                     overflow: elide;
                                 }
-                                Text {
+                                if s.delta == "": Text {
                                     text: s.sub; color: FinTheme.ink-dim; font-size: 11px;
                                     overflow: elide;
+                                }
+                                if s.delta != "": HorizontalLayout {
+                                    alignment: start;
+                                    Delta { label: s.delta; up: s.delta-up; }
                                 }
                             }
                         }
@@ -1046,10 +1260,32 @@ export component FinancesPage inherits Rectangle {
                                 CardTitle { title: "Accounts"; hint: root.liquid-total + " liquid"; }
                                 for a in root.accounts: HorizontalLayout {
                                     spacing: 10px;
-                                    Text {
-                                        text: a.name; color: FinTheme.ink; font-size: 12.5px;
-                                        vertical-alignment: center; horizontal-stretch: 1;
-                                        overflow: elide;
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        Tile {
+                                            size: 30px;
+                                            hue: a.kind == "card"   ? FinTheme.bad
+                                               : a.kind == "loan"   ? FinTheme.bad
+                                               : a.kind == "cash"   ? FinTheme.good
+                                               : a.kind == "wallet" ? FinTheme.accent-2
+                                               : FinTheme.accent;
+                                            icon: a.kind == "card" ? Icons.credit-card
+                                                : a.kind == "cash" ? Icons.wallet
+                                                : a.kind == "wallet" ? Icons.wallet
+                                                : a.kind == "loan" ? Icons.receipt
+                                                : Icons.credit-card;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 1; spacing: 1px;
+                                        Text {
+                                            text: a.name; color: FinTheme.ink; font-size: 12.5px;
+                                            font-weight: 600; overflow: elide;
+                                        }
+                                        if a.sub != "": Text {
+                                            text: a.sub; color: FinTheme.ink-dim;
+                                            font-size: 10.5px; overflow: elide;
+                                        }
                                     }
                                     Text {
                                         text: a.balance;
@@ -1065,23 +1301,84 @@ export component FinancesPage inherits Rectangle {
                             VerticalLayout {
                                 padding: 16px; spacing: 8px;
                                 CardTitle { title: "Money between people"; }
+                                // Two columns, each headed by its own total — the
+                                // shape the design asks for, because the two
+                                // directions are separate facts and putting them in
+                                // one list invites the eye to net them off.
                                 HorizontalLayout {
-                                    spacing: 10px;
-                                    Text { text: "Owed to you"; color: FinTheme.ink-dim;
-                                        font-size: 12px; vertical-alignment: center;
-                                        horizontal-stretch: 1; }
-                                    Text { text: root.owed-to-me; color: FinTheme.good;
-                                        font-size: 13px; font-weight: 700;
-                                        vertical-alignment: center; }
-                                }
-                                HorizontalLayout {
-                                    spacing: 10px;
-                                    Text { text: "You owe"; color: FinTheme.ink-dim;
-                                        font-size: 12px; vertical-alignment: center;
-                                        horizontal-stretch: 1; }
-                                    Text { text: root.i-owe; color: FinTheme.warn;
-                                        font-size: 13px; font-weight: 700;
-                                        vertical-alignment: center; }
+                                    spacing: 16px;
+                                    VerticalLayout {
+                                        // spacing 0 on purpose: a due belonging to the other
+                                        // column collapses to zero height, and a spaced layout
+                                        // would leave its gap behind as a hole in this one.
+                                        spacing: 0px; horizontal-stretch: 1;
+                                        Text {
+                                            text: "Owed to you · " + root.owed-to-me;
+                                            color: FinTheme.good; font-size: 12px; font-weight: 700;
+                                        }
+                                        for d in root.dues: Rectangle {
+                                            property <bool> mine: d.direction == "owed_to_me";
+                                            min-height: self.mine ? 38px : 0px;
+                                            max-height: self.mine ? 38px : 0px;
+                                            background: transparent;
+                                            clip: true;
+                                            if self.mine: HorizontalLayout {
+                                                spacing: 8px; padding-top: 6px;
+                                                VerticalLayout {
+                                                    alignment: center; horizontal-stretch: 0;
+                                                    Tile { size: 26px; hue: FinTheme.good; icon: Icons.arrow-down; }
+                                                }
+                                                VerticalLayout {
+                                                    alignment: center; horizontal-stretch: 1; spacing: 1px;
+                                                    Text { text: d.person; color: FinTheme.ink;
+                                                        font-size: 12px; font-weight: 600; overflow: elide; }
+                                                    Text { text: "since " + d.opened;
+                                                        color: FinTheme.ink-dim; font-size: 10px; }
+                                                }
+                                                VerticalLayout {
+                                                    alignment: center; horizontal-stretch: 0;
+                                                    Text { text: d.amount; color: FinTheme.good;
+                                                        font-size: 12px; font-weight: 700; }
+                                                }
+                                            }
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        // spacing 0 on purpose: a due belonging to the other
+                                        // column collapses to zero height, and a spaced layout
+                                        // would leave its gap behind as a hole in this one.
+                                        spacing: 0px; horizontal-stretch: 1;
+                                        Text {
+                                            text: "You owe · " + root.i-owe;
+                                            color: FinTheme.bad; font-size: 12px; font-weight: 700;
+                                        }
+                                        for d in root.dues: Rectangle {
+                                            property <bool> mine: d.direction == "i_owe";
+                                            min-height: self.mine ? 38px : 0px;
+                                            max-height: self.mine ? 38px : 0px;
+                                            background: transparent;
+                                            clip: true;
+                                            if self.mine: HorizontalLayout {
+                                                spacing: 8px; padding-top: 6px;
+                                                VerticalLayout {
+                                                    alignment: center; horizontal-stretch: 0;
+                                                    Tile { size: 26px; hue: FinTheme.bad; icon: Icons.arrow-up; }
+                                                }
+                                                VerticalLayout {
+                                                    alignment: center; horizontal-stretch: 1; spacing: 1px;
+                                                    Text { text: d.person; color: FinTheme.ink;
+                                                        font-size: 12px; font-weight: 600; overflow: elide; }
+                                                    Text { text: "since " + d.opened;
+                                                        color: FinTheme.ink-dim; font-size: 10px; }
+                                                }
+                                                VerticalLayout {
+                                                    alignment: center; horizontal-stretch: 0;
+                                                    Text { text: d.amount; color: FinTheme.bad;
+                                                        font-size: 12px; font-weight: 700; }
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
                                 // Deliberately not summed. See the design note on
                                 // why net worth is not printed anywhere.
@@ -1160,7 +1457,9 @@ export component FinancesPage inherits Rectangle {
                                             vertical-alignment: center;
                                         }
                                     }
-                                    Bar { pct: l.progress-pct; thickness: 6px; hue: FinTheme.good; }
+                                    // Repayment, not burn: 90% paid off is the good end of this bar.
+                                    Bar { pct: l.progress-pct; thickness: 6px; hue: FinTheme.good;
+                                        toned: false; }
                                     Text {
                                         text: "\{l.remaining-months} of \{l.tenure-months} instalments left · " + l.emi + " a month";
                                         color: FinTheme.ink-dim; font-size: 10.5px;
@@ -1184,24 +1483,36 @@ export component FinancesPage inherits Rectangle {
                             }
                             for t in root.recent: HorizontalLayout {
                                 spacing: 10px;
-                                Text {
-                                    text: t.date; color: FinTheme.ink-dim; font-size: 11.5px;
-                                    vertical-alignment: center; horizontal-stretch: 0;
-                                    min-width: 88px;
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    // Direction, as a tile: money in, money out, or
+                                    // money that only moved between your own
+                                    // accounts and is not spending at all.
+                                    Tile {
+                                        size: 30px;
+                                        hue: t.kind == "income" ? FinTheme.good
+                                           : t.kind == "transfer" ? FinTheme.ink-dim
+                                           : FinTheme.accent;
+                                        icon: t.kind == "income" ? Icons.arrow-down
+                                            : t.kind == "transfer" ? Icons.refresh-cw
+                                            : Icons.arrow-up;
+                                    }
                                 }
-                                Text {
-                                    text: t.description;
-                                    // A transfer is greyed back here for the same
-                                    // reason it is in the ledger: visible, but not
-                                    // reading as spending.
-                                    color: t.kind == "transfer" ? FinTheme.transfer-ink : FinTheme.ink;
-                                    font-size: 12.5px; vertical-alignment: center;
-                                    horizontal-stretch: 1; overflow: elide;
-                                }
-                                Text {
-                                    text: t.category; color: FinTheme.ink-dim; font-size: 11px;
-                                    vertical-alignment: center; horizontal-stretch: 0;
-                                    overflow: elide; max-width: 130px;
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 1; spacing: 1px;
+                                    Text {
+                                        text: t.description;
+                                        // A transfer is greyed back here for the same
+                                        // reason it is in the ledger: visible, but not
+                                        // reading as spending.
+                                        color: t.kind == "transfer" ? FinTheme.transfer-ink : FinTheme.ink;
+                                        font-size: 12.5px; font-weight: 600; overflow: elide;
+                                    }
+                                    Text {
+                                        text: t.date + " · " + t.category + " · " + t.account;
+                                        color: FinTheme.ink-dim; font-size: 10.5px;
+                                        overflow: elide;
+                                    }
                                 }
                                 Text {
                                     text: t.amount;
@@ -1337,7 +1648,24 @@ export component FinancesPage inherits Rectangle {
                                             ink: t.kind == "transfer"
                                                  ? FinTheme.transfer-ink : FinTheme.ink;
                                         }
-                                        Cell { text: t.category; w: 130px; dim: true; }
+                                        // Category as a tinted tag rather than grey
+                                        // text: it is the column the eye groups the
+                                        // table by, and the colour is the same one
+                                        // the donut used.
+                                        Rectangle {
+                                            horizontal-stretch: 0;
+                                            min-width: 130px; max-width: 130px;
+                                            background: transparent;
+                                            // A long category name is cut off here
+                                            // rather than growing the pill into the
+                                            // account column.
+                                            clip: true;
+                                            if t.category != "": Pill {
+                                                x: 0;
+                                                y: (parent.height - self.height) / 2;
+                                                label: t.category; hue: t.cat-hue;
+                                            }
+                                        }
                                         Cell { text: t.account; w: 120px; dim: true; }
                                         Cell { text: t.source; w: 90px; dim: true; }
                                         Cell {
@@ -1425,7 +1753,12 @@ export component FinancesPage inherits Rectangle {
                             for b in root.bills: brow := Rectangle {
                                 min-height: 62px; max-height: 62px;
                                 border-radius: 12px;
-                                background: bta.has-hover ? FinTheme.card-2 : transparent;
+                                // An overdue row carries a faint alarm wash of its
+                                // own, so it is findable in a long list without
+                                // hovering every row to see which one is red.
+                                background: b.status == "overdue"
+                                    ? FinTheme.bad.with-alpha(bta.has-hover ? 0.14 : 0.07)
+                                    : (bta.has-hover ? FinTheme.card-2 : transparent);
                                 bta := TouchArea { }
                                 property <color> hue:
                                     b.status == "overdue" ? FinTheme.bad :
@@ -1435,8 +1768,10 @@ export component FinancesPage inherits Rectangle {
                                     padding-left: 12px; padding-right: 12px; spacing: 12px;
                                     VerticalLayout {
                                         alignment: center; horizontal-stretch: 0;
-                                        Rectangle { width: 4px; height: 34px; border-radius: 2px;
-                                            background: brow.hue; }
+                                        Tile {
+                                            hue: brow.hue;
+                                            icon: b.status == "paid" ? Icons.check : Icons.receipt;
+                                        }
                                     }
                                     VerticalLayout {
                                         alignment: center; horizontal-stretch: 1; spacing: 3px;
@@ -1964,7 +2299,7 @@ export component FinancesPage inherits Rectangle {
                                             vertical-alignment: center; horizontal-stretch: 0;
                                         }
                                     }
-                                    Bar { pct: l.progress-pct; hue: FinTheme.accent; }
+                                    Bar { pct: l.progress-pct; hue: FinTheme.accent; toned: false; }
                                     HorizontalLayout {
                                         spacing: 10px;
                                         Text {
@@ -2027,7 +2362,10 @@ export component FinancesPage inherits Rectangle {
                                         vertical-alignment: center;
                                     }
                                 }
-                                Bar { pct: root.budget-allocated-pct; hue: FinTheme.accent-2; }
+                                // Allocating most of your income is the point of an envelope system, so
+                                // this one does not warn as it fills.
+                                Bar { pct: root.budget-allocated-pct; hue: FinTheme.accent-2;
+                                    toned: false; }
                                 Text {
                                     text: root.budget-unallocated + " unallocated";
                                     color: FinTheme.ink-dim; font-size: 11px;
@@ -2103,8 +2441,10 @@ export component FinancesPage inherits Rectangle {
                                     vertical-alignment: center; min-width: 66px; }
                                 Bar {
                                     pct: m.pct;
+                                    // Already decided: within budget or not. The
+                                    // fill's own tone rule would overrule that.
                                     hue: m.within ? FinTheme.good : FinTheme.bad;
-                                    thickness: 10px;
+                                    thickness: 10px; toned: false;
                                 }
                                 Text {
                                     text: m.spent + " / " + m.budget;

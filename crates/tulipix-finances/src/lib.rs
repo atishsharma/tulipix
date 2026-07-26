@@ -39,6 +39,7 @@
 pub mod accounts;
 pub mod budgets;
 pub mod date;
+pub mod demo;
 pub mod dues;
 pub mod fx;
 pub mod import;
@@ -73,6 +74,11 @@ pub async fn open() -> Result<SqlitePool> {
     let pool = handle.pool().await?;
     schema::apply_schema(&pool).await?;
     schema::seed_defaults(&pool).await?;
+    // Sample data, once, and only on a database that has never held anything
+    // real. Nine empty tabs are indistinguishable from nine broken ones.
+    if let Err(e) = demo::seed(&pool, date::today()).await {
+        tracing::warn!("finances: sample data not seeded: {e}");
+    }
     Ok(pool)
 }
 
@@ -104,11 +110,13 @@ pub struct TickResult {
     pub swept: u64,
     /// Names of everything now overdue, for the notification body.
     pub overdue: Vec<String>,
+    /// Sample rows dropped because the user now has real data of that kind.
+    pub demo_pruned: u64,
 }
 
 impl TickResult {
     pub fn changed(&self) -> bool {
-        !self.created.is_empty() || self.swept > 0
+        !self.created.is_empty() || self.swept > 0 || self.demo_pruned > 0
     }
 }
 
@@ -123,7 +131,10 @@ pub async fn tick(pool: &SqlitePool) -> Result<TickResult> {
     let created = recur::materialise_due(pool, today).await?;
     let swept = obligations::sweep(pool, today).await?;
     let overdue = obligations::overdue_names(pool, today).await.unwrap_or_default();
-    Ok(TickResult { created, swept, overdue })
+    // Sample data steps aside as the user's own arrives. Cheap enough to check
+    // every tick, and a no-op once the last sample is gone.
+    let demo_pruned = demo::prune(pool).await.unwrap_or(0);
+    Ok(TickResult { created, swept, overdue, demo_pruned })
 }
 
 /// One line for a desktop notification, or `None` when there is nothing worth
@@ -246,12 +257,14 @@ mod tests {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         schema::apply_schema(&pool).await.unwrap();
         schema::seed_defaults(&pool).await.unwrap();
-        recur::create(&pool, &recur::NewRecurrence::variable_bill("Water", "2020-03-01"))
-            .await
-            .unwrap();
+        // One-offs rather than a recurrence: a monthly template dated years back
+        // catches up every missed period, which is correct behaviour and useless
+        // for testing the wording.
+        obligations::create_one_off(&pool, "Water", "2020-03-01", Some(100_000)).await.unwrap();
 
         let t = tick(&pool).await.unwrap();
         assert_eq!(t.overdue, ["Water"]);
-        assert!(notice(&t).unwrap().0.contains("Water"));
+        assert!(t.swept > 0, "it moved to overdue on this tick");
+        assert_eq!(notice(&t).unwrap().0, "Water is late");
     }
 }

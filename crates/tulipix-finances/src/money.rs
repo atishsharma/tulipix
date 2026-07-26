@@ -240,10 +240,11 @@ mod tests {
 
     #[test]
     fn conversion_does_not_overflow_at_crore_scale() {
-        // ₹10 crore worth of USD at a weak-rupee rate. In i64 the intermediate
-        // product is 8.36e19 and wraps; in i128 it does not.
-        let amount = 1_000_000_000_00i64; // 100 crore minor units
-        assert_eq!(convert(amount, 83_600_000), 8_360_000_000_00);
+        // 100 crore rupees' worth of USD at a weak-rupee rate. The intermediate
+        // product is 8.36e18, which is inside i64 only just — one more zero on
+        // either side wraps it — so the widening to i128 is what makes this exact.
+        let amount = 1_000_000_000_00i64; // ₹100 crore, in paise
+        assert_eq!(convert(amount, 83_600_000), 8_360_000_000_000);
     }
 
     #[test]
