@@ -54,6 +54,7 @@ docs/
 target/
 target-dev/
 target-dev-lite/
+target-test/
 .rtk/
 .windsurfrules
 tulipix_plan.html

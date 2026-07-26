@@ -57,6 +57,7 @@ jobs:
           -p tulipix-books -p tulipix-tools -p tulipix-cloud -p tulipix-player
           -p tulipix-whisper -p tulipix-ai -p tulipix-mdl -p tulipix-platform
           -p tulipix-plugins -p tulipix-cli -p tulipix-transfer -p tulipix-genesis
+          -p tulipix-finances
 
   clippy:
     runs-on: ubuntu-24.04
@@ -80,7 +81,8 @@ jobs:
           cargo clippy -p tulipix-core -p tulipix-videos -p tulipix-music -p tulipix-photos
           -p tulipix-books -p tulipix-tools -p tulipix-cloud -p tulipix-player
           -p tulipix-whisper -p tulipix-ai -p tulipix-mdl -p tulipix-platform
-          -p tulipix-plugins -p tulipix-cli -p tulipix-transfer -p tulipix-genesis --all-targets --
+          -p tulipix-plugins -p tulipix-cli -p tulipix-transfer -p tulipix-genesis
+          -p tulipix-finances --all-targets --
           -A warnings -D clippy::correctness -D clippy::suspicious
 
   # Compile-check the app itself in the lean renderer configuration. `check`
@@ -102,7 +104,7 @@ jobs:
       # `genesis` is opt-in and lives behind --no-default-features here, so it
       # has to be named explicitly or tulipix-sec-genesis is never compiled by
       # any job — which is exactly how four type errors in it reached a push.
-      - run: cargo check -p tulipix-app --no-default-features --features renderer-femtovg,genesis
+      - run: cargo check -p tulipix-app --no-default-features --features renderer-femtovg,genesis,finances
 
   # The UI-glue crates' own tests (~30). They need a renderer selected, which
   # only tulipix-app's features can do, so the app is built alongside them and
@@ -157,6 +159,7 @@ jobs:
           trap 'kill $sampler 2>/dev/null' EXIT
           cargo test --no-fail-fast -p tulipix-sec-videos -p tulipix-sec-books \
             -p tulipix-sec-music -p tulipix-sec-transfer -p tulipix-sec-genesis \
+          -p tulipix-sec-finances \
             -p tulipix-app \
             --no-default-features --features tulipix-app/renderer-femtovg,tulipix-app/genesis
 

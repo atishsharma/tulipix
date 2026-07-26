@@ -1,0 +1,32 @@
+[package]
+name = "tulipix-finances"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+# Core of the Finances section: schema, money arithmetic, ledger queries,
+# recurrence engine, import. Deliberately free of Slint and of every UI type —
+# that lives in tulipix-sec-finances — so this crate runs in the light CI `test`
+# job with no renderer, no libmpv and no display.
+
+[dependencies]
+anyhow = { workspace = true }
+sqlx = { workspace = true }
+# DbHandle behind finances.db, alongside genesis.db and the section DBs.
+tulipix-core = { path = "../tulipix-core" }
+# The spec asked for `time`; `chrono` is what this workspace already uses (four
+# crates depend on it directly) and `time` is not a workspace dependency at all,
+# so adding it would put two date libraries in the tree for one consumer.
+# "clock" is needed: the recurrence sweep asks what today is.
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
+# Bank statement CSVs quote fields containing commas, and a hand-rolled splitter
+# gets that wrong on exactly the rows that matter (merchant names with commas).
+csv = "1"
+# Per-bank column maps are stored as JSON in `import_presets.column_map`.
+serde = { workspace = true }
+serde_json = { workspace = true }
+
+[dev-dependencies]
+# Not a workspace dep; matches tulipix-transfer and tulipix-genesis.
+tempfile = "3"
+tokio = { workspace = true }

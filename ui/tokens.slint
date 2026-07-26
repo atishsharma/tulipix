@@ -2,7 +2,7 @@
 // Both light + extra-dark themes; switch via Theme.dark in-out property.
 // WCAG: extra-dark bg #050614 + text #f8faff = ~17.8:1 (AAA).
 
-export enum Section { photos, videos, music, books, cloud, tools, transfer, settings }
+export enum Section { photos, videos, music, books, cloud, tools, transfer, finances, settings }
 
 export global Theme {
     in-out property <bool> dark: true;
@@ -51,6 +51,11 @@ export global Theme {
     // Orange is the one hue the six sections above leave free, so a glance at
     // the accent is enough to say which section you are looking at.
     out property <color> sec-transfer: #f97316; // orange
+    // Lime is the last free hue ramp. Red is deliberately not used as the
+    // Finances identity even though it is the obvious "money" colour: this
+    // section leans on `error` constantly for overdue and over-budget, and an
+    // accent that reads as an alarm would make every screen look like a problem.
+    out property <color> sec-finances: #84cc16; // lime
     out property <color> sec-settings: #94a3b8; // slate
 
     // Tools section identity — cyan→sky gradient ramp (run button, chips,
@@ -64,6 +69,11 @@ export global Theme {
     // sidebar.
     out property <color> transfer-accent:   #f97316; // orange
     out property <color> transfer-accent-2: #fbbf24; // amber
+
+    // Finances section identity — lime→yellow ramp (stat strip, donut, budget
+    // bars, the Add button). `finances-accent` == sec-finances for the sidebar.
+    out property <color> finances-accent:   #84cc16; // lime
+    out property <color> finances-accent-2: #facc15; // yellow
 
     // --- Neutral surface ramp ---
     // Sections whose light identity is the Google-neutral white/grey palette
@@ -138,6 +148,7 @@ export global Accent {
         section == Section.cloud    ? Theme.sec-cloud :
         section == Section.tools    ? Theme.sec-tools :
         section == Section.transfer ? Theme.sec-transfer :
+        section == Section.finances ? Theme.sec-finances :
                                       Theme.sec-settings;
 
     out property <{x: float, y: float}> orb-corner:
@@ -148,6 +159,7 @@ export global Accent {
         section == Section.cloud    ? { x: 0.50, y: 0.50 } :
         section == Section.tools    ? { x: 0.80, y: 0.50 } :
         section == Section.transfer ? { x: 0.20, y: 0.50 } :
+        section == Section.finances ? { x: 0.65, y: 0.30 } :
                                       { x: 0.50, y: 0.50 };
 }
 
@@ -168,6 +180,7 @@ export global Tokens {
     out property <color> sec-cloud: Theme.sec-cloud;
     out property <color> sec-tools: Theme.sec-tools;
     out property <color> sec-transfer: Theme.sec-transfer;
+    out property <color> sec-finances: Theme.sec-finances;
     out property <length> radius-md: Theme.radius-md;
     out property <length> radius-lg: Theme.radius-lg;
     out property <length> sidebar-w: Theme.sidebar-w;

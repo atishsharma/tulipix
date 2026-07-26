@@ -26,10 +26,15 @@ path = "src/main.rs"
 # alloc-mimalloc on by default: 10-20% on the thumb pipeline + DB pool. The
 # global_allocator is cfg-gated to Linux/Windows (macOS keeps system malloc),
 # so this is a no-op allocator-wise on mac.
-default = ["embedded-mpv", "alloc-mimalloc", "genesis"]
+default = ["embedded-mpv", "alloc-mimalloc", "genesis", "finances"]
 # Genesis — book search and download inside Books. Gated so a build that should
 # not carry it drops the crate entirely rather than shipping it switched off.
 genesis = ["dep:tulipix-sec-genesis"]
+# Finances — the household-money section. Gated the same way, and named in BOTH
+# `default` above and the `run-dev-lite` feature list in the justfile: that
+# recipe passes --no-default-features, so a section added only to `default`
+# ships dead in the lite build. Genesis was broken for a cycle exactly that way.
+finances = ["dep:tulipix-sec-finances"]
 # The embedded player hands libmpv frames to Slint as a BorrowedOpenGLTexture,
 # which only the skia-opengl surface provides — so embedded-mpv pulls skia.
 embedded-mpv = ["renderer-skia"]
@@ -46,7 +51,7 @@ renderer-femtovg = ["slint/renderer-femtovg"]
 # interpreter-backed LiveReloadingComponent that re-reads .slint at runtime —
 # the build must ALSO run with SLINT_LIVE_PREVIEW=1 so the slint compiler
 # emits the live-preview glue (see vendor/i-slint-compiler/generator/rust.rs).
-dev-reload = ["dep:notify", "slint/live-preview", "tulipix-ui/dev-reload", "tulipix-sec-tools/dev-reload", "tulipix-sec-transfer/dev-reload", "tulipix-sec-photos/dev-reload", "tulipix-sec-music/dev-reload", "tulipix-sec-videos/dev-reload", "tulipix-sec-cloud/dev-reload", "tulipix-sec-genesis?/dev-reload"]
+dev-reload = ["dep:notify", "slint/live-preview", "tulipix-ui/dev-reload", "tulipix-sec-tools/dev-reload", "tulipix-sec-transfer/dev-reload", "tulipix-sec-photos/dev-reload", "tulipix-sec-music/dev-reload", "tulipix-sec-videos/dev-reload", "tulipix-sec-cloud/dev-reload", "tulipix-sec-genesis?/dev-reload", "tulipix-sec-finances?/dev-reload"]
 
 # Dev-only Rust hot-patch. Routes section wire-up through the tulipix-hot dylib
 # (loaded by hot-lib-reloader): edit section callback logic, rebuild that small
@@ -110,6 +115,7 @@ tulipix-music = { path = "../tulipix-music" }
 tulipix-sec-tools = { path = "../tulipix-sec-tools" }
 tulipix-sec-transfer = { path = "../tulipix-sec-transfer" }
 tulipix-sec-genesis = { path = "../tulipix-sec-genesis", optional = true }
+tulipix-sec-finances = { path = "../tulipix-sec-finances", optional = true }
 tulipix-sec-photos = { path = "../tulipix-sec-photos" }
 tulipix-sec-music = { path = "../tulipix-sec-music" }
 tulipix-sec-videos = { path = "../tulipix-sec-videos" }

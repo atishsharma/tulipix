@@ -530,6 +530,13 @@ fn main() -> Result<()> {
     #[cfg(feature = "genesis")]
     tulipix_sec_genesis::wire(&window);
 
+    // ── Finances: accounts, the ledger, bills, subscriptions, dues, budgets.
+    // Wired at startup rather than on first open because the sidebar badge has to
+    // be right before the section is ever visited — a bill due today that only
+    // appears once you look is a reminder that does not work.
+    #[cfg(feature = "finances")]
+    tulipix_sec_finances::wire(&window);
+
     // Photo viewer — click a tile to open the original in a full-screen modal,
     // then navigate the library with prev/next (and the slideshow timer).
     let w = window.as_weak();
@@ -1353,6 +1360,10 @@ fn main() -> Result<()> {
         // Transfer binds its port on the way in and drops it on the way out, so
         // it needs to hear about every section change, not just its own.
         tulipix_sec_transfer::section_changed(&w0, s.as_str());
+        // Finances re-runs the recurrence sweep on entry: the app may have been
+        // left running across midnight, or across a month end.
+        #[cfg(feature = "finances")]
+        tulipix_sec_finances::section_changed(&w0, s.as_str());
         if s.as_str() == "home" {
             // Fresh greeting (time of day) + counts on every Home landing.
             set_home_greeting_now(&w0);

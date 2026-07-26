@@ -37,6 +37,10 @@ import { HomePage, HomeStats, HomeRemote, HomeContinue } from "page_home.slint";
 import { BooksPage, BookTile, BooksHero, BookStat, BookChip, CollChip, CollRow, StatBookRow } from "page_books.slint";
 import { BookReader, TocRow, BookmarkRow, SearchRow, AnnotRow, HlRect, ThumbRow } from "book_reader.slint";
 import { GenesisPage, GenesisRow, GenesisTopic } from "page_genesis.slint";
+import { FinancesPage, FinStat, FinAccountRow, FinTxnRow, FinRecurRow, FinObligationRow,
+          FinDueRow, FinBudgetRow, FinLoanRow, FinInstalment, FinCatSlice, FinMonthBar,
+          FinCalDay, FinFlag, FinDiscipline, FinRate, FinPrice, FinProposal, FinImportRow,
+          FinField } from "page_finances.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
 import { AppIcon, Icons } from "icons.slint";
@@ -1468,6 +1472,116 @@ callback cloud-go-home();
     callback transfer-set-sort(int, bool);
     callback transfer-dismiss-upload(int);
 
+    // ── Finances ────────────────────────────────────────────────────────────
+    // One `tab` string drives all nine views, the same way `genesis-phase` drives
+    // that page: nine booleans could disagree with each other and a name cannot.
+    //
+    // Every money figure crossing this boundary is already a formatted string.
+    // Amounts are `i64` minor units throughout tulipix-finances and the only
+    // place a decimal point exists is the formatter the glue crate calls, so no
+    // arithmetic on money happens in .slint and no rounding bug can start here.
+    in-out property <string> fin-tab: "overview";
+    in property <[FinStat]> fin-stats: [];
+    in property <[FinCatSlice]> fin-slices: [];
+    in property <string> fin-spent-total: "";
+    in property <[FinMonthBar]> fin-months: [];
+    in property <[FinObligationRow]> fin-needs-you: [];
+    in property <string> fin-month-label: "";
+    in property <[FinTxnRow]> fin-txns: [];
+    // The overview's own short ledger. Separate from `fin-txns` so the
+    // Transactions tab's filters cannot change what the dashboard shows.
+    in property <[FinTxnRow]> fin-recent: [];
+    in-out property <int> fin-txn-page: 0;
+    in property <int> fin-txn-pages: 1;
+    in property <int> fin-txn-total: 0;
+    in-out property <string> fin-txn-sort: "date";
+    in-out property <bool> fin-txn-desc: true;
+    in-out property <string> fin-txn-search: "";
+    in property <[string]> fin-account-names: [];
+    in-out property <string> fin-txn-account: "All accounts";
+    in property <[string]> fin-category-names: [];
+    in-out property <string> fin-txn-category: "All categories";
+    in-out property <string> fin-txn-kind: "All";
+    in property <bool> fin-running-shown: false;
+    in property <string> fin-txn-spent: "";
+    in property <string> fin-txn-income: "";
+    in property <[FinObligationRow]> fin-bills: [];
+    in property <[FinRecurRow]> fin-bill-templates: [];
+    in property <[FinRecurRow]> fin-subs: [];
+    in property <string> fin-subs-yearly: "";
+    in property <[FinDueRow]> fin-dues: [];
+    in property <string> fin-owed-to-me: "";
+    in property <string> fin-i-owe: "";
+    in property <[FinAccountRow]> fin-accounts: [];
+    in property <string> fin-liquid-total: "";
+    in property <string> fin-debt-total: "";
+    in property <[FinLoanRow]> fin-loans: [];
+    in property <[FinBudgetRow]> fin-budgets: [];
+    in property <string> fin-budget-period: "";
+    in property <string> fin-budget-income: "";
+    in property <string> fin-budget-allocated: "";
+    in property <string> fin-budget-unallocated: "";
+    in property <int> fin-budget-allocated-pct: 0;
+    in property <[FinDiscipline]> fin-discipline: [];
+    in property <[FinCalDay]> fin-cal-days: [];
+    in property <string> fin-cal-label: "";
+    in property <[FinObligationRow]> fin-cal-agenda: [];
+    in property <string> fin-cal-low-point: "";
+    in property <[FinFlag]> fin-flags: [];
+    // Bills and subscriptions due inside the alert lead. Drives the sidebar badge.
+    in property <int> fin-badge: 0;
+    in-out property <string> fin-sheet: "";
+    in property <string> fin-sheet-title: "";
+    in property <string> fin-sheet-hint: "";
+    in property <[FinField]> fin-form: [];
+    in property <string> fin-sheet-primary: "Save";
+    in property <string> fin-sheet-error: "";
+    // A live answer beside the form: what an envelope has left, or what OCR read
+    // off a receipt. Not an error, so it is styled and placed differently.
+    in property <string> fin-sheet-note: "";
+    in property <bool> fin-sheet-busy: false;
+    in property <[FinPrice]> fin-prices: [];
+    in property <[FinInstalment]> fin-schedule: [];
+    in property <[FinImportRow]> fin-import-rows: [];
+    in property <string> fin-import-summary: "";
+    in property <bool> fin-import-needs-format: false;
+    in property <[FinProposal]> fin-proposals: [];
+    in property <[FinRate]> fin-rates: [];
+    callback fin-set-tab(string);
+    callback fin-set-field(string, string);
+    callback fin-open-sheet(string, int);
+    callback fin-close-sheet();
+    callback fin-submit-sheet();
+    callback fin-flag-action(string);
+    callback fin-txn-sort-by(string);
+    callback fin-txn-goto(int);
+    callback fin-txn-filter();
+    callback fin-txn-open(int);
+    callback fin-txn-delete(int);
+    callback fin-pay-obligation(int);
+    callback fin-skip-obligation(int);
+    callback fin-unpay-obligation(int);
+    callback fin-recur-status(int, string);
+    callback fin-recur-delete(int);
+    callback fin-due-settle(int);
+    callback fin-due-write-off(int);
+    callback fin-due-delete(int);
+    callback fin-account-reconcile(int);
+    callback fin-account-close(int, bool);
+    callback fin-account-delete(int);
+    callback fin-loan-schedule(int);
+    callback fin-loan-prepay(int);
+    callback fin-budget-remove(int);
+    callback fin-budget-copy-forward();
+    callback fin-cal-step(int);
+    callback fin-budget-step(int);
+    callback fin-accept-proposal(int);
+    callback fin-import-pick();
+    callback fin-scan-receipt();
+    callback fin-submit-again();
+    callback fin-refresh();
+    callback fin-enter();
+
     // ── Genesis (Books → book search & download) ────────────────────────────
     // A sub-page of Books, like the reader: `genesis-open` swaps which of the
     // two draws, and the section itself never changes.
@@ -2629,6 +2743,7 @@ callback cloud-go-home();
             user: root.user;
             logo-choice: root.app-logo-choice;
             festival: root.festival-logo;
+            finances-badge: root.fin-badge;
             user-action(a) => { root.user-action(a); }
             section-changed(s) => { root.section-changed(s); }
             theme-cycled => { root.music-theme-changed(); }
@@ -3485,6 +3600,104 @@ callback cloud-go-home();
                 set-page(p) => { root.transfer-set-page(p); }
                 set-sort(c, d) => { root.transfer-set-sort(c, d); }
                 dismiss-upload(id) => { root.transfer-dismiss-upload(id); }
+            }
+            if active-section == "finances": FinancesPage {
+                width: parent.width; height: parent.height;
+                tab <=> root.fin-tab;
+                stats: root.fin-stats;
+                slices: root.fin-slices;
+                spent-total: root.fin-spent-total;
+                months: root.fin-months;
+                needs-you: root.fin-needs-you;
+                month-label: root.fin-month-label;
+                txns: root.fin-txns;
+                recent: root.fin-recent;
+                txn-page: root.fin-txn-page;
+                txn-pages: root.fin-txn-pages;
+                txn-total: root.fin-txn-total;
+                txn-sort <=> root.fin-txn-sort;
+                txn-desc <=> root.fin-txn-desc;
+                txn-search <=> root.fin-txn-search;
+                account-names: root.fin-account-names;
+                txn-account <=> root.fin-txn-account;
+                category-names: root.fin-category-names;
+                txn-category <=> root.fin-txn-category;
+                txn-kind <=> root.fin-txn-kind;
+                running-shown: root.fin-running-shown;
+                txn-spent: root.fin-txn-spent;
+                txn-income: root.fin-txn-income;
+                bills: root.fin-bills;
+                bill-templates: root.fin-bill-templates;
+                subs: root.fin-subs;
+                subs-yearly: root.fin-subs-yearly;
+                dues: root.fin-dues;
+                owed-to-me: root.fin-owed-to-me;
+                i-owe: root.fin-i-owe;
+                accounts: root.fin-accounts;
+                liquid-total: root.fin-liquid-total;
+                debt-total: root.fin-debt-total;
+                loans: root.fin-loans;
+                budgets: root.fin-budgets;
+                budget-period: root.fin-budget-period;
+                budget-income: root.fin-budget-income;
+                budget-allocated: root.fin-budget-allocated;
+                budget-unallocated: root.fin-budget-unallocated;
+                budget-allocated-pct: root.fin-budget-allocated-pct;
+                discipline: root.fin-discipline;
+                cal-days: root.fin-cal-days;
+                cal-label: root.fin-cal-label;
+                cal-agenda: root.fin-cal-agenda;
+                cal-low-point: root.fin-cal-low-point;
+                flags: root.fin-flags;
+                badge: root.fin-badge;
+                sheet <=> root.fin-sheet;
+                sheet-title: root.fin-sheet-title;
+                sheet-hint: root.fin-sheet-hint;
+                form: root.fin-form;
+                sheet-primary: root.fin-sheet-primary;
+                sheet-error: root.fin-sheet-error;
+                sheet-note: root.fin-sheet-note;
+                sheet-busy: root.fin-sheet-busy;
+                prices: root.fin-prices;
+                schedule: root.fin-schedule;
+                import-rows: root.fin-import-rows;
+                import-summary: root.fin-import-summary;
+                import-needs-format: root.fin-import-needs-format;
+                proposals: root.fin-proposals;
+                rates: root.fin-rates;
+                set-tab(t) => { root.fin-set-tab(t); }
+                set-field(k, v) => { root.fin-set-field(k, v); }
+                open-sheet(k, i) => { root.fin-open-sheet(k, i); }
+                close-sheet() => { root.fin-close-sheet(); }
+                submit-sheet() => { root.fin-submit-sheet(); }
+                flag-action(a) => { root.fin-flag-action(a); }
+                txn-sort-by(c) => { root.fin-txn-sort-by(c); }
+                txn-goto(p) => { root.fin-txn-goto(p); }
+                txn-filter() => { root.fin-txn-filter(); }
+                txn-open(i) => { root.fin-txn-open(i); }
+                txn-delete(i) => { root.fin-txn-delete(i); }
+                pay-obligation(i) => { root.fin-pay-obligation(i); }
+                skip-obligation(i) => { root.fin-skip-obligation(i); }
+                unpay-obligation(i) => { root.fin-unpay-obligation(i); }
+                recur-status(i, st) => { root.fin-recur-status(i, st); }
+                recur-delete(i) => { root.fin-recur-delete(i); }
+                due-settle(i) => { root.fin-due-settle(i); }
+                due-write-off(i) => { root.fin-due-write-off(i); }
+                due-delete(i) => { root.fin-due-delete(i); }
+                account-reconcile(i) => { root.fin-account-reconcile(i); }
+                account-close(i, c) => { root.fin-account-close(i, c); }
+                account-delete(i) => { root.fin-account-delete(i); }
+                loan-schedule(i) => { root.fin-loan-schedule(i); }
+                loan-prepay(i) => { root.fin-loan-prepay(i); }
+                budget-remove(i) => { root.fin-budget-remove(i); }
+                budget-copy-forward() => { root.fin-budget-copy-forward(); }
+                cal-step(d) => { root.fin-cal-step(d); }
+                budget-step(d) => { root.fin-budget-step(d); }
+                accept-proposal(i) => { root.fin-accept-proposal(i); }
+                import-pick() => { root.fin-import-pick(); }
+                scan-receipt() => { root.fin-scan-receipt(); }
+                submit-again() => { root.fin-submit-again(); }
+                refresh() => { root.fin-refresh(); }
             }
             if active-section == "home": HomePage {
                 width: parent.width; height: parent.height;

@@ -16,6 +16,10 @@ component NavRow inherits Rectangle {
     in property <color> accent;
     in property <bool> active;
     in property <bool> collapsed: false;
+    // Count of things wanting attention in this section. 0 hides the badge.
+    // Only Finances sets it today; it lives on NavRow rather than on that one
+    // row so a second section wanting a count does not need a second mechanism.
+    in property <int> badge: 0;
     callback clicked();
     property <length> row-h: root.collapsed ? 46px : 58px;
     min-height: root.row-h; max-height: root.row-h;
@@ -88,6 +92,37 @@ component NavRow inherits Rectangle {
             vertical-alignment: center;
             horizontal-stretch: 1;
         }
+        // Count pill, expanded only. `error` rather than the section accent:
+        // this is the one thing on the row that is meant to interrupt, and the
+        // lime Finances accent deliberately does not read as an alarm.
+        if !root.collapsed && root.badge > 0: Rectangle {
+            horizontal-stretch: 0;
+            y: (parent.height - self.height) / 2;
+            min-width: Math.max(20px, pill.width + 12px);
+            height: 20px;
+            border-radius: 10px;
+            background: Theme.error;
+            pill := Text {
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                text: root.badge > 99 ? "99+" : "\{root.badge}";
+                color: #ffffff;
+                font-size: 11px;
+                font-weight: 700;
+            }
+        }
+    }
+
+    // Collapsed rail has no room for a pill, so the count becomes a dot in the
+    // icon's corner — still visible, which is the whole point of the badge.
+    if root.collapsed && root.badge > 0: Rectangle {
+        x: parent.width - self.width - 9px;
+        y: 9px;
+        width: 9px; height: 9px;
+        border-radius: 4.5px;
+        background: Theme.error;
+        border-width: 1.5px;
+        border-color: Theme.dark ? #161827 : #ffffff;
     }
 }
 
@@ -241,6 +276,9 @@ export component Sidebar inherits Rectangle {
     in property <int> logo-choice: 0;
     in property <bool> festival: false;
     in-out property <bool> collapsed: true;
+    // Bills and subscriptions coming due inside the alert lead. Set by
+    // tulipix-sec-finances on every tick.
+    in property <int> finances-badge: 0;
     callback section-changed(string);
     callback user-action(string);
     callback theme-cycled();   // fired after the theme toggle cycles light/dark/OLED (persist)
@@ -312,6 +350,11 @@ export component Sidebar inherits Rectangle {
         NavRow { icon-img: Icons.share; label: "Transfer"; accent: Theme.sec-transfer; collapsed: root.collapsed;
             active: root.active-section == "transfer";
             clicked => { root.active-section = "transfer"; root.section-changed("transfer"); }
+        }
+        NavRow { icon-img: Icons.wallet; label: "Finances"; accent: Theme.sec-finances; collapsed: root.collapsed;
+            active: root.active-section == "finances";
+            badge: root.finances-badge;
+            clicked => { root.active-section = "finances"; root.section-changed("finances"); }
         }
 
         // Bottom spacer pushes user card + footer dock to the bottom.

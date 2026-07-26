@@ -62,7 +62,7 @@ run-dev-lite:
       --setenv=CARGO_TARGET_DIR=target-dev-lite \
       nice -n 15 ionice -c3 \
       cargo +nightly {{fast}} run -j 1 -p tulipix-app \
-        --no-default-features --features renderer-femtovg,alloc-mimalloc,dev-reload,ai-onnx,genesis
+        --no-default-features --features renderer-femtovg,alloc-mimalloc,dev-reload,ai-onnx,genesis,finances
 
 # Sub-2s error feedback loop: `bacon` runs `cargo check` on every save (no
 # codegen, no link, incremental) in the dev-reload feature set + target-dev dir,
@@ -107,6 +107,17 @@ _hot-build:
     CARGO_TARGET_DIR=target-dev \
       nice -n 18 ionice -c3 \
       cargo +nightly {{fast}} build -p tulipix-hot --features dev-reload
+
+# Run one core crate's unit tests. Own target dir on purpose: the app's
+# target-dev/target-dev-lite caches are built with the `fast` cranelift flags
+# above, and a plain cargo invocation into either mixes codegen backends and
+# makes the next warm app build fail. Core crates pull no renderer, so this is
+# a light build and needs no memory scope.
+#   just test-crate tulipix-finances
+test-crate crate:
+    CARGO_TARGET_DIR=target-test \
+      nice -n 18 ionice -c3 \
+      cargo test -j 2 -p {{crate}}
 
 # Caps tracing
 trace:
