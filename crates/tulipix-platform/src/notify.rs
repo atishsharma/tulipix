@@ -79,9 +79,132 @@ impl NotificationSink for StubSink {
     }
 }
 
-/// Per-OS deliverer. `tulipix-app` swaps the impl at startup; CI uses StubSink.
+/// Hands the banner to whatever the OS already ships.
+///
+/// A subprocess rather than `notify-rust`: on Linux that crate pulls the whole
+/// zbus stack for what `notify-send` does in one exec, and this app already
+/// shells out to ffmpeg, yt-dlp and mpv, so the pattern is not new. Actions and
+/// deep links are not carried — `notify-send` cannot express them without a
+/// live D-Bus connection to keep the callback alive, so a click opens nothing
+/// and the notification is informational only.
+pub struct OsSink;
+
+impl NotificationSink for OsSink {
+    fn deliver(&self, n: &Notification) -> Result<()> {
+        use std::process::{Command, Stdio};
+
+        #[cfg(target_os = "linux")]
+        let mut cmd = {
+            let mut c = Command::new("notify-send");
+            c.args(["-a", "Tulipix", "-i", "tulipix", n.title.as_str(), n.body.as_str()]);
+            c
+        };
+
+        #[cfg(target_os = "macos")]
+        let mut cmd = {
+            // Quotes are escaped rather than interpolated raw: a bill named
+            // `Bob"s rent` would otherwise end the AppleScript string early.
+            let script = format!(
+                "display notification \"{}\" with title \"{}\"",
+                esc(&n.body),
+                esc(&n.title)
+            );
+            let mut c = Command::new("osascript");
+            c.args(["-e", &script]);
+            c
+        };
+
+        #[cfg(target_os = "windows")]
+        let mut cmd = {
+            // WinRT toast through PowerShell. Verbose, but it is the only route
+            // that needs nothing installed on a stock Windows 10 or 11.
+            let script = format!(
+                r#"[Windows.UI.Notifications.ToastNotificationManager, Windows.UI.Notifications, ContentType=WindowsRuntime] > $null
+$t = [Windows.UI.Notifications.ToastNotificationManager]::GetTemplateContent([Windows.UI.Notifications.ToastTemplateType]::ToastText02)
+$x = $t.GetElementsByTagName('text')
+$x.Item(0).AppendChild($t.CreateTextNode('{}')) > $null
+$x.Item(1).AppendChild($t.CreateTextNode('{}')) > $null
+[Windows.UI.Notifications.ToastNotificationManager]::CreateToastNotifier('Tulipix').Show([Windows.UI.Notifications.ToastNotification]::new($t))"#,
+                esc_ps(&n.title),
+                esc_ps(&n.body)
+            );
+            let mut c = Command::new("powershell");
+            c.args(["-NoProfile", "-NonInteractive", "-Command", &script]);
+            c
+        };
+
+        // Fire and forget. Waiting on the notification daemon would block the
+        // caller for as long as the banner is on screen on some desktops.
+        cmd.stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .map(|_| ())
+            .map_err(anyhow::Error::from)
+    }
+}
+
+#[cfg(target_os = "macos")]
+fn esc(s: &str) -> String {
+    s.replace('\\', "\\\\").replace('"', "\\\"")
+}
+
+#[cfg(target_os = "windows")]
+fn esc_ps(s: &str) -> String {
+    s.replace('\'', "''")
+}
+
+static SINK: std::sync::OnceLock<Box<dyn NotificationSink>> = std::sync::OnceLock::new();
+
+/// Install the process-wide deliverer. First call wins; later ones are ignored,
+/// which keeps a second call from silently changing behaviour halfway through a
+/// run.
+pub fn set_sink(sink: Box<dyn NotificationSink>) {
+    let _ = SINK.set(sink);
+}
+
+/// The installed deliverer, falling back to [`os_sink`].
+pub fn sink() -> &'static dyn NotificationSink {
+    SINK.get_or_init(os_sink).as_ref()
+}
+
+/// Deliver through the installed sink, logging rather than propagating.
+///
+/// A failed banner must never fail the operation that raised it: a bill is still
+/// overdue whether or not the desktop managed to say so.
+pub fn notify(n: &Notification) {
+    if let Err(e) = sink().deliver(n) {
+        tracing::debug!(error = %e, id = %n.id, "notification not delivered");
+    }
+}
+
+/// Per-OS deliverer. Falls back to the stub where the OS tool is missing —
+/// notably a headless CI runner, where `notify-send` exists on no image.
 pub fn os_sink() -> Box<dyn NotificationSink> {
-    Box::new(StubSink)
+    if delivery_available() { Box::new(OsSink) } else { Box::new(StubSink) }
+}
+
+fn delivery_available() -> bool {
+    // `$DISPLAY`-less Linux has no one to show a banner to, and spawning
+    // notify-send there writes an error to a log nobody reads.
+    #[cfg(target_os = "linux")]
+    {
+        if std::env::var_os("DISPLAY").is_none() && std::env::var_os("WAYLAND_DISPLAY").is_none() {
+            return false;
+        }
+        which("notify-send")
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        true
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn which(bin: &str) -> bool {
+    std::env::var_os("PATH")
+        .map(|p| std::env::split_paths(&p).any(|d| d.join(bin).is_file()))
+        .unwrap_or(false)
 }
 
 /// Parse a tulipix:// deep-link into (action_id, key=value pairs). Used by
