@@ -26,8 +26,8 @@ use tulipix_finances::{
     insights::{Flag, Severity, Snapshot},
     loans::{Instalment, LoanRow},
     money,
-    obligations::Obligation,
-    recur::{Price, RecurRow},
+    obligations::{Obligation, Status as ObStatus},
+    recur::{self, Price, RecurRow},
     txn::{CategorySpend, MonthTotal, TxnKind, TxnRow},
 };
 use tulipix_ui::*;
@@ -382,8 +382,515 @@ pub fn obligations(rows: &[Obligation]) -> Vec<FinObligationRow> {
             over: o.variance_minor().unwrap_or(0) > 0,
             status: s(o.status.as_str()),
             is_estimate: o.is_estimate(),
+            category: opt(o.category_name.clone()),
+            cat_hue: category_hue(0, o.category_name.as_deref().unwrap_or(""), None),
+            account: opt(o.account_name.clone()),
+            auto_post: o.auto_post,
         })
         .collect()
+}
+
+/// How many bills fall in each filter group.
+///
+/// Of the whole window, never of the filtered list: a chip showing the count of what
+/// it would leave after filtering reads as zero for every group you are not in.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct BillCounts {
+    pub all: i32,
+    pub needs: i32,
+    pub auto: i32,
+    pub paid: i32,
+    pub oneoff: i32,
+}
+
+pub fn bill_counts(rows: &[Obligation]) -> BillCounts {
+    let mut c = BillCounts { all: rows.len() as i32, ..Default::default() };
+    for o in rows {
+        if matches!(o.status, ObStatus::Paid) {
+            c.paid += 1;
+        } else if o.auto_post {
+            c.auto += 1;
+        } else if !matches!(o.status, ObStatus::Skipped) {
+            // What is left is what someone has to do something about.
+            c.needs += 1;
+        }
+        if o.recurrence_id.is_none() {
+            c.oneoff += 1;
+        }
+    }
+    c
+}
+
+/// The subset of bills a filter chip selects.
+///
+/// `oneoff` overlaps the others on purpose — a one-off bill is also either paid or
+/// needing action — because "which of these did I enter by hand" is a different
+/// question from "what do I have to do", and answering it should not require the
+/// others to be mutually exclusive with it.
+pub fn filter_bills<'a>(rows: &'a [Obligation], filter: &str) -> Vec<Obligation> {
+    rows.iter()
+        .filter(|o| match filter {
+            "needs" => {
+                !o.auto_post && !matches!(o.status, ObStatus::Paid | ObStatus::Skipped)
+            }
+            "auto" => o.auto_post && !matches!(o.status, ObStatus::Paid),
+            "paid" => matches!(o.status, ObStatus::Paid),
+            "oneoff" => o.recurrence_id.is_none(),
+            // Unknown filter included: an empty list would look like a broken tab,
+            // and the chip row can only ever send one of the five.
+            _ => true,
+        })
+        .cloned()
+        .collect::<Vec<_>>()
+}
+
+/// Six months of spending per category, biggest first.
+///
+/// One call per month rather than one grouped query: `spend_by_category` is the
+/// function the donut already uses, and six calls to a tested aggregate beat one new
+/// query that could disagree with it.
+///
+/// Bars are shares of each category's *own* worst month. Shares of the whole ledger
+/// would draw every category except the largest as a flat line, which is exactly the
+/// trend the card exists to show.
+pub fn trend(months: &[(String, Vec<CategorySpend>)], base: &str, limit: usize) -> Vec<FinCatTrend> {
+    // Total per category across the window, to rank and to keep only the top few.
+    let mut totals: Vec<(String, i64)> = Vec::new();
+    for (_, rows) in months {
+        for r in rows {
+            match totals.iter_mut().find(|(n, _)| *n == r.name) {
+                Some((_, t)) => *t += r.base_minor,
+                None => totals.push((r.name.clone(), r.base_minor)),
+            }
+        }
+    }
+    totals.sort_by(|a, b| b.1.cmp(&a.1));
+    totals.truncate(limit);
+
+    totals
+        .into_iter()
+        .enumerate()
+        .map(|(i, (name, total))| {
+            let series: Vec<i64> = months
+                .iter()
+                .map(|(_, rows)| {
+                    rows.iter().find(|r| r.name == name).map(|r| r.base_minor).unwrap_or(0)
+                })
+                .collect();
+            let peak = series.iter().copied().max().unwrap_or(0).max(1);
+            let last = series.last().copied().unwrap_or(0);
+            // Against the mean of the earlier months, not against last month alone:
+            // one quiet month would otherwise report every category as rising.
+            let earlier = &series[..series.len().saturating_sub(1)];
+            let mean: i64 = if earlier.is_empty() {
+                0
+            } else {
+                earlier.iter().sum::<i64>() / earlier.len() as i64
+            };
+            let diff = last - mean;
+            // A tenth of the mean is noise; below that the card says nothing.
+            let worth_saying = mean > 0 && diff.abs() * 10 > mean;
+
+            FinCatTrend {
+                name: s(&name),
+                hue: category_hue(i, &name, None),
+                total: s(money::format_minor(total, base)),
+                delta: s(if worth_saying {
+                    format!("{} vs usual", money::format_minor(diff.abs(), base))
+                } else {
+                    String::new()
+                }),
+                up: diff > 0,
+                months: model(
+                    months
+                        .iter()
+                        .zip(series.iter())
+                        .enumerate()
+                        .map(|(mi, ((label, _), v))| FinTrendMonth {
+                            label: s(month_short(label)),
+                            pct: ((*v as i128 * 100) / peak as i128) as i32,
+                            current: mi + 1 == months.len(),
+                        })
+                        .collect(),
+                ),
+            }
+        })
+        .collect()
+}
+
+/// The four figures above the Insights list.
+pub fn insight_stats(
+    snap: &Snapshot,
+    flags: &[Flag],
+    subs_yearly_minor: i64,
+    base: &str,
+) -> Vec<FinStat> {
+    let f = |m: i64| money::format_minor(m, base);
+    let bad = flags.iter().filter(|x| x.severity == Severity::Bad).count();
+    let warn = flags.iter().filter(|x| x.severity == Severity::Warn).count();
+
+    // What this month would come to if it carried on: not a forecast of the future,
+    // an arithmetic statement about the present rate, which is why it is labelled
+    // "if nothing changes" rather than "projected".
+    let saved = snap.saved_this_month_minor();
+
+    vec![
+        FinStat {
+            label: s("WORTH ACTING ON"),
+            value: s(format!("{}", bad + warn)),
+            sub: s(if bad > 0 {
+                format!("{bad} urgent, {warn} to watch")
+            } else if warn > 0 {
+                format!("{warn} to watch, nothing urgent")
+            } else {
+                "nothing needs you".to_string()
+            }),
+            tone: s(if bad > 0 { "bad" } else if warn > 0 { "warn" } else { "ok" }),
+            delta: s(""),
+            delta_up: false,
+        },
+        FinStat {
+            label: s("SAVINGS RATE"),
+            value: s(match saved_pct(snap) {
+                Some(p) => p,
+                None => "—".to_string(),
+            }),
+            sub: s(if snap.income_this_month_minor > 0 {
+                format!("{} of {}", f(saved), f(snap.income_this_month_minor))
+            } else {
+                "no income recorded this month".to_string()
+            }),
+            tone: s(if snap.income_this_month_minor == 0 {
+                "flat"
+            } else if saved < 0 {
+                "bad"
+            } else {
+                "ok"
+            }),
+            delta: s(""),
+            delta_up: false,
+        },
+        FinStat {
+            label: s("IF NOTHING CHANGES"),
+            value: s(f(saved * 12)),
+            sub: s("a year at this month's rate"),
+            tone: s(if saved < 0 { "bad" } else { "ok" }),
+            delta: s(""),
+            delta_up: false,
+        },
+        FinStat {
+            label: s("SUBSCRIPTIONS"),
+            value: s(f(subs_yearly_minor)),
+            sub: s(format!("{} a month, committed", f(subs_yearly_minor / 12))),
+            tone: s("flat"),
+            delta: s(""),
+            delta_up: false,
+        },
+    ]
+}
+
+/// The Calendar tab's two cards: whether the month is covered, and its worst day.
+///
+/// Returns `(warning, heaviest_amount, heaviest_label, heaviest_detail)`. The warning
+/// is empty when nothing is short — the card then says so itself, rather than this
+/// inventing a reassuring sentence.
+pub fn calendar_cards(
+    low: Option<&tulipix_finances::insights::LowPoint>,
+    items: &[Obligation],
+    liquid_minor: i64,
+    base: &str,
+) -> (String, String, String, String) {
+    let f = |m: i64| money::format_minor(m, base);
+
+    let warning = match low {
+        Some(l) if l.balance_minor < 0 => format!(
+            "{} leaves before {} and the balance projects to {}. Something has to move.",
+            f(items.iter().filter_map(|o| o.shown_minor()).sum::<i64>()),
+            l.on,
+            f(l.balance_minor)
+        ),
+        Some(l) => {
+            let out: i64 = items.iter().filter_map(|o| o.shown_minor()).sum();
+            // Tight rather than short: worth saying, but it is not a warning.
+            if l.balance_minor * 4 < liquid_minor && out > 0 {
+                format!(
+                    "{} leaves this month, and the balance dips to {} around {}.",
+                    f(out),
+                    f(l.balance_minor),
+                    l.on
+                )
+            } else {
+                String::new()
+            }
+        }
+        None => String::new(),
+    };
+
+    // The single day with the most leaving it. A month can be affordable in total and
+    // still fail on the 5th.
+    let mut by_day: Vec<(&str, i64, usize)> = Vec::new();
+    for o in items {
+        let Some(m) = o.shown_minor() else { continue };
+        match by_day.iter_mut().find(|(d, _, _)| *d == o.due_on.as_str()) {
+            Some((_, total, n)) => {
+                *total += m;
+                *n += 1;
+            }
+            None => by_day.push((&o.due_on, m, 1)),
+        }
+    }
+    let heaviest = by_day.into_iter().max_by_key(|(_, t, _)| *t);
+    match heaviest {
+        Some((day, total, n)) => (
+            warning,
+            f(total),
+            day.to_string(),
+            format!("{n} thing{} due that day", if n == 1 { "" } else { "s" }),
+        ),
+        None => (warning, String::new(), String::new(), "Nothing dated this month.".to_string()),
+    }
+}
+
+/// Where the month's income is committed before anything discretionary.
+///
+/// Loans, rent-shaped bills and subscriptions, then what is left over. Percentages
+/// are of income, so they only mean anything when there is income — with none, this
+/// returns nothing rather than dividing by zero or showing shares of a total it
+/// invented.
+pub fn commitments(
+    income_minor: i64,
+    loan_emi_minor: i64,
+    bills_minor: i64,
+    subs_monthly_minor: i64,
+    base: &str,
+) -> Vec<FinCatSlice> {
+    if income_minor <= 0 {
+        return Vec::new();
+    }
+    let committed = loan_emi_minor + bills_minor + subs_monthly_minor;
+    let left = (income_minor - committed).max(0);
+    [
+        ("Loans & EMI", loan_emi_minor, 0xFFf472b6u32),
+        ("Bills", bills_minor, 0xFFfacc15),
+        ("Subscriptions", subs_monthly_minor, 0xFFfb923c),
+        ("Left to decide", left, 0xFF84cc16),
+    ]
+    .into_iter()
+    .filter(|(_, m, _)| *m > 0)
+    .map(|(name, m, argb)| FinCatSlice {
+        name: s(name),
+        amount: s(money::format_minor(m, base)),
+        pct: ((m as i128 * 100) / income_minor as i128) as i32,
+        // No ring here: this is a bar list, and an arc path for it would be geometry
+        // nothing draws.
+        path: s(""),
+        hue: slint::Color::from_argb_encoded(argb),
+    })
+    .collect()
+}
+
+/// How many dues are in each group.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct DueCounts {
+    pub all: i32,
+    pub to_me: i32,
+    pub i_owe: i32,
+    pub closed: i32,
+}
+
+pub fn due_counts(rows: &[Due]) -> DueCounts {
+    let mut c = DueCounts { all: rows.len() as i32, ..Default::default() };
+    for d in rows {
+        if !matches!(d.status, dues::Status::Open) {
+            c.closed += 1;
+        } else if d.direction == dues::Direction::OwedToMe {
+            c.to_me += 1;
+        } else {
+            c.i_owe += 1;
+        }
+    }
+    c
+}
+
+pub fn filter_dues(rows: &[Due], filter: &str) -> Vec<Due> {
+    rows.iter()
+        .filter(|d| {
+            let open = matches!(d.status, dues::Status::Open);
+            match filter {
+                "to-me" => open && d.direction == dues::Direction::OwedToMe,
+                "i-owe" => open && d.direction == dues::Direction::IOwe,
+                "closed" => !open,
+                _ => true,
+            }
+        })
+        .cloned()
+        .collect()
+}
+
+/// The four figures above the Dues table.
+///
+/// The net position is shown *and* labelled as a net, because the two directions are
+/// never subtracted anywhere else in this section — but "am I up or down on money
+/// between friends" is the question the tab exists to answer, and refusing to
+/// answer it while showing both halves would be pedantry rather than honesty.
+pub fn due_stats(
+    totals: &dues::Totals,
+    settled: &dues::Totals,
+    rows: &[Due],
+    base: &str,
+) -> Vec<FinStat> {
+    let f = |m: i64| money::format_minor(m, base);
+    let net = totals.owed_to_me_minor - totals.i_owe_minor;
+    let open: Vec<&Due> = rows.iter().filter(|d| matches!(d.status, dues::Status::Open)).collect();
+    let oldest = open.iter().map(|d| d.age_days).max().unwrap_or(0);
+    let stale = open.iter().filter(|d| d.age_days >= 180).count();
+
+    vec![
+        FinStat {
+            label: s("OWED TO YOU"),
+            value: s(f(totals.owed_to_me_minor)),
+            sub: s(format!(
+                "{} open",
+                open.iter().filter(|d| d.direction == dues::Direction::OwedToMe).count()
+            )),
+            tone: s(if totals.owed_to_me_minor > 0 { "ok" } else { "flat" }),
+            delta: s(""),
+            delta_up: false,
+        },
+        FinStat {
+            label: s("YOU OWE"),
+            value: s(f(totals.i_owe_minor)),
+            sub: s(format!(
+                "{} open",
+                open.iter().filter(|d| d.direction == dues::Direction::IOwe).count()
+            )),
+            tone: s(if totals.i_owe_minor > 0 { "warn" } else { "flat" }),
+            delta: s(""),
+            delta_up: false,
+        },
+        FinStat {
+            label: s("NET POSITION"),
+            value: s(format!("{}{}", if net < 0 { "−" } else { "" }, f(net.abs()))),
+            sub: s(if net == 0 {
+                "square with everyone".to_string()
+            } else if net > 0 {
+                "in your favour".to_string()
+            } else {
+                "against you".to_string()
+            }),
+            tone: s(if net < 0 { "bad" } else if net > 0 { "ok" } else { "flat" }),
+            delta: s(""),
+            delta_up: false,
+        },
+        FinStat {
+            label: s("CAME BACK, 6 MONTHS"),
+            value: s(f(settled.owed_to_me_minor)),
+            sub: s(if stale > 0 {
+                format!("{stale} open {} months+", oldest / 30)
+            } else if oldest > 0 {
+                format!("oldest is {oldest} days old")
+            } else {
+                "nothing outstanding".to_string()
+            }),
+            tone: s(if stale > 0 { "warn" } else { "flat" }),
+            delta: s(""),
+            delta_up: false,
+        },
+    ]
+}
+
+/// The four figures above the Bills table.
+///
+/// Derived from the rows the tab is already showing rather than from four more
+/// queries: they have to agree with the list underneath them, and the surest way to
+/// make two numbers agree is for them to be the same number.
+///
+/// `income_minor` is this month's income, for the "fixed floor" share. Zero when
+/// there is none, in which case the share is left off rather than shown as 0%.
+pub fn bill_stats(
+    rows: &[Obligation],
+    subs_yearly_minor: i64,
+    income_minor: i64,
+    base: &str,
+) -> Vec<FinStat> {
+    let f = |m: i64| money::format_minor(m, base);
+    let open = |o: &&Obligation| !matches!(o.status, ObStatus::Paid | ObStatus::Skipped);
+
+    let overdue: Vec<&Obligation> =
+        rows.iter().filter(|o| matches!(o.status, ObStatus::Overdue)).collect();
+    let overdue_total: i64 = overdue.iter().filter_map(|o| o.shown_minor()).sum();
+    let latest = overdue.iter().map(|o| -o.days_until).max().unwrap_or(0);
+
+    let due: Vec<&Obligation> = rows.iter().filter(open).collect();
+    let due_total: i64 = due.iter().filter_map(|o| o.shown_minor()).sum();
+    // An estimate needs confirming; a fixed amount does not.
+    let needs_confirming = due.iter().filter(|o| o.is_estimate()).count();
+
+    let auto: Vec<&Obligation> = due.iter().copied().filter(|o| o.auto_post).collect();
+    let auto_total: i64 = auto.iter().filter_map(|o| o.shown_minor()).sum();
+
+    // What leaves every month whatever the user does: the bills on the calendar plus
+    // a twelfth of the subscriptions. The one figure on this tab that is about the
+    // shape of someone's finances rather than about this month's list.
+    let floor = due_total + subs_yearly_minor / 12;
+    let share = if income_minor > 0 {
+        format!(" · {}% of income", (floor as i128 * 100 / income_minor as i128).min(999))
+    } else {
+        String::new()
+    };
+
+    vec![
+        FinStat {
+            label: s("OVERDUE"),
+            value: s(f(overdue_total)),
+            sub: s(if overdue.is_empty() {
+                "Nothing late".to_string()
+            } else {
+                format!(
+                    "{} bill{} · {latest} day{} late",
+                    overdue.len(),
+                    if overdue.len() == 1 { "" } else { "s" },
+                    if latest == 1 { "" } else { "s" }
+                )
+            }),
+            tone: s(if overdue.is_empty() { "flat" } else { "bad" }),
+            delta: s(""),
+            delta_up: false,
+        },
+        FinStat {
+            label: s("DUE THIS MONTH"),
+            value: s(f(due_total)),
+            sub: s(format!(
+                "{} bill{} · {needs_confirming} need{} confirming",
+                due.len(),
+                if due.len() == 1 { "" } else { "s" },
+                if needs_confirming == 1 { "s" } else { "" }
+            )),
+            tone: s("flat"),
+            delta: s(""),
+            delta_up: false,
+        },
+        FinStat {
+            label: s("AUTO-DEBITED"),
+            value: s(f(auto_total)),
+            sub: s(format!(
+                "{} bill{} · no action needed",
+                auto.len(),
+                if auto.len() == 1 { "" } else { "s" }
+            )),
+            tone: s("flat"),
+            delta: s(""),
+            delta_up: false,
+        },
+        FinStat {
+            label: s("FIXED MONTHLY FLOOR"),
+            value: s(f(floor)),
+            sub: s(format!("bills + subscriptions{share}")),
+            tone: s("flat"),
+            delta: s(""),
+            delta_up: false,
+        },
+    ]
 }
 
 pub fn recurrences(rows: &[RecurRow], base: &str) -> Vec<FinRecurRow> {
@@ -413,14 +920,131 @@ pub fn recurrences(rows: &[RecurRow], base: &str) -> Vec<FinRecurRow> {
             account: opt(r.account_name.clone()),
             category: opt(r.category_name.clone()),
             yearly: s(money::format_minor(r.yearly_minor, base)),
+            // A twelfth of the year, in the base currency: the point of the column
+            // is comparing a yearly plan against a monthly one, and two currencies
+            // in one column would not compare.
+            monthly: s(money::format_minor(r.yearly_minor / 12, base)),
             hike_from: s(r
                 .hike_from_minor
                 .map(|m| money::format_minor(m, &r.currency))
                 .unwrap_or_default()),
             auto_post: r.auto_post,
             last_paid: opt(r.last_paid_on.clone()),
+            cat_hue: category_hue(0, r.category_name.as_deref().unwrap_or(""), None),
         })
         .collect()
+}
+
+/// How many subscriptions are in each status.
+#[derive(Clone, Copy, Debug, Default)]
+pub struct SubCounts {
+    pub all: i32,
+    pub active: i32,
+    pub paused: i32,
+    pub cancelled: i32,
+}
+
+pub fn sub_counts(rows: &[RecurRow]) -> SubCounts {
+    let mut c = SubCounts { all: rows.len() as i32, ..Default::default() };
+    for r in rows {
+        match r.status {
+            recur::Status::Active => c.active += 1,
+            recur::Status::Paused => c.paused += 1,
+            recur::Status::Cancelled => c.cancelled += 1,
+        }
+    }
+    c
+}
+
+pub fn filter_subs(rows: &[RecurRow], filter: &str) -> Vec<RecurRow> {
+    rows.iter()
+        .filter(|r| match filter {
+            "active" => matches!(r.status, recur::Status::Active),
+            "paused" => matches!(r.status, recur::Status::Paused),
+            "cancelled" => matches!(r.status, recur::Status::Cancelled),
+            _ => true,
+        })
+        .cloned()
+        .collect()
+}
+
+/// The four figures above the Subscriptions table.
+///
+/// The last two are the argument for the tab existing: what the whole set costs a
+/// year, and what the ones nobody is using cost. `unused_minor` comes from the
+/// Videos-playback flag and is zero when there is no playback data at all — the
+/// card then says so rather than claiming nothing is unused.
+pub fn sub_stats(rows: &[RecurRow], base: &str, unused: &[String], unused_minor: i64) -> Vec<FinStat> {
+    let f = |m: i64| money::format_minor(m, base);
+    let active: Vec<&RecurRow> =
+        rows.iter().filter(|r| matches!(r.status, recur::Status::Active)).collect();
+    let yearly: i64 = active.iter().map(|r| r.yearly_minor).sum();
+    let paused: i64 = rows
+        .iter()
+        .filter(|r| matches!(r.status, recur::Status::Paused))
+        .map(|r| r.yearly_minor)
+        .sum();
+    // The next thing to be charged, so the tab opens on a date rather than only on
+    // totals.
+    let today = date::today();
+    let next = active
+        .iter()
+        .filter_map(|r| r.next_due_on.as_deref())
+        .filter_map(|d| date::parse(d).ok())
+        .filter(|d| *d >= today)
+        .min();
+
+    vec![
+        FinStat {
+            label: s("A YEAR, ACTIVE"),
+            value: s(f(yearly)),
+            sub: s(format!("{} subscription{}", active.len(), if active.len() == 1 { "" } else { "s" })),
+            tone: s("flat"),
+            delta: s(""),
+            delta_up: false,
+        },
+        FinStat {
+            label: s("A MONTH, ACTIVE"),
+            value: s(f(yearly / 12)),
+            sub: s("the recurring floor"),
+            tone: s("flat"),
+            delta: s(""),
+            delta_up: false,
+        },
+        FinStat {
+            label: s("NEXT CHARGE"),
+            value: s(match next {
+                Some(d) => date::iso(d),
+                None => "—".to_string(),
+            }),
+            sub: s(match next {
+                Some(d) => {
+                    let n = date::days_between(today, d);
+                    if n == 0 { "today".to_string() } else { format!("in {n} day{}", if n == 1 { "" } else { "s" }) }
+                }
+                None => "nothing scheduled".to_string(),
+            }),
+            tone: s("flat"),
+            delta: s(""),
+            delta_up: false,
+        },
+        FinStat {
+            label: s("PAID, NOT USED"),
+            value: s(if unused.is_empty() { "—".to_string() } else { f(unused_minor) }),
+            sub: s(if unused.is_empty() {
+                if paused > 0 {
+                    format!("{} a year is paused", f(paused))
+                } else {
+                    "nothing flagged".to_string()
+                }
+            } else {
+                unused.join(", ")
+            }),
+            tone: s(if unused.is_empty() { "flat" } else { "warn" }),
+            delta: s(""),
+            delta_up: false,
+        },
+    ]
 }
 
 fn cycle_label(c: date::Cycle) -> &'static str {
@@ -678,12 +1302,50 @@ pub fn rates(rows: &[Rate], base: &str) -> Vec<FinRate> {
                 (r.rate_micro % 1_000_000) / 10_000,
                 base
             )),
+            // Where it came from and when, because a converted total is only as
+            // trustworthy as the age of the rate behind it.
             edited: s(match chrono::DateTime::<chrono::Utc>::from_timestamp(r.edited_at, 0) {
-                Some(dt) => format!("edited {}", dt.with_timezone(&chrono::Local).date_naive()),
+                Some(dt) => format!(
+                    "{} {}",
+                    if r.live { "fetched" } else { "typed" },
+                    dt.with_timezone(&chrono::Local).date_naive()
+                ),
                 None => String::new(),
             }),
+            live: r.live,
         })
         .collect()
+}
+
+/// Which column of the file became which field.
+///
+/// Shown in the import sheet because the mapping is *guessed*. Getting debit and
+/// credit the wrong way round inverts every row in a statement and leaves all the
+/// totals looking plausible, so the guess has to be visible before anything posts.
+pub fn import_map(map: &tulipix_finances::import::csv::ColumnMap) -> Vec<FinField> {
+    let row = |label: &str, value: Option<&str>| FinField {
+        key: s(label),
+        label: s(label),
+        kind: s("static"),
+        value: s(value.unwrap_or("")),
+        hint: s(""),
+        options: model(Vec::new()),
+        required: false,
+    };
+    let mut out = vec![
+        row("Date", Some(&map.date)),
+        row("Description", Some(&map.description)),
+    ];
+    // Either one signed column or a debit/credit pair — never both, and which one it
+    // is tells the user something about their bank's export.
+    match (&map.amount, &map.debit, &map.credit) {
+        (Some(a), _, _) => out.push(row("Amount (signed)", Some(a))),
+        (None, d, c) => {
+            out.push(row("Money out", d.as_deref()));
+            out.push(row("Money in", c.as_deref()));
+        }
+    }
+    out
 }
 
 pub fn import_rows(rows: &[RawRow], currency: &str, limit: usize) -> Vec<FinImportRow> {

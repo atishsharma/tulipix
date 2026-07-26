@@ -40,7 +40,7 @@ import { GenesisPage, GenesisRow, GenesisTopic } from "page_genesis.slint";
 import { FinancesPage, FinStat, FinAccountRow, FinTxnRow, FinRecurRow, FinObligationRow,
           FinDueRow, FinBudgetRow, FinLoanRow, FinInstalment, FinCatSlice, FinMonthBar,
           FinCalDay, FinFlag, FinDiscipline, FinRate, FinPrice, FinProposal, FinImportRow,
-          FinField } from "page_finances.slint";
+          FinField, FinCatTrend } from "page_finances.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
 import { AppIcon, Icons } from "icons.slint";
@@ -1530,8 +1530,46 @@ callback cloud-go-home();
     in property <[FinFlag]> fin-flags: [];
     // Bills and subscriptions due inside the alert lead. Drives the sidebar badge.
     in property <int> fin-badge: 0;
-    // Sample data is still on screen. Drives the banner that says so.
+    // Sample data is still on screen. Drives the pulsing header warning.
     in property <bool> fin-demo: false;
+    // A rate fetch is in flight, from the Refresh button in the rates sheet.
+    in property <bool> fin-rates-busy: false;
+    // Bills tab: the stat strip, the active filter and its chip counts.
+    in property <[FinStat]> fin-bill-stats: [];
+    in-out property <string> fin-bills-filter: "all";
+    in property <int> fin-bills-all: 0;
+    in property <int> fin-bills-needs: 0;
+    in property <int> fin-bills-auto: 0;
+    in property <int> fin-bills-paid: 0;
+    in property <int> fin-bills-oneoff: 0;
+    // Subscriptions tab: same shape as Bills.
+    in property <[FinStat]> fin-sub-stats: [];
+    in-out property <string> fin-subs-filter: "all";
+    in property <int> fin-subs-all: 0;
+    in property <int> fin-subs-active: 0;
+    in property <int> fin-subs-paused: 0;
+    in property <int> fin-subs-cancelled: 0;
+    // Dues tab.
+    in property <[FinStat]> fin-due-stats: [];
+    in-out property <string> fin-dues-filter: "all";
+    in property <int> fin-dues-all: 0;
+    in property <int> fin-dues-to-me: 0;
+    in property <int> fin-dues-i-owe: 0;
+    in property <int> fin-dues-closed: 0;
+    // Insights: the strip and the six-month category trend.
+    in property <[FinStat]> fin-insight-stats: [];
+    in property <[FinCatTrend]> fin-trend: [];
+    // Calendar: the cash-flow sentence and the worst single day.
+    in property <string> fin-cal-warning: "";
+    in property <string> fin-cal-heaviest: "";
+    in property <string> fin-cal-heaviest-label: "";
+    in property <string> fin-cal-heaviest-sub: "";
+    // Budgets: what income is committed to, and what no envelope is watching.
+    in property <[FinCatSlice]> fin-commitments: [];
+    in property <string> fin-budget-unbudgeted: "";
+    in property <string> fin-budget-unbudgeted-sub: "";
+    // Which statement column became which field, for the import sheet.
+    in property <[FinField]> fin-import-map: [];
     in-out property <string> fin-sheet: "";
     in property <string> fin-sheet-title: "";
     in property <string> fin-sheet-hint: "";
@@ -1581,6 +1619,12 @@ callback cloud-go-home();
     callback fin-import-pick();
     callback fin-scan-receipt();
     callback fin-demo-remove();
+    callback fin-demo-add();
+    callback fin-rates-refresh();
+    callback fin-set-bills-filter(string);
+    callback fin-set-subs-filter(string);
+    callback fin-set-dues-filter(string);
+    callback fin-find-missing();
     callback fin-submit-again();
     callback fin-refresh();
     callback fin-enter();
@@ -3654,6 +3698,40 @@ callback cloud-go-home();
                 flags: root.fin-flags;
                 badge: root.fin-badge;
                 demo: root.fin-demo;
+                rates-busy: root.fin-rates-busy;
+                bill-stats: root.fin-bill-stats;
+                bills-filter <=> root.fin-bills-filter;
+                bills-all: root.fin-bills-all;
+                bills-needs: root.fin-bills-needs;
+                bills-auto: root.fin-bills-auto;
+                bills-paid: root.fin-bills-paid;
+                bills-oneoff: root.fin-bills-oneoff;
+                set-bills-filter(f) => { root.fin-set-bills-filter(f); }
+                sub-stats: root.fin-sub-stats;
+                subs-filter <=> root.fin-subs-filter;
+                subs-all: root.fin-subs-all;
+                subs-active: root.fin-subs-active;
+                subs-paused: root.fin-subs-paused;
+                subs-cancelled: root.fin-subs-cancelled;
+                set-subs-filter(f) => { root.fin-set-subs-filter(f); }
+                due-stats: root.fin-due-stats;
+                dues-filter <=> root.fin-dues-filter;
+                dues-all: root.fin-dues-all;
+                dues-to-me: root.fin-dues-to-me;
+                dues-i-owe: root.fin-dues-i-owe;
+                dues-closed: root.fin-dues-closed;
+                set-dues-filter(f) => { root.fin-set-dues-filter(f); }
+                insight-stats: root.fin-insight-stats;
+                trend: root.fin-trend;
+                cal-warning: root.fin-cal-warning;
+                cal-heaviest: root.fin-cal-heaviest;
+                cal-heaviest-label: root.fin-cal-heaviest-label;
+                cal-heaviest-sub: root.fin-cal-heaviest-sub;
+                commitments: root.fin-commitments;
+                budget-unbudgeted: root.fin-budget-unbudgeted;
+                budget-unbudgeted-sub: root.fin-budget-unbudgeted-sub;
+                import-map: root.fin-import-map;
+                find-missing() => { root.fin-find-missing(); }
                 sheet <=> root.fin-sheet;
                 sheet-title: root.fin-sheet-title;
                 sheet-hint: root.fin-sheet-hint;
@@ -3701,6 +3779,8 @@ callback cloud-go-home();
                 import-pick() => { root.fin-import-pick(); }
                 scan-receipt() => { root.fin-scan-receipt(); }
                 demo-remove() => { root.fin-demo-remove(); }
+            demo-add() => { root.fin-demo-add(); }
+            rates-refresh() => { root.fin-rates-refresh(); }
                 submit-again() => { root.fin-submit-again(); }
                 refresh() => { root.fin-refresh(); }
             }

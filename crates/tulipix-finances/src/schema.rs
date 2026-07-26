@@ -152,7 +152,11 @@ CREATE TABLE IF NOT EXISTS budgets (
 CREATE TABLE IF NOT EXISTS fx_rates (
     code       TEXT PRIMARY KEY,                    -- 'USD'
     rate_micro INTEGER NOT NULL,                    -- 83.60 -> 83_600_000
-    edited_at  INTEGER NOT NULL
+    edited_at  INTEGER NOT NULL,
+    -- 'manual' or 'live'. A hand-typed rate is a decision and the daily refresh
+    -- must not overwrite it; see `fx::apply_live`. Added after the first release,
+    -- so `add_missing_columns` puts it on databases that predate it.
+    source     TEXT    NOT NULL DEFAULT 'manual'
 );
 
 CREATE TABLE IF NOT EXISTS import_presets (
@@ -224,6 +228,37 @@ const SEED_CATEGORIES: &[(&str, &str, Option<&str>)] = &[
 
 pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(SCHEMA).execute(pool).await?;
+    add_missing_columns(pool).await?;
+    Ok(())
+}
+
+/// Columns added to an existing table after its first release.
+///
+/// `CREATE TABLE IF NOT EXISTS` is a no-op on a database that already has the
+/// table, so a new column in [`SCHEMA`] reaches new installs only. Each entry here
+/// is checked against `pragma_table_info` and added if missing, which is
+/// idempotent and safe to run on every launch.
+///
+/// Kept to `ADD COLUMN` with a default on purpose: anything that rewrites or drops
+/// data needs a considered migration, not a list.
+async fn add_missing_columns(pool: &SqlitePool) -> Result<()> {
+    for (table, column, decl) in
+        [("fx_rates", "source", "TEXT NOT NULL DEFAULT 'manual'")]
+    {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?) WHERE name = ?)",
+        )
+        .bind(table)
+        .bind(column)
+        .fetch_one(pool)
+        .await?;
+        if !exists {
+            // Table and column names are from the literal above, never from input.
+            sqlx::query(&format!("ALTER TABLE {table} ADD COLUMN {column} {decl}"))
+                .execute(pool)
+                .await?;
+        }
+    }
     Ok(())
 }
 

@@ -327,7 +327,11 @@ pub async fn unused_subscription_flags(
 ///
 /// Opens `videos.db` read-only through the shared handle. Returns `None` on any
 /// problem at all — this is an optional signal, not a dependency.
-async fn last_video_playback() -> Option<NaiveDate> {
+///
+/// Public so the Subscriptions tab can pass the same figure to
+/// [`unused_subscription_flags`] that [`flags`] does, rather than the two tabs
+/// disagreeing about what counts as unused.
+pub async fn last_video_playback() -> Option<NaiveDate> {
     let handle = tulipix_core::db::DbHandle::open("videos").ok()?;
     if !handle.path.exists() {
         return None;

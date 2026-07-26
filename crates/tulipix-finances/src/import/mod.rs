@@ -15,6 +15,8 @@ pub mod csv;
 pub mod dates;
 pub mod detect;
 pub mod ofx;
+pub mod pdf;
+pub mod sheets;
 
 use anyhow::{bail, Context, Result};
 use sqlx::SqlitePool;
@@ -58,6 +60,10 @@ impl Preview {
 pub enum FileKind {
     Csv,
     Ofx,
+    /// A statement PDF, converted to CSV by [`pdf`] before anything else sees it.
+    Pdf,
+    /// `.xlsx` or legacy `.xls`, converted to CSV by [`sheets`].
+    Sheet,
 }
 
 impl FileKind {
@@ -65,7 +71,67 @@ impl FileKind {
         match self {
             FileKind::Csv => "csv",
             FileKind::Ofx => "ofx",
+            FileKind::Pdf => "pdf",
+            FileKind::Sheet => "spreadsheet",
         }
+    }
+
+    /// Whether the file was converted to CSV to be read.
+    ///
+    /// The preview says so, because a converted file is the one case where a
+    /// mis-mapped column is the importer's fault rather than the bank's, and the
+    /// user should look harder at the rows before posting them.
+    pub fn converted(self) -> bool {
+        matches!(self, FileKind::Pdf | FileKind::Sheet)
+    }
+}
+
+/// Every extension the file picker should offer.
+pub const EXTENSIONS: &[&str] =
+    &["csv", "txt", "ofx", "qfx", "pdf", "xls", "xlsx", "xlsm", "xlsb", "ods"];
+
+/// Read any supported statement file as the CSV text the pipeline parses.
+///
+/// PDFs and spreadsheets are converted here rather than given a parser of their own:
+/// column mapping, date sniffing, the preview and the dedup index are all in the CSV
+/// path already, and a second pipeline would be a second set of the same bugs.
+///
+/// Returns the text, what the file actually was, and how many of its lines were not
+/// transactions — which only a converted file can report, since for CSV and OFX that
+/// is counted later by their own parsers.
+pub fn read_file(bytes: &[u8]) -> Result<(String, FileKind, usize)> {
+    if bytes.is_empty() {
+        bail!("that file is empty");
+    }
+    // By content, not by extension: a `.xls` that is really an HTML table and a
+    // `.csv` that is really a QFX are both common, and the extension is the least
+    // reliable thing about a downloaded statement.
+    if bytes.starts_with(b"%PDF") {
+        let (text, unreadable) = pdf::to_csv(bytes)?;
+        return Ok((text, FileKind::Pdf, unreadable));
+    }
+    // `PK` is a zip, which is what every modern Office file is; `D0 CF 11 E0` is the
+    // old OLE container that legacy `.xls` uses.
+    if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(&[0xD0, 0xCF, 0x11, 0xE0]) {
+        let (text, unreadable) = sheets::to_csv(bytes)?;
+        return Ok((text, FileKind::Sheet, unreadable));
+    }
+    let text = decode_text(bytes)?;
+    let kind = sniff_kind(&text);
+    Ok((text, kind, 0))
+}
+
+/// Bytes as text, tolerating what banks actually emit.
+///
+/// UTF-8 first, then Latin-1, because a statement with a `£` or a `€` in it written
+/// by a Windows tool is not UTF-8 and refusing it would be refusing the file for a
+/// reason the user cannot act on. The BOM goes, or it becomes part of the first
+/// column's name and the mapping misses it.
+fn decode_text(bytes: &[u8]) -> Result<String> {
+    let body = bytes.strip_prefix(&[0xEF, 0xBB, 0xBF]).unwrap_or(bytes);
+    match std::str::from_utf8(body) {
+        Ok(s) => Ok(s.to_string()),
+        Err(_) => Ok(body.iter().map(|b| *b as char).collect()),
     }
 }
 
@@ -80,6 +146,30 @@ pub fn sniff_kind(text: &str) -> FileKind {
     } else {
         FileKind::Csv
     }
+}
+
+/// Preview a statement file of any supported kind.
+///
+/// The entry point the UI uses. [`preview`] takes text and is what the tests and the
+/// re-run-with-corrections path call; this adds the conversion step in front of it
+/// and keeps the file's real kind on the result, so a PDF does not report itself as
+/// a CSV just because that is what it was turned into.
+pub fn preview_bytes(
+    bytes: &[u8],
+    account_currency: &str,
+    override_map: Option<&ColumnMap>,
+    override_format: Option<DateFormat>,
+) -> Result<Preview> {
+    let (text, kind, skipped) = read_file(bytes)?;
+    let mut p = preview(&text, account_currency, override_map, override_format)?;
+    if kind.converted() {
+        p.kind = kind;
+        // Lines the converter could not use, on top of the ones the CSV parser
+        // rejected. Both are the same fact to the user: rows in the file that did
+        // not become transactions.
+        p.unreadable += skipped;
+    }
+    Ok(p)
 }
 
 /// Read a file into a preview, guessing the mapping and sniffing the date format.
@@ -109,7 +199,11 @@ pub fn preview(
                 kind: FileKind::Ofx,
             })
         }
-        FileKind::Csv => {
+        // A PDF or a spreadsheet has already been converted to CSV text by the time
+        // it reaches here, so `sniff_kind` sees CSV and these two arms are unreachable
+        // in practice. They are named rather than wildcarded so that adding a real
+        // third format is a compile error here instead of silently parsing as CSV.
+        FileKind::Csv | FileKind::Pdf | FileKind::Sheet => {
             let headers = csv::headers(text)?;
             let map = match override_map {
                 Some(m) => m.clone(),
@@ -309,6 +403,50 @@ OFXHEADER:100
     fn file_kind_comes_from_the_contents_not_the_extension() {
         assert_eq!(sniff_kind(HDFC), FileKind::Csv);
         assert_eq!(sniff_kind(QFX), FileKind::Ofx);
+    }
+
+    #[test]
+    fn binary_statements_are_recognised_by_their_magic_bytes() {
+        // A `.xls` that is really a CSV and a `.csv` that is really a QFX are both
+        // things banks do, so the extension is never consulted.
+        assert_eq!(read_file(HDFC.as_bytes()).unwrap().1, FileKind::Csv);
+        assert_eq!(read_file(QFX.as_bytes()).unwrap().1, FileKind::Ofx);
+        // Truncated files of each binary kind: recognised, then refused by the
+        // parser rather than silently read as a one-line CSV.
+        assert!(read_file(b"%PDF-1.4 truncated").is_err());
+        assert!(read_file(b"PK\x03\x04 truncated").is_err());
+        assert!(read_file(&[0xD0, 0xCF, 0x11, 0xE0, 0x00]).is_err());
+        assert!(read_file(b"").is_err());
+    }
+
+    #[test]
+    fn a_windows_encoded_statement_is_read_rather_than_refused() {
+        // Latin-1, not UTF-8: byte 0xA3 is `£`. Refusing the file would be refusing
+        // it for a reason the user cannot act on.
+        let mut bytes = b"Date,Description,Amount\n01/07/2026,CAF\xC9 ".to_vec();
+        bytes.extend_from_slice(b"\xA35.00,5.00\n");
+        let (text, kind, _) = read_file(&bytes).unwrap();
+        assert_eq!(kind, FileKind::Csv);
+        assert!(text.contains("CAFÉ"), "got {text}");
+
+        // And a BOM does not become part of the first column's name, which would
+        // stop the mapping finding the date column.
+        let (text, _, _) = read_file(b"\xEF\xBB\xBFDate,Amount\n").unwrap();
+        assert!(text.starts_with("Date"), "got {text:?}");
+    }
+
+    #[test]
+    fn a_converted_file_reports_what_it_was_and_what_it_lost() {
+        // The conversion path, without needing a real PDF: `preview_bytes` on CSV
+        // bytes must behave exactly as `preview` on the same text, and must *not*
+        // claim to be converted.
+        let direct = preview(HDFC, "INR", None, None).unwrap();
+        let viabytes = preview_bytes(HDFC.as_bytes(), "INR", None, None).unwrap();
+        assert_eq!(viabytes.rows.len(), direct.rows.len());
+        assert_eq!(viabytes.unreadable, direct.unreadable);
+        assert_eq!(viabytes.kind, FileKind::Csv);
+        assert!(!viabytes.kind.converted());
+        assert!(FileKind::Pdf.converted() && FileKind::Sheet.converted());
     }
 
     #[test]

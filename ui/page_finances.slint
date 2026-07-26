@@ -116,9 +116,13 @@ export struct FinRecurRow {
     account: string,
     category: string,
     yearly: string,
+    // The same commitment as `yearly`, per month. Both are shown: a monthly figure
+    // is what someone feels and a yearly one is what they cancel on.
+    monthly: string,
     hike-from: string,     // empty when the price has never risen
     auto-post: bool,
     last-paid: string,
+    cat-hue: color,
 }
 
 // A materialised instance: dated money that is owed but has not moved.
@@ -134,6 +138,12 @@ export struct FinObligationRow {
     over: bool,            // actual came in above the estimate
     status: string,        // upcoming|due|overdue|paid|skipped
     is-estimate: bool,
+    category: string,
+    cat-hue: color,
+    account: string,       // which account pays it
+    // Posts itself on its due date. The Bills table separates these out, because a
+    // bill that needs no action is not on the same footing as one that does.
+    auto-post: bool,
 }
 
 export struct FinDueRow {
@@ -231,7 +241,25 @@ export struct FinFlag {
 
 export struct FinDiscipline { period: string, budget: string, spent: string, within: bool, pct: int }
 
-export struct FinRate { code: string, rate: string, edited: string }
+// One month of one category's six-month trend. `pct` is a share of that category's
+// own worst month, not of the whole ledger — otherwise every category but the
+// largest is a flat line at the bottom.
+export struct FinTrendMonth { label: string, pct: int, current: bool }
+
+export struct FinCatTrend {
+    name: string,
+    hue: color,
+    total: string,
+    // Change against the mean of the earlier months, with a direction. Empty when
+    // there is not enough history for the comparison to mean anything.
+    delta: string,
+    up: bool,
+    months: [FinTrendMonth],
+}
+
+// One row of the exchange-rate editor. `live` is false when the user typed the
+// rate, which is also what stops the daily refresh replacing it.
+export struct FinRate { code: string, rate: string, edited: string, live: bool }
 
 export struct FinPrice { amount: string, from: string }
 
@@ -347,6 +375,55 @@ component Tile inherits Rectangle {
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
     }
+}
+
+// Pulsing warning pill. Amber, outlined, and breathing — for the one notice in
+// this section that must not be possible to overlook or dismiss by ignoring.
+//
+// The pulse is a triangle wave off `animation-tick()` rather than a `Timer`: it
+// needs no state, cannot drift, and stops costing anything the moment the element
+// is not instantiated.
+component WarnPulse inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    horizontal-stretch: 0; vertical-stretch: 0;
+    min-height: 44px; max-height: 44px;
+    min-width: l.width + 60px; max-width: l.width + 60px;
+    border-radius: 22px;
+    // 1.4s there and back. Slow enough to read as a heartbeat rather than a
+    // hazard light, which would be unusable to sit next to.
+    property <float> beat: Math.abs(Math.mod(animation-tick() / 700ms, 2.0) - 1.0);
+    background: FinTheme.warn.with-alpha(0.10 + 0.16 * root.beat);
+    border-width: 1.5px;
+    border-color: FinTheme.warn.with-alpha(0.45 + 0.4 * root.beat);
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    AppIcon {
+        source: Icons.triangle-alert; tint: FinTheme.warn;
+        width: 16px; height: 16px;
+        x: 16px; y: (parent.height - self.height) / 2;
+    }
+    l := Text {
+        x: 40px; y: (parent.height - self.height) / 2;
+        text: root.label; color: FinTheme.warn;
+        font-size: 13px; font-weight: 700;
+    }
+}
+
+// A 30px filter chip with an optional count — the mockup's `.chip.sm`. Filters are
+// not tabs, so these are quieter than `FinTab`: accent fill when on, glass when not,
+// and no gradient.
+component FilterChip inherits HdrChip {
+    in property <bool> on: false;
+    active: root.on;
+    accent: FinTheme.accent;
+    active-text: FinTheme.on-accent;
+    dark: !FinTheme.light;
+    dk-idle: FinTheme.pill-bg;
+    dk-hover: FinTheme.card-2;
+    dk-text: FinTheme.ink-dim;
+    dk-border: FinTheme.hairline;
+    height: 30px;
+    min-width: 72px;
 }
 
 // Section tab — the shared header chip with this section's gradient baked in.
@@ -521,6 +598,44 @@ component Delta inherits Rectangle {
         x: 25px; y: (parent.height - self.height) / 2;
         text: root.label; color: root.hue;
         font-size: 11.5px; font-weight: 700;
+    }
+}
+
+// A row of headline figures. One component rather than one per tab: Overview, Bills
+// and Dues all show four numbers above their content, and four copies of this drift.
+//
+// A card whose tone is not flat is outlined in its tone as well as coloured — the
+// mockup's red-bordered Overdue card. Colour alone carries it for most people and
+// an outline carries it for the rest.
+component StatStrip inherits HorizontalLayout {
+    in property <[FinStat]> stats;
+    spacing: 12px;
+    for s in root.stats: sc := Card {
+        horizontal-stretch: 1;
+        min-height: 96px; max-height: 96px;
+        property <color> tone-hue: s.tone == "bad"  ? FinTheme.bad
+                                : s.tone == "warn" ? FinTheme.warn
+                                : s.tone == "ok"   ? FinTheme.good : FinTheme.ink;
+        border-color: s.tone == "flat" ? FinTheme.hairline : sc.tone-hue.with-alpha(0.4);
+        VerticalLayout {
+            padding: 14px; spacing: 4px; alignment: center;
+            Text {
+                text: s.label;
+                color: s.tone == "flat" ? FinTheme.ink-dim : sc.tone-hue;
+                font-size: 11px; font-weight: 700;
+            }
+            Text {
+                text: s.value; color: sc.tone-hue;
+                font-size: 22px; font-weight: 800; overflow: elide;
+            }
+            if s.delta == "": Text {
+                text: s.sub; color: FinTheme.ink-dim; font-size: 11px; overflow: elide;
+            }
+            if s.delta != "": HorizontalLayout {
+                alignment: start;
+                Delta { label: s.delta; up: s.delta-up; }
+            }
+        }
     }
 }
 
@@ -901,14 +1016,36 @@ export component FinancesPage inherits Rectangle {
 
     // Recurrences
     in property <[FinObligationRow]> bills;
+    // The four figures above the Bills table, and the counts on its filter chips.
+    // Counts are of the whole month, not of the filtered list — a filter that hid
+    // its own count would be unusable.
+    in property <[FinStat]> bill-stats;
+    in-out property <string> bills-filter: "all";
+    in property <int> bills-all: 0;
+    in property <int> bills-needs: 0;
+    in property <int> bills-auto: 0;
+    in property <int> bills-paid: 0;
+    in property <int> bills-oneoff: 0;
     in property <[FinRecurRow]> subs;
     in property <[FinRecurRow]> bill-templates;
     in property <string> subs-yearly: "";
+    in property <[FinStat]> sub-stats;
+    in-out property <string> subs-filter: "all";
+    in property <int> subs-all: 0;
+    in property <int> subs-active: 0;
+    in property <int> subs-paused: 0;
+    in property <int> subs-cancelled: 0;
 
     // Dues, accounts, budgets, loans, calendar, insights
     in property <[FinDueRow]> dues;
     in property <string> owed-to-me: "";
     in property <string> i-owe: "";
+    in property <[FinStat]> due-stats;
+    in-out property <string> dues-filter: "all";
+    in property <int> dues-all: 0;
+    in property <int> dues-to-me: 0;
+    in property <int> dues-i-owe: 0;
+    in property <int> dues-closed: 0;
     in property <[FinAccountRow]> accounts;
     in property <string> liquid-total: "";
     in property <string> debt-total: "";
@@ -918,17 +1055,35 @@ export component FinancesPage inherits Rectangle {
     in property <string> budget-income: "";
     in property <string> budget-allocated: "";
     in property <string> budget-unallocated: "";
+    // Spending this month that no envelope is watching, and how much of it there is.
+    in property <string> budget-unbudgeted: "";
+    in property <string> budget-unbudgeted-sub: "";
+    // Where the month's income is committed before any discretionary spending:
+    // loans, rent, subscriptions, then what is left.
+    in property <[FinCatSlice]> commitments;
     in property <int> budget-allocated-pct: 0;
     in property <[FinDiscipline]> discipline;
     in property <[FinCalDay]> cal-days;
     in property <string> cal-label: "";
     in property <[FinObligationRow]> cal-agenda;
     in property <string> cal-low-point: "";
+    // The cash-flow sentence, empty when the month is covered. Written in Rust
+    // because it is a claim about someone's money, not a label.
+    in property <string> cal-warning: "";
+    in property <string> cal-heaviest: "";
+    in property <string> cal-heaviest-label: "";
+    in property <string> cal-heaviest-sub: "";
     in property <[FinFlag]> flags;
+    in property <[FinStat]> insight-stats;
+    in property <[FinCatTrend]> trend;
     in property <int> badge: 0;
     // Sample data is still on screen. Never hidden: invented money that does not
     // announce itself is the one thing this section must not do.
     in property <bool> demo: false;
+    // The sample-data explainer. Local to this file — it has no form to fill in and
+    // nothing to fetch, so routing it through `sheet` would mean building a form in
+    // Rust to say two paragraphs.
+    in-out property <bool> demo-open: false;
 
     // Sheet — one modal at a time, named by a string for the same reason `tab`
     // is a string: two booleans can be true at once and a name cannot.
@@ -947,8 +1102,13 @@ export component FinancesPage inherits Rectangle {
     in property <[FinImportRow]> import-rows;
     in property <string> import-summary: "";
     in property <bool> import-needs-format: false;
+    // Which file column became which field, as label/value pairs.
+    in property <[FinField]> import-map;
     in property <[FinProposal]> proposals;
     in property <[FinRate]> rates;
+    // A rate fetch is in flight. Only ever true from the Refresh button: the daily
+    // one happens on section open and has nothing to report.
+    in property <bool> rates-busy: false;
 
     callback set-tab(string);
     callback set-field(string, string);
@@ -984,6 +1144,13 @@ export component FinancesPage inherits Rectangle {
     callback import-pick();
     callback scan-receipt();
     callback demo-remove();
+    callback demo-add();
+    callback rates-refresh();
+    callback set-bills-filter(string);
+    callback set-subs-filter(string);
+    callback set-dues-filter(string);
+    // Opens the ledger filtered to the account being reconciled.
+    callback find-missing();
     // Saves and reopens a blank form of the same kind, for entering several
     // things in a row.
     callback submit-again();
@@ -1016,14 +1183,23 @@ export component FinancesPage inherits Rectangle {
                 }
             }
             VerticalLayout {
-                alignment: center; horizontal-stretch: 0; spacing: 2px;
+                alignment: center; horizontal-stretch: 0;
                 Text { text: "Finances"; color: FinTheme.ink; font-size: 21px; font-weight: 800; }
-                Text {
-                    text: "Offline. No bank sync, no accounts — nothing here leaves this machine.";
-                    color: FinTheme.ink-dim; font-size: 11.5px;
-                }
             }
             Rectangle { horizontal-stretch: 1; background: transparent; }
+
+            // ── sample-data warning ─────────────────────────────────────────
+            // Money the app invented has to announce itself wherever the user is,
+            // so this sits in the header rather than on one tab, and it pulses
+            // because a static notice beside eight other controls is a notice
+            // nobody reads. It disappears for good once the last sample is gone.
+            if root.demo: VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                WarnPulse {
+                    label: "Sample data";
+                    clicked => { root.demo-open = true; }
+                }
+            }
             // Search is the ledger's search wherever it is typed: there is one
             // table underneath all nine tabs, so a second "search everything" box
             // would be the same query with a different name. Typing here goes to
@@ -1067,43 +1243,6 @@ export component FinancesPage inherits Rectangle {
                         clicked => { root.open-sheet("txn", 0); } }
                     IconBtn { icon: Icons.settings; tip: "Exchange rates";
                         clicked => { root.open-sheet("rates", 0); } }
-                }
-            }
-        }
-
-        // ── sample-data banner ──────────────────────────────────────────────
-        // Above the tabs, so it is on screen whichever tab is open. The section
-        // seeds one month of plausible finances on a first run, because nine empty
-        // tabs are indistinguishable from nine broken ones — but money the app
-        // invented has to say so, every time it is shown.
-        if root.demo: Rectangle {
-            border-radius: 12px;
-            background: FinTheme.accent.with-alpha(0.12);
-            border-width: 1px;
-            border-color: FinTheme.accent.with-alpha(0.35);
-            HorizontalLayout {
-                padding: 12px; spacing: 10px;
-                VerticalLayout {
-                    alignment: center; horizontal-stretch: 0;
-                    AppIcon {
-                        source: Icons.bell; tint: FinTheme.accent;
-                        width: 16px; height: 16px;
-                    }
-                }
-                VerticalLayout {
-                    alignment: center; horizontal-stretch: 1; spacing: 2px;
-                    Text {
-                        text: "This is sample data, not your money.";
-                        color: FinTheme.ink; font-size: 12.5px; font-weight: 700;
-                    }
-                    Text {
-                        text: "Each part disappears as you add your own — a real account clears the sample accounts, a real bill clears the sample bills.";
-                        color: FinTheme.ink-dim; font-size: 11px; wrap: word-wrap;
-                    }
-                }
-                VerticalLayout {
-                    alignment: center; horizontal-stretch: 0;
-                    Btn { label: "Remove all of it"; clicked => { root.demo-remove(); } }
                 }
             }
         }
@@ -1167,37 +1306,7 @@ export component FinancesPage inherits Rectangle {
                 VerticalLayout {
                     padding-right: 6px; spacing: 14px;
 
-                    // stat strip
-                    HorizontalLayout {
-                        spacing: 12px;
-                        for s in root.stats: Card {
-                            horizontal-stretch: 1;
-                            min-height: 96px; max-height: 96px;
-                            VerticalLayout {
-                                padding: 14px; spacing: 4px; alignment: center;
-                                Text {
-                                    text: s.label; color: FinTheme.ink-dim;
-                                    font-size: 11px; font-weight: 700;
-                                }
-                                Text {
-                                    text: s.value;
-                                    color: s.tone == "bad"  ? FinTheme.bad
-                                         : s.tone == "warn" ? FinTheme.warn
-                                         : s.tone == "ok"   ? FinTheme.good : FinTheme.ink;
-                                    font-size: 22px; font-weight: 800;
-                                    overflow: elide;
-                                }
-                                if s.delta == "": Text {
-                                    text: s.sub; color: FinTheme.ink-dim; font-size: 11px;
-                                    overflow: elide;
-                                }
-                                if s.delta != "": HorizontalLayout {
-                                    alignment: start;
-                                    Delta { label: s.delta; up: s.delta-up; }
-                                }
-                            }
-                        }
-                    }
+                    StatStrip { stats: root.stats; }
 
                     // breakdown + needs-you
                     HorizontalLayout {
@@ -1551,12 +1660,32 @@ export component FinancesPage inherits Rectangle {
                         min-width: 170px; horizontal-stretch: 0;
                         selected(v) => { root.txn-category = v; root.txn-filter(); }
                     }
-                    ComboBox {
-                        model: ["All", "Expense", "Income", "Transfer"];
-                        current-value: root.txn-kind;
-                        min-width: 120px; horizontal-stretch: 0;
-                        selected(v) => { root.txn-kind = v; root.txn-filter(); }
-                    }
+                }
+
+                // Direction chips. The combo boxes above narrow *what*; these
+                // narrow which way the money went, which is the filter people
+                // actually reach for.
+                HorizontalLayout {
+                    spacing: 8px; alignment: start;
+                    FilterChip { label: "Everything";
+                        min-width: 108px;
+                        on: root.txn-kind == "All";
+                        clicked => { root.txn-kind = "All"; root.txn-filter(); } }
+                    FilterChip { label: "Money out"; icon: Icons.arrow-up;
+                        min-width: 116px;
+                        on: root.txn-kind == "Expense";
+                        clicked => { root.txn-kind = "Expense"; root.txn-filter(); } }
+                    FilterChip { label: "Money in"; icon: Icons.arrow-down;
+                        min-width: 112px;
+                        on: root.txn-kind == "Income";
+                        clicked => { root.txn-kind = "Income"; root.txn-filter(); } }
+                    // Transfers are shown but never counted as spending, which is
+                    // the whole reason they get a filter of their own.
+                    FilterChip { label: "Transfers"; icon: Icons.refresh-cw;
+                        min-width: 112px;
+                        on: root.txn-kind == "Transfer";
+                        clicked => { root.txn-kind = "Transfer"; root.txn-filter(); } }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
                 }
 
                 HorizontalLayout {
@@ -1729,30 +1858,74 @@ export component FinancesPage inherits Rectangle {
                 VerticalLayout {
                     padding-right: 6px; spacing: 14px;
 
+                    StatStrip { stats: root.bill-stats; }
+
+                    // Which bills to show. Filtered in Rust rather than here: Slint
+                    // models cannot be filtered in a `for`, and a hidden-but-present
+                    // row would still be counted by everything above.
+                    HorizontalLayout {
+                        spacing: 8px; alignment: start;
+                        FilterChip { label: "All"; count: root.bills-all;
+                            on: root.bills-filter == "all";
+                            clicked => { root.set-bills-filter("all"); } }
+                        FilterChip { label: "Needs action"; count: root.bills-needs;
+                            min-width: 128px;
+                            on: root.bills-filter == "needs";
+                            clicked => { root.set-bills-filter("needs"); } }
+                        FilterChip { label: "Auto"; count: root.bills-auto;
+                            on: root.bills-filter == "auto";
+                            clicked => { root.set-bills-filter("auto"); } }
+                        FilterChip { label: "Paid"; count: root.bills-paid;
+                            on: root.bills-filter == "paid";
+                            clicked => { root.set-bills-filter("paid"); } }
+                        FilterChip { label: "One-off"; count: root.bills-oneoff;
+                            min-width: 96px;
+                            on: root.bills-filter == "oneoff";
+                            clicked => { root.set-bills-filter("oneoff"); } }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                        Btn { label: "One-off bill"; icon: Icons.plus; h: 30px;
+                            clicked => { root.open-sheet("one-off", 0); } }
+                        Btn { label: "New bill"; icon: Icons.plus; h: 30px; primary: true;
+                            clicked => { root.open-sheet("bill", 0); } }
+                    }
+
                     Card {
+                        clip: true;
                         VerticalLayout {
-                            padding: 16px; spacing: 12px;
-                            HorizontalLayout {
-                                spacing: 10px;
-                                CardTitle {
-                                    title: "Bills";
-                                    hint: "Amount varies, so each one is confirmed rather than posted for you.";
+                            padding: 0px; spacing: 0px;
+
+                            // Column header. Not sortable: the list is ordered by due
+                            // date, which is the only order a bill list is useful in.
+                            Rectangle {
+                                min-height: 36px; max-height: 36px;
+                                background: FinTheme.card-2;
+                                HorizontalLayout {
+                                    padding-left: 14px; padding-right: 14px; spacing: 10px;
+                                    HeadCell { label: "BILL"; flex: true; sortable: false; }
+                                    HeadCell { label: "CATEGORY"; w: 116px; sortable: false; }
+                                    HeadCell { label: "DUE"; w: 78px; sortable: false; }
+                                    HeadCell { label: "ESTIMATE"; w: 96px; right: true;
+                                        sortable: false; }
+                                    HeadCell { label: "ACTUAL"; w: 96px; right: true;
+                                        sortable: false; }
+                                    HeadCell { label: "PAYS FROM"; w: 108px; sortable: false; }
+                                    HeadCell { label: "STATUS"; w: 116px; sortable: false; }
+                                    HeadCell { label: ""; w: 104px; sortable: false; }
                                 }
-                                Btn { label: "One-off bill"; h: 32px;
-                                    clicked => { root.open-sheet("one-off", 0); } }
-                                Btn { label: "New bill"; h: 32px; primary: true;
-                                    clicked => { root.open-sheet("bill", 0); } }
                             }
+                            Rectangle { min-height: 1px; max-height: 1px;
+                                background: FinTheme.hairline; }
 
                             if root.bills.length == 0: Blank {
-                                title: "No bills yet";
-                                body: "A bill is anything whose amount changes month to month — electricity, water, a card statement. Add one, or let the importer find it in a statement.";
+                                title: root.bills-all == 0 ? "No bills yet" : "Nothing in that filter";
+                                body: root.bills-all == 0
+                                    ? "A bill is anything whose amount changes month to month — electricity, water, a card statement. Add one, or let the importer find it in a statement."
+                                    : "Every bill is in one of the other groups.";
                                 icon: Icons.receipt;
                             }
 
                             for b in root.bills: brow := Rectangle {
-                                min-height: 62px; max-height: 62px;
-                                border-radius: 12px;
+                                min-height: 46px; max-height: 46px;
                                 // An overdue row carries a faint alarm wash of its
                                 // own, so it is findable in a long list without
                                 // hovering every row to see which one is red.
@@ -1765,72 +1938,131 @@ export component FinancesPage inherits Rectangle {
                                     b.status == "paid"    ? FinTheme.good :
                                     b.days <= 0           ? FinTheme.warn : FinTheme.ink-dim;
                                 HorizontalLayout {
-                                    padding-left: 12px; padding-right: 12px; spacing: 12px;
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 0;
-                                        Tile {
-                                            hue: brow.hue;
-                                            icon: b.status == "paid" ? Icons.check : Icons.receipt;
+                                    padding-left: 14px; padding-right: 14px; spacing: 10px;
+                                    // Name, with the cycle underneath it — the
+                                    // mockup's two-line first cell.
+                                    Rectangle {
+                                        horizontal-stretch: 1; min-width: 120px;
+                                        background: transparent; clip: true;
+                                        HorizontalLayout {
+                                            spacing: 10px;
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                Tile {
+                                                    size: 28px; hue: brow.hue;
+                                                    icon: b.status == "paid" ? Icons.check
+                                                        : b.auto-post ? Icons.refresh-cw
+                                                        : Icons.receipt;
+                                                }
+                                            }
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 1;
+                                                spacing: 1px;
+                                                Text { text: b.name; color: FinTheme.ink;
+                                                    font-size: 12.5px; font-weight: 600;
+                                                    overflow: elide; }
+                                                Text {
+                                                    text: b.kind == "one-off" ? "one-off"
+                                                        : (b.auto-post ? "auto-debit" : "confirm each month");
+                                                    color: FinTheme.ink-dim; font-size: 10px;
+                                                    overflow: elide;
+                                                }
+                                            }
                                         }
                                     }
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 1; spacing: 3px;
-                                        Text { text: b.name; color: FinTheme.ink; font-size: 13px;
-                                            font-weight: 600; overflow: elide; }
-                                        Text {
-                                            text: b.due + " · " + b.status;
-                                            color: brow.hue; font-size: 11px; font-weight: 600;
+                                    Rectangle {
+                                        horizontal-stretch: 0;
+                                        min-width: 116px; max-width: 116px;
+                                        background: transparent; clip: true;
+                                        if b.category != "": Pill {
+                                            x: 0; y: (parent.height - self.height) / 2;
+                                            label: b.category; hue: b.cat-hue;
                                         }
                                     }
-                                    // estimate | actual | variance, side by side —
-                                    // the gap between the first two is the whole
-                                    // reason a bill is not a subscription.
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 0;
-                                        min-width: 110px;
-                                        Text { text: "Estimate"; color: FinTheme.ink-dim;
-                                            font-size: 10px; horizontal-alignment: right; }
+                                    Cell { text: b.due; w: 78px; dim: true; }
+                                    // Italic as well as tilde'd: a guess must not be
+                                    // readable as a measurement.
+                                    Rectangle {
+                                        horizontal-stretch: 0;
+                                        min-width: 96px; max-width: 96px;
+                                        background: transparent;
                                         Text {
+                                            width: 100%;
+                                            y: (parent.height - self.height) / 2;
                                             text: b.estimate == "" ? "—" : b.estimate;
-                                            color: FinTheme.ink-dim; font-size: 13px;
-                                            font-italic: true; horizontal-alignment: right;
-                                        }
-                                    }
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 0;
-                                        min-width: 110px;
-                                        Text { text: "Actual"; color: FinTheme.ink-dim;
-                                            font-size: 10px; horizontal-alignment: right; }
-                                        Text {
-                                            text: b.actual == "" ? "—" : b.actual;
-                                            color: FinTheme.ink; font-size: 13.5px;
-                                            font-weight: 700; horizontal-alignment: right;
-                                        }
-                                    }
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 0;
-                                        min-width: 92px;
-                                        if b.variance != "": Text {
-                                            text: (b.over ? "+" : "−") + b.variance;
-                                            color: b.over ? FinTheme.bad : FinTheme.good;
-                                            font-size: 12px; font-weight: 700;
+                                            color: FinTheme.ink-dim; font-size: 12.5px;
+                                            font-italic: b.is-estimate;
                                             horizontal-alignment: right;
                                         }
                                     }
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 0;
-                                        HorizontalLayout {
-                                            spacing: 6px;
-                                            if b.status != "paid": Btn {
-                                                label: "Mark paid"; h: 30px;
-                                                clicked => { root.pay-obligation(b.id); }
+                                    Cell {
+                                        text: b.actual == "" ? "—" : b.actual;
+                                        w: 96px; right: true; strong: true;
+                                    }
+                                    Cell { text: b.account; w: 108px; dim: true; }
+                                    // Status, with the variance under it when both an
+                                    // estimate and an actual are known — the gap
+                                    // between those two is the whole reason a bill is
+                                    // not a subscription.
+                                    Rectangle {
+                                        horizontal-stretch: 0;
+                                        min-width: 116px; max-width: 116px;
+                                        background: transparent; clip: true;
+                                        VerticalLayout {
+                                            alignment: center; spacing: 1px;
+                                            HorizontalLayout {
+                                                alignment: start;
+                                                Pill {
+                                                    hue: brow.hue;
+                                                    label: b.status == "overdue"
+                                                            ? "\{-b.days} days late"
+                                                        : b.status == "paid" ? "Paid"
+                                                        : b.status == "skipped" ? "Skipped"
+                                                        : b.auto-post ? "Auto-debit"
+                                                        : b.days == 0 ? "Due today"
+                                                        : "Due in \{b.days}d";
+                                                }
                                             }
-                                            if b.status == "paid": Btn {
-                                                label: "Undo"; h: 30px;
-                                                clicked => { root.unpay-obligation(b.id); }
+                                            if b.variance != "": Text {
+                                                text: (b.over ? "+" : "−") + b.variance
+                                                      + (b.over ? " over" : " under");
+                                                color: b.over ? FinTheme.bad : FinTheme.good;
+                                                font-size: 10px; font-weight: 700;
                                             }
                                         }
                                     }
+                                    Rectangle {
+                                        horizontal-stretch: 0;
+                                        min-width: 104px; max-width: 104px;
+                                        background: transparent;
+                                        HorizontalLayout {
+                                            alignment: end; spacing: 4px;
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                if b.status != "paid": Btn {
+                                                    label: b.is-estimate ? "Enter" : "Paid";
+                                                    h: 28px; primary: true;
+                                                    clicked => { root.pay-obligation(b.id); }
+                                                }
+                                                if b.status == "paid": Btn {
+                                                    label: "Undo"; h: 28px;
+                                                    clicked => { root.unpay-obligation(b.id); }
+                                                }
+                                            }
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                if b.status != "paid": IconBtn {
+                                                    icon: Icons.x; tip: "Skip this one";
+                                                    clicked => { root.skip-obligation(b.id); }
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Rectangle {
+                                    y: parent.height - 1px;
+                                    height: 1px; width: parent.width;
+                                    background: FinTheme.hairline;
                                 }
                             }
                         }
@@ -1888,104 +2120,180 @@ export component FinancesPage inherits Rectangle {
                 init => { self.viewport-y = 0; }
                 VerticalLayout {
                     padding-right: 6px; spacing: 14px;
+                    StatStrip { stats: root.sub-stats; }
+
+                    HorizontalLayout {
+                        spacing: 8px; alignment: start;
+                        FilterChip { label: "All"; count: root.subs-all;
+                            on: root.subs-filter == "all";
+                            clicked => { root.set-subs-filter("all"); } }
+                        FilterChip { label: "Active"; count: root.subs-active;
+                            on: root.subs-filter == "active";
+                            clicked => { root.set-subs-filter("active"); } }
+                        FilterChip { label: "Paused"; count: root.subs-paused;
+                            on: root.subs-filter == "paused";
+                            clicked => { root.set-subs-filter("paused"); } }
+                        FilterChip { label: "Cancelled"; count: root.subs-cancelled;
+                            min-width: 108px;
+                            on: root.subs-filter == "cancelled";
+                            clicked => { root.set-subs-filter("cancelled"); } }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                        Btn { label: "New subscription"; icon: Icons.plus; h: 30px;
+                            primary: true;
+                            clicked => { root.open-sheet("sub", 0); } }
+                    }
+
                     Card {
+                        clip: true;
                         VerticalLayout {
-                            padding: 16px; spacing: 12px;
-                            HorizontalLayout {
-                                spacing: 10px;
-                                CardTitle {
-                                    title: "Subscriptions";
-                                    hint: root.subs-yearly == "" ? ""
-                                          : root.subs-yearly + " a year across everything active";
+                            padding: 0px; spacing: 0px;
+                            Rectangle {
+                                min-height: 36px; max-height: 36px;
+                                background: FinTheme.card-2;
+                                HorizontalLayout {
+                                    padding-left: 14px; padding-right: 14px; spacing: 10px;
+                                    HeadCell { label: "SERVICE"; flex: true; sortable: false; }
+                                    HeadCell { label: "CATEGORY"; w: 112px; sortable: false; }
+                                    HeadCell { label: "CYCLE"; w: 76px; sortable: false; }
+                                    // Both, side by side: a monthly figure is what
+                                    // you feel and a yearly one is what you decide on.
+                                    HeadCell { label: "COST / MO"; w: 92px; right: true;
+                                        sortable: false; }
+                                    HeadCell { label: "COST / YR"; w: 96px; right: true;
+                                        sortable: false; }
+                                    HeadCell { label: "NEXT CHARGE"; w: 100px; sortable: false; }
+                                    HeadCell { label: "PAYS FROM"; w: 104px; sortable: false; }
+                                    HeadCell { label: "STATUS"; w: 96px; sortable: false; }
+                                    HeadCell { label: ""; w: 118px; sortable: false; }
                                 }
-                                Btn { label: "New subscription"; h: 32px; primary: true;
-                                    clicked => { root.open-sheet("sub", 0); } }
                             }
+                            Rectangle { min-height: 1px; max-height: 1px;
+                                background: FinTheme.hairline; }
 
                             if root.subs.length == 0: Blank {
-                                title: "No subscriptions tracked";
-                                body: "A subscription is a fixed amount on a fixed cycle. Import a statement and the app will offer to set up the ones it can already see.";
-                                icon: Icons.credit-card;
-                                tint: FinTheme.accent;
+                                title: root.subs-all == 0 ? "No subscriptions tracked"
+                                                          : "Nothing in that filter";
+                                body: root.subs-all == 0
+                                    ? "A subscription is a fixed amount on a fixed cycle. Import a statement and the app will offer to set up the ones it can already see."
+                                    : "Every subscription is in one of the other groups.";
+                                icon: Icons.repeat;
                             }
 
-                            for s in root.subs: Rectangle {
-                                min-height: 66px; max-height: 66px;
-                                border-radius: 12px;
+                            for s in root.subs: srow := Rectangle {
+                                min-height: 46px; max-height: 46px;
                                 background: sta.has-hover ? FinTheme.card-2 : transparent;
+                                // A paused or cancelled row is dimmed rather than
+                                // hidden: it is still money committed until it is
+                                // actually gone, and the totals say so.
                                 opacity: s.status == "active" ? 1.0 : 0.55;
                                 sta := TouchArea { }
                                 HorizontalLayout {
-                                    padding-left: 12px; padding-right: 12px; spacing: 12px;
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 0;
-                                        Rectangle {
-                                            width: 34px; height: 34px; border-radius: 10px;
-                                            background: FinTheme.accent.with-alpha(0.14);
-                                            AppIcon {
-                                                source: Icons.credit-card; tint: FinTheme.accent;
-                                                width: 17px; height: 17px;
-                                                x: (parent.width - self.width) / 2;
-                                                y: (parent.height - self.height) / 2;
-                                            }
-                                        }
-                                    }
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 1; spacing: 3px;
+                                    padding-left: 14px; padding-right: 14px; spacing: 10px;
+                                    Rectangle {
+                                        horizontal-stretch: 1; min-width: 130px;
+                                        background: transparent; clip: true;
                                         HorizontalLayout {
-                                            spacing: 8px; alignment: start;
-                                            Text { text: s.name; color: FinTheme.ink;
-                                                font-size: 13px; font-weight: 600;
-                                                vertical-alignment: center; }
-                                            if s.hike-from != "": Pill {
-                                                label: "was " + s.hike-from; hue: FinTheme.warn; }
-                                            if s.status != "active": Pill {
-                                                label: s.status; hue: FinTheme.ink-dim; }
-                                            if s.auto-post: Pill {
-                                                label: "auto"; hue: FinTheme.good; }
-                                        }
-                                        Text {
-                                            text: s.cycle + " · next " + s.next-due
-                                                  + (s.last-paid == "" ? ""
-                                                     : " · last paid " + s.last-paid);
-                                            color: FinTheme.ink-dim; font-size: 11px;
-                                        }
-                                    }
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 0;
-                                        min-width: 110px;
-                                        Text {
-                                            text: s.amount; color: FinTheme.ink;
-                                            font-size: 14px; font-weight: 700;
-                                            horizontal-alignment: right;
-                                        }
-                                        Text {
-                                            text: s.yearly + " / yr"; color: FinTheme.ink-dim;
-                                            font-size: 10.5px; horizontal-alignment: right;
-                                        }
-                                    }
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 0;
-                                        HorizontalLayout {
-                                            spacing: 4px;
-                                            if s.hike-from != "": Btn {
-                                                label: "Prices"; h: 28px;
-                                                clicked => { root.open-sheet("prices", s.id); }
-                                            }
-                                            Btn {
-                                                label: s.status == "active" ? "Pause" : "Resume";
-                                                h: 28px;
-                                                clicked => {
-                                                    root.recur-status(s.id,
-                                                        s.status == "active" ? "paused" : "active");
+                                            spacing: 10px;
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                Tile {
+                                                    size: 28px;
+                                                    hue: s.hike-from != "" ? FinTheme.warn
+                                                                           : FinTheme.accent;
+                                                    icon: Icons.repeat;
                                                 }
                                             }
-                                            Btn { label: "Edit"; h: 28px;
-                                                clicked => { root.open-sheet("sub", s.id); } }
-                                            IconBtn { icon: Icons.x;
-                                                clicked => { root.recur-delete(s.id); } }
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 1;
+                                                spacing: 1px;
+                                                Text { text: s.name; color: FinTheme.ink;
+                                                    font-size: 12.5px; font-weight: 600;
+                                                    overflow: elide; }
+                                                Text {
+                                                    // The price rise this section
+                                                    // exists to make visible.
+                                                    text: s.hike-from != ""
+                                                        ? "was " + s.hike-from
+                                                        : (s.last-paid == "" ? "never charged yet"
+                                                           : "last " + s.last-paid);
+                                                    color: s.hike-from != "" ? FinTheme.warn
+                                                                            : FinTheme.ink-dim;
+                                                    font-size: 10px; overflow: elide;
+                                                }
+                                            }
                                         }
                                     }
+                                    Rectangle {
+                                        horizontal-stretch: 0;
+                                        min-width: 112px; max-width: 112px;
+                                        background: transparent; clip: true;
+                                        if s.category != "": Pill {
+                                            x: 0; y: (parent.height - self.height) / 2;
+                                            label: s.category; hue: s.cat-hue;
+                                        }
+                                    }
+                                    Cell { text: s.cycle; w: 76px; dim: true; }
+                                    Cell { text: s.monthly; w: 92px; right: true; strong: true; }
+                                    Cell { text: s.yearly; w: 96px; right: true; dim: true; }
+                                    Cell { text: s.next-due; w: 100px;
+                                        dim: s.status != "active"; }
+                                    Cell { text: s.account; w: 104px; dim: true; }
+                                    Rectangle {
+                                        horizontal-stretch: 0;
+                                        min-width: 96px; max-width: 96px;
+                                        background: transparent; clip: true;
+                                        Pill {
+                                            x: 0; y: (parent.height - self.height) / 2;
+                                            label: s.status == "active"
+                                                ? (s.auto-post ? "Auto" : "Active")
+                                                : s.status;
+                                            hue: s.status == "active"
+                                                ? FinTheme.good : FinTheme.ink-dim;
+                                        }
+                                    }
+                                    Rectangle {
+                                        horizontal-stretch: 0;
+                                        min-width: 118px; max-width: 118px;
+                                        background: transparent;
+                                        HorizontalLayout {
+                                            alignment: end; spacing: 3px;
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                if s.hike-from != "": IconBtn {
+                                                    icon: Icons.trending-up; tip: "Price history";
+                                                    hue: FinTheme.warn;
+                                                    clicked => { root.open-sheet("prices", s.id); }
+                                                }
+                                            }
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                IconBtn {
+                                                    icon: s.status == "active" ? Icons.pause
+                                                                              : Icons.play;
+                                                    tip: s.status == "active" ? "Pause" : "Resume";
+                                                    clicked => {
+                                                        root.recur-status(s.id,
+                                                            s.status == "active" ? "paused" : "active");
+                                                    }
+                                                }
+                                            }
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                IconBtn { icon: Icons.pencil; tip: "Edit";
+                                                    clicked => { root.open-sheet("sub", s.id); } }
+                                            }
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                IconBtn { icon: Icons.x; tip: "Delete";
+                                                    clicked => { root.recur-delete(s.id); } }
+                                            }
+                                        }
+                                    }
+                                }
+                                Rectangle {
+                                    y: parent.height - 1px;
+                                    height: 1px; width: parent.width;
+                                    background: FinTheme.hairline;
                                 }
                             }
                         }
@@ -2001,121 +2309,179 @@ export component FinancesPage inherits Rectangle {
                 VerticalLayout {
                     padding-right: 6px; spacing: 14px;
 
+                    StatStrip { stats: root.due-stats; }
+
                     HorizontalLayout {
-                        spacing: 14px;
-                        Card {
-                            horizontal-stretch: 1; min-height: 84px; max-height: 84px;
-                            VerticalLayout {
-                                padding: 14px; spacing: 4px; alignment: center;
-                                Text { text: "OWED TO YOU"; color: FinTheme.ink-dim;
-                                    font-size: 11px; font-weight: 700; }
-                                Text { text: root.owed-to-me; color: FinTheme.good;
-                                    font-size: 22px; font-weight: 800; }
+                        spacing: 8px; alignment: start;
+                        FilterChip { label: "All"; count: root.dues-all;
+                            on: root.dues-filter == "all";
+                            clicked => { root.set-dues-filter("all"); } }
+                        FilterChip { label: "Owed to you"; count: root.dues-to-me;
+                            min-width: 122px;
+                            on: root.dues-filter == "to-me";
+                            clicked => { root.set-dues-filter("to-me"); } }
+                        FilterChip { label: "You owe"; count: root.dues-i-owe;
+                            min-width: 100px;
+                            on: root.dues-filter == "i-owe";
+                            clicked => { root.set-dues-filter("i-owe"); } }
+                        FilterChip { label: "Closed"; count: root.dues-closed;
+                            min-width: 96px;
+                            on: root.dues-filter == "closed";
+                            clicked => { root.set-dues-filter("closed"); } }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                        Btn { label: "Record a due"; icon: Icons.plus; h: 30px; primary: true;
+                            clicked => { root.open-sheet("due", 0); } }
+                    }
+
+                    Card {
+                        clip: true;
+                        VerticalLayout {
+                            padding: 0px; spacing: 0px;
+                            Rectangle {
+                                min-height: 36px; max-height: 36px;
+                                background: FinTheme.card-2;
+                                HorizontalLayout {
+                                    padding-left: 14px; padding-right: 14px; spacing: 10px;
+                                    HeadCell { label: "PERSON"; w: 150px; sortable: false; }
+                                    HeadCell { label: "DIRECTION"; w: 108px; sortable: false; }
+                                    HeadCell { label: "NOTE"; flex: true; sortable: false; }
+                                    HeadCell { label: "SETTLED"; w: 104px; right: true;
+                                        sortable: false; }
+                                    HeadCell { label: "OPEN FOR"; w: 92px; right: true;
+                                        sortable: false; }
+                                    HeadCell { label: "AMOUNT"; w: 104px; right: true;
+                                        sortable: false; }
+                                    HeadCell { label: ""; w: 132px; sortable: false; }
+                                }
                             }
-                        }
-                        Card {
-                            horizontal-stretch: 1; min-height: 84px; max-height: 84px;
-                            VerticalLayout {
-                                padding: 14px; spacing: 4px; alignment: center;
-                                Text { text: "YOU OWE"; color: FinTheme.ink-dim;
-                                    font-size: 11px; font-weight: 700; }
-                                Text { text: root.i-owe; color: FinTheme.warn;
-                                    font-size: 22px; font-weight: 800; }
+                            Rectangle { min-height: 1px; max-height: 1px;
+                                background: FinTheme.hairline; }
+
+                            if root.dues.length == 0: Blank {
+                                title: root.dues-all == 0 ? "Nothing owed either way"
+                                                          : "Nothing in that filter";
+                                body: root.dues-all == 0
+                                    ? "Money lent to or borrowed from a named person. Lending posts as a transfer, not as spending — it is still yours until it is written off."
+                                    : "Every due is in one of the other groups.";
+                                icon: Icons.users;
+                            }
+
+                            for d in root.dues: drow := Rectangle {
+                                min-height: 46px; max-height: 46px;
+                                background: dta.has-hover ? FinTheme.card-2 : transparent;
+                                opacity: d.status == "open" ? 1.0 : 0.6;
+                                dta := TouchArea { }
+                                property <color> hue: d.direction == "owed_to_me"
+                                    ? FinTheme.good : FinTheme.bad;
+                                HorizontalLayout {
+                                    padding-left: 14px; padding-right: 14px; spacing: 10px;
+                                    Rectangle {
+                                        horizontal-stretch: 0;
+                                        min-width: 150px; max-width: 150px;
+                                        background: transparent; clip: true;
+                                        HorizontalLayout {
+                                            spacing: 10px;
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                Tile {
+                                                    size: 28px; hue: drow.hue;
+                                                    icon: d.direction == "owed_to_me"
+                                                        ? Icons.arrow-down : Icons.arrow-up;
+                                                }
+                                            }
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 1;
+                                                spacing: 1px;
+                                                Text { text: d.person; color: FinTheme.ink;
+                                                    font-size: 12.5px; font-weight: 600;
+                                                    overflow: elide; }
+                                                Text { text: "since " + d.opened;
+                                                    color: FinTheme.ink-dim; font-size: 10px;
+                                                    overflow: elide; }
+                                            }
+                                        }
+                                    }
+                                    Rectangle {
+                                        horizontal-stretch: 0;
+                                        min-width: 108px; max-width: 108px;
+                                        background: transparent; clip: true;
+                                        Pill {
+                                            x: 0; y: (parent.height - self.height) / 2;
+                                            label: d.direction == "owed_to_me"
+                                                ? "Owed to you" : "You owe";
+                                            hue: drow.hue;
+                                        }
+                                    }
+                                    Cell { text: d.note; flex: true; dim: true; }
+                                    // What has actually come back. The column that
+                                    // makes a part-settled due readable: ₹1,000 of
+                                    // ₹3,000 is a different thing from ₹2,000 owed.
+                                    Rectangle {
+                                        horizontal-stretch: 0;
+                                        min-width: 104px; max-width: 104px;
+                                        background: transparent;
+                                        Text {
+                                            width: 100%;
+                                            y: (parent.height - self.height) / 2;
+                                            text: d.part-paid ? d.settled + " of " + d.original
+                                                              : (d.status == "open" ? "—" : d.settled);
+                                            color: d.part-paid ? FinTheme.good : FinTheme.ink-dim;
+                                            font-size: 11px; horizontal-alignment: right;
+                                            overflow: elide;
+                                        }
+                                    }
+                                    Cell {
+                                        text: d.status == "open" ? "\{d.age-days} days" : "—";
+                                        w: 92px; right: true;
+                                        // Six months and counting is worth noticing.
+                                        ink: d.age-days >= 180 ? FinTheme.warn : FinTheme.ink-dim;
+                                    }
+                                    Cell {
+                                        text: d.amount; w: 104px; right: true; strong: true;
+                                        ink: drow.hue;
+                                    }
+                                    Rectangle {
+                                        horizontal-stretch: 0;
+                                        min-width: 132px; max-width: 132px;
+                                        background: transparent;
+                                        HorizontalLayout {
+                                            alignment: end; spacing: 4px;
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                if d.status == "open": Btn {
+                                                    label: "Settle"; h: 28px; primary: true;
+                                                    clicked => { root.due-settle(d.id); }
+                                                }
+                                            }
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                if d.status == "open": IconBtn {
+                                                    icon: Icons.archive;
+                                                    tip: "Write it off";
+                                                    clicked => { root.due-write-off(d.id); }
+                                                }
+                                            }
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                IconBtn { icon: Icons.x; tip: "Delete";
+                                                    clicked => { root.due-delete(d.id); } }
+                                            }
+                                        }
+                                    }
+                                }
+                                Rectangle {
+                                    y: parent.height - 1px;
+                                    height: 1px; width: parent.width;
+                                    background: FinTheme.hairline;
+                                }
                             }
                         }
                     }
 
-                    Card {
-                        VerticalLayout {
-                            padding: 16px; spacing: 12px;
-                            HorizontalLayout {
-                                spacing: 10px;
-                                CardTitle {
-                                    title: "Dues";
-                                    hint: "Lending is not spending — it moves to a holding account and comes back when settled.";
-                                }
-                                Btn { label: "Record a due"; h: 32px; primary: true;
-                                    clicked => { root.open-sheet("due", 0); } }
-                            }
-
-                            if root.dues.length == 0: Blank {
-                                title: "Nothing owed either way";
-                                body: "Money lent and money borrowed, remembered. The app will not message anyone or send reminders — it has no way to contact a person and will not pretend otherwise.";
-                                icon: Icons.wallet;
-                                tint: FinTheme.accent;
-                            }
-
-                            for d in root.dues: Rectangle {
-                                min-height: 62px; max-height: 62px;
-                                border-radius: 12px;
-                                background: dta.has-hover ? FinTheme.card-2 : transparent;
-                                opacity: d.status == "open" ? 1.0 : 0.55;
-                                dta := TouchArea { }
-                                HorizontalLayout {
-                                    padding-left: 12px; padding-right: 12px; spacing: 12px;
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 0;
-                                        AppIcon {
-                                            source: d.direction == "owed_to_me"
-                                                    ? Icons.trending-up : Icons.trending-down;
-                                            tint: d.direction == "owed_to_me"
-                                                  ? FinTheme.good : FinTheme.warn;
-                                            width: 20px; height: 20px;
-                                        }
-                                    }
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 1; spacing: 3px;
-                                        HorizontalLayout {
-                                            spacing: 8px; alignment: start;
-                                            Text { text: d.person; color: FinTheme.ink;
-                                                font-size: 13px; font-weight: 600;
-                                                vertical-alignment: center; }
-                                            if d.status != "open": Pill {
-                                                label: d.status == "written_off"
-                                                       ? "written off" : d.status;
-                                                hue: FinTheme.ink-dim; }
-                                            if d.part-paid && d.status == "open": Pill {
-                                                label: d.settled + " back"; hue: FinTheme.good; }
-                                        }
-                                        Text {
-                                            text: "Since \{d.opened} · \{d.age-days} days"
-                                                  + (d.note == "" ? "" : " · " + d.note);
-                                            color: FinTheme.ink-dim; font-size: 11px;
-                                            overflow: elide;
-                                        }
-                                    }
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 0;
-                                        min-width: 110px;
-                                        Text {
-                                            text: d.amount;
-                                            color: d.direction == "owed_to_me"
-                                                   ? FinTheme.good : FinTheme.warn;
-                                            font-size: 14px; font-weight: 700;
-                                            horizontal-alignment: right;
-                                        }
-                                        if d.part-paid: Text {
-                                            text: "of " + d.original; color: FinTheme.ink-dim;
-                                            font-size: 10.5px; horizontal-alignment: right;
-                                        }
-                                    }
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 0;
-                                        HorizontalLayout {
-                                            spacing: 4px;
-                                            if d.status == "open": Btn {
-                                                label: "Settle"; h: 28px;
-                                                clicked => { root.due-settle(d.id); } }
-                                            if d.status == "open": Btn {
-                                                label: "Write off"; h: 28px; danger: true;
-                                                clicked => { root.due-write-off(d.id); } }
-                                            IconBtn { icon: Icons.x;
-                                                clicked => { root.due-delete(d.id); } }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                    // The one thing this tab must not do.
+                    Text {
+                        text: "Shown separately and never subtracted: what you are owed is not cash you have, and what you owe is not spending you have done.";
+                        color: FinTheme.ink-dim; font-size: 11px; wrap: word-wrap;
                     }
                 }
             }
@@ -2374,6 +2740,79 @@ export component FinancesPage inherits Rectangle {
                         }
                     }
 
+                    // Where the income goes before anything is decided. The
+                    // envelopes are only the part of a month that is discretionary,
+                    // and a budget tab that shows them alone implies the rest is too.
+                    HorizontalLayout {
+                        spacing: 14px;
+                        Card {
+                            horizontal-stretch: 1;
+                            VerticalLayout {
+                                padding: 16px; spacing: 10px;
+                                CardTitle {
+                                    title: "Where " + root.budget-income + " is committed";
+                                    hint: "before anything discretionary";
+                                }
+                                for c in root.commitments: VerticalLayout {
+                                    spacing: 3px;
+                                    HorizontalLayout {
+                                        spacing: 8px;
+                                        VerticalLayout {
+                                            alignment: center; horizontal-stretch: 0;
+                                            Rectangle { width: 10px; height: 10px;
+                                                border-radius: 3px; background: c.hue; }
+                                        }
+                                        Text { text: c.name; color: FinTheme.ink;
+                                            font-size: 12px; vertical-alignment: center;
+                                            horizontal-stretch: 1; overflow: elide; }
+                                        Text { text: "\{c.pct}%"; color: FinTheme.ink-dim;
+                                            font-size: 11px; vertical-alignment: center;
+                                            min-width: 34px; horizontal-alignment: right; }
+                                        Text { text: c.amount; color: FinTheme.ink;
+                                            font-size: 12px; font-weight: 700;
+                                            vertical-alignment: center; min-width: 92px;
+                                            horizontal-alignment: right; }
+                                    }
+                                    Bar { pct: c.pct; thickness: 5px; hue: c.hue;
+                                        toned: false; }
+                                }
+                                if root.commitments.length == 0: Text {
+                                    text: "No income recorded this month, so there is nothing to divide up yet.";
+                                    color: FinTheme.ink-dim; font-size: 12px; wrap: word-wrap;
+                                }
+                            }
+                        }
+                        // Spending with no envelope on it. Not a failure — most
+                        // categories should not have one — but worth being able to
+                        // see, because it is the part no budget is watching.
+                        Card {
+                            horizontal-stretch: 0;
+                            min-width: 260px; max-width: 260px;
+                            VerticalLayout {
+                                padding: 16px; spacing: 6px;
+                                Text { text: "NOT BUDGETED"; color: FinTheme.ink-dim;
+                                    font-size: 11px; font-weight: 700; }
+                                Text {
+                                    text: root.budget-unbudgeted == "" ? "—"
+                                                                       : root.budget-unbudgeted;
+                                    color: FinTheme.ink; font-size: 22px; font-weight: 800;
+                                }
+                                Text {
+                                    text: root.budget-unbudgeted-sub;
+                                    color: FinTheme.ink-dim; font-size: 11px; wrap: word-wrap;
+                                }
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                                // The rule, stated where the rollover figures are
+                                // shown, because "why is my envelope bigger than I
+                                // set it" is otherwise unanswerable from the UI.
+                                Text {
+                                    text: "An envelope with rollover carries what it did not spend into next month. One without it starts fresh.";
+                                    color: FinTheme.ink-dim; font-size: 10.5px; wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+
                     Card {
                         VerticalLayout {
                             padding: 16px; spacing: 14px;
@@ -2465,6 +2904,66 @@ export component FinancesPage inherits Rectangle {
                 init => { self.viewport-y = 0; }
                 VerticalLayout {
                     padding-right: 6px; spacing: 14px;
+
+                    // The two things a calendar of obligations is for: whether the
+                    // money is there when they land, and which single day is worst.
+                    HorizontalLayout {
+                        spacing: 14px;
+                        Card {
+                            horizontal-stretch: 1;
+                            border-color: root.cal-warning == ""
+                                ? FinTheme.hairline : FinTheme.warn.with-alpha(0.4);
+                            VerticalLayout {
+                                padding: 14px; spacing: 6px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        AppIcon {
+                                            source: root.cal-warning == ""
+                                                ? Icons.check : Icons.triangle-alert;
+                                            tint: root.cal-warning == ""
+                                                ? FinTheme.good : FinTheme.warn;
+                                            width: 15px; height: 15px;
+                                        }
+                                    }
+                                    Text {
+                                        text: root.cal-warning == ""
+                                            ? "Cash flow holds" : "Cash-flow warning";
+                                        color: root.cal-warning == ""
+                                            ? FinTheme.good : FinTheme.warn;
+                                        font-size: 11px; font-weight: 800;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                                Text {
+                                    text: root.cal-warning == ""
+                                        ? "Everything dated in the next month is covered by what is in the bank."
+                                        : root.cal-warning;
+                                    color: FinTheme.ink-dim; font-size: 12px; wrap: word-wrap;
+                                }
+                            }
+                        }
+                        Card {
+                            horizontal-stretch: 1;
+                            VerticalLayout {
+                                padding: 14px; spacing: 4px;
+                                Text {
+                                    text: root.cal-heaviest-label == ""
+                                        ? "HEAVIEST DAY" : "HEAVIEST DAY — " + root.cal-heaviest-label;
+                                    color: FinTheme.ink-dim; font-size: 11px; font-weight: 700;
+                                }
+                                Text {
+                                    text: root.cal-heaviest == "" ? "—" : root.cal-heaviest;
+                                    color: FinTheme.ink; font-size: 22px; font-weight: 800;
+                                }
+                                Text {
+                                    text: root.cal-heaviest-sub;
+                                    color: FinTheme.ink-dim; font-size: 11px; wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
 
                     Card {
                         VerticalLayout {
@@ -2594,6 +3093,63 @@ export component FinancesPage inherits Rectangle {
                 VerticalLayout {
                     padding-right: 6px; spacing: 12px;
 
+                    StatStrip { stats: root.insight-stats; }
+
+                    // Six months of spending by category, as a small multiple. The
+                    // trend is the point: one month's donut cannot tell you that
+                    // food has been climbing since March.
+                    if root.trend.length > 0: Card {
+                        VerticalLayout {
+                            padding: 16px; spacing: 12px;
+                            CardTitle {
+                                title: "Spend by category";
+                                hint: "last six months, biggest first";
+                            }
+                            for t in root.trend: VerticalLayout {
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        Rectangle { width: 10px; height: 10px;
+                                            border-radius: 3px; background: t.hue; }
+                                    }
+                                    Text { text: t.name; color: FinTheme.ink;
+                                        font-size: 12px; vertical-alignment: center;
+                                        horizontal-stretch: 1; overflow: elide; }
+                                    if t.delta != "": Delta { label: t.delta; up: t.up; }
+                                    Text { text: t.total; color: FinTheme.ink;
+                                        font-size: 12px; font-weight: 700;
+                                        vertical-alignment: center; }
+                                }
+                                // One bar per month, oldest left. Heights are shares
+                                // of this category's own worst month, so a small
+                                // category still shows its own shape.
+                                HorizontalLayout {
+                                    spacing: 4px;
+                                    for m in t.months: Rectangle {
+                                        horizontal-stretch: 1;
+                                        min-height: 26px; max-height: 26px;
+                                        background: transparent;
+                                        Rectangle {
+                                            y: parent.height - self.height;
+                                            width: parent.width;
+                                            height: parent.height * Math.max(2, m.pct) / 100;
+                                            border-radius: 3px;
+                                            background: m.current ? t.hue
+                                                                  : t.hue.with-alpha(0.35);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    if root.flags.length > 0: Text {
+                        text: "Worth acting on";
+                        color: FinTheme.ink; font-size: 13px; font-weight: 700;
+                    }
+
                     if root.flags.length == 0: Blank {
                         title: "Nothing to report";
                         body: "Insights only says things it can put a number behind. When there is a price rise, an overspend or a subscription you are not using, it will be here.";
@@ -2647,6 +3203,92 @@ export component FinancesPage inherits Rectangle {
 
     // ══ SHEET ═══════════════════════════════════════════════════════════════
     // Declared last so it paints over the page: declaration order is z-order.
+    // ── sample-data explainer ───────────────────────────────────────────────
+    // What the sample data is, why it is there, and the two things that can be
+    // done about it.
+    if root.demo-open: Rectangle {
+        width: 100%; height: 100%;
+        background: #000000a0;
+        TouchArea { clicked => { root.demo-open = false; } }
+
+        Rectangle {
+            width: Math.min(root.width - 64px, 520px);
+            height: dl.preferred-height;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: 20px;
+            background: Theme.modal;
+            border-width: 1px;
+            border-color: FinTheme.warn.with-alpha(0.35);
+            drop-shadow-blur: 40px;
+            drop-shadow-color: #00000070;
+            TouchArea { }
+
+            dl := VerticalLayout {
+                padding: 20px; spacing: 12px;
+
+                HorizontalLayout {
+                    spacing: 10px;
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        Rectangle {
+                            width: 34px; height: 34px; border-radius: 11px;
+                            background: FinTheme.warn.with-alpha(0.16);
+                            AppIcon {
+                                source: Icons.triangle-alert; tint: FinTheme.warn;
+                                width: 18px; height: 18px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 1;
+                        Text {
+                            text: "This is sample data, not your money.";
+                            color: FinTheme.ink; font-size: 16px; font-weight: 800;
+                            wrap: word-wrap;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        IconBtn { icon: Icons.x; clicked => { root.demo-open = false; } }
+                    }
+                }
+
+                Text {
+                    text: "The section seeded a plausible year of accounts, spending, bills, subscriptions, loans, dues and budgets on its first run, because nine empty tabs look exactly like nine broken ones. None of it came from a bank and none of it is yours.";
+                    color: FinTheme.ink-dim; font-size: 12.5px; wrap: word-wrap;
+                }
+                Text {
+                    text: "It gets out of your way by itself, one part at a time: your first real account clears the sample accounts, your first real bill clears the sample bills. Nothing you enter is ever removed with it.";
+                    color: FinTheme.ink-dim; font-size: 12.5px; wrap: word-wrap;
+                }
+
+                Rectangle { min-height: 1px; max-height: 1px; background: FinTheme.hairline; }
+
+                HorizontalLayout {
+                    spacing: 8px;
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 1;
+                        Text {
+                            text: "Adding it again replaces what is left of it.";
+                            color: FinTheme.ink-dim; font-size: 11px; wrap: word-wrap;
+                        }
+                    }
+                    Btn {
+                        label: "Add sample data"; icon: Icons.plus; h: 36px;
+                        clicked => { root.demo-add(); root.demo-open = false; }
+                    }
+                    Btn {
+                        label: "Remove all of it"; icon: Icons.trash; h: 36px; danger: true;
+                        clicked => { root.demo-remove(); root.demo-open = false; }
+                    }
+                }
+            }
+        }
+    }
+
     if root.sheet != "": Rectangle {
         width: 100%; height: 100%;
         background: #000000a0;
@@ -2656,7 +3298,11 @@ export component FinancesPage inherits Rectangle {
 
         Rectangle {
             width: Math.min(root.width - 64px, 640px);
-            height: Math.min(root.height - 64px, 720px);
+            // Fits its content, up to the window. A fixed 720px box put a
+            // two-row rate list at the top of half a screen of nothing — and
+            // every short sheet in this section had the same problem, so the
+            // panel measures rather than each sheet declaring a height.
+            height: Math.min(root.height - 64px, Math.max(240px, body.preferred-height));
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             border-radius: 20px;
@@ -2669,7 +3315,7 @@ export component FinancesPage inherits Rectangle {
             // scrim's close handler.
             TouchArea { }
 
-            VerticalLayout {
+            body := VerticalLayout {
                 padding: 20px; spacing: 14px;
 
                 HorizontalLayout {
@@ -2717,21 +3363,106 @@ export component FinancesPage inherits Rectangle {
                         }
 
                         // ── exchange rates ──────────────────────────────────
-                        if root.sheet == "rates": VerticalLayout {
+                        // ── reconcile ───────────────────────────────────────
+                        // Before booking a correction, the honest first move is to
+                        // look for what is actually missing. This is the mockup's
+                        // "find the missing row": it opens the ledger filtered to
+                        // this account so the gap can be spotted rather than papered
+                        // over with an adjustment.
+                        if root.sheet == "reconcile": VerticalLayout {
                             spacing: 8px;
+                            Rectangle {
+                                border-radius: 12px;
+                                background: FinTheme.warn.with-alpha(0.10);
+                                border-width: 1px;
+                                border-color: FinTheme.warn.with-alpha(0.30);
+                                VerticalLayout {
+                                    padding: 12px; spacing: 6px;
+                                    Text {
+                                        text: "A correction is a last resort.";
+                                        color: FinTheme.warn; font-size: 12px; font-weight: 700;
+                                    }
+                                    Text {
+                                        text: "If the statement and the ledger disagree, usually one transaction is missing or duplicated. Look for it first — booking the difference hides the cause and the same gap opens again next month.";
+                                        color: FinTheme.ink-dim; font-size: 11.5px; wrap: word-wrap;
+                                    }
+                                    HorizontalLayout {
+                                        spacing: 8px; alignment: start;
+                                        Btn {
+                                            label: "Find the missing row"; icon: Icons.search;
+                                            h: 30px;
+                                            clicked => { root.find-missing(); }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        // ── import column mapping ───────────────────────────
+                        // Which column of the file became which field. Shown because
+                        // it is guessed, and a wrong guess inverts a whole statement
+                        // while every total still looks plausible.
+                        if root.sheet == "import" && root.import-map.length > 0: VerticalLayout {
+                            spacing: 6px;
+                            Text { text: "Column mapping"; color: FinTheme.ink;
+                                font-size: 12.5px; font-weight: 700; }
+                            for m in root.import-map: HorizontalLayout {
+                                spacing: 10px;
+                                Text { text: m.label; color: FinTheme.ink-dim; font-size: 11.5px;
+                                    vertical-alignment: center; min-width: 104px; }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    AppIcon { source: Icons.arrow-right; tint: FinTheme.ink-dim;
+                                        width: 12px; height: 12px; }
+                                }
+                                Text {
+                                    text: m.value == "" ? "not found" : m.value;
+                                    color: m.value == "" ? FinTheme.warn : FinTheme.ink;
+                                    font-size: 11.5px; font-weight: 600;
+                                    vertical-alignment: center; horizontal-stretch: 1;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+
+                        if root.sheet == "rates": VerticalLayout {
+                            spacing: 10px;
                             Text {
-                                text: "Rates are typed by hand and never fetched. Every transaction stores the rate that was in force when it was posted, so editing one here does not rewrite what last March cost.";
+                                text: "Fetched once a day. A rate you type is kept and never overwritten. Every transaction stores the rate in force when it was posted, so nothing here rewrites what last March cost.";
                                 color: FinTheme.ink-dim; font-size: 11.5px; wrap: word-wrap;
+                            }
+                            if root.rates.length == 0: Text {
+                                text: "No rates yet — nothing in this section is priced in another currency.";
+                                color: FinTheme.ink-dim; font-size: 12px;
                             }
                             for r in root.rates: HorizontalLayout {
                                 spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    // Fetched or typed, at a glance: the distinction
+                                    // decides whether the daily refresh will touch it.
+                                    Tile {
+                                        size: 26px;
+                                        hue: r.live ? FinTheme.accent : FinTheme.warn;
+                                        icon: r.live ? Icons.refresh-cw : Icons.pencil;
+                                    }
+                                }
                                 Text { text: r.code; color: FinTheme.ink; font-size: 12.5px;
                                     font-weight: 700; vertical-alignment: center;
-                                    min-width: 54px; }
+                                    min-width: 42px; }
                                 Text { text: r.rate; color: FinTheme.ink; font-size: 12.5px;
                                     vertical-alignment: center; horizontal-stretch: 1; }
                                 Text { text: r.edited; color: FinTheme.ink-dim; font-size: 11px;
                                     vertical-alignment: center; }
+                            }
+                            HorizontalLayout {
+                                spacing: 8px; alignment: start;
+                                Btn {
+                                    label: root.rates-busy ? "Fetching…" : "Refresh now";
+                                    icon: Icons.refresh-cw; h: 32px;
+                                    enabled: !root.rates-busy;
+                                    clicked => { root.rates-refresh(); }
+                                }
                             }
                         }
 

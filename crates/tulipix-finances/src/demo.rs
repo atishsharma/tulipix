@@ -108,6 +108,27 @@ pub async fn seed(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
     if seeded(pool).await? || !is_empty(pool).await? {
         return Ok(false);
     }
+    seed_now(pool, today).await
+}
+
+/// Seed again because the user asked, whatever is in the database already.
+///
+/// Behind a button rather than automatic: the guards on [`seed`] exist so the app
+/// never invents money on its own, and pressing "Add sample data" is not the app
+/// deciding anything. Any surviving samples go first, so pressing it twice does not
+/// leave two Netflixes.
+pub async fn reseed(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
+    remove_all(pool).await?;
+    // The marker too, or the seed below refuses to run.
+    sqlx::query("DELETE FROM demo_rows").execute(pool).await?;
+    seed_now(pool, today).await
+}
+
+async fn seed_now(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
+    // What is already here, so the marking sweep at the end can tell the sample
+    // rows from the user's. On a fresh database these are all zero and the sweep
+    // marks everything, which is the same thing.
+    let before = high_water(pool).await?;
     // Written before the rows, so a failure halfway through cannot come back on
     // the next launch and seed a second copy on top of the first.
     mark(pool, SEEDED, 1).await?;
@@ -117,13 +138,14 @@ pub async fn seed(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
     let ahead = |n: i64| today + Duration::days(n);
 
     // ── accounts ────────────────────────────────────────────────────────────
-    // The opening balance has to cover a year of the home-loan EMIs below and
-    // still leave a plausible figure, or the sample opens on an overdrawn account.
-    let bank = accounts::create(pool, &NewAccount::bank("HDFC Savings", 65_000_000)).await?;
+    // The opening balances have to cover a year of three loans' EMIs and a year of
+    // spending and still leave plausible figures, or the sample opens overdrawn —
+    // which `the_sample_month_is_internally_consistent` refuses to let ship.
+    let bank = accounts::create(pool, &NewAccount::bank("HDFC Savings", 200_000_000)).await?;
 
     let cash = accounts::create(
         pool,
-        &NewAccount { kind: AccountKind::Cash, ..NewAccount::bank("Cash", 250_000) },
+        &NewAccount { kind: AccountKind::Cash, ..NewAccount::bank("Cash", 500_000) },
     )
     .await?;
 
@@ -141,7 +163,7 @@ pub async fn seed(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
 
     let wallet = accounts::create(
         pool,
-        &NewAccount { kind: AccountKind::Wallet, ..NewAccount::bank("Paytm", 300_000) },
+        &NewAccount { kind: AccountKind::Wallet, ..NewAccount::bank("Paytm", 500_000) },
     )
     .await?;
 
@@ -171,72 +193,128 @@ pub async fn seed(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
         }
     }
 
+    // Two more, at different stages: a car loan over halfway through and a phone
+    // EMI nearly finished. One loan shows a progress bar; three show that the bar
+    // means something, and give the Loans card the shape it was designed around.
+    for (name, principal, rate_bp, tenure, started, paid) in [
+        // ₹8,00,000 over 5 years, and ₹96,000 over one. Minor units, like every
+        // other figure in this crate.
+        ("Car loan", 80_000_000i64, 950i64, 60i64, 1180i64, 39i64),
+        ("Phone EMI", 9_600_000, 1400, 12, 280, 9),
+    ] {
+        let id = loans::create(
+            pool,
+            &NewLoan {
+                name: name.into(),
+                principal_minor: principal,
+                rate_bp,
+                tenure_months: tenure,
+                started_on: iso(ago(started)),
+                emi_minor: None,
+                emi_day: 7,
+                currency: "INR".into(),
+            },
+        )
+        .await?;
+        let e = loans::get(pool, id).await?.map(|l| l.emi_minor).unwrap_or(0);
+        if e > 0 {
+            for n in 0..paid {
+                loans::pay_emi(pool, id, bank, e, ago(started - n * 30)).await?;
+            }
+        }
+    }
+
     // ── categories to hang things off ───────────────────────────────────────
     // Names taken from `schema::SEED_CATEGORIES` exactly, so the sample uses the
     // user's own categories rather than inventing near-duplicates beside them.
     let food = category(pool, "Eating out").await?;
     let groceries = category(pool, "Groceries").await?;
     let transport = category(pool, "Transport").await?;
+    let fuel = category(pool, "Fuel").await?;
     let bills_cat = category(pool, "Utilities").await?;
+    let rent_cat = category(pool, "Rent").await?;
     let subs_cat = category(pool, "Subscriptions").await?;
+    let health = category(pool, "Health").await?;
+    let shopping = category(pool, "Shopping").await?;
     let salary = category(pool, "Salary").await?;
 
     // ── the ledger ──────────────────────────────────────────────────────────
     // Income first, so the running balance reads the way a real month does.
     let mut rows: Vec<(NewTxn, Option<i64>)> = Vec::new();
 
-    let mut pay = NewTxn::expense(bank, 12_500_000, "INR", &iso(ago(26)), "SALARY");
+    // The salary has to land *inside* the current month, whatever day of the month
+    // the app is first opened on. Dating it a fixed number of days back put it in
+    // the previous month for the first 25 days of every month, which left the
+    // Overview with zero income, a negative "saved this month", and no savings
+    // rate — the section's headline figures all wrong on the strength of one date.
+    let pay_day = today.day().min(25);
+    let payday = today.with_day(pay_day).unwrap_or(today);
+    let mut pay = NewTxn::expense(bank, 12_500_000, "INR", &iso(payday), "Salary — Acme Corp");
     pay.kind = TxnKind::Income;
     rows.push((pay, Some(salary)));
 
-    // Six earlier months, thinner but real, so the twelve-month chart has a shape
-    // and the six-month discipline table has rows. One month of data draws a
-    // single bar, which tells the user nothing about either.
-    for k in 1..=6i64 {
+    // Eleven earlier months, so every bar of the twelve-month chart has something
+    // in it and the six-month discipline table is full. Six left five empty
+    // columns on the left of the chart, which reads as missing data rather than as
+    // a quiet year.
+    for k in 1..=11i64 {
         let Some(month) = month_start(today, k) else { continue };
-        let vary = k * 37_000; // enough that no two months are the same height
+        // Enough that no two months are the same height, and shaped so the year
+        // has a trend rather than a sawtooth.
+        let vary = k * 37_000;
         let mut earlier = NewTxn::expense(
             bank,
             12_500_000 - vary,
             "INR",
             &iso(month + Duration::days(1)),
-            "SALARY",
+            "Salary — Acme Corp",
         );
         earlier.kind = TxnKind::Income;
         rows.push((earlier, Some(salary)));
-        rows.push((
-            NewTxn::expense(
-                bank,
-                1_850_000 + vary,
-                "INR",
-                &iso(month + Duration::days(6)),
-                "Groceries and household",
-            ),
-            Some(groceries),
-        ));
-        rows.push((
-            NewTxn::expense(
-                card,
-                640_000 - vary / 2,
-                "INR",
-                &iso(month + Duration::days(14)),
-                "Eating out",
-            ),
-            Some(food),
-        ));
+        for (day, amount, desc, c, acct) in [
+            (5i64, 1_850_000 + vary, "Groceries and household", groceries, bank),
+            (8, 3_800_000, "Rent", rent_cat, bank),
+            (13, 640_000 - vary / 2, "Eating out", food, card),
+            (17, 420_000 + vary / 3, "Fuel", fuel, card),
+            (21, 310_000, "Pharmacy", health, bank),
+        ] {
+            rows.push((
+                NewTxn::expense(acct, amount, "INR", &iso(month + Duration::days(day)), desc),
+                Some(c),
+            ));
+        }
     }
 
+    // This month, in detail. Every category the donut can show needs a posting in
+    // it, or the chart is three slices wide and says nothing about where the money
+    // actually goes.
     for (days, amount, desc, c, acct) in [
         (24i64, 462_000, "BigBasket — monthly groceries", groceries, bank),
+        (23, 3_800_000, "Rent — August", rent_cat, bank),
+        (22, 289_000, "Croma — kettle", shopping, card),
         (21, 34_000, "Auto to office", transport, cash),
+        (20, 64_900, "Netflix", subs_cat, card),
         (19, 128_000, "Dinner — Toit", food, card),
-        (16, 89_900, "Petrol", transport, card),
+        (18, 245_000, "Apollo Pharmacy", health, bank),
+        (16, 89_900, "Petrol — Indian Oil", fuel, card),
+        (15, 142_000, "Electricity — BESCOM", bills_cat, bank),
+        (14, 356_000, "Myntra — shirts", shopping, card),
         (12, 24_000, "Chai and samosa", food, cash),
+        (11, 78_000, "Uber to airport", transport, wallet),
         (9, 156_000, "Blinkit — top-up shop", groceries, wallet),
+        (8, 199_000, "Spotify family", subs_cat, card),
+        (7, 92_000, "Dr Rao — consultation", health, cash),
         (5, 45_000, "Metro card recharge", transport, bank),
+        (4, 268_000, "Swiggy — weekend", food, card),
+        (3, 121_000, "Petrol — Shell", fuel, card),
         (2, 68_000, "Lunch — Meghana", food, cash),
+        (1, 32_000, "Filter coffee", food, cash),
     ] {
-        rows.push((NewTxn::expense(acct, amount, "INR", &iso(ago(days)), desc), Some(c)));
+        // Only what has already happened this month: a sample that posts spending
+        // in the future would make every month-to-date total a lie.
+        if days <= today.day() as i64 {
+            rows.push((NewTxn::expense(acct, amount, "INR", &iso(ago(days)), desc), Some(c)));
+        }
     }
 
     for (t, c) in rows {
@@ -276,10 +354,17 @@ pub async fn seed(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
         r.category_id = Some(subs_cat);
         recur::create(pool, &r).await?;
     }
-    // Without a rate the foreign subscription cannot be shown in the base
-    // currency at all, so the sample supplies one. Hand-edited, like every rate
-    // in this section.
-    crate::fx::set(pool, "USD", 83_600_000, crate::schema::unix_now()).await?;
+    // Without a rate the foreign subscription is counted at 1:1, so the sample
+    // supplies one — as a *fetched* rate, dated a day old. That way the first visit
+    // to the section replaces it with today's real one, which is both more accurate
+    // and the only way to see that the daily refresh works. Seeding it as
+    // hand-typed would have exempted it from exactly that.
+    crate::fx::apply_live(
+        pool,
+        &[("USD".to_string(), 83_600_000)],
+        crate::schema::unix_now() - crate::fx::REFRESH_SECS,
+    )
+    .await?;
 
     let paused = {
         let mut r = NewRecurrence::subscription("Gym", 150_000, &iso(ahead(20)));
@@ -350,8 +435,63 @@ pub async fn seed(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
     recur::materialise_due(pool, today).await?;
     obligations::sweep(pool, today).await?;
 
-    mark_everything(pool).await?;
+    mark_new_rows(pool, &before).await?;
     Ok(true)
+}
+
+/// The tables a group is drawn from, and the SQL that finds the group's rows.
+const TABLES: &[(&str, &str)] = &[
+    ("transactions", "transactions"),
+    ("obligations", "obligations"),
+    ("recurrences", "recurrences"),
+    ("dues", "dues"),
+    ("budgets", "budgets"),
+    ("accounts", "accounts"),
+];
+
+/// Highest row id in each table right now.
+///
+/// SQLite hands out `MAX(rowid) + 1`, so any row inserted after this call has an id
+/// above the figure recorded here — which is what makes "everything newer than this
+/// is sample data" sound even on a database that already had rows.
+async fn high_water(pool: &SqlitePool) -> Result<Vec<(&'static str, i64)>> {
+    let mut out = Vec::with_capacity(TABLES.len());
+    for (kind, table) in TABLES {
+        let sql = format!("SELECT COALESCE(MAX(id), 0) FROM {table}");
+        out.push((*kind, sqlx::query_scalar::<_, i64>(&sql).fetch_one(pool).await?));
+    }
+    Ok(out)
+}
+
+/// Record every row added since `before` as sample data.
+///
+/// A sweep at the end rather than a `mark` beside each insert, because half these
+/// rows are side effects: `dues::create` posts the lending transfer, `loans::create`
+/// creates an account, `mark_paid` posts the payment, and `materialise_due` creates
+/// obligations from the templates. Any one of them missed would leave an unmarked
+/// row that reads as the user's own — and one of those is enough to make the very
+/// first prune delete the entire sample.
+///
+/// Bounded by the high-water marks rather than marking the whole table, because
+/// [`reseed`] can run on a database with the user's own rows in it, and marking one
+/// of those as a sample would have the next prune delete their data.
+async fn mark_new_rows(pool: &SqlitePool, before: &[(&str, i64)]) -> Result<()> {
+    for (kind, floor) in before {
+        let sql = match *kind {
+            "transactions" => "SELECT id FROM transactions WHERE id > ?",
+            "obligations" => "SELECT id FROM obligations WHERE id > ?",
+            "recurrences" => "SELECT id FROM recurrences WHERE id > ?",
+            "dues" => "SELECT id FROM dues WHERE id > ?",
+            "budgets" => "SELECT id FROM budgets WHERE id > ?",
+            // The two holding accounts are seeded for every user and are not samples.
+            "accounts" => "SELECT id FROM accounts WHERE id > ? AND kind <> 'virtual'",
+            _ => continue,
+        };
+        for id in sqlx::query_scalar::<_, i64>(sql).bind(floor).fetch_all(pool).await? {
+            mark(pool, kind, id).await?;
+        }
+    }
+    Ok(())
 }
 
 /// The first of the month `k` months before `today`.
@@ -361,34 +501,6 @@ pub async fn seed(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
 /// in the chart it is meant to fill.
 fn month_start(today: NaiveDate, k: i64) -> Option<NaiveDate> {
     today.with_day(1)?.checked_sub_months(chrono::Months::new(k.max(0) as u32))
-}
-
-/// Record every row now in the database as sample data.
-///
-/// A sweep at the end rather than a `mark` beside each insert, because half these
-/// rows are side effects: `dues::create` posts the lending transfer, `loans::create`
-/// creates an account, `mark_paid` posts the payment, and `materialise_due` creates
-/// obligations from the templates. Any one of them missed would leave an unmarked
-/// row that reads as the user's own — and one of those is enough to make the very
-/// first prune delete the entire sample.
-///
-/// Sound because [`seed`] only ever runs on a database with nothing real in it, so
-/// at this moment everything present is sample data by definition.
-async fn mark_everything(pool: &SqlitePool) -> Result<()> {
-    for (kind, sql) in [
-        ("transactions", "SELECT id FROM transactions"),
-        ("obligations", "SELECT id FROM obligations"),
-        ("recurrences", "SELECT id FROM recurrences"),
-        ("dues", "SELECT id FROM dues"),
-        ("budgets", "SELECT id FROM budgets"),
-        // The two holding accounts are seeded for every user and are not samples.
-        ("accounts", "SELECT id FROM accounts WHERE kind <> 'virtual'"),
-    ] {
-        for id in sqlx::query_scalar::<_, i64>(sql).fetch_all(pool).await? {
-            mark(pool, kind, id).await?;
-        }
-    }
-    Ok(())
 }
 
 /// A category id by name, creating it if the seed list does not have it.
@@ -575,10 +687,22 @@ mod tests {
         assert_eq!(count(&p, "dues").await, 3);
         // Three envelopes across four months.
         assert_eq!(count(&p, "budgets").await, 12);
-        // Six earlier months plus this one, so the twelve-month chart has a shape.
+        // Every one of the twelve chart columns has something in it. Six left five
+        // empty bars, which reads as missing data rather than as a quiet year.
         let months = txn::monthly_totals(&p, 12).await.unwrap();
-        assert!(months.iter().filter(|m| m.income_minor > 0).count() >= 6);
-        assert_eq!(count(&p, "loans").await, 1);
+        assert_eq!(months.iter().filter(|m| m.income_minor > 0).count(), 12);
+        assert_eq!(count(&p, "loans").await, 3, "home, car and phone");
+
+        // The current month has income in it. Dating the salary a fixed number of
+        // days back put it in the *previous* month for the first 25 days of every
+        // month, which left the Overview with no income, a negative "saved this
+        // month" and no savings rate.
+        let (from, to) = date::month_bounds(&date::ym(today())).unwrap();
+        assert!(txn::income_between(&p, &from, &to).await.unwrap() > 0, "the salary is inside the current month");
+
+        // And enough categories this month for the donut to be a donut.
+        let cats = txn::spend_by_category(&p, &from, &to).await.unwrap();
+        assert!(cats.len() >= 6, "only {} categories this month", cats.len());
     }
 
     #[tokio::test]
@@ -662,6 +786,52 @@ mod tests {
 
         // And it does not come back.
         assert!(!seed(&p, today()).await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn reseeding_never_marks_the_users_own_rows_as_samples() {
+        // The dangerous direction of the Add button: seeding on top of real data
+        // must not tag that data as a sample, or the next prune deletes it.
+        let p = pool().await;
+        let mine_acct = accounts::create(&p, &NewAccount::bank("My bank", 1_000_000)).await.unwrap();
+        let mine = txn::post(
+            &p,
+            &NewTxn::expense(mine_acct, 12_300, "INR", "2026-07-25", "My own spend"),
+        )
+        .await
+        .unwrap();
+
+        // Auto-seeding declines, because the database is not empty.
+        assert!(!seed(&p, today()).await.unwrap());
+        // The button does not.
+        assert!(reseed(&p, today()).await.unwrap());
+        assert!(present(&p).await.unwrap());
+
+        // Neither of the user's rows is marked.
+        let marked: i64 = sqlx::query_scalar(
+            "SELECT COUNT(*) FROM demo_rows WHERE (kind = 'transactions' AND row_id = ?)
+                                               OR (kind = 'accounts' AND row_id = ?)",
+        )
+        .bind(mine)
+        .bind(mine_acct)
+        .fetch_one(&p)
+        .await
+        .unwrap();
+        assert_eq!(marked, 0);
+
+        // So removing every sample leaves them standing.
+        remove_all(&p).await.unwrap();
+        assert_eq!(count(&p, "transactions").await, 1, "the user's posting survives");
+        assert_eq!(count(&p, "accounts").await, 3, "their account plus the two virtual ones");
+    }
+
+    #[tokio::test]
+    async fn reseeding_twice_does_not_leave_two_of_everything() {
+        let p = pool().await;
+        seed(&p, today()).await.unwrap();
+        let n = count(&p, "recurrences").await;
+        reseed(&p, today()).await.unwrap();
+        assert_eq!(count(&p, "recurrences").await, n, "the old samples went first");
     }
 
     #[tokio::test]

@@ -30,6 +30,11 @@ anyhow.workspace = true
 sqlx.workspace = true
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+# The one network call in this section: the daily exchange-rate fetch. Deliberately
+# not a dependency of tulipix-finances — that crate builds the URL and parses the
+# response, and stays testable with no network. Already in the tree, so no new
+# crates are pulled in.
+reqwest = { workspace = true }
 tulipix-ui = { path = "../tulipix-ui" }
 tulipix-core = { path = "../tulipix-core" }
 tulipix-finances = { path = "../tulipix-finances" }

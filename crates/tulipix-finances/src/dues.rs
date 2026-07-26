@@ -386,6 +386,36 @@ pub struct Totals {
     pub i_owe_minor: i64,
 }
 
+/// How much has actually come back, in each direction, since `from`.
+///
+/// Settled dues, not open ones: the Dues tab's other figures are what is owed, and
+/// this is the one that says whether money between people actually returns. A tab
+/// that only ever shows outstanding balances cannot answer that.
+pub async fn settled_since(pool: &SqlitePool, from: &str) -> Result<Totals> {
+    // There is no settlements table: a settlement is a transaction tagged with
+    // `SETTLEMENT_NOTE` and pointing at the due. Same source `settled_total` uses,
+    // so the two can never disagree about what has been paid back.
+    let rows = sqlx::query_as::<_, (String, i64)>(
+        "SELECT d.direction, COALESCE(SUM(t.amount_minor), 0)
+           FROM transactions t JOIN dues d ON d.id = t.due_id
+          WHERE t.note = ? AND t.occurred_on >= ?
+          GROUP BY d.direction",
+    )
+    .bind(SETTLEMENT_NOTE)
+    .bind(from)
+    .fetch_all(pool)
+    .await?;
+    let mut t = Totals::default();
+    for (dir, amount) in rows {
+        if Direction::parse(&dir) == Direction::OwedToMe {
+            t.owed_to_me_minor += amount;
+        } else {
+            t.i_owe_minor += amount;
+        }
+    }
+    Ok(t)
+}
+
 /// Outstanding in both directions. Open dues only.
 pub async fn totals(pool: &SqlitePool) -> Result<Totals> {
     let rows = sqlx::query_as::<_, (String, i64)>(
@@ -423,6 +453,31 @@ mod tests {
 
     async fn bank(p: &SqlitePool) -> i64 {
         accounts::create(p, &accounts::NewAccount::bank("HDFC", 10_000_000)).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn what_has_come_back_counts_settlements_and_not_the_lending() {
+        let p = pool().await;
+        let acct = bank(&p).await;
+        let lent = create(&p, &NewDue::lent("Ravi", 500_000, "2026-01-10", acct)).await.unwrap();
+        let owed = create(&p, &NewDue::borrowed("Dad", 300_000, "2026-01-11", acct)).await.unwrap();
+
+        // Nothing settled yet. The opening postings are tagged differently, and
+        // counting them here would report every loan as already repaid.
+        let none = settled_since(&p, "2026-01-01").await.unwrap();
+        assert_eq!(none, Totals::default());
+
+        settle(&p, lent, 200_000, d("2026-07-01"), acct).await.unwrap();
+        settle(&p, owed, 100_000, d("2026-07-02"), acct).await.unwrap();
+
+        let t = settled_since(&p, "2026-01-01").await.unwrap();
+        assert_eq!(t.owed_to_me_minor, 200_000, "came back to me");
+        assert_eq!(t.i_owe_minor, 100_000, "I paid back");
+
+        // The window is a window: a settlement before it does not count.
+        let recent = settled_since(&p, "2026-07-02").await.unwrap();
+        assert_eq!(recent.owed_to_me_minor, 0);
+        assert_eq!(recent.i_owe_minor, 100_000);
     }
 
     #[tokio::test]

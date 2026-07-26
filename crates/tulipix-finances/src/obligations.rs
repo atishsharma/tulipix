@@ -75,6 +75,13 @@ pub struct Obligation {
     pub account_id: Option<i64>,
     /// Negative when overdue.
     pub days_until: i64,
+    /// The category of the recurrence behind it, for the Bills table. `None` for a
+    /// one-off or an uncategorised template.
+    pub category_name: Option<String>,
+    /// Which account it is paid from, by name.
+    pub account_name: Option<String>,
+    /// Posts itself on its due date, so it needs no action from anyone.
+    pub auto_post: bool,
 }
 
 impl Obligation {
@@ -110,6 +117,9 @@ fn row_to_obligation(r: Row, today: NaiveDate) -> Obligation {
         currency: r.9.unwrap_or_else(|| "INR".into()),
         account_id: r.10,
         days_until,
+        category_name: r.11,
+        account_name: r.12,
+        auto_post: r.13.unwrap_or(0) != 0,
     }
 }
 
@@ -127,12 +137,18 @@ type Row = (
     Option<String>,
     Option<String>,
     Option<i64>,
+    Option<String>,
+    Option<String>,
+    Option<i64>,
 );
 
 const SELECT: &str = "SELECT o.id, o.recurrence_id, o.name, o.due_on, o.estimate_minor,
                              o.actual_minor, o.status, o.transaction_id, r.kind, r.currency,
-                             r.account_id
-                        FROM obligations o LEFT JOIN recurrences r ON r.id = o.recurrence_id";
+                             r.account_id, c.name, a.name, r.auto_post
+                        FROM obligations o
+                        LEFT JOIN recurrences r ON r.id = o.recurrence_id
+                        LEFT JOIN categories  c ON c.id = r.category_id
+                        LEFT JOIN accounts    a ON a.id = r.account_id";
 
 /// Everything still open, plus everything paid, inside a date window.
 ///

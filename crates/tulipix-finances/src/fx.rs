@@ -1,15 +1,27 @@
-//! Exchange rates, hand-edited.
+//! Exchange rates: fetched daily, overridable by hand.
 //!
-//! There is no rate API and there will not be one — the section is offline by
-//! decree, not by phase. The user types a rate, it is stored as millionths, and
-//! every transaction records the rate that was in force when it was posted.
+//! A rate is stored as millionths, and every transaction records the rate that was
+//! in force when it was posted.
 //!
-//! That last part is the important one. A transaction's `base_minor` is computed
-//! once, at post time, and never recomputed. If rates were applied at read time,
-//! editing the USD rate today would silently rewrite what last March cost, and
-//! two runs of the same report would disagree.
+//! That last part is the important one, and it does not change now that rates
+//! arrive from the network. A transaction's `base_minor` is computed once, at post
+//! time, and never recomputed. If rates were applied at read time, today's refresh
+//! would silently rewrite what last March cost, and two runs of the same report
+//! would disagree.
+//!
+//! # Two things the daily refresh is not allowed to do
+//!
+//! **Overwrite a rate the user typed.** A hand-edited rate is a decision — often a
+//! deliberately different one, like the rate a card actually charged. [`apply_live`]
+//! skips every row whose `source` is `manual`.
+//!
+//! **Reach the network from this crate.** Everything here is pure or SQL: the URL
+//! is built by [`endpoint`], the response is turned into rates by [`parse_rates`],
+//! and the HTTP between them happens in the glue crate. That keeps this crate
+//! testable with no display, no network and no fixtures beyond a JSON string, which
+//! is the whole reason for the core/glue split.
 
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sqlx::SqlitePool;
 
 use crate::money::RATE_ONE;
@@ -17,11 +29,41 @@ use crate::money::RATE_ONE;
 /// Settings key for the base currency. Everything is reported in it.
 pub const BASE_KEY: &str = "finances.base_currency";
 
+/// Settings key for the daily refresh. On unless turned off.
+pub const AUTO_KEY: &str = "finances.fx_auto";
+
+/// How old a fetched rate gets before it is refetched. Once a day: published
+/// rates move on a daily cycle, and a desktop app polling faster than its source
+/// updates is just noise on someone's connection.
+pub const REFRESH_SECS: i64 = 86_400;
+
+/// Keyless, no attribution header, base-relative. `{}` is the base currency.
+const ENDPOINT: &str = "https://open.er-api.com/v6/latest/{}";
+
+/// Where to fetch rates relative to `base`.
+pub fn endpoint(base: &str) -> String {
+    ENDPOINT.replace("{}", &base.trim().to_uppercase())
+}
+
+/// Whether the daily refresh is wanted. On unless explicitly turned off.
+pub fn auto_enabled() -> bool {
+    !matches!(
+        tulipix_core::settings::Settings::load()
+            .ok()
+            .and_then(|s| s.advanced.get(AUTO_KEY).cloned())
+            .as_deref(),
+        Some("false") | Some("0")
+    )
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Rate {
     pub code: String,
     pub rate_micro: i64,
     pub edited_at: i64,
+    /// `false` when the user typed this rate, which means the daily refresh will
+    /// leave it alone.
+    pub live: bool,
 }
 
 /// The base currency, from advanced settings. INR unless the user says otherwise.
@@ -51,27 +93,155 @@ pub fn set_base_currency(code: &str) -> Result<()> {
 }
 
 pub async fn list(pool: &SqlitePool) -> Result<Vec<Rate>> {
-    let rows = sqlx::query_as::<_, (String, i64, i64)>(
-        "SELECT code, rate_micro, edited_at FROM fx_rates ORDER BY code",
+    let rows = sqlx::query_as::<_, (String, i64, i64, String)>(
+        "SELECT code, rate_micro, edited_at, source FROM fx_rates ORDER BY code",
     )
     .fetch_all(pool)
     .await?;
-    Ok(rows.into_iter().map(|(code, rate_micro, edited_at)| Rate { code, rate_micro, edited_at }).collect())
+    Ok(rows
+        .into_iter()
+        .map(|(code, rate_micro, edited_at, source)| Rate {
+            code,
+            rate_micro,
+            edited_at,
+            live: source == "live",
+        })
+        .collect())
 }
 
+/// Store a hand-typed rate. Marked `manual`, so the daily refresh leaves it alone.
 pub async fn set(pool: &SqlitePool, code: &str, rate_micro: i64, at: i64) -> Result<()> {
+    upsert(pool, code, rate_micro, at, "manual").await
+}
+
+async fn upsert(
+    pool: &SqlitePool,
+    code: &str,
+    rate_micro: i64,
+    at: i64,
+    source: &str,
+) -> Result<()> {
     let code = code.trim().to_uppercase();
     sqlx::query(
-        "INSERT INTO fx_rates (code, rate_micro, edited_at) VALUES (?, ?, ?)
+        "INSERT INTO fx_rates (code, rate_micro, edited_at, source) VALUES (?, ?, ?, ?)
          ON CONFLICT(code) DO UPDATE SET rate_micro = excluded.rate_micro,
-                                         edited_at  = excluded.edited_at",
+                                         edited_at  = excluded.edited_at,
+                                         source     = excluded.source",
     )
     .bind(&code)
     .bind(rate_micro)
     .bind(at)
+    .bind(source)
     .execute(pool)
     .await?;
     Ok(())
+}
+
+/// Turn a rates response into `(code, rate_micro)` pairs, where `rate_micro` is
+/// **how much base one unit of that currency is worth** — the direction the rest of
+/// this crate multiplies by.
+///
+/// The response is the other way round: it quotes how many foreign units one unit
+/// of base buys. So every figure is inverted here, and inverted with integer
+/// arithmetic: the quoted number is read to twelve decimal places and the reciprocal
+/// taken in `i128`, because this is a number every converted total is multiplied by
+/// and a float would put a different rounding in each of them.
+pub fn parse_rates(json: &str, base: &str) -> Result<Vec<(String, i64)>> {
+    let v: serde_json::Value = serde_json::from_str(json).context("rates response is not JSON")?;
+    let rates = v
+        .get("rates")
+        .and_then(|r| r.as_object())
+        .context("rates response has no `rates` object")?;
+    let base = base.trim().to_uppercase();
+
+    let mut out = Vec::with_capacity(rates.len());
+    for (code, quoted) in rates {
+        let code = code.trim().to_uppercase();
+        // A currency code, or nothing: the response is remote input.
+        if code.len() != 3 || !code.chars().all(|c| c.is_ascii_alphabetic()) || code == base {
+            continue;
+        }
+        let serde_json::Value::Number(num) = quoted else { continue };
+        // Through the number's own text and the crate's decimal parser rather than
+        // as an f64 — same path a hand-typed rate takes.
+        let Ok(pico) = crate::money::parse_scaled(&num.to_string(), 12) else { continue };
+        if pico <= 0 {
+            continue;
+        }
+        // 1 / quoted, in millionths: (1e6 * 1e12) / pico.
+        let micro = (RATE_ONE as i128) * 1_000_000_000_000i128 / (pico as i128);
+        if micro <= 0 || micro > i64::MAX as i128 {
+            continue;
+        }
+        out.push((code, micro as i64));
+    }
+    if out.is_empty() {
+        anyhow::bail!("no usable rates in the response");
+    }
+    out.sort();
+    Ok(out)
+}
+
+/// Store fetched rates, leaving hand-typed ones alone.
+///
+/// Returns how many rows were written. Only currencies the user actually has —
+/// [`needed_codes`] — so a response listing 160 currencies does not put 160 rows in
+/// a database that uses two.
+pub async fn apply_live(
+    pool: &SqlitePool,
+    rates: &[(String, i64)],
+    at: i64,
+) -> Result<u64> {
+    let wanted = needed_codes(pool, &base_currency()).await?;
+    let manual: Vec<String> =
+        sqlx::query_scalar("SELECT code FROM fx_rates WHERE source = 'manual'")
+            .fetch_all(pool)
+            .await?;
+    let mut n = 0;
+    for (code, micro) in rates {
+        if !wanted.contains(code) || manual.iter().any(|m| m == code) {
+            continue;
+        }
+        upsert(pool, code, *micro, at, "live").await?;
+        n += 1;
+    }
+    Ok(n)
+}
+
+/// The currencies worth having a rate for: everything already in `fx_rates`, plus
+/// every currency money has actually been posted in, minus the base.
+pub async fn needed_codes(pool: &SqlitePool, base: &str) -> Result<Vec<String>> {
+    let base = base.trim().to_uppercase();
+    let rows: Vec<String> = sqlx::query_scalar(
+        "SELECT code FROM fx_rates
+         UNION
+         SELECT DISTINCT currency FROM transactions
+         UNION
+         SELECT DISTINCT currency FROM recurrences",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(rows.into_iter().map(|c| c.to_uppercase()).filter(|c| *c != base).collect())
+}
+
+/// Whether the fetched rates are older than a day.
+///
+/// True when there is nothing fetched yet but something to fetch *for*: a database
+/// with no foreign currency in it has nothing to refresh, and asking the network on
+/// its behalf every launch would be a request made for no reason.
+pub async fn stale(pool: &SqlitePool, now: i64) -> Result<bool> {
+    if needed_codes(pool, &base_currency()).await?.is_empty() {
+        return Ok(false);
+    }
+    let newest: Option<i64> =
+        sqlx::query_scalar("SELECT MAX(edited_at) FROM fx_rates WHERE source = 'live'")
+            .fetch_optional(pool)
+            .await?
+            .flatten();
+    Ok(match newest {
+        Some(at) => now - at >= REFRESH_SECS,
+        None => true,
+    })
 }
 
 pub async fn remove(pool: &SqlitePool, code: &str) -> Result<()> {
@@ -147,6 +317,114 @@ mod tests {
         set(&p, "USD", 84_100_000, 20).await.unwrap();
         assert_eq!(list(&p).await.unwrap().len(), 1, "upsert, not a second row");
         assert_eq!(rate_for(&p, "USD", "INR").await.unwrap(), 84_100_000);
+    }
+
+    /// A trimmed open.er-api.com response, with the base quoted as 1 and a
+    /// currency whose rate needs eight decimal places to be worth anything.
+    const RESPONSE: &str = r#"{
+        "result": "success",
+        "base_code": "INR",
+        "time_last_update_unix": 1785000000,
+        "rates": { "INR": 1, "USD": 0.011962, "EUR": 0.011045, "JPY": 1.8123,
+                   "KWD": 0.00366, "junk": 1.0, "TOOLONG": 2.0, "BAD": "x" }
+    }"#;
+
+    #[test]
+    fn a_rates_response_is_inverted_into_what_a_unit_is_worth() {
+        let out = parse_rates(RESPONSE, "INR").unwrap();
+        let get = |c: &str| out.iter().find(|(k, _)| k == c).map(|(_, v)| *v);
+
+        // The response says 1 INR buys 0.011962 USD, so one USD is worth
+        // 1/0.011962 = ₹83.60. Getting this backwards would value a $10
+        // subscription at 12 paise.
+        assert_eq!(get("USD"), Some(83_598_060));
+        assert_eq!(get("JPY"), Some(551_785));
+        // A currency worth ~₹273: fine at twelve decimal places, meaningless at
+        // the six a hand-typed rate uses.
+        assert_eq!(get("KWD"), Some(273_224_043));
+
+        // The base itself is never stored as a rate — `rate_for` returns 1 for it
+        // by definition, and a row saying otherwise is a trap.
+        assert_eq!(get("INR"), None);
+        // Remote input: anything that is not a three-letter code, or not a number,
+        // is dropped rather than trusted.
+        assert_eq!(get("JUNK"), None);
+        assert_eq!(get("TOOLONG"), None);
+        assert_eq!(get("BAD"), None);
+    }
+
+    #[test]
+    fn a_response_that_is_not_a_rates_response_is_an_error_not_an_empty_list() {
+        // Silently applying nothing would leave stale rates looking fresh.
+        assert!(parse_rates("not json", "INR").is_err());
+        assert!(parse_rates(r#"{"result":"error"}"#, "INR").is_err());
+        assert!(parse_rates(r#"{"rates":{}}"#, "INR").is_err());
+        // Only the base came back, so there is nothing to store.
+        assert!(parse_rates(r#"{"rates":{"INR":1}}"#, "INR").is_err());
+    }
+
+    #[tokio::test]
+    async fn a_hand_typed_rate_survives_the_daily_refresh() {
+        // The rule this whole `source` column exists for: someone who types the
+        // rate their card actually charged must not have it quietly replaced.
+        let p = pool().await;
+        sqlx::query(
+            "INSERT INTO recurrences (kind, name, currency, cycle, created_at)
+             VALUES ('subscription', 'Some SaaS', 'USD', 'monthly', 0),
+                    ('subscription', 'Andere',    'EUR', 'monthly', 0)",
+        )
+        .execute(&p)
+        .await
+        .unwrap();
+        set(&p, "USD", 90_000_000, 5).await.unwrap();
+
+        let fetched = parse_rates(RESPONSE, "INR").unwrap();
+        let written = apply_live(&p, &fetched, 1_000).await.unwrap();
+
+        assert_eq!(rate_for(&p, "USD", "INR").await.unwrap(), 90_000_000, "theirs stands");
+        assert_eq!(rate_for(&p, "EUR", "INR").await.unwrap(), 90_538_705, "this one is fetched");
+        assert_eq!(written, 1, "only EUR");
+        // JPY is in the response but nothing in this database is priced in it.
+        assert!(list(&p).await.unwrap().iter().all(|r| r.code != "JPY"));
+    }
+
+    #[tokio::test]
+    async fn rates_go_stale_after_a_day_and_never_before() {
+        let p = pool().await;
+        // Nothing foreign in the database, so there is nothing to fetch for.
+        assert!(!stale(&p, 100_000).await.unwrap());
+
+        sqlx::query(
+            "INSERT INTO recurrences (kind, name, currency, cycle, created_at)
+             VALUES ('subscription', 'Some SaaS', 'USD', 'monthly', 0)",
+        )
+        .execute(&p)
+        .await
+        .unwrap();
+        assert!(stale(&p, 100_000).await.unwrap(), "nothing fetched yet");
+
+        apply_live(&p, &[("USD".into(), 83_600_000)], 100_000).await.unwrap();
+        assert!(!stale(&p, 100_000 + REFRESH_SECS - 1).await.unwrap());
+        assert!(stale(&p, 100_000 + REFRESH_SECS).await.unwrap());
+
+        // A hand-typed rate is not a fetch: it must not hold the refresh off,
+        // because the currencies the user did *not* type still need one.
+        let p2 = pool().await;
+        sqlx::query(
+            "INSERT INTO recurrences (kind, name, currency, cycle, created_at)
+             VALUES ('subscription', 'Some SaaS', 'USD', 'monthly', 0)",
+        )
+        .execute(&p2)
+        .await
+        .unwrap();
+        set(&p2, "USD", 83_600_000, 100_000).await.unwrap();
+        assert!(stale(&p2, 100_001).await.unwrap());
+    }
+
+    #[test]
+    fn the_endpoint_is_built_from_the_base() {
+        assert_eq!(endpoint("inr"), "https://open.er-api.com/v6/latest/INR");
+        assert!(auto_enabled(), "on unless turned off");
     }
 
     #[tokio::test]
