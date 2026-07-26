@@ -96,7 +96,7 @@ impl NotificationSink for OsSink {
         #[cfg(target_os = "linux")]
         let mut cmd = {
             let mut c = Command::new("notify-send");
-            c.args(["-a", "Tulipix", "-i", "tulipix", n.title.as_str(), n.body.as_str()]);
+            c.args(["-a", "Tulipix", "-i", icon_arg(), n.title.as_str(), n.body.as_str()]);
             c
         };
 
@@ -152,6 +152,26 @@ fn esc(s: &str) -> String {
 #[cfg(target_os = "windows")]
 fn esc_ps(s: &str) -> String {
     s.replace('\'', "''")
+}
+
+static ICON: std::sync::OnceLock<std::path::PathBuf> = std::sync::OnceLock::new();
+
+/// Point the banners at the app's own mark, by file path.
+///
+/// Without this the Linux sink asks for the icon-theme name `tulipix`, which exists
+/// only once the app has been installed into a theme directory — so an uninstalled
+/// build shows the theme's broken-image placeholder instead of a logo. The app knows
+/// where its icon is on disk; this module does not, and should not have to embed a
+/// second copy of it to find out.
+pub fn set_icon(path: impl Into<std::path::PathBuf>) {
+    let _ = ICON.set(path.into());
+}
+
+/// The icon to hand the desktop: the file if one was named, otherwise the theme name
+/// an installed build can rely on.
+#[cfg(target_os = "linux")]
+fn icon_arg() -> &'static str {
+    ICON.get().and_then(|p| p.to_str()).unwrap_or("tulipix")
 }
 
 static SINK: std::sync::OnceLock<Box<dyn NotificationSink>> = std::sync::OnceLock::new();

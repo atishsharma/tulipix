@@ -71,12 +71,41 @@ CREATE TABLE IF NOT EXISTS devices (
     label     TEXT    NOT NULL,
     issued    INTEGER NOT NULL,
     last_seen INTEGER NOT NULL,
-    expires   INTEGER NOT NULL
+    expires   INTEGER NOT NULL,
+    kind      TEXT    NOT NULL DEFAULT '',
+    ip        TEXT    NOT NULL DEFAULT '',
+    name      TEXT    NOT NULL DEFAULT '',
+    pin       TEXT    NOT NULL DEFAULT ''
 );
 "#;
 
 pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(SCHEMA).execute(pool).await?;
+    add_missing_columns(pool).await?;
+    Ok(())
+}
+
+/// The four columns the round-button device list needs, added to a `devices`
+/// table that predates them. `CREATE TABLE IF NOT EXISTS` does nothing to a table
+/// that already exists, so a database from before this change would otherwise be
+/// missing them for good.
+async fn add_missing_columns(pool: &SqlitePool) -> Result<()> {
+    for (column, decl) in
+        [("kind", "TEXT NOT NULL DEFAULT ''"), ("ip", "TEXT NOT NULL DEFAULT ''"),
+         ("name", "TEXT NOT NULL DEFAULT ''"), ("pin", "TEXT NOT NULL DEFAULT ''")]
+    {
+        let exists: bool = sqlx::query_scalar(
+            "SELECT EXISTS(SELECT 1 FROM pragma_table_info('devices') WHERE name = ?)",
+        )
+        .bind(column)
+        .fetch_one(pool)
+        .await?;
+        if !exists {
+            sqlx::query(&format!("ALTER TABLE devices ADD COLUMN {column} {decl}"))
+                .execute(pool)
+                .await?;
+        }
+    }
     Ok(())
 }
 
@@ -207,31 +236,60 @@ pub async fn clear_transfers(pool: &SqlitePool) -> Result<()> {
 
 pub async fn remember_device(
     pool: &SqlitePool,
-    token: &str,
-    label: &str,
+    token: &crate::auth::Token,
     now: i64,
-    expires: i64,
 ) -> Result<()> {
     sqlx::query(
-        "INSERT INTO devices (token, label, issued, last_seen, expires) VALUES (?, ?, ?, ?, ?)
+        "INSERT INTO devices (token, label, issued, last_seen, expires, kind, ip, name, pin)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(token) DO UPDATE SET last_seen = excluded.last_seen",
     )
-    .bind(token)
-    .bind(label)
+    .bind(&token.value)
+    .bind(&token.label)
     .bind(now)
     .bind(now)
-    .bind(expires)
+    .bind(token.expires as i64)
+    .bind(&token.kind)
+    .bind(&token.ip)
+    .bind(&token.name)
+    .bind(&token.pin)
     .execute(pool)
     .await?;
     Ok(())
 }
 
+/// A name typed on the desktop outlives a restart, unlike the rest of the
+/// session state — it is the one thing here the user authored.
+pub async fn rename_device(pool: &SqlitePool, token: &str, name: &str) -> Result<()> {
+    sqlx::query("UPDATE devices SET name = ? WHERE token = ?")
+        .bind(name)
+        .bind(token)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// One stored device. A row, not a tuple: nine columns positionally would be a
+/// bug waiting for the next column to be added.
+#[derive(Clone, Debug, sqlx::FromRow)]
+pub struct DeviceRecord {
+    pub token: String,
+    pub label: String,
+    pub last_seen: i64,
+    pub expires: i64,
+    pub kind: String,
+    pub ip: String,
+    pub name: String,
+    pub pin: String,
+}
+
 /// Only devices whose token has not expired. Expired rows are left in place for
 /// `forget_expired` to sweep, so a phone that reappears at hour 49 is told to
 /// re-pair rather than being silently unknown.
-pub async fn devices(pool: &SqlitePool, now: i64) -> Result<Vec<(String, String, i64, i64)>> {
-    let rows = sqlx::query_as::<_, (String, String, i64, i64)>(
-        "SELECT token, label, last_seen, expires FROM devices WHERE expires > ? ORDER BY last_seen DESC",
+pub async fn devices(pool: &SqlitePool, now: i64) -> Result<Vec<DeviceRecord>> {
+    let rows = sqlx::query_as::<_, DeviceRecord>(
+        "SELECT token, label, last_seen, expires, kind, ip, name, pin
+         FROM devices WHERE expires > ? ORDER BY last_seen DESC",
     )
     .bind(now)
     .fetch_all(pool)
@@ -257,6 +315,21 @@ mod tests {
         let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
         apply_schema(&pool).await.unwrap();
         pool
+    }
+
+    /// A token as the pairing handlers would hand it over.
+    fn sample_device(value: &str, now: u64) -> crate::auth::Token {
+        crate::auth::Token {
+            value: value.into(),
+            label: "Android · Chrome".into(),
+            kind: "Android".into(),
+            ip: "192.168.1.31".into(),
+            pin: "123456".into(),
+            issued: now,
+            expires: now + 48 * 3600,
+            last_seen: now,
+            ..Default::default()
+        }
     }
 
     /// The default view: newest first.
@@ -343,7 +416,7 @@ mod tests {
     async fn clearing_transfers_leaves_paired_devices_alone() {
         let pool = mem_pool().await;
         record(&pool, Row::sent("a", 1, "1.2.3.4"), 100).await.unwrap();
-        remember_device(&pool, "tok", "Android · Chrome", 100, 100 + 48 * 3600).await.unwrap();
+        remember_device(&pool, &sample_device("tok", 100), 100).await.unwrap();
 
         clear_transfers(&pool).await.unwrap();
 
@@ -352,9 +425,51 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn a_device_keeps_its_type_address_and_typed_name() {
+        let pool = mem_pool().await;
+        remember_device(&pool, &sample_device("tok", 100), 100).await.unwrap();
+        rename_device(&pool, "tok", "Kitchen").await.unwrap();
+
+        let rows = devices(&pool, 200).await.unwrap();
+        assert_eq!(rows[0].kind, "Android");
+        assert_eq!(rows[0].ip, "192.168.1.31");
+        assert_eq!(rows[0].pin, "123456");
+        assert_eq!(rows[0].name, "Kitchen");
+
+        // Seeing the phone again must not wipe the name it was given.
+        remember_device(&pool, &sample_device("tok", 300), 300).await.unwrap();
+        assert_eq!(devices(&pool, 400).await.unwrap()[0].name, "Kitchen");
+    }
+
+    #[tokio::test]
+    async fn a_devices_table_from_before_the_new_columns_is_migrated() {
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        // The old shape, exactly as it shipped.
+        sqlx::raw_sql(
+            "CREATE TABLE devices (token TEXT PRIMARY KEY, label TEXT NOT NULL,
+             issued INTEGER NOT NULL, last_seen INTEGER NOT NULL, expires INTEGER NOT NULL);
+             INSERT INTO devices VALUES ('old', 'Android · Chrome', 100, 100, 172900);",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        apply_schema(&pool).await.unwrap();
+
+        let rows = devices(&pool, 200).await.unwrap();
+        assert_eq!(rows.len(), 1, "the existing pairing was lost");
+        // Nothing invented for a device that paired before we asked: empty, and
+        // the UI captions it by whatever the label says instead.
+        assert_eq!(rows[0].kind, "");
+        assert_eq!(rows[0].name, "");
+        // And the migration is idempotent.
+        apply_schema(&pool).await.unwrap();
+    }
+
+    #[tokio::test]
     async fn an_expired_device_is_not_listed() {
         let pool = mem_pool().await;
-        remember_device(&pool, "tok", "Android · Chrome", 100, 100 + 48 * 3600).await.unwrap();
+        remember_device(&pool, &sample_device("tok", 100), 100).await.unwrap();
         assert_eq!(devices(&pool, 100 + 47 * 3600).await.unwrap().len(), 1);
         assert_eq!(devices(&pool, 100 + 49 * 3600).await.unwrap().len(), 0);
     }

@@ -144,6 +144,23 @@ pub fn wire(window: &MainWindow) {
     });
 
     let w = window.as_weak();
+    window.on_transfer_rename_device(move |token, name| {
+        let w = w.clone();
+        let token = token.to_string();
+        let name = name.to_string();
+        spawn(async move {
+            // Same borrow dance as `forget`: the service is taken out for the
+            // duration of the await and put straight back.
+            let taken = guard().take();
+            if let Some(svc) = taken {
+                svc.rename_device(&token, &name).await;
+                *guard() = Some(svc);
+            }
+            let _ = w.upgrade_in_event_loop(|w| refresh(&w));
+        });
+    });
+
+    let w = window.as_weak();
     window.on_transfer_set_iface(move |ip| {
         let w = w.clone();
         let ip = ip.to_string();
@@ -418,10 +435,29 @@ fn refresh(w: &MainWindow) {
     let devices: Vec<TransferDevice> = snap
         .devices
         .iter()
-        .map(|d| TransferDevice {
+        .enumerate()
+        .map(|(i, d)| TransferDevice {
             token: d.token.clone().into(),
+            // What to call it: the name typed on the desktop, the device type when
+            // there is none, and — for a device paired before either was recorded
+            // — whatever its User-Agent said.
+            name: if !d.name.is_empty() {
+                d.name.clone()
+            } else if !d.kind.is_empty() {
+                d.kind.clone()
+            } else {
+                d.label.clone()
+            }
+            .into(),
+            kind: d.kind.clone().into(),
             label: d.label.clone().into(),
+            ip: d.ip.clone().into(),
+            pin: d.pin.clone().into(),
+            remaining: left(d.remaining).into(),
+            busy: d.busy,
             seen: ago(d.last_seen).into(),
+            // The row a button lands in: five to a row in the Connection card.
+            idx: i as i32,
         })
         .collect();
     set_rows(&w.get_transfer_devices(), devices, |rows| w.set_transfer_devices(rows));
@@ -648,6 +684,26 @@ fn load_history(w: &MainWindow, page: usize) {
 
 fn plural(n: usize, word: &str) -> String {
     if n == 1 { format!("1 {word}") } else { format!("{n} {word}s") }
+}
+
+/// How long a pairing has left, for the device popup. Coarse on purpose: the
+/// number that matters is "today" or "tomorrow", and a ticking countdown would
+/// redraw the list every second to say nothing new.
+fn left(secs: u64) -> String {
+    if secs == 0 {
+        return "expired".into();
+    }
+    let hours = secs / 3600;
+    if hours >= 1 {
+        let minutes = (secs % 3600) / 60;
+        if hours >= 6 || minutes == 0 {
+            plural(hours as usize, "hour")
+        } else {
+            format!("{}, {}", plural(hours as usize, "hour"), plural(minutes as usize, "min"))
+        }
+    } else {
+        plural(((secs + 59) / 60) as usize, "min")
+    }
 }
 
 fn kind_of(name: &str) -> String {

@@ -74,6 +74,9 @@ async function press(ch) {
 
   if (res.ok) { say('Scanning the QR instead skips this step.', false); show('files'); refresh(); }
   else if (res.status === 429) say('Too many wrong PINs. Restart sharing on the desktop.', true);
+  // The PIN was right and the limit is what stopped it, so saying "wrong PIN"
+  // here would send someone off retyping a PIN that works.
+  else if (res.status === 409) say('Ten devices are already paired. Forget one on the desktop.', true);
   else say('That PIN did not work.', true);
 }
 

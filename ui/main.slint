@@ -1456,6 +1456,8 @@ callback cloud-go-home();
     in-out property <int> transfer-sort: 5;
     in-out property <bool> transfer-sort-desc: true;
     in property <int> transfer-port: 8420;
+    /// Mirrors `auth::MAX_DEVICES`; the caption only, the refusal is in Rust.
+    in property <int> transfer-device-max: 10;
     callback transfer-start();
     callback transfer-stop();
     callback transfer-add-files();
@@ -1471,6 +1473,7 @@ callback cloud-go-home();
     callback transfer-set-page(int);
     callback transfer-set-sort(int, bool);
     callback transfer-dismiss-upload(int);
+    callback transfer-rename-device(string, string);
 
     // ── Finances ────────────────────────────────────────────────────────────
     // One `tab` string drives all nine views, the same way `genesis-phase` drives
@@ -3632,6 +3635,7 @@ callback cloud-go-home();
                 sort: root.transfer-sort;
                 sort-desc: root.transfer-sort-desc;
                 port: root.transfer-port;
+                device-max: root.transfer-device-max;
                 start-sharing() => { root.transfer-start(); }
                 stop-sharing() => { root.transfer-stop(); }
                 add-files() => { root.transfer-add-files(); }
@@ -3647,6 +3651,7 @@ callback cloud-go-home();
                 set-page(p) => { root.transfer-set-page(p); }
                 set-sort(c, d) => { root.transfer-set-sort(c, d); }
                 dismiss-upload(id) => { root.transfer-dismiss-upload(id); }
+                rename-device(t, n) => { root.transfer-rename-device(t, n); }
             }
             if active-section == "finances": FinancesPage {
                 width: parent.width; height: parent.height;

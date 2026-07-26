@@ -32,11 +32,23 @@ pub struct FileRow {
     pub bytes: u64,
 }
 
-/// One paired phone.
+/// One paired phone, as the Connection card's round buttons want it.
 pub struct DeviceRow {
     pub token: String,
+    /// "Android · Chrome" — the detail line inside the popup.
     pub label: String,
+    /// The device type: the caption when nothing has been typed, and the icon.
+    pub kind: String,
+    /// The name typed on the desktop, empty when there is none.
+    pub name: String,
+    pub ip: String,
+    /// The PIN this device paired with, which is not necessarily today's.
+    pub pin: String,
     pub last_seen: u64,
+    /// Seconds until it has to pair again.
+    pub remaining: u64,
+    /// Bytes are moving to or from this device right now.
+    pub busy: bool,
 }
 
 /// One upload in flight (or just finished).
@@ -303,6 +315,17 @@ impl TransferService {
             .unwrap_or_else(|| Ipv4Addr::LOCALHOST.to_string())
     }
 
+    /// Name a paired device. The name is clamped to ten characters by
+    /// [`auth::clamp_name`] and persisted, so it survives a restart — it is the
+    /// only thing on that list the user wrote.
+    pub async fn rename_device(&self, token: &str, name: &str) {
+        let Some(st) = self.state() else { return };
+        let Some(stored) = lock(&st.auth).rename(token, name) else { return };
+        if let Some(pool) = &st.pool {
+            let _ = ledger::rename_device(pool, token, &stored).await;
+        }
+    }
+
     pub async fn forget_device(&self, token: &str) {
         let Some(st) = self.state() else { return };
         lock(&st.auth).forget(token);
@@ -349,7 +372,17 @@ impl TransferService {
             let devices: Vec<DeviceRow> = auth
                 .devices(now)
                 .into_iter()
-                .map(|(token, label, last_seen)| DeviceRow { token, label, last_seen })
+                .map(|t| DeviceRow {
+                    remaining: t.remaining(now),
+                    busy: t.busy(now),
+                    last_seen: t.last_seen,
+                    token: t.value,
+                    label: t.label,
+                    kind: t.kind,
+                    name: t.name,
+                    ip: t.ip,
+                    pin: t.pin,
+                })
                 .collect();
             (devices, auth.wrong_attempts())
         };

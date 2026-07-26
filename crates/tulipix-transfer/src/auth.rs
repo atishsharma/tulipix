@@ -10,6 +10,17 @@ pub const MAX_ATTEMPTS: u32 = 5;
 const PAIRING_TTL: u64 = 60;
 /// "48 hours, then re-token."
 pub const TOKEN_TTL: u64 = 48 * 3600;
+/// Phones paired at once. The eleventh is refused rather than quietly evicting
+/// one of the ten: whoever is holding the desktop decides which device loses its
+/// place, and the Connection card is where they do it.
+pub const MAX_DEVICES: usize = 10;
+/// A device name has to fit inside a 56px circle's caption, so it is short by
+/// construction rather than elided at draw time.
+pub const NAME_MAX: usize = 10;
+/// How long a device keeps counting as busy after the last byte moved. Long
+/// enough to bridge the gaps between chunks on a slow link, short enough that the
+/// ring goes out promptly when the transfer really has stopped.
+pub const ACTIVE_WINDOW: u64 = 3;
 
 pub enum PinResult {
     Ok(Token),
@@ -17,28 +28,67 @@ pub enum PinResult {
     LockedOut,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Default)]
 pub struct Token {
     pub value: String,
+    /// What the User-Agent implies, in full: "Android · Chrome".
     pub label: String,
+    /// Just the device type — "Android", "iPhone", "Windows". The Connection
+    /// card's default caption, and what picks the icon.
+    pub kind: String,
+    /// The address it paired from, so a device on the list can be identified
+    /// against the router when two phones report the same type.
+    pub ip: String,
+    /// A name typed on the desktop. Empty means "call it by its type".
+    pub name: String,
+    /// The PIN that was on screen when this device paired. Stored per device
+    /// rather than read live: the session PIN is regenerated at every start, so
+    /// showing today's PIN beside a phone that paired yesterday would be a lie.
+    pub pin: String,
     pub issued: u64,
     pub expires: u64,
     pub last_seen: u64,
+    /// Bytes were moving for this device until this second. Not persisted: a
+    /// transfer cannot survive a restart, so a stored value could only ever be
+    /// wrong.
+    pub active_until: u64,
 }
 
 impl Token {
-    pub fn issue(label: &str, now: u64) -> Self {
+    /// A bare token. The descriptive fields are filled in by [`Auth::remember`],
+    /// which is the only place that knows the request they came from.
+    pub fn issue(now: u64) -> Self {
         Self {
             value: random_hex(32),
-            label: label.to_string(),
             issued: now,
             expires: now + TOKEN_TTL,
             last_seen: now,
+            ..Self::default()
         }
     }
 
     pub fn valid_at(&self, now: u64) -> bool {
         now < self.expires
+    }
+
+    /// What to call it: the typed name, or the device type it reported.
+    pub fn display_name(&self) -> &str {
+        if self.name.is_empty() {
+            if self.kind.is_empty() { "Device type" } else { &self.kind }
+        } else {
+            &self.name
+        }
+    }
+
+    /// Seconds left before it has to type the PIN again. Saturating, so an
+    /// already-expired token reports zero rather than wrapping.
+    pub fn remaining(&self, now: u64) -> u64 {
+        self.expires.saturating_sub(now)
+    }
+
+    /// A file is moving to or from this device right now.
+    pub fn busy(&self, now: u64) -> bool {
+        self.active_until > now
     }
 }
 
@@ -90,7 +140,7 @@ impl Auth {
             return PinResult::LockedOut;
         }
         if constant_time_eq(given.as_bytes(), self.pin.as_bytes()) {
-            PinResult::Ok(Token::issue("device", now))
+            PinResult::Ok(Token::issue(now))
         } else {
             *tries += 1;
             PinResult::Wrong
@@ -113,14 +163,49 @@ impl Auth {
             return None;
         }
         self.pairing = None; // single use
-        Some(Token::issue("device", now))
+        Some(Token::issue(now))
     }
 
-    /// File a freshly issued token under the label the User-Agent implies.
-    pub fn remember(&mut self, mut token: Token, label: &str) -> Token {
+    /// File a freshly issued token under what the request said about itself.
+    ///
+    /// `None` when ten devices are already paired — see [`MAX_DEVICES`]. Checked
+    /// here rather than in the handlers so the PIN form and the QR cannot
+    /// disagree about the limit.
+    pub fn remember(&mut self, mut token: Token, label: &str, kind: &str, ip: &str) -> Option<Token> {
+        if self.tokens.len() >= MAX_DEVICES && !self.tokens.contains_key(&token.value) {
+            return None;
+        }
         token.label = label.to_string();
+        token.kind = kind.to_string();
+        token.ip = ip.to_string();
+        token.pin = self.pin.clone();
         self.tokens.insert(token.value.clone(), token.clone());
-        token
+        Some(token)
+    }
+
+    /// Rename a paired device. Returns the stored name, which is the given one
+    /// trimmed and cut to [`NAME_MAX`] characters — the cut happens here so the
+    /// desktop field and the phone list cannot end up with different names.
+    pub fn rename(&mut self, value: &str, name: &str) -> Option<String> {
+        let name = clamp_name(name);
+        let token = self.tokens.get_mut(value)?;
+        token.name = name.clone();
+        Some(name)
+    }
+
+    /// Note that this device is moving bytes, as of `now`. Called per chunk on
+    /// both directions, which is what makes the ring go out on its own when the
+    /// transfer ends — there is no "finished" event to miss.
+    pub fn mark_active(&mut self, value: &str, now: u64) {
+        if let Some(token) = self.tokens.get_mut(value) {
+            token.active_until = now + ACTIVE_WINDOW;
+        }
+    }
+
+    /// Paired devices, including expired ones? No: valid only, and that is what
+    /// the count is measured against.
+    pub fn device_count(&self, now: u64) -> usize {
+        self.tokens.values().filter(|t| t.valid_at(now)).count()
     }
 
     /// Reinstated from `transfers.db` at start, so a phone paired an hour before
@@ -146,15 +231,12 @@ impl Auth {
         self.tokens.remove(value);
     }
 
-    /// (token, label, last_seen) for every still-valid device, newest first.
-    pub fn devices(&self, now: u64) -> Vec<(String, String, u64)> {
-        let mut out: Vec<(String, String, u64)> = self
-            .tokens
-            .values()
-            .filter(|t| t.valid_at(now))
-            .map(|t| (t.value.clone(), t.label.clone(), t.last_seen))
-            .collect();
-        out.sort_by(|a, b| b.2.cmp(&a.2));
+    /// Every still-valid device, newest first. The whole token: the Connection
+    /// card shows the name, the type, the address, the PIN it paired with and how
+    /// long it has left, and all five come from here.
+    pub fn devices(&self, now: u64) -> Vec<Token> {
+        let mut out: Vec<Token> = self.tokens.values().filter(|t| t.valid_at(now)).cloned().collect();
+        out.sort_by(|a, b| b.last_seen.cmp(&a.last_seen));
         out
     }
 }
@@ -187,10 +269,10 @@ fn random_u64() -> u64 {
     u64::from_le_bytes(buf)
 }
 
-/// A human label for the paired-devices list, from the User-Agent. Nothing here
-/// is trusted — it is a display string only, never a decision.
-pub fn label_for(user_agent: &str) -> String {
-    let os = if user_agent.contains("Android") {
+/// The device type a User-Agent implies. The Connection card's default caption,
+/// and what chooses the icon on the round button.
+pub fn kind_for(user_agent: &str) -> &'static str {
+    if user_agent.contains("Android") {
         "Android"
     } else if user_agent.contains("iPhone") {
         "iPhone"
@@ -204,7 +286,19 @@ pub fn label_for(user_agent: &str) -> String {
         "Linux"
     } else {
         "Device"
-    };
+    }
+}
+
+/// A device name as it will be stored: trimmed, and cut to [`NAME_MAX`]
+/// characters rather than bytes — ten emoji is ten characters.
+pub fn clamp_name(raw: &str) -> String {
+    raw.trim().chars().take(NAME_MAX).collect::<String>().trim_end().to_string()
+}
+
+/// A human label for the paired-devices list, from the User-Agent. Nothing here
+/// is trusted — it is a display string only, never a decision.
+pub fn label_for(user_agent: &str) -> String {
+    let os = kind_for(user_agent);
     // Order matters: Edge and Chrome both claim Safari, Edge also claims Chrome.
     let browser = if user_agent.contains("Edg/") {
         "Edge"
@@ -301,18 +395,24 @@ mod tests {
     fn device_token_lives_forty_eight_hours() {
         const H: u64 = 3600;
         let issued = at(0);
-        let tok = Token::issue("Android · Chrome", issued);
+        let tok = Token::issue(issued);
         assert!(tok.valid_at(issued + 47 * H), "rejected inside the window");
         assert!(!tok.valid_at(issued + 49 * H), "accepted past the window");
         // Exactly 48h is the boundary: expired, not valid.
         assert!(!tok.valid_at(issued + 48 * H));
     }
 
+    /// One paired device, as the handlers would file it.
+    fn pair(a: &mut Auth, ip: &str, now: u64) -> Token {
+        a.remember(Token::issue(now), "Android · Chrome", "Android", ip)
+            .expect("device list was full")
+    }
+
     #[test]
     fn a_remembered_token_opens_the_api_until_it_expires() {
         const H: u64 = 3600;
         let mut a = Auth::new(at(0));
-        let tok = a.remember(Token::issue("device", at(0)), "Android · Chrome");
+        let tok = pair(&mut a, "1.2.3.4", at(0));
         assert!(a.check(&tok.value, at(1)).is_some());
         assert!(a.check(&tok.value, at(0) + 49 * H).is_none(), "expired token accepted");
         assert!(a.check("not-a-token", at(1)).is_none());
@@ -321,11 +421,77 @@ mod tests {
     #[test]
     fn forgetting_a_device_refuses_it_immediately() {
         let mut a = Auth::new(at(0));
-        let tok = a.remember(Token::issue("device", at(0)), "Android · Chrome");
+        let tok = pair(&mut a, "1.2.3.4", at(0));
         assert_eq!(a.devices(at(1)).len(), 1);
         a.forget(&tok.value);
         assert!(a.check(&tok.value, at(1)).is_none());
         assert!(a.devices(at(1)).is_empty());
+    }
+
+    #[test]
+    fn a_paired_device_carries_what_the_card_shows() {
+        let mut a = Auth::new(at(0));
+        let pin = a.pin().to_string();
+        let tok = pair(&mut a, "192.168.1.31", at(0));
+        assert_eq!(tok.kind, "Android");
+        assert_eq!(tok.ip, "192.168.1.31");
+        // The PIN it paired with, not whatever the next session generates.
+        assert_eq!(tok.pin, pin);
+        // No name typed yet, so the button is captioned by type.
+        assert_eq!(tok.display_name(), "Android");
+        assert_eq!(tok.remaining(at(0) + 3600), TOKEN_TTL - 3600);
+    }
+
+    #[test]
+    fn the_eleventh_device_is_refused_rather_than_evicting_one_of_the_ten() {
+        let mut a = Auth::new(at(0));
+        for i in 0..MAX_DEVICES {
+            assert!(
+                a.remember(Token::issue(at(0)), "Android · Chrome", "Android", &format!("10.0.0.{i}"))
+                    .is_some(),
+                "device {i} was refused inside the limit"
+            );
+        }
+        assert_eq!(a.device_count(at(1)), MAX_DEVICES);
+        assert!(
+            a.remember(Token::issue(at(0)), "Android · Chrome", "Android", "10.0.0.99").is_none(),
+            "an eleventh device was let in"
+        );
+        // Forgetting one makes room again — that is the whole point of refusing
+        // rather than evicting.
+        let first = a.devices(at(1))[0].value.clone();
+        a.forget(&first);
+        assert!(a.remember(Token::issue(at(0)), "Android · Chrome", "Android", "10.0.0.99").is_some());
+    }
+
+    #[test]
+    fn a_transferring_device_reads_busy_until_the_bytes_stop() {
+        let mut a = Auth::new(at(0));
+        let tok = pair(&mut a, "1.2.3.4", at(0));
+        assert!(!a.devices(at(1))[0].busy(at(1)), "busy before anything moved");
+
+        a.mark_active(&tok.value, at(10));
+        assert!(a.devices(at(11))[0].busy(at(11)));
+        // The window lapses on its own: there is no end-of-transfer event to
+        // miss, which is the whole reason it is a window.
+        assert!(!a.devices(at(20))[0].busy(at(10 + ACTIVE_WINDOW)));
+        // An unknown token is ignored rather than creating an entry.
+        a.mark_active("not-a-token", at(10));
+        assert_eq!(a.devices(at(11)).len(), 1);
+    }
+
+    #[test]
+    fn a_device_name_is_trimmed_and_cut_to_ten_characters() {
+        let mut a = Auth::new(at(0));
+        let tok = pair(&mut a, "1.2.3.4", at(0));
+        assert_eq!(a.rename(&tok.value, "  Kitchen tablet  ").as_deref(), Some("Kitchen ta"));
+        assert_eq!(a.devices(at(1))[0].display_name(), "Kitchen ta");
+        // Cleared back to empty: the caption falls back to the device type.
+        a.rename(&tok.value, "   ");
+        assert_eq!(a.devices(at(1))[0].display_name(), "Android");
+        // Characters, not bytes.
+        assert_eq!(clamp_name("अआइईउऊऋएऐओऔ").chars().count(), NAME_MAX);
+        assert!(a.rename("not-a-token", "Nope").is_none());
     }
 
     #[test]

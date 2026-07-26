@@ -20,7 +20,7 @@ use axum::{
 };
 use sqlx::SqlitePool;
 
-use crate::auth::{label_for, Auth, PinResult, Token, TOKEN_TTL};
+use crate::auth::{kind_for, label_for, Auth, PinResult, Token, MAX_DEVICES, TOKEN_TTL};
 use crate::share::Tray;
 use crate::{inbox, ledger, range};
 
@@ -146,13 +146,19 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
     if let Some(pool) = &cfg.pool {
         let _ = ledger::forget_expired(pool, now as i64).await;
         if let Ok(rows) = ledger::devices(pool, now as i64).await {
-            for (value, label, last_seen, expires) in rows {
+            for d in rows {
                 auth.restore(Token {
-                    value,
-                    label,
-                    issued: last_seen as u64,
-                    expires: expires as u64,
-                    last_seen: last_seen as u64,
+                    value: d.token,
+                    label: d.label,
+                    kind: d.kind,
+                    ip: d.ip,
+                    name: d.name,
+                    pin: d.pin,
+                    issued: d.last_seen as u64,
+                    expires: d.expires as u64,
+                    last_seen: d.last_seen as u64,
+                    // Nothing can be in flight before the server is listening.
+                    active_until: 0,
                 });
             }
         }
@@ -204,6 +210,28 @@ fn asset(body: &'static str, mime: &'static str) -> Response {
     ([(header::CONTENT_TYPE, mime)], body).into_response()
 }
 
+/// The one page that is not the app: a valid pairing key arriving when ten
+/// devices are already paired. Its own page rather than the PIN form, because the
+/// PIN is not the problem and there is nothing to type.
+fn full_page() -> Response {
+    let body = format!(
+        "<!doctype html><meta name=viewport content=\"width=device-width,initial-scale=1\">\
+         <title>Tulipix — device limit</title>\
+         <style>body{{font:16px/1.5 system-ui,sans-serif;margin:0;min-height:100vh;display:grid;\
+         place-items:center;background:#14110f;color:#f5efe9}}div{{max-width:22rem;padding:1.5rem;\
+         text-align:center}}b{{color:#f0a35e}}</style>\
+         <div><p><b>{MAX_DEVICES} devices are already paired.</b></p>\
+         <p>Open Transfer on the desktop, tap a device in the Connection card and forget it, \
+         then scan the code again.</p></div>"
+    );
+    (
+        StatusCode::CONFLICT,
+        [(header::CONTENT_TYPE, "text/html; charset=utf-8")],
+        body,
+    )
+        .into_response()
+}
+
 fn json(body: String) -> Response {
     (
         [
@@ -233,8 +261,16 @@ fn token_in(headers: &HeaderMap) -> Option<String> {
 }
 
 fn authorised(st: &AppState, headers: &HeaderMap) -> bool {
-    let Some(value) = token_in(headers) else { return false };
-    lock(&st.auth).check(&value, now_secs()).is_some()
+    caller(st, headers).is_some()
+}
+
+/// The token value behind the request, if it is one we issued and still good.
+///
+/// The transfer handlers need the value itself, not just a yes: it is how the
+/// Connection card knows which of the ten circles to ring while bytes move.
+fn caller(st: &AppState, headers: &HeaderMap) -> Option<String> {
+    let value = token_in(headers)?;
+    lock(&st.auth).check(&value, now_secs()).map(|_| value)
 }
 
 fn user_agent(headers: &HeaderMap) -> String {
@@ -243,6 +279,15 @@ fn user_agent(headers: &HeaderMap) -> String {
         .and_then(|v| v.to_str().ok())
         .map(label_for)
         .unwrap_or_else(|| "Device · Browser".to_string())
+}
+
+/// Just the device type, for the caption and the icon on the round button.
+fn device_kind(headers: &HeaderMap) -> &'static str {
+    headers
+        .get(header::USER_AGENT)
+        .and_then(|v| v.to_str().ok())
+        .map(kind_for)
+        .unwrap_or("Device")
 }
 
 fn peer_ip(peer: SocketAddr) -> String {
@@ -256,6 +301,7 @@ fn peer_ip(peer: SocketAddr) -> String {
 /// and the phone never sees the PIN form.
 async fn page(
     State(st): State<Shared>,
+    ConnectInfo(peer): ConnectInfo<SocketAddr>,
     Query(q): Query<std::collections::HashMap<String, String>>,
     headers: HeaderMap,
 ) -> Response {
@@ -264,24 +310,29 @@ async fn page(
 
     let now = now_secs();
     let label = user_agent(&headers);
+    let kind = device_kind(&headers);
+    let ip = peer_ip(peer);
+    // Three outcomes, not two: a bad key falls through to the PIN form, but a
+    // good key with no room left has to say so — otherwise scanning the QR looks
+    // like it worked and every later call answers 401.
     let issued = {
         let mut auth = lock(&st.auth);
         match auth.try_pairing_key(key, now) {
-            Some(token) => Some(auth.remember(token, &label)),
-            None => None,
+            Some(token) => match auth.remember(token, &label, kind, &ip) {
+                Some(token) => Ok(token),
+                None => Err(true),
+            },
+            None => Err(false),
         }
     };
-    let Some(token) = issued else { return body };
+    let token = match issued {
+        Ok(t) => t,
+        Err(true) => return full_page(),
+        Err(false) => return body,
+    };
 
     if let Some(pool) = &st.pool {
-        let _ = ledger::remember_device(
-            pool,
-            &token.value,
-            &token.label,
-            token.issued as i64,
-            token.expires as i64,
-        )
-        .await;
+        let _ = ledger::remember_device(pool, &token, token.issued as i64).await;
     }
 
     let mut res = body;
@@ -314,11 +365,17 @@ async fn auth_post(
     let now = now_secs();
     let ip = peer_ip(peer);
     let label = user_agent(&headers);
+    let kind = device_kind(&headers);
 
     let outcome = {
         let mut auth = lock(&st.auth);
         match auth.try_pin(&ip, given, now) {
-            PinResult::Ok(token) => Ok(auth.remember(token, &label)),
+            PinResult::Ok(token) => match auth.remember(token, &label, kind, &ip) {
+                Some(token) => Ok(token),
+                // 409, not 401: the PIN was right. Ten devices are paired and
+                // one of them has to be forgotten on the desktop.
+                None => Err(StatusCode::CONFLICT),
+            },
             PinResult::Wrong => Err(StatusCode::UNAUTHORIZED),
             // 429, not 401: the difference is what the page tells the user.
             PinResult::LockedOut => Err(StatusCode::TOO_MANY_REQUESTS),
@@ -331,14 +388,7 @@ async fn auth_post(
     };
 
     if let Some(pool) = &st.pool {
-        let _ = ledger::remember_device(
-            pool,
-            &token.value,
-            &token.label,
-            token.issued as i64,
-            token.expires as i64,
-        )
-        .await;
+        let _ = ledger::remember_device(pool, &token, token.issued as i64).await;
     }
 
     let mut res = StatusCode::OK.into_response();
@@ -397,9 +447,9 @@ async fn download(
     Path(id): Path<u64>,
     headers: HeaderMap,
 ) -> Response {
-    if !authorised(&st, &headers) {
+    let Some(token) = caller(&st, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
     let (name, path) = {
         let tray = lock(&st.tray);
         let Some(item) = tray.by_id(id) else {
@@ -441,7 +491,10 @@ async fn download(
         st.record(ledger::Row::sent(&name, len as i64, &peer_ip(peer))).await;
     }
 
-    let body = Body::from_stream(file_stream(file, span));
+    // The stream stamps the device on every chunk, so the ring in the Connection
+    // card follows the actual bytes rather than the request that started them —
+    // a 200 MB video keeps the ring lit for as long as it is really sending.
+    let body = Body::from_stream(file_stream(file, span, st.clone(), token));
     let disposition = format!("attachment; filename=\"{}\"", name.replace('"', "'"));
     let mut res = Response::new(body);
     {
@@ -470,22 +523,29 @@ fn insert(headers: &mut HeaderMap, name: header::HeaderName, value: &str) {
 fn file_stream(
     file: tokio::fs::File,
     span: u64,
+    st: Shared,
+    token: String,
 ) -> impl futures_util::stream::Stream<Item = Result<Vec<u8>, std::io::Error>> {
     use tokio::io::AsyncReadExt as _;
-    futures_util::stream::unfold((file, span), |(mut file, left)| async move {
-        if left == 0 {
-            return None;
-        }
-        let want = CHUNK.min(left as usize);
-        let mut buf = vec![0u8; want];
-        match file.read(&mut buf).await {
-            // A short file under a stale length: stop rather than pad with zeros.
-            Ok(0) => None,
-            Ok(n) => {
-                buf.truncate(n);
-                Some((Ok(buf), (file, left - n as u64)))
+    futures_util::stream::unfold((file, span), move |(mut file, left)| {
+        let st = st.clone();
+        let token = token.clone();
+        async move {
+            if left == 0 {
+                return None;
             }
-            Err(e) => Some((Err(e), (file, 0))),
+            let want = CHUNK.min(left as usize);
+            let mut buf = vec![0u8; want];
+            match file.read(&mut buf).await {
+                // A short file under a stale length: stop rather than pad with zeros.
+                Ok(0) => None,
+                Ok(n) => {
+                    buf.truncate(n);
+                    lock(&st.auth).mark_active(&token, now_secs());
+                    Some((Ok(buf), (file, left - n as u64)))
+                }
+                Err(e) => Some((Err(e), (file, 0))),
+            }
         }
     })
 }
@@ -499,9 +559,9 @@ async fn upload(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    if !authorised(&st, &headers) {
+    let Some(token) = caller(&st, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
 
     let dir = lock(&st.inbox).clone();
     let Ok(mut sink) = inbox::Sink::create(&dir, &name).await else {
@@ -544,6 +604,7 @@ async fn upload(
             return StatusCode::INSUFFICIENT_STORAGE.into_response();
         }
         progress(&st, id, sink.written);
+        lock(&st.auth).mark_active(&token, now_secs());
     }
 
     let written = sink.written;

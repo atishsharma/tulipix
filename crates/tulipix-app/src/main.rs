@@ -216,6 +216,20 @@ fn main() -> Result<()> {
         .ok().map(|img| { let rgba = img.thumbnail(64, 64).to_rgba8(); let (w, h) = rgba.dimensions(); (rgba.into_raw(), w, h) });
     let tray_ok = tulipix_platform::init_tray(tray_icon_rgba);
     TRAY_ACTIVE.store(tray_ok, std::sync::atomic::Ordering::Relaxed);
+    // Desktop banners want the icon as a file: `notify-send -i tulipix` goes through
+    // the icon theme, which has no such entry until the app is installed, so a run
+    // from the build directory shows a broken image. Same bytes as the tray, written
+    // once into the cache.
+    if let Some(dir) = tulipix_core::paths::cache_dir() {
+        let path = dir.join(if festival { "notify-india.png" } else { "notify.png" });
+        if !path.exists() {
+            let _ = std::fs::create_dir_all(&dir);
+            let _ = std::fs::write(&path, icon_bytes);
+        }
+        if path.exists() {
+            tulipix_platform::notify::set_icon(path);
+        }
+    }
 
     // ── Embedded player (np.p3.player.*) ── libmpv renders into a GL texture
     // presented by Slint. The rendering notifier is the only place the GL
