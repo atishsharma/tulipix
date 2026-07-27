@@ -179,6 +179,7 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
         .route("/", get(page))
         .route("/app.css", get(css))
         .route("/app.js", get(js))
+        .route("/logo.png", get(logo))
         .route("/auth", post(auth_post))
         .route("/api/files", get(files))
         .route("/api/status", get(status))
@@ -350,6 +351,21 @@ async fn js() -> Response {
     asset(include_str!("web/app.js"), "text/javascript; charset=utf-8")
 }
 
+/// The app mark, at 96px. Serves as both the favicon and the header logo, so a
+/// tab left open on the phone is identifiable among a row of blank favicons.
+/// Checked in already downscaled — the 819 KB source in `resources/appicons` is
+/// an absurd thing to hand a phone for a 26px image.
+async fn logo() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        include_bytes!("web/logo.png").as_slice(),
+    )
+        .into_response()
+}
+
 /// The body is the PIN and nothing else — six characters, so a request body of
 /// any size is refused before it is compared.
 async fn auth_post(
@@ -488,7 +504,8 @@ async fn download(
     // `Range: bytes=N-` with N > 0, and one row per resume would turn a flaky
     // Wi-Fi link into a page of identical entries.
     if start == 0 {
-        st.record(ledger::Row::sent(&name, len as i64, &peer_ip(peer))).await;
+        let from = path.to_string_lossy().into_owned();
+        st.record(ledger::Row::sent(&name, &from, len as i64, &peer_ip(peer))).await;
     }
 
     // The stream stamps the device on every chunk, so the ring in the Connection

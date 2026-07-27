@@ -155,6 +155,20 @@ impl Auth {
         key
     }
 
+    /// Is the code currently on screen still worth showing?
+    ///
+    /// False once it has been spent or once it is closer to expiry than half its
+    /// life. Both cases used to be invisible: the QR was drawn once per address
+    /// and never again, so the first phone to scan it consumed the key and every
+    /// later scan — including the same phone re-pairing after being forgotten —
+    /// landed on the PIN form with the desktop still showing a dead code.
+    pub fn pairing_live(&self, now: u64) -> bool {
+        match &self.pairing {
+            Some((_, issued)) => now.saturating_sub(*issued) < PAIRING_TTL / 2,
+            None => false,
+        }
+    }
+
     pub fn try_pairing_key(&mut self, given: &str, now: u64) -> Option<Token> {
         let (key, issued) = self.pairing.as_ref()?;
         let fresh = now.saturating_sub(*issued) < PAIRING_TTL;
@@ -378,6 +392,25 @@ mod tests {
         let key = a.new_pairing_key(at(0));
         assert!(a.try_pairing_key(&key, at(10)).is_some());
         assert!(a.try_pairing_key(&key, at(11)).is_none(), "key was reusable");
+    }
+
+    #[test]
+    fn a_spent_or_ageing_key_reports_itself_dead_so_the_qr_gets_redrawn() {
+        let mut a = Auth::new(at(0));
+        assert!(!a.pairing_live(at(0)), "live before a key was ever minted");
+
+        let key = a.new_pairing_key(at(0));
+        assert!(a.pairing_live(at(0)));
+        // Past half the TTL it is stale: the code on screen must always have
+        // enough life left to walk to the phone and scan it.
+        assert!(!a.pairing_live(at(31)));
+
+        // Spending it is the case that actually bit — pair, forget, scan again.
+        let mut b = Auth::new(at(0));
+        let key2 = b.new_pairing_key(at(0));
+        assert!(b.try_pairing_key(&key2, at(1)).is_some());
+        assert!(!b.pairing_live(at(1)), "a spent key still claimed to be live");
+        let _ = key;
     }
 
     #[test]

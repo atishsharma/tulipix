@@ -5,13 +5,26 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="light dark">
 <title>Tulipix Transfer</title>
+<link rel="icon" href="/logo.png" type="image/png">
+<link rel="apple-touch-icon" href="/logo.png">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
 
 <header class="appbar">
+  <img class="logo" src="/logo.png" alt="" width="26" height="26">
   <span class="brand">Tulipix Transfer</span>
+  <span class="spacer"></span>
+  <!-- The address this phone is actually talking to, read off location.host —
+       the desktop never has to tell us, and it is the one thing worth checking
+       when two desktops are sharing on the same network. -->
+  <span class="addr" id="addr" hidden></span>
   <span class="chip" id="chip" hidden>paired</span>
+  <button class="theme" type="button" id="themeBtn" hidden
+          aria-label="Switch between light and dark">
+    <svg class="i-sun" viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4.2"/><path d="M12 2.2v2.4M12 19.4v2.4M2.2 12h2.4M19.4 12h2.4M5 5l1.7 1.7M17.3 17.3 19 19M19 5l-1.7 1.7M6.7 17.3 5 19"/></svg>
+    <svg class="i-moon" viewBox="0 0 24 24" aria-hidden="true"><path d="M20 14.5A8.2 8.2 0 0 1 9.5 4 8.3 8.3 0 1 0 20 14.5Z"/></svg>
+  </button>
 </header>
 
 <main class="body">
@@ -26,11 +39,23 @@
 
   <!-- 2 — what the desktop is offering -->
   <section id="viewFiles" hidden>
-    <div class="section-label" id="filesLabel">Shared right now</div>
+    <div class="listbar">
+      <label class="all">
+        <input type="checkbox" id="filesAll">
+        <span>Select all</span>
+      </label>
+      <span class="section-label" id="filesLabel">Shared right now</span>
+    </div>
     <ul class="files" id="files"></ul>
     <p class="empty" id="filesEmpty" hidden>
       Nothing is being shared yet. Add files on the desktop and they appear here.
     </p>
+    <div class="actionbar" id="getBar" hidden>
+      <button class="go go-dl" type="button" id="getBtn">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v11M7.5 10.5 12 15l4.5-4.5M4.5 19.5h15"/></svg>
+        <span id="getLabel">Get</span>
+      </button>
+    </div>
   </section>
 
   <!-- 3 — sending files the other way -->
@@ -41,16 +66,47 @@
       <button class="drop-btn" type="button" id="pickBtn">Choose files</button>
       <input type="file" id="picker" multiple hidden>
     </div>
-    <div class="section-label" id="sendingLabel" hidden>Sending</div>
+
+    <!-- Picked, not yet sent. Nothing leaves the phone until Send is pressed. -->
+    <div class="listbar" id="queueBar" hidden>
+      <label class="all">
+        <input type="checkbox" id="queueAll">
+        <span>Select all</span>
+      </label>
+      <span class="section-label">Ready to send</span>
+      <button class="linkbtn" type="button" id="queueClear">Clear</button>
+    </div>
+    <ul class="files" id="queue"></ul>
+
+    <div class="listbar" id="sendingBar" hidden>
+      <span class="section-label">Sending</span>
+      <button class="linkbtn" type="button" id="clearDone">Clear all</button>
+    </div>
     <div class="files" id="uploads"></div>
+
     <div class="dest">Arriving in the desktop's inbox — nothing is sorted or renamed.</div>
+
+    <div class="actionbar" id="sendBar" hidden>
+      <button class="go go-up" type="button" id="sendBtn">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5v-11M7.5 13.5 12 9l4.5 4.5M4.5 4.5h15"/></svg>
+        <span id="sendLabel">Send</span>
+      </button>
+    </div>
   </section>
 
 </main>
 
 <nav class="tabs" id="tabs" hidden>
-  <button class="tab" type="button" data-view="files" aria-selected="true">Download</button>
-  <button class="tab" type="button" data-view="upload" aria-selected="false">Upload</button>
+  <div class="tabwrap">
+    <button class="tab tab-dl" type="button" data-view="files" aria-selected="true">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v11M7.5 10.5 12 15l4.5-4.5M4.5 19.5h15"/></svg>
+      <span>Download</span>
+    </button>
+    <button class="tab tab-up" type="button" data-view="upload" aria-selected="false">
+      <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 20.5v-11M7.5 13.5 12 9l4.5 4.5M4.5 4.5h15"/></svg>
+      <span>Upload</span>
+    </button>
+  </div>
 </nav>
 
 <script src="/app.js"></script>

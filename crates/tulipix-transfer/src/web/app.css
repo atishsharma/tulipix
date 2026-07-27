@@ -3,13 +3,20 @@
    orange accent — the one hue the desktop's six sections leave free.
 
    Two roles only. Everything that is data — PIN digits, byte counts, percents —
-   is monospaced and tabular, because those are the numbers read across rows. */
+   is monospaced and tabular, because those are the numbers read across rows.
+
+   Theming is three-layer: the light values below are the default, the media
+   query flips them for a phone set to dark, and an explicit [data-theme] on
+   <html> beats both — that last layer is what the header toggle writes, and it
+   has to win in *both* directions or the button does nothing on half the
+   phones. */
 
 :root {
   --ground:      #ede9f8;
   --ground-deep: #ddd6f0;
   --panel:       #ffffff;
   --panel-2:     #f6f3fd;
+  --glass:       rgba(255, 255, 255, 0.62);
   --ink:         #17132b;
   --ink-soft:    #55506b;
   --ink-faint:   #8b86a1;
@@ -17,6 +24,10 @@
   --line-strong: rgba(26, 16, 64, 0.22);
   --accent:      #ea580c;
   --accent-wash: rgba(249, 115, 22, 0.10);
+  --dl:          #0284c7;
+  --dl-wash:     rgba(2, 132, 199, 0.10);
+  --up:          #ea580c;
+  --up-wash:     rgba(249, 115, 22, 0.10);
   --ok:          #0f9d63;
   --warn:        #b45309;
   --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
@@ -28,6 +39,7 @@
     --ground-deep: #000000;
     --panel:       #0d0f22;
     --panel-2:     #141733;
+    --glass:       rgba(20, 23, 51, 0.55);
     --ink:         #f8faff;
     --ink-soft:    #b3b6cf;
     --ink-faint:   #7b7e9c;
@@ -35,9 +47,55 @@
     --line-strong: rgba(255, 255, 255, 0.20);
     --accent:      #f97316;
     --accent-wash: rgba(249, 115, 22, 0.14);
+    --dl:          #38bdf8;
+    --dl-wash:     rgba(56, 189, 248, 0.14);
+    --up:          #f97316;
+    --up-wash:     rgba(249, 115, 22, 0.14);
     --ok:          #34d399;
     --warn:        #fbbf24;
   }
+}
+
+:root[data-theme="light"] {
+  --ground:      #ede9f8;
+  --ground-deep: #ddd6f0;
+  --panel:       #ffffff;
+  --panel-2:     #f6f3fd;
+  --glass:       rgba(255, 255, 255, 0.62);
+  --ink:         #17132b;
+  --ink-soft:    #55506b;
+  --ink-faint:   #8b86a1;
+  --line:        rgba(26, 16, 64, 0.12);
+  --line-strong: rgba(26, 16, 64, 0.22);
+  --accent:      #ea580c;
+  --accent-wash: rgba(249, 115, 22, 0.10);
+  --dl:          #0284c7;
+  --dl-wash:     rgba(2, 132, 199, 0.10);
+  --up:          #ea580c;
+  --up-wash:     rgba(249, 115, 22, 0.10);
+  --ok:          #0f9d63;
+  --warn:        #b45309;
+}
+
+:root[data-theme="dark"] {
+  --ground:      #050614;
+  --ground-deep: #000000;
+  --panel:       #0d0f22;
+  --panel-2:     #141733;
+  --glass:       rgba(20, 23, 51, 0.55);
+  --ink:         #f8faff;
+  --ink-soft:    #b3b6cf;
+  --ink-faint:   #7b7e9c;
+  --line:        rgba(255, 255, 255, 0.10);
+  --line-strong: rgba(255, 255, 255, 0.20);
+  --accent:      #f97316;
+  --accent-wash: rgba(249, 115, 22, 0.14);
+  --dl:          #38bdf8;
+  --dl-wash:     rgba(56, 189, 248, 0.14);
+  --up:          #f97316;
+  --up-wash:     rgba(249, 115, 22, 0.14);
+  --ok:          #34d399;
+  --warn:        #fbbf24;
 }
 
 * { box-sizing: border-box; }
@@ -62,12 +120,24 @@ body {
 .appbar {
   display: flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 10px;
-  padding: 16px 18px 12px;
+  gap: 8px;
+  padding: 14px 16px 10px;
   flex: none;
 }
-.brand { font-size: 17px; font-weight: 640; letter-spacing: -0.015em; }
+.logo { flex: none; border-radius: 7px; display: block; }
+.brand { font-size: 16px; font-weight: 640; letter-spacing: -0.015em; white-space: nowrap; }
+.spacer { flex: 1; }
+.addr {
+  font-family: var(--mono);
+  font-size: 10.5px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ink-faint);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 42vw;
+}
+.addr[hidden], .chip[hidden], .theme[hidden] { display: none; }
 .chip {
   font-family: var(--mono);
   font-size: 10.5px;
@@ -76,7 +146,26 @@ body {
   background: var(--accent-wash);
   color: var(--accent);
   white-space: nowrap;
+  flex: none;
 }
+.theme {
+  flex: none;
+  width: 30px; height: 30px;
+  display: grid; place-items: center;
+  border-radius: 999px;
+  border: 1px solid var(--line);
+  background: var(--panel);
+  color: var(--ink-soft);
+  cursor: pointer;
+  padding: 0;
+  -webkit-tap-highlight-color: transparent;
+}
+.theme svg { width: 16px; height: 16px; fill: none; stroke: currentColor; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }
+/* One button, two glyphs: show the one for the theme you would switch *to*. */
+.theme .i-moon { display: none; }
+.theme[data-next="dark"] .i-sun { display: none; }
+.theme[data-next="dark"] .i-moon { display: block; }
+.theme:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 
 .body {
   flex: 1;
@@ -141,8 +230,24 @@ body {
   letter-spacing: 0.14em;
   text-transform: uppercase;
   color: var(--ink-faint);
+}
+.listbar {
+  display: flex;
+  align-items: center;
+  gap: 12px;
   margin: 18px 0 10px;
 }
+.listbar[hidden] { display: none; }
+.listbar .section-label { flex: 1; text-align: right; }
+.all { display: flex; align-items: center; gap: 7px; font-size: 12.5px; color: var(--ink-soft); cursor: pointer; }
+.all input { width: 17px; height: 17px; accent-color: var(--accent); margin: 0; }
+.linkbtn {
+  border: none; background: none; padding: 0;
+  font-size: 12px; font-weight: 560; color: var(--warn);
+  cursor: pointer; flex: none;
+}
+.linkbtn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+
 .files { display: flex; flex-direction: column; gap: 9px; margin: 0; padding: 0; list-style: none; }
 .empty { font-size: 13.5px; line-height: 1.6; color: var(--ink-faint); margin: 4px 0; }
 
@@ -154,7 +259,9 @@ body {
   border: 1px solid var(--line);
   border-radius: 13px;
   background: var(--panel);
+  cursor: pointer;
 }
+.file input { width: 18px; height: 18px; flex: none; accent-color: var(--accent); margin: 0; }
 .file-kind {
   width: 32px; height: 32px; flex: none;
   border-radius: 9px;
@@ -165,27 +272,59 @@ body {
   font-size: 9px;
 }
 .file-text { min-width: 0; flex: 1; }
-.file-name { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* Wrap rather than elide. A long name used to run under the Get button; there
+   is no button in the row now, but a name is still the thing worth reading in
+   full, and three lines of it is cheaper than a truncated one. */
+.file-name {
+  font-size: 13.5px;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
 .file-meta {
   font-family: var(--mono);
   font-size: 11px;
   font-variant-numeric: tabular-nums;
   color: var(--ink-faint);
-  margin-top: 2px;
+  margin-top: 3px;
 }
-.get {
-  flex: none;
-  font-size: 12px;
-  font-weight: 560;
-  padding: 8px 13px;
-  border-radius: 9px;
-  border: 1px solid var(--accent);
-  background: transparent;
-  color: var(--accent);
+
+/* ---- the one button that acts on the ticked rows ---- */
+.actionbar {
+  position: sticky;
+  bottom: 0;
+  margin: 14px -18px -18px;
+  padding: 12px 18px calc(12px + env(safe-area-inset-bottom));
+  background: var(--glass);
+  backdrop-filter: blur(16px) saturate(180%);
+  -webkit-backdrop-filter: blur(16px) saturate(180%);
+  border-top: 1px solid var(--line);
+}
+.actionbar[hidden] { display: none; }
+.go {
+  width: 100%;
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  padding: 14px 18px;
+  border: none;
+  border-radius: 13px;
+  font-size: 14.5px;
+  font-weight: 680;
+  letter-spacing: -0.01em;
+  color: #fff;
   cursor: pointer;
-  text-decoration: none;
+  -webkit-tap-highlight-color: transparent;
 }
-.get:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.go svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.go-dl { background: var(--dl); box-shadow: 0 6px 18px -8px var(--dl); }
+.go-up { background: var(--up); box-shadow: 0 6px 18px -8px var(--up); }
+.go:active { filter: brightness(0.88); }
+.go:disabled { opacity: 0.45; cursor: default; box-shadow: none; }
+.go:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
 
 /* ---- upload ---- */
 .drop {
@@ -217,7 +356,7 @@ body {
   padding: 12px; border: 1px solid var(--line); border-radius: 13px; background: var(--panel);
 }
 .up-head { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
-.up-name { font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.up-name { font-size: 13.5px; min-width: 0; overflow-wrap: anywhere; word-break: break-word; }
 .up-pct {
   font-family: var(--mono);
   font-size: 11.5px;
@@ -248,30 +387,49 @@ body {
   line-height: 1.5;
 }
 
-/* ---- tab bar ---- */
+/* ---- tab bar ----
+   A frosted rail with two pills in it. The selected one fills with its own
+   colour and takes white text, which is the only treatment that stays legible
+   over whatever the blur picks up from the page behind it — a tinted label on
+   frosted glass washes out at exactly the moment it matters. */
 .tabs {
-  display: flex;
-  border-top: 1px solid var(--line);
   flex: none;
-  background: var(--panel);
-  padding-bottom: env(safe-area-inset-bottom);
+  padding: 8px 14px calc(8px + env(safe-area-inset-bottom));
+  background: var(--glass);
+  backdrop-filter: blur(18px) saturate(180%);
+  -webkit-backdrop-filter: blur(18px) saturate(180%);
+  border-top: 1px solid var(--line);
 }
 .tabs[hidden] { display: none; }
+.tabwrap {
+  display: flex;
+  gap: 6px;
+  padding: 5px;
+  border-radius: 15px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  max-width: 640px;
+  margin: 0 auto;
+}
 .tab {
   flex: 1;
-  padding: 14px 0 16px;
-  text-align: center;
-  font-size: 12.5px;
-  font-weight: 560;
-  color: var(--ink-faint);
-  background: none;
+  display: flex; align-items: center; justify-content: center; gap: 8px;
+  padding: 11px 0;
   border: none;
+  border-radius: 11px;
+  background: transparent;
+  font-size: 13.5px;
+  font-weight: 660;
+  letter-spacing: -0.01em;
+  color: var(--ink-soft);
   cursor: pointer;
-  border-top: 2px solid transparent;
-  margin-top: -1px;
+  -webkit-tap-highlight-color: transparent;
+  transition: background .16s ease, color .16s ease;
 }
-.tab[aria-selected="true"] { color: var(--accent); border-top-color: var(--accent); }
-.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -3px; }
+.tab svg { width: 17px; height: 17px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.tab-dl[aria-selected="true"] { background: var(--dl); color: #fff; box-shadow: 0 4px 14px -6px var(--dl); }
+.tab-up[aria-selected="true"] { background: var(--up); color: #fff; box-shadow: 0 4px 14px -6px var(--up); }
+.tab:focus-visible { outline: 2px solid var(--ink); outline-offset: -3px; }
 
 @media (prefers-reduced-motion: reduce) {
   * { transition: none !important; animation: none !important; }

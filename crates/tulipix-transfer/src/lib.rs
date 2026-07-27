@@ -303,6 +303,15 @@ impl TransferService {
         format!("http://{}:{}/?k={key}", self.address(), run.port)
     }
 
+    /// Whether the key inside the QR currently on screen is still good. False
+    /// means the code has to be re-minted and redrawn — see
+    /// [`auth::Auth::pairing_live`] for why a code drawn once per address is not
+    /// enough.
+    pub fn pairing_live(&self) -> bool {
+        let Some(run) = &self.running else { return false };
+        lock(&run.state.auth).pairing_live(server::now_secs())
+    }
+
     /// The chosen interface's address, or the best one available.
     fn address(&self) -> String {
         if !self.iface.is_empty() && self.ifaces.iter().any(|(_, ip)| ip.to_string() == self.iface)

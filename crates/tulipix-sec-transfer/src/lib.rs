@@ -475,13 +475,18 @@ fn refresh(w: &MainWindow) {
         .collect();
     set_rows(&w.get_transfer_uploads(), uploads, |rows| w.set_transfer_uploads(rows));
 
-    // The QR carries a single-use key, so it is minted once per address rather
-    // than on every tick — a code that changed twice a second would be
-    // unscannable. A restart or a different interface changes the address, and
-    // the URL it was drawn for is what notices.
+    // The QR carries a single-use key with a 60-second life, so the address is
+    // not the only thing that can invalidate it: the first phone to scan spends
+    // it, and the clock kills it either way. Minting once per address meant the
+    // code on screen was dead within a minute and could never pair a second
+    // device — forget a phone and try to scan again and you got the PIN form.
+    //
+    // So: redraw when the address changes *or* when the key behind it is no
+    // longer live. `pairing_live` goes false at half the TTL, which puts a fresh
+    // code up every 30s at worst — slow enough to scan, and never stale.
     if snap.running {
         let mut drawn = qr_drawn_for();
-        if *drawn != snap.url {
+        if *drawn != snap.url || !with(|svc| svc.pairing_live()).unwrap_or(false) {
             if let Some(img) = with(|svc| svc.pairing_url()).and_then(|u| qr::render(&u)) {
                 w.set_transfer_qr(img);
                 drawn.clone_from(&snap.url);

@@ -129,11 +129,15 @@ pub struct Row {
 }
 
 impl Row {
-    pub fn sent(name: &str, bytes: i64, peer: &str) -> Self {
+    /// `path` is where the file was read from on this machine. Recorded for the
+    /// same reason a received file's is: the ledger's reveal button needs
+    /// somewhere to point, and a sent row without one was the only kind that
+    /// could not be opened.
+    pub fn sent(name: &str, path: &str, bytes: i64, peer: &str) -> Self {
         Self {
             direction: "out",
             name: name.into(),
-            abs_path: None,
+            abs_path: Some(path.into()),
             bytes,
             peer: peer.into(),
             status: "ok",
@@ -340,8 +344,8 @@ mod tests {
     #[tokio::test]
     async fn rows_come_back_newest_first() {
         let pool = mem_pool().await;
-        record(&pool, Row::sent("old.mp3", 10, "1.2.3.4"), 100).await.unwrap();
-        record(&pool, Row::sent("new.mp3", 20, "1.2.3.4"), 200).await.unwrap();
+        record(&pool, Row::sent("old.mp3", "/tmp/out", 10, "1.2.3.4"), 100).await.unwrap();
+        record(&pool, Row::sent("new.mp3", "/tmp/out", 20, "1.2.3.4"), 200).await.unwrap();
 
         let page = newest(&pool, 0).await;
         assert_eq!(
@@ -354,7 +358,7 @@ mod tests {
     async fn pagination_is_derived_from_the_page_size_constant() {
         let pool = mem_pool().await;
         for n in 0..(PAGE_SIZE + 5) {
-            record(&pool, Row::sent(&format!("f{n}"), 1, "1.2.3.4"), 100 + n as i64).await.unwrap();
+            record(&pool, Row::sent(&format!("f{n}"), "/tmp/out", 1, "1.2.3.4"), 100 + n as i64).await.unwrap();
         }
         assert_eq!(newest(&pool, 0).await.len(), PAGE_SIZE);
         assert_eq!(newest(&pool, 1).await.len(), 5);
@@ -364,8 +368,8 @@ mod tests {
     async fn every_column_sorts_both_ways() {
         let pool = mem_pool().await;
         record(&pool, Row::received("beta.mp3", "/in/b", 300, "10.0.0.9"), 100).await.unwrap();
-        record(&pool, Row::sent("alpha.mp3", 100, "10.0.0.2"), 300).await.unwrap();
-        record(&pool, Row::sent("gamma.mp3", 200, "10.0.0.5").failed(), 200).await.unwrap();
+        record(&pool, Row::sent("alpha.mp3", "/tmp/out", 100, "10.0.0.2"), 300).await.unwrap();
+        record(&pool, Row::sent("gamma.mp3", "/tmp/out", 200, "10.0.0.5").failed(), 200).await.unwrap();
 
         async fn names(pool: &sqlx::SqlitePool, sort: Sort, desc: bool) -> Vec<String> {
             recent(pool, 0, sort, desc).await.unwrap().into_iter().map(|e| e.name).collect()
@@ -389,8 +393,8 @@ mod tests {
     #[tokio::test]
     async fn sizes_sort_numerically_not_lexically() {
         let pool = mem_pool().await;
-        record(&pool, Row::sent("small", 9, "1.2.3.4"), 100).await.unwrap();
-        record(&pool, Row::sent("big", 1000, "1.2.3.4"), 200).await.unwrap();
+        record(&pool, Row::sent("small", "/tmp/out", 9, "1.2.3.4"), 100).await.unwrap();
+        record(&pool, Row::sent("big", "/tmp/out", 1000, "1.2.3.4"), 200).await.unwrap();
 
         // Lexically "1000" < "9", so this is the case that catches a TEXT
         // column or a string comparison sneaking in.
@@ -415,7 +419,7 @@ mod tests {
     #[tokio::test]
     async fn clearing_transfers_leaves_paired_devices_alone() {
         let pool = mem_pool().await;
-        record(&pool, Row::sent("a", 1, "1.2.3.4"), 100).await.unwrap();
+        record(&pool, Row::sent("a", "/tmp/out", 1, "1.2.3.4"), 100).await.unwrap();
         remember_device(&pool, &sample_device("tok", 100), 100).await.unwrap();
 
         clear_transfers(&pool).await.unwrap();
@@ -486,7 +490,7 @@ mod tests {
     #[tokio::test]
     async fn a_failed_transfer_is_recorded_as_failed() {
         let pool = mem_pool().await;
-        record(&pool, Row::sent("x", 1, "1.2.3.4").failed(), 100).await.unwrap();
+        record(&pool, Row::sent("x", "/tmp/out", 1, "1.2.3.4").failed(), 100).await.unwrap();
         assert_eq!(newest(&pool, 0).await[0].status, "failed");
     }
 }

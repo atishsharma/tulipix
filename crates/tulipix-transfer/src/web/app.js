@@ -3,6 +3,10 @@
 // The session token lives in an HttpOnly cookie the server sets, so there is
 // nothing here to store, clear or leak — a 401 from any call is the single
 // signal that we are back to the PIN form.
+//
+// Both lists work the same way: tick rows, then press the one button at the
+// bottom. Nothing moves on the tap that selects it — picking a file used to
+// start its upload immediately, which made a mis-tap unrecoverable.
 
 const $ = (id) => document.getElementById(id);
 
@@ -13,11 +17,15 @@ let poll = null;
 function show(next) {
   view = next;
   for (const [name, el] of Object.entries(views)) el.hidden = name !== next;
-  $('tabs').hidden = next === 'pin';
-  $('chip').hidden = next === 'pin';
+  const paired = next !== 'pin';
+  $('tabs').hidden = !paired;
+  $('chip').hidden = !paired;
+  $('addr').hidden = !paired;
+  $('themeBtn').hidden = !paired;
   for (const tab of document.querySelectorAll('.tab')) {
     tab.setAttribute('aria-selected', String(tab.dataset.view === next));
   }
+  syncBars();
   if (next === 'pin') stopPolling(); else startPolling();
 }
 
@@ -28,6 +36,44 @@ function bytes(n) {
   while (v >= 1024 && i < units.length - 1) { v /= 1024; i++; }
   return (v < 10 ? v.toFixed(1) : Math.round(v)) + ' ' + units[i];
 }
+
+const plural = (n, word) => `${n} ${word}${n === 1 ? '' : 's'}`;
+
+// ---- theme ------------------------------------------------------------------
+// The phone's own setting is the default; the toggle writes an override that
+// beats it in both directions and survives a reload.
+
+const themeBtn = $('themeBtn');
+
+function systemDark() {
+  return window.matchMedia('(prefers-color-scheme: dark)').matches;
+}
+
+function applyTheme(mode) {
+  if (mode === 'light' || mode === 'dark') {
+    document.documentElement.setAttribute('data-theme', mode);
+  } else {
+    document.documentElement.removeAttribute('data-theme');
+  }
+  const dark = mode ? mode === 'dark' : systemDark();
+  // The glyph advertises where the button goes, not where we are.
+  themeBtn.dataset.next = dark ? 'light' : 'dark';
+}
+
+let theme = null;
+try { theme = localStorage.getItem('tulipix-theme'); } catch { /* private mode */ }
+applyTheme(theme);
+
+themeBtn.addEventListener('click', () => {
+  const dark = theme ? theme === 'dark' : systemDark();
+  theme = dark ? 'light' : 'dark';
+  try { localStorage.setItem('tulipix-theme', theme); } catch { /* private mode */ }
+  applyTheme(theme);
+});
+
+// The address bar in the header: whatever host this page was actually fetched
+// from, which is the desktop's address by definition.
+$('addr').textContent = location.host;
 
 // ---- PIN --------------------------------------------------------------------
 
@@ -102,7 +148,48 @@ document.addEventListener('keydown', (e) => {
   else if (e.key === 'Backspace') press('del');
 });
 
+// ---- one row with a tick box ------------------------------------------------
+// Shared by both lists: same shape, same hit target, and the whole row toggles
+// rather than only the 18px box.
+
+function tickRow(opts) {
+  const { name, size, kind, checked, onToggle, tag } = opts;
+  const li = document.createElement(tag || 'li');
+  li.className = 'file';
+
+  const box = document.createElement('input');
+  box.type = 'checkbox';
+  box.checked = checked;
+
+  const kindEl = document.createElement('span');
+  kindEl.className = 'file-kind';
+  kindEl.textContent = kind;
+
+  const text = document.createElement('span');
+  text.className = 'file-text';
+  const nameEl = document.createElement('span');
+  nameEl.className = 'file-name';
+  nameEl.textContent = name;
+  const meta = document.createElement('span');
+  meta.className = 'file-meta';
+  meta.textContent = size;
+  text.append(nameEl, meta);
+
+  li.append(box, kindEl, text);
+  li.addEventListener('click', (e) => {
+    // The box fires its own change; anywhere else in the row we flip it.
+    if (e.target !== box) box.checked = !box.checked;
+    onToggle(box.checked);
+  });
+  box.addEventListener('click', (e) => e.stopPropagation());
+  box.addEventListener('change', () => onToggle(box.checked));
+  return li;
+}
+
 // ---- download ---------------------------------------------------------------
+
+let shared = [];               // what the desktop is offering
+const picked = new Set();      // ids ticked for download
 
 async function refresh() {
   let res;
@@ -113,50 +200,90 @@ async function refresh() {
 }
 
 function render(items) {
+  shared = items;
+  // Drop ticks for files the desktop has since stopped sharing.
+  const live = new Set(items.map((i) => i.id));
+  for (const id of [...picked]) if (!live.has(id)) picked.delete(id);
+
   const list = $('files');
   list.replaceChildren();
   $('filesEmpty').hidden = items.length > 0;
-  $('filesLabel').textContent =
-    items.length === 1 ? 'Shared right now — 1 file' : `Shared right now — ${items.length} files`;
+  $('filesLabel').textContent = `Shared right now — ${plural(items.length, 'file')}`;
 
   for (const item of items) {
-    const li = document.createElement('li');
-    li.className = 'file';
-
-    const kind = document.createElement('span');
-    kind.className = 'file-kind';
-    kind.textContent = item.kind;
-
-    const text = document.createElement('span');
-    text.className = 'file-text';
-    const name = document.createElement('span');
-    name.className = 'file-name';
-    name.textContent = item.name;
-    const meta = document.createElement('span');
-    meta.className = 'file-meta';
-    meta.textContent = bytes(item.bytes);
-    text.append(name, meta);
-
-    // A plain link, so the browser's own download manager owns the transfer and
-    // a resume after a screen lock is its problem, not ours.
-    const get = document.createElement('a');
-    get.className = 'get';
-    get.href = '/dl/' + item.id;
-    get.setAttribute('download', item.name);
-    get.textContent = 'Get';
-
-    li.append(kind, text, get);
-    list.appendChild(li);
+    list.appendChild(tickRow({
+      name: item.name,
+      size: bytes(item.bytes),
+      kind: item.kind,
+      checked: picked.has(item.id),
+      onToggle: (on) => { on ? picked.add(item.id) : picked.delete(item.id); syncBars(); },
+    }));
   }
+  syncBars();
 }
+
+// A plain link per file, so the browser's own download manager owns each
+// transfer and a resume after a screen lock is its problem, not ours. Several
+// of them are clicked in turn with a beat between.
+//
+// ponytail: sequential synthetic clicks. Some mobile browsers only honour the
+// first of a burst and prompt for the rest — if that turns out to bite, the fix
+// is a server-side zip endpoint, not a shorter delay.
+function getSelected() {
+  const wanted = shared.filter((i) => picked.has(i.id));
+  wanted.forEach((item, n) => {
+    setTimeout(() => {
+      const a = document.createElement('a');
+      a.href = '/dl/' + item.id;
+      a.setAttribute('download', item.name);
+      a.rel = 'noopener';
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+    }, n * 350);
+  });
+}
+
+$('getBtn').addEventListener('click', getSelected);
+
+$('filesAll').addEventListener('change', (e) => {
+  picked.clear();
+  if (e.target.checked) for (const i of shared) picked.add(i.id);
+  render(shared);
+});
 
 // ---- upload -----------------------------------------------------------------
 
-const rows = new Map(); // File -> {pct, bar, meta}
+let queue = [];                // {file, id, send} — chosen, not yet sent
+const rows = new Map();        // queue id -> {pct, bar, meta}
+let nextId = 1;
+let sending = false;
 
-function rowFor(file) {
-  if (rows.has(file)) return rows.get(file);
-  $('sendingLabel').hidden = false;
+function drawQueue() {
+  const list = $('queue');
+  list.replaceChildren();
+  for (const q of queue) {
+    list.appendChild(tickRow({
+      name: q.file.name,
+      size: bytes(q.file.size),
+      kind: (q.file.name.split('.').pop() || '?').slice(0, 4).toUpperCase(),
+      checked: q.send,
+      onToggle: (on) => { q.send = on; syncBars(); },
+    }));
+  }
+  $('queueBar').hidden = queue.length === 0;
+  $('queueAll').checked = queue.length > 0 && queue.every((q) => q.send);
+  syncBars();
+}
+
+function enqueue(files) {
+  for (const file of files) queue.push({ file, id: nextId++, send: true });
+  drawQueue();
+}
+
+function rowFor(q) {
+  if (rows.has(q.id)) return rows.get(q.id);
+  $('sendingBar').hidden = false;
 
   const wrap = document.createElement('div');
   wrap.className = 'up';
@@ -164,7 +291,7 @@ function rowFor(file) {
   head.className = 'up-head';
   const name = document.createElement('span');
   name.className = 'up-name';
-  name.textContent = file.name;
+  name.textContent = q.file.name;
   const pct = document.createElement('span');
   pct.className = 'up-pct';
   pct.textContent = 'Waiting';
@@ -178,18 +305,19 @@ function rowFor(file) {
 
   const meta = document.createElement('div');
   meta.className = 'up-meta';
-  meta.textContent = bytes(file.size);
+  meta.textContent = bytes(q.file.size);
 
   wrap.append(head, track, meta);
   $('uploads').prepend(wrap);
 
-  const row = { pct, bar, meta };
-  rows.set(file, row);
+  const row = { pct, bar, meta, wrap };
+  rows.set(q.id, row);
   return row;
 }
 
-function upload(file) {
-  const row = rowFor(file);
+function upload(q) {
+  const file = q.file;
+  const row = rowFor(q);
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
     xhr.open('PUT', '/upload/' + encodeURIComponent(file.name));
@@ -219,26 +347,57 @@ function upload(file) {
   });
 }
 
-async function uploadAll(files) {
-  for (const f of files) {
+async function sendSelected() {
+  if (sending) return;
+  const going = queue.filter((q) => q.send);
+  if (going.length === 0) return;
+
+  sending = true;
+  syncBars();
+  // Out of the queue as it starts: a file cannot be sitting in "ready to send"
+  // and be halfway to the desktop at the same time.
+  queue = queue.filter((q) => !q.send);
+  drawQueue();
+
+  for (const q of going) {
     // Sequential: parallel writes to one disk are slower, and one active write
     // keeps the progress display honest.
     try {
-      await upload(f);
+      await upload(q);
     } catch (e) {
-      const row = rowFor(f);
+      const row = rowFor(q);
       row.bar.dataset.state = 'failed';
       row.pct.dataset.state = 'failed';
       row.pct.textContent = 'Failed';
       row.meta.textContent = String(e);
     }
   }
+  sending = false;
+  syncBars();
 }
+
+$('sendBtn').addEventListener('click', sendSelected);
+
+$('queueAll').addEventListener('change', (e) => {
+  for (const q of queue) q.send = e.target.checked;
+  drawQueue();
+});
+
+$('queueClear').addEventListener('click', () => { queue = []; drawQueue(); });
+
+// Only what has finished. A row still moving bytes has nowhere else to report
+// from, so clearing it would lose the transfer's only progress display.
+$('clearDone').addEventListener('click', () => {
+  for (const [id, row] of [...rows]) {
+    if (row.bar.dataset.state) { row.wrap.remove(); rows.delete(id); }
+  }
+  $('sendingBar').hidden = rows.size === 0;
+});
 
 $('pickBtn').addEventListener('click', () => $('picker').click());
 $('picker').addEventListener('change', (e) => {
-  uploadAll([...e.target.files]);
-  e.target.value = ''; // so picking the same file again re-sends it
+  enqueue([...e.target.files]);
+  e.target.value = ''; // so picking the same file again re-queues it
 });
 
 const drop = $('drop');
@@ -250,8 +409,24 @@ for (const type of ['dragleave', 'drop']) {
 }
 drop.addEventListener('drop', (e) => {
   e.preventDefault();
-  if (e.dataTransfer?.files?.length) uploadAll([...e.dataTransfer.files]);
+  if (e.dataTransfer?.files?.length) enqueue([...e.dataTransfer.files]);
 });
+
+// ---- the two bottom bars ----------------------------------------------------
+
+function syncBars() {
+  const n = picked.size;
+  $('getBar').hidden = view !== 'files' || shared.length === 0;
+  $('getBtn').disabled = n === 0;
+  $('getLabel').textContent = n === 0 ? 'Get' : `Get ${plural(n, 'file')}`;
+  $('filesAll').checked = shared.length > 0 && n === shared.length;
+
+  const m = queue.filter((q) => q.send).length;
+  $('sendBar').hidden = view !== 'upload' || queue.length === 0;
+  $('sendBtn').disabled = m === 0 || sending;
+  $('sendLabel').textContent =
+    sending ? 'Sending…' : (m === 0 ? 'Send' : `Send ${plural(m, 'file')}`);
+}
 
 // ---- polling ----------------------------------------------------------------
 
