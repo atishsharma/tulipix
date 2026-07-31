@@ -304,20 +304,33 @@ jobs:
       # attempt died with "rustc-LLVM ERROR: out of memory / Allocation failed"
       # on tulipix-ui. Put a fixed 32 GB pagefile on D: — the runner's large
       # scratch disk, and the drive the build itself runs from.
+      # Best-effort, and deliberately incapable of failing the job: the real fix
+      # for the OOM is the codegen-unit split below, and a pagefile that cannot
+      # be reconfigured is not a reason to lose a release build. The printed
+      # commit limit is what says whether it took.
+      # Win32_PageFileSetting's size properties are uint32 — passing bare
+      # integers is what made the first attempt die with "Type mismatch for
+      # property MaximumSize" before the build even started.
       - name: Pagefile headroom
         shell: pwsh
         run: |
+          $ErrorActionPreference = 'Continue'
           $sys = Get-CimInstance Win32_ComputerSystem
           if ($sys.AutomaticManagedPagefile) {
-            Set-CimInstance -InputObject $sys -Property @{AutomaticManagedPagefile = $false}
+            Set-CimInstance -InputObject $sys -Property @{AutomaticManagedPagefile = $false} -ErrorAction SilentlyContinue
           }
           Get-CimInstance Win32_PageFileSetting | Remove-CimInstance -ErrorAction SilentlyContinue
           New-CimInstance -ClassName Win32_PageFileSetting -Property @{
-            Name = 'D:\pagefile.sys'; InitialSize = 32768; MaximumSize = 32768
-          } -ErrorAction Stop | Out-Null
+            Name         = 'D:\pagefile.sys'
+            InitialSize  = [uint32]32768
+            MaximumSize  = [uint32]32768
+          } -ErrorAction SilentlyContinue | Out-Null
           Get-CimInstance Win32_PageFileSetting | Format-List Name, InitialSize, MaximumSize
+          Get-CimInstance Win32_PageFileUsage  | Format-List Name, AllocatedBaseSize
           $os = Get-CimInstance Win32_OperatingSystem
+          "physical:     {0:N0} MB" -f ($os.TotalVisibleMemorySize / 1KB)
           "commit limit: {0:N0} MB" -f ($os.TotalVirtualMemorySize / 1KB)
+          exit 0
 
       - name: "Build (full: embedded-mpv + skia)"
         env:
