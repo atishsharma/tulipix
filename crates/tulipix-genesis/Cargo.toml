@@ -26,6 +26,22 @@ sqlx = { workspace = true }
 # Cache directory for the mirror ranking, and the DbHandle behind genesis.db.
 tulipix-core = { path = "../tulipix-core" }
 
+# Both of these came across with the port and were left out of this manifest,
+# so the two call sites behind them only ever failed to resolve on the platform
+# that compiles them — which no Linux build, CI job or local run ever was. They
+# surfaced on the first macOS release build.
+
+# `mark_quarantined` in download.rs: tag a finished download the way a browser
+# would, so Gatekeeper still evaluates it. Upstream gates this on cfg(unix);
+# the call site here is macOS-only, so the dependency is too.
+[target.'cfg(target_os = "macos")'.dependencies]
+xattr = "1.6.1"
+
+# `replace` in download.rs: ReplaceFileW, for the case where a plain rename
+# loses to a reader holding the destination open.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = ["Win32_Storage_FileSystem"] }
+
 [dev-dependencies]
 tempfile = "3"
 tokio = { workspace = true }

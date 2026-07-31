@@ -57,13 +57,11 @@ pub fn share(req: &ShareRequest) -> Result<ShareOutcome> {
 
 #[cfg(target_os = "macos")]
 fn share_macos(req: &ShareRequest) -> Result<ShareOutcome> {
-    use objc2::{msg_send, runtime::AnyObject};
     // Hand the file URLs to NSSharingServicePicker via a small AppleScript
     // bridge. Full ObjC NSSharingServicePicker.showRelativeTo wiring lives on
     // the app's main NSWindow; here we route through `open` which on macOS
     // does present an AirDrop / Mail picker when the file is dragged into a
     // share-aware target. This keeps the helper testable.
-    let _: *mut AnyObject = std::ptr::null_mut();
     for it in &req.items {
         Command::new("open").arg("-a").arg("Finder").arg(&it.path).status()?;
     }
