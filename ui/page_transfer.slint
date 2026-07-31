@@ -11,6 +11,7 @@
 // one hue the six existing sections — violet, indigo, pink, emerald, teal,
 // cyan — leave free, so a glance at the accent says which section this is.
 import { Theme } from "tokens.slint";
+import { Surface, Rim } from "surface.slint";
 import { ScrollView } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
 
@@ -65,15 +66,26 @@ component ActionButton inherits Rectangle {
     in property <bool> enabled: true;
     in property <image> icon;
     callback clicked();
-    height: 40px; min-width: 118px; border-radius: 10px;
-    background: !root.enabled ? Theme.panel-2
+    height: 40px; min-width: 118px; border-radius: Surface.btn-radius;
+    background: !root.enabled ? Surface.body(Theme.panel-2)
         : (touch.pressed ? root.tint.darker(32%)
-        : (touch.has-hover ? root.tint.darker(16%) : root.tint));
+        : (touch.has-hover ? root.tint.darker(16%) : Surface.tile(root.tint)));
     opacity: enabled ? 1.0 : 0.5;
+    drop-shadow-blur: Surface.cast(0px);
+    drop-shadow-color: Surface.shadow-ink;
+    drop-shadow-offset-y: Surface.cast-y(0px);
     animate background { duration: 110ms; }
     touch := TouchArea {
         mouse-cursor: root.enabled ? pointer : default;
         clicked => { if (root.enabled) { root.clicked(); } }
+    }
+    // A filled key in the two moulded languages: same colour, lit top edge, and
+    // it goes down when held. Standard has no rim and keeps the flat fill.
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Math.max(2px, parent.border-radius - 1px);
+        pressed: touch.pressed;
     }
     HorizontalLayout {
         alignment: center; spacing: 7px;
@@ -98,11 +110,17 @@ component RowBtn inherits Rectangle {
     in property <string> label;
     in property <color> tint: Theme.error;
     callback clicked();
-    horizontal-stretch: 0; height: 28px; min-width: 64px; border-radius: 8px;
+    horizontal-stretch: 0; height: 28px; min-width: 64px; border-radius: Surface.r(8px);
     background: touch.pressed ? root.tint.darker(32%)
-        : (touch.has-hover ? root.tint.darker(16%) : root.tint);
+        : (touch.has-hover ? root.tint.darker(16%) : Surface.tile(root.tint));
     animate background { duration: 110ms; }
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Math.max(2px, parent.border-radius - 1px);
+        pressed: touch.pressed;
+    }
     Text {
         text: root.label; color: #ffffff; font-size: 11.5px; font-weight: 700;
         horizontal-alignment: center; vertical-alignment: center;
@@ -117,15 +135,21 @@ component DangerBtn inherits Rectangle {
     in property <image> icon;
     in property <bool> enabled: true;
     callback clicked();
-    height: 34px; min-width: 124px; border-radius: 10px;
+    height: 34px; min-width: 124px; border-radius: Surface.btn-radius;
     opacity: root.enabled ? 1.0 : 0.4;
-    background: !root.enabled ? Theme.panel-2
+    background: !root.enabled ? Surface.body(Theme.panel-2)
         : (touch.pressed ? Theme.error.darker(32%)
-        : (touch.has-hover ? Theme.error.darker(16%) : Theme.error));
+        : (touch.has-hover ? Theme.error.darker(16%) : Surface.tile(Theme.error)));
     animate background { duration: 110ms; }
     touch := TouchArea {
         mouse-cursor: root.enabled ? pointer : default;
         clicked => { if (root.enabled) { root.clicked(); } }
+    }
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Math.max(2px, parent.border-radius - 1px);
+        pressed: touch.pressed;
     }
     HorizontalLayout {
         alignment: center; spacing: 7px;
@@ -158,13 +182,19 @@ component Card inherits Rectangle {
     in property <image> action-icon;
     in property <bool> action-enabled: true;
     callback action-clicked();
-    border-radius: Theme.radius-lg;
-    background: Theme.panel;
+    border-radius: Surface.panel-radius;
+    background: Surface.panel(Theme.panel, root.tint);
     // The card wears its own tint rather than the shared grey, so the outer
     // border, the glyph and the panels inside it are one colour.
-    border-width: 1px; border-color: root.tint.with-alpha(0.30);
-    drop-shadow-blur: 20px;
-    drop-shadow-color: #00000012;
+    border-width: Surface.edge-w(1px); border-color: Surface.edge(root.tint, 0.30);
+    drop-shadow-blur: Surface.cast(20px);
+    drop-shadow-color: Surface.cast-ink(#00000012);
+    drop-shadow-offset-y: Surface.cast-y(20px);
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Surface.panel-radius - 1px;
+    }
     VerticalLayout {
         padding: 20px; spacing: 16px;
         HorizontalLayout {
@@ -173,7 +203,12 @@ component Card inherits Rectangle {
                 alignment: center; horizontal-stretch: 0;
                 Rectangle {
                     width: 44px; height: 44px; border-radius: 22px;
-                    background: root.tint.with-alpha(0.14);
+                    background: Surface.wash(root.tint, 0.14);
+                    if Surface.rim: Rim {
+                        x: 1px; y: 1px;
+                        width: parent.width - 2px; height: parent.height - 2px;
+                        radius: parent.border-radius - 1px;
+                    }
                     AppIcon {
                         source: root.icon; colorize: root.tint; width: 21px; height: 21px;
                         x: (parent.width - self.width) / 2;
@@ -213,9 +248,14 @@ component HelpBlock inherits Rectangle {
     in property <image> icon;
     in property <color> tint: Theme.transfer-accent;
     height: self.preferred-height;
-    border-radius: 12px;
-    background: Theme.panel-2;
-    border-width: 1px; border-color: Theme.outline;
+    border-radius: Surface.r(12px);
+    background: Surface.panel(Theme.panel-2, root.tint);
+    border-width: Surface.edge-w(1px); border-color: Surface.clay ? transparent : Theme.outline;
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Math.max(2px, Surface.r(12px) - 1px);
+    }
     VerticalLayout {
         padding: 14px; spacing: 9px;
         HorizontalLayout {
@@ -223,8 +263,8 @@ component HelpBlock inherits Rectangle {
             VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
                 Rectangle {
-                    width: 26px; height: 26px; border-radius: 8px;
-                    background: root.tint.with-alpha(0.16);
+                    width: 26px; height: 26px; border-radius: Surface.r(8px);
+                    background: Surface.wash(root.tint, 0.16);
                     AppIcon {
                         source: root.icon; colorize: root.tint; width: 14px; height: 14px;
                         x: (parent.width - self.width) / 2;
@@ -258,15 +298,21 @@ component PageBtn inherits Rectangle {
     in property <bool> enabled: true;
     in property <color> tint: Theme.transfer-accent;
     callback clicked();
-    horizontal-stretch: 0; height: 32px; min-width: 104px; border-radius: 9px;
+    horizontal-stretch: 0; height: 32px; min-width: 104px; border-radius: Surface.r(9px);
     opacity: root.enabled ? 1.0 : 0.35;
-    background: !root.enabled ? Theme.panel-2
+    background: !root.enabled ? Surface.body(Theme.panel-2)
         : (touch.pressed ? root.tint.darker(32%)
-        : (touch.has-hover ? root.tint.darker(16%) : root.tint));
+        : (touch.has-hover ? root.tint.darker(16%) : Surface.tile(root.tint)));
     animate background { duration: 110ms; }
     touch := TouchArea {
         mouse-cursor: root.enabled ? pointer : default;
         clicked => { if (root.enabled) { root.clicked(); } }
+    }
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Math.max(2px, parent.border-radius - 1px);
+        pressed: touch.pressed;
     }
     HorizontalLayout {
         alignment: center; spacing: 6px;
@@ -301,7 +347,7 @@ component HeadPill inherits Rectangle {
     in property <bool> hot: false;
     height: 22px; border-radius: 11px;
     horizontal-stretch: 0;
-    background: root.on ? root.tint
+    background: root.on ? Surface.tile(root.tint)
         : root.tint.with-alpha(root.hot ? 0.78 : 0.60);
     animate background { duration: 110ms; }
     HorizontalLayout {
@@ -364,16 +410,21 @@ component NoteStrip inherits Rectangle {
     in property <string> chip;
     in property <image> icon;
     in property <color> tint: Theme.ok;
-    border-radius: 12px;
-    background: root.tint.with-alpha(0.10);
-    border-width: 1px; border-color: root.tint.with-alpha(0.22);
+    border-radius: Surface.r(12px);
+    background: Surface.wash(root.tint, 0.10);
+    border-width: Surface.edge-w(1px); border-color: Surface.edge(root.tint, 0.22);
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Math.max(2px, Surface.r(12px) - 1px);
+    }
     HorizontalLayout {
         padding: 12px; spacing: 11px;
         VerticalLayout {
             alignment: center; horizontal-stretch: 0;
             Rectangle {
                 width: 30px; height: 30px; border-radius: 15px;
-                background: root.tint.with-alpha(0.18);
+                background: Surface.wash(root.tint, 0.18);
                 AppIcon {
                     source: root.icon; colorize: root.tint; width: 15px; height: 15px;
                     x: (parent.width - self.width) / 2;
@@ -392,7 +443,7 @@ component NoteStrip inherits Rectangle {
             alignment: center; horizontal-stretch: 0;
             Rectangle {
                 height: 22px; min-width: 54px; border-radius: 11px;
-                background: root.tint.with-alpha(0.20);
+                background: Surface.wash(root.tint, 0.20);
                 Text {
                     text: root.chip; color: root.tint; font-size: 10.5px; font-weight: 700;
                     horizontal-alignment: center; vertical-alignment: center;
@@ -416,13 +467,21 @@ component ValueField inherits Rectangle {
     /// The hue of the box this field sits in, so ADDRESS and PIN are outlined in
     /// their card's colour like everything else rather than in the shared grey.
     in property <color> tint: Theme.transfer-accent;
-    height: 46px; border-radius: 10px;
+    height: 46px; border-radius: Surface.r(10px);
     // Hover lifts both the fill and the border: these are the two values people
     // reach for with the mouse to select and copy, so they have to answer it.
-    background: hov.has-hover ? root.tint.with-alpha(0.12) : root.tint.with-alpha(0.06);
-    border-width: 1px;
-    border-color: root.tint.with-alpha(hov.has-hover ? 0.75 : 0.38);
+    background: Surface.wash(root.tint, hov.has-hover ? 0.12 : 0.06);
+    border-width: Surface.edge-w(1px);
+    border-color: Surface.edge(root.tint, hov.has-hover ? 0.75 : 0.38);
     animate background, border-color { duration: 120ms; }
+    // A field is a well, not a plate: the sheen runs the other way so it reads
+    // as something set into the card rather than sitting on it.
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Math.max(2px, Surface.r(10px) - 1px);
+        pressed: true;
+    }
     // Behind the TextInput so selecting the value still works — a TouchArea
     // declared first loses the click to the input drawn over it.
     hov := TouchArea { mouse-cursor: text; }
@@ -447,9 +506,11 @@ component IfaceChip inherits Rectangle {
     in property <bool> active: false;
     callback clicked();
     height: 28px; horizontal-stretch: 0; border-radius: 14px;
-    background: root.active ? Theme.transfer-accent.with-alpha(0.18) : Theme.panel-2;
-    border-width: 1px;
-    border-color: root.active ? Theme.transfer-accent : Theme.outline;
+    background: root.active ? Surface.wash(Theme.transfer-accent, 0.18)
+                            : Surface.body(Theme.panel-2);
+    border-width: Surface.edge-w(1px);
+    border-color: Surface.clay ? transparent
+                : (root.active ? Theme.transfer-accent : Theme.outline);
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
         padding-left: 11px; padding-right: 11px; spacing: 6px; alignment: center;
@@ -473,10 +534,10 @@ component UploadRow inherits Rectangle {
     callback dismiss();
     property <bool> failed: root.up.state == "failed";
     height: root.failed ? 82px : 64px;
-    border-radius: 11px;
-    background: root.failed ? Theme.error.with-alpha(0.07) : Theme.panel-2;
-    border-width: root.failed ? 1px : 0px;
-    border-color: Theme.error.with-alpha(0.28);
+    border-radius: Surface.r(11px);
+    background: root.failed ? Surface.wash(Theme.error, 0.07) : Surface.body(Theme.panel-2);
+    border-width: Surface.edge-w(root.failed ? 1px : 0px);
+    border-color: Surface.edge(Theme.error, 0.28);
     property <color> tint:
         root.up.state == "done"   ? Theme.ok :
         root.failed               ? Theme.error :
@@ -546,16 +607,21 @@ component TrayRow inherits Rectangle {
     callback remove();
     // 64px to match UploadRow, which is what makes FILES TO SEND and ARRIVING
     // the same box rather than two boxes that nearly line up.
-    height: 64px; border-radius: 11px;
-    background: touch.has-hover ? Theme.panel-2 : Theme.panel-2.with-alpha(0.6);
+    height: 64px; border-radius: Surface.r(11px);
+    background: Surface.body(touch.has-hover ? Theme.panel-2 : Theme.panel-2.with-alpha(0.6));
     touch := TouchArea { }
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Math.max(2px, Surface.r(11px) - 1px);
+    }
     HorizontalLayout {
         padding-left: 11px; padding-right: 11px; spacing: 11px;
         VerticalLayout {
             alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 32px; height: 32px; border-radius: 9px;
-                background: root.accent.with-alpha(0.15);
+                width: 32px; height: 32px; border-radius: Surface.r(9px);
+                background: Surface.wash(root.accent, 0.15);
                 Text {
                     text: root.file.kind; color: root.accent;
                     font-size: 9px; font-weight: 800;
@@ -615,12 +681,12 @@ component DeviceChip inherits Rectangle {
             Rectangle {
                 width: 48px; height: 48px; border-radius: 24px;
                 background: root.device.busy
-                    ? root.busy-tint.with-alpha(0.10 + 0.26 * root.beat)
-                    : (t.has-hover ? root.tint.with-alpha(0.22) : root.tint.with-alpha(0.11));
-                border-width: 1.5px;
+                    ? Surface.wash(root.busy-tint, 0.10 + 0.26 * root.beat)
+                    : Surface.wash(root.tint, t.has-hover ? 0.22 : 0.11);
+                border-width: Surface.edge-w(1.5px);
                 border-color: root.device.busy
-                    ? root.busy-tint.with-alpha(0.40 + 0.55 * root.beat)
-                    : root.tint.with-alpha(t.has-hover ? 0.7 : 0.32);
+                    ? Surface.edge(root.busy-tint, 0.40 + 0.55 * root.beat)
+                    : Surface.edge(root.tint, t.has-hover ? 0.7 : 0.32);
                 t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
                 AppIcon {
                     source: root.glyph;
@@ -657,9 +723,16 @@ component Outline inherits Rectangle {
     /// — which is every use but Send's "Clear all".
     in property <string> action;
     callback action-clicked();
-    border-radius: 12px;
-    background: root.tint.with-alpha(0.05);
-    border-width: 1px; border-color: root.tint.with-alpha(0.38);
+    border-radius: Surface.r(12px);
+    background: Surface.wash(root.tint, 0.05);
+    border-width: Surface.edge-w(1px); border-color: Surface.edge(root.tint, 0.38);
+    // A well: the list is set into the card, so the sheen is inverted.
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Math.max(2px, Surface.r(12px) - 1px);
+        pressed: true;
+    }
     VerticalLayout {
         padding: 10px; spacing: 8px; alignment: start;
         HorizontalLayout {
@@ -716,8 +789,18 @@ export component TransferPage inherits Rectangle {
     in property <string> hint: "";
     in property <string> attempts: "";
     in property <string> url: "";
+    /// Where a phone installs the root certificate, over plain http. Empty when
+    /// the server is not on TLS, which is what hides the hint.
+    in property <string> trust-url: "";
+    /// The mDNS form of the address. Empty when there is no certificate, since
+    /// the name is only worth offering when it is one the certificate covers.
+    in property <string> host-url: "";
     in property <string> pin: "";
     in property <image> qr;
+    /// The same code light-on-dark. Only the enlarged view uses it, and only
+    /// when asked: a QR is meant to be dark-on-light and some scanners hold to
+    /// that, so the inverted one is a choice rather than a theme.
+    in property <image> qr-inv;
     in property <[TransferFile]> files: [];
     in property <string> total: "";
     in property <[TransferDevice]> devices: [];
@@ -831,6 +914,11 @@ export component TransferPage inherits Rectangle {
     // dead space in all three and pushes the ledger off the first screen.
     property <length> card-h: 576px;
 
+    // Which way round the enlarged code is drawn. Off by default and reset by
+    // nothing: whoever flipped it did so because their screen or their eyes
+    // wanted it that way, and it should still be that way next time.
+    property <bool> qr-dark: false;
+
     background: transparent;
 
     VerticalLayout {
@@ -839,15 +927,17 @@ export component TransferPage inherits Rectangle {
         // ── header: identity, live address, the one control that opens or
         // closes the port ───────────────────────────────────────────────────
         Rectangle {
-            height: 76px; horizontal-stretch: 1; background: Theme.panel;
-            border-width: 1px; border-color: Theme.outline;
+            height: 76px; horizontal-stretch: 1;
+            background: Surface.panel(Theme.panel, root.accent);
+            border-width: Surface.edge-w(1px);
+            border-color: Surface.clay ? transparent : Theme.outline;
             HorizontalLayout {
                 padding-left: 26px; padding-right: 26px; spacing: 14px;
                 VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
                     Rectangle {
-                        width: 40px; height: 40px; border-radius: 12px;
-                        background: root.accent.with-alpha(0.16);
+                        width: 40px; height: 40px; border-radius: Surface.r(12px);
+                        background: Surface.wash(root.accent, 0.16);
                         AppIcon {
                             source: Icons.share; colorize: root.accent; width: 20px; height: 20px;
                             x: (parent.width - self.width) / 2;
@@ -886,7 +976,7 @@ export component TransferPage inherits Rectangle {
                     alignment: center; horizontal-stretch: 0;
                     Rectangle {
                         height: 28px; min-width: 88px; border-radius: 14px;
-                        background: Theme.ok.with-alpha(0.14);
+                        background: Surface.wash(Theme.ok, 0.14);
                         HorizontalLayout {
                             padding-left: 11px; padding-right: 12px; spacing: 6px; alignment: center;
                             VerticalLayout {
@@ -1007,10 +1097,16 @@ export component TransferPage inherits Rectangle {
                         // than as a gap under the device grid.
                         Rectangle {
                             vertical-stretch: 1;
-                            border-radius: 14px;
-                            background: root.accent.with-alpha(0.05);
-                            border-width: 1.5px;
-                            border-color: root.accent.with-alpha(0.42);
+                            border-radius: Surface.r(14px);
+                            background: Surface.wash(root.accent, 0.05);
+                            border-width: Surface.edge-w(1.5px);
+                            border-color: Surface.edge(root.accent, 0.42);
+                            if Surface.rim: Rim {
+                                x: 1px; y: 1px;
+                                width: parent.width - 2px; height: parent.height - 2px;
+                                radius: Math.max(2px, Surface.r(14px) - 1px);
+                                pressed: true;
+                            }
                             HorizontalLayout {
                                 padding: 16px; spacing: 16px;
                                 // The QR carries a single-use pairing key, not the
@@ -1018,7 +1114,7 @@ export component TransferPage inherits Rectangle {
                                 // worthless.
                                 VerticalLayout {
                                     alignment: center; horizontal-stretch: 0;
-                                    Rectangle {
+                                    qrbox := Rectangle {
                                         // 140 rather than 168: still a comfortable
                                         // scan target, and the 28px is what the
                                         // three cards came down by.
@@ -1031,7 +1127,10 @@ export component TransferPage inherits Rectangle {
                                         border-width: 1.5px;
                                         border-color: root.accent.with-alpha(qrhov.has-hover ? 0.75 : 0.38);
                                         animate border-color { duration: 120ms; }
-                                        qrhov := TouchArea { mouse-cursor: default; }
+                                        qrhov := TouchArea {
+                                            mouse-cursor: root.running ? pointer : default;
+                                            clicked => { if (root.running) { qrpop.show(); } }
+                                        }
                                         if root.running: Image {
                                             source: root.qr; image-fit: contain;
                                             width: parent.width - 14px; height: parent.height - 14px;
@@ -1041,6 +1140,93 @@ export component TransferPage inherits Rectangle {
                                             text: "Not sharing"; color: Theme.text-dim; font-size: 12px;
                                             horizontal-alignment: center; vertical-alignment: center;
                                             width: parent.width; height: parent.height;
+                                        }
+
+                                        // 140px is a scan target for a phone held
+                                        // near the screen; across a desk it is not.
+                                        // Clicking the code blows it up rather than
+                                        // making every session's card bigger for the
+                                        // one time in ten that the distance matters.
+                                        qrpop := PopupWindow {
+                                            // Centred on the page, not on the 140px
+                                            // square it belongs to. A popup this size
+                                            // hung off the Connection card sits half
+                                            // over one column and half over the next;
+                                            // the middle of the page is where the eye
+                                            // already is when something opens.
+                                            // Coordinates here are the parent's, so
+                                            // the page's origin has to be walked back
+                                            // to — hence the two absolute-positions.
+                                            x: root.absolute-position.x - qrbox.absolute-position.x
+                                                + (root.width - self.width) / 2;
+                                            y: root.absolute-position.y - qrbox.absolute-position.y
+                                                + (root.height - self.height) / 2;
+                                            width: 424px; height: 512px;
+                                            close-policy: close-on-click-outside;
+                                            Rectangle {
+                                                width: 100%; height: 100%;
+                                                border-radius: Surface.r(18px);
+                                                background: Surface.panel(Theme.panel, root.accent);
+                                                border-width: Surface.edge-w(1.5px);
+                                                border-color: Surface.edge(root.accent, 0.45);
+                                                drop-shadow-blur: Surface.cast(40px);
+                                                drop-shadow-color: Surface.cast-ink(#00000099);
+                                                drop-shadow-offset-y: Surface.cast-y(40px);
+                                                VerticalLayout {
+                                                    padding: 18px; spacing: 12px;
+                                                    Text {
+                                                        text: "Scan to pair";
+                                                        color: Theme.text; font-size: 15px; font-weight: 800;
+                                                        horizontal-alignment: center;
+                                                    }
+                                                    // Same plate as the small one, on
+                                                    // purpose: the enlarged view is the
+                                                    // card's own code, not a second
+                                                    // widget that happens to look alike.
+                                                    Rectangle {
+                                                        height: 316px;
+                                                        border-radius: 16px;
+                                                        background: root.qr-dark ? #0c0e16 : #ffffff;
+                                                        border-width: 1.5px;
+                                                        border-color: root.accent.with-alpha(0.38);
+                                                        animate background { duration: 140ms; }
+                                                        Image {
+                                                            source: root.qr-dark ? root.qr-inv : root.qr;
+                                                            image-fit: contain;
+                                                            width: 300px; height: 300px;
+                                                            x: (parent.width - self.width) / 2;
+                                                            y: (parent.height - self.height) / 2;
+                                                        }
+                                                    }
+                                                    Text {
+                                                        text: root.url;
+                                                        color: Theme.text-dim; font-size: 11.5px;
+                                                        horizontal-alignment: center; overflow: elide;
+                                                    }
+                                                    HorizontalLayout {
+                                                        alignment: center; spacing: 8px;
+                                                        ActionButton {
+                                                            label: root.qr-dark ? "Normal code" : "Invert code";
+                                                            icon: Icons.contrast;
+                                                            tint: root.accent;
+                                                            clicked => { root.qr-dark = !root.qr-dark; }
+                                                        }
+                                                        ActionButton {
+                                                            label: "Close";
+                                                            tint: root.help-tint;
+                                                            clicked => { qrpop.close(); }
+                                                        }
+                                                    }
+                                                    // Said once, here, rather than
+                                                    // discovered as a code that will
+                                                    // not scan on somebody's phone.
+                                                    if root.qr-dark: Text {
+                                                        text: "A few scanners only read dark-on-light. Switch back if this one will not take.";
+                                                        color: Theme.text-dim; font-size: 10.5px;
+                                                        horizontal-alignment: center; wrap: word-wrap;
+                                                    }
+                                                }
+                                            }
                                         }
                                     }
                                 }
@@ -1067,6 +1253,14 @@ export component TransferPage inherits Rectangle {
                                             value: root.running ? root.pin : "——————";
                                             size: 22px; tone: root.accent; weight: 800;
                                         }
+                                    }
+                                    // The same machine by name, for a phone whose
+                                    // browser resolves .local. Under the address
+                                    // rather than instead of it: plenty do not.
+                                    if root.host-url != "": Text {
+                                        text: "also " + root.host-url;
+                                        color: Theme.text-dim; font-size: 10.5px;
+                                        overflow: elide;
                                     }
                                     // Somebody grinding the PIN is silent from this
                                     // end otherwise: the guesser gets a 429 and the
@@ -1171,12 +1365,18 @@ export component TransferPage inherits Rectangle {
                         // left over grows the picker instead of the card.
                         Rectangle {
                             vertical-stretch: 1;
-                            border-radius: 14px;
-                            background: pick.has-hover
-                                ? root.send-tint.with-alpha(0.10) : root.send-tint.with-alpha(0.05);
-                            border-width: 1.5px;
+                            border-radius: Surface.r(14px);
+                            background: Surface.wash(root.send-tint, pick.has-hover ? 0.10 : 0.05);
+                            border-width: Surface.edge-w(1.5px);
                             border-color: pick.has-hover
-                                ? root.send-tint : root.send-tint.with-alpha(0.42);
+                                ? Surface.edge(root.send-tint, 1.0)
+                                : Surface.edge(root.send-tint, 0.42);
+                            if Surface.rim: Rim {
+                                x: 1px; y: 1px;
+                                width: parent.width - 2px; height: parent.height - 2px;
+                                radius: Math.max(2px, Surface.r(14px) - 1px);
+                                pressed: true;
+                            }
                             pick := TouchArea {
                                 mouse-cursor: pointer;
                                 clicked => { root.add-files(); }
@@ -1268,11 +1468,17 @@ export component TransferPage inherits Rectangle {
                         // Receive's stretchy panel too.
                         Rectangle {
                             vertical-stretch: 1;
-                            border-radius: 14px;
-                            background: root.recv-tint.with-alpha(0.05);
-                            border-width: 1.5px;
+                            border-radius: Surface.r(14px);
+                            background: Surface.wash(root.recv-tint, 0.05);
+                            border-width: Surface.edge-w(1.5px);
                             border-color: root.inbox-ok
-                                ? root.recv-tint.with-alpha(0.42) : Theme.error;
+                                ? Surface.edge(root.recv-tint, 0.42) : Theme.error;
+                            if Surface.rim: Rim {
+                                x: 1px; y: 1px;
+                                width: parent.width - 2px; height: parent.height - 2px;
+                                radius: Math.max(2px, Surface.r(14px) - 1px);
+                                pressed: true;
+                            }
                             VerticalLayout {
                                 alignment: center; spacing: 12px;
                                 padding-left: 16px; padding-right: 16px;
@@ -1282,9 +1488,11 @@ export component TransferPage inherits Rectangle {
                                     font-size: 10px; letter-spacing: 1.3px; font-weight: 700;
                                 }
                                 Rectangle {
-                                    height: 46px; border-radius: 10px; background: Theme.panel-2;
-                                    border-width: 1px;
-                                    border-color: root.inbox-ok ? Theme.outline : Theme.error;
+                                    height: 46px; border-radius: Surface.r(10px);
+                                    background: Surface.body(Theme.panel-2);
+                                    border-width: Surface.edge-w(1px);
+                                    border-color: root.inbox-ok
+                                        ? (Surface.clay ? transparent : Theme.outline) : Theme.error;
                                     HorizontalLayout {
                                         padding-left: 12px; padding-right: 8px; spacing: 8px;
                                         VerticalLayout {
@@ -1385,8 +1593,12 @@ export component TransferPage inherits Rectangle {
                     // Sorting runs in SQL over the whole ledger, not over the
                     // ten rows on screen: sorting a page in place would only
                     // shuffle that page and leave the rest of the table alone.
-                    Rectangle {
-                        height: 38px; border-radius: 9px; background: Theme.panel-2;
+                    //
+                    // Hidden while the ledger is empty — six column pills over
+                    // nothing read as a broken table rather than a fresh one.
+                    if root.rows.length > 0: Rectangle {
+                        height: 38px; border-radius: Surface.r(9px);
+                        background: Surface.body(Theme.panel-2);
                         HorizontalLayout {
                             padding-left: 12px; padding-right: 12px; spacing: 12px;
                             SortHead {
@@ -1436,8 +1648,8 @@ export component TransferPage inherits Rectangle {
                     }
 
                     for r[i] in root.rows: Rectangle {
-                        height: 64px; border-radius: 10px;
-                        background: rowtouch.has-hover ? Theme.panel-2 : transparent;
+                        height: 64px; border-radius: Surface.r(10px);
+                        background: rowtouch.has-hover ? Surface.body(Theme.panel-2) : transparent;
                         opacity: r.missing ? 0.55 : 1.0;
                         rowtouch := TouchArea {
                             mouse-cursor: r.path == "" ? default : pointer;
@@ -1456,9 +1668,9 @@ export component TransferPage inherits Rectangle {
                                 VerticalLayout {
                                     alignment: center; horizontal-stretch: 0;
                                     Rectangle {
-                                        width: 34px; height: 34px; border-radius: 10px;
-                                        background: (r.direction == "in" ? root.recv-tint : root.accent)
-                                            .with-alpha(0.14);
+                                        width: 34px; height: 34px; border-radius: Surface.r(10px);
+                                        background: Surface.wash(
+                                            r.direction == "in" ? root.recv-tint : root.accent, 0.14);
                                         Text {
                                             text: r.kind;
                                             color: r.direction == "in" ? root.recv-tint : root.accent;
@@ -1603,6 +1815,47 @@ export component TransferPage inherits Rectangle {
                     }
                 }
 
+                // The one thing a phone cannot discover on its own. It meets the
+                // browser's certificate warning and has no way to learn there is
+                // a page that makes it go away, so the desktop is where that
+                // address has to be readable. Here rather than in Connection: the
+                // cards are a fixed height, and this would have cost all three of
+                // them 60px of it for a line that is read once per phone.
+                if root.trust-url != "": Rectangle {
+                    height: 52px; border-radius: Surface.r(12px);
+                    background: Surface.wash(root.pair-tint, 0.08);
+                    border-width: Surface.edge-w(1px);
+                    border-color: Surface.edge(root.pair-tint, 0.32);
+                    HorizontalLayout {
+                        padding-left: 14px; padding-right: 14px; spacing: 11px;
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Rectangle {
+                                width: 30px; height: 30px; border-radius: 15px;
+                                background: Surface.wash(root.pair-tint, 0.18);
+                                AppIcon {
+                                    source: Icons.shield; colorize: root.pair-tint;
+                                    width: 15px; height: 15px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 1; spacing: 2px;
+                            Text {
+                                text: "First time on a phone? It will ask you to install a certificate.";
+                                color: Theme.text; font-size: 12px; font-weight: 700;
+                                overflow: elide;
+                            }
+                            Text {
+                                text: "Scanning the code takes it there — the page walks through it and opens Transfer by itself once it is done. Encrypts the connection, and is what lets the phone scan the code with its camera. Reachable any time at " + root.trust-url + ".";
+                                color: Theme.text-dim; font-size: 11px; wrap: word-wrap;
+                            }
+                        }
+                    }
+                }
+
                 // ── footer ──────────────────────────────────────────────────
                 HorizontalLayout {
                     alignment: center; spacing: 8px;
@@ -1636,10 +1889,13 @@ export component TransferPage inherits Rectangle {
         Rectangle {
             width: min(430px, parent.width - 48px);
             height: self.preferred-height;
-            border-radius: Theme.radius-lg;
-            background: Theme.panel;
-            border-width: 1px; border-color: Theme.outline;
-            drop-shadow-blur: 40px; drop-shadow-color: #00000055;
+            border-radius: Surface.panel-radius;
+            background: Surface.panel(Theme.panel, root.accent);
+            border-width: Surface.edge-w(1px);
+            border-color: Surface.clay ? transparent : Theme.outline;
+            drop-shadow-blur: Surface.cast(40px);
+            drop-shadow-color: Surface.cast-ink(#00000055);
+            drop-shadow-offset-y: Surface.cast-y(40px);
             // Without this the click would fall through to the scrim and close
             // the dialog the moment anyone touched it.
             TouchArea { }
@@ -1651,7 +1907,7 @@ export component TransferPage inherits Rectangle {
                         alignment: start; horizontal-stretch: 0;
                         Rectangle {
                             width: 44px; height: 44px; border-radius: 22px;
-                            background: Theme.error.with-alpha(0.14);
+                            background: Surface.wash(Theme.error, 0.14);
                             AppIcon {
                                 source: Icons.trash; colorize: Theme.error;
                                 width: 20px; height: 20px;
@@ -1680,7 +1936,7 @@ export component TransferPage inherits Rectangle {
                 HorizontalLayout {
                     spacing: 10px; alignment: end;
                     Rectangle {
-                        height: 36px; min-width: 92px; border-radius: 10px;
+                        height: 36px; min-width: 92px; border-radius: Surface.btn-radius;
                         background: cancel-t.pressed ? root.help-tint.darker(32%)
                             : (cancel-t.has-hover ? root.help-tint.darker(16%) : root.help-tint);
                         animate background { duration: 110ms; }
@@ -1696,7 +1952,7 @@ export component TransferPage inherits Rectangle {
                         }
                     }
                     Rectangle {
-                        height: 36px; min-width: 124px; border-radius: 10px;
+                        height: 36px; min-width: 124px; border-radius: Surface.btn-radius;
                         background: wipe-t.pressed ? Theme.error.darker(32%)
                             : (wipe-t.has-hover ? Theme.error.darker(16%) : Theme.error);
                         animate background { duration: 110ms; }
@@ -1725,10 +1981,13 @@ export component TransferPage inherits Rectangle {
         Rectangle {
             width: min(620px, parent.width - 48px);
             height: min(640px, parent.height - 48px);
-            border-radius: Theme.radius-lg;
-            background: Theme.panel;
-            border-width: 1px; border-color: Theme.outline;
-            drop-shadow-blur: 40px; drop-shadow-color: #00000055;
+            border-radius: Surface.panel-radius;
+            background: Surface.panel(Theme.panel, root.accent);
+            border-width: Surface.edge-w(1px);
+            border-color: Surface.clay ? transparent : Theme.outline;
+            drop-shadow-blur: Surface.cast(40px);
+            drop-shadow-color: Surface.cast-ink(#00000055);
+            drop-shadow-offset-y: Surface.cast-y(40px);
             TouchArea { }
             VerticalLayout {
                 padding: 0px;
@@ -1739,7 +1998,7 @@ export component TransferPage inherits Rectangle {
                         alignment: center; horizontal-stretch: 0;
                         Rectangle {
                             width: 42px; height: 42px; border-radius: 21px;
-                            background: root.accent.with-alpha(0.14);
+                            background: Surface.wash(root.accent, 0.14);
                             AppIcon {
                                 source: Icons.info; colorize: root.accent;
                                 width: 20px; height: 20px;
@@ -1879,10 +2138,13 @@ export component TransferPage inherits Rectangle {
         Rectangle {
             width: min(400px, parent.width - 48px);
             height: self.preferred-height;
-            border-radius: Theme.radius-lg;
-            background: Theme.panel;
-            border-width: 1px; border-color: Theme.outline;
-            drop-shadow-blur: 40px; drop-shadow-color: #00000055;
+            border-radius: Surface.panel-radius;
+            background: Surface.panel(Theme.panel, root.accent);
+            border-width: Surface.edge-w(1px);
+            border-color: Surface.clay ? transparent : Theme.outline;
+            drop-shadow-blur: Surface.cast(40px);
+            drop-shadow-color: Surface.cast-ink(#00000055);
+            drop-shadow-offset-y: Surface.cast-y(40px);
             TouchArea { }
             VerticalLayout {
                 padding: 22px; spacing: 14px;
@@ -1893,7 +2155,7 @@ export component TransferPage inherits Rectangle {
                         alignment: center; horizontal-stretch: 0;
                         Rectangle {
                             width: 48px; height: 48px; border-radius: 24px;
-                            background: root.accent.with-alpha(0.14);
+                            background: Surface.wash(root.accent, 0.14);
                             AppIcon {
                                 source: root.device.kind == "Android" || root.device.kind == "iPhone"
                                         ? Icons.device-mobile
@@ -1942,8 +2204,8 @@ export component TransferPage inherits Rectangle {
                         }
                     }
                     Rectangle {
-                        height: 42px; border-radius: 10px;
-                        background: Theme.panel-2;
+                        height: 42px; border-radius: Surface.r(10px);
+                        background: Surface.body(Theme.panel-2);
                         border-width: 1px;
                         border-color: namefield.has-focus ? root.accent : Theme.outline;
                         HorizontalLayout {
@@ -2034,7 +2296,7 @@ export component TransferPage inherits Rectangle {
                     }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
                     Rectangle {
-                        height: 36px; min-width: 84px; border-radius: 10px;
+                        height: 36px; min-width: 84px; border-radius: Surface.btn-radius;
                         background: close-t.pressed ? root.help-tint.darker(32%)
                             : (close-t.has-hover ? root.help-tint.darker(16%) : root.help-tint);
                         animate background { duration: 110ms; }

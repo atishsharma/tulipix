@@ -35,6 +35,14 @@ const DONE_LINGER_MS: u64 = 6_000;
 /// second. Throttled to roughly 10 Hz before crossing into the event loop.
 const PROGRESS_MS: u128 = 100;
 
+/// Rows on screen at once. The mirror hands back up to `SearchQuery::limit`
+/// records in one answer, so paging is a slice of what is already in hand — no
+/// second round trip when the page turns.
+const PAGE: usize = 12;
+
+/// How long the "Saved" confirmation on the settings dialog stays.
+const SAVED_LINGER_MS: u64 = 2_000;
+
 /// The service, parked in an `Option` so a blocking task can take it, own it
 /// outright for the duration of a call, and put it back — rather than holding
 /// the mutex across the seconds a search or download takes.
@@ -68,7 +76,23 @@ thread_local! {
     /// Clears the "Added to library" strip. Bound to the thread that started
     /// it, which is always the UI thread here.
     static DONE_TIMER: slint::Timer = slint::Timer::default();
+    /// Clears the settings dialog's "Saved ✓".
+    static SAVED_TIMER: slint::Timer = slint::Timer::default();
 }
+
+/// Which column the result table is ordered by, and which way.
+///
+/// Kept here rather than on the window because sorting runs over the whole
+/// result set — the twelve rows the window holds are the *output* of it.
+/// Empty key = the order the mirror returned, which is its own relevance
+/// ranking and the only ordering that is not arbitrary.
+fn sort_state() -> MutexGuard<'static, (String, bool)> {
+    static S: OnceLock<Mutex<(String, bool)>> = OnceLock::new();
+    S.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Which page of the current result set is on screen.
+static PAGE_AT: AtomicU64 = AtomicU64::new(0);
 
 // ── entry points ────────────────────────────────────────────────────────────
 
@@ -181,6 +205,119 @@ pub fn wire(window: &MainWindow) {
             tracing::warn!(error = %e, "genesis: could not open the download folder");
         }
     });
+
+    // ── result table ────────────────────────────────────────────────────────
+
+    let w = window.as_weak();
+    window.on_genesis_set_page(move |page| {
+        let Some(w) = w.upgrade() else { return };
+        PAGE_AT.store(page.max(0) as u64, Ordering::Relaxed);
+        push_page(&w);
+    });
+
+    let w = window.as_weak();
+    window.on_genesis_sort_clicked(move |key| {
+        let Some(w) = w.upgrade() else { return };
+        {
+            let mut s = sort_state();
+            // Same column again flips direction; a different one starts
+            // ascending, which is what every table on the desktop does.
+            if s.0 == key.as_str() {
+                s.1 = !s.1;
+            } else {
+                *s = (key.to_string(), false);
+            }
+        }
+        // Back to page one: the row someone was looking at is not on page four
+        // of the new ordering, and leaving the pager where it was would show a
+        // page of results that appear to have come from nowhere.
+        PAGE_AT.store(0, Ordering::Relaxed);
+        push_page(&w);
+    });
+
+    // ── settings ────────────────────────────────────────────────────────────
+
+    let w = window.as_weak();
+    window.on_genesis_settings_opened(move || {
+        let Some(w) = w.upgrade() else { return };
+        w.set_genesis_mirrors(advanced(MIRRORS_KEY).replace(',', "\n").into());
+        w.set_genesis_mirrors_default(tulipix_genesis::mirror::SEED_MIRRORS.join("\n").into());
+        w.set_genesis_settings_saved(false);
+        refresh_dest(&w);
+    });
+
+    let w = window.as_weak();
+    window.on_genesis_settings_save(move || {
+        let Some(w) = w.upgrade() else { return };
+        // Stored comma-separated because `Settings.advanced` is a flat
+        // string map; the box is newline-per-entry because that is how a list
+        // is edited.
+        let list = w
+            .get_genesis_mirrors()
+            .split(['\n', ','])
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .collect::<Vec<_>>()
+            .join(",");
+        set_advanced(MIRRORS_KEY, &list);
+        // The pool in memory was resolved from the old list, so it has to go or
+        // the next search silently ignores the edit.
+        let _ = with_mut(|svc| svc.refresh_mirrors());
+        flash_saved(&w);
+    });
+
+    let w = window.as_weak();
+    window.on_genesis_settings_reset(move || {
+        let Some(w) = w.upgrade() else { return };
+        set_advanced(MIRRORS_KEY, "");
+        set_advanced(DEST_KEY, "");
+        w.set_genesis_mirrors("".into());
+        let _ = with_mut(|svc| svc.refresh_mirrors());
+        refresh_dest(&w);
+        flash_saved(&w);
+    });
+
+    let w = window.as_weak();
+    window.on_genesis_pick_dest(move || {
+        let start = resolve_dest();
+        let weak = w.clone();
+        spawn(async move {
+            let Some(dir) = rfd::AsyncFileDialog::new()
+                .set_title("Where should Genesis downloads land?")
+                .set_directory(&start)
+                .pick_folder()
+                .await
+            else {
+                return;
+            };
+            let path = dir.path().display().to_string();
+            set_advanced(DEST_KEY, &path);
+            let _ = with_mut(|svc| svc.set_dest(PathBuf::from(&path)));
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                // Registers the new folder as a library root, which is what
+                // makes a book downloaded into it appear in My Library.
+                refresh_dest(&w);
+                flash_saved(&w);
+            });
+        });
+    });
+}
+
+/// Show "Saved ✓" on the settings dialog, then put the button back.
+fn flash_saved(w: &MainWindow) {
+    w.set_genesis_settings_saved(true);
+    let weak = w.as_weak();
+    SAVED_TIMER.with(|t| {
+        t.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(SAVED_LINGER_MS),
+            move || {
+                if let Some(w) = weak.upgrade() {
+                    w.set_genesis_settings_saved(false);
+                }
+            },
+        )
+    });
 }
 
 // ── search ──────────────────────────────────────────────────────────────────
@@ -230,6 +367,7 @@ fn start_search(w: &MainWindow) {
             match result {
                 Some(Ok(served)) => {
                     w.set_genesis_mirror(served.mirror.clone().into());
+                    w.set_genesis_active_url(served.url.clone().into());
                     w.set_genesis_mirror_tone("ok".into());
                     w.set_genesis_status("".into());
                     w.set_genesis_phase("ready".into());
@@ -250,10 +388,10 @@ fn start_search(w: &MainWindow) {
     });
 }
 
-/// Push the rows, marking the ones already downloaded.
+/// Stash the result set, mark what is already downloaded, and paint page one.
 ///
-/// The history lookup is one query for the whole page rather than one per row,
-/// which would be twenty-five round trips to paint one table.
+/// The history lookup is one query for the whole result set rather than one per
+/// row, which would be fifty round trips to paint twelve.
 fn fill_rows(w: &MainWindow, books: Vec<Book>) {
     let md5s: Vec<String> = books.iter().map(|b| b.md5.clone()).collect();
     let weak = w.as_weak();
@@ -266,41 +404,117 @@ fn fill_rows(w: &MainWindow, books: Vec<Book>) {
             }
         };
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let rows: Vec<GenesisRow> = books
-                .iter()
-                .map(|b| GenesisRow {
-                    md5: b.md5.clone().into(),
-                    title: b.title.clone().into(),
-                    author: b.authors_or_unknown().to_string().into(),
-                    year: b.year.clone().unwrap_or_default().into(),
-                    language: b.language.clone().unwrap_or_default().into(),
-                    pages: b.pages.clone().unwrap_or_default().into(),
-                    size: b.size_human().into(),
-                    format: b.ext().to_uppercase().into(),
-                    have: known.contains(&b.md5),
-                })
-                .collect();
-            set_rows(&w.get_genesis_rows(), rows, |rows| w.set_genesis_rows(rows));
-            stash(books);
+            stash(books, known);
+            // A new search starts at page one, in the mirror's own order. Any
+            // other choice means the first thing shown after a search is page
+            // four of the previous one, sorted by something long forgotten.
+            PAGE_AT.store(0, Ordering::Relaxed);
+            *sort_state() = (String::new(), false);
+            push_page(&w);
         });
     });
 }
 
 /// The last result set, kept so a Get click can name a full [`Book`] rather
-/// than re-searching to find the row the user pressed.
-fn results() -> MutexGuard<'static, Vec<Book>> {
-    static ROWS: OnceLock<Mutex<Vec<Book>>> = OnceLock::new();
+/// than re-searching to find the row the user pressed — and so sorting and
+/// paging never need the mirror again.
+fn results() -> MutexGuard<'static, (Vec<Book>, Vec<String>)> {
+    static ROWS: OnceLock<Mutex<(Vec<Book>, Vec<String>)>> = OnceLock::new();
     ROWS.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner())
 }
 
-fn stash(books: Vec<Book>) {
-    *results() = books;
+fn stash(books: Vec<Book>, known: Vec<String>) {
+    *results() = (books, known);
+}
+
+/// Order the whole result set, cut out the current page, and push it.
+///
+/// Sorting is over every record the mirror returned, not over the twelve on
+/// screen: sorting a page in place would shuffle that page and leave the rest of
+/// the table alone, which is the one thing a sort must never do.
+fn push_page(w: &MainWindow) {
+    let (key, desc) = sort_state().clone();
+    let (books, known) = {
+        let g = results();
+        (g.0.clone(), g.1.clone())
+    };
+
+    let mut ordered: Vec<&Book> = books.iter().collect();
+    if !key.is_empty() {
+        ordered.sort_by(|a, b| {
+            let ord = match key.as_str() {
+                "author" => text(a.authors_or_unknown()).cmp(&text(b.authors_or_unknown())),
+                // Year and pages are strings on the record because mirrors put
+                // anything in those columns; a numeric compare on "1998" and
+                // "200?" has to fall back to text rather than to zero.
+                "year" => number(a.year.as_deref()).cmp(&number(b.year.as_deref())),
+                "language" => text(a.language.as_deref().unwrap_or("")).cmp(&text(b.language.as_deref().unwrap_or(""))),
+                "pages" => number(a.pages.as_deref()).cmp(&number(b.pages.as_deref())),
+                "size" => a.size_bytes.unwrap_or(0).cmp(&b.size_bytes.unwrap_or(0)),
+                "format" => a.ext().cmp(b.ext()),
+                _ => text(&a.title).cmp(&text(&b.title)),
+            };
+            // Titles break every tie, so an ordering is stable across repeated
+            // clicks instead of reshuffling equal rows.
+            let ord = ord.then_with(|| text(&a.title).cmp(&text(&b.title)));
+            if desc { ord.reverse() } else { ord }
+        });
+    }
+
+    let total = ordered.len();
+    let pages = total.div_ceil(PAGE).max(1);
+    // A sort can never change how many pages there are, but a fresh search can,
+    // and the stored page has to be clamped into the new range.
+    let at = (PAGE_AT.load(Ordering::Relaxed) as usize).min(pages - 1);
+    PAGE_AT.store(at as u64, Ordering::Relaxed);
+
+    let rows: Vec<GenesisRow> = ordered
+        .into_iter()
+        .skip(at * PAGE)
+        .take(PAGE)
+        .map(|b| GenesisRow {
+            md5: b.md5.clone().into(),
+            title: b.title.clone().into(),
+            author: b.authors_or_unknown().to_string().into(),
+            year: b.year.clone().unwrap_or_default().into(),
+            language: b.language.clone().unwrap_or_default().into(),
+            pages: b.pages.clone().unwrap_or_default().into(),
+            size: b.size_human().into(),
+            format: b.ext().to_uppercase().into(),
+            have: known.contains(&b.md5),
+        })
+        .collect();
+
+    set_rows(&w.get_genesis_rows(), rows, |rows| w.set_genesis_rows(rows));
+    w.set_genesis_page(at as i32);
+    w.set_genesis_pages(if total == 0 { 0 } else { pages as i32 });
+    w.set_genesis_total(total as i32);
+    w.set_genesis_sort(key.into());
+    w.set_genesis_sort_desc(desc);
+}
+
+/// Case-folded sort key. Mirrors mix casing freely, so a byte compare would put
+/// every lowercase title after every uppercase one.
+fn text(s: &str) -> String {
+    s.trim().to_lowercase()
+}
+
+/// Leading digits of a ragged mirror column. `None`/unparseable sorts first
+/// ascending, which is where "unknown" belongs.
+fn number(s: Option<&str>) -> u64 {
+    s.unwrap_or_default()
+        .chars()
+        .skip_while(|c| !c.is_ascii_digit())
+        .take_while(char::is_ascii_digit)
+        .collect::<String>()
+        .parse()
+        .unwrap_or(0)
 }
 
 // ── download ────────────────────────────────────────────────────────────────
 
 fn start_download(w: &MainWindow, md5: String) {
-    let Some(book) = results().iter().find(|b| b.md5 == md5).cloned() else {
+    let Some(book) = results().0.iter().find(|b| b.md5 == md5).cloned() else {
         return;
     };
     let dest = resolve_dest();
@@ -636,6 +850,24 @@ fn advanced(key: &str) -> String {
         .unwrap_or_default()
 }
 
+/// Write one `advanced` key. An empty value removes it rather than storing a
+/// blank, so "unset" and "set to nothing" stay the same thing — every reader
+/// here treats empty as "use the default".
+fn set_advanced(key: &str, value: &str) {
+    let Ok(mut s) = tulipix_core::settings::Settings::load() else {
+        tracing::warn!("genesis: could not load settings; {key} not saved");
+        return;
+    };
+    if value.trim().is_empty() {
+        s.advanced.remove(key);
+    } else {
+        s.advanced.insert(key.to_string(), value.trim().to_string());
+    }
+    if let Err(e) = s.save() {
+        tracing::warn!(error = %e, "genesis: could not save settings");
+    }
+}
+
 fn configured_mirrors() -> Vec<String> {
     advanced(MIRRORS_KEY)
         .split(',')
@@ -727,6 +959,26 @@ mod tests {
         let on: Vec<String> =
             default_topics().into_iter().filter(|t| t.on).map(|t| t.code).collect();
         assert_eq!(on, ["libgen", "fiction"]);
+    }
+
+    #[test]
+    fn ragged_mirror_columns_still_sort_as_numbers() {
+        // Mirrors put anything in Year and Pages. Leading digits win, and
+        // nothing parseable sorts as 0 — "unknown" first, ascending.
+        assert_eq!(number(Some("1998")), 1998);
+        assert_eq!(number(Some("c. 2004")), 2004, "leading prose is skipped");
+        assert_eq!(number(Some("200?")), 200);
+        assert_eq!(number(Some("")), 0);
+        assert_eq!(number(None), 0);
+    }
+
+    #[test]
+    fn titles_sort_case_insensitively() {
+        // A byte compare would file every lowercase title after every
+        // uppercase one, which reads as no sort at all.
+        let mut v = vec![text("banana"), text("Apple"), text("cherry")];
+        v.sort();
+        assert_eq!(v, ["apple", "banana", "cherry"]);
     }
 
     #[test]

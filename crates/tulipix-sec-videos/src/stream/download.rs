@@ -167,7 +167,7 @@ pub fn stream_download_season(weak: slint::Weak<MainWindow>) {
     set_status(&weak, format!("Queueing {max_ep} episodes…"), true);
 
     tokio::runtime::Handle::current().spawn(async move {
-        let Ok(c) = client().await else { return };
+        let Ok(c) = catalogue().await else { return };
         let sticky = stream::quality::sticky();
         let mut queued = 0;
         for ep in 1..=max_ep {
@@ -277,7 +277,24 @@ async fn run_queue(weak: slint::Weak<MainWindow>) {
             }
         };
 
-        match download_to(&job.url, &part, &report).await {
+        // Resolved here rather than when the job was queued: a resolver link
+        // is minted per request and expires, so a queue that sat for an hour
+        // would start every job on a dead URL.
+        let source_url = match playable_url(&job.url).await {
+            Ok(u) => u,
+            Err(e) => {
+                let _ = stream::downloads::set_state(
+                    &pool,
+                    job.id,
+                    State::Failed,
+                    &format!("source could not be resolved: {e}"),
+                )
+                .await;
+                set_dl(&weak, format!("{label} — source unavailable"), 0.0, true);
+                continue;
+            }
+        };
+        match download_to(&source_url, &part, &report).await {
             Ok(true) => {
                 if tokio::fs::rename(&part, &dest).await.is_ok() {
                     let _ = stream::downloads::set_state(&pool, job.id, State::Done, "").await;

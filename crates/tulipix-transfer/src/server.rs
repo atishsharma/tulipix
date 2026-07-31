@@ -89,6 +89,10 @@ pub struct AppState {
     /// Bumped on every ledger write. The UI refetches Recent Transfers when it
     /// changes rather than polling the database on a timer.
     pub rev: AtomicU64,
+    /// `(PEM, DER)` of the root a phone has to install. `None` when the server
+    /// fell back to plain HTTP, in which case there is nothing to trust and the
+    /// download routes 404.
+    pub ca: Mutex<Option<(String, Vec<u8>)>>,
 }
 
 pub type Shared = Arc<AppState>;
@@ -110,6 +114,10 @@ impl AppState {
 pub struct Config {
     pub inbox: PathBuf,
     pub bind: String,
+    /// Serve over TLS with the app's own certificate. False only in tests, which
+    /// exercise the routes rather than the transport and would otherwise all
+    /// need a client that trusts a CA generated moments earlier.
+    pub tls: bool,
     /// `None` in tests and when `transfers.db` could not be opened — the server
     /// still transfers files, it just does not remember having done so.
     pub pool: Option<SqlitePool>,
@@ -119,8 +127,14 @@ pub struct Running {
     pub port: u16,
     pub pin: String,
     pub state: Shared,
+    /// False when a certificate could not be produced and the server fell back
+    /// to plain HTTP — the URL scheme and the QR both key off this.
+    pub secure: bool,
     shutdown: tokio::sync::oneshot::Sender<()>,
     handle: tokio::task::JoinHandle<()>,
+    /// Kept alive for as long as the server is: dropping the daemon withdraws
+    /// the `tulipix.local` record.
+    _mdns: Option<crate::mdns::Advert>,
 }
 
 impl Running {
@@ -173,6 +187,7 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
         uploads: Mutex::new(Vec::new()),
         next_upload: AtomicU64::new(0),
         rev: AtomicU64::new(0),
+        ca: Mutex::new(None),
     });
 
     let app = Router::new()
@@ -180,29 +195,97 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
         .route("/app.css", get(css))
         .route("/app.js", get(js))
         .route("/logo.png", get(logo))
+        // Installable-app assets. All static, all unauthenticated: they are the
+        // shell, and a phone has to be able to fetch the manifest and the icons
+        // before it has any way to prove who it is. Nothing here says anything
+        // about what is being shared.
+        .route("/manifest.webmanifest", get(manifest))
+        .route("/sw.js", get(sw))
+        .route("/icon-192.png", get(icon_192))
+        .route("/icon-512.png", get(icon_512))
+        .route("/icon-maskable.png", get(icon_maskable))
+        // Where the OS share sheet posts. The service worker catches this
+        // before it reaches the network and hands the files to the page, so a
+        // request arriving here means the worker is not running — an
+        // uninstalled browser, or one with workers switched off. Answering with
+        // the page rather than a 404 at least lands somewhere useful.
+        .route("/share", get(page).post(share_fallback))
         .route("/auth", post(auth_post))
         .route("/api/files", get(files))
         .route("/api/status", get(status))
+        // What the gateway probes. Unauthenticated on purpose: the answer it is
+        // after is "did the TLS handshake succeed", which is settled before any
+        // request body exists. 204 so there is nothing to read, and no auth so a
+        // phone that has not paired yet still gets a clean answer.
+        .route("/api/ping", get(ping))
         .route("/dl/{id}", get(download))
         .route("/upload/{name}", put(upload))
+        // The same three the plaintext side answers, so a phone that has already
+        // trusted us can still reach the page that explains how to untrust.
+        .route("/trust", get(trust))
+        .route("/tulipix-ca.crt", get(ca_crt))
+        .route("/tulipix-ca.pem", get(ca_pem))
         .with_state(state.clone());
 
     let listener = tokio::net::TcpListener::bind(&cfg.bind).await?;
     let port = listener.local_addr()?.port();
 
+    // Every address the leaf has to be valid for. A phone reaching us by IP and
+    // one reaching us by name must both get a certificate that matches what
+    // they typed, or the padlock is a warning either way.
+    let ips: Vec<std::net::IpAddr> = crate::net::interfaces()
+        .into_iter()
+        .map(|(_, ip)| std::net::IpAddr::V4(ip))
+        .chain(std::iter::once(std::net::IpAddr::V4(std::net::Ipv4Addr::LOCALHOST)))
+        .collect();
+
+    // A certificate is worth having but not worth refusing to start over: with
+    // no data directory to keep a CA in, plain HTTP still transfers files. It
+    // only costs the in-page camera scanner, which needs a secure origin.
+    let identity = match (cfg.tls, crate::tls::Identity::load(&ips)) {
+        (false, _) => None,
+        (true, Ok(id)) => Some(id),
+        (true, Err(e)) => {
+            tracing::warn!(error = %e, "transfer: no certificate, serving plain HTTP");
+            None
+        }
+    };
+    let secure = identity.is_some();
+    if let Some(id) = &identity {
+        *lock(&state.ca) = Some((id.ca_pem.clone(), id.ca_der.clone()));
+        tracing::info!(names = ?id.names, "transfer: serving HTTPS");
+    }
+
+    let mdns = crate::mdns::advertise(&ips, port, secure);
+
     let (tx, rx) = tokio::sync::oneshot::channel();
+    let svc = app.into_make_service_with_connect_info::<SocketAddr>();
     let handle = tokio::spawn(async move {
-        let served =
-            axum::serve(listener, app.into_make_service_with_connect_info::<SocketAddr>())
-                .with_graceful_shutdown(async {
-                    let _ = rx.await;
-                });
-        if let Err(e) = served.await {
+        let shutdown = async {
+            let _ = rx.await;
+        };
+        let served = match identity {
+            Some(id) => {
+                // `.tap_io` with a no-op is not decoration. `ConnectInfo` needs
+                // `Connected<IncomingStream<'_, L>>` for SocketAddr, and axum
+                // only implements that for its own TcpListener — writing it here
+                // for our listener is refused by the orphan rule, since
+                // `IncomingStream<TlsListener>` is a foreign type that merely
+                // mentions a local one. axum does ship a blanket impl for
+                // `TapIo<L, F>`, so wrapping is the supported way to keep peer
+                // addresses on a custom listener, and the tap itself is free.
+                use axum::serve::ListenerExt as _;
+                let tls = crate::tls::TlsListener::new(listener, &id).tap_io(|_| {});
+                axum::serve(tls, svc).with_graceful_shutdown(shutdown).await
+            }
+            None => axum::serve(listener, svc).with_graceful_shutdown(shutdown).await,
+        };
+        if let Err(e) = served {
             tracing::warn!(error = %e, "transfer: server stopped");
         }
     });
 
-    Ok(Running { port, pin, state, shutdown: tx, handle })
+    Ok(Running { port, pin, state, secure, shutdown: tx, handle, _mdns: mdns })
 }
 
 // ── responses ───────────────────────────────────────────────────────────────
@@ -347,6 +430,79 @@ async fn css() -> Response {
     asset(include_str!("web/app.css"), "text/css; charset=utf-8")
 }
 
+/// The web-app manifest. `application/manifest+json` rather than plain JSON:
+/// Chrome accepts either, but the spec names this one and Safari is fussier.
+async fn manifest() -> Response {
+    asset(
+        include_str!("web/manifest.webmanifest"),
+        "application/manifest+json; charset=utf-8",
+    )
+}
+
+/// The service worker.
+///
+/// `Service-Worker-Allowed: /` is what lets a worker served from anywhere claim
+/// the whole origin; it is already at the root here, so the header is belt and
+/// braces. `no-cache` is not: a worker cached for a day is a worker that keeps
+/// serving last week's shell after a Tulipix upgrade, and the browser has no
+/// other way to find out it changed.
+async fn sw() -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "text/javascript; charset=utf-8"),
+            (header::CACHE_CONTROL, "no-cache"),
+            (
+                header::HeaderName::from_static("service-worker-allowed"),
+                "/",
+            ),
+        ],
+        include_str!("web/sw.js"),
+    )
+        .into_response()
+}
+
+fn png(body: &'static [u8]) -> Response {
+    (
+        [
+            (header::CONTENT_TYPE, "image/png"),
+            (header::CACHE_CONTROL, "public, max-age=86400"),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+/// Home-screen icons. Two square marks and one maskable: Android crops an icon
+/// to whatever shape the launcher uses, and a square mark cropped to a circle
+/// loses its corners, so the maskable one carries its own padding.
+async fn icon_192() -> Response {
+    png(include_bytes!("web/icon-192.png").as_slice())
+}
+
+async fn icon_512() -> Response {
+    png(include_bytes!("web/icon-512.png").as_slice())
+}
+
+async fn icon_maskable() -> Response {
+    png(include_bytes!("web/icon-maskable.png").as_slice())
+}
+
+/// A share that got past the service worker.
+///
+/// This should not happen: the worker registers on the first page load and the
+/// app cannot be installed — and so cannot be a share target — without one. If
+/// it does, the files are in a multipart body that no cookie was attached to,
+/// because the session cookie is SameSite=Strict and the operating system, not
+/// the page, started this request. There is nothing safe to do with them, so
+/// say so plainly rather than dropping them silently.
+async fn share_fallback() -> Response {
+    (
+        StatusCode::SEE_OTHER,
+        [(header::LOCATION, "/?share=empty")],
+    )
+        .into_response()
+}
+
 async fn js() -> Response {
     asset(include_str!("web/app.js"), "text/javascript; charset=utf-8")
 }
@@ -355,6 +511,45 @@ async fn js() -> Response {
 /// tab left open on the phone is identifiable among a row of blank favicons.
 /// Checked in already downscaled — the 819 KB source in `resources/appicons` is
 /// an absurd thing to hand a phone for a 26px image.
+/// Reached only over TLS, which is the whole of its meaning: a caller that gets
+/// an answer has a browser that trusts this certificate.
+async fn ping() -> Response {
+    StatusCode::NO_CONTENT.into_response()
+}
+
+/// The install instructions. Static, and identical on both schemes.
+async fn trust() -> Response {
+    asset(include_str!("web/trust.html"), "text/html; charset=utf-8")
+}
+
+fn ca_download(st: &Shared, pem: bool) -> Response {
+    let Some((ca_pem, ca_der)) = lock(&st.ca).clone() else {
+        return StatusCode::NOT_FOUND.into_response();
+    };
+    let (mime, name, body) = if pem {
+        ("application/x-pem-file", "tulipix-ca.pem", ca_pem.into_bytes())
+    } else {
+        ("application/x-x509-ca-cert", "tulipix-ca.crt", ca_der)
+    };
+    let disposition = format!("attachment; filename=\"{name}\"");
+    (
+        [
+            (header::CONTENT_TYPE, mime.to_string()),
+            (header::CONTENT_DISPOSITION, disposition),
+        ],
+        body,
+    )
+        .into_response()
+}
+
+async fn ca_crt(State(st): State<Shared>) -> Response {
+    ca_download(&st, false)
+}
+
+async fn ca_pem(State(st): State<Shared>) -> Response {
+    ca_download(&st, true)
+}
+
 async fn logo() -> Response {
     (
         [
@@ -688,6 +883,7 @@ mod tests {
             inbox: dir.path().to_path_buf(),
             bind: "127.0.0.1:0".into(),
             pool: None,
+            tls: false,
         })
         .await
         .unwrap();

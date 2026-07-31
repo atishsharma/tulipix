@@ -44,7 +44,7 @@ fn run_search(weak: slint::Weak<MainWindow>, query: String, page: usize) {
     let epoch = next_epoch(); // also abandons any detail load still in flight
     set_status(&weak, if page > 1 { "Loading more…" } else { "Searching…" }, true);
     tokio::runtime::Handle::current().spawn(async move {
-        let c = match client().await {
+        let c = match catalogue().await {
             Ok(c) => c,
             Err(e) => return set_status(&weak, explain(&e), false),
         };
@@ -151,7 +151,7 @@ pub fn stream_suggest(weak: slint::Weak<MainWindow>, query: String) {
         if SUGGEST_SEQ.load(Ordering::SeqCst) != seq {
             return; // superseded by a later keystroke
         }
-        let Ok(c) = client().await else { return };
+        let Ok(c) = catalogue().await else { return };
         let Ok(names) = c.suggest(&query).await else { return };
         if SUGGEST_SEQ.load(Ordering::SeqCst) != seq {
             return;
@@ -201,7 +201,7 @@ pub fn stream_preview(weak: slint::Weak<MainWindow>, subject_id: String) {
         if SEQ.load(Ordering::SeqCst) != seq {
             return; // pointer moved on
         }
-        let Ok(c) = client().await else { return };
+        let Ok(c) = catalogue().await else { return };
         let Ok(d) = c.details(&subject_id).await else { return };
         with_state(|st| {
             // Bounded: the grid is at most a few dozen cards.

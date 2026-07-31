@@ -18,6 +18,9 @@ async-trait = "0.1"
 # string, so md-5/hmac ride on the digest 0.10 already pulled in by sha2, and
 # url/base64 are both already in the tree via reqwest.
 thiserror.workspace = true
+# Live TV and the 4KHDHub scraper both log what they skipped rather than
+# failing a whole batch, so they need the tracing macros.
+tracing.workspace = true
 hmac = "0.12"
 md-5 = "0.10"
 base64 = "0.22"

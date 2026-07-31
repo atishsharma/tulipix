@@ -8,6 +8,7 @@
 // Fuzzy match is computed Rust-side; this component just renders the result rows.
 
 import { Theme } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { ListView } from "std-widgets.slint";
 
 export struct PaletteRow {
@@ -43,7 +44,7 @@ export component CmdPalette inherits Rectangle {
         border-width: 1px;
         border-color: Theme.outline-strong;
         drop-shadow-color: #00000066;
-        drop-shadow-blur: 32px;
+        drop-shadow-blur: Surface.cast(32px);
         drop-shadow-offset-y: 8px;
         clip: true;
 
@@ -53,10 +54,10 @@ export component CmdPalette inherits Rectangle {
 
             Rectangle {
                 height: 44px;
-                border-radius: 12px;
-                background: Theme.panel;
+                border-radius: Surface.r(12px);
+                background: Surface.body(Theme.panel);
                 border-width: 1px;
-                border-color: Theme.outline;
+                border-color: Surface.hairline;
 
                 input := TextInput {
                     x: 14px; y: 0; width: parent.width - 28px; height: parent.height;
@@ -87,7 +88,7 @@ export component CmdPalette inherits Rectangle {
                 for r[i] in root.rows: Rectangle {
                     height: 44px;
                     background: i == root.selected ? rgba(124, 58, 237, 0.18) : transparent;
-                    border-radius: 8px;
+                    border-radius: Surface.r(8px);
                     TouchArea { clicked => { root.row-activated(r.id); } }
                     HorizontalLayout {
                         padding: 8px;

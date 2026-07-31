@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="light dark">
+<title>Tulipix Transfer</title>
+<link rel="icon" href="/logo.png" type="image/png">
+<style>
+:root {
+  --ground: #ede9f8; --ground-deep: #ddd6f0; --panel: #fff; --panel-2: #f6f3fd;
+  --ink: #17132b; --ink-soft: #55506b; --ink-faint: #8b86a1;
+  --line: rgba(26,16,64,.12); --accent: #ea580c; --ok: #0f9d63;
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --ground: #050614; --ground-deep: #000; --panel: #0d0f22; --panel-2: #141733;
+    --ink: #f8faff; --ink-soft: #b3b6cf; --ink-faint: #7b7e9c;
+    --line: rgba(255,255,255,.10); --accent: #f97316; --ok: #34d399;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0; min-height: 100dvh;
+  background: linear-gradient(var(--ground), var(--ground-deep));
+  background-attachment: fixed;
+  color: var(--ink);
+  font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  -webkit-font-smoothing: antialiased;
+  padding: 22px 18px calc(28px + env(safe-area-inset-bottom));
+}
+main { max-width: 640px; margin: 0 auto; }
+.head { display: flex; align-items: center; gap: 9px; margin-bottom: 22px; }
+.head img { width: 26px; height: 26px; border-radius: 7px; }
+.head span { font-size: 16px; font-weight: 640; }
+
+/* The waiting state. Shown first, because a phone that has already been
+   through this should never see the instructions flash past on its way in. */
+.checking { display: flex; align-items: center; gap: 11px; padding: 26px 4px; }
+.spin {
+  width: 20px; height: 20px; flex: none;
+  border: 2.5px solid var(--line); border-top-color: var(--accent);
+  border-radius: 50%; animation: spin .8s linear infinite;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+.checking p { margin: 0; font-size: 14.5px; color: var(--ink-soft); }
+
+#steps[hidden], #checking[hidden], #done[hidden] { display: none; }
+
+h1 { font-size: 21px; letter-spacing: -.02em; margin: 0 0 6px; }
+.lede { font-size: 14px; line-height: 1.6; color: var(--ink-soft); margin: 0 0 20px; }
+.get {
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  padding: 15px 18px; border-radius: 13px;
+  background: var(--accent); color: #fff;
+  font-size: 15px; font-weight: 680; text-decoration: none;
+  box-shadow: 0 6px 18px -8px var(--accent);
+}
+.get svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.alt { font-size: 12.5px; color: var(--ink-faint); text-align: center; margin: 10px 0 0; }
+.alt a { color: var(--ink-soft); }
+.watch {
+  display: flex; align-items: center; gap: 9px;
+  margin: 18px 0 0; padding: 11px 13px;
+  background: var(--panel-2); border-radius: 11px;
+  font-size: 12.5px; color: var(--ink-soft);
+}
+.watch .spin { width: 14px; height: 14px; border-width: 2px; }
+h2 { font-size: 13px; letter-spacing: .1em; text-transform: uppercase; color: var(--ink-faint); margin: 26px 0 10px; }
+.card { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; margin-bottom: 10px; }
+.card h3 { font-size: 14.5px; margin: 0 0 8px; }
+ol { margin: 0; padding-left: 20px; }
+li { font-size: 13.5px; line-height: 1.65; color: var(--ink-soft); margin-bottom: 3px; }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: 12.5px; background: var(--panel-2); padding: 1px 5px; border-radius: 5px; }
+.note { font-size: 12.5px; line-height: 1.6; color: var(--ink-soft); margin: 0 0 10px; }
+.note:last-child { margin-bottom: 0; }
+pre { margin: 0 0 10px; background: var(--panel-2); border-radius: 9px; padding: 11px 12px; overflow-x: auto; }
+pre code { background: none; padding: 0; font-size: 12px; white-space: pre; }
+.why { background: var(--panel-2); border-radius: 12px; padding: 14px 16px; font-size: 12.5px; line-height: 1.65; color: var(--ink-soft); margin-top: 20px; }
+.skip { display: block; text-align: center; margin-top: 22px; font-size: 13.5px; color: var(--ink-faint); }
+.tick { width: 44px; height: 44px; color: var(--ok); }
+#done { text-align: center; padding: 40px 0; }
+#done p { font-size: 15px; color: var(--ink-soft); margin: 12px 0 0; }
+</style>
+</head>
+<body>
+<main>
+
+<div class="head">
+  <img src="/logo.png" alt="">
+  <span>Tulipix Transfer</span>
+</div>
+
+<!-- 1 — the state every returning phone sees, and leaves within a moment. -->
+<div class="checking" id="checking">
+  <div class="spin"></div>
+  <p>Checking this connection…</p>
+</div>
+
+<!-- 2 — the certificate is trusted; we are on our way across. -->
+<div id="done" hidden>
+  <svg class="tick" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6.5 9.5 17 4 11.5"/></svg>
+  <p>Trusted. Opening Tulipix Transfer…</p>
+</div>
+
+<!-- 3 — first time on this phone. -->
+<div id="steps" hidden>
+  <h1>Trust this desktop</h1>
+  <p class="lede">
+    This phone has not seen this desktop's certificate before. Installing it
+    once tells the phone that this desktop is who it says it is — after that
+    the connection is encrypted, there is no warning, and this page never
+    appears again.
+  </p>
+
+  <a class="get" href="/tulipix-ca.crt" download="tulipix-ca.crt">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3.5v11M7.5 10.5 12 15l4.5-4.5M4.5 19.5h15"/></svg>
+    Download the certificate
+  </a>
+  <p class="alt">
+    If your phone rejects that file, try the
+    <a href="/tulipix-ca.pem" download="tulipix-ca.pem">PEM version</a> instead.
+  </p>
+
+  <!-- The whole reason this page can be left open: it notices by itself. -->
+  <div class="watch">
+    <div class="spin"></div>
+    <span>Leave this page open — it opens Tulipix on its own the moment the certificate is installed.</span>
+  </div>
+
+  <h2>Install it</h2>
+
+  <div class="card">
+    <h3>Android</h3>
+    <ol>
+      <li>Open <b>Settings</b> and search for <code>CA certificate</code>.</li>
+      <li>Choose <b>Encryption &amp; credentials</b> → <b>Install a certificate</b> → <b>CA certificate</b>.</li>
+      <li>Accept the warning, pick the downloaded <code>tulipix-ca.crt</code>.</li>
+      <li>Come back to this page.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3>iPhone and iPad</h3>
+    <ol>
+      <li>Safari asks to allow a configuration profile — allow it.</li>
+      <li><b>Settings</b> → <b>General</b> → <b>VPN &amp; Device Management</b>, open the Tulipix profile and <b>Install</b> it.</li>
+      <li>Then <b>Settings</b> → <b>General</b> → <b>About</b> → <b>Certificate Trust Settings</b> and switch Tulipix on. iOS needs both steps, and the second one is the one people miss.</li>
+      <li>Come back to this page.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3>Linux</h3>
+    <p class="note">
+      Browsers on Linux ignore the system certificate store and keep their own,
+      which is why copying the file into <code>/usr/local/share/ca-certificates</code>
+      changes nothing in Chrome or Firefox. This script writes to the right ones,
+      and needs no root:
+    </p>
+    <pre><code>curl -fsSL http://HOST/tulipix-ca-install.sh | sh</code></pre>
+    <p class="note">
+      Or <a href="/tulipix-ca-install.sh" download="tulipix-ca-install.sh">download it</a>,
+      read it, and run it. Restart the browser afterwards. Needs
+      <code>certutil</code> — <code>libnss3-tools</code> on Debian and Ubuntu,
+      <code>nss-tools</code> on Fedora, <code>nss</code> on Arch.
+    </p>
+  </div>
+
+  <div class="card">
+    <h3>Windows</h3>
+    <ol>
+      <li>Double-click <code>tulipix-ca.crt</code> → <b>Install Certificate</b>.</li>
+      <li>Store location <b>Current User</b>, then <b>Place all certificates in the following store</b>.</li>
+      <li>Choose <b>Trusted Root Certification Authorities</b> and finish.</li>
+    </ol>
+  </div>
+
+  <div class="card">
+    <h3>macOS</h3>
+    <ol>
+      <li>Open <code>tulipix-ca.pem</code> in <b>Keychain Access</b>, in the <b>login</b> keychain.</li>
+      <li>Find <b>Tulipix Local CA</b>, open it, expand <b>Trust</b>.</li>
+      <li>Set <b>When using this certificate</b> to <b>Always Trust</b>.</li>
+    </ol>
+  </div>
+
+  <div class="why">
+    <b>What this does and does not do.</b> The certificate only lets this phone
+    verify desktops holding the matching private key — which is this machine, and
+    only while the key stays on it. It is not a password and grants no access to
+    anything: the PIN and the paired-device list are still what decide who can
+    see your files. Remove it any time from the same settings screen.
+  </div>
+
+  <a class="skip" id="skip" href="#">Skip — continue without installing it</a>
+</div>
+
+</main>
+
+<script>
+// The gateway.
+//
+// This page is served over plain http, which is the point: a browser shows no
+// interstitial for http, so a phone that has never seen our certificate can
+// still be told what to do about it. Everything else — the app, the API, the
+// camera the QR scanner needs — lives on https at the same host and port, and
+// this page's only job is to work out whether the phone can get there yet.
+//
+// The probe is a cross-origin fetch at the TLS side. `no-cors` means the answer
+// is opaque and unreadable, which is fine: a resolved promise means the browser
+// completed a TLS handshake it was willing to trust, and a rejected one means it
+// was not. That is the entire question.
+
+var target = 'https://' + location.host;
+var probe = target + '/api/ping';
+
+function el(id) { return document.getElementById(id); }
+
+function cross() {
+  // The query string comes along, so the QR's single-use `?k=` is still in hand
+  // on the other side and pairing finishes without anyone typing a PIN.
+  location.replace(target + '/' + location.search);
+}
+
+function trusted() {
+  return fetch(probe, { mode: 'no-cors', cache: 'no-store' }).then(
+    function () { return true; },
+    function () { return false; }
+  );
+}
+
+var tries = 0;
+
+function check(first) {
+  trusted().then(function (ok) {
+    if (ok) {
+      el('checking').hidden = true;
+      el('steps').hidden = true;
+      el('done').hidden = false;
+      // A beat so the tick is seen rather than flashed past.
+      setTimeout(cross, first ? 0 : 700);
+      return;
+    }
+    el('checking').hidden = true;
+    el('steps').hidden = false;
+    // Keep watching. Installing a root takes a trip through Settings and a
+    // couple of minutes, and coming back to a page that has already noticed is
+    // the difference between this feeling finished and feeling abandoned.
+    // Backs off after ten minutes rather than polling a forgotten tab forever.
+    tries += 1;
+    if (tries < 300) setTimeout(function () { check(false); }, 2000);
+  });
+}
+
+// Installing a certificate means leaving the browser, so the return trip is a
+// visibility change rather than a load. Re-check immediately on the way back
+// instead of waiting out the rest of the interval.
+document.addEventListener('visibilitychange', function () {
+  if (!document.hidden && el('done').hidden) check(false);
+});
+
+el('skip').addEventListener('click', function (e) {
+  e.preventDefault();
+  cross();
+});
+
+// The one-liner names whichever host got you here, so it can be copied as-is.
+for (var i = 0, cs = document.querySelectorAll('pre code'); i < cs.length; i++) {
+  cs[i].textContent = cs[i].textContent.replace('HOST', location.host);
+}
+
+check(true);
+</script>
+</body>
+</html>

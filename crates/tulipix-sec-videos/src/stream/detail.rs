@@ -9,7 +9,7 @@ pub fn stream_open(weak: slint::Weak<MainWindow>, subject_id: String) {
     let epoch = next_epoch();
     set_status(&weak, "Loading…", true);
     tokio::runtime::Handle::current().spawn(async move {
-        let c = match client().await {
+        let c = match catalogue().await {
             Ok(c) => c,
             Err(e) => return set_status(&weak, explain(&e), false),
         };
@@ -98,7 +98,7 @@ pub fn stream_open(weak: slint::Weak<MainWindow>, subject_id: String) {
 /// costs one request and is left exactly as it was. The grouping is remembered
 /// for the rest of the session, so reopening the same show does not search
 /// again.
-async fn regroup_seasons(c: &StreamClient, title: &str, subject_id: &str) -> Vec<(i64, String)> {
+async fn regroup_seasons(c: &Catalogue, title: &str, subject_id: &str) -> Vec<(i64, String)> {
     let base = stream::split_season_suffix(title).0;
     if base.is_empty() {
         return Vec::new();
@@ -250,7 +250,7 @@ pub(crate) async fn load_files(
         // Backfill subs for an entry cached before captions were fetched
         // separately: patch just the captions, no stream refetch, and re-store.
         if !cached.files.is_empty() && cached.files.iter().all(|f| f.captions.is_empty()) {
-            if let Ok(c) = client().await {
+            if let Ok(c) = catalogue().await {
                 let mut patched = cached.files.clone();
                 attach_episode_captions(&c, &subject_id, &mut patched).await;
                 let gained = patched.iter().any(|f| !f.captions.is_empty());
@@ -279,7 +279,7 @@ pub(crate) async fn load_files(
         return;
     }
 
-    let c = match client().await {
+    let c = match catalogue().await {
         Ok(c) => c,
         Err(e) => {
             if is_current(epoch) && !painted {
@@ -330,7 +330,7 @@ pub(crate) async fn load_files(
 /// but a given resource may simply carry none, so up to three distinct resources
 /// (usually different uploaders) are tried concurrently and their tracks unioned.
 /// Files that already came with inline captions are left untouched.
-async fn attach_episode_captions(c: &StreamClient, subject_id: &str, files: &mut [StreamFile]) {
+async fn attach_episode_captions(c: &Catalogue, subject_id: &str, files: &mut [StreamFile]) {
     if files.is_empty() || files.iter().any(|f| !f.captions.is_empty()) {
         return;
     }

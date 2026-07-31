@@ -3,7 +3,8 @@
 // the main pane is a lazy remote-tree browser (list or thumb grid). "Sync &
 // Tools" swaps the pane for a full tabbed workspace. Modals connect / encrypt /
 // mount / upload, and confirm remote removal + unmount.
-import { TextEdit } from "std-widgets.slint";
+import { ScrollView } from "std-widgets.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { AppIcon, Icons } from "icons.slint";
 import { MicBtn } from "voice.slint";
 import { Theme } from "tokens.slint";
@@ -14,10 +15,54 @@ export struct CloudEntry { name: string, is_dir: bool, size: string, modified: s
 export struct CloudJob { id: int, label: string, schedule: string, enabled: bool }
 export struct CloudUsage { remote: string, used: string, total: string, fraction: float, has_quota: bool }
 export struct CloudXfer { id: int, kind: string, detail: string, ok: bool, when: string }
+// One backend rclone can talk to, straight out of `rclone config providers`.
+// `oauth` decides whether the form offers the Authorize button.
+export struct CloudBackend { name: string, desc: string, oauth: bool }
+// One row of the generated config form. `kind` picks the widget:
+// bool | select | secret | text. `choices`/`choice-values` are rclone's own
+// suggested values (label vs. what gets written). `free` marks a suggestion
+// list that is not exhaustive, so the row can be switched to free text with
+// `custom`.
+export struct CloudOpt {
+    key: string,
+    label: string,
+    help: string,
+    kind: string,
+    value: string,
+    placeholder: string,
+    required: bool,
+    free: bool,
+    custom: bool,
+    choices: [string],
+    choice-values: [string],
+}
 
 // ── Aurora Teal design kit (theme-aware) ───────────────────────────────────
 
-component GradButton inherits Rectangle {
+// The section's own surface ramp, and the one place the design language reaches
+// it. Cloud paints in literal hexes rather than app tokens because its identity
+// is a teal-on-navy palette that does not exist anywhere else — but the *card*,
+// the *key* and the *well* are still just material, so those three take the
+// language and the teal keeps its hues. Standard returns the exact pairs that
+// were inline before.
+export global CT {
+    property <bool> dk: Theme.dark;
+    // A panel: cards, modals, rail bodies.
+    out property <color> card: Surface.clay ? Surface.card-ink
+        : (Surface.skeuo ? Surface.plate-ink : (dk ? #141d2e : #ffffff));
+    // A key sitting on one: buttons, chips, fields.
+    out property <color> key: Surface.clay ? Surface.clay-key
+        : (Surface.skeuo ? Surface.key-top : (dk ? #16223a : #ffffff));
+    out property <color> key-hi: Surface.clay ? Surface.clay-key.brighter(0.10)
+        : (Surface.skeuo ? Surface.key-top.brighter(0.08) : (dk ? #20304a : #eaf0f4));
+    // A recess: list wells, tree bodies, thumb tiles.
+    out property <color> well: Surface.clay ? Surface.clay-well
+        : (Surface.skeuo ? Surface.key-bottom : (dk ? #0f1828 : #ffffff));
+    out property <color> line: Surface.clay ? transparent
+        : (Surface.skeuo ? Theme.outline-strong : (dk ? #2a3a54 : #d9e1e8));
+}
+
+component GradButton inherits Skin {
     in property <string> label;
     in property <image> icon;
     in property <bool> primary: false;
@@ -26,12 +71,12 @@ component GradButton inherits Rectangle {
     property <bool> dk: Theme.dark;
     height: 40px; min-width: 92px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 12px;
+    border-radius: Surface.r(12px);
     background: primary
         ? (danger ? @linear-gradient(120deg, #fb7185, #e11d48) : @linear-gradient(120deg, #0ea5e9, #14b8a6))
-        : (ta.has-hover ? (dk ? #20304a : #eaf0f4) : (dk ? #16223a : #ffffff));
+        : (ta.has-hover ? (CT.key-hi) : (CT.key));
     border-width: primary ? 0px : 1px;
-    border-color: danger ? (dk ? #7f1d2e : #fecdd3) : (dk ? #2a3a54 : #d9e1e8);
+    border-color: danger ? (dk ? #7f1d2e : #fecdd3) : (CT.line);
     drop-shadow-blur: primary ? 16px : 0px;
     drop-shadow-color: primary ? (danger ? #e11d4866 : #0d948866) : #00000000;
     drop-shadow-offset-y: primary ? 5px : 0px;
@@ -46,7 +91,7 @@ component GradButton inherits Rectangle {
     }
 }
 
-component Pill inherits Rectangle {
+component Pill inherits Skin {
     in property <string> label;
     in property <image> icon;
     in property <bool> active: false;
@@ -71,7 +116,7 @@ component Pill inherits Rectangle {
 }
 
 // Pill that shows an indeterminate sliding progress bar while `busy`.
-component BusyPill inherits Rectangle {
+component BusyPill inherits Skin {
     in property <string> label;
     in property <image> icon;
     in property <bool> busy: false;
@@ -80,8 +125,8 @@ component BusyPill inherits Rectangle {
     height: 40px; min-width: 84px;
     horizontal-stretch: 0; vertical-stretch: 0;
     border-radius: self.height / 2; clip: true;
-    background: busy ? (dk ? #16223a : #e6f6f3) : (ta.has-hover ? (dk ? #20304a : #eaf0f4) : (dk ? #16223a : #ffffff));
-    border-width: 1px; border-color: dk ? #2a3a54 : #d9e1e8;
+    background: busy ? (dk ? #16223a : #e6f6f3) : (ta.has-hover ? (CT.key-hi) : (CT.key));
+    border-width: 1px; border-color: CT.line;
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
         alignment: center; spacing: 7px; padding-left: 14px; padding-right: 14px;
@@ -92,32 +137,32 @@ component BusyPill inherits Rectangle {
     }
     if busy: Rectangle {
         x: 0; y: parent.height - 3px; width: 100%; height: 3px; clip: true;
-        Rectangle { height: 100%; width: parent.width * 0.4; border-radius: 1.5px;
+        Rectangle { height: 100%; width: parent.width * 0.4; border-radius: Surface.r(1.5px);
             background: @linear-gradient(90deg, #0ea5e9, #14b8a6);
             x: -0.4 * parent.width + Math.mod(animation-tick() / 1ms, 1300) / 1300 * (parent.width * 1.4);
         }
     }
 }
 
-component IconBtn inherits Rectangle {
+component IconBtn inherits Skin {
     in property <image> icon;
     in property <bool> active: false;
     callback clicked();
     property <bool> dk: Theme.dark;
-    width: 40px; height: 40px; border-radius: 12px;
+    width: 40px; height: 40px; border-radius: Surface.r(12px);
     horizontal-stretch: 0; vertical-stretch: 0;
-    background: active ? @linear-gradient(120deg, #0ea5e9, #14b8a6) : (ta.has-hover ? (dk ? #20304a : #eaf0f4) : (dk ? #16223a : #ffffff));
-    border-width: active ? 0px : 1px; border-color: dk ? #2a3a54 : #d9e1e8;
+    background: active ? @linear-gradient(120deg, #0ea5e9, #14b8a6) : (ta.has-hover ? (CT.key-hi) : (CT.key));
+    border-width: active ? 0px : 1px; border-color: CT.line;
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     AppIcon { source: root.icon; tint: active ? #ffffff : (dk ? #5eead4 : #0d9488); width: 17px; height: 17px; }
 }
 
-component CtxItem inherits Rectangle {
+component CtxItem inherits Skin {
     in property <string> label;
     in property <bool> danger: false;
     callback clicked();
     property <bool> dk: Theme.dark;
-    height: 34px; horizontal-stretch: 1; border-radius: 7px;
+    height: 34px; horizontal-stretch: 1; border-radius: Surface.r(7px);
     background: ci.has-hover ? (danger ? (dk ? #3a1a22 : #ffe4e6) : (dk ? #20304a : #e8f7f3)) : transparent;
     ci := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
@@ -138,8 +183,8 @@ component Field {
         spacing: 5px;
         Text { text: root.label; color: dk ? #9fb1c4 : #64748b; font-size: 11px; font-weight: 700; }
         Rectangle {
-            height: 38px; border-radius: 10px; background: dk ? #0f1828 : #ffffff;
-            border-width: 1px; border-color: ti.has-focus ? #14b8a6 : (dk ? #2a3a54 : #d9e1e8);
+            height: 38px; border-radius: Surface.r(10px); background: CT.well;
+            border-width: 1px; border-color: ti.has-focus ? #14b8a6 : (CT.line);
             clip: true;
             HorizontalLayout {
                 padding-left: 12px; padding-right: 12px;
@@ -171,8 +216,8 @@ component RemotePathField {
         HorizontalLayout {
             spacing: 8px;
             Rectangle {
-                width: 150px; height: 38px; border-radius: 10px;
-                background: dk ? #0f1828 : #ffffff; border-width: 1px; border-color: dk ? #2a3a54 : #d9e1e8;
+                width: 150px; height: 38px; border-radius: Surface.r(10px);
+                background: CT.well; border-width: 1px; border-color: CT.line;
                 HorizontalLayout {
                     padding-left: 12px; padding-right: 10px; spacing: 6px;
                     Text { text: root.sel; color: #14b8a6; font-size: 13px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
@@ -182,18 +227,18 @@ component RemotePathField {
                 dpop := PopupWindow {
                     x: 0; y: 42px; width: 190px;
                     Rectangle {
-                        background: dk ? #141d2e : #ffffff; border-radius: 12px;
+                        background: CT.card; border-radius: Surface.r(12px);
                         border-width: 1px; border-color: dk ? #2a3a54 : #e6ebf0;
-                        drop-shadow-blur: 26px; drop-shadow-color: #00000088; drop-shadow-offset-y: 8px;
+                        drop-shadow-blur: Surface.cast(26px); drop-shadow-color: #00000088; drop-shadow-offset-y: 8px;
                         VerticalLayout {
                             padding: 6px; spacing: 1px;
-                            Rectangle { height: 32px; border-radius: 7px;
+                            Rectangle { height: 32px; border-radius: Surface.r(7px);
                                 background: loc.has-hover ? (dk ? #20304a : #e8f7f3) : transparent;
                                 loc := TouchArea { mouse-cursor: pointer; clicked => { root.sel = "Local"; root.value-changed(root.dir); } }
                                 HorizontalLayout { padding-left: 12px;
                                     Text { text: "Local path"; color: dk ? #d7e0ea : #1e2a37; font-size: 13px; vertical-alignment: center; } }
                             }
-                            for r[i] in root.remotes: Rectangle { height: 32px; border-radius: 7px;
+                            for r[i] in root.remotes: Rectangle { height: 32px; border-radius: Surface.r(7px);
                                 background: rmh.has-hover ? (dk ? #20304a : #e8f7f3) : transparent;
                                 rmh := TouchArea { mouse-cursor: pointer; clicked => { root.sel = r.name; root.value-changed(r.name + ":" + root.dir); } }
                                 HorizontalLayout { padding-left: 12px; spacing: 8px;
@@ -205,8 +250,8 @@ component RemotePathField {
                 }
             }
             Rectangle {
-                horizontal-stretch: 1; height: 38px; border-radius: 10px;
-                background: dk ? #0f1828 : #ffffff; border-width: 1px; border-color: pin.has-focus ? #14b8a6 : (dk ? #2a3a54 : #d9e1e8);
+                horizontal-stretch: 1; height: 38px; border-radius: Surface.r(10px);
+                background: CT.well; border-width: 1px; border-color: pin.has-focus ? #14b8a6 : (CT.line);
                 HorizontalLayout {
                     padding-left: 12px; padding-right: 12px;
                     Rectangle { horizontal-stretch: 1; clip: true;
@@ -222,13 +267,13 @@ component RemotePathField {
     }
 }
 
-component CyclePill inherits Rectangle {
+component CyclePill inherits Skin {
     in property <string> label;
     in property <string> value;
     callback clicked();
     property <bool> dk: Theme.dark;
-    height: 38px; border-radius: 10px; border-width: 1px; border-color: dk ? #2a3a54 : #d9e1e8;
-    background: ta.has-hover ? (dk ? #20304a : #e8f7f3) : (dk ? #0f1828 : #ffffff);
+    height: 38px; border-radius: Surface.r(10px); border-width: 1px; border-color: CT.line;
+    background: ta.has-hover ? (dk ? #20304a : #e8f7f3) : (CT.well);
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
         padding-left: 12px; padding-right: 12px; spacing: 6px;
@@ -238,7 +283,7 @@ component CyclePill inherits Rectangle {
     }
 }
 
-component CheckRow inherits Rectangle {
+component CheckRow inherits Skin {
     in property <string> label;
     in-out property <bool> checked;
     callback toggled(bool);
@@ -248,7 +293,7 @@ component CheckRow inherits Rectangle {
     HorizontalLayout {
         spacing: 10px;
         Rectangle {
-            width: 20px; height: 20px; border-radius: 6px; y: (parent.height - self.height)/2;
+            width: 20px; height: 20px; border-radius: Surface.r(6px); y: (parent.height - self.height)/2;
             border-width: 1px; border-color: root.checked ? #14b8a6 : (dk ? #3a4a64 : #b6c2cd);
             background: root.checked ? @linear-gradient(120deg, #0ea5e9, #14b8a6) : transparent;
             Text { text: "✓"; color: #ffffff; font-size: 13px; font-weight: 700;
@@ -258,7 +303,7 @@ component CheckRow inherits Rectangle {
     }
 }
 
-component ToolCard inherits Rectangle {
+component ToolCard inherits Skin {
     in property <string> title;
     in property <string> subtitle;
     // Optional right-aligned action button on the title row (e.g. Refresh / Clear all).
@@ -268,9 +313,9 @@ component ToolCard inherits Rectangle {
     in property <bool> action-danger: false;
     callback action();
     property <bool> dk: Theme.dark;
-    border-radius: 16px; background: dk ? #141d2e : #ffffff;
+    border-radius: Surface.r(16px); background: CT.card;
     border-width: dk ? 1px : 0px; border-color: #243349;
-    drop-shadow-blur: 24px; drop-shadow-color: dk ? #00000055 : #1e293b14; drop-shadow-offset-y: 6px;
+    drop-shadow-blur: Surface.cast(24px); drop-shadow-color: dk ? #00000055 : #1e293b14; drop-shadow-offset-y: 6px;
     VerticalLayout {
         padding: 20px; spacing: 14px;
         HorizontalLayout { spacing: 12px;
@@ -283,6 +328,118 @@ component ToolCard inherits Rectangle {
                     clicked => { root.action(); } } }
         }
         @children
+    }
+}
+
+// ── generated-form widgets ─────────────────────────────────────────────────
+// One per widget kind in `CloudOpt.kind`. They write back into the model row
+// they were handed, which is what keeps the form state in one place instead of
+// a parallel array of bindings.
+
+// A sliding on/off switch for a `bool` option.
+component OptSwitch inherits Skin {
+    in-out property <bool> on;
+    callback toggled();
+    property <bool> dk: Theme.dark;
+    width: 44px; height: 24px; border-radius: 12px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    background: on ? @linear-gradient(120deg, #0ea5e9, #14b8a6) : (dk ? #24344c : #d9e1e8);
+    animate background { duration: 140ms; }
+    TouchArea { mouse-cursor: pointer; clicked => { root.on = !root.on; root.toggled(); } }
+    Rectangle {
+        y: 3px; width: 18px; height: 18px; border-radius: 9px; background: #ffffff;
+        x: root.on ? parent.width - self.width - 3px : 3px;
+        animate x { duration: 140ms; easing: ease-out; }
+    }
+}
+
+// A closed dropdown over rclone's suggested values. `values` is what actually
+// gets written — the labels carry rclone's one-line help beside them, which is
+// the whole reason the list is worth showing at all.
+component OptSelect inherits Skin {
+    in property <[string]> labels;
+    in property <[string]> values;
+    in-out property <string> value;
+    callback picked();
+    property <bool> dk: Theme.dark;
+    height: 36px; border-radius: Surface.r(10px);
+    background: CT.well; border-width: 1px;
+    border-color: ta.has-hover ? #14b8a6 : CT.line;
+    ta := TouchArea { mouse-cursor: pointer; clicked => { pop.show(); } }
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 10px; spacing: 6px;
+        Text {
+            text: root.value == "" ? "Choose…" : root.value;
+            color: root.value == "" ? (dk ? #5d7d92 : #94a3b8) : #14b8a6;
+            font-size: 13px; font-weight: 600; vertical-alignment: center;
+            horizontal-stretch: 1; overflow: elide;
+        }
+        Text { text: "▾"; color: dk ? #7a8ba0 : #94a3b8; font-size: 10px; vertical-alignment: center; }
+    }
+    pop := PopupWindow {
+        x: 0; y: 38px; width: root.width;
+        Rectangle {
+            background: CT.card; border-radius: Surface.r(12px);
+            border-width: 1px; border-color: CT.line;
+            drop-shadow-blur: Surface.cast(26px); drop-shadow-color: #00000088; drop-shadow-offset-y: 8px;
+            // Long lists are the norm here — s3 alone offers fifty regions.
+            ScrollView {
+                x: 6px; y: 6px;
+                width: parent.width - 12px;
+                height: min(280px, inner.preferred-height);
+                viewport-width: self.width;
+                viewport-height: inner.preferred-height;
+                inner := VerticalLayout {
+                    width: parent.width; alignment: start; spacing: 1px;
+                    for lbl[i] in root.labels: Rectangle {
+                        height: 30px; border-radius: Surface.r(7px);
+                        background: it.has-hover ? (dk ? #20304a : #e8f7f3) : transparent;
+                        it := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.value = root.values[i]; root.picked(); pop.close(); }
+                        }
+                        HorizontalLayout {
+                            padding-left: 10px; padding-right: 10px;
+                            Text {
+                                text: lbl; color: dk ? #d7e0ea : #1e2a37; font-size: 12.5px;
+                                vertical-alignment: center; overflow: elide;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A plain text box. `secret` masks it — passwords, keys and tokens are the
+// majority of what a cloud backend asks for.
+component OptText inherits Skin {
+    in property <string> placeholder;
+    in property <bool> secret: false;
+    in-out property <string> value;
+    callback edited();
+    property <bool> dk: Theme.dark;
+    height: 36px; border-radius: Surface.r(10px);
+    background: CT.well; border-width: 1px;
+    border-color: ti.has-focus ? #14b8a6 : CT.line;
+    clip: true;
+    HorizontalLayout {
+        padding-left: 12px; padding-right: 12px;
+        Rectangle {
+            horizontal-stretch: 1; clip: true;
+            ti := TextInput {
+                width: 100%; height: 100%; text <=> root.value;
+                color: dk ? #e8eef6 : #0f172a; font-size: 13px;
+                vertical-alignment: center; single-line: true;
+                input-type: root.secret ? InputType.password : InputType.text;
+                edited => { root.edited(); }
+            }
+            if root.value == "": Text {
+                text: root.placeholder; color: dk ? #5d7d92 : #94a3b8; font-size: 13px;
+                vertical-alignment: center; height: 100%; visible: !ti.has-focus;
+            }
+        }
     }
 }
 
@@ -311,7 +468,7 @@ component XferRow inherits HorizontalLayout {
     property <bool> dk: Theme.dark;
     spacing: 10px; height: 34px;
     VerticalLayout { alignment: center;
-        Rectangle { width: 20px; height: 20px; border-radius: 10px;
+        Rectangle { width: 20px; height: 20px; border-radius: Surface.r(10px);
             background: xfer.ok ? (dk ? #0c3a2a : #d1fae5) : (dk ? #3a1a22 : #ffe4e6);
             Text { text: xfer.ok ? "✓" : "✕"; color: xfer.ok ? #34d399 : #fb7185; font-size: 11px; font-weight: 700;
                 horizontal-alignment: center; vertical-alignment: center; } } }
@@ -319,12 +476,12 @@ component XferRow inherits HorizontalLayout {
     Text { text: xfer.detail; color: dk ? #9fb1c4 : #64748b; font-size: 12px; vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
     Text { text: xfer.when; color: dk ? #708194 : #94a3b8; font-size: 11px; vertical-alignment: center; }
     VerticalLayout { alignment: center;
-        Rectangle { width: 30px; height: 30px; border-radius: 9px;
+        Rectangle { width: 30px; height: 30px; border-radius: Surface.r(9px);
             background: rtb.has-hover ? (dk ? #1c2738 : #eaf0f4) : transparent;
             rtb := TouchArea { mouse-cursor: pointer; clicked => { root.retry(); } }
             AppIcon { source: Icons.refresh-cw; tint: #14b8a6; width: 14px; height: 14px; } } }
     VerticalLayout { alignment: center;
-        Rectangle { width: 30px; height: 30px; border-radius: 9px;
+        Rectangle { width: 30px; height: 30px; border-radius: Surface.r(9px);
             background: xcb.has-hover ? (dk ? #3a1a22 : #ffe4e6) : transparent;
             xcb := TouchArea { mouse-cursor: pointer; clicked => { root.clear(); } }
             AppIcon { source: Icons.x; tint: #e11d48; width: 12px; height: 12px; } } }
@@ -358,7 +515,29 @@ export component CloudPage inherits Rectangle {
     in-out property <bool> connect-open: false;
     in-out property <string> form-name: "";
     in-out property <string> form-backend: "drive";
-    in-out property <string> form-opts: "";
+    // ── generated rclone config form ──
+    // Two steps: pick a backend from rclone's own catalogue, then fill the form
+    // rclone says that backend takes. `opts` is in-out because the widgets write
+    // straight into the model — the alternative is a callback per keystroke.
+    in property <[CloudBackend]> backends: [];
+    in-out property <[CloudOpt]> opts: [];
+    in-out property <int> connect-step: 0;      // 0 = pick backend, 1 = form
+    in-out property <bool> connect-edit: false; // editing an existing remote
+    in-out property <string> backend-query: "";
+    in-out property <bool> show-advanced: false;
+    // Whether the picked backend authenticates over OAuth — decided in Rust from
+    // the presence of a `token` option, so the Authorize button only appears
+    // where rclone can actually do the dance.
+    in property <bool> form-oauth: false;
+    in property <bool> authorizing: false;
+    in property <string> connect-error: "";
+    in property <bool> connect-busy: false;
+    callback backend-search(string);
+    callback backend-pick(string);
+    callback opt-changed(string);
+    callback advanced-toggled();
+    callback authorize();
+    callback remote-edit(string);
 
     // Sync & Tools
     in-out property <bool> tools-open: false;
@@ -450,7 +629,7 @@ export component CloudPage inherits Rectangle {
     // Theme-aware palette.
     property <bool> dk: Theme.dark;
     property <color> canvas: dk ? #0b1220 : #f4f7f9;
-    property <color> surf:   dk ? #141d2e : #ffffff;
+    property <color> surf:   CT.card;
     property <color> surf2:  dk ? #0f1828 : #eef2f5;
     property <color> ink:    dk ? #e8eef6 : #0f172a;
     property <color> ink2:   dk ? #9fb1c4 : #64748b;
@@ -491,9 +670,9 @@ export component CloudPage inherits Rectangle {
                 padding-left: 28px; padding-right: 28px; spacing: 12px;
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     HorizontalLayout { spacing: 12px;
-                        Rectangle { width: 44px; height: 44px; border-radius: 13px; y: (parent.height - self.height)/2;
+                        Rectangle { width: 44px; height: 44px; border-radius: Surface.r(13px); y: (parent.height - self.height)/2;
                             background: @linear-gradient(135deg, #0ea5e9, #14b8a6);
-                            drop-shadow-blur: 14px; drop-shadow-color: #0d948855; drop-shadow-offset-y: 4px;
+                            drop-shadow-blur: Surface.cast(14px); drop-shadow-color: #0d948855; drop-shadow-offset-y: 4px;
                             AppIcon { source: Icons.cloud; tint: #ffffff; width: 24px; height: 24px; } }
                         VerticalLayout { alignment: center;
                             Text { text: "Cloud"; color: ink; font-size: 22px; font-weight: 700; }
@@ -514,7 +693,7 @@ export component CloudPage inherits Rectangle {
                                     vertical-alignment: center; single-line: true; edited => { root.search(self.text); } }
                                 if root.query == "": Text { text: "Filter files"; color: ink3; font-size: 13px; vertical-alignment: center; height: 100%; visible: !qi.has-focus; }
                             }
-                            if root.query != "": Rectangle { width: 26px; height: 26px; border-radius: 13px; y: (parent.height - self.height)/2;
+                            if root.query != "": Rectangle { width: 26px; height: 26px; border-radius: Surface.r(13px); y: (parent.height - self.height)/2;
                                 background: cx.has-hover ? hover : transparent;
                                 cx := TouchArea { mouse-cursor: pointer; clicked => { root.query = ""; root.search(""); } }
                                 AppIcon { source: Icons.x; tint: ink2; width: 12px; height: 12px;
@@ -554,8 +733,8 @@ export component CloudPage inherits Rectangle {
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     Text { text: op-label; color: ink; font-size: 12px; font-weight: 600; vertical-alignment: center; } }
                 VerticalLayout { alignment: center; horizontal-stretch: 1;
-                    Rectangle { height: 8px; border-radius: 4px; background: field;
-                        Rectangle { x: 0; y: 0; height: parent.height; border-radius: 4px;
+                    Rectangle { height: 8px; border-radius: Surface.r(4px); background: field;
+                        Rectangle { x: 0; y: 0; height: parent.height; border-radius: Surface.r(4px);
                             width: parent.width * op-frac; background: @linear-gradient(90deg, #0ea5e9, #14b8a6); } } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     Text { text: Math.round(op-frac * 100) + "%"; color: ink2; font-size: 12px; font-weight: 700; vertical-alignment: center; } }
@@ -639,18 +818,18 @@ export component CloudPage inherits Rectangle {
                             rail := VerticalLayout {
                                 spacing: 6px; alignment: start;
                                 for r[i] in remotes: Rectangle {
-                                    height: 54px; border-radius: 12px;
+                                    height: 54px; border-radius: Surface.r(12px);
                                     background: r.name == active-remote ? surf : (rta.has-hover ? hover : transparent);
                                     drop-shadow-blur: r.name == active-remote ? 14px : 0px;
                                     drop-shadow-color: r.name == active-remote ? #0d948822 : #00000000;
                                     drop-shadow-offset-y: r.name == active-remote ? 3px : 0px;
                                     rta := TouchArea { mouse-cursor: pointer; clicked => { root.remote-open(r.name); } }
-                                    Rectangle { x: 0; y: 8px; width: 4px; height: parent.height - 16px; border-radius: 2px;
+                                    Rectangle { x: 0; y: 8px; width: 4px; height: parent.height - 16px; border-radius: Surface.r(2px);
                                         background: @linear-gradient(180deg, #0ea5e9, #14b8a6); visible: r.name == active-remote; }
                                     HorizontalLayout {
                                         padding-left: 14px; padding-right: 8px; spacing: 10px;
                                         VerticalLayout { alignment: center;
-                                            Rectangle { width: 34px; height: 34px; border-radius: 10px;
+                                            Rectangle { width: 34px; height: 34px; border-radius: Surface.r(10px);
                                                 background: r.name == active-remote ? @linear-gradient(135deg, #0ea5e9, #14b8a6) : (dk ? #1c2a3e : #dbe7ec);
                                                 AppIcon { source: Icons.cloud; tint: r.name == active-remote ? #ffffff : #14b8a6; width: 18px; height: 18px; } } }
                                         VerticalLayout {
@@ -659,13 +838,23 @@ export component CloudPage inherits Rectangle {
                                                 Text { text: r.name; color: ink; font-size: 13px; font-weight: 700; overflow: elide; }
                                                 // green dot = mounted
                                                 if r.mounted: VerticalLayout { alignment: center;
-                                                    Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #22c55e;
-                                                        drop-shadow-blur: 6px; drop-shadow-color: #22c55eaa; } }
+                                                    Rectangle { width: 8px; height: 8px; border-radius: Surface.r(4px); background: #22c55e;
+                                                        drop-shadow-blur: Surface.cast(6px); drop-shadow-color: #22c55eaa; } }
                                             }
                                             Text { text: r.mounted ? (r.backend + " · mounted") : r.backend; color: r.mounted ? #16a34a : ink3; font-size: 10px; }
                                         }
+                                        // Reopens the same generated form with the
+                                        // remote's stored values filled in, so a
+                                        // wrong region does not mean delete and
+                                        // start over.
                                         VerticalLayout { alignment: center;
-                                            Rectangle { width: 30px; height: 30px; border-radius: 9px;
+                                            Rectangle { width: 30px; height: 30px; border-radius: Surface.r(9px);
+                                                background: edt.has-hover ? hover : transparent;
+                                                edt := TouchArea { mouse-cursor: pointer;
+                                                    clicked => { root.remote-edit(r.name); } }
+                                                AppIcon { source: Icons.settings; tint: edt.has-hover ? #14b8a6 : ink3; width: 14px; height: 14px; } } }
+                                        VerticalLayout { alignment: center;
+                                            Rectangle { width: 30px; height: 30px; border-radius: Surface.r(9px);
                                                 background: dta.has-hover ? (dk ? #3a1a22 : #ffe4e6) : transparent;
                                                 dta := TouchArea { mouse-cursor: pointer;
                                                     clicked => { root.confirm-remote = r.name; root.confirm-open = true; } }
@@ -686,7 +875,7 @@ export component CloudPage inherits Rectangle {
                         HorizontalLayout { alignment: center;
                             Rectangle { width: 104px; height: 104px; border-radius: 28px;
                                 background: @linear-gradient(135deg, #0ea5e9, #14b8a6);
-                                drop-shadow-blur: 30px; drop-shadow-color: #0d948855; drop-shadow-offset-y: 10px;
+                                drop-shadow-blur: Surface.cast(30px); drop-shadow-color: #0d948855; drop-shadow-offset-y: 10px;
                                 AppIcon { source: Icons.cloud; tint: #ffffff; width: 48px; height: 48px; } } }
                         Text { text: remotes.length == 0 ? "No remotes connected" : "Pick a remote"; color: ink; font-size: 21px; font-weight: 700; horizontal-alignment: center; }
                         Text { text: "Connect Google Drive, Dropbox, S3 and 70+ more via rclone — then browse, mount, sync and stream."; color: ink2; font-size: 13px; horizontal-alignment: center; wrap: word-wrap; max-width: 420px; }
@@ -697,9 +886,9 @@ export component CloudPage inherits Rectangle {
                     if active-remote != "" && root.view == "list": VerticalLayout {
                         padding: 18px; spacing: 0px;
                         Rectangle {
-                            vertical-stretch: 1; border-radius: 16px; background: surf;
+                            vertical-stretch: 1; border-radius: Surface.r(16px); background: surf;
                             border-width: dk ? 1px : 0px; border-color: #243349;
-                            drop-shadow-blur: 24px; drop-shadow-color: dk ? #00000055 : #1e293b12; drop-shadow-offset-y: 6px;
+                            drop-shadow-blur: Surface.cast(24px); drop-shadow-color: dk ? #00000055 : #1e293b12; drop-shadow-offset-y: 6px;
                             clip: true;
                             VerticalLayout {
                                 spacing: 0px;
@@ -737,7 +926,7 @@ export component CloudPage inherits Rectangle {
                                                 HorizontalLayout {
                                                     horizontal-stretch: 1; spacing: 11px;
                                                     VerticalLayout { alignment: center;
-                                                        Rectangle { width: 30px; height: 30px; border-radius: 9px;
+                                                        Rectangle { width: 30px; height: 30px; border-radius: Surface.r(9px);
                                                             background: root.kind-tint(e.kind).with-alpha(dk ? 0.22 : 0.14);
                                                             AppIcon { source: root.kind-icon(e.kind); tint: root.kind-tint(e.kind); width: 16px; height: 16px; } } }
                                                     Text { text: e.name; color: ink; font-size: 13px; font-weight: 500; vertical-alignment: center; overflow: elide; }
@@ -766,7 +955,7 @@ export component CloudPage inherits Rectangle {
                                 x: gp.pad + Math.mod(i, gp.cols) * gp.cellw;
                                 y: gp.pad + Math.floor(i / gp.cols) * gp.cellh;
                                 width: gp.cellw - 14px; height: gp.cellh - 14px;
-                                border-radius: 14px; background: gta.has-hover ? surf : (dk ? #111a2a : #fbfcfd);
+                                border-radius: Surface.r(14px); background: gta.has-hover ? surf : (dk ? #111a2a : #fbfcfd);
                                 border-width: 1px; border-color: hair;
                                 drop-shadow-blur: gta.has-hover ? 20px : 0px;
                                 drop-shadow-color: gta.has-hover ? (dk ? #00000066 : #1e293b1f) : #00000000;
@@ -786,7 +975,7 @@ export component CloudPage inherits Rectangle {
                                 VerticalLayout {
                                     padding: 12px; spacing: 10px;
                                     Rectangle {
-                                        vertical-stretch: 1; border-radius: 11px;
+                                        vertical-stretch: 1; border-radius: Surface.r(11px);
                                         background: root.kind-tint(e.kind).with-alpha(dk ? 0.20 : 0.12);
                                         AppIcon { source: root.kind-icon(e.kind); tint: root.kind-tint(e.kind); width: 40px; height: 40px; }
                                     }
@@ -872,21 +1061,21 @@ export component CloudPage inherits Rectangle {
                         if root.tools-tab == "sync" && jobs.length > 0: ToolCard {
                             title: "Scheduled jobs";
                             for j[i] in jobs: Rectangle {
-                                height: 52px; border-radius: 12px; background: surf2; border-width: 1px; border-color: hair;
+                                height: 52px; border-radius: Surface.r(12px); background: surf2; border-width: 1px; border-color: hair;
                                 HorizontalLayout {
                                     padding-left: 14px; padding-right: 8px; spacing: 8px;
                                     VerticalLayout { alignment: center; horizontal-stretch: 1;
                                         Text { text: j.label; color: ink; font-size: 13px; font-weight: 700; overflow: elide; }
                                         Text { text: j.schedule + (j.enabled ? "" : " · paused"); color: ink3; font-size: 10px; } }
-                                    Rectangle { width: 34px; height: 34px; border-radius: 10px; y: (parent.height - self.height)/2;
+                                    Rectangle { width: 34px; height: 34px; border-radius: Surface.r(10px); y: (parent.height - self.height)/2;
                                         background: rb.has-hover ? hover : transparent;
                                         rb := TouchArea { mouse-cursor: pointer; clicked => { root.job-run(j.id); } }
                                         AppIcon { source: Icons.play; tint: #14b8a6; width: 15px; height: 15px; } }
-                                    Rectangle { width: 34px; height: 34px; border-radius: 10px; y: (parent.height - self.height)/2;
+                                    Rectangle { width: 34px; height: 34px; border-radius: Surface.r(10px); y: (parent.height - self.height)/2;
                                         background: tb.has-hover ? hover : transparent;
                                         tb := TouchArea { mouse-cursor: pointer; clicked => { root.job-toggle(j.id); } }
                                         AppIcon { source: j.enabled ? Icons.pause : Icons.check; tint: ink2; width: 15px; height: 15px; } }
-                                    Rectangle { width: 34px; height: 34px; border-radius: 10px; y: (parent.height - self.height)/2;
+                                    Rectangle { width: 34px; height: 34px; border-radius: Surface.r(10px); y: (parent.height - self.height)/2;
                                         background: jdb.has-hover ? (dk ? #3a1a22 : #ffe4e6) : transparent;
                                         jdb := TouchArea { mouse-cursor: pointer; clicked => { root.job-delete(j.id); } }
                                         AppIcon { source: Icons.trash; tint: #e11d48; width: 14px; height: 14px; } }
@@ -945,8 +1134,8 @@ export component CloudPage inherits Rectangle {
                                     Text { text: u.has_quota ? (u.used + " / " + u.total) : u.used; color: ink2; font-size: 12px; }
                                 }
                                 if u.has_quota: Rectangle {
-                                    height: 8px; border-radius: 4px; background: field;
-                                    Rectangle { x: 0; y: 0; height: parent.height; border-radius: 4px;
+                                    height: 8px; border-radius: Surface.r(4px); background: field;
+                                    Rectangle { x: 0; y: 0; height: parent.height; border-radius: Surface.r(4px);
                                         width: parent.width * u.fraction; background: @linear-gradient(90deg, #0ea5e9, #14b8a6); }
                                 }
                             }
@@ -967,28 +1156,293 @@ export component CloudPage inherits Rectangle {
     }
 
     // ── Connect-remote modal ──
+    //
+    // Two steps over one card. Step 0 is rclone's own backend catalogue; step 1
+    // is the form rclone says that backend takes — every option, its type, its
+    // suggested values, its help. The schema is read from the binary that will
+    // run the config, so it stays right across rclone upgrades instead of
+    // rotting into a hand-kept list of key names.
     if connect-open: ModalScrim {
         close => { root.connect-cancel(); }
         Rectangle {
-            width: 480px; height: 440px; border-radius: 18px; background: surf;
-            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            width: 620px; height: 620px; border-radius: Surface.r(18px); background: surf;
+            drop-shadow-blur: Surface.cast(40px); drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
             TouchArea {}
             VerticalLayout {
-                padding: 26px; spacing: 14px;
-                Text { text: "Connect a remote"; color: ink; font-size: 19px; font-weight: 700; }
-                Text { text: "Shells rclone config create. OAuth backends (drive/dropbox) need a token — paste token={...} below or run rclone authorize first.";
-                    color: ink2; font-size: 11px; wrap: word-wrap; }
-                Field { label: "Name"; placeholder: "gdrive"; text <=> root.form-name; }
-                Field { label: "Backend"; placeholder: "drive / s3 / dropbox / webdav / sftp …"; text <=> root.form-backend; }
-                Text { text: "Options (key=value per line)"; color: ink2; font-size: 11px; font-weight: 700; }
-                Rectangle {
-                    vertical-stretch: 1; border-radius: 10px; border-width: 1px; border-color: hair; clip: true; background: field;
-                    TextEdit { width: 100%; height: 100%; text <=> root.form-opts; }
-                }
+                padding: 26px; spacing: 12px;
+
+                // Title row. Step 1 puts Back in front of it — the backend list
+                // is where the dialog starts, so it is where Back goes.
                 HorizontalLayout {
-                    spacing: 10px; alignment: end;
+                    spacing: 10px; vertical-stretch: 0;
+                    if root.connect-step == 1 && !root.connect-edit: VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        Rectangle {
+                            width: 32px; height: 32px; border-radius: Surface.r(10px);
+                            background: bk.has-hover ? hover : surf2;
+                            border-width: 1px; border-color: hair;
+                            bk := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.connect-step = 0; root.backend-search(root.backend-query); }
+                            }
+                            AppIcon {
+                                source: Icons.chevron-left; tint: #14b8a6; width: 15px; height: 15px;
+                                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                            }
+                        }
+                    }
+                    VerticalLayout {
+                        spacing: 2px; horizontal-stretch: 1;
+                        Text {
+                            text: root.connect-edit ? "Edit " + root.form-name
+                                : (root.connect-step == 0 ? "Connect a remote" : root.form-backend);
+                            color: ink; font-size: 19px; font-weight: 700; overflow: elide;
+                        }
+                        Text {
+                            text: root.connect-step == 0
+                                ? "Pick what you are connecting to. The form on the next step is built from rclone's own option list."
+                                : "Required fields are marked. Everything else falls back to rclone's default.";
+                            color: ink2; font-size: 11px; wrap: word-wrap;
+                        }
+                    }
+                }
+
+                // ── step 0: the backend catalogue ──
+                if root.connect-step == 0: Rectangle {
+                    height: 38px; border-radius: Surface.r(10px); background: field;
+                    border-width: 1px; border-color: bq.has-focus ? #14b8a6 : hair;
+                    vertical-stretch: 0; clip: true;
+                    HorizontalLayout {
+                        padding-left: 12px; padding-right: 12px; spacing: 8px;
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            AppIcon { source: Icons.search; tint: ink2; width: 14px; height: 14px; }
+                        }
+                        Rectangle {
+                            horizontal-stretch: 1; clip: true;
+                            bq := TextInput {
+                                width: 100%; height: 100%; text <=> root.backend-query;
+                                color: ink; font-size: 13px; vertical-alignment: center; single-line: true;
+                                edited => { root.backend-search(self.text); }
+                            }
+                            if root.backend-query == "": Text {
+                                text: "Search 70+ backends — drive, s3, dropbox, sftp…";
+                                color: ink3; font-size: 13px; vertical-alignment: center;
+                                height: 100%; visible: !bq.has-focus;
+                            }
+                        }
+                    }
+                }
+                if root.connect-step == 0: Rectangle {
+                    vertical-stretch: 1; border-radius: Surface.r(12px); background: field;
+                    border-width: 1px; border-color: hair; clip: true;
+                    if root.backends.length == 0: Text {
+                        text: root.rclone-ok
+                            ? "Nothing matched. Clear the search to see the whole list."
+                            : "rclone not found — install rclone (or bundle it in resources/bin) to connect remotes.";
+                        color: ink2; font-size: 12px; wrap: word-wrap;
+                        x: 16px; y: 16px; width: parent.width - 32px;
+                    }
+                    ScrollView {
+                        width: 100%; height: 100%;
+                        viewport-width: self.width;
+                        viewport-height: blist.preferred-height;
+                        blist := VerticalLayout {
+                            width: parent.width; alignment: start; padding: 6px; spacing: 2px;
+                            for b in root.backends: Rectangle {
+                                height: 46px; border-radius: Surface.r(9px);
+                                background: bh.has-hover ? hover : transparent;
+                                bh := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.backend-pick(b.name); }
+                                }
+                                HorizontalLayout {
+                                    padding-left: 12px; padding-right: 12px; spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        AppIcon { source: Icons.cloud; tint: #14b8a6; width: 16px; height: 16px; }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 1; spacing: 1px;
+                                        Text {
+                                            text: b.name; color: ink; font-size: 13px; font-weight: 700;
+                                            overflow: elide;
+                                        }
+                                        Text {
+                                            text: b.desc; color: ink2; font-size: 11px; overflow: elide;
+                                        }
+                                    }
+                                    // OAuth backends open a browser rather than
+                                    // asking for a key, which is worth knowing
+                                    // before the form appears.
+                                    if b.oauth: VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        Rectangle {
+                                            height: 20px; border-radius: Surface.r(6px);
+                                            background: dk ? #0c3a2a : #d1fae5;
+                                            HorizontalLayout {
+                                                padding-left: 7px; padding-right: 7px;
+                                                Text {
+                                                    text: "OAuth"; color: #14b8a6; font-size: 9.5px;
+                                                    font-weight: 800; vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── step 1: the generated form ──
+                if root.connect-step == 1: Field {
+                    label: "Name"; placeholder: "gdrive"; text <=> root.form-name;
+                }
+                if root.connect-step == 1: HorizontalLayout {
+                    spacing: 10px; vertical-stretch: 0;
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        OptSwitch {
+                            on: root.show-advanced;
+                            toggled => { root.show-advanced = self.on; root.advanced-toggled(); }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 1;
+                        Text {
+                            text: "Show advanced options"; color: ink2;
+                            font-size: 12px; font-weight: 600; vertical-alignment: center;
+                        }
+                    }
+                    // Only offered where rclone actually supports it: opens the
+                    // browser, waits for the redirect, drops the token in.
+                    if root.form-oauth: VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        GradButton {
+                            icon: Icons.shield;
+                            label: root.authorizing ? "Waiting for browser…" : "Authorize";
+                            clicked => { if (!root.authorizing) { root.authorize(); } }
+                        }
+                    }
+                }
+                if root.connect-step == 1: Rectangle {
+                    vertical-stretch: 1; border-radius: Surface.r(12px); background: field;
+                    border-width: 1px; border-color: hair; clip: true;
+                    ScrollView {
+                        width: 100%; height: 100%;
+                        viewport-width: self.width;
+                        viewport-height: olist.preferred-height;
+                        // A backend swap must not leave the form scrolled to
+                        // where the previous one ended.
+                        property <int> watch: root.opts.length;
+                        changed watch => { self.viewport-y = 0; }
+                        olist := VerticalLayout {
+                            width: parent.width; alignment: start; padding: 14px; spacing: 12px;
+                            for o[i] in root.opts: VerticalLayout {
+                                spacing: 4px;
+                                HorizontalLayout {
+                                    spacing: 6px;
+                                    Text {
+                                        text: o.label; color: ink2; font-size: 11px; font-weight: 700;
+                                        horizontal-stretch: 0; vertical-alignment: center;
+                                    }
+                                    if o.required: Text {
+                                        text: "required"; color: #fb7185; font-size: 9.5px;
+                                        font-weight: 800; horizontal-stretch: 0; vertical-alignment: center;
+                                    }
+                                    Rectangle { horizontal-stretch: 1; }
+                                    // A suggestion list that is not exhaustive
+                                    // still has to allow a value rclone has
+                                    // never heard of.
+                                    if o.free && !o.custom: Rectangle {
+                                        height: 18px; border-radius: Surface.r(5px);
+                                        horizontal-stretch: 0;
+                                        background: cst.has-hover ? hover : transparent;
+                                        cst := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.opts[i].custom = true; }
+                                        }
+                                        HorizontalLayout {
+                                            padding-left: 6px; padding-right: 6px;
+                                            Text {
+                                                text: "type my own"; color: #14b8a6; font-size: 10px;
+                                                font-weight: 700; vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                    if o.free && o.custom: Rectangle {
+                                        height: 18px; border-radius: Surface.r(5px);
+                                        horizontal-stretch: 0;
+                                        background: lst.has-hover ? hover : transparent;
+                                        lst := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.opts[i].custom = false; }
+                                        }
+                                        HorizontalLayout {
+                                            padding-left: 6px; padding-right: 6px;
+                                            Text {
+                                                text: "pick from list"; color: #14b8a6; font-size: 10px;
+                                                font-weight: 700; vertical-alignment: center;
+                                            }
+                                        }
+                                    }
+                                }
+                                if o.kind == "bool": HorizontalLayout {
+                                    spacing: 10px; alignment: start;
+                                    OptSwitch {
+                                        on: o.value == "true";
+                                        toggled => {
+                                            root.opts[i].value = self.on ? "true" : "false";
+                                            root.opt-changed(o.key);
+                                        }
+                                    }
+                                }
+                                if o.kind == "select" && !o.custom: OptSelect {
+                                    labels: o.choices;
+                                    values: o.choice-values;
+                                    value: o.value;
+                                    picked => { root.opts[i].value = self.value; root.opt-changed(o.key); }
+                                }
+                                if o.kind == "select" && o.custom: OptText {
+                                    placeholder: o.placeholder;
+                                    value: o.value;
+                                    edited => { root.opts[i].value = self.value; }
+                                }
+                                if o.kind == "secret": OptText {
+                                    placeholder: o.placeholder; secret: true;
+                                    value: o.value;
+                                    edited => { root.opts[i].value = self.value; }
+                                }
+                                if o.kind == "text": OptText {
+                                    placeholder: o.placeholder == "" ? "optional" : o.placeholder;
+                                    value: o.value;
+                                    edited => { root.opts[i].value = self.value; }
+                                }
+                                if o.help != "": Text {
+                                    text: o.help; color: ink3; font-size: 10.5px; wrap: word-wrap;
+                                }
+                            }
+                        }
+                    }
+                }
+
+                if root.connect-error != "": Text {
+                    text: root.connect-error; color: dk ? #fda4af : #be123c;
+                    font-size: 11.5px; wrap: word-wrap; vertical-stretch: 0;
+                }
+
+                HorizontalLayout {
+                    spacing: 10px; alignment: end; vertical-stretch: 0;
                     GradButton { label: "Cancel"; clicked => { root.connect-cancel(); } }
-                    GradButton { icon: Icons.plus; label: "Connect"; primary: true; clicked => { root.connect-submit(); } }
+                    if root.connect-step == 1: GradButton {
+                        icon: root.connect-edit ? Icons.save : Icons.plus;
+                        label: root.connect-busy
+                            ? "Working…"
+                            : (root.connect-edit ? "Save" : "Connect");
+                        primary: true;
+                        clicked => { if (!root.connect-busy) { root.connect-submit(); } }
+                    }
                 }
             }
         }
@@ -998,8 +1452,8 @@ export component CloudPage inherits Rectangle {
     if upload-open: ModalScrim {
         close => { root.upload-open = false; }
         Rectangle {
-            width: 460px; height: 262px; border-radius: 18px; background: surf;
-            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            width: 460px; height: 262px; border-radius: Surface.r(18px); background: surf;
+            drop-shadow-blur: Surface.cast(40px); drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
             TouchArea {}
             VerticalLayout {
                 padding: 26px; spacing: 12px;
@@ -1021,13 +1475,13 @@ export component CloudPage inherits Rectangle {
     if confirm-open: ModalScrim {
         close => { root.confirm-open = false; }
         Rectangle {
-            width: 420px; height: 230px; border-radius: 18px; background: surf;
-            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            width: 420px; height: 230px; border-radius: Surface.r(18px); background: surf;
+            drop-shadow-blur: Surface.cast(40px); drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
             TouchArea {}
             VerticalLayout {
                 padding: 26px; spacing: 12px;
                 HorizontalLayout { spacing: 12px;
-                    Rectangle { width: 44px; height: 44px; border-radius: 13px; background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
+                    Rectangle { width: 44px; height: 44px; border-radius: Surface.r(13px); background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
                         AppIcon { source: Icons.trash; tint: #e11d48; width: 22px; height: 22px; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 1;
                         Text { text: "Remove remote?"; color: ink; font-size: 18px; font-weight: 700; } }
@@ -1047,13 +1501,13 @@ export component CloudPage inherits Rectangle {
     if unmount-confirm-open: ModalScrim {
         close => { root.unmount-confirm-open = false; }
         Rectangle {
-            width: 420px; height: 220px; border-radius: 18px; background: surf;
-            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            width: 420px; height: 220px; border-radius: Surface.r(18px); background: surf;
+            drop-shadow-blur: Surface.cast(40px); drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
             TouchArea {}
             VerticalLayout {
                 padding: 26px; spacing: 12px;
                 HorizontalLayout { spacing: 12px;
-                    Rectangle { width: 44px; height: 44px; border-radius: 13px; background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
+                    Rectangle { width: 44px; height: 44px; border-radius: Surface.r(13px); background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
                         AppIcon { source: Icons.x; tint: #e11d48; width: 22px; height: 22px; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 1;
                         Text { text: "Unmount remote?"; color: ink; font-size: 18px; font-weight: 700; } }
@@ -1073,13 +1527,13 @@ export component CloudPage inherits Rectangle {
     if delete-confirm-open: ModalScrim {
         close => { root.delete-confirm-open = false; }
         Rectangle {
-            width: 420px; height: 224px; border-radius: 18px; background: surf;
-            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            width: 420px; height: 224px; border-radius: Surface.r(18px); background: surf;
+            drop-shadow-blur: Surface.cast(40px); drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
             TouchArea {}
             VerticalLayout {
                 padding: 26px; spacing: 12px;
                 HorizontalLayout { spacing: 12px;
-                    Rectangle { width: 44px; height: 44px; border-radius: 13px; background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
+                    Rectangle { width: 44px; height: 44px; border-radius: Surface.r(13px); background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
                         AppIcon { source: Icons.trash; tint: #e11d48; width: 22px; height: 22px; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 1;
                         Text { text: root.ctx-is-dir ? "Delete folder?" : "Delete file?"; color: ink; font-size: 18px; font-weight: 700; } }
@@ -1099,8 +1553,8 @@ export component CloudPage inherits Rectangle {
     if xfer-popup-open: ModalScrim {
         close => { root.xfer-popup-open = false; }
         Rectangle {
-            width: 580px; height: 440px; border-radius: 18px; background: surf;
-            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            width: 580px; height: 440px; border-radius: Surface.r(18px); background: surf;
+            drop-shadow-blur: Surface.cast(40px); drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
             TouchArea {}
             VerticalLayout {
                 padding: 24px; spacing: 14px;
@@ -1129,13 +1583,13 @@ export component CloudPage inherits Rectangle {
     if xfer-clear-open: ModalScrim {
         close => { root.xfer-clear-open = false; }
         Rectangle {
-            width: 420px; height: 210px; border-radius: 18px; background: surf;
-            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            width: 420px; height: 210px; border-radius: Surface.r(18px); background: surf;
+            drop-shadow-blur: Surface.cast(40px); drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
             TouchArea {}
             VerticalLayout {
                 padding: 26px; spacing: 12px;
                 HorizontalLayout { spacing: 12px;
-                    Rectangle { width: 44px; height: 44px; border-radius: 13px; background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
+                    Rectangle { width: 44px; height: 44px; border-radius: Surface.r(13px); background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
                         AppIcon { source: Icons.trash; tint: #e11d48; width: 22px; height: 22px; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 1;
                         Text { text: "Clear this transfer?"; color: ink; font-size: 18px; font-weight: 700; } }
@@ -1155,13 +1609,13 @@ export component CloudPage inherits Rectangle {
     if xfer-clearall-open: ModalScrim {
         close => { root.xfer-clearall-open = false; }
         Rectangle {
-            width: 420px; height: 210px; border-radius: 18px; background: surf;
-            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            width: 420px; height: 210px; border-radius: Surface.r(18px); background: surf;
+            drop-shadow-blur: Surface.cast(40px); drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
             TouchArea {}
             VerticalLayout {
                 padding: 26px; spacing: 12px;
                 HorizontalLayout { spacing: 12px;
-                    Rectangle { width: 44px; height: 44px; border-radius: 13px; background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
+                    Rectangle { width: 44px; height: 44px; border-radius: Surface.r(13px); background: dk ? #3a1a22 : #ffe4e6; horizontal-stretch: 0;
                         AppIcon { source: Icons.trash; tint: #e11d48; width: 22px; height: 22px; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 1;
                         Text { text: "Clear all transfers?"; color: ink; font-size: 18px; font-weight: 700; } }
@@ -1189,9 +1643,9 @@ export component CloudPage inherits Rectangle {
             y: min(root.ctx-y, root.height - self.height - 8px);
             width: 218px;
             height: menu.preferred-height + 12px;
-            border-radius: 12px; background: surf;
+            border-radius: Surface.r(12px); background: surf;
             border-width: dk ? 1px : 0px; border-color: #2a3a54;
-            drop-shadow-blur: 28px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 8px;
+            drop-shadow-blur: Surface.cast(28px); drop-shadow-color: #000000aa; drop-shadow-offset-y: 8px;
             menu := VerticalLayout {
                 padding: 6px; spacing: 1px;
                 CtxItem { label: root.ctx-is-dir ? "Open" : "Open / Play"; clicked => { root.ctx-open = false; root.ctx-action(root.ctx-index, "open"); } }
@@ -1212,8 +1666,8 @@ export component CloudPage inherits Rectangle {
     if crypt-open: ModalScrim {
         close => { root.crypt-cancel(); }
         Rectangle {
-            width: 480px; height: 486px; border-radius: 18px; background: surf;
-            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            width: 480px; height: 486px; border-radius: Surface.r(18px); background: surf;
+            drop-shadow-blur: Surface.cast(40px); drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
             TouchArea {}
             VerticalLayout {
                 padding: 26px; spacing: 13px;
@@ -1237,8 +1691,8 @@ export component CloudPage inherits Rectangle {
     if mountopts-open: ModalScrim {
         close => { root.mountopts-cancel(); }
         Rectangle {
-            width: 460px; height: 330px; border-radius: 18px; background: surf;
-            drop-shadow-blur: 40px; drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
+            width: 460px; height: 330px; border-radius: Surface.r(18px); background: surf;
+            drop-shadow-blur: Surface.cast(40px); drop-shadow-color: #000000aa; drop-shadow-offset-y: 12px;
             TouchArea {}
             VerticalLayout {
                 padding: 26px; spacing: 14px;

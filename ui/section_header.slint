@@ -3,6 +3,7 @@
 // passing its own accent + light/dark canvas so the per-app theme is preserved.
 // Modeled on the Photos page header (the reference look).
 import { AppIcon, Icons } from "icons.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { MicBtn } from "voice.slint";
 
 // Pill tab / action chip. Generalizes the old GPhotoChip / VideoTab / MusicTab /
@@ -146,7 +147,7 @@ export component HdrSearch inherits Rectangle {
             }
         }
         if root.query != "": Rectangle {
-            width: 28px; height: 28px; border-radius: 14px;
+            width: 28px; height: 28px; border-radius: Surface.r(14px);
             horizontal-stretch: 0; vertical-stretch: 0;
             y: (parent.height - self.height) / 2;
             background: dark ? (clearx.has-hover ? #ffffff33 : #ffffff22)

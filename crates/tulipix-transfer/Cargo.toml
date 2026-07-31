@@ -15,11 +15,20 @@ axum.workspace = true
 futures-util.workspace = true
 getrandom.workspace = true
 if-addrs.workspace = true
+# The `tulipix.local` record. Best-effort by design — see src/mdns.rs.
+mdns-sd = "0.13"
+# The app's own CA and the leaf it signs. `ring` to match the rustls provider
+# already resolved in this tree; the default would be free to pick aws-lc-rs and
+# link a second crypto library in beside it.
+rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
 serde_json.workspace = true
 sqlx.workspace = true
 # `net` for the listener: the workspace default trims tokio to what the media
 # crates use, and nothing there binds a socket.
-tokio = { workspace = true, features = ["net"] }
+tokio = { workspace = true, features = ["net", "io-util", "time", "rt"] }
+# Already in the tree under reqwest, so this costs no new dependency — only the
+# feature that lets us be the server end rather than the client end.
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
 tracing.workspace = true
 tulipix-core = { path = "../tulipix-core" }
 

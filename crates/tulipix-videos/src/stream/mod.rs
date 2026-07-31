@@ -18,6 +18,7 @@ pub mod crypto;
 pub mod downloads;
 pub mod feed;
 pub mod feed_cache;
+pub mod fourk;
 pub mod probe;
 pub mod progress;
 
@@ -891,6 +892,161 @@ impl StreamClient {
 
 // ---- user-editable host pool ----
 
+// ---- catalogue selection ----
+
+/// Which catalogue the Stream tab is searching.
+///
+/// The two are unrelated services with unrelated identifiers: MovieBox subject
+/// ids are numeric, 4KHDHub ids are URL paths. That is what lets bookmarks,
+/// history and downloads keep one `subject_id` column and still never confuse
+/// a row from one source for a row from the other.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Source {
+    #[default]
+    MovieBox,
+    FourK,
+}
+
+impl Source {
+    pub const ALL: [Source; 2] = [Source::MovieBox, Source::FourK];
+
+    pub fn key(self) -> &'static str {
+        match self {
+            Source::MovieBox => "moviebox",
+            Source::FourK => "fourk",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Source::MovieBox => "MovieBox",
+            Source::FourK => "4KHDHub",
+        }
+    }
+
+    /// Anything unrecognised falls back to MovieBox — it is the source with a
+    /// real API behind it, so it is the safe default for a stale setting.
+    pub fn parse(s: &str) -> Self {
+        match s.trim() {
+            "fourk" => Source::FourK,
+            _ => Source::MovieBox,
+        }
+    }
+}
+
+/// The remembered source. Its own settings key so it survives a restart.
+pub mod source {
+    use super::Source;
+    use tulipix_core::settings::Settings;
+
+    pub const KEY: &str = "stream.source";
+
+    pub fn load() -> Source {
+        Source::parse(&Settings::load().unwrap_or_default().text(KEY))
+    }
+
+    pub fn store(s: Source) {
+        let mut settings = Settings::load().unwrap_or_default();
+        settings.advanced.insert(KEY.to_string(), s.key().to_string());
+        if let Err(e) = settings.save() {
+            tracing::warn!(error = %e, "stream: could not remember the source");
+        }
+    }
+}
+
+/// One catalogue, whichever it is.
+///
+/// The Stream tab's search, detail, download and playback paths are identical
+/// between sources — a title, a season, an episode, a list of files — so they
+/// take this rather than one client type, and the whole of the difference
+/// between the two backends lives in this enum's four methods.
+#[derive(Clone)]
+pub enum Catalogue {
+    MovieBox(StreamClient),
+    FourK(fourk::FourKClient),
+}
+
+impl Catalogue {
+    pub fn source(&self) -> Source {
+        match self {
+            Catalogue::MovieBox(_) => Source::MovieBox,
+            Catalogue::FourK(_) => Source::FourK,
+        }
+    }
+
+    pub async fn search(&self, query: &str, page: usize) -> Result<Vec<SearchHit>, StreamError> {
+        match self {
+            Catalogue::MovieBox(c) => c.search(query, page).await,
+            Catalogue::FourK(c) => c.search(query, page).await,
+        }
+    }
+
+    /// Type-ahead titles. 4KHDHub has no suggest endpoint — its search *is* the
+    /// suggestion — so it answers with an empty list rather than an error.
+    pub async fn suggest(&self, query: &str) -> Result<Vec<String>, StreamError> {
+        match self {
+            Catalogue::MovieBox(c) => c.suggest(query).await,
+            Catalogue::FourK(_) => Ok(Vec::new()),
+        }
+    }
+
+    /// Which server answered, for the status line. 4KHDHub has one address
+    /// rather than a pool, so it names that.
+    pub async fn active_host(&self) -> String {
+        match self {
+            Catalogue::MovieBox(c) => c.active_host().await,
+            Catalogue::FourK(c) => c.base_url().trim_end_matches('/').to_string(),
+        }
+    }
+
+    pub async fn details(&self, id: &str) -> Result<Details, StreamError> {
+        match self {
+            Catalogue::MovieBox(c) => c.details(id).await,
+            Catalogue::FourK(c) => c.details(id).await,
+        }
+    }
+
+    pub async fn resources(
+        &self,
+        id: &str,
+        season: usize,
+        episode: usize,
+        resolution: &str,
+    ) -> Result<Vec<StreamFile>, StreamError> {
+        match self {
+            Catalogue::MovieBox(c) => c.resources(id, season, episode, resolution).await,
+            Catalogue::FourK(c) => c.resources(id, season, episode, resolution).await,
+        }
+    }
+
+    /// Sidecar subtitle tracks for one file. 4KHDHub ships none, so it answers
+    /// with an empty list rather than an error — no captions is a normal state
+    /// on both sources.
+    pub async fn captions(
+        &self,
+        subject_id: &str,
+        resource_id: &str,
+    ) -> Result<Vec<Caption>, StreamError> {
+        match self {
+            Catalogue::MovieBox(c) => c.captions(subject_id, resource_id).await,
+            Catalogue::FourK(_) => Ok(Vec::new()),
+        }
+    }
+
+    /// A [`StreamFile`]'s URL turned into something a player can open.
+    ///
+    /// MovieBox hands back direct links, so this is a pass-through for it.
+    /// 4KHDHub hands back a resolver page, and following that chain is a
+    /// network round trip — which is why every caller does this at play time
+    /// and not while building the file list.
+    pub async fn playable(&self, url: &str) -> Result<String, StreamError> {
+        match self {
+            Catalogue::MovieBox(_) => Ok(url.to_string()),
+            Catalogue::FourK(c) => c.playable_url(url).await,
+        }
+    }
+}
+
 /// The Stream tab's Hosts editor. Stored as newline-separated entries in the
 /// shared settings file so it round-trips with everything else in Settings.
 pub mod hosts {
@@ -1713,6 +1869,20 @@ mod tests {
         assert_eq!(hits.len(), 2); // both contain it
         let hits = parse_search(&p, "ek deewane");
         assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn a_stale_or_unknown_source_setting_falls_back_to_moviebox() {
+        // The safe default: it is the one with a real API behind it.
+        assert_eq!(Source::parse("fourk"), Source::FourK);
+        assert_eq!(Source::parse(" fourk "), Source::FourK);
+        assert_eq!(Source::parse("moviebox"), Source::MovieBox);
+        assert_eq!(Source::parse(""), Source::MovieBox);
+        assert_eq!(Source::parse("someone-elses-catalogue"), Source::MovieBox);
+        // Round-trips through the stored spelling.
+        for s in Source::ALL {
+            assert_eq!(Source::parse(s.key()), s);
+        }
     }
 
     #[test]

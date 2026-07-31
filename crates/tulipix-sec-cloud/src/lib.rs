@@ -11,29 +11,14 @@ use tulipix_core::proc::NoWindow;
 use tulipix_sec_photos::format_exif;
 
 mod cloud;
+mod connect;
 
 /// Register every cloud callback on `window` and do the initial remote refresh.
 pub fn wire(window: &MainWindow) {
     let w = window.as_weak();
     window.on_cloud_refresh(move || { cloud_refresh_remotes(w.clone()); });
-    let w = window.as_weak();
-    window.on_cloud_connect_open_dialog(move || {
-        if let Some(w) = w.upgrade() {
-            w.set_cloud_form_name("".into());
-            w.set_cloud_form_backend("drive".into());
-            w.set_cloud_form_opts("".into());
-            w.set_cloud_status("".into());
-            w.set_cloud_connect_open(true);
-        }
-    });
-    let w = window.as_weak();
-    window.on_cloud_connect_cancel(move || { if let Some(w) = w.upgrade() { w.set_cloud_connect_open(false); } });
-    let w = window.as_weak();
-    window.on_cloud_connect_submit(move || {
-        let Some(w0) = w.upgrade() else { return; };
-        cloud_connect(w.clone(), w0.get_cloud_form_name().to_string(),
-            w0.get_cloud_form_backend().to_string(), w0.get_cloud_form_opts().to_string());
-    });
+    // Connect / Edit remote: a config form generated from rclone's own schema.
+    connect::wire(window);
     let w = window.as_weak();
     window.on_cloud_remote_open(move |name| { cloud_open_remote(w.clone(), name.to_string()); });
     let w = window.as_weak();
@@ -400,41 +385,6 @@ async fn cloud_startup_mounts() {
             let _ = tokio::task::spawn_blocking(move || cloud_mount_ensure(&name)).await;
         }
     }
-}
-
-/// Create a remote non-interactively from the connect dialog fields.
-fn cloud_connect(weak: slint::Weak<MainWindow>, name: String, backend: String, opts: String) {
-    if name.trim().is_empty() || backend.trim().is_empty() { return; }
-    // Parse "key=value" lines / commas.
-    let pairs: Vec<(String, String)> = opts
-        .split(['\n', ','])
-        .filter_map(|kv| {
-            let kv = kv.trim();
-            if kv.is_empty() { return None; }
-            let (k, v) = kv.split_once('=')?;
-            Some((k.trim().to_string(), v.trim().to_string()))
-        })
-        .collect();
-    let handle = tokio::runtime::Handle::current();
-    handle.spawn(async move {
-        let name_c = name.clone();
-        let res = tokio::task::spawn_blocking(move || {
-            let refs: Vec<(&str, &str)> = pairs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
-            cloud::run(&tulipix_cloud::remotes::create_args(&name_c, &backend, &refs))
-        }).await.unwrap_or_else(|e| Err(anyhow::anyhow!(e)));
-        let _ = weak.upgrade_in_event_loop(move |w| {
-            match res {
-                Ok(_) => {
-                    w.set_cloud_connect_open(false);
-                    w.set_cloud_form_name("".into());
-                    w.set_cloud_form_opts("".into());
-                    w.set_cloud_status(format!("Connected '{name}'").into());
-                    cloud_refresh_remotes(w.as_weak());
-                }
-                Err(e) => w.set_cloud_status(format!("Connect failed: {e}").into()),
-            }
-        });
-    });
 }
 
 fn cloud_delete(weak: slint::Weak<MainWindow>, name: String) {

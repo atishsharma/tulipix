@@ -1,4 +1,5 @@
 import { Theme } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { ModalFrost } from "frost.slint";
 import { AppIcon, Icons } from "icons.slint";
 
@@ -27,9 +28,9 @@ export component ErrorBoundary inherits Rectangle {
             Text { text: message; color: Theme.text-dim; font-size: 13px; }
             Rectangle {
                 horizontal-stretch: 1; vertical-stretch: 1;
-                border-radius: 8px;
-                background: Theme.panel;
-                border-color: Theme.outline; border-width: 1px;
+                border-radius: Surface.r(8px);
+                background: Surface.body(Theme.panel);
+                border-color: Surface.hairline; border-width: 1px;
                 Text {
                     text: log-tail; color: Theme.text-dim;
                     font-size: 11px; font-family: "monospace";
@@ -41,19 +42,19 @@ export component ErrorBoundary inherits Rectangle {
             HorizontalLayout {
                 spacing: 8px;
                 Rectangle { horizontal-stretch: 1; }
-                Rectangle { width: 110px; height: 30px; border-radius: 8px;
-                    background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
+                Rectangle { width: 110px; height: 30px; border-radius: Surface.r(8px);
+                    background: Surface.body(Theme.panel-2); border-color: Surface.hairline; border-width: 1px;
                     TouchArea { clicked => { root.open-logs(); } }
                     Text { text: "Open Logs"; color: Theme.text; font-size: 12px;
                         horizontal-alignment: center; vertical-alignment: center; }
                 }
-                Rectangle { width: 80px; height: 30px; border-radius: 8px;
-                    background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
+                Rectangle { width: 80px; height: 30px; border-radius: Surface.r(8px);
+                    background: Surface.body(Theme.panel-2); border-color: Surface.hairline; border-width: 1px;
                     TouchArea { clicked => { root.reload(); } }
                     Text { text: "Reload"; color: Theme.text; font-size: 12px;
                         horizontal-alignment: center; vertical-alignment: center; }
                 }
-                Rectangle { width: 80px; height: 30px; border-radius: 8px;
+                Rectangle { width: 80px; height: 30px; border-radius: Surface.r(8px);
                     background: #dc2626;
                     TouchArea { clicked => { root.quit(); } }
                     Text { text: "Quit"; color: #ffffff; font-size: 12px; font-weight: 600;

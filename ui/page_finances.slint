@@ -22,6 +22,7 @@
 // already on it, because that distinction is a rule of the design and not a
 // styling choice this file gets to make.
 import { Theme } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { ScrollView, LineEdit, ComboBox, Switch } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
 // The same header primitives Photos · Videos · Music · Books · Cloud · Tools use.
@@ -44,12 +45,18 @@ export global FinTheme {
     out property <color> on-accent: #1a2e05;
     out property <bool>  light:     !Theme.dark;
     out property <color> canvas:   Theme.atmosphere;
-    out property <color> card:     Theme.panel;
-    out property <color> card-2:   Theme.panel-2;
-    out property <color> hairline: Theme.outline;
+    // Material, and only material: the lime ramp, the ink and the good/warn/bad
+    // status colours stay exactly where they are in every language. A finances
+    // page whose alarm colours moved with the skin is a page you cannot read.
+    out property <color> card:     Surface.clay ? Surface.card-ink
+        : (Surface.skeuo ? Surface.plate-ink : Theme.panel);
+    out property <color> card-2:   Surface.clay ? Surface.clay-key
+        : (Surface.skeuo ? Surface.key-top : Theme.panel-2);
+    out property <color> hairline: Surface.hairline;
     out property <color> ink:      Theme.text;
     out property <color> ink-dim:  Theme.text-dim;
-    out property <color> pill-bg:  Theme.glass;
+    out property <color> pill-bg:  Surface.clay ? Surface.clay-key
+        : (Surface.skeuo ? Surface.key-top : Theme.glass);
     out property <color> good:     Theme.ok;
     out property <color> warn:     Theme.warn;
     out property <color> bad:      Theme.error;
@@ -296,7 +303,7 @@ export struct FinField {
 // A local empty state. `empty_state.slint`'s component is keyed to a `Section`
 // enum and its own accent halo; this one takes an icon and a tint directly,
 // which is what a nine-tab section with nine different blank states needs.
-component Blank inherits Rectangle {
+component Blank inherits Skin {
     in property <string> title;
     in property <string> body;
     in property <image> icon;
@@ -309,7 +316,7 @@ component Blank inherits Rectangle {
             min-height: 48px; max-height: 48px;
             background: transparent;
             Rectangle {
-                width: 48px; height: 48px; border-radius: 15px;
+                width: 48px; height: 48px; border-radius: Surface.r(15px);
                 x: (parent.width - self.width) / 2;
                 background: root.tint.with-alpha(0.14);
                 AppIcon {
@@ -331,7 +338,7 @@ component Blank inherits Rectangle {
     }
 }
 
-component Pill inherits Rectangle {
+component Pill inherits Skin {
     in property <string> label;
     in property <color> hue: FinTheme.ink-dim;
     in property <bool> solid: false;
@@ -339,7 +346,7 @@ component Pill inherits Rectangle {
     height: 22px;
     min-width: t.width + 18px;
     max-width: t.width + 18px;
-    border-radius: 11px;
+    border-radius: Surface.r(11px);
     background: root.solid ? root.hue : root.hue.with-alpha(0.15);
     t := Text {
         x: (parent.width - self.width) / 2;
@@ -359,7 +366,7 @@ component Pill inherits Rectangle {
 // section *does* know — what kind of thing the row is — as an icon on a wash of
 // its meaning colour. Same shape and rhythm in the row, and it stays correct for
 // a merchant nobody has a logo for.
-component Tile inherits Rectangle {
+component Tile inherits Skin {
     in property <image> icon;
     in property <color> hue: FinTheme.accent;
     in property <length> size: 32px;
@@ -383,7 +390,7 @@ component Tile inherits Rectangle {
 // The pulse is a triangle wave off `animation-tick()` rather than a `Timer`: it
 // needs no state, cannot drift, and stops costing anything the moment the element
 // is not instantiated.
-component WarnPulse inherits Rectangle {
+component WarnPulse inherits Skin {
     in property <string> label;
     // Quiet: there is no sample data on screen, so this is not a warning — it is the
     // way back to the explainer. Same chip, no heartbeat, no alarm colour.
@@ -461,7 +468,7 @@ component FinTab inherits HdrChip {
 // Pill button. Secondary is a glass fill with a hairline border, primary is the
 // section gradient — the mockup's `.hbtn` / `.hbtn.solid` pair. An optional
 // leading icon, because a header button with a label and no icon reads as a link.
-component Btn inherits Rectangle {
+component Btn inherits Skin {
     in property <string> label;
     in property <image> icon;
     in property <bool> primary: false;
@@ -509,7 +516,7 @@ component Btn inherits Rectangle {
     animate background { duration: 120ms; }
 }
 
-component IconBtn inherits Rectangle {
+component IconBtn inherits Skin {
     in property <image> icon;
     in property <string> tip;
     in property <color> hue: FinTheme.ink-dim;
@@ -517,7 +524,7 @@ component IconBtn inherits Rectangle {
     horizontal-stretch: 0;
     min-width: 30px; max-width: 30px;
     min-height: 30px; max-height: 30px;
-    border-radius: 9px;
+    border-radius: Surface.r(9px);
     background: ta.has-hover ? FinTheme.pill-bg : transparent;
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     AppIcon {
@@ -529,8 +536,8 @@ component IconBtn inherits Rectangle {
     }
 }
 
-component Card inherits Rectangle {
-    border-radius: 16px;
+component Card inherits Skin {
+    border-radius: Surface.r(16px);
     background: FinTheme.card;
     border-width: 1px;
     border-color: FinTheme.hairline;
@@ -559,7 +566,7 @@ component CardTitle inherits HorizontalLayout {
 // one at 40% is a bar that failed to say the only thing it was drawn to say.
 // `toned: false` opts out, for the bars that measure progress rather than burn
 // (loan repayment, where 93% paid off is good news).
-component Bar inherits Rectangle {
+component Bar inherits Skin {
     in property <int> pct: 0;
     in property <color> hue: FinTheme.accent;
     in property <length> thickness: 8px;
@@ -584,7 +591,7 @@ component Bar inherits Rectangle {
 // Up is red and down is green because this only ever labels spending: an arrow
 // that means "more" is bad news here, and colouring by direction rather than by
 // meaning is how a dashboard ends up congratulating you for overspending.
-component Delta inherits Rectangle {
+component Delta inherits Skin {
     in property <string> label;
     in property <bool> up: false;
     horizontal-stretch: 0; vertical-stretch: 0;
@@ -593,7 +600,7 @@ component Delta inherits Rectangle {
     // set `l.width` from this width and this width from `l.width`, which is the
     // binding loop this file is one wrong line away from at all times.
     min-width: l.width + 33px; max-width: l.width + 33px;
-    border-radius: 11px;
+    border-radius: Surface.r(11px);
     property <color> hue: root.up ? FinTheme.bad : FinTheme.good;
     background: root.hue.with-alpha(0.16);
     AppIcon {
@@ -775,7 +782,7 @@ component SpendBreakdown inherits VerticalLayout {
         spacing: 10px;
         VerticalLayout {
             alignment: center; horizontal-stretch: 0;
-            Rectangle { width: 10px; height: 10px; border-radius: 3px; background: s.hue; }
+            Rectangle { width: 10px; height: 10px; border-radius: Surface.r(3px); background: s.hue; }
         }
         Text {
             text: s.name; color: FinTheme.ink; font-size: 12.5px;
@@ -821,7 +828,7 @@ component MonthBars inherits VerticalLayout {
                         x: parent.width / 2 - 11px;
                         height: parent.height * Math.max(1, m.income-pct) / 100;
                         y: parent.height - self.height;
-                        border-radius: 3px;
+                        border-radius: Surface.r(3px);
                         background: FinTheme.good.with-alpha(0.75);
                     }
                     Rectangle {
@@ -829,7 +836,7 @@ component MonthBars inherits VerticalLayout {
                         x: parent.width / 2 + 2px;
                         height: parent.height * Math.max(1, m.expense-pct) / 100;
                         y: parent.height - self.height;
-                        border-radius: 3px;
+                        border-radius: Surface.r(3px);
                         background: FinTheme.accent;
                     }
                 }
@@ -847,7 +854,7 @@ component MonthBars inherits VerticalLayout {
         HorizontalLayout {
             spacing: 6px; horizontal-stretch: 0;
             VerticalLayout { alignment: center; horizontal-stretch: 0;
-                Rectangle { width: 9px; height: 9px; border-radius: 3px;
+                Rectangle { width: 9px; height: 9px; border-radius: Surface.r(3px);
                     background: FinTheme.good.with-alpha(0.75); } }
             Text { text: "Income"; color: FinTheme.ink-dim; font-size: 11px;
                 vertical-alignment: center; }
@@ -855,7 +862,7 @@ component MonthBars inherits VerticalLayout {
         HorizontalLayout {
             spacing: 6px; horizontal-stretch: 0;
             VerticalLayout { alignment: center; horizontal-stretch: 0;
-                Rectangle { width: 9px; height: 9px; border-radius: 3px;
+                Rectangle { width: 9px; height: 9px; border-radius: Surface.r(3px);
                     background: FinTheme.accent; } }
             Text { text: "Spending"; color: FinTheme.ink-dim; font-size: 11px;
                 vertical-alignment: center; }
@@ -864,13 +871,13 @@ component MonthBars inherits VerticalLayout {
 }
 
 // ── one row of the "needs you" list ─────────────────────────────────────────
-component NeedsRow inherits Rectangle {
+component NeedsRow inherits Skin {
     in property <FinObligationRow> item;
     callback pay(int);
     callback skip(int);
     min-height: 56px; max-height: 56px;
     horizontal-stretch: 1;
-    border-radius: 12px;
+    border-radius: Surface.r(12px);
     background: ta.has-hover ? FinTheme.card-2 : transparent;
     ta := TouchArea { }
     property <color> hue:
@@ -1183,7 +1190,7 @@ export component FinancesPage inherits Rectangle {
                 // icon is dark-on-accent rather than accent-on-wash: it is the one
                 // place the section states its colour at full strength.
                 Rectangle {
-                    width: 44px; height: 44px; border-radius: 13px;
+                    width: 44px; height: 44px; border-radius: Surface.r(13px);
                     background: FinTheme.accent-grad;
                     // Also the way back to the sample-data explainer: see `demo-peek`.
                     TouchArea {
@@ -2587,7 +2594,7 @@ export component FinancesPage inherits Rectangle {
 
                             for a in root.accounts: Rectangle {
                                 min-height: 64px; max-height: 64px;
-                                border-radius: 12px;
+                                border-radius: Surface.r(12px);
                                 background: ata.has-hover ? FinTheme.card-2 : transparent;
                                 opacity: a.closed ? 0.55 : 1.0;
                                 ata := TouchArea { }
@@ -2596,7 +2603,7 @@ export component FinancesPage inherits Rectangle {
                                     VerticalLayout {
                                         alignment: center; horizontal-stretch: 0;
                                         Rectangle {
-                                            width: 34px; height: 34px; border-radius: 10px;
+                                            width: 34px; height: 34px; border-radius: Surface.r(10px);
                                             background: FinTheme.accent.with-alpha(0.14);
                                             AppIcon {
                                                 source: a.kind == "card" ? Icons.credit-card
@@ -2684,7 +2691,7 @@ export component FinancesPage inherits Rectangle {
                             }
                             for l in root.loans: Rectangle {
                                 min-height: 86px; max-height: 86px;
-                                border-radius: 12px;
+                                border-radius: Surface.r(12px);
                                 background: FinTheme.card-2;
                                 VerticalLayout {
                                     alignment: start;
@@ -2803,7 +2810,7 @@ export component FinancesPage inherits Rectangle {
                                         VerticalLayout {
                                             alignment: center; horizontal-stretch: 0;
                                             Rectangle { width: 10px; height: 10px;
-                                                border-radius: 3px; background: c.hue; }
+                                                border-radius: Surface.r(3px); background: c.hue; }
                                         }
                                         Text { text: c.name; color: FinTheme.ink;
                                             font-size: 12px; vertical-alignment: center;
@@ -3054,7 +3061,7 @@ export component FinancesPage inherits Rectangle {
                                             money-out: false, overdue: false };
                                     horizontal-stretch: 1;
                                     min-height: 62px; max-height: 62px;
-                                    border-radius: 10px;
+                                    border-radius: Surface.r(10px);
                                     background: cell.d.today
                                         ? FinTheme.accent.with-alpha(0.16)
                                         : (cell.d.in-month ? FinTheme.card-2 : transparent);
@@ -3162,7 +3169,7 @@ export component FinancesPage inherits Rectangle {
                                     VerticalLayout {
                                         alignment: center; horizontal-stretch: 0;
                                         Rectangle { width: 10px; height: 10px;
-                                            border-radius: 3px; background: t.hue; }
+                                            border-radius: Surface.r(3px); background: t.hue; }
                                     }
                                     Text { text: t.name; color: FinTheme.ink;
                                         font-size: 12px; vertical-alignment: center;
@@ -3185,7 +3192,7 @@ export component FinancesPage inherits Rectangle {
                                             y: parent.height - self.height;
                                             width: parent.width;
                                             height: parent.height * Math.max(2, m.pct) / 100;
-                                            border-radius: 3px;
+                                            border-radius: Surface.r(3px);
                                             background: m.current ? t.hue
                                                                   : t.hue.with-alpha(0.35);
                                         }
@@ -3219,7 +3226,7 @@ export component FinancesPage inherits Rectangle {
                             VerticalLayout {
                                 alignment: start; horizontal-stretch: 0;
                                 Rectangle {
-                                    width: 34px; height: 34px; border-radius: 10px;
+                                    width: 34px; height: 34px; border-radius: Surface.r(10px);
                                     background: flag.hue.with-alpha(0.15);
                                     AppIcon {
                                         source: f.severity == "good" ? Icons.trending-up
@@ -3266,13 +3273,13 @@ export component FinancesPage inherits Rectangle {
             height: dl.preferred-height;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            border-radius: 20px;
+            border-radius: Surface.r(20px);
             background: Theme.modal;
             border-width: 1px;
             // Warn-edged only while there is invented money on screen. Opened from the
             // logo with none left, this popup is an offer, not an alert.
             border-color: root.demo ? FinTheme.warn.with-alpha(0.35) : FinTheme.hairline;
-            drop-shadow-blur: 40px;
+            drop-shadow-blur: Surface.cast(40px);
             drop-shadow-color: #00000070;
             TouchArea { }
 
@@ -3284,7 +3291,7 @@ export component FinancesPage inherits Rectangle {
                     VerticalLayout {
                         alignment: center; horizontal-stretch: 0;
                         Rectangle {
-                            width: 34px; height: 34px; border-radius: 11px;
+                            width: 34px; height: 34px; border-radius: Surface.r(11px);
                             background: root.demo
                                 ? FinTheme.warn.with-alpha(0.16)
                                 : FinTheme.accent.with-alpha(0.14);
@@ -3368,11 +3375,11 @@ export component FinancesPage inherits Rectangle {
             height: Math.min(root.height - 64px, Math.max(240px, body.preferred-height));
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            border-radius: 20px;
+            border-radius: Surface.r(20px);
             background: Theme.modal;
             border-width: 1px;
             border-color: FinTheme.hairline;
-            drop-shadow-blur: 40px;
+            drop-shadow-blur: Surface.cast(40px);
             drop-shadow-color: #00000070;
             // A second TouchArea, so clicks inside the panel do not reach the
             // scrim's close handler.
@@ -3442,7 +3449,7 @@ export component FinancesPage inherits Rectangle {
                         if root.sheet == "reconcile": VerticalLayout {
                             spacing: 8px;
                             Rectangle {
-                                border-radius: 12px;
+                                border-radius: Surface.r(12px);
                                 background: FinTheme.warn.with-alpha(0.10);
                                 border-width: 1px;
                                 border-color: FinTheme.warn.with-alpha(0.30);
@@ -3571,7 +3578,7 @@ export component FinancesPage inherits Rectangle {
                         if root.sheet == "import": VerticalLayout {
                             spacing: 10px;
                             if root.import-needs-format: Rectangle {
-                                border-radius: 12px;
+                                border-radius: Surface.r(12px);
                                 background: FinTheme.warn.with-alpha(0.14);
                                 VerticalLayout {
                                     padding: 12px; spacing: 4px;
@@ -3620,7 +3627,7 @@ export component FinancesPage inherits Rectangle {
                             }
                             for p in root.proposals: Rectangle {
                                 min-height: 58px; max-height: 58px;
-                                border-radius: 12px;
+                                border-radius: Surface.r(12px);
                                 background: FinTheme.card-2;
                                 HorizontalLayout {
                                     padding-left: 12px; padding-right: 12px; spacing: 10px;
@@ -3661,7 +3668,7 @@ export component FinancesPage inherits Rectangle {
                 // An answer, not a complaint: what the chosen category's envelope
                 // has left, or which fields came off a photographed receipt.
                 if root.sheet-note != "": Rectangle {
-                    border-radius: 10px;
+                    border-radius: Surface.r(10px);
                     background: FinTheme.accent.with-alpha(0.10);
                     VerticalLayout {
                         padding: 10px;

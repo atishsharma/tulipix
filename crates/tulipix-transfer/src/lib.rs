@@ -8,11 +8,13 @@
 pub mod auth;
 pub mod inbox;
 pub mod ledger;
+pub mod mdns;
 pub mod names;
 pub mod net;
 pub mod range;
 pub mod server;
 pub mod share;
+pub mod tls;
 
 use std::net::Ipv4Addr;
 use std::path::{Path, PathBuf};
@@ -68,8 +70,19 @@ pub struct Snapshot {
     pub running: bool,
     pub port: u16,
     pub pin: String,
-    /// `http://{ip}:{port}/` — what a person types into a phone.
+    /// `https://{ip}:{port}/` — what a person types into a phone. Plain `http`
+    /// only when no certificate could be made; [`Snapshot::secure`] says which.
     pub url: String,
+    /// The nicer form of the same thing, over mDNS. Offered alongside the
+    /// address rather than instead of it: plenty of phones cannot resolve a
+    /// `.local` name, and the address always works.
+    pub host_url: String,
+    /// Where a phone goes to install the root certificate once. Plain HTTP by
+    /// design — the certificate cannot be fetched over a connection the browser
+    /// is refusing because it does not have that certificate yet.
+    pub trust_url: String,
+    /// Whether the server is actually on TLS.
+    pub secure: bool,
     /// The interfaces a phone could reach, best first: `(name, ip)`.
     pub interfaces: Vec<(String, String)>,
     /// Which of them the URL is built from.
@@ -195,6 +208,7 @@ impl TransferService {
             inbox: self.inbox.clone(),
             bind: format!("{addr}:{PORT}"),
             pool: pool.clone(),
+            tls: true,
         })
         .await;
         if started.is_err() {
@@ -203,6 +217,7 @@ impl TransferService {
                 inbox: self.inbox.clone(),
                 bind: format!("{addr}:0"),
                 pool,
+                tls: true,
             })
             .await;
         }
@@ -300,7 +315,23 @@ impl TransferService {
     pub fn pairing_url(&self) -> String {
         let Some(run) = &self.running else { return String::new() };
         let key = lock(&run.state.auth).new_pairing_key(server::now_secs());
-        format!("http://{}:{}/?k={key}", self.address(), run.port)
+        // The address, not `tulipix.local`: a QR that resolves on some phones
+        // and not others is worse than four numbers that resolve on all of them,
+        // and the certificate covers both names either way.
+        format!("{}/?k={key}", self.base_url())
+    }
+
+    /// The address to hand a phone, with no trailing slash.
+    ///
+    /// Plain `http` even when the server is on TLS, and deliberately. A browser
+    /// shows no interstitial for http, so this is the one entry point that works
+    /// on a phone which has never seen our certificate: it lands on the gateway,
+    /// which checks whether the phone can reach the TLS side and moves it across
+    /// itself. Pointing a first-time phone at `https` directly is what put the
+    /// browser's warning between it and the page explaining the warning.
+    fn base_url(&self) -> String {
+        let Some(run) = &self.running else { return String::new() };
+        format!("http://{}:{}", self.address(), run.port)
     }
 
     /// Whether the key inside the QR currently on screen is still good. False
@@ -414,7 +445,10 @@ impl TransferService {
             running: true,
             port: run.port,
             pin: run.pin.clone(),
-            url: format!("http://{}:{}", self.address(), run.port),
+            url: self.base_url(),
+            host_url: format!("http://{}:{}", tls::HOST, run.port),
+            trust_url: format!("http://{}:{}/trust", self.address(), run.port),
+            secure: run.secure,
             iface: self.address(),
             interfaces,
             files,

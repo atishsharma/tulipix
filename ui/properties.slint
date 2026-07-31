@@ -1,4 +1,5 @@
 import { Theme } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { ModalFrost } from "frost.slint";
 import { AppIcon, Icons } from "icons.slint";
 
@@ -60,8 +61,8 @@ export component PropertiesWindow inherits Rectangle {
                 // Left panel: facts + histogram.
                 Rectangle {
                     width: 320px;
-                    border-radius: 10px; background: Theme.panel;
-                    border-color: Theme.outline; border-width: 1px;
+                    border-radius: Surface.r(10px); background: Surface.body(Theme.panel);
+                    border-color: Surface.hairline; border-width: 1px;
                     VerticalLayout {
                         padding: 14px; spacing: 7px;
                         KvRow { k: "Path";     v: props.path; }
@@ -84,9 +85,9 @@ export component PropertiesWindow inherits Rectangle {
                         }
                         Rectangle {
                             height: 96px; horizontal-stretch: 1;
-                            border-radius: 8px; clip: true;
+                            border-radius: Surface.r(8px); clip: true;
                             background: #00000066;
-                            border-color: Theme.outline; border-width: 1px;
+                            border-color: Surface.hairline; border-width: 1px;
                             Image {
                                 source: props.histogram; image-fit: fill;
                                 width: parent.width; height: parent.height;
@@ -107,8 +108,8 @@ export component PropertiesWindow inherits Rectangle {
                 // Right panel: EXIF metadata.
                 Rectangle {
                     horizontal-stretch: 1;
-                    border-radius: 10px; background: Theme.panel;
-                    border-color: Theme.outline; border-width: 1px;
+                    border-radius: Surface.r(10px); background: Surface.body(Theme.panel);
+                    border-color: Surface.hairline; border-width: 1px;
                     VerticalLayout {
                         padding: 14px; spacing: 8px;
                         Text { text: "Metadata"; color: Theme.text-dim; font-size: 11px; font-weight: 700; }
@@ -131,14 +132,14 @@ export component PropertiesWindow inherits Rectangle {
                 spacing: 8px;
                 Rectangle { horizontal-stretch: 1; }
                 Rectangle {
-                    width: 150px; height: 30px; border-radius: 8px;
-                    background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
+                    width: 150px; height: 30px; border-radius: Surface.r(8px);
+                    background: Surface.body(Theme.panel-2); border-color: Surface.hairline; border-width: 1px;
                     TouchArea { clicked => { root.open-containing-folder(); } }
                     Text { text: "Open Containing"; color: Theme.text; font-size: 11px;
                         horizontal-alignment: center; vertical-alignment: center; }
                 }
                 Rectangle {
-                    width: 70px; height: 30px; border-radius: 8px;
+                    width: 70px; height: 30px; border-radius: Surface.r(8px);
                     background: Theme.brand;
                     TouchArea { clicked => { root.close(); root.open = false; } }
                     Text { text: "Close"; color: #ffffff; font-size: 11px; font-weight: 600;

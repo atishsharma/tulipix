@@ -1,4 +1,5 @@
 import { Theme } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 
 export enum FolderViewMode { library, folders, timeline }
 
@@ -6,9 +7,9 @@ export component ViewModeSwitcher inherits Rectangle {
     in-out property <FolderViewMode> mode: FolderViewMode.library;
     callback changed(FolderViewMode);
     height: 28px;
-    border-radius: 8px;
-    background: Theme.panel-2;
-    border-color: Theme.outline; border-width: 1px;
+    border-radius: Surface.r(8px);
+    background: Surface.body(Theme.panel-2);
+    border-color: Surface.hairline; border-width: 1px;
     HorizontalLayout {
         padding: 3px; spacing: 3px;
         for entry in [
@@ -17,7 +18,7 @@ export component ViewModeSwitcher inherits Rectangle {
             { label: "Timeline", v: FolderViewMode.timeline },
         ]: Rectangle {
             horizontal-stretch: 1;
-            border-radius: 6px;
+            border-radius: Surface.r(6px);
             background: mode == entry.v ? Theme.brand : transparent;
             TouchArea {
                 clicked => { root.mode = entry.v; root.changed(entry.v); }

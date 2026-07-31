@@ -5,6 +5,7 @@
 // - Reduce-motion aware: animations skipped, halo static.
 
 import { Theme, Accent, Section } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 
 export component EmptyState inherits Rectangle {
     in property <Section> section: Section.photos;
@@ -14,9 +15,9 @@ export component EmptyState inherits Rectangle {
     callback cta-clicked();
 
     border-radius: Theme.radius-lg;
-    background: Theme.panel;
+    background: Surface.body(Theme.panel);
     border-width: 1px;
-    border-color: Theme.outline;
+    border-color: Surface.hairline;
 
     // Soft accent halo behind the icon. Static when reduce-motion.
     Rectangle {
@@ -54,7 +55,7 @@ export component EmptyState inherits Rectangle {
 
         Rectangle {
             height: 36px;
-            border-radius: 10px;
+            border-radius: Surface.r(10px);
             background: Accent.color;
             TouchArea {
                 clicked => { root.cta-clicked(); }
@@ -82,7 +83,7 @@ export component HeartBurst inherits Rectangle {
         y: parent.height / 2 - 6px;
         width: 12px;
         height: 12px;
-        border-radius: 6px;
+        border-radius: Surface.r(6px);
         background: #ec4899;
         opacity: playing ? 0.0 : 1.0;
         animate opacity { duration: dur; easing: ease-out; }

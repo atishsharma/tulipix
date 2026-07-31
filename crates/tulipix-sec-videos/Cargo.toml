@@ -17,6 +17,7 @@ dev-reload = ["tulipix-ui/dev-reload"]
 [dependencies]
 slint.workspace = true
 tokio.workspace = true
+tracing.workspace = true
 sqlx = { workspace = true }
 sha2 = "0.10"
 # Stream tab: poster caching for remote search results.

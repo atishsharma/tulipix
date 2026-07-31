@@ -92,7 +92,7 @@ pub fn stream_bookmarks_refresh(weak: slint::Weak<MainWindow>) {
         if due.is_empty() {
             return;
         }
-        let Ok(c) = client().await else { return };
+        let Ok(c) = catalogue().await else { return };
         let mut news = false;
         for bm in due.into_iter().take(REFRESH_BATCH) {
             let Ok(d) = c.details(&bm.subject_id).await else { continue };

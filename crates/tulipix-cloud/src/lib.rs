@@ -19,6 +19,7 @@ pub mod http;
 pub mod jobs;
 pub mod mount;
 pub mod preview;
+pub mod providers;
 pub mod quota;
 pub mod ransomware;
 pub mod recycle;

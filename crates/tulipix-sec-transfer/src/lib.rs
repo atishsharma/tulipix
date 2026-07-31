@@ -390,6 +390,10 @@ fn refresh(w: &MainWindow) {
     w.set_transfer_running(snap.running);
     w.set_transfer_url(snap.url.clone().into());
     w.set_transfer_pin(snap.pin.clone().into());
+    // Empty unless there is a certificate to install, which is what makes the
+    // hint in the Connection card conditional without a second flag.
+    w.set_transfer_trust_url(if snap.secure { snap.trust_url.clone().into() } else { "".into() });
+    w.set_transfer_host_url(snap.host_url.clone().into());
     w.set_transfer_inbox(snap.inbox.display().to_string().into());
     w.set_transfer_inbox_ok(snap.inbox_ok);
     w.set_transfer_iface(snap.iface.clone().into());
@@ -487,13 +491,22 @@ fn refresh(w: &MainWindow) {
     if snap.running {
         let mut drawn = qr_drawn_for();
         if *drawn != snap.url || !with(|svc| svc.pairing_live()).unwrap_or(false) {
-            if let Some(img) = with(|svc| svc.pairing_url()).and_then(|u| qr::render(&u)) {
-                w.set_transfer_qr(img);
-                drawn.clone_from(&snap.url);
+            // Both tones from the one key: the enlarged view can be flipped to
+            // light-on-dark without minting a second code, which would spend a
+            // pairing key for a colour change.
+            if let Some(url) = with(|svc| svc.pairing_url()) {
+                if let Some(img) = qr::render(&url, false) {
+                    w.set_transfer_qr(img);
+                    if let Some(inv) = qr::render(&url, true) {
+                        w.set_transfer_qr_inv(inv);
+                    }
+                    drawn.clone_from(&snap.url);
+                }
             }
         }
     } else {
         w.set_transfer_qr(slint::Image::default());
+        w.set_transfer_qr_inv(slint::Image::default());
         qr_drawn_for().clear();
     }
 

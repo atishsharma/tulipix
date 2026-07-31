@@ -179,6 +179,72 @@ body {
 .body > section { display: flex; flex-direction: column; flex: 1; }
 .body > section[hidden] { display: none; }
 
+/* ---- PIN: scanner ---- */
+.scan { margin-top: 18px; }
+.scan-btn {
+  width: 100%;
+  display: flex; align-items: center; justify-content: center; gap: 9px;
+  padding: 14px 18px;
+  border: none;
+  border-radius: 13px;
+  background: var(--accent);
+  box-shadow: 0 6px 18px -8px var(--accent);
+  color: #fff;
+  font-size: 14.5px;
+  font-weight: 680;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
+}
+.scan-btn svg { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
+.scan-btn:active { filter: brightness(0.88); }
+.scan-btn:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; }
+.scan-btn[hidden] { display: none; }
+
+.scan-stage {
+  position: relative;
+  margin-top: 12px;
+  border-radius: 15px;
+  overflow: hidden;
+  background: #000;
+  aspect-ratio: 1 / 1;
+}
+.scan-stage[hidden] { display: none; }
+.scan-stage video { width: 100%; height: 100%; object-fit: cover; display: block; }
+/* A window rather than an overlay: the cut-out is four inset shadows, so there
+   is no second element to keep aligned with the video as it resizes. */
+.scan-frame {
+  position: absolute; inset: 16%;
+  border-radius: 12px;
+  box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.42);
+  outline: 2px solid rgba(255, 255, 255, 0.9);
+  outline-offset: -2px;
+}
+.scan-stop {
+  position: absolute; left: 50%; bottom: 12px; transform: translateX(-50%);
+  padding: 8px 18px;
+  border: none;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
+  color: #fff;
+  font-size: 12.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+.scan-note { font-size: 12.5px; line-height: 1.5; color: var(--ink-faint); margin: 12px 0 0; }
+.scan-note[hidden] { display: none; }
+.scan-note.bad { color: var(--warn); }
+
+.or {
+  display: flex; align-items: center; gap: 12px;
+  margin: 20px 0 0;
+  font-size: 11.5px;
+  color: var(--ink-faint);
+}
+.or::before, .or::after { content: ""; flex: 1; height: 1px; background: var(--line); }
+
 /* ---- PIN ---- */
 .pin-prompt { margin: 18px 0 0; font-size: 15px; line-height: 1.5; color: var(--ink-soft); }
 .pin-boxes { display: flex; gap: 8px; margin: 22px 0 4px; }
@@ -387,18 +453,21 @@ body {
   line-height: 1.5;
 }
 
-/* ---- tab bar ----
-   A frosted rail with two pills in it. The selected one fills with its own
-   colour and takes white text, which is the only treatment that stays legible
-   over whatever the blur picks up from the page behind it — a tinted label on
-   frosted glass washes out at exactly the moment it matters. */
+/* ---- tabs ----
+   Two pills in a frosted capsule, and no rail around it. The full-width band
+   this replaced read as a piece of furniture on a phone: a second header at
+   the wrong end of the screen, costing a row of list to say nothing. The glass
+   sits on the capsule, which is the only part that was ever doing any work.
+
+   The selected pill fills with its own colour and takes white text, which is
+   the only treatment that stays legible over whatever the blur picks up from
+   the page behind it — a tinted label on frosted glass washes out at exactly
+   the moment it matters. */
 .tabs {
   flex: none;
+  display: flex;
+  justify-content: center;
   padding: 8px 14px calc(8px + env(safe-area-inset-bottom));
-  background: var(--glass);
-  backdrop-filter: blur(18px) saturate(180%);
-  -webkit-backdrop-filter: blur(18px) saturate(180%);
-  border-top: 1px solid var(--line);
 }
 .tabs[hidden] { display: none; }
 .tabwrap {
@@ -406,15 +475,17 @@ body {
   gap: 6px;
   padding: 5px;
   border-radius: 15px;
-  background: var(--panel-2);
+  background: var(--glass);
+  backdrop-filter: blur(18px) saturate(180%);
+  -webkit-backdrop-filter: blur(18px) saturate(180%);
   border: 1px solid var(--line);
-  max-width: 640px;
-  margin: 0 auto;
+  box-shadow: 0 6px 20px -12px rgba(0, 0, 0, .55);
 }
 .tab {
-  flex: 1;
+  /* Sized by its own label now that the pill no longer spans the screen. */
+  flex: none;
   display: flex; align-items: center; justify-content: center; gap: 8px;
-  padding: 11px 0;
+  padding: 11px 20px;
   border: none;
   border-radius: 11px;
   background: transparent;

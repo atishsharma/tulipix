@@ -1,0 +1,487 @@
+// Design language — the surface treatment, and nothing else.
+//
+// Three languages share one layout. Every value here is paint: a radius, a
+// fill, a rim, a shadow. Nothing in this file moves an element, changes a
+// size, or hides anything, because a language that needs a different layout is
+// not a skin the app can offer as a setting — it is a second app.
+//
+//   0 · Standard      what the app already is. Every branch below returns the
+//                     exact values the components carried before this file
+//                     existed, so picking Standard is a true no-op.
+//   1 · Claymorphism  soft extruded lumps in one matte material. Big radii, no
+//                     borders at all, a wide diffuse cast, and a light rim on
+//                     the top-left edge. The body is opaque clay rather than an
+//                     accent wash — the accent survives as a whisper in the mix
+//                     and at full strength in the glyphs and pills, which is
+//                     what keeps a page of lumps from reading as one grey slab.
+//                     The active row presses *in* rather than lighting up.
+//   2 · Skeuomorphism moulded plates. Lit from above, hard rim on the upper
+//                     edge, tight radii, hairlines everywhere, and an active row
+//                     whose sheen inverts so it reads as a key pushed down.
+//
+// All three run on the app's own three tiers (light · dark · OLED). The one
+// that needs watching is OLED: a cast shadow is invisible against #000000, so
+// on that tier the ramps compress toward black and the rim carries the whole
+// shape. Text never changes colour here — Theme.text and Theme.text-dim are AAA
+// on all three tiers already, and a language that has to dim the type to look
+// right is a language that fails the contrast bar.
+
+import { Theme } from "tokens.slint";
+
+export global Surface {
+    // Set from Rust out of `ui.design-language`; 0 is the shipped look.
+    in-out property <int> lang: 0;
+
+    out property <bool> clay:  lang == 1;
+    out property <bool> skeuo: lang == 2;
+
+    // ── geometry ────────────────────────────────────────────────────────────
+    // Radius is paint, not layout: nothing reflows when it changes.
+    out property <length> panel-radius: clay ? 30px : (skeuo ? 14px : Theme.radius-lg);
+    out property <length> card-radius:  clay ? 26px : (skeuo ? 12px : 14px);
+    out property <length> row-radius:   clay ? 18px : (skeuo ? 10px : Theme.radius-md);
+    out property <length> btn-radius:   clay ? 16px : (skeuo ?  9px : 10px);
+    out property <length> glyph-radius: clay ? 13px : (skeuo ?  8px :  9px);
+
+    /// Scale a radius that a component already chose for itself.
+    ///
+    /// Home is full of small surfaces — thumbnails, chips, tiles, the Continue
+    /// cards — each with a radius picked for its own size. Replacing them all
+    /// with one token would flatten that; scaling keeps every relationship and
+    /// still moves the whole page together. Standard returns the base
+    /// untouched, so it is a true no-op there.
+    public pure function r(base: length) -> length {
+        return clay ? base * 1.9 : (skeuo ? Math.max(4px, base * 0.72) : base);
+    }
+
+    // ── material ────────────────────────────────────────────────────────────
+    // The neutral ramps. These are what make the two languages read as
+    // different *substances* rather than the same page with rounder corners,
+    // and they are the part pass 1 was missing.
+
+    // Clay: one matte body in three depths — the lump, the key sitting on it,
+    // and the well something presses into. The lump is always lighter than the
+    // canvas, the well always darker, in every tier. On OLED the whole ramp
+    // compresses so the black tier stays black and the rim does the work.
+    out property <color> clay-shell: Theme.dark ? (Theme.oled ? #121214 : #1b1e30) : #ffffff;
+    out property <color> clay-key:   Theme.dark ? (Theme.oled ? #1a1a1e : #252943) : #ffffff;
+    out property <color> clay-well:  Theme.dark ? (Theme.oled ? #08080a : #12142099) : #e6e0f5;
+
+    // Moulded: every plate is lit from the top edge and falls away at the
+    // bottom, so each one is a pair. Keys run brighter than the shell they sit
+    // on — a key the same tone as its housing is a painted-on key.
+    out property <color> plate-top:    Theme.dark ? (Theme.oled ? #141414 : #1e2135) : #ffffff;
+    out property <color> plate-bottom: Theme.dark ? (Theme.oled ? #000000 : #101223) : #ece7f7;
+    out property <color> key-top:      Theme.dark ? (Theme.oled ? #1d1d1d : #2a2e45) : #ffffff;
+    out property <color> key-bottom:   Theme.dark ? (Theme.oled ? #0b0b0b : #171a2b) : #e9e4f6;
+
+    // The flat bodies a card accent is mixed *into*. Opaque on purpose: a
+    // translucent card over the canvas is the Standard recipe, and both of the
+    // other languages need a surface that looks like it is made of something.
+    out property <color> card-ink:  Theme.dark ? (Theme.oled ? #101012 : #1b1e30) : #ffffff;
+    out property <color> plate-ink: Theme.dark ? (Theme.oled ? #0e0e0e : #191c2c) : #fbfaff;
+
+    // Standard's sidebar shell — the exact pair it has always used.
+    out property <color> shell-ink: Theme.dark ? #161827 : #ffffff;
+
+    // ── rim and sheen ───────────────────────────────────────────────────────
+    // One inset hairline standing in for an inner highlight, which Slint has no
+    // primitive for. Both non-standard languages need it; OLED needs it most,
+    // because there it is the only thing separating one black box from another.
+    out property <bool> rim: clay || skeuo;
+    out property <color> rim-ink: clay
+        ? (Theme.dark ? (Theme.oled ? rgba(255,255,255,0.20) : rgba(255,255,255,0.15))
+                      : rgba(255,255,255,0.95))
+        : (Theme.dark ? (Theme.oled ? rgba(255,255,255,0.16) : rgba(255,255,255,0.12))
+                      : rgba(255,255,255,0.92));
+    // Clay's second ring. A single hard hairline reads as a drawn outline,
+    // which is the one thing clay must not have; a fainter ring a pixel further
+    // in turns it into a soft edge instead.
+    out property <color> rim-ink-2: Theme.dark
+        ? (Theme.oled ? rgba(255,255,255,0.07) : rgba(255,255,255,0.05))
+        : rgba(255,255,255,0.55);
+
+    // The sheen running across a surface — light where it faces the lamp,
+    // shade where it turns away. Held as globals rather than built inline
+    // because a gradient cannot read a function argument, but it can read
+    // these. Clay's pair is soft (it is matte); the moulded pair is not.
+    out property <color> sheen-hi: clay
+        ? (Theme.dark ? rgba(255,255,255,0.05) : rgba(255,255,255,0.38))
+        : (Theme.dark ? rgba(255,255,255,0.10) : rgba(255,255,255,0.60));
+    out property <color> sheen-lo: clay
+        ? (Theme.dark ? rgba(0,0,0,0.16) : rgba(26,16,64,0.05))
+        : (Theme.dark ? rgba(0,0,0,0.24) : rgba(26,16,64,0.07));
+
+    // ── shadow ──────────────────────────────────────────────────────────────
+    // Claymorphism is mostly this shadow; skeuomorphism uses a tighter, harder
+    // one. Standard casts nothing at rest, which is what it does today.
+    out property <color> shadow-ink: Theme.dark
+        ? (Theme.oled ? #000000e6 : #00000099)
+        : rgba(26, 16, 64, 0.16);
+    out property <length> panel-shadow:   clay ? 34px : (skeuo ? 22px : 28px);
+    out property <length> panel-shadow-y: clay ? 14px : (skeuo ?  8px :  0px);
+    out property <length> card-shadow:    clay ? 26px : (skeuo ? 14px : 0px);
+    out property <length> card-shadow-y:  clay ? 10px : (skeuo ?  5px : 0px);
+
+    /// The cast under a small raised surface — tiles, chips, covers.
+    public pure function tile-shadow() -> length {
+        return clay ? 14px : (skeuo ? 7px : 0px);
+    }
+
+    public pure function tile-shadow-y() -> length {
+        return clay ? 6px : (skeuo ? 3px : 0px);
+    }
+
+    // ── borders ─────────────────────────────────────────────────────────────
+    // Clay has none, anywhere. A single hairline is enough to flatten the whole
+    // illusion, which is why this is a hard zero rather than a faint value.
+    out property <length> panel-border-w: clay ? 0px : 1px;
+    out property <color>  panel-border:   clay ? transparent : (skeuo ? Theme.outline-strong : Theme.outline);
+
+    /// A separator rule, and the default outline every panel in the app reaches
+    /// for. Clay does not have rules — a line drawn across a lump is a line
+    /// drawn across a lump — while the moulded language leans on them harder
+    /// than Standard, because a plate without a defined edge is a smear.
+    out property <color> hairline: clay
+        ? transparent
+        : (skeuo ? Theme.outline-strong : Theme.outline);
+
+    // ── the shells ──────────────────────────────────────────────────────────
+    // These return `brush` because the moulded branch is a gradient, but the
+    // Standard branch hands back the plain colour it always used rather than a
+    // one-colour gradient. Same pixels either way, and it keeps Standard on the
+    // exact rendering path it was on before this file existed.
+
+    /// The window canvas. Standard and clay are flat — clay wants its lumps to
+    /// be the only lit thing on screen — while the moulded page falls off
+    /// toward the bottom like a lit surface seen at an angle.
+    public pure function canvas() -> brush {
+        return skeuo
+            ? @linear-gradient(180deg, Theme.atmosphere 0%, Theme.bg 100%)
+            : Theme.bg;
+    }
+
+    /// The sidebar / settings shell.
+    public pure function shell() -> brush {
+        return skeuo
+            ? @linear-gradient(180deg, plate-top 0%, plate-bottom 100%)
+            : (clay ? clay-shell : shell-ink);
+    }
+
+    /// A section-accented card body — Photos, Videos, Continue, Music, and the
+    /// rest of Home.
+    ///
+    /// Standard washes the accent over the page at 8%. The other two make the
+    /// card out of their own material and mix the accent *into* it at ~12%: a
+    /// Photos card still leans violet and a Books card still leans green, but
+    /// every card on the page is visibly the same substance, which is the whole
+    /// claim both languages make. `mix(other, f)` keeps `f` of self, so 0.88
+    /// is twelve percent accent.
+    public pure function plate(a: color) -> brush {
+        return clay
+            ? card-ink.mix(a, 0.88)
+            : (skeuo ? plate-ink.mix(a, 0.90) : a.with-alpha(0.08));
+    }
+
+    /// The quieter body the pink cards use. Pink is far brighter than the other
+    /// section accents, so Music, Continue and Quick Launch have always sat at
+    /// roughly a third of the standard fill to land at the same perceived
+    /// darkness. That relationship has to survive the language change, which is
+    /// why it is a second scale rather than a multiplier on `plate` —
+    /// `with-alpha` replaces an alpha, it does not scale one.
+    public pure function plate-quiet(a: color) -> brush {
+        return clay
+            ? card-ink.mix(a, 0.95)
+            : (skeuo ? plate-ink.mix(a, 0.96) : a.with-alpha(0.03));
+    }
+
+    /// `strong` picks the heavier of the two outlines the cards already use:
+    /// the section tiles carry 1.5px at 40%, the slideshow cards 1px at 24%.
+    public pure function plate-border(a: color, strong: bool) -> color {
+        return clay
+            ? transparent
+            : (skeuo
+                ? a.with-alpha(strong ? 0.55 : 0.34)
+                : a.with-alpha(strong ? 0.4 : 0.24));
+    }
+
+    public pure function plate-border-w(strong: bool) -> length {
+        return clay ? 0px : (skeuo ? 1.25px : (strong ? 1.5px : 1px));
+    }
+
+    /// Lift a flat fill for the moulded language, which wants every small
+    /// surface to look lit rather than printed, and settle it into the clay
+    /// body for the matte one. The sheen that finishes the moulding is [`Rim`],
+    /// because `@linear-gradient` resolves its stops outside the enclosing
+    /// function and so cannot see a parameter.
+    public pure function tile(c: color) -> brush {
+        return skeuo ? c.brighter(0.10) : c;
+    }
+
+    /// A small neutral surface — a chip, a thumbnail well, a Continue card.
+    ///
+    /// Standard hands back the theme colour the component picked. Clay ignores
+    /// it: every lump on the page is the same material, and a chip in a
+    /// slightly different grey is a chip that looks like a mistake. The moulded
+    /// language lifts it instead, and [`Rim`] finishes it.
+    public pure function body(c: color) -> brush {
+        return clay ? clay-key : (skeuo ? c.brighter(0.10) : c);
+    }
+
+    /// A neutral card body that keeps a hint of its section.
+    ///
+    /// `c` is the colour the component already picked — usually `Theme.panel` —
+    /// and Standard gets exactly that back. The other two build the card out of
+    /// their own material with the section accent mixed in at 6–8%, which is
+    /// what stops a page of cards from being a page of identical grey lumps
+    /// while still making them all obviously the same substance.
+    public pure function panel(c: color, a: color) -> brush {
+        return clay
+            ? card-ink.mix(a, 0.92)
+            : (skeuo ? plate-ink.mix(a, 0.94) : c);
+    }
+
+    /// An outline the section already chose the alpha for. Clay has no outlines
+    /// at all; the moulded language leans on them harder than Standard, since a
+    /// plate without a defined edge is a smear.
+    public pure function edge(a: color, amt: float) -> color {
+        return clay ? transparent : (skeuo ? a.with-alpha(Math.min(1.0, amt * 1.6)) : a.with-alpha(amt));
+    }
+
+    public pure function edge-w(base: length) -> length {
+        return clay ? 0px : base;
+    }
+
+    /// Scale a cast a component already chose. Standard keeps its own value —
+    /// several surfaces outside Home do cast a soft shadow at rest and this must
+    /// not take it away — while clay widens it and the moulded language tightens
+    /// it and pushes it down.
+    public pure function cast(base: length) -> length {
+        return clay ? base * 1.5 : (skeuo ? base * 0.8 : base);
+    }
+
+    public pure function cast-y(base: length) -> length {
+        return clay ? Math.max(6px, base * 0.4) : (skeuo ? Math.max(3px, base * 0.25) : 0px);
+    }
+
+    /// Both languages want their own shadow ink — clay's is wide and soft, the
+    /// moulded one hard — while Standard keeps whatever tint the component set.
+    public pure function cast-ink(base: color) -> color {
+        return rim ? shadow-ink : base;
+    }
+
+    /// An accent wash — the faint tinted fills behind Home's discs and pills.
+    ///
+    /// Standard is the literal `a.with-alpha(amt)` those sites already used.
+    /// The other two cannot use a wash at all: a translucent tint is a stain on
+    /// a surface, and both languages need the surface to *be* something. Same
+    /// perceived tint, mixed into an opaque body instead.
+    public pure function wash(a: color, amt: float) -> color {
+        return clay
+            ? clay-key.mix(a, 1.0 - amt)
+            : (skeuo ? key-top.mix(a, 1.0 - amt) : a.with-alpha(amt));
+    }
+
+    // ── nav rows ────────────────────────────────────────────────────────────
+
+    /// A sidebar row.
+    ///
+    /// Standard: glass wash, double outline. Clay: the active row is pressed
+    /// into the shell, so it is a *well* — darker than the surface around it,
+    /// carrying the accent up out of the recess. Skeuo: nothing at rest, a lit
+    /// plate on hover, and an accented key when active whose recess comes from
+    /// [`Rim`]'s inverted sheen.
+    public pure function row-bg(active: bool, hover: bool, a: color) -> brush {
+        return clay
+            ? (active ? clay-well.mix(a, 0.80) : (hover ? clay-key : transparent))
+            : (skeuo
+                ? (active ? plate-ink.mix(a, 0.74) : (hover ? Theme.glass-strong : transparent))
+                : (active ? Theme.glass-strong : (hover ? Theme.glass : transparent)));
+    }
+
+    public pure function row-border(active: bool, hover: bool, a: color) -> color {
+        return clay
+            ? transparent
+            : (skeuo
+                ? (active ? a.with-alpha(0.62) : (hover ? Theme.outline-strong : transparent))
+                : (active ? a : (hover ? Theme.glass-border : transparent)));
+    }
+
+    public pure function row-border-w(active: bool) -> length {
+        return clay ? 0px : (skeuo ? 1px : (active ? 1.5px : 1px));
+    }
+
+    /// The double outline is Standard's signature for "you are here". The other
+    /// two carry the active state in the material — a recess in clay, a pushed
+    /// key in the moulded one — and drawing both would read as two competing
+    /// answers to the same question.
+    out property <bool> nav-ring: lang == 0;
+
+    /// The glyph tile inside a nav row.
+    ///
+    /// Standard leaves it empty at rest, which is why pass 1 looked like
+    /// nothing had happened: the icon is the most-looked-at object in the
+    /// sidebar and it was the one thing no language touched. Clay makes it a
+    /// raised lump with the accent mixed in; the moulded language makes it a
+    /// key, brighter than the shell and finished by [`Rim`].
+    public pure function glyph-bg(a: color, active: bool, hover: bool) -> brush {
+        return clay
+            ? (active ? clay-key.mix(a, 0.60) : clay-key.mix(a, 0.86))
+            : (skeuo
+                ? (active ? key-top.mix(a, 0.58) : key-top)
+                : ((!active && hover) ? Theme.glass : transparent));
+    }
+
+    public pure function glyph-border(a: color, active: bool) -> color {
+        return clay
+            ? transparent
+            : (skeuo ? (active ? a.with-alpha(0.55) : Theme.outline-strong) : transparent);
+    }
+
+    public pure function glyph-border-w() -> length {
+        return skeuo ? 1px : 0px;
+    }
+
+    // ── keys ────────────────────────────────────────────────────────────────
+
+    /// Dock keys, quick-launch tiles, transport buttons.
+    public pure function key-bg(active: bool, hover: bool) -> brush {
+        return skeuo
+            ? (active
+                ? @linear-gradient(180deg, key-bottom 0%, key-top 100%)
+                : @linear-gradient(180deg, key-top 0%, key-bottom 100%))
+            : (clay
+                ? (active ? clay-well : (hover ? clay-key.brighter(0.10) : clay-key))
+                : (active ? Theme.glass-strong : (hover ? Theme.glass : transparent)));
+    }
+
+    public pure function key-border(active: bool, hover: bool) -> color {
+        return clay
+            ? transparent
+            : (skeuo
+                ? Theme.outline-strong
+                : ((active || hover) ? Theme.glass-border : transparent));
+    }
+
+    // No `key-shadow` on purpose. The dock keys, the quick-launch discs and the
+    // Music tabs hold a single glyph each, and a cast under a 34–48px surface
+    // lands directly beneath that glyph and greys it out. Those surfaces take
+    // the language through their fill, radius and rim only.
+
+    // ── press feedback ──────────────────────────────────────────────────────
+    /// Whether [`Ripple`] paints while nothing is happening.
+    ///
+    /// It does today: every term in that component is scaled by `1 - t`, so at
+    /// rest it lays a 2px accent outline, an accent wash and a radial glow over
+    /// whatever it is sitting in, and *fades out* while the row is held. That is
+    /// the shipped look of the sidebar and Standard keeps it exactly.
+    ///
+    /// It is also why the other two languages looked like Standard: clay's
+    /// defining move is no border anywhere, and the ripple was putting one back
+    /// on every row from underneath. There, the effect runs the way its name
+    /// promises instead — nothing at rest, a swell while held.
+    out property <bool> ripple-at-rest: lang == 0;
+}
+
+// The lit edge, and the sheen that goes with it.
+//
+// Slint has no inner shadow and no way to put a function argument inside a
+// gradient, so this one element carries both halves of what clay and moulded
+// surfaces need: a hairline rim in the border, and a directional sheen in the
+// background. Drop it inside any surface, inset by a pixel.
+//
+// `pressed` inverts the sheen — shade where the light used to be — which is the
+// whole reason a pushed key looks pushed.
+export component Rim inherits Rectangle {
+    in property <bool> pressed: false;
+    in property <length> radius: 0px;
+
+    border-radius: root.radius;
+    border-width: 1px;
+    border-color: Surface.rim-ink;
+    // 160°: the light is up and to the left in all three tiers. Break that on
+    // one surface and the page reads as a rendering bug rather than a style.
+    background: root.pressed
+        ? @linear-gradient(160deg,
+            Surface.sheen-lo 0%, transparent 48%, Surface.sheen-hi 100%)
+        : @linear-gradient(160deg,
+            Surface.sheen-hi 0%, transparent 52%, Surface.sheen-lo 100%);
+
+    // Clay's soft second edge. One hard hairline is an outline; two, the second
+    // fainter and a pixel further in, is a rounded edge catching the light.
+    if Surface.clay: Rectangle {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        border-radius: Math.max(1px, root.radius - 1px);
+        background: transparent;
+        border-width: 1px;
+        border-color: Surface.rim-ink-2;
+    }
+}
+
+// A card that carries its own rim.
+//
+// The Music and Books sections are seventy-odd small components between them,
+// and hand-placing a [`Rim`] inside each one is seventy edits that all have to
+// get the child order right. Deriving from this instead is one word per
+// component: the rim comes with the base, and whatever the component declares
+// lands inside it.
+//
+// Border only, no sheen. `Rim`'s gradient has to sit *under* the content or it
+// veils the text, and a base component's elements are drawn before the deriving
+// component's — but that ordering is worth not betting a whole section on. A
+// hairline is the same either way, and it is the half of the effect that
+// actually says clay or moulded.
+export component Skin inherits Rectangle {
+    if Surface.rim: Rectangle {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        border-radius: Math.max(2px, parent.border-radius - 1px);
+        background: transparent;
+        border-width: 1px;
+        border-color: Surface.rim-ink;
+    }
+}
+
+// The three-way picker for Profile & Style. Same shape as ThemePicker, because
+// these two settings are neighbours and a second visual grammar between them
+// would be a distinction with nothing behind it.
+export component DesignLangPicker inherits Rectangle {
+    // Read-only on purpose, unlike ThemePicker's two-way `choice`. The click
+    // goes out to Rust, which persists the name and sets `Surface.lang` in the
+    // same handler; the selected pill follows from that one source rather than
+    // from a local copy that would be briefly, invisibly out of step with what
+    // is actually on disk.
+    in property <int> choice: 0;
+    callback changed(int);
+
+    height: 40px;
+    border-radius: Theme.radius-md;
+    background: Theme.panel-2;
+    border-color: Theme.outline;
+    border-width: 1px;
+
+    HorizontalLayout {
+        padding: 4px; spacing: 4px;
+        for entry in [
+            { label: "Standard", v: 0 },
+            { label: "Claymorphism", v: 1 },
+            { label: "Skeuomorphism", v: 2 },
+        ]: Rectangle {
+            horizontal-stretch: 1;
+            border-radius: Theme.radius-sm;
+            background: root.choice == entry.v ? Theme.brand : transparent;
+            animate background { duration: 130ms; easing: ease-out; }
+            TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.changed(entry.v); }
+            }
+            Text {
+                text: entry.label;
+                color: root.choice == entry.v ? #ffffff : Theme.text-dim;
+                font-size: 12px; font-weight: 600;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
+        }
+    }
+}

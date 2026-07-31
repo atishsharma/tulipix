@@ -1,4 +1,5 @@
 import { Theme, Section, Accent } from "tokens.slint";
+import { Surface, Rim } from "surface.slint";
 import { PanelFrost } from "frost.slint";
 import { UserCard, UserState } from "user_card.slint";
 import { Mode } from "mode_pill.slint";
@@ -24,13 +25,14 @@ component NavRow inherits Rectangle {
     property <length> row-h: root.collapsed ? 46px : 58px;
     min-height: root.row-h; max-height: root.row-h;
     horizontal-stretch: 1;
-    border-radius: Theme.radius-md;
-    background: active ? Theme.glass-strong
-              : (touch.has-hover ? Theme.glass : transparent);
+    border-radius: Surface.row-radius;
+    background: Surface.row-bg(root.active, touch.has-hover, root.accent);
     // Outer ring — section accent when active.
-    border-width: active ? 1.5px : 1px;
-    border-color: active ? root.accent
-                : (touch.has-hover ? Theme.glass-border : transparent);
+    border-width: Surface.row-border-w(root.active);
+    border-color: Surface.row-border(root.active, touch.has-hover, root.accent);
+    // No cast under a nav row in any language. Clay's active row is pressed
+    // *into* the shell and the moulded one is a key pushed down — both are
+    // recesses, and a recess that also floats is a recess that reads as neither.
     animate background { duration: 130ms; easing: ease-out; }
     animate border-color { duration: 130ms; easing: ease-out; }
 
@@ -55,9 +57,21 @@ component NavRow inherits Rectangle {
         background: transparent;
         border-width: 1px;
         border-color: Theme.text.with-alpha(0.38);
-        opacity: root.active ? 1 : 0;
+        opacity: (root.active && Surface.nav-ring) ? 1 : 0;
         animate inset { duration: 220ms; easing: ease-out; }
         animate opacity { duration: 220ms; easing: ease-out; }
+    }
+
+    // Rim light. Stands in for the inner highlight neither clay nor a moulded
+    // plate can do without and Slint has no primitive for. On OLED it is the
+    // only thing telling one black box from the black box behind it.
+    if Surface.rim && (root.active || touch.has-hover): Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Math.max(2px, parent.border-radius - 1px);
+        // The active row is a key that has been pushed in, so its sheen runs
+        // the other way: shade along the top edge, light along the bottom.
+        pressed: root.active;
     }
 
     HorizontalLayout {
@@ -68,11 +82,24 @@ component NavRow inherits Rectangle {
             width: root.collapsed ? 28px : 40px; height: self.width;
             horizontal-stretch: 0; vertical-stretch: 0;
             y: (parent.height - self.height) / 2;
-            border-radius: 9px;
-            // No glass box behind the active icon — the double outline carries
-            // the active state; hover keeps its light wash.
-            background: (!active && touch.has-hover) ? Theme.glass : transparent;
+            border-radius: Surface.glyph-radius;
+            // Standard: no glass box behind the active icon — the double
+            // outline carries the active state and hover keeps its light wash.
+            // The other two make the tile itself the object: a clay lump with
+            // the accent mixed in, or a moulded key lit from the top edge. This
+            // is the most-looked-at surface in the sidebar, and leaving it empty
+            // is most of why the languages read as the same page before.
+            background: Surface.glyph-bg(root.accent, root.active, touch.has-hover);
+            border-width: Surface.glyph-border-w();
+            border-color: Surface.glyph-border(root.accent, root.active);
             animate background { duration: 130ms; easing: ease-out; }
+            if Surface.rim: Rim {
+                x: 1px; y: 1px;
+                width: parent.width - 2px; height: parent.height - 2px;
+                radius: Math.max(2px, parent.border-radius - 1px);
+                // A tile on an active row has gone down with the row it is on.
+                pressed: root.active;
+            }
             AppIcon {
                 source: icon-img;
                 tint: accent;
@@ -92,36 +119,25 @@ component NavRow inherits Rectangle {
             vertical-alignment: center;
             horizontal-stretch: 1;
         }
-        // Count pill, expanded only. `error` rather than the section accent:
-        // this is the one thing on the row that is meant to interrupt, and the
-        // lime Finances accent deliberately does not read as an alarm.
-        if !root.collapsed && root.badge > 0: Rectangle {
-            horizontal-stretch: 0;
-            y: (parent.height - self.height) / 2;
-            min-width: Math.max(20px, pill.width + 12px);
-            height: 20px;
-            border-radius: 10px;
-            background: Theme.error;
-            pill := Text {
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
-                text: root.badge > 99 ? "99+" : "\{root.badge}";
-                color: #ffffff;
-                font-size: 11px;
-                font-weight: 700;
-            }
-        }
     }
 
-    // Collapsed rail has no room for a pill, so the count becomes a dot in the
-    // icon's corner — still visible, which is the whole point of the badge.
-    if root.collapsed && root.badge > 0: Rectangle {
-        x: parent.width - self.width - 9px;
-        y: 9px;
+    // The alert dot, both widths: tucked just inside the row's own outline at
+    // the top-right. Placed by hand rather than in the layout — in the layout it
+    // was a count pill wide enough to push the row's content past the border and
+    // spill outside it, and the corner is where a badge is looked for anyway.
+    // `error` rather than the section accent: this is the one thing on the row
+    // meant to interrupt, and the lime Finances accent deliberately does not
+    // read as an alarm.
+    if root.badge > 0: Rectangle {
+        x: parent.width - self.width - (root.collapsed ? 9px : 8px);
+        y: root.collapsed ? 9px : 8px;
         width: 9px; height: 9px;
         border-radius: 4.5px;
         background: Theme.error;
-        border-width: 1.5px;
+        // A ring in the shell colour on the rail, where the dot sits over the
+        // glyph tile and needs cutting out of it. Expanded it sits on the row's
+        // own empty corner, so the ring would only be a second outline.
+        border-width: root.collapsed ? 1.5px : 0px;
         border-color: Theme.dark ? #161827 : #ffffff;
     }
 }
@@ -135,10 +151,10 @@ component IconButton inherits Rectangle {
     min-width: 38px; max-width: 38px;
     min-height: 38px; max-height: 38px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 12px;
-    background: active ? Theme.glass-strong : (touch.has-hover ? Theme.glass : transparent);
-    border-width: 1px;
-    border-color: (active || touch.has-hover) ? Theme.glass-border : transparent;
+    border-radius: Surface.btn-radius;
+    background: Surface.key-bg(root.active, touch.has-hover);
+    border-width: Surface.panel-border-w;
+    border-color: Surface.key-border(root.active, touch.has-hover);
     animate background { duration: 140ms; easing: ease-out; }
     animate border-color { duration: 140ms; easing: ease-out; }
     touch := TouchArea { clicked => { root.clicked(); } }
@@ -148,14 +164,22 @@ component IconButton inherits Rectangle {
         accent: root.accent;
         triggered: touch.pressed;
     }
-    // Faint inner highlight — frost recipe.
-    if (active || touch.has-hover): Rectangle {
+    // Faint inner highlight — frost recipe, Standard only. The other two get
+    // the full rim instead: at this size the lit top edge is the only thing
+    // saying "key" rather than "swatch".
+    if (!Surface.rim && (active || touch.has-hover)): Rectangle {
         x: 1px; y: 1px;
         width: parent.width - 2px; height: parent.height - 2px;
         border-radius: parent.border-radius - 1px;
         background: transparent;
         border-width: 1px;
         border-color: Theme.highlight-inner;
+    }
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Math.max(2px, parent.border-radius - 1px);
+        pressed: root.active || touch.pressed;
     }
     AppIcon {
         source: icon-img;
@@ -175,10 +199,10 @@ component DockBtn inherits Rectangle {
     callback clicked();
     min-height: 36px; max-height: 36px;
     horizontal-stretch: 1;
-    border-radius: 10px;
-    background: active ? Theme.glass-strong : (touch.has-hover ? Theme.glass : transparent);
-    border-width: 1px;
-    border-color: (active || touch.has-hover) ? Theme.glass-border : transparent;
+    border-radius: Surface.btn-radius;
+    background: Surface.key-bg(root.active, touch.has-hover);
+    border-width: Surface.panel-border-w;
+    border-color: Surface.key-border(root.active, touch.has-hover);
     animate background { duration: 130ms; easing: ease-out; }
     animate border-color { duration: 130ms; easing: ease-out; }
     touch := TouchArea { clicked => { root.clicked(); } }
@@ -188,14 +212,21 @@ component DockBtn inherits Rectangle {
         accent: root.accent;
         triggered: touch.pressed;
     }
-    // Faint inner highlight — frost recipe.
-    if (active || touch.has-hover): Rectangle {
+    // Faint inner highlight — frost recipe, Standard only; the other two take
+    // the rim, which is what makes a key look pressable at 36px.
+    if (!Surface.rim && (active || touch.has-hover)): Rectangle {
         x: 1px; y: 1px;
         width: parent.width - 2px; height: parent.height - 2px;
         border-radius: parent.border-radius - 1px;
         background: transparent;
         border-width: 1px;
         border-color: Theme.highlight-inner;
+    }
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Math.max(2px, parent.border-radius - 1px);
+        pressed: root.active || touch.pressed;
     }
     AppIcon {
         source: icon-img;
@@ -244,7 +275,7 @@ component BrandHeader inherits Rectangle {
             width: 36px; height: 36px;
             horizontal-stretch: 0; vertical-stretch: 0;
             y: (parent.height - self.height) / 2;
-            border-radius: 10px;
+            border-radius: Surface.glyph-radius;
             clip: true;
             TouchArea { mouse-cursor: pointer; clicked => { root.logo-clicked(); } }
             Image {
@@ -255,6 +286,13 @@ component BrandHeader inherits Rectangle {
                       :                         @image-url("../resources/appicons/sidebar-default.png");
                 image-fit: cover;
                 width: 100%; height: 100%;
+            }
+            // The mark is a physical object in both languages — a clay disc, or
+            // a lens with a specular top edge. Drawn over the image, which is
+            // what makes it read as glazed rather than printed.
+            if Surface.rim: Rim {
+                width: 100%; height: 100%;
+                radius: parent.border-radius;
             }
         }
         if !root.collapsed: VerticalLayout {
@@ -293,19 +331,34 @@ export component Sidebar inherits Rectangle {
     }
 
     property <length> w-collapsed: 68px;
-    min-width: root.collapsed ? root.w-collapsed : Theme.sidebar-w * 0.66;
-    max-width: root.collapsed ? root.w-collapsed : Theme.sidebar-w * 0.66;
+    // +10px over the old 0.66 fraction: the nav rows were running out of room
+    // for a full label plus anything after it.
+    property <length> w-expanded: Theme.sidebar-w * 0.66 + 10px;
+    min-width: root.collapsed ? root.w-collapsed : root.w-expanded;
+    max-width: root.collapsed ? root.w-collapsed : root.w-expanded;
     horizontal-stretch: 0;
     animate min-width { duration: 160ms; easing: ease-out; }
     animate max-width { duration: 160ms; easing: ease-out; }
 
-    border-radius: Theme.radius-lg;
-    // Solid panel (no frosted translucency) for a clean, modern surface.
-    background: Theme.dark ? #161827 : #ffffff;
-    border-color: Theme.outline;
-    border-width: 1px;
-    drop-shadow-blur: 28px;
-    drop-shadow-color: #00000040;
+    border-radius: Surface.panel-radius;
+    // Solid panel (no frosted translucency) for a clean, modern surface. The
+    // moulded language turns it into a lit plate; clay drops the hairline and
+    // widens the cast instead.
+    background: Surface.shell();
+    border-color: Surface.panel-border;
+    border-width: Surface.panel-border-w;
+    drop-shadow-blur: Surface.panel-shadow;
+    drop-shadow-color: Surface.shadow-ink;
+    drop-shadow-offset-y: Surface.panel-shadow-y;
+
+    // Rim light along the shell edge — what separates the sidebar from the page
+    // once clay has taken its border away, and the only separation there is on
+    // OLED, where the cast shadow lands on black and disappears.
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Surface.panel-radius - 1px;
+    }
 
     VerticalLayout {
         padding: root.collapsed ? 10px : 14px;
@@ -360,10 +413,12 @@ export component Sidebar inherits Rectangle {
         // Bottom spacer pushes user card + footer dock to the bottom.
         Rectangle { vertical-stretch: 1; horizontal-stretch: 1; background: transparent; }
 
-        // Separator above the bottom block.
+        // Separator above the bottom block. Clay has no rules — a line ruled
+        // across a lump is a line ruled across a lump — so there it is nothing
+        // and the gap does the separating on its own.
         Rectangle {
             height: 1px; horizontal-stretch: 1;
-            background: Theme.outline;
+            background: Surface.hairline;
         }
         Rectangle { height: 8px; horizontal-stretch: 1; background: transparent; }
 

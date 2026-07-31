@@ -1,4 +1,5 @@
 import { Theme } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { AppIcon, Icons } from "icons.slint";
 
 // Local-only app: no account mode. The pill is 🏠 Local or 🔒 Locked.
@@ -7,7 +8,7 @@ export enum Mode { local, locked }
 export component ModePill inherits Rectangle {
     in property <Mode> mode: Mode.local;
     height: 20px;
-    border-radius: 10px;
+    border-radius: Surface.r(10px);
     background:
         mode == Mode.local ? @linear-gradient(135deg, #4f46e5 0%, #7c3aed 100%)
                            : @linear-gradient(135deg, #475569 0%, #1f2937 100%);

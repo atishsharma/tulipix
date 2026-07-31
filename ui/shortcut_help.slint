@@ -3,6 +3,7 @@
 // Printable: caller routes to system print via the Print button.
 
 import { Theme } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 
 export struct ShortcutItem {
     keys: string,    // e.g. "Ctrl+K"
@@ -53,15 +54,15 @@ export component ShortcutHelp inherits Rectangle {
                     spacing: 8px;
                     Rectangle {
                         height: 32px; width: 80px;
-                        border-radius: 8px;
+                        border-radius: Surface.r(8px);
                         border-width: 1px;
-                        border-color: Theme.outline;
+                        border-color: Surface.hairline;
                         TouchArea { clicked => { root.print-clicked(); } }
                         Text { text: "Print"; horizontal-alignment: center; vertical-alignment: center; color: Theme.text; }
                     }
                     Rectangle {
                         height: 32px; width: 80px;
-                        border-radius: 8px;
+                        border-radius: Surface.r(8px);
                         background: Theme.brand;
                         TouchArea { clicked => { root.dismissed(); } }
                         Text { text: "Close"; color: white; horizontal-alignment: center; vertical-alignment: center; }
@@ -88,10 +89,10 @@ export component ShortcutHelp inherits Rectangle {
                             Rectangle {
                                 width: 140px;
                                 height: 26px;
-                                border-radius: 6px;
-                                background: Theme.panel;
+                                border-radius: Surface.r(6px);
+                                background: Surface.body(Theme.panel);
                                 border-width: 1px;
-                                border-color: Theme.outline;
+                                border-color: Surface.hairline;
                                 Text {
                                     text: it.keys;
                                     color: Theme.text;

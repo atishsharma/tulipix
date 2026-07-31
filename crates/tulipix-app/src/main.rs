@@ -93,6 +93,20 @@ fn apply_theme_choice(window: &MainWindow, choice: ThemeChoice) {
     window.set_oled(oled);
 }
 
+/// The stored design language as the index `Surface.lang` wants.
+///
+/// Names rather than numbers in settings.json: the file is hand-editable, and
+/// `"skeuo"` survives a reordering of the picker where `2` would silently
+/// become something else. Anything unrecognised — including the empty string a
+/// first run gives back — is Standard, which is the look the app already had.
+fn design_lang_index(name: &str) -> i32 {
+    match name {
+        "clay" => 1,
+        "skeuo" => 2,
+        _ => 0,
+    }
+}
+
 /// Drive the Settings → Libraries maintenance progress bar. `frac` is 0..1, or
 /// negative for an indeterminate "working…" bar. Safe to call from any thread.
 fn set_lib_busy(weak: &slint::Weak<MainWindow>, task: &str, frac: f32) {
@@ -522,6 +536,9 @@ fn main() -> Result<()> {
     // ── Cloud: rclone remotes CRUD + remote-tree browse (np.p4.cloud.*) ──
     tulipix_sec_cloud::wire(&window);
 
+    // ── Live TV: iptv-org playlists, the channel grid, and mpv (Videos tab). ──
+    tulipix_sec_videos::livetv::wire(&window);
+
     // ── Books: Book Home page (Continue Reading hero, stats, library grid,
     // filter chips) + the reader. Callbacks land on `window.on_books_*`.
     tulipix_sec_books::wire(&window);
@@ -731,6 +748,16 @@ fn main() -> Result<()> {
     window.on_video_stream_key_save(move |k| stream_key_save(w.clone(), k.to_string()));
     let w = window.as_weak();
     window.on_video_stream_key_reset(move || stream_key_reset(w.clone()));
+    // Which catalogue Stream searches, and the scraped source's own address.
+    window.set_video_stream_source(stream_active_source().key().into());
+    let w = window.as_weak();
+    window.on_video_stream_set_source(move |s| stream_set_source(w.clone(), s.to_string()));
+    let w = window.as_weak();
+    window.on_video_stream_source_opened(move || stream_source_load(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_fourk_save(move |u| stream_fourk_save(w.clone(), u.to_string()));
+    let w = window.as_weak();
+    window.on_video_stream_fourk_reset(move || stream_fourk_reset(w.clone()));
     // Landing row — resume slider + trending picks.
     let w = window.as_weak();
     window.on_video_stream_feed_load(move || stream_feed_load(w.clone()));
@@ -2056,6 +2083,7 @@ fn main() -> Result<()> {
         }
         // Home command center (np.p6.home): greeting + date line + live stats.
         window.set_home_music_left(s.flag("home.music-left", false));
+        window.set_design_lang(design_lang_index(&s.text("ui.design-language")));
         set_home_greeting_now(&window);
         kick_home_stats(&window);
         kick_home_photos(&window);
@@ -2890,6 +2918,13 @@ fn main() -> Result<()> {
         // Apply the universal tools dir live (no restart).
         if key == "tools.bin-dir" {
             tulipix_core::thumbs::set_tool_dir(s.advanced.get("tools.bin-dir").map(|v| v.as_str()));
+        }
+        // Design language repaints live — it is only paint, so there is nothing
+        // to rebuild and no reason to make anyone restart to see the choice.
+        if key == "ui.design-language" {
+            if let Some(w) = w.upgrade() {
+                w.set_design_lang(design_lang_index(&s.text("ui.design-language")));
+            }
         }
         tracing::info!(%key, "setting text edited");
         // Segmented pickers (whisper model choice) need a re-seed so the

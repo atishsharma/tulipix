@@ -8,6 +8,7 @@
 // file types / genres). All data flows in via `in` properties; every user
 // action leaves through a callback the sec-books crate wires to the engine.
 import { Theme } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { AppIcon, Icons } from "icons.slint";
 import { ScrollView, ComboBox, LineEdit } from "std-widgets.slint";
 
@@ -20,7 +21,12 @@ export global BookTheme {
     // collapse to true black like every other section.
     property <bool> oled: Theme.dark && Theme.oled;
     out property <color> canvas:      dark ? (oled ? #000000 : #14151a) : #f2f2f7;
-    out property <color> card:        dark ? (oled ? #0a0a0a : #1e1f26) : #ffffff;
+    // The design language owns the material of the card, the pill, the track
+    // and the hairline — the four things every surface on this page is built
+    // out of. The tints and the ink stay: Books is a bright section and a skin
+    // that drained its colour would be a different section.
+    out property <color> card:     Surface.clay ? Surface.card-ink
+        : (Surface.skeuo ? Surface.plate-ink : (dark ? (oled ? #0a0a0a : #1e1f26) : #ffffff));
     out property <color> accent:      #6c4df6;
     out property <color> tint-violet: dark ? (oled ? #191331 : #241d3d) : #efeaff;
     out property <color> tint-pink:   dark ? (oled ? #22151d : #2e1f28) : #fdeef4;
@@ -29,10 +35,15 @@ export global BookTheme {
     out property <color> tint-blue:   dark ? (oled ? #101a2b : #182338) : #e7f0ff;
     out property <color> ink:         dark ? #e8e8ee : #1b1b22;
     out property <color> ink-dim:     dark ? #8f8f9a : #8a8a94;
-    out property <color> track:       dark ? (oled ? #161616 : #2a2b33) : #ececf2;
-    out property <color> pill-bg:     dark ? (oled ? #131316 : #24252d) : #f4f4f8;
-    out property <color> hairline:    dark ? (oled ? #1f1f1f : #2c2d36) : #ececf2;
-    out property <length> radius: 18px;
+    // A track is a groove: something is set *into* the card, so clay takes its
+    // well tone and the moulded language the underside of a key.
+    out property <color> track:    Surface.clay ? Surface.clay-well
+        : (Surface.skeuo ? Surface.key-bottom : (dark ? (oled ? #161616 : #2a2b33) : #ececf2));
+    out property <color> pill-bg:  Surface.clay ? Surface.clay-key
+        : (Surface.skeuo ? Surface.key-top : (dark ? (oled ? #131316 : #24252d) : #f4f4f8));
+    out property <color> hairline: Surface.clay ? transparent
+        : (Surface.skeuo ? Theme.outline-strong : (dark ? (oled ? #1f1f1f : #2c2d36) : #ececf2));
+    out property <length> radius: Surface.r(18px);
     // Dark themes get LIGHT shadows (a soft glow — dark-on-dark is invisible),
     // light themes keep the classic dark drop.
     out property <color> shadow:      dark ? #ffffff1c : #00000010;
@@ -129,16 +140,16 @@ export struct StatBookRow {
 // ── small parts ───────────────────────────────────────────────────────────────
 
 // White rounded card with the SPEC hairline shadow.
-component Card inherits Rectangle {
+component Card inherits Skin {
     background: BookTheme.card;
     border-radius: BookTheme.radius;
-    drop-shadow-blur: 16px;
+    drop-shadow-blur: Surface.cast(16px);
     drop-shadow-offset-y: 6px;
     drop-shadow-color: BookTheme.shadow-soft;
 }
 
 // Rounded pill button. `filled` → solid accent + white; else outline.
-component PillButton inherits Rectangle {
+component PillButton inherits Skin {
     in property <string> label;
     in property <image> icon;
     in property <bool> filled: false;
@@ -167,14 +178,14 @@ component PillButton inherits Rectangle {
 }
 
 // Rounded filter chip — per-chip hue: soft fill + outline, solid when active.
-component FilterChip inherits Rectangle {
+component FilterChip inherits Skin {
     in property <string> label;
     in property <int> count: -1;
     in property <bool> active: false;
     in property <color> hue: BookTheme.accent;
     callback clicked();
     height: 34px;
-    border-radius: 17px;
+    border-radius: Surface.r(17px);
     horizontal-stretch: 0;
     background: active ? hue : hue.with-alpha(0.10);
     border-width: 1.5px;
@@ -192,7 +203,7 @@ component FilterChip inherits Rectangle {
 }
 
 // A collection/series row on the Collections / Series pages.
-component EntryCard inherits Rectangle {
+component EntryCard inherits Skin {
     in property <string> label;
     in property <int> count;
     /// Shown instead of the count when `count` is negative.
@@ -201,14 +212,14 @@ component EntryCard inherits Rectangle {
     in property <bool> deletable: false;
     callback clicked();
     callback deleted();
-    height: 54px; border-radius: 12px;
+    height: 54px; border-radius: Surface.r(12px);
     background: eta.has-hover ? BookTheme.pill-bg : BookTheme.card;
     border-width: 1px; border-color: BookTheme.hairline;
     eta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
         padding-left: 14px; padding-right: 12px; spacing: 12px; alignment: start;
         VerticalLayout { alignment: center;
-            Rectangle { width: 34px; height: 34px; border-radius: 10px; background: BookTheme.tint-violet;
+            Rectangle { width: 34px; height: 34px; border-radius: Surface.r(10px); background: BookTheme.tint-violet;
                 AppIcon { source: root.icon; tint: BookTheme.accent; width: 17px; height: 17px; } } }
         VerticalLayout { alignment: center; horizontal-stretch: 1;
             Text { text: root.label; color: BookTheme.ink; font-size: 14px; font-weight: 700; overflow: elide; }
@@ -218,7 +229,7 @@ component EntryCard inherits Rectangle {
                     : root.count + (root.count == 1 ? " book" : " books");
                 color: BookTheme.ink-dim; font-size: 11px; } }
         if root.deletable: VerticalLayout { alignment: center;
-            Rectangle { width: 30px; height: 30px; border-radius: 8px;
+            Rectangle { width: 30px; height: 30px; border-radius: Surface.r(8px);
                 background: dta.has-hover ? #e0518f.with-alpha(0.14) : transparent;
                 AppIcon { source: Icons.trash; tint: #d6336c; width: 15px; height: 15px; }
                 dta := TouchArea { mouse-cursor: pointer; clicked => { root.deleted(); } } } }
@@ -233,7 +244,7 @@ component MenuItem inherits Rectangle {
     in property <image> icon;
     in property <bool> danger: false;
     callback clicked();
-    height: 34px; border-radius: 8px;
+    height: 34px; border-radius: Surface.r(8px);
     background: mta.has-hover ? (danger ? #e0518f.with-alpha(0.12) : BookTheme.pill-bg) : transparent;
     property <color> ink: danger ? #d6336c : BookTheme.ink;
     mta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
@@ -249,7 +260,7 @@ component MenuItem inherits Rectangle {
 // Left cover artwork. When there's no cover image, draws a generated cover
 // card from the title/author on a hash-picked color (for PDFs and any coverless
 // book). Also shows the format badge + optional reading-progress bar.
-component Cover inherits Rectangle {
+component Cover inherits Skin {
     in property <image> source;
     in property <string> format;
     in property <string> title;
@@ -261,7 +272,7 @@ component Cover inherits Rectangle {
     // Scale text with the card so it reads in both the tiny grid tile and the
     // larger hero — `big` splits the two size regimes.
     property <bool> big: self.width > 100px;
-    border-radius: 8px;
+    border-radius: Surface.r(8px);
     clip: true;
     background: root.source.width <= 0
         ? @linear-gradient(155deg, root.hue, root.hue.darker(0.35))
@@ -272,7 +283,7 @@ component Cover inherits Rectangle {
         // Inner hairline frame.
         Rectangle {
             x: 6px; y: 6px; width: parent.width - 12px; height: parent.height - 12px;
-            border-radius: 6px; border-width: 1.5px; border-color: #ffffff55; background: transparent;
+            border-radius: Surface.r(6px); border-width: 1.5px; border-color: #ffffff55; background: transparent;
         }
         VerticalLayout {
             padding: root.big ? 16px : 8px; spacing: 0px;
@@ -280,7 +291,7 @@ component Cover inherits Rectangle {
             HorizontalLayout {
                 alignment: start;
                 Rectangle {
-                    height: root.big ? 20px : 15px; border-radius: 5px; background: #ffffff33;
+                    height: root.big ? 20px : 15px; border-radius: Surface.r(5px); background: #ffffff33;
                     HorizontalLayout { padding-left: 6px; padding-right: 6px;
                         Text { text: root.format; color: #ffffff; font-size: root.big ? 10px : 8px;
                             font-weight: 700; vertical-alignment: center; } }
@@ -361,7 +372,7 @@ component Book3D inherits Rectangle {
         y: root.oy + root.dh * 0.02;
         width: root.dw * 0.831;
         height: root.dh * 0.92;
-        border-radius: 2px;
+        border-radius: Surface.r(2px);
         fit-contain: true;
         source: root.source; format: root.format; percent: root.percent;
         title: root.title; author: root.author; hue: root.hue;
@@ -384,7 +395,7 @@ component StatCard inherits Card {
     HorizontalLayout {
         padding: 16px; spacing: 14px; alignment: start;
         Rectangle {
-            width: 46px; height: 46px; border-radius: 13px; background: root.tint;
+            width: 46px; height: 46px; border-radius: Surface.r(13px); background: root.tint;
             AppIcon { source: root.icon; tint: root.accent; width: 22px; height: 22px; }
         }
         VerticalLayout { alignment: center; spacing: 2px;
@@ -401,7 +412,7 @@ component StatCard inherits Card {
 // Stars fill live under the cursor; left half of a star = ½ step. `rate`
 // reports the new value — the host decides how to store it (grid rows are
 // patched by Rust, the detail popup writes its two-way prop).
-component RatingPill inherits Rectangle {
+component RatingPill inherits Skin {
     in property <float> rating;
     in property <length> star: 18px;
     callback rate(float);
@@ -448,7 +459,7 @@ component RatingPill inherits Rectangle {
 }
 
 // ── book grid tile (horizontal card: cover-left + details-right) ───────────────
-component GridTile inherits Rectangle {
+component GridTile inherits Skin {
     in property <BookTile> tile;
     // List view: short full-width row — small cover, no date/rating rows.
     in property <bool> compact: false;
@@ -467,13 +478,13 @@ component GridTile inherits Rectangle {
     // the repeater, so a grid refresh can't tear down its parent → no
     // slint#6426 panic on trash).
     callback menu(length, length);
-    border-radius: 18px;
+    border-radius: Surface.r(18px);
     clip: true; // keep every child inside the tile (meta row was overflowing)
     background: BookTheme.card;
     // Per-book colorful outline (cover-hash hue), brighter on hover.
     border-width: 1.5px;
     border-color: ta.has-hover ? tile.hue.with-alpha(0.85) : tile.hue.with-alpha(0.45);
-    drop-shadow-blur: 16px;
+    drop-shadow-blur: Surface.cast(16px);
     drop-shadow-offset-y: 6px;
     drop-shadow-color: BookTheme.shadow-soft;
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
@@ -529,7 +540,7 @@ component GridTile inherits Rectangle {
                     // Fetched average rating (read-only, from online metadata).
                     if !root.compact && tile.net-rating > 0: HorizontalLayout {
                         alignment: start;
-                        Rectangle { height: 22px; border-radius: 11px; background: #f5a623.with-alpha(0.16);
+                        Rectangle { height: 22px; border-radius: Surface.r(11px); background: #f5a623.with-alpha(0.16);
                             border-width: 1px; border-color: #f5a623.with-alpha(0.45);
                             HorizontalLayout { padding-left: 9px; padding-right: 9px; spacing: 4px; alignment: center;
                                 VerticalLayout { alignment: center;
@@ -549,7 +560,7 @@ component GridTile inherits Rectangle {
                     // Publication date pill — blue combo.
                     if !root.compact: HorizontalLayout {
                         alignment: start;
-                        Rectangle { height: 24px; border-radius: 12px;
+                        Rectangle { height: 24px; border-radius: Surface.r(12px);
                             background: #3a86ff.with-alpha(0.10);
                             border-width: 1px; border-color: #3a86ff.with-alpha(0.4);
                             HorizontalLayout { padding-left: 10px; padding-right: 10px;
@@ -568,7 +579,7 @@ component GridTile inherits Rectangle {
                         VerticalLayout { alignment: center;
                             // Format badge — violet combo.
                             Rectangle {
-                                height: 20px; border-radius: 6px;
+                                height: 20px; border-radius: Surface.r(6px);
                                 background: BookTheme.accent.with-alpha(0.10);
                                 border-width: 1px; border-color: BookTheme.accent.with-alpha(0.4);
                                 HorizontalLayout { padding-left: 8px; padding-right: 8px;
@@ -577,7 +588,7 @@ component GridTile inherits Rectangle {
                             } }
                         HorizontalLayout { spacing: 8px; alignment: end;
                             // ⊕ add-to-collection — green combo.
-                            Rectangle { width: 28px; height: 28px; border-radius: 14px;
+                            Rectangle { width: 28px; height: 28px; border-radius: Surface.r(14px);
                                 background: #2fbf71.with-alpha(plusta.has-hover ? 0.32 : 0.10);
                                 border-width: 1px; border-color: #2fbf71.with-alpha(0.4);
                                 AppIcon { source: Icons.plus; tint: #2fbf71; width: 16px; height: 16px;
@@ -586,9 +597,9 @@ component GridTile inherits Rectangle {
                                 coll-add := PopupWindow {
                                     x: parent.width - 210px; y: parent.height + 4px; width: 210px;
                                     Rectangle {
-                                        background: BookTheme.card; border-radius: 12px;
+                                        background: BookTheme.card; border-radius: Surface.r(12px);
                                         border-width: 1px; border-color: BookTheme.hairline;
-                                        drop-shadow-blur: 18px; drop-shadow-color: #00000033;
+                                        drop-shadow-blur: Surface.cast(18px); drop-shadow-color: #00000033;
                                         VerticalLayout {
                                             padding: 8px; spacing: 2px;
                                             Text { text: "Add to collection"; color: BookTheme.ink-dim;
@@ -606,7 +617,7 @@ component GridTile inherits Rectangle {
                             // ♥ favorite — pink combo; outline pulses on click
                             // while the change lands.
                             fav-pill := Rectangle {
-                                width: 28px; height: 28px; border-radius: 14px;
+                                width: 28px; height: 28px; border-radius: Surface.r(14px);
                                 property <bool> pulse: false;
                                 background: #e0518f.with-alpha(fav-ta.has-hover ? 0.32 : 0.10);
                                 border-width: self.pulse ? 2px : 1px;
@@ -622,7 +633,7 @@ component GridTile inherits Rectangle {
                             }
                             // ⋮ context menu — violet combo, right of ♥.
                             Rectangle {
-                                width: 28px; height: 28px; border-radius: 14px;
+                                width: 28px; height: 28px; border-radius: Surface.r(14px);
                                 background: BookTheme.accent.with-alpha(menuta.has-hover ? 0.32 : 0.10);
                                 border-width: 1px; border-color: BookTheme.accent.with-alpha(0.4);
                                 AppIcon { source: Icons.ellipsis; tint: BookTheme.accent;
@@ -683,7 +694,7 @@ component GridTile inherits Rectangle {
                 // Format badge — violet combo (moved off the cover thumb).
                 VerticalLayout { alignment: center;
                     Rectangle {
-                        height: 20px; border-radius: 6px;
+                        height: 20px; border-radius: Surface.r(6px);
                         background: BookTheme.accent.with-alpha(0.10);
                         border-width: 1px; border-color: BookTheme.accent.with-alpha(0.4);
                         HorizontalLayout { padding-left: 8px; padding-right: 8px;
@@ -692,7 +703,7 @@ component GridTile inherits Rectangle {
                     } }
                 // ⊕ add-to-collection — green combo, left of ♥.
                 Rectangle {
-                    width: 26px; height: 26px; border-radius: 13px;
+                    width: 26px; height: 26px; border-radius: Surface.r(13px);
                     background: #2fbf71.with-alpha(lplus-ta.has-hover ? 0.32 : 0.10);
                     border-width: 1px; border-color: #2fbf71.with-alpha(0.4);
                     AppIcon { source: Icons.plus; tint: #2fbf71; width: 14px; height: 14px;
@@ -701,9 +712,9 @@ component GridTile inherits Rectangle {
                     lcoll-add := PopupWindow {
                         x: parent.width - 210px; y: parent.height + 4px; width: 210px;
                         Rectangle {
-                            background: BookTheme.card; border-radius: 12px;
+                            background: BookTheme.card; border-radius: Surface.r(12px);
                             border-width: 1px; border-color: BookTheme.hairline;
-                            drop-shadow-blur: 18px; drop-shadow-color: #00000033;
+                            drop-shadow-blur: Surface.cast(18px); drop-shadow-color: #00000033;
                             VerticalLayout {
                                 padding: 8px; spacing: 2px;
                                 Text { text: "Add to collection"; color: BookTheme.ink-dim;
@@ -719,7 +730,7 @@ component GridTile inherits Rectangle {
                     }
                 }
                 Rectangle {
-                    width: 26px; height: 26px; border-radius: 13px;
+                    width: 26px; height: 26px; border-radius: Surface.r(13px);
                     background: #e0518f.with-alpha(lfav-ta.has-hover ? 0.32 : 0.10);
                     border-width: 1px; border-color: #e0518f.with-alpha(0.4);
                     AppIcon { source: tile.favorite ? Icons.heart-filled : Icons.heart;
@@ -728,7 +739,7 @@ component GridTile inherits Rectangle {
                     lfav-ta := TouchArea { mouse-cursor: pointer; clicked => { root.favorite(); } }
                 }
                 Rectangle {
-                    width: 26px; height: 26px; border-radius: 13px;
+                    width: 26px; height: 26px; border-radius: Surface.r(13px);
                     background: BookTheme.accent.with-alpha(lmenu-ta.has-hover ? 0.32 : 0.10);
                     border-width: 1px; border-color: BookTheme.accent.with-alpha(0.4);
                     AppIcon { source: Icons.ellipsis; tint: BookTheme.accent;
@@ -753,7 +764,7 @@ component RailBlock inherits VerticalLayout {
 
 // One rail list row: leading icon · label · trailing count. Used for quick
 // filters and file types (matches the design's right-rail list style).
-component RailRow inherits Rectangle {
+component RailRow inherits Skin {
     in property <image> icon;
     in property <color> icon-tint: BookTheme.accent;
     in property <string> label;
@@ -761,7 +772,7 @@ component RailRow inherits Rectangle {
     in property <bool> active: false;
     callback clicked();
     height: 36px;
-    border-radius: 10px;
+    border-radius: Surface.r(10px);
     background: root.active ? BookTheme.tint-violet : (ta.has-hover ? BookTheme.pill-bg : transparent);
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
@@ -779,14 +790,14 @@ component RailRow inherits Rectangle {
 }
 
 // A colored genre chip with a trailing count (rail Genres section).
-component GenreChip inherits Rectangle {
+component GenreChip inherits Skin {
     in property <string> label;
     in property <int> count: -1;
     in property <color> hue: BookTheme.accent;
     in property <bool> active: false;
     callback clicked();
     height: 30px;
-    border-radius: 15px;
+    border-radius: Surface.r(15px);
     background: root.active ? root.hue.with-alpha(0.9) : root.hue.with-alpha(0.12);
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
@@ -953,7 +964,7 @@ callback open-genesis();
             spacing: 16px;
             // badge + title
             VerticalLayout { alignment: center; horizontal-stretch: 0;
-                Rectangle { width: 40px; height: 40px; border-radius: 12px; background: BookTheme.tint-violet;
+                Rectangle { width: 40px; height: 40px; border-radius: Surface.r(12px); background: BookTheme.tint-violet;
                     AppIcon { source: Icons.book-open; tint: BookTheme.accent; width: 22px; height: 22px; } } }
             VerticalLayout { alignment: center; horizontal-stretch: 0;
                 Text { text: "My Library"; color: BookTheme.ink; font-size: 26px; font-weight: 800;
@@ -1001,7 +1012,7 @@ callback open-genesis();
                     // × clear — wipes the query so the results vanish.
                     if root.search-text != "": VerticalLayout { alignment: center;
                         Rectangle {
-                            width: 26px; height: 26px; border-radius: 13px;
+                            width: 26px; height: 26px; border-radius: Surface.r(13px);
                             background: clr-ta.has-hover ? BookTheme.track : BookTheme.pill-bg;
                             AppIcon { source: Icons.x; tint: BookTheme.ink-dim; width: 14px; height: 14px;
                                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
@@ -1035,7 +1046,7 @@ callback open-genesis();
                     if root.hero.book.width > 0: VerticalLayout { alignment: center;
                         Rectangle {
                             width: 195px; height: 178px;
-                            border-radius: 14px;
+                            border-radius: Surface.r(14px);
                             border-width: 1.5px;
                             border-color: root.hero.hue.with-alpha(0.5);
                             Image {
@@ -1044,7 +1055,7 @@ callback open-genesis();
                                 image-fit: contain; width: 100%; height: 100%; } } }
                     if root.hero.book.width <= 0: Book3D {
                         width: 145px;
-                        border-radius: 14px;
+                        border-radius: Surface.r(14px);
                         border-width: 1.5px;
                         border-color: root.hero.hue.with-alpha(0.5);
                         source: root.hero.cover;
@@ -1063,11 +1074,11 @@ callback open-genesis();
                             font-weight: 500; overflow: elide; }
                         // progress — thick full-width bar; the track fades out
                         // as it approaches the illustration on the right.
-                        Rectangle { height: 16px; border-radius: 8px;
+                        Rectangle { height: 16px; border-radius: Surface.r(8px);
                             background: @linear-gradient(90deg,
                                 BookTheme.track 0%, BookTheme.track 70%, transparent 100%);
                             Rectangle { x: 0; width: parent.width * root.hero.percent / 100; height: 16px;
-                                border-radius: 8px;
+                                border-radius: Surface.r(8px);
                                 background: @linear-gradient(90deg, #6c4df6, #b9b0ff); } }
                         Text { color: BookTheme.ink-dim; font-size: 12px;
                             text: "Page " + root.hero.page + " of " + root.hero.total + " • "
@@ -1081,7 +1092,7 @@ callback open-genesis();
                             // ••• — overflow actions for the hero book.
                             VerticalLayout { alignment: center;
                                 Rectangle {
-                                    width: 40px; height: 40px; border-radius: 20px;
+                                    width: 40px; height: 40px; border-radius: Surface.r(20px);
                                     background: hmta.has-hover ? BookTheme.pill-bg : BookTheme.card;
                                     border-width: 1.5px; border-color: BookTheme.hairline;
                                     AppIcon { source: Icons.ellipsis; tint: BookTheme.ink-dim;
@@ -1108,7 +1119,7 @@ callback open-genesis();
                 }
                 // → slider arrow (only when >1 in-progress book; wraps around)
                 if root.hero.present && root.hero-count > 1: Rectangle {
-                    x: parent.width - 42px; y: (parent.height - 34px) / 2; width: 34px; height: 34px; border-radius: 17px;
+                    x: parent.width - 42px; y: (parent.height - 34px) / 2; width: 34px; height: 34px; border-radius: Surface.r(17px);
                     background: ra.has-hover ? BookTheme.pill-bg : BookTheme.card;
                     border-width: 1px; border-color: BookTheme.hairline;
                     AppIcon { source: Icons.chevron-right; tint: BookTheme.ink; width: 18px; height: 18px; }
@@ -1218,12 +1229,12 @@ callback open-genesis();
                         // Grid / list view toggle (persisted via set-view-mode).
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
                             Rectangle {
-                                width: 74px; height: 36px; border-radius: 18px;
+                                width: 74px; height: 36px; border-radius: Surface.r(18px);
                                 background: BookTheme.card; border-width: 1px; border-color: BookTheme.hairline;
                                 HorizontalLayout {
                                     padding: 4px; spacing: 2px;
                                     Rectangle {
-                                        width: 32px; border-radius: 14px;
+                                        width: 32px; border-radius: Surface.r(14px);
                                         background: root.view-mode == "grid" ? BookTheme.tint-violet : transparent;
                                         AppIcon { source: Icons.layout-grid;
                                             tint: root.view-mode == "grid" ? BookTheme.accent : BookTheme.ink-dim;
@@ -1231,7 +1242,7 @@ callback open-genesis();
                                         TouchArea { mouse-cursor: pointer; clicked => { root.set-view-mode("grid"); } }
                                     }
                                     Rectangle {
-                                        width: 32px; border-radius: 14px;
+                                        width: 32px; border-radius: Surface.r(14px);
                                         background: root.view-mode == "list" ? BookTheme.tint-violet : transparent;
                                         AppIcon { source: Icons.list;
                                             tint: root.view-mode == "list" ? BookTheme.accent : BookTheme.ink-dim;
@@ -1243,7 +1254,7 @@ callback open-genesis();
                         // Filters button — now holds File type + Sort in a popover.
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
                             Rectangle {
-                                height: 36px; border-radius: 18px; background: fta.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                                height: 36px; border-radius: Surface.r(18px); background: fta.has-hover ? BookTheme.pill-bg : BookTheme.card;
                                 border-width: 1.5px; border-color: BookTheme.accent.with-alpha(0.35);
                                 HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 6px; alignment: center;
                                     VerticalLayout { alignment: center;
@@ -1256,9 +1267,9 @@ callback open-genesis();
                                     close-policy: no-auto-close;
                                     x: parent.width - 260px; y: parent.height + 6px; width: 260px;
                                     Rectangle {
-                                        background: BookTheme.card; border-radius: 12px;
+                                        background: BookTheme.card; border-radius: Surface.r(12px);
                                         border-width: 1px; border-color: BookTheme.hairline;
-                                        drop-shadow-blur: 16px; drop-shadow-color: #0000002e;
+                                        drop-shadow-blur: Surface.cast(16px); drop-shadow-color: #0000002e;
                                         VerticalLayout {
                                             padding: 14px; spacing: 8px;
                                             Text { text: "File type"; color: BookTheme.ink-dim; font-size: 12px; font-weight: 600; }
@@ -1268,7 +1279,7 @@ callback open-genesis();
                                             ComboBox { model: root.sort-options; current-index: root.sort-index;
                                                 selected(v) => { root.set-sort(v); } }
                                             Rectangle { height: 2px; }
-                                            Rectangle { height: 36px; border-radius: 18px; background: BookTheme.accent;
+                                            Rectangle { height: 36px; border-radius: Surface.r(18px); background: BookTheme.accent;
                                                 Text { text: "Apply"; color: #ffffff; font-size: 13px; font-weight: 700;
                                                     horizontal-alignment: center; vertical-alignment: center; }
                                                 TouchArea { mouse-cursor: pointer; clicked => { filters-popup.close(); } } }
@@ -1279,7 +1290,7 @@ callback open-genesis();
                         // Pagination (moved from below the grid) — prev · p/N · next.
                         if root.page-count > 1: VerticalLayout { alignment: center; horizontal-stretch: 0;
                             HorizontalLayout { spacing: 6px;
-                                Rectangle { width: 32px; height: 32px; border-radius: 16px;
+                                Rectangle { width: 32px; height: 32px; border-radius: Surface.r(16px);
                                     background: root.page > 1 ? BookTheme.card : BookTheme.pill-bg;
                                     border-width: 1px; border-color: BookTheme.hairline;
                                     AppIcon { source: Icons.chevron-left; tint: BookTheme.ink; width: 16px; height: 16px; }
@@ -1287,7 +1298,7 @@ callback open-genesis();
                                         clicked => { if (root.page > 1) { root.set-page(root.page - 1); } } } }
                                 Text { text: root.page + " / " + root.page-count; color: BookTheme.ink;
                                     font-size: 13px; font-weight: 700; vertical-alignment: center; }
-                                Rectangle { width: 32px; height: 32px; border-radius: 16px;
+                                Rectangle { width: 32px; height: 32px; border-radius: Surface.r(16px);
                                     background: root.page < root.page-count ? BookTheme.card : BookTheme.pill-bg;
                                     border-width: 1px; border-color: BookTheme.hairline;
                                     AppIcon { source: Icons.chevron-right; tint: BookTheme.ink; width: 16px; height: 16px; }
@@ -1300,7 +1311,7 @@ callback open-genesis();
                 if root.active-author != "": HorizontalLayout {
                     spacing: 12px;
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        Rectangle { width: 40px; height: 40px; border-radius: 20px; background: BookTheme.tint-pink;
+                        Rectangle { width: 40px; height: 40px; border-radius: Surface.r(20px); background: BookTheme.tint-pink;
                             AppIcon { source: Icons.user; tint: #e0518f; width: 20px; height: 20px; } } }
                     VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 1px;
                         Text { text: "Books by " + root.active-author; color: BookTheme.ink;
@@ -1309,7 +1320,7 @@ callback open-genesis();
                             color: BookTheme.ink-dim; font-size: 12px; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
                         Rectangle {
-                            height: 38px; border-radius: 19px; background: cba.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                            height: 38px; border-radius: Surface.r(19px); background: cba.has-hover ? BookTheme.pill-bg : BookTheme.card;
                             border-width: 1.5px; border-color: BookTheme.hairline;
                             HorizontalLayout { padding-left: 14px; padding-right: 16px; spacing: 6px; alignment: center;
                                 VerticalLayout { alignment: center;
@@ -1323,7 +1334,7 @@ callback open-genesis();
                 if root.panel == "library" && root.active-series != "": HorizontalLayout {
                     spacing: 12px;
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        Rectangle { width: 40px; height: 40px; border-radius: 20px; background: BookTheme.tint-violet;
+                        Rectangle { width: 40px; height: 40px; border-radius: Surface.r(20px); background: BookTheme.tint-violet;
                             AppIcon { source: Icons.book-open; tint: BookTheme.accent; width: 20px; height: 20px; } } }
                     VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 1px;
                         Text { text: "Series · " + root.active-series; color: BookTheme.ink;
@@ -1332,7 +1343,7 @@ callback open-genesis();
                             color: BookTheme.ink-dim; font-size: 12px; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
                         Rectangle {
-                            height: 38px; border-radius: 19px; background: sba.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                            height: 38px; border-radius: Surface.r(19px); background: sba.has-hover ? BookTheme.pill-bg : BookTheme.card;
                             border-width: 1.5px; border-color: BookTheme.hairline;
                             HorizontalLayout { padding-left: 14px; padding-right: 16px; spacing: 6px; alignment: center;
                                 VerticalLayout { alignment: center;
@@ -1346,7 +1357,7 @@ callback open-genesis();
                 if root.panel == "library" && root.active-collection > 0: HorizontalLayout {
                     spacing: 12px;
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                        Rectangle { width: 40px; height: 40px; border-radius: 20px; background: BookTheme.tint-violet;
+                        Rectangle { width: 40px; height: 40px; border-radius: Surface.r(20px); background: BookTheme.tint-violet;
                             AppIcon { source: Icons.bookmark; tint: BookTheme.accent; width: 20px; height: 20px; } } }
                     VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 1px;
                         Text { text: "Collection · " + root.active-collection-name; color: BookTheme.ink;
@@ -1355,7 +1366,7 @@ callback open-genesis();
                             color: BookTheme.ink-dim; font-size: 12px; } }
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
                         Rectangle {
-                            height: 38px; border-radius: 19px; background: cbb.has-hover ? BookTheme.pill-bg : BookTheme.card;
+                            height: 38px; border-radius: Surface.r(19px); background: cbb.has-hover ? BookTheme.pill-bg : BookTheme.card;
                             border-width: 1.5px; border-color: BookTheme.hairline;
                             HorizontalLayout { padding-left: 14px; padding-right: 16px; spacing: 6px; alignment: center;
                                 VerticalLayout { alignment: center;
@@ -1436,7 +1447,7 @@ callback open-genesis();
                     HorizontalLayout { spacing: 8px;
                         newcol := LineEdit { placeholder-text: "New collection…"; horizontal-stretch: 1;
                             accepted(t) => { root.collection-create(t); self.text = ""; } }
-                        Rectangle { width: 96px; height: 36px; border-radius: 10px; background: BookTheme.accent;
+                        Rectangle { width: 96px; height: 36px; border-radius: Surface.r(10px); background: BookTheme.accent;
                             HorizontalLayout { alignment: center; spacing: 6px;
                                 VerticalLayout { alignment: center;
                                     AppIcon { source: Icons.plus; tint: #ffffff; width: 15px; height: 15px; } }
@@ -1466,7 +1477,7 @@ callback open-genesis();
                             HorizontalLayout { spacing: 8px;
                                 newsmart := LineEdit { placeholder-text: "Name this view…"; horizontal-stretch: 1;
                                     accepted(t) => { root.smart-create(t); self.text = ""; } }
-                                Rectangle { width: 96px; height: 36px; border-radius: 10px;
+                                Rectangle { width: 96px; height: 36px; border-radius: Surface.r(10px);
                                     background: smta.has-hover ? BookTheme.accent.with-alpha(0.85) : BookTheme.accent;
                                     HorizontalLayout { alignment: center; spacing: 6px;
                                         VerticalLayout { alignment: center;
@@ -1555,9 +1566,9 @@ callback open-genesis();
             y: Math.max(8px, Math.min(root.card-menu-y, root.height - menu-lay.preferred-height - 12px));
             width: 200px;
             height: menu-lay.preferred-height;
-            background: BookTheme.card; border-radius: 12px;
+            background: BookTheme.card; border-radius: Surface.r(12px);
             border-width: 1px; border-color: BookTheme.hairline;
-            drop-shadow-blur: 18px; drop-shadow-color: #00000033;
+            drop-shadow-blur: Surface.cast(18px); drop-shadow-color: #00000033;
             menu-lay := VerticalLayout {
                 padding: 6px; spacing: 2px;
                 // Library vs. trash view.
@@ -1609,11 +1620,11 @@ callback open-genesis();
         y: (root.height - self.height) / 2;
         width: 768px;
         height: 506px;
-        border-radius: 20px;
+        border-radius: Surface.r(20px);
         background: BookTheme.card;
         border-width: 1.5px;
         border-color: root.detail-hue.with-alpha(0.5);
-        drop-shadow-blur: 40px;
+        drop-shadow-blur: Surface.cast(40px);
         drop-shadow-color: #00000040;
         drop-shadow-offset-y: 10px;
         HorizontalLayout {
@@ -1658,7 +1669,7 @@ callback open-genesis();
                             TouchArea { mouse-cursor: pointer; clicked => { root.detail-open = false; root.open-author(root.detail-author); } } }
                     }
                     Rectangle {
-                        width: 30px; height: 30px; border-radius: 15px;
+                        width: 30px; height: 30px; border-radius: Surface.r(15px);
                         background: xta.has-hover ? BookTheme.pill-bg : transparent;
                         AppIcon { source: Icons.x; tint: BookTheme.ink-dim; width: 15px; height: 15px; }
                         xta := TouchArea { mouse-cursor: pointer; clicked => { root.detail-open = false; root.confirm-delete = false; } }
@@ -1672,7 +1683,7 @@ callback open-genesis();
                     // Preferred height only — without this the layout dumps
                     // leftover space here and spreads the three lines apart.
                     vertical-stretch: 0;
-                    border-radius: 14px;
+                    border-radius: Surface.r(14px);
                     background: BookTheme.pill-bg.with-alpha(0.6);
                     border-width: 1px; border-color: BookTheme.accent.with-alpha(0.3);
                     VerticalLayout { padding: 10px; spacing: 4px;
@@ -1700,7 +1711,7 @@ callback open-genesis();
                     }
                     // ♥ favorite — right of the rating (optimistic toggle).
                     d-fav := Rectangle {
-                        width: 26px; height: 26px; border-radius: 13px;
+                        width: 26px; height: 26px; border-radius: Surface.r(13px);
                         property <bool> pulse: false;
                         background: #e0518f.with-alpha(dfta.has-hover ? 0.32 : 0.10);
                         border-width: self.pulse ? 2px : 1px;
@@ -1720,7 +1731,7 @@ callback open-genesis();
                     // in-book search for scanned/layout PDFs.
                     if root.detail-format == "PDF": VerticalLayout { alignment: center;
                         Rectangle {
-                            height: 26px; border-radius: 13px;
+                            height: 26px; border-radius: Surface.r(13px);
                             background: root.detail-magazine ? #f5a623 : #f5a623.with-alpha(dmta.has-hover ? 0.28 : 0.12);
                             border-width: 1px; border-color: #f5a623.with-alpha(0.5);
                             HorizontalLayout { padding-left: 10px; padding-right: 10px; alignment: center;
@@ -1736,7 +1747,7 @@ callback open-genesis();
                     // Manga right-to-left toggle (comics only).
                     if root.detail-format == "CBZ" || root.detail-format == "CBR": VerticalLayout { alignment: center;
                         Rectangle {
-                            height: 26px; border-radius: 13px;
+                            height: 26px; border-radius: Surface.r(13px);
                             background: root.detail-rtl ? #e0518f : #e0518f.with-alpha(drta.has-hover ? 0.28 : 0.12);
                             border-width: 1px; border-color: #e0518f.with-alpha(0.5);
                             HorizontalLayout { padding-left: 10px; padding-right: 10px; alignment: center;
@@ -1751,7 +1762,7 @@ callback open-genesis();
                         } }
                     // Fetched average rating (read-only) — detail popup only.
                     if root.detail-net-rating > 0: VerticalLayout { alignment: center;
-                        Rectangle { height: 22px; border-radius: 11px; background: #f5a623.with-alpha(0.16);
+                        Rectangle { height: 22px; border-radius: Surface.r(11px); background: #f5a623.with-alpha(0.16);
                             HorizontalLayout { padding-left: 9px; padding-right: 9px; spacing: 4px; alignment: center;
                                 VerticalLayout { alignment: center;
                                     AppIcon { source: Icons.star-filled; tint: #f5a623; width: 12px; height: 12px; } }
@@ -1765,15 +1776,15 @@ callback open-genesis();
                 // edge. (DB stores 0‥100; the old ×100 here was the "400%
                 // read" bug. Fixed height so the layout never stretches it.)
                 if root.detail-percent > 0: Rectangle {
-                    height: 28px; vertical-stretch: 0; border-radius: 14px;
+                    height: 28px; vertical-stretch: 0; border-radius: Surface.r(14px);
                     background: BookTheme.accent.with-alpha(0.12);
                     border-width: 1px; border-color: BookTheme.accent.with-alpha(0.4);
                     HorizontalLayout {
                         padding-left: 12px; padding-right: 12px; spacing: 10px; alignment: stretch;
                         VerticalLayout { alignment: center; horizontal-stretch: 1;
-                            Rectangle { height: 8px; border-radius: 4px; background: BookTheme.track;
+                            Rectangle { height: 8px; border-radius: Surface.r(4px); background: BookTheme.track;
                                 Rectangle { x: 0; width: parent.width * Math.min(root.detail-percent, 100) / 100;
-                                    height: 8px; border-radius: 4px;
+                                    height: 8px; border-radius: Surface.r(4px);
                                     background: @linear-gradient(90deg, #6c4df6, #b9b0ff); } } }
                         Text { text: Math.round(Math.min(root.detail-percent, 100)) + "% read";
                             color: BookTheme.accent; font-size: 11px; font-weight: 700;
@@ -1784,7 +1795,7 @@ callback open-genesis();
                 if root.detail-collections.length > 0: HorizontalLayout {
                     spacing: 6px; alignment: start;
                     for c in root.detail-collections: Rectangle {
-                        height: 26px; border-radius: 13px;
+                        height: 26px; border-radius: Surface.r(13px);
                         min-width: 44px;
                         background: c.member ? BookTheme.accent : BookTheme.pill-bg;
                         HorizontalLayout { padding-left: 10px; padding-right: 10px; spacing: 4px;
@@ -1801,7 +1812,7 @@ callback open-genesis();
                 // it pushed the slack into the meta pill instead.
                 Rectangle {
                     vertical-stretch: 1;
-                    border-radius: 10px; background: BookTheme.pill-bg.with-alpha(0.5);
+                    border-radius: Surface.r(10px); background: BookTheme.pill-bg.with-alpha(0.5);
                     // Visible outline so the scrollable summary area reads
                     // as a distinct box.
                     border-width: 1px; border-color: BookTheme.accent.with-alpha(0.35);
@@ -1822,7 +1833,7 @@ callback open-genesis();
                 if !root.confirm-delete: HorizontalLayout {
                     spacing: 10px;
                     Rectangle {
-                        height: 42px; border-radius: 11px; background: BookTheme.accent; horizontal-stretch: 1;
+                        height: 42px; border-radius: Surface.r(11px); background: BookTheme.accent; horizontal-stretch: 1;
                         HorizontalLayout { alignment: center; spacing: 6px;
                             // Icon centered in its own column so it lines up
                             // with the label's baseline row.
@@ -1832,7 +1843,7 @@ callback open-genesis();
                         TouchArea { mouse-cursor: pointer; clicked => { root.detail-open = false; root.open-details(root.detail-id); } }
                     }
                     Rectangle {
-                        width: 46px; height: 42px; border-radius: 11px;
+                        width: 46px; height: 42px; border-radius: Surface.r(11px);
                         // Accent-tinted fill — pill-bg vs card was invisible in dark.
                         background: BookTheme.accent.with-alpha(refta.has-hover ? 0.32 : 0.12);
                         border-width: 1px; border-color: BookTheme.accent.with-alpha(0.4);
@@ -1841,7 +1852,7 @@ callback open-genesis();
                         refta := TouchArea { mouse-cursor: pointer; clicked => { root.fetch-summary(root.detail-id); } }
                     }
                     Rectangle {
-                        width: 46px; height: 42px; border-radius: 11px;
+                        width: 46px; height: 42px; border-radius: Surface.r(11px);
                         background: delta.has-hover ? #d6454518 : BookTheme.card;
                         border-width: 1px; border-color: #d6454555;
                         AppIcon { source: Icons.trash; tint: #d64545; width: 16px; height: 16px; }
@@ -1856,14 +1867,14 @@ callback open-genesis();
                     HorizontalLayout {
                         spacing: 10px;
                         Rectangle {
-                            height: 40px; border-radius: 10px; horizontal-stretch: 1;
+                            height: 40px; border-radius: Surface.r(10px); horizontal-stretch: 1;
                             background: cta.has-hover ? BookTheme.pill-bg : BookTheme.card;
                             border-width: 1px; border-color: BookTheme.hairline;
                             Text { text: "Cancel"; color: BookTheme.ink; font-size: 13px; font-weight: 700; }
                             cta := TouchArea { mouse-cursor: pointer; clicked => { root.confirm-delete = false; } }
                         }
                         Rectangle {
-                            height: 40px; border-radius: 10px; horizontal-stretch: 1; background: #d64545;
+                            height: 40px; border-radius: Surface.r(10px); horizontal-stretch: 1; background: #d64545;
                             Text { text: "Remove"; color: #ffffff; font-size: 13px; font-weight: 700; }
                             TouchArea { mouse-cursor: pointer; clicked => {
                                 root.confirm-delete = false; root.detail-open = false;
@@ -1887,11 +1898,11 @@ callback open-genesis();
         y: (root.height - self.height) / 2;
         width: 620px;
         height: 500px;
-        border-radius: 20px;
+        border-radius: Surface.r(20px);
         background: BookTheme.card;
         border-width: 1px;
         border-color: BookTheme.hairline;
-        drop-shadow-blur: 40px;
+        drop-shadow-blur: Surface.cast(40px);
         drop-shadow-color: #00000040;
         drop-shadow-offset-y: 10px;
         VerticalLayout {
@@ -1900,7 +1911,7 @@ callback open-genesis();
                 alignment: space-between;
                 Text { text: "Reading stats"; color: BookTheme.ink; font-size: 20px; font-weight: 800;
                     vertical-alignment: center; }
-                Rectangle { width: 30px; height: 30px; border-radius: 15px;
+                Rectangle { width: 30px; height: 30px; border-radius: Surface.r(15px);
                     background: sxta.has-hover ? BookTheme.pill-bg : transparent;
                     AppIcon { source: Icons.x; tint: BookTheme.ink-dim; width: 15px; height: 15px; }
                     sxta := TouchArea { mouse-cursor: pointer; clicked => { root.stats-open = false; } } }
@@ -1915,7 +1926,7 @@ callback open-genesis();
                     { v: root.stats-started + "", l: "Started" },
                     { v: root.stats-days + "", l: "Days" },
                 ]: Rectangle {
-                    horizontal-stretch: 1; height: 74px; border-radius: 12px; background: BookTheme.pill-bg;
+                    horizontal-stretch: 1; height: 74px; border-radius: Surface.r(12px); background: BookTheme.pill-bg;
                     VerticalLayout { alignment: center; spacing: 2px;
                         Text { text: m.v; color: BookTheme.accent; font-size: 22px; font-weight: 800;
                             horizontal-alignment: center; }
@@ -1934,7 +1945,7 @@ callback open-genesis();
                 for hd[i] in root.stats-heat: Rectangle {
                     x: Math.floor(i / 7) * parent.cell-w;
                     y: Math.mod(i, 7) * 15px;
-                    width: parent.cell-w - 4px; height: 11px; border-radius: 3px;
+                    width: parent.cell-w - 4px; height: 11px; border-radius: Surface.r(3px);
                     background: hd ? BookTheme.accent : BookTheme.track;
                 }
             }

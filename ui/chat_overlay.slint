@@ -1,4 +1,5 @@
 import { Theme } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { ModalFrost } from "frost.slint";
 import { AppIcon, Icons } from "icons.slint";
 
@@ -32,13 +33,13 @@ export component ChatOverlay inherits Rectangle {
             }
             Rectangle {
                 horizontal-stretch: 1; vertical-stretch: 1;
-                border-radius: 10px;
-                background: Theme.panel;
-                border-color: Theme.outline; border-width: 1px;
+                border-radius: Surface.r(10px);
+                background: Surface.body(Theme.panel);
+                border-color: Surface.hairline; border-width: 1px;
                 VerticalLayout {
                     padding: 10px; spacing: 8px;
                     for t in turns: Rectangle {
-                        border-radius: 8px;
+                        border-radius: Surface.r(8px);
                         background: t.role == "user" ? Theme.panel-2 : transparent;
                         VerticalLayout {
                             padding: 8px; spacing: 2px;
@@ -49,9 +50,9 @@ export component ChatOverlay inherits Rectangle {
                 }
             }
             Rectangle {
-                height: 38px; border-radius: 8px;
-                background: Theme.panel-2;
-                border-color: Theme.outline; border-width: 1px;
+                height: 38px; border-radius: Surface.r(8px);
+                background: Surface.body(Theme.panel-2);
+                border-color: Surface.hairline; border-width: 1px;
                 HorizontalLayout {
                     padding: 4px; spacing: 4px;
                     input := TextInput {
@@ -62,7 +63,7 @@ export component ChatOverlay inherits Rectangle {
                         accepted => { root.submit(root.draft); root.draft = ""; }
                     }
                     Rectangle {
-                        width: 70px; border-radius: 6px;
+                        width: 70px; border-radius: Surface.r(6px);
                         background: Theme.brand;
                         TouchArea { clicked => { root.submit(root.draft); root.draft = ""; } }
                         Text { text: "Send"; color: #ffffff; font-size: 12px; font-weight: 600;

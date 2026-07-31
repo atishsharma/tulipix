@@ -26,6 +26,9 @@ function show(next) {
     tab.setAttribute('aria-selected', String(tab.dataset.view === next));
   }
   syncBars();
+  // Leaving the PIN view with the camera still running would keep the indicator
+  // lit on the phone for the rest of the session.
+  if (next !== 'pin') stopScan();
   if (next === 'pin') stopPolling(); else startPolling();
 }
 
@@ -118,7 +121,14 @@ async function press(ch) {
   entered = '';
   drawPin();
 
-  if (res.ok) { say('Scanning the QR instead skips this step.', false); show('files'); refresh(); }
+  // Straight to the queue if something is waiting in it. Anyone who arrived
+  // here from the share sheet was interrupted by the PIN, and putting them on
+  // the download list afterwards asks them to find their own files again.
+  if (res.ok) {
+    say('Scanning the QR instead skips this step.', false);
+    if (queue.length > 0) { show('upload'); return; }
+    show('files'); refresh();
+  }
   else if (res.status === 429) say('Too many wrong PINs. Restart sharing on the desktop.', true);
   // The PIN was right and the limit is what stopped it, so saying "wrong PIN"
   // here would send someone off retyping a PIN that works.
@@ -132,14 +142,17 @@ for (const n of ['1', '2', '3', '4', '5', '6', '7', '8', '9']) {
   k.addEventListener('click', () => press(n));
   $('keypad').appendChild(k);
 }
-const del = document.createElement('button');
-del.type = 'button'; del.className = 'key wide'; del.textContent = 'DELETE';
-del.addEventListener('click', () => press('del'));
-$('keypad').appendChild(del);
+// Zero takes the wide left slot and DELETE the narrow right one — the reverse
+// of the usual arrangement. Under a thumb reaching for the bottom row, the wide
+// key is the one that gets hit, and it should not be the destructive one.
 const zero = document.createElement('button');
-zero.type = 'button'; zero.className = 'key'; zero.textContent = '0';
+zero.type = 'button'; zero.className = 'key wide'; zero.textContent = '0';
 zero.addEventListener('click', () => press('0'));
 $('keypad').appendChild(zero);
+const del = document.createElement('button');
+del.type = 'button'; del.className = 'key'; del.textContent = 'DEL';
+del.addEventListener('click', () => press('del'));
+$('keypad').appendChild(del);
 drawPin();
 
 document.addEventListener('keydown', (e) => {
@@ -147,6 +160,91 @@ document.addEventListener('keydown', (e) => {
   if (/^[0-9]$/.test(e.key)) press(e.key);
   else if (e.key === 'Backspace') press('del');
 });
+
+// ---- QR scanner -------------------------------------------------------------
+// The camera is gated on a secure context, so over plain http:// there is no
+// scanner to offer and the button is replaced by a line pointing at the phone's
+// own camera app — which reads the same code and needs no permission from us.
+// BarcodeDetector is the decoder; nothing is bundled to stand in for it, because
+// a QR library is larger than the rest of this page put together.
+
+const scanBtn = $('scanBtn');
+const scanStage = $('scanStage');
+const scanVideo = $('scanVideo');
+const scanNote = $('scanNote');
+let scanStream = null;
+let scanTimer = null;
+let detector = null;
+
+function scanSay(text, bad) {
+  scanNote.textContent = text;
+  scanNote.classList.toggle('bad', !!bad);
+  scanNote.hidden = !text;
+}
+
+const canScan = window.isSecureContext
+  && 'BarcodeDetector' in window
+  && !!navigator.mediaDevices?.getUserMedia;
+
+if (!canScan) {
+  scanBtn.hidden = true;
+  scanSay(
+    window.isSecureContext
+      ? 'Point your phone’s camera app at the code on the desktop — this browser cannot read QR codes itself.'
+      : 'Point your phone’s camera app at the code on the desktop. In-page scanning needs a secure connection.',
+    false,
+  );
+}
+
+function stopScan() {
+  if (scanTimer) { clearInterval(scanTimer); scanTimer = null; }
+  if (scanStream) { for (const t of scanStream.getTracks()) t.stop(); scanStream = null; }
+  scanVideo.srcObject = null;
+  scanStage.hidden = true;
+  scanBtn.hidden = false;
+}
+
+// The code carries a full URL. Only its `k` is used, and it is replayed against
+// *this* origin — a QR photographed from someone else's desktop must not be able
+// to bounce this page somewhere else.
+function useCode(raw) {
+  let key = null;
+  try { key = new URL(raw, location.origin).searchParams.get('k'); } catch { /* not a URL */ }
+  if (!key) { scanSay('That code is not a Tulipix pairing code.', true); return false; }
+  stopScan();
+  location.replace('/?k=' + encodeURIComponent(key));
+  return true;
+}
+
+async function startScan() {
+  scanSay('', false);
+  try {
+    detector = detector || new window.BarcodeDetector({ formats: ['qr_code'] });
+    scanStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment' },
+      audio: false,
+    });
+  } catch {
+    scanSay('The camera could not be opened. Allow camera access, or enter the PIN.', true);
+    return;
+  }
+  scanVideo.srcObject = scanStream;
+  try { await scanVideo.play(); } catch { /* autoplay is muted+inline, so this is rare */ }
+  scanBtn.hidden = true;
+  scanStage.hidden = false;
+
+  // Polled rather than per-frame: decoding at 60fps drains a phone for no gain,
+  // and a code held in front of a camera is there for far longer than 250ms.
+  scanTimer = setInterval(async () => {
+    if (!scanStream || scanVideo.readyState < 2) return;
+    let found = [];
+    try { found = await detector.detect(scanVideo); } catch { return; }
+    for (const hit of found) if (hit.rawValue && useCode(hit.rawValue)) return;
+  }, 250);
+}
+
+scanBtn.addEventListener('click', startScan);
+$('scanStop').addEventListener('click', () => { stopScan(); scanSay('', false); });
 
 // ---- one row with a tick box ------------------------------------------------
 // Shared by both lists: same shape, same hit target, and the whole row toggles
@@ -465,14 +563,68 @@ for (const tab of document.querySelectorAll('.tab')) {
   });
 }
 
+// ---- installed app ----------------------------------------------------------
+
+// The worker is what makes this installable, and it is what catches the share
+// sheet. Registered after load so it never competes with the first paint, and
+// failure is silent on purpose: without it the page is exactly what it was
+// before — a web page that works — and a red banner about a service worker is
+// not something anyone can act on from a phone.
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => {
+    navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => {});
+  });
+}
+
+// Files handed over by the OS share sheet. The worker parked them in a cache
+// and sent us back here with a count; we turn them into the same queue entries
+// the file picker makes, so everything downstream — the ticks, the progress
+// bars, Send — is the code that was already there.
+async function drainShare() {
+  const flag = new URLSearchParams(location.search).get('share');
+  if (!flag) return false;
+  history.replaceState({}, '', location.pathname);
+
+  if (flag === 'empty') {
+    show('upload');
+    return true;
+  }
+
+  let box;
+  try { box = await caches.open('tulipix-share-v1'); } catch { return false; }
+  const keys = await box.keys();
+  const files = [];
+  for (const key of keys) {
+    const res = await box.match(key);
+    if (!res) continue;
+    const name = decodeURIComponent(res.headers.get('x-name') || 'shared');
+    const type = res.headers.get('content-type') || 'application/octet-stream';
+    files.push(new File([await res.blob()], name, { type }));
+    await box.delete(key);
+  }
+  if (files.length === 0) return false;
+
+  enqueue(files);
+  show('upload');
+  return true;
+}
+
 // The QR's pairing key sets the cookie before this script runs, so the first
 // call decides which view opens: 200 means we are already in.
 (async function boot() {
+  let paired = false;
   try {
     const res = await fetch('/api/files');
-    if (res.ok) { show('files'); render(await res.json()); return; }
+    paired = res.ok;
+    if (paired) render(await res.json());
   } catch { /* fall through to the PIN form */ }
-  show('pin');
+
+  // A share always wins the opening view — someone who just shared a photo is
+  // not here to browse what the desktop is offering. Unpaired, the PIN screen
+  // still comes first; the queue survives it and is waiting on the other side.
+  const shared = await drainShare();
+  if (!paired) { show('pin'); return; }
+  if (!shared) show('files');
 })();
 
 // Drop ?k= from the address bar once it has been spent — a single-use key left

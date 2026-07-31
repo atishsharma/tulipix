@@ -2,6 +2,7 @@
 // `SettingsList` bound to a model of `SettingItem`s seeded in Rust, so adding
 // a toggle / endpoint field / status line needs no new component.
 import { Theme, Accent } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { ScrollView } from "std-widgets.slint";
 
 export struct SettingItem {
@@ -16,26 +17,26 @@ export struct SettingItem {
     frac: float,      // busy rows: 0..1 determinate progress (<=0 = sweep)
 }
 
-component PillToggle inherits Rectangle {
+component PillToggle inherits Skin {
     in property <bool> on;
     callback toggled(bool);
     width: 48px; height: 26px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 13px;
+    border-radius: Surface.r(13px);
     background: on ? Accent.color : Theme.outline;
     animate background { duration: 140ms; easing: ease-out; }
     TouchArea { mouse-cursor: pointer; clicked => { root.toggled(!root.on); } }
     Rectangle {
-        width: 20px; height: 20px; border-radius: 10px; background: #ffffff;
+        width: 20px; height: 20px; border-radius: Surface.r(10px); background: #ffffff;
         x: on ? parent.width - self.width - 3px : 3px;
         y: (parent.height - self.height) / 2;
         animate x { duration: 140ms; easing: ease-out; }
     }
 }
 
-component StatusDot inherits Rectangle {
+component StatusDot inherits Skin {
     in property <string> state;
-    width: 9px; height: 9px; border-radius: 5px;
+    width: 9px; height: 9px; border-radius: Surface.r(5px);
     horizontal-stretch: 0; vertical-stretch: 0;
     background:
         state == "ok"    ? Theme.ok :
@@ -44,14 +45,14 @@ component StatusDot inherits Rectangle {
                            Theme.text-dim;
 }
 
-component Btn inherits Rectangle {
+component Btn inherits Skin {
     in property <string> label;
     callback clicked();
     height: 30px; min-width: 110px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 8px;
+    border-radius: Surface.r(8px);
     background: touch.has-hover ? Theme.brand : Theme.panel;
-    border-color: Theme.outline; border-width: 1px;
+    border-color: Surface.hairline; border-width: 1px;
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     Text {
         text: label; color: touch.has-hover ? #ffffff : Theme.text;
@@ -60,7 +61,7 @@ component Btn inherits Rectangle {
     }
 }
 
-component Row inherits Rectangle {
+component Row inherits Skin {
     in property <SettingItem> item;
     callback toggle(bool);
     callback text-edited(string);
@@ -99,13 +100,13 @@ component Row inherits Rectangle {
         if item.kind == "action" && item.state == "busy": Rectangle {
             height: 30px; min-width: 110px;
             horizontal-stretch: 0; vertical-stretch: 0;
-            border-radius: 8px; clip: true;
-            background: Theme.panel;
+            border-radius: Surface.r(8px); clip: true;
+            background: Surface.body(Theme.panel);
             border-color: Accent.color.with-alpha(0.6); border-width: 1px;
             property <float> ph: Math.mod(animation-tick() / 1ms, 1100) / 1100;
             Rectangle {
                 width: 44%; height: 100%;
-                border-radius: 8px;
+                border-radius: Surface.r(8px);
                 background: Accent.color.with-alpha(0.30);
                 x: (parent.width - self.width) * (ph < 0.5 ? ph * 2 : (1 - ph) * 2);
             }
@@ -139,8 +140,8 @@ component Row inherits Rectangle {
             Rectangle {
                 height: 30px; min-width: 110px;
                 horizontal-stretch: 0; vertical-stretch: 0;
-                border-radius: 8px; clip: true;
-                background: Theme.panel;
+                border-radius: Surface.r(8px); clip: true;
+                background: Surface.body(Theme.panel);
                 border-color: Accent.color.with-alpha(0.6); border-width: 1px;
                 Rectangle {
                     x: 0; width: parent.width * Math.max(0.02, Math.min(1, item.frac));
@@ -165,7 +166,7 @@ component Row inherits Rectangle {
                 { k: "pa",   label: "ਪੰਜਾਬੀ" },
                 { k: "auto", label: "Auto" },
             ]: Rectangle {
-                width: 66px; height: 30px; border-radius: 8px;
+                width: 66px; height: 30px; border-radius: Surface.r(8px);
                 property <bool> sel: item.value == opt.k || (item.value == "" && opt.k == "en");
                 background: sel ? Accent.color : Theme.panel;
                 border-color: sel ? Accent.color : Theme.outline; border-width: 1px;
@@ -185,7 +186,7 @@ component Row inherits Rectangle {
                 { k: "small", label: "Small" },
                 { k: "turbo", label: "Turbo" },
             ]: Rectangle {
-                width: 62px; height: 30px; border-radius: 8px;
+                width: 62px; height: 30px; border-radius: Surface.r(8px);
                 property <bool> sel: item.value == opt.k || (item.value == "" && opt.k == "tiny");
                 background: sel ? Accent.color : Theme.panel;
                 border-color: sel ? Accent.color : Theme.outline; border-width: 1px;
@@ -199,8 +200,8 @@ component Row inherits Rectangle {
             width: 280px; height: 34px;
             horizontal-stretch: 0; vertical-stretch: 0;
             y: (parent.height - self.height) / 2;
-            border-radius: 9px;
-            background: Theme.panel; border-color: Theme.outline; border-width: 1px;
+            border-radius: Surface.r(9px);
+            background: Surface.body(Theme.panel); border-color: Surface.hairline; border-width: 1px;
             ti := TextInput {
                 x: 12px; width: parent.width - 24px; height: parent.height;
                 text: item.value;

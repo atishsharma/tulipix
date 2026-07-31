@@ -18,7 +18,9 @@ use std::path::PathBuf;
 use std::sync::{Mutex, OnceLock};
 use tulipix_common::*;
 use tulipix_ui::*;
-use tulipix_videos::stream::{self, Caption, Details, StreamClient, StreamError, StreamFile};
+use tulipix_videos::stream::{
+    self, Caption, Catalogue, Details, Source, StreamClient, StreamError, StreamFile,
+};
 
 mod cast;
 mod detail;
@@ -293,6 +295,56 @@ pub(crate) async fn client() -> Result<StreamClient, StreamError> {
         return Ok(g.clone().unwrap_or(c));
     }
     Ok(c)
+}
+
+/// The catalogue the tab is searching right now, built over whichever source is
+/// selected.
+///
+/// MovieBox reuses the warmed `client()`; 4KHDHub is stateless (no session, no
+/// token) so it is built per call, which is a `reqwest::Client` clone and not a
+/// connection.
+pub(crate) async fn catalogue() -> Result<Catalogue, StreamError> {
+    match active_source() {
+        Source::MovieBox => Ok(Catalogue::MovieBox(client().await?)),
+        Source::FourK => Ok(Catalogue::FourK(stream::fourk::FourKClient::new()?)),
+    }
+}
+
+/// Which source is selected. Read from settings once, then kept in memory —
+/// this is on the path of every search and every episode click.
+static SOURCE: OnceLock<Mutex<Option<Source>>> = OnceLock::new();
+
+/// The selected source, for callers outside this module (the app registers the
+/// initial UI value from it at startup).
+pub fn stream_active_source() -> Source {
+    active_source()
+}
+
+pub(crate) fn active_source() -> Source {
+    let cell = SOURCE.get_or_init(|| Mutex::new(None));
+    if let Ok(mut g) = cell.lock() {
+        return *g.get_or_insert_with(stream::source::load);
+    }
+    Source::default()
+}
+
+/// Switch source, remembering it for the next session.
+pub(crate) fn set_active_source(s: Source) {
+    if let Ok(mut g) = SOURCE.get_or_init(|| Mutex::new(None)).lock() {
+        *g = Some(s);
+    }
+    stream::source::store(s);
+}
+
+/// A file's URL, resolved to something a player, a downloader or a cast target
+/// can actually open.
+///
+/// A no-op on MovieBox, which hands back direct links. On 4KHDHub it follows the
+/// resolver chain — done here, at the moment the URL is used, because the links
+/// it produces are short-lived and resolving twenty of them to paint a quality
+/// list would spend twenty chains to use one.
+pub(crate) async fn playable_url(url: &str) -> Result<String, StreamError> {
+    catalogue().await?.playable(url).await
 }
 
 /// Force the next call to rebuild the client — used after a host edit so the new

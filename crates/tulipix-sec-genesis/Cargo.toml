@@ -19,6 +19,9 @@ _check = ["slint/renderer-skia", "slint/renderer-skia-opengl"]
 slint.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+# Native folder picker for the settings dialog's download-location button. Same
+# flags as tulipix-sec-books so the two share one build of it.
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 tulipix-ui = { path = "../tulipix-ui" }
 tulipix-common = { path = "../tulipix-common" }
 tulipix-core = { path = "../tulipix-core" }

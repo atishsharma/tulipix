@@ -2,17 +2,18 @@
 // Mode → Library → Done. Shown once; on finish the app persists an "onboarded"
 // flag. Reuses ThemePicker; mode + add-folder bubble to the existing handlers.
 import { Theme, Accent } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { ThemePicker, ThemeChoice } from "theme_picker.slint";
 import { ModalFrost } from "frost.slint";
 
-component WizBtn inherits Rectangle {
+component WizBtn inherits Skin {
     in property <string> label;
     in property <bool> primary: true;
     in property <bool> ghost: false;
     callback clicked();
     height: 38px; min-width: 110px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 10px;
+    border-radius: Surface.r(10px);
     background: ghost ? transparent : (primary ? Theme.brand : Theme.panel-2);
     border-width: 1px;
     border-color: ghost ? transparent : (primary ? Theme.brand : Theme.outline);
@@ -24,7 +25,7 @@ component WizBtn inherits Rectangle {
     }
 }
 
-component ChoiceCard inherits Rectangle {
+component ChoiceCard inherits Skin {
     in property <bool> active;
     in property <string> title;
     in property <string> sub;
@@ -73,7 +74,7 @@ export component OnboardingWizard inherits Rectangle {
             HorizontalLayout {
                 alignment: center; spacing: 8px;
                 for i in [0, 1, 2, 3, 4]: Rectangle {
-                    width: i == root.step ? 22px : 8px; height: 8px; border-radius: 4px;
+                    width: i == root.step ? 22px : 8px; height: 8px; border-radius: Surface.r(4px);
                     background: i == root.step ? Accent.color : Theme.outline;
                     animate width { duration: 160ms; easing: ease-out; }
                 }

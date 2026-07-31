@@ -104,8 +104,12 @@ pub fn stream_cast_to(weak: slint::Weak<MainWindow>, device: String) {
         };
         let ctl = dlna::resolve_url(&dev.location, &ctl);
 
+        let url = match playable_url(&file.url).await {
+            Ok(u) => u,
+            Err(e) => return set_status(&weak, format!("That source could not be opened: {e}"), false),
+        };
         for (action, body) in [
-            ("SetAVTransportURI", dlna::soap_set_uri(0, &file.url)),
+            ("SetAVTransportURI", dlna::soap_set_uri(0, &url)),
             ("Play", dlna::soap_play(0)),
         ] {
             let ok = client

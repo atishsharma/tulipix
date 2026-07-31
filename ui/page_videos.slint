@@ -5,6 +5,7 @@
 // np.p3.last-accessed, np.p3.watch-progress).
 // Discover tab: TMDB trending / upcoming / on-the-air horizontal rails (np.p3.discover).
 import { ScrollView } from "std-widgets.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { HdrChip } from "section_header.slint";
 import { EmptyState } from "empty_state.slint";
 import { Section, Theme } from "tokens.slint";
@@ -31,13 +32,28 @@ export global VP {
 
     // --- Surfaces ---
     out property <color> bg:        Theme.bg;
-    out property <color> surface:   Theme.panel;
-    out property <color> surface-2: Theme.panel-2;
-    out property <color> header:    Theme.dark ? (Theme.oled ? #000000 : #131316) : #e7e2f5;
-    out property <color> header-2:  Theme.dark ? (Theme.oled ? #060606 : #18181c) : #ede9f8;
-    out property <color> modal:     Theme.modal;
-    // Poster/thumbnail placeholder well.
-    out property <color> well:      Theme.dark ? (Theme.oled ? #101013 : #2a2a2e) : #d7d2ea;
+    // The design language owns the material of the six surfaces this section is
+    // built out of. Clay makes them one matte body, the moulded language lights
+    // them from the top edge, and Standard keeps the exact tones it always had.
+    // The indigo ramp above and the text below are untouched — a skin repaints
+    // a section, it does not re-identify it.
+    out property <color> surface:   Surface.clay ? Surface.card-ink
+        : (Surface.skeuo ? Surface.plate-ink : Theme.panel);
+    out property <color> surface-2: Surface.clay ? Surface.clay-key
+        : (Surface.skeuo ? Surface.key-top : Theme.panel-2);
+    out property <color> header:    Surface.clay ? Surface.clay-shell
+        : (Surface.skeuo ? Surface.plate-top
+        : (Theme.dark ? (Theme.oled ? #000000 : #131316) : #e7e2f5));
+    out property <color> header-2:  Surface.clay ? Surface.clay-shell
+        : (Surface.skeuo ? Surface.plate-bottom
+        : (Theme.dark ? (Theme.oled ? #060606 : #18181c) : #ede9f8));
+    // A modal floats, so it takes the key tone rather than the shell tone.
+    out property <color> modal:     Surface.clay ? Surface.clay-key
+        : (Surface.skeuo ? Surface.key-top : Theme.modal);
+    // Poster/thumbnail placeholder well — a recess in both languages.
+    out property <color> well:      Surface.clay ? Surface.clay-well
+        : (Surface.skeuo ? Surface.key-bottom
+        : (Theme.dark ? (Theme.oled ? #101013 : #2a2a2e) : #d7d2ea));
     out property <color> scrim:      #000000cc;
     out property <color> scrim-soft: #00000066;
 
@@ -220,7 +236,7 @@ export struct StreamFileRow {
     has-subs: bool,
 }
 
-component PlexButton inherits Rectangle {
+component PlexButton inherits Skin {
     in property <string> label;
     in property <image> icon;
     in property <bool> filled: false;
@@ -232,7 +248,7 @@ component PlexButton inherits Rectangle {
     callback clicked();
     height: 40px; min-width: root.compact ? 74px : 120px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 6px;
+    border-radius: Surface.r(6px);
     background: filled
         ? (touch.has-hover ? root.hue.brighter(0.18) : root.hue)
         : (touch.has-hover ? VP.btn-2-hi : VP.btn-2);
@@ -254,7 +270,7 @@ component PlexButton inherits Rectangle {
 // solid pill (was a wrapper over HdrChip, whose baked-in dark idle went invisible
 // on the light canvas). Active = solid indigo; inactive = solid indigo-tint —
 // visible and coloured in light / dark / OLED.
-component VideoTab inherits Rectangle {
+component VideoTab inherits Skin {
     in property <string> label;
     in property <image> icon;
     in property <bool> active: false;
@@ -281,7 +297,7 @@ component VideoTab inherits Rectangle {
     }
 }
 
-component Poster inherits Rectangle {
+component Poster inherits Skin {
     in property <VideoTile> tile;
     callback clicked();
     callback context(int, length, length);
@@ -291,7 +307,7 @@ component Poster inherits Rectangle {
         spacing: 8px;
         Rectangle {
             width: 150px; height: 225px;
-            border-radius: 8px; clip: true;
+            border-radius: Surface.r(8px); clip: true;
             background: VP.well;
             border-width: ta.has-hover ? 2px : 0px;
             border-color: VP.accent;
@@ -300,21 +316,21 @@ component Poster inherits Rectangle {
             // Star badge (top-right).
             if tile.starred: Rectangle {
                 x: parent.width - self.width - 6px; y: 6px;
-                width: 24px; height: 24px; border-radius: 12px;
+                width: 24px; height: 24px; border-radius: Surface.r(12px);
                 background: VP.scrim;
                 AppIcon { source: Icons.star-filled; tint: VP.accent; width: 14px; height: 14px; }
             }
             // Watched check (top-left).
             if tile.watched: Rectangle {
                 x: 6px; y: 6px;
-                width: 24px; height: 24px; border-radius: 12px;
+                width: 24px; height: 24px; border-radius: Surface.r(12px);
                 background: VP.accent;
                 AppIcon { source: Icons.check; tint: VP.accent-ink; width: 14px; height: 14px; }
             }
             // Duration pill (bottom-right) when known and no resume bar overlap.
             if tile.duration != "": Rectangle {
                 x: parent.width - self.width - 6px; y: parent.height - self.height - 10px;
-                width: dlbl.preferred-width + 12px; height: 18px; border-radius: 9px;
+                width: dlbl.preferred-width + 12px; height: 18px; border-radius: Surface.r(9px);
                 background: VP.scrim;
                 dlbl := Text { text: tile.duration; color: VP.badge-ink; font-size: 10px; font-weight: 600;
                     horizontal-alignment: center; vertical-alignment: center; }
@@ -322,7 +338,7 @@ component Poster inherits Rectangle {
             // Episode badge (bottom-left) — TV episodes only.
             if tile.episode > 0: Rectangle {
                 x: 6px; y: parent.height - self.height - 10px;
-                width: eplbl.preferred-width + 12px; height: 18px; border-radius: 9px;
+                width: eplbl.preferred-width + 12px; height: 18px; border-radius: Surface.r(9px);
                 background: VP.accent-cc;
                 eplbl := Text {
                     text: (tile.season > 0 ? "S" + tile.season : "") + "E" + tile.episode;
@@ -355,7 +371,7 @@ component Poster inherits Rectangle {
     }
 }
 
-component ShowCardView inherits Rectangle {
+component ShowCardView inherits Skin {
     in property <ShowCard> show;
     callback clicked();
     width: 150px;
@@ -364,13 +380,13 @@ component ShowCardView inherits Rectangle {
         spacing: 8px;
         Rectangle {
             width: 150px; height: 225px;
-            border-radius: 8px; clip: true; background: VP.well;
+            border-radius: Surface.r(8px); clip: true; background: VP.well;
             border-width: ta.has-hover ? 2px : 0px; border-color: VP.accent;
             Image { source: show.cover; image-fit: cover; width: parent.width; height: parent.height; }
             // Episode-count badge.
             Rectangle {
                 x: parent.width - self.width - 6px; y: 6px;
-                width: cnt.preferred-width + 14px; height: 22px; border-radius: 11px; background: VP.scrim;
+                width: cnt.preferred-width + 14px; height: 22px; border-radius: Surface.r(11px); background: VP.scrim;
                 cnt := Text { text: show.count + " ep"; color: VP.badge-ink; font-size: 10px; font-weight: 700;
                     horizontal-alignment: center; vertical-alignment: center; }
             }
@@ -381,7 +397,7 @@ component ShowCardView inherits Rectangle {
 }
 
 // Single card in a Discover rail — compact 2:3 poster with badges.
-component DiscoverCardView inherits Rectangle {
+component DiscoverCardView inherits Skin {
     in property <DiscoverCard> card;
     callback clicked();
     width: 130px;
@@ -390,7 +406,7 @@ component DiscoverCardView inherits Rectangle {
         spacing: 6px;
         Rectangle {
             width: 130px; height: 195px;
-            border-radius: 8px; clip: true;
+            border-radius: Surface.r(8px); clip: true;
             background: VP.well;
             border-width: ta.has-hover ? 2px : 0px;
             border-color: VP.accent;
@@ -402,7 +418,7 @@ component DiscoverCardView inherits Rectangle {
             if card.vote > 0.0: Rectangle {
                 x: parent.width - self.width - 6px; y: 6px;
                 width: vt.preferred-width + 10px; height: 18px;
-                border-radius: 9px; background: VP.scrim;
+                border-radius: Surface.r(9px); background: VP.scrim;
                 vt := Text {
                     text: Math.round(card.vote * 10.0) / 10.0;
                     color: VP.accent; font-size: 9px; font-weight: 800;
@@ -413,7 +429,7 @@ component DiscoverCardView inherits Rectangle {
             Rectangle {
                 x: 6px; y: 6px;
                 width: kt.preferred-width + 10px; height: 16px;
-                border-radius: 8px; background: card.is-movie ? VP.badge-movie : VP.badge-series;
+                border-radius: Surface.r(8px); background: card.is-movie ? VP.badge-movie : VP.badge-series;
                 kt := Text {
                     text: card.is-movie ? "MOVIE" : "SHOW";
                     color: VP.badge-ink; font-size: 8px; font-weight: 800;
@@ -446,7 +462,7 @@ component DiscoverCardView inherits Rectangle {
 }
 
 // One horizontal-scroll rail with a labelled header.
-component DiscoverRail inherits Rectangle {
+component DiscoverRail inherits Skin {
     in property <string> label;
     in property <image> icon;
     in property <[DiscoverCard]> items;
@@ -461,7 +477,7 @@ component DiscoverRail inherits Rectangle {
         // Rail header row.
         HorizontalLayout {
             alignment: start; spacing: 10px;
-            Rectangle { width: 4px; height: 18px; border-radius: 2px; background: VP.accent;
+            Rectangle { width: 4px; height: 18px; border-radius: Surface.r(2px); background: VP.accent;
                 horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
             VerticalLayout { alignment: center; AppIcon { source: icon; tint: VP.text; width: 16px; height: 16px; } }
             Text { text: label; color: VP.text; font-size: 16px; font-weight: 700;
@@ -491,7 +507,7 @@ component DiscoverRail inherits Rectangle {
 
 // The Stream search field. One component so the centred landing version and
 // the compact toolbar version cannot drift apart — they differ only in size.
-component StreamSearchField inherits Rectangle {
+component StreamSearchField inherits Skin {
     in-out property <string> query;
     in property <bool> large: false;
     callback search(string);
@@ -540,7 +556,7 @@ component StreamSearchField inherits Rectangle {
             }
         }
         if root.query != "": Rectangle {
-            width: 28px; height: 28px; border-radius: 14px;
+            width: 28px; height: 28px; border-radius: Surface.r(14px);
             horizontal-stretch: 0; vertical-stretch: 0;
             y: (parent.height - self.height) / 2;
             background: sclear.has-hover ? VP.btn-2-hi : VP.btn-2;
@@ -553,12 +569,12 @@ component StreamSearchField inherits Rectangle {
 }
 
 // A remembered search term on the landing screen.
-component RecentChip inherits Rectangle {
+component RecentChip inherits Skin {
     in property <string> label;
     callback clicked();
     height: 36px;
     horizontal-stretch: 1; vertical-stretch: 0;
-    border-radius: 10px;
+    border-radius: Surface.r(10px);
     background: rta.has-hover ? VP.btn-2-hi : VP.btn-2;
     border-width: 1px; border-color: rta.has-hover ? VP.accent : VP.btn-2-edge;
     rta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
@@ -576,12 +592,12 @@ component RecentChip inherits Rectangle {
 }
 
 // One Saved-page card: poster on the left, info + Open on the right.
-component BookmarkCard inherits Rectangle {
+component BookmarkCard inherits Skin {
     in property <StreamCard> card;
     callback open();
     callback remove();
     horizontal-stretch: 1; vertical-stretch: 1;
-    border-radius: 12px;
+    border-radius: Surface.r(12px);
     background: bcard.has-hover ? VP.surface-2 : VP.surface;
     border-width: 1px; border-color: bcard.has-hover ? VP.accent-55 : VP.hair;
     bcard := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
@@ -590,7 +606,7 @@ component BookmarkCard inherits Rectangle {
         // Poster — 30% of the card so the artwork reads.
         Rectangle {
             width: (root.width - 36px) * 0.30; horizontal-stretch: 0; vertical-stretch: 1;
-            border-radius: 8px; clip: true; background: VP.well;
+            border-radius: Surface.r(8px); clip: true; background: VP.well;
             Image { source: card.poster; image-fit: cover; width: parent.width; height: parent.height; }
             if card.poster.width == 0: AppIcon {
                 source: card.is-series ? Icons.tv : Icons.film; tint: VP.ph-icon;
@@ -602,13 +618,13 @@ component BookmarkCard inherits Rectangle {
         // bottom of this column.
         Rectangle {
             horizontal-stretch: 1; vertical-stretch: 1;
-            border-radius: 10px; background: VP.fill-weak;
+            border-radius: Surface.r(10px); background: VP.fill-weak;
             border-width: 1px; border-color: bcard.has-hover ? VP.accent-44 : VP.hair;
             VerticalLayout {
                 padding: 12px; spacing: 6px;
                 HorizontalLayout { spacing: 6px; vertical-stretch: 0;
                     Rectangle {
-                        width: kl.preferred-width + 14px; height: 17px; border-radius: 8px;
+                        width: kl.preferred-width + 14px; height: 17px; border-radius: Surface.r(8px);
                         horizontal-stretch: 0; vertical-stretch: 0;
                         background: card.is-series ? VP.badge-series : VP.badge-movie;
                         kl := Text { text: card.is-series ? "SERIES" : "MOVIE";
@@ -618,7 +634,7 @@ component BookmarkCard inherits Rectangle {
                     }
                     Rectangle { horizontal-stretch: 1; }
                     Rectangle {
-                        width: 24px; height: 24px; border-radius: 12px;
+                        width: 24px; height: 24px; border-radius: Surface.r(12px);
                         horizontal-stretch: 0; vertical-stretch: 0;
                         background: rmb.has-hover ? VP.danger : VP.btn-2;
                         rmb := TouchArea { mouse-cursor: pointer; clicked => { root.remove(); } }
@@ -647,14 +663,14 @@ component BookmarkCard inherits Rectangle {
 }
 
 // Small sort-key chip for the Saved header.
-component SortChip inherits Rectangle {
+component SortChip inherits Skin {
     in property <string> label;
     in property <bool> active: false;
     in property <color> hue: VP.accent;   // active fill — one colour per key
     callback clicked();
     height: 30px; width: sctext.preferred-width + 22px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 8px;
+    border-radius: Surface.r(8px);
     background: root.active ? root.hue : (scta.has-hover ? VP.btn-2-hi : VP.btn-2);
     border-width: root.active ? 0px : 1px; border-color: VP.btn-2-edge;
     scta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
@@ -665,7 +681,7 @@ component SortChip inherits Rectangle {
 }
 
 // Back pill — filled amber, matched to the search field height so it aligns.
-component StreamBackBtn inherits Rectangle {
+component StreamBackBtn inherits Skin {
     in property <string> label: "Back";
     callback clicked();
     height: 44px; min-width: 104px;
@@ -686,7 +702,7 @@ component StreamBackBtn inherits Rectangle {
 // Home pill — one step back to the Stream landing screen from anywhere in the
 // section. Sits next to the Back pill and matches its shape, in violet so the
 // two never read as the same control.
-component StreamHomeBtn inherits Rectangle {
+component StreamHomeBtn inherits Skin {
     callback clicked();
     height: 44px; min-width: 104px;
     horizontal-stretch: 0; vertical-stretch: 0;
@@ -704,7 +720,7 @@ component StreamHomeBtn inherits Rectangle {
 }
 
 // Square icon action inside a stream row (copy / download).
-component IconBtn inherits Rectangle {
+component IconBtn inherits Skin {
     in property <image> icon;
     in property <string> tip: "";
     // Action colour — icon shows it at rest, the fill takes it on hover.
@@ -712,7 +728,7 @@ component IconBtn inherits Rectangle {
     callback clicked();
     width: 38px; height: 38px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 6px;
+    border-radius: Surface.r(6px);
     background: ib.has-hover ? root.hue.brighter(0.15) : root.hue;
     border-width: 0px;
     ib := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
@@ -724,7 +740,7 @@ component IconBtn inherits Rectangle {
     if ib.has-hover && root.tip != "": Rectangle {
         y: -26px; height: 22px; width: tiptext.preferred-width + 18px;
         x: (parent.width - self.width) / 2;
-        border-radius: 6px;
+        border-radius: Surface.r(6px);
         background: Theme.dark ? #f4f5fb : #17142e;
         border-width: 1px;
         border-color: Theme.dark ? rgba(0,0,0,0.35) : rgba(255,255,255,0.28);
@@ -737,10 +753,10 @@ component IconBtn inherits Rectangle {
 
 // A bordered column in the detail pane, mirroring the TUI's panels: a titled
 // header strip with an optional right-aligned hint, then the content.
-component PanelBox inherits Rectangle {
+component PanelBox inherits Skin {
     in property <string> title;
     in property <string> hint: "";
-    border-radius: 10px;
+    border-radius: Surface.r(10px);
     background: VP.surface;
     border-width: 1px;
     border-color: VP.hair;
@@ -769,7 +785,7 @@ component PanelBox inherits Rectangle {
 // `>>` cursor so the active row reads at a glance.
 // One episode in the detail strip: number, the catalogue's name for it where
 // there is one, and a hairline showing how far through it you are.
-component EpisodeRow inherits Rectangle {
+component EpisodeRow inherits Skin {
     in property <int> number;
     in property <string> title;
     in property <float> progress: 0.0;
@@ -777,7 +793,7 @@ component EpisodeRow inherits Rectangle {
     callback clicked();
     height: 34px;
     horizontal-stretch: 1; vertical-stretch: 0;
-    border-radius: 6px;
+    border-radius: Surface.r(6px);
     background: root.active ? #ff2323 : (erow.has-hover ? VP.row-hi : VP.row);
     border-width: root.active ? 0px : 1px; border-color: VP.row-edge;
     erow := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
@@ -793,11 +809,11 @@ component EpisodeRow inherits Rectangle {
                 overflow: elide; }
             // Hidden entirely at zero, so an unwatched list stays clean.
             if root.progress > 0.01: Rectangle {
-                height: 2px; border-radius: 1px;
+                height: 2px; border-radius: Surface.r(1px);
                 background: VP.row-edge;
                 Rectangle {
                     x: 0; width: parent.width * Math.clamp(root.progress, 0.0, 1.0);
-                    height: 100%; border-radius: 1px;
+                    height: 100%; border-radius: Surface.r(1px);
                     background: root.progress >= 0.99 ? VP.row-ink.with-alpha(0.45) : #ff2323;
                 }
             }
@@ -807,14 +823,14 @@ component EpisodeRow inherits Rectangle {
 
 // One line of the History list: thumb, what it was, how far you got, when, and
 // the two things worth doing about it.
-component HistoryRow inherits Rectangle {
+component HistoryRow inherits Skin {
     in property <StreamHistoryRow> entry;
     callback play();
     callback opened();
     callback remove();
     height: 64px;
     horizontal-stretch: 1; vertical-stretch: 0;
-    border-radius: 8px;
+    border-radius: Surface.r(8px);
     background: hr.has-hover ? VP.list-hi : VP.list;
     border-width: 1px; border-color: hr.has-hover ? VP.accent.with-alpha(0.5) : VP.list-edge;
     hr := TouchArea { mouse-cursor: pointer; clicked => { root.opened(); } }
@@ -823,7 +839,7 @@ component HistoryRow inherits Rectangle {
         // Thumb.
         VerticalLayout { alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 34px; height: 50px; border-radius: 5px; clip: true; background: VP.well;
+                width: 34px; height: 50px; border-radius: Surface.r(5px); clip: true; background: VP.well;
                 Image { source: entry.poster; image-fit: cover;
                     width: parent.width; height: parent.height; }
                 if entry.poster.width == 0: AppIcon { source: Icons.film; tint: VP.ph-icon;
@@ -841,10 +857,10 @@ component HistoryRow inherits Rectangle {
         // How far, as a bar and as words.
         VerticalLayout { alignment: center; horizontal-stretch: 0; spacing: 4px;
             Rectangle {
-                width: 130px; height: 4px; border-radius: 2px; background: VP.hair;
+                width: 130px; height: 4px; border-radius: Surface.r(2px); background: VP.hair;
                 horizontal-stretch: 0;
                 Rectangle {
-                    x: 0; height: 100%; border-radius: 2px;
+                    x: 0; height: 100%; border-radius: Surface.r(2px);
                     width: parent.width * Math.clamp(entry.progress, 0.0, 1.0);
                     background: entry.finished ? VP.list-ink2 : VP.accent;
                 }
@@ -859,7 +875,7 @@ component HistoryRow inherits Rectangle {
         // Resume it, or drop it.
         VerticalLayout { alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 34px; height: 34px; border-radius: 8px;
+                width: 34px; height: 34px; border-radius: Surface.r(8px);
                 background: hpl.has-hover ? VP.c-play.brighter(0.15) : VP.c-play;
                 hpl := TouchArea { mouse-cursor: pointer; clicked => { root.play(); } }
                 AppIcon { source: Icons.play; tint: #ffffff; width: 14px; height: 14px;
@@ -868,7 +884,7 @@ component HistoryRow inherits Rectangle {
             } }
         VerticalLayout { alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 30px; height: 30px; border-radius: 15px;
+                width: 30px; height: 30px; border-radius: Surface.r(15px);
                 background: hrm.has-hover ? VP.danger : VP.btn-2;
                 hrm := TouchArea { mouse-cursor: pointer; clicked => { root.remove(); } }
                 AppIcon { source: Icons.x; tint: hrm.has-hover ? #ffffff : VP.list-ink2;
@@ -880,7 +896,7 @@ component HistoryRow inherits Rectangle {
 
 // One row of the Downloads page: what it is, where it got to, and the actions
 // that make sense for the state it is in.
-component DownloadRow inherits Rectangle {
+component DownloadRow inherits Skin {
     in property <StreamDownloadRow> entry;
     callback play();
     callback retry();
@@ -889,7 +905,7 @@ component DownloadRow inherits Rectangle {
     callback delete-file();
     height: 66px;
     horizontal-stretch: 1; vertical-stretch: 0;
-    border-radius: 8px;
+    border-radius: Surface.r(8px);
     background: dr.has-hover ? VP.list-hi : VP.list;
     border-width: 1px;
     border-color: entry.failed
@@ -901,7 +917,7 @@ component DownloadRow inherits Rectangle {
         // State pill.
         VerticalLayout { alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 86px; height: 20px; border-radius: 10px;
+                width: 86px; height: 20px; border-radius: Surface.r(10px);
                 background: entry.failed ? VP.danger
                     : (entry.active ? VP.c-dl : VP.c-play);
                 Text { text: entry.state; color: #ffffff;
@@ -917,9 +933,9 @@ component DownloadRow inherits Rectangle {
             Text { text: entry.detail; color: VP.list-ink2; font-size: 10px;
                 font-weight: 600; overflow: elide; }
             if entry.active: Rectangle {
-                height: 4px; border-radius: 2px; background: VP.list-edge;
+                height: 4px; border-radius: Surface.r(2px); background: VP.list-edge;
                 Rectangle {
-                    x: 0; height: 100%; border-radius: 2px; background: VP.c-dl;
+                    x: 0; height: 100%; border-radius: Surface.r(2px); background: VP.c-dl;
                     width: parent.width * Math.clamp(entry.progress, 0.0, 1.0);
                 }
             }
@@ -927,7 +943,7 @@ component DownloadRow inherits Rectangle {
         // Play what finished, or try a failure again.
         if entry.done: VerticalLayout { alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 34px; height: 34px; border-radius: 8px;
+                width: 34px; height: 34px; border-radius: Surface.r(8px);
                 background: dpl.has-hover ? VP.c-play.brighter(0.15) : VP.c-play;
                 dpl := TouchArea { mouse-cursor: pointer; clicked => { root.play(); } }
                 AppIcon { source: Icons.play; tint: #ffffff; width: 14px; height: 14px;
@@ -936,7 +952,7 @@ component DownloadRow inherits Rectangle {
             } }
         if entry.failed: VerticalLayout { alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 34px; height: 34px; border-radius: 8px;
+                width: 34px; height: 34px; border-radius: Surface.r(8px);
                 background: drt.has-hover ? VP.c-dl.brighter(0.15) : VP.c-dl;
                 drt := TouchArea { mouse-cursor: pointer; clicked => { root.retry(); } }
                 AppIcon { source: Icons.refresh-cw; tint: #ffffff; width: 14px; height: 14px;
@@ -945,7 +961,7 @@ component DownloadRow inherits Rectangle {
         // Show it in the file manager.
         if entry.done: VerticalLayout { alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 30px; height: 30px; border-radius: 15px;
+                width: 30px; height: 30px; border-radius: Surface.r(15px);
                 background: drv.has-hover ? VP.btn-2-hi : VP.btn-2;
                 drv := TouchArea { mouse-cursor: pointer; clicked => { root.reveal(); } }
                 AppIcon { source: Icons.folder-open; tint: VP.btn-2-ink;
@@ -955,7 +971,7 @@ component DownloadRow inherits Rectangle {
         // Delete the file itself — only offered when there is one.
         if entry.done: VerticalLayout { alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 30px; height: 30px; border-radius: 15px;
+                width: 30px; height: 30px; border-radius: Surface.r(15px);
                 background: ddf.has-hover ? VP.danger : VP.btn-2;
                 ddf := TouchArea { mouse-cursor: pointer; clicked => { root.delete-file(); } }
                 AppIcon { source: Icons.trash; tint: ddf.has-hover ? #ffffff : VP.list-ink2;
@@ -965,7 +981,7 @@ component DownloadRow inherits Rectangle {
         // Drop the row (stops it first if it is running). The file stays.
         VerticalLayout { alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 30px; height: 30px; border-radius: 15px;
+                width: 30px; height: 30px; border-radius: Surface.r(15px);
                 background: dfg.has-hover ? VP.danger : VP.btn-2;
                 dfg := TouchArea { mouse-cursor: pointer; clicked => { root.forget(); } }
                 AppIcon { source: Icons.x; tint: dfg.has-hover ? #ffffff : VP.list-ink2;
@@ -976,10 +992,10 @@ component DownloadRow inherits Rectangle {
 }
 
 // One step of the resume slider.
-component SlideArrow inherits Rectangle {
+component SlideArrow inherits Skin {
     in property <image> icon;
     callback clicked();
-    width: 20px; height: 44px; border-radius: 6px;
+    width: 20px; height: 44px; border-radius: Surface.r(6px);
     horizontal-stretch: 0; vertical-stretch: 0;
     background: sa.has-hover ? VP.btn-2-hi : VP.btn-2;
     border-width: 1px; border-color: VP.btn-2-edge;
@@ -992,12 +1008,12 @@ component SlideArrow inherits Rectangle {
 // Continue Watching, built like the Saved card: poster on the left, an info
 // panel on the right carrying what you are watching and how much is left, with
 // Continue at the foot of that panel rather than under the whole card.
-component ResumeCard inherits Rectangle {
+component ResumeCard inherits Skin {
     in property <StreamCard> card;
     in property <color> outline: VP.accent;
     callback continued();
     horizontal-stretch: 1; vertical-stretch: 1;
-    border-radius: 12px;
+    border-radius: Surface.r(12px);
     background: rcard.has-hover ? VP.surface-2 : VP.surface;
     border-width: 1.5px;
     border-color: rcard.has-hover ? root.outline : root.outline.with-alpha(0.5);
@@ -1012,7 +1028,7 @@ component ResumeCard inherits Rectangle {
         // away with it because its cards sit in a fixed 3x3 of definite cells.
         Rectangle {
             width: 128px; horizontal-stretch: 0; vertical-stretch: 1;
-            border-radius: 8px; clip: true; background: VP.well;
+            border-radius: Surface.r(8px); clip: true; background: VP.well;
             Image { source: card.poster; image-fit: cover;
                 width: parent.width; height: parent.height; }
             if card.poster.width == 0: AppIcon {
@@ -1031,13 +1047,13 @@ component ResumeCard inherits Rectangle {
         // Info side — kind, title, which episode, how much is left, then Continue.
         Rectangle {
             horizontal-stretch: 1; vertical-stretch: 1;
-            border-radius: 10px; background: VP.fill-weak;
+            border-radius: Surface.r(10px); background: VP.fill-weak;
             border-width: 1px; border-color: rcard.has-hover ? VP.accent-44 : VP.hair;
             VerticalLayout {
                 padding: 12px; spacing: 6px;
                 HorizontalLayout { spacing: 6px; vertical-stretch: 0;
                     Rectangle {
-                        width: rkl.preferred-width + 14px; height: 17px; border-radius: 8px;
+                        width: rkl.preferred-width + 14px; height: 17px; border-radius: Surface.r(8px);
                         horizontal-stretch: 0; vertical-stretch: 0;
                         background: card.is-series ? VP.badge-series : VP.badge-movie;
                         rkl := Text { text: card.is-series ? "SERIES" : "MOVIE";
@@ -1073,7 +1089,7 @@ component ResumeCard inherits Rectangle {
 // A trending card: portrait poster like the search grid, a solid pill carrying
 // the name and year, and an outline whose colour varies down the row. The whole
 // card is one hover target.
-component MiniPoster inherits Rectangle {
+component MiniPoster inherits Skin {
     in property <StreamCard> card;
     // Position in the row, which picks the outline colour.
     in property <int> idx: 0;
@@ -1084,7 +1100,7 @@ component MiniPoster inherits Rectangle {
         Math.mod(root.idx, 6) == 2 ? VP.c-save :
         Math.mod(root.idx, 6) == 3 ? VP.c-copy :
         Math.mod(root.idx, 6) == 4 ? VP.c-dl : VP.accent;
-    border-radius: 10px; clip: true;
+    border-radius: Surface.r(10px); clip: true;
     background: VP.list;
     border-width: 1.5px;
     border-color: mp.has-hover ? root.hue : root.hue.with-alpha(0.5);
@@ -1103,7 +1119,7 @@ component MiniPoster inherits Rectangle {
             if mp.has-hover: Rectangle {
                 width: parent.width; height: parent.height; background: VP.scrim-soft;
                 Rectangle {
-                    width: 38px; height: 38px; border-radius: 19px; background: root.hue;
+                    width: 38px; height: 38px; border-radius: Surface.r(19px); background: root.hue;
                     x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                     AppIcon { source: Icons.play; tint: #ffffff; width: 15px; height: 15px;
                         x: (parent.width - self.width) / 2 + 1px;
@@ -1129,11 +1145,11 @@ component MiniPoster inherits Rectangle {
 }
 
 // One tab of the Stream Setting popup.
-component SettingTab inherits Rectangle {
+component SettingTab inherits Skin {
     in property <string> label;
     in property <bool> active: false;
     callback clicked();
-    height: 28px; border-radius: 8px;
+    height: 28px; border-radius: Surface.r(8px);
     width: st-label.preferred-width + 26px;
     horizontal-stretch: 0; vertical-stretch: 0;
     background: root.active ? VP.accent : (stt.has-hover ? VP.btn-2-hi : VP.btn-2);
@@ -1149,28 +1165,28 @@ component SettingTab inherits Rectangle {
 }
 
 // A small on/off switch for the Servers modal's preferences.
-component StreamToggle inherits Rectangle {
+component StreamToggle inherits Skin {
     in property <bool> on: false;
     callback toggled(bool);
-    width: 42px; height: 24px; border-radius: 12px;
+    width: 42px; height: 24px; border-radius: Surface.r(12px);
     horizontal-stretch: 0; vertical-stretch: 0;
     background: root.on ? VP.c-play : VP.btn-2;
     border-width: 1px; border-color: root.on ? VP.c-play : VP.btn-2-edge;
     tg := TouchArea { mouse-cursor: pointer; clicked => { root.toggled(!root.on); } }
     Rectangle {
         y: 3px; x: root.on ? parent.width - self.width - 3px : 3px;
-        width: 18px; height: 18px; border-radius: 9px;
+        width: 18px; height: 18px; border-radius: Surface.r(9px);
         background: root.on ? #ffffff : (tg.has-hover ? VP.icon : VP.text-mute);
         animate x { duration: 120ms; easing: ease-out; }
     }
 }
 
 // "− label +" — a compact stepper for a numeric preference.
-component StepperPill inherits Rectangle {
+component StepperPill inherits Skin {
     in property <string> label;
     callback minus();
     callback plus();
-    height: 30px; border-radius: 8px;
+    height: 30px; border-radius: Surface.r(8px);
     horizontal-stretch: 0; vertical-stretch: 0;
     // Fixed rather than sized from the row inside it: that row has a stretching
     // label, so asking it for a preferred width is a cycle waiting to happen.
@@ -1180,7 +1196,7 @@ component StepperPill inherits Rectangle {
         padding-left: 6px; padding-right: 6px; spacing: 8px;
         VerticalLayout { alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 20px; height: 20px; border-radius: 6px;
+                width: 20px; height: 20px; border-radius: Surface.r(6px);
                 background: mn.has-hover ? VP.btn-2-hi : transparent;
                 mn := TouchArea { mouse-cursor: pointer; clicked => { root.minus(); } }
                 Text { text: "−"; color: VP.btn-2-ink; font-size: 14px; font-weight: 800;
@@ -1193,7 +1209,7 @@ component StepperPill inherits Rectangle {
                 vertical-alignment: center; } }
         VerticalLayout { alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 20px; height: 20px; border-radius: 6px;
+                width: 20px; height: 20px; border-radius: Surface.r(6px);
                 background: pl.has-hover ? VP.btn-2-hi : transparent;
                 pl := TouchArea { mouse-cursor: pointer; clicked => { root.plus(); } }
                 Text { text: "+"; color: VP.btn-2-ink; font-size: 14px; font-weight: 800;
@@ -1204,13 +1220,13 @@ component StepperPill inherits Rectangle {
     }
 }
 
-component PickRow inherits Rectangle {
+component PickRow inherits Skin {
     in property <string> label;
     in property <bool> active: false;
     callback clicked();
     height: 30px;
     horizontal-stretch: 1; vertical-stretch: 0;
-    border-radius: 6px;
+    border-radius: Surface.r(6px);
     background: root.active ? #ff2323 : (prow.has-hover ? VP.row-hi : VP.row);
     border-width: root.active ? 0px : 1px; border-color: VP.row-edge;
     prow := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
@@ -1230,7 +1246,7 @@ component PickRow inherits Rectangle {
 // Search-result poster for the Stream tab. Same 2:3 language as the library
 // posters, with a kind pill instead of playback badges — nothing is downloaded
 // yet, so there is no progress or watched state to show.
-component StreamPoster inherits Rectangle {
+component StreamPoster inherits Skin {
     in property <StreamCard> card;
     in property <bool> removable: false;
     callback clicked();
@@ -1245,7 +1261,7 @@ component StreamPoster inherits Rectangle {
         alignment: start; spacing: 8px;
         Rectangle {
             width: 150px; height: 225px;
-            border-radius: 8px; clip: true; background: VP.well;
+            border-radius: Surface.r(8px); clip: true; background: VP.well;
             border-width: ta.has-hover ? 2px : 0px; border-color: VP.accent;
             Image { source: card.poster; image-fit: cover; width: parent.width; height: parent.height; }
             // Placeholder glyph when the poster has not cached yet.
@@ -1257,7 +1273,7 @@ component StreamPoster inherits Rectangle {
             Rectangle {
                 x: 6px; y: 6px;
                 width: kind-label.preferred-width + 12px; height: 17px;
-                border-radius: 8px; background: card.is-series ? VP.badge-series : VP.badge-movie;
+                border-radius: Surface.r(8px); background: card.is-series ? VP.badge-series : VP.badge-movie;
                 kind-label := Text {
                     text: card.is-series ? "SERIES" : "MOVIE";
                     color: VP.badge-ink; font-size: 8px; font-weight: 800;
@@ -1268,7 +1284,7 @@ component StreamPoster inherits Rectangle {
             if card.seasons > 1: Rectangle {
                 x: parent.width - self.width - 6px; y: 6px;
                 width: seasons-label.preferred-width + 12px; height: 17px;
-                border-radius: 8px; background: VP.scrim;
+                border-radius: Surface.r(8px); background: VP.scrim;
                 seasons-label := Text {
                     text: card.seasons + " seasons";
                     color: VP.accent; font-size: 8px; font-weight: 800;
@@ -1305,7 +1321,7 @@ component StreamPoster inherits Rectangle {
             // Remove button — Saved page only, top-right, appears on hover.
             if root.removable && ta.has-hover: Rectangle {
                 x: parent.width - self.width - 6px; y: 6px;
-                width: 26px; height: 26px; border-radius: 13px;
+                width: 26px; height: 26px; border-radius: Surface.r(13px);
                 background: rmv.has-hover ? VP.danger : VP.scrim;
                 rmv := TouchArea { mouse-cursor: pointer; clicked => { root.remove(); } }
                 AppIcon { source: Icons.x; tint: VP.text; width: 12px; height: 12px;
@@ -1314,7 +1330,7 @@ component StreamPoster inherits Rectangle {
         }
         // Title + year together in one solid pill under the poster.
         Rectangle {
-            width: 150px; height: 34px; border-radius: 10px;
+            width: 150px; height: 34px; border-radius: Surface.r(10px);
             background: VP.btn-2; border-width: 1px; border-color: VP.btn-2-edge;
             HorizontalLayout {
                 padding-left: 10px; padding-right: 10px; spacing: 6px;
@@ -1330,7 +1346,7 @@ component StreamPoster inherits Rectangle {
 }
 
 // One resolved stream: quality on the left, size/codec beneath, Play on the right.
-component StreamFileRowView inherits Rectangle {
+component StreamFileRowView inherits Skin {
     in property <StreamFileRow> entry;
     in property <bool> current: false;
     in property <bool> launching: false;
@@ -1339,7 +1355,7 @@ component StreamFileRowView inherits Rectangle {
     callback download();
     callback select();
     height: 58px; horizontal-stretch: 1;
-    border-radius: 10px;
+    border-radius: Surface.r(10px);
     background: root.current ? #ff2323 : (rowta.has-hover ? VP.row-hi : VP.row);
     border-width: root.current ? 2px : 1px;
     border-color: root.current ? #ffffff : (rowta.has-hover ? VP.row-ink2 : VP.row-edge);
@@ -1365,7 +1381,7 @@ component StreamFileRowView inherits Rectangle {
         padding-left: 16px; padding-right: 12px; spacing: 14px;
         VerticalLayout { alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 58px; height: 26px; border-radius: 6px; background: #ffffff2e;
+                width: 58px; height: 26px; border-radius: Surface.r(6px); background: #ffffff2e;
                 Text { text: entry.label; color: #ffffff; font-size: 12px; font-weight: 800;
                     horizontal-alignment: center; vertical-alignment: center;
                     width: parent.width; height: parent.height; }
@@ -1379,7 +1395,7 @@ component StreamFileRowView inherits Rectangle {
         // Subtitle availability, straight off the resource entry.
         VerticalLayout { alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 62px; height: 22px; border-radius: 11px;
+                width: 62px; height: 22px; border-radius: Surface.r(11px);
                 background: entry.has-subs ? #ffffff2e : transparent;
                 Text { text: entry.subs;
                     color: entry.has-subs ? #ffffff : VP.row-ink2;
@@ -1578,7 +1594,19 @@ export component VideosPage inherits Rectangle {
     // Pending "clear the whole history" confirmation.
     in-out property <bool> hist-confirm-clear: false;
     // Which tab of the Stream Setting popup is showing.
-    in-out property <string> settings-tab: "hosts";   // hosts | key | player
+    in-out property <string> settings-tab: "hosts";   // hosts | key | source | player
+    // ── which catalogue Stream is searching ──
+    // "moviebox" is a signed API; "fourk" is a scraped site with its own
+    // address, which is why it gets an editable base URL of its own rather
+    // than joining the host pool above.
+    in property <string> stream-source: "moviebox";   // moviebox | fourk
+    callback stream-set-source(string);
+    in-out property <string> stream-fourk-base: "";
+    in property <string> stream-fourk-default: "";
+    in property <string> stream-fourk-error: "";
+    in property <bool> stream-fourk-saved: false;
+    callback stream-fourk-save(string);
+    callback stream-fourk-reset();
     // Drop the health results and show the host list again.
     function hosts-check-clear() {
         root.stream-host-health = [];
@@ -1656,6 +1684,7 @@ export component VideosPage inherits Rectangle {
     callback stream-hosts-reset();
     callback stream-key-save(string);
     callback stream-key-reset();
+    callback stream-source-opened();
 
     // True when the TV tab should show show-cards rather than episode tiles.
     property <bool> cards-mode: root.kind == "tv" && !root.show-open;
@@ -1759,7 +1788,7 @@ export component VideosPage inherits Rectangle {
             HorizontalLayout {
                 padding-left: 28px; padding-right: 28px; spacing: 12px;
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Rectangle { width: 34px; height: 34px; border-radius: 10px;
+                    Rectangle { width: 34px; height: 34px; border-radius: Surface.r(10px);
                         background: VP.accent.with-alpha(0.18);
                         AppIcon { source: Icons.film; tint: VP.accent; width: 18px; height: 18px;
                             x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
@@ -1773,6 +1802,9 @@ export component VideosPage inherits Rectangle {
                         VideoTab { hue: VP.c-save; label: "Movies";   active: root.kind == "movies";   clicked => { root.set-kind("movies"); } }
                         VideoTab { hue: VP.c-dl; label: "Local";    active: root.kind == "local";    clicked => { root.set-kind("local"); } }
                         VideoTab { hue: VP.c-back; label: "Discover"; active: root.kind == "discover"; clicked => { root.set-kind("discover"); } }
+                        // Live TV draws its own page (page_livetv.slint), which
+                        // repeats this strip — this tab only has to switch kind.
+                        VideoTab { hue: VP.c-copy; label: "Live TV";  active: root.kind == "livetv";  clicked => { root.set-kind("livetv"); } }
                         VideoTab { hue: VP.c-play; label: "Stream";   active: root.kind == "stream";   clicked => { root.set-kind("stream"); } }
                     }
                 }
@@ -1804,7 +1836,7 @@ export component VideosPage inherits Rectangle {
                                 }
                             }
                             if root.query != "": Rectangle {
-                                width: 26px; height: 26px; border-radius: 13px;
+                                width: 26px; height: 26px; border-radius: Surface.r(13px);
                                 horizontal-stretch: 0; vertical-stretch: 0; y: (parent.height - self.height) / 2;
                                 background: clearx.has-hover ? VP.btn-2-hi : VP.btn-2;
                                 clearx := TouchArea { mouse-cursor: pointer; clicked => { root.query = ""; root.search(""); } }
@@ -1828,6 +1860,22 @@ export component VideosPage inherits Rectangle {
                         height: 44px; border-radius: 22px; background: VP.accent;
                         HorizontalLayout { padding-left: 16px; padding-right: 16px;
                             Text { text: root.item-count + " videos"; color: VP.accent-ink; font-size: 12px; font-weight: 800; vertical-alignment: center; } }
+                    }
+                }
+
+                // Which catalogue is being searched. Two unrelated services, so
+                // this sits beside the search rather than inside the settings
+                // modal — it changes what every result on the page came from.
+                if root.kind == "stream": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    HorizontalLayout { spacing: 6px;
+                        VideoTab {
+                            hue: VP.c-play; label: "MovieBox";
+                            active: root.stream-source == "moviebox";
+                            clicked => { root.stream-set-source("moviebox"); } }
+                        VideoTab {
+                            hue: VP.c-save; label: "4KHDHub";
+                            active: root.stream-source == "fourk";
+                            clicked => { root.stream-set-source("fourk"); } }
                     }
                 }
 
@@ -1934,7 +1982,7 @@ export component VideosPage inherits Rectangle {
                 if root.next-up.length > 0: VerticalLayout {
                     spacing: 14px;
                     HorizontalLayout { alignment: start; spacing: 8px;
-                        Rectangle { width: 4px; height: 20px; border-radius: 2px; background: VP.accent;
+                        Rectangle { width: 4px; height: 20px; border-radius: Surface.r(2px); background: VP.accent;
                             horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
                         Text { text: "Next Up"; color: VP.text; font-size: 18px; font-weight: 700; } }
                     Flickable {
@@ -1948,7 +1996,7 @@ export component VideosPage inherits Rectangle {
                     }
                 }
                 HorizontalLayout { alignment: start; spacing: 8px;
-                    Rectangle { width: 4px; height: 20px; border-radius: 2px; background: VP.accent;
+                    Rectangle { width: 4px; height: 20px; border-radius: Surface.r(2px); background: VP.accent;
                         horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
                     Text { text: "TV Shows"; color: VP.text; font-size: 18px; font-weight: 700; } }
                 Rectangle {
@@ -1966,7 +2014,7 @@ export component VideosPage inherits Rectangle {
         if root.cards-mode && shows.length == 0: VerticalLayout {
             alignment: center; spacing: 14px;
             HorizontalLayout { alignment: center;
-                Rectangle { width: 96px; height: 96px; border-radius: 20px; background: VP.accent-22;
+                Rectangle { width: 96px; height: 96px; border-radius: Surface.r(20px); background: VP.accent-22;
                     AppIcon { source: Icons.tv; width: 42px; height: 42px; } } }
             Text { text: "No TV shows"; color: VP.text; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
             Text { text: "Name episode files like 'Show S01E01.mkv' in a per-show folder; they group here."; color: VP.text-dim; font-size: 13px; horizontal-alignment: center; }
@@ -1982,7 +2030,7 @@ export component VideosPage inherits Rectangle {
                     spacing: 14px;
                     HorizontalLayout {
                         alignment: start; spacing: 8px;
-                        Rectangle { width: 4px; height: 20px; border-radius: 2px; background: VP.accent;
+                        Rectangle { width: 4px; height: 20px; border-radius: Surface.r(2px); background: VP.accent;
                             horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
                         Text { text: season.label; color: VP.text; font-size: 18px; font-weight: 700; }
                         Text { text: season.tiles.length + (season.tiles.length == 1 ? " episode" : " episodes");
@@ -2005,7 +2053,7 @@ export component VideosPage inherits Rectangle {
         if root.drilled && seasons.length == 0: VerticalLayout {
             alignment: center; spacing: 14px;
             HorizontalLayout { alignment: center;
-                Rectangle { width: 96px; height: 96px; border-radius: 20px; background: VP.accent-22;
+                Rectangle { width: 96px; height: 96px; border-radius: Surface.r(20px); background: VP.accent-22;
                     AppIcon { source: Icons.tv; width: 42px; height: 42px; } } }
             Text { text: "No episodes"; color: VP.text; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
             Text { text: "This show has no episodes in the current tab."; color: VP.text-dim; font-size: 13px; horizontal-alignment: center; }
@@ -2048,7 +2096,7 @@ export component VideosPage inherits Rectangle {
                     spacing: 14px;
                     HorizontalLayout {
                         alignment: start; spacing: 8px;
-                        Rectangle { width: 4px; height: 20px; border-radius: 2px; background: VP.accent;
+                        Rectangle { width: 4px; height: 20px; border-radius: Surface.r(2px); background: VP.accent;
                             horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
                         Text { text: root.tab-title(root.category); color: VP.text; font-size: 18px; font-weight: 700; }
                     }
@@ -2085,7 +2133,7 @@ export component VideosPage inherits Rectangle {
             alignment: center; spacing: 14px;
             HorizontalLayout {
                 alignment: center;
-                Rectangle { width: 96px; height: 96px; border-radius: 20px; background: VP.accent-22;
+                Rectangle { width: 96px; height: 96px; border-radius: Surface.r(20px); background: VP.accent-22;
                     AppIcon { source: Icons.film; width: 42px; height: 42px; } }
             }
             Text { text: "Nothing here"; color: VP.text; font-size: 22px; font-weight: 700; horizontal-alignment: center; }
@@ -2206,8 +2254,8 @@ export component VideosPage inherits Rectangle {
                         Text { text: root.stream-dl-label; color: VP.text-dim;
                             font-size: 11px; font-weight: 600; overflow: elide; }
                         if root.stream-dl-active: Rectangle {
-                            height: 4px; border-radius: 2px; background: VP.hair;
-                            Rectangle { x: 0; y: 0; height: 4px; border-radius: 2px;
+                            height: 4px; border-radius: Surface.r(2px); background: VP.hair;
+                            Rectangle { x: 0; y: 0; height: 4px; border-radius: Surface.r(2px);
                                 width: parent.width * Math.clamp(root.stream-dl-frac, 0.0, 1.0);
                                 background: VP.accent; }
                         }
@@ -2218,7 +2266,7 @@ export component VideosPage inherits Rectangle {
                     // Dismiss a finished row now (it also auto-hides after a few s).
                     if !root.stream-dl-active: VerticalLayout { alignment: center; horizontal-stretch: 0;
                         Rectangle {
-                            width: 28px; height: 28px; border-radius: 14px;
+                            width: 28px; height: 28px; border-radius: Surface.r(14px);
                             background: dlx.has-hover ? VP.btn-2-hi : VP.btn-2;
                             dlx := TouchArea { mouse-cursor: pointer;
                                 clicked => { root.stream-download-dismiss(); } }
@@ -2241,7 +2289,7 @@ export component VideosPage inherits Rectangle {
                         padding-left: 44px; padding-right: 24px;
                         padding-top: 24px; padding-bottom: 36px; spacing: 14px;
                         HorizontalLayout { alignment: start; spacing: 8px;
-                            Rectangle { width: 4px; height: 20px; border-radius: 2px; background: VP.accent;
+                            Rectangle { width: 4px; height: 20px; border-radius: Surface.r(2px); background: VP.accent;
                                 horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
                             Text { text: "Results"; color: VP.text; font-size: 18px; font-weight: 700; }
                             Text { text: root.stream-results.length + " titles"; color: VP.text-mute;
@@ -2288,7 +2336,7 @@ export component VideosPage inherits Rectangle {
                             // Poster first — big thumb above the title.
                             if root.stream-preview-open: Rectangle {
                                 width: 100%; height: 400px;
-                                border-radius: 10px; clip: true; background: VP.well;
+                                border-radius: Surface.r(10px); clip: true; background: VP.well;
                                 horizontal-stretch: 1; vertical-stretch: 0;
                                 Image { source: root.stream-preview-cover; image-fit: cover;
                                     width: parent.width; height: parent.height; }
@@ -2302,7 +2350,7 @@ export component VideosPage inherits Rectangle {
                                 height: 20px;
                                 width: kindpill.preferred-width + 16px;
                                 horizontal-stretch: 0;
-                                border-radius: 10px;
+                                border-radius: Surface.r(10px);
                                 background: root.stream-preview-is-series ? VP.badge-series : VP.badge-movie;
                                 kindpill := Text {
                                     text: root.stream-preview-is-series ? "SERIES" : "MOVIE";
@@ -2369,7 +2417,7 @@ export component VideosPage inherits Rectangle {
                         border-width: 1.5px; border-color: VP.c-dl.with-alpha(0.55);
                         VerticalLayout { padding: 7px;
                             Rectangle {
-                                border-radius: 16px; background: transparent;
+                                border-radius: Surface.r(16px); background: transparent;
                                 border-width: 1px; border-color: VP.c-dl.with-alpha(0.30);
                                 VerticalLayout {
                                     padding: 13px; spacing: 9px;
@@ -2413,7 +2461,7 @@ export component VideosPage inherits Rectangle {
                         // This padding is the GAP between the outer and inner ring.
                         VerticalLayout { padding: 7px;
                             Rectangle {
-                                border-radius: 16px; background: transparent;
+                                border-radius: Surface.r(16px); background: transparent;
                                 border-width: 1px; border-color: VP.c-info.with-alpha(0.30);
                                 VerticalLayout {
                                     padding: 26px; spacing: 0px;
@@ -2456,7 +2504,7 @@ export component VideosPage inherits Rectangle {
                                             width: 560px;
                                             height: Math.min(root.stream-suggestions.length, 6) * 34px + 10px;
                                             horizontal-stretch: 0; vertical-stretch: 0;
-                                            border-radius: 12px; background: VP.modal;
+                                            border-radius: Surface.r(12px); background: VP.modal;
                                             border-width: 1px; border-color: VP.glass-2;
                                             clip: true;
                                             VerticalLayout {
@@ -2499,7 +2547,7 @@ export component VideosPage inherits Rectangle {
                         border-width: 1.5px; border-color: VP.c-play.with-alpha(0.55);
                         VerticalLayout { padding: 7px;
                             Rectangle {
-                                border-radius: 16px; background: transparent;
+                                border-radius: Surface.r(16px); background: transparent;
                                 border-width: 1px; border-color: VP.c-play.with-alpha(0.30);
                                 VerticalLayout {
                                     padding: 12px; spacing: 8px;
@@ -2510,7 +2558,7 @@ export component VideosPage inherits Rectangle {
                                             vertical-alignment: center; }
                                         Rectangle { horizontal-stretch: 1; }
                                         Rectangle {
-                                            width: 46px; height: 18px; border-radius: 9px;
+                                            width: 46px; height: 18px; border-radius: Surface.r(9px);
                                             horizontal-stretch: 0; vertical-stretch: 0;
                                             background: clr.has-hover ? VP.btn-2-hi : VP.btn-2;
                                             clr := TouchArea { mouse-cursor: pointer;
@@ -2548,14 +2596,14 @@ export component VideosPage inherits Rectangle {
                     // ── Continue watching, 30% ──────────────────────────────
                     Rectangle {
                         horizontal-stretch: 3;
-                        border-radius: 18px;
+                        border-radius: Surface.r(18px);
                         border-width: 1.5px; border-color: VP.c-save.with-alpha(0.55);
                         background: VP.panel-tint;
                         // Inner ring, matching the frosted blocks above.
                         Rectangle {
                             x: 6px; y: 6px;
                             width: parent.width - 12px; height: parent.height - 12px;
-                            border-radius: 13px; background: transparent;
+                            border-radius: Surface.r(13px); background: transparent;
                             border-width: 1px; border-color: VP.c-save.with-alpha(0.30);
                         }
                         if root.stream-resume.length > 0: VerticalLayout {
@@ -2591,13 +2639,13 @@ export component VideosPage inherits Rectangle {
                     // ── Trending, 70% ───────────────────────────────────────
                     trend := Rectangle {
                         horizontal-stretch: 7;
-                        border-radius: 18px;
+                        border-radius: Surface.r(18px);
                         border-width: 1.5px; border-color: VP.c-copy.with-alpha(0.55);
                         background: VP.panel-tint;
                         Rectangle {
                             x: 6px; y: 6px;
                             width: parent.width - 12px; height: parent.height - 12px;
-                            border-radius: 13px; background: transparent;
+                            border-radius: Surface.r(13px); background: transparent;
                             border-width: 1px; border-color: VP.c-copy.with-alpha(0.30);
                         }
                         // Six equal cards, measured off the block. Stretch factors
@@ -2749,7 +2797,7 @@ export component VideosPage inherits Rectangle {
                         alignment: center; spacing: 10px;
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
                             Rectangle {
-                                width: 30px; height: 30px; border-radius: 15px;
+                                width: 30px; height: 30px; border-radius: Surface.r(15px);
                                 opacity: root.stream-history-page > 0 ? 1.0 : 0.4;
                                 background: hprev.has-hover ? VP.accent : VP.btn-2;
                                 hprev := TouchArea { mouse-cursor: pointer;
@@ -2769,7 +2817,7 @@ export component VideosPage inherits Rectangle {
                                 vertical-alignment: center; } }
                         VerticalLayout { alignment: center; horizontal-stretch: 0;
                             Rectangle {
-                                width: 30px; height: 30px; border-radius: 15px;
+                                width: 30px; height: 30px; border-radius: Surface.r(15px);
                                 opacity: root.stream-history-page + 1 < root.stream-history-pages ? 1.0 : 0.4;
                                 background: hnext.has-hover ? VP.accent : VP.btn-2;
                                 hnext := TouchArea { mouse-cursor: pointer;
@@ -2826,7 +2874,7 @@ export component VideosPage inherits Rectangle {
                                         root.stream-bookmarks-sort("type", root.bm-asc); } }
                                 // Ascending / descending toggle.
                                 Rectangle {
-                                    width: 34px; height: 30px; border-radius: 8px;
+                                    width: 34px; height: 30px; border-radius: Surface.r(8px);
                                     horizontal-stretch: 0; vertical-stretch: 0;
                                     background: dirbtn.has-hover ? VP.btn-2-hi : VP.btn-2;
                                     dirbtn := TouchArea { mouse-cursor: pointer;
@@ -2845,7 +2893,7 @@ export component VideosPage inherits Rectangle {
                         if root.bm-pages > 1: VerticalLayout { alignment: center; horizontal-stretch: 0;
                             HorizontalLayout { spacing: 6px;
                                 Rectangle {
-                                    width: 34px; height: 34px; border-radius: 8px;
+                                    width: 34px; height: 34px; border-radius: Surface.r(8px);
                                     background: prevbm.has-hover ? VP.btn-2-hi : VP.btn-2;
                                     opacity: root.bm-page > 0 ? 1.0 : 0.4;
                                     prevbm := TouchArea { mouse-cursor: pointer;
@@ -2858,7 +2906,7 @@ export component VideosPage inherits Rectangle {
                                         color: VP.text-dim; font-size: 12px; font-weight: 700;
                                         vertical-alignment: center; } }
                                 Rectangle {
-                                    width: 34px; height: 34px; border-radius: 8px;
+                                    width: 34px; height: 34px; border-radius: Surface.r(8px);
                                     background: nextbm.has-hover ? VP.btn-2-hi : VP.btn-2;
                                     opacity: root.bm-page + 1 < root.bm-pages ? 1.0 : 0.4;
                                     nextbm := TouchArea { mouse-cursor: pointer;
@@ -2919,14 +2967,14 @@ export component VideosPage inherits Rectangle {
                 Rectangle {
                     vertical-stretch: 0; horizontal-stretch: 1;
                     height: 278px;
-                    border-radius: 12px; background: VP.surface;
+                    border-radius: Surface.r(12px); background: VP.surface;
                     border-width: 1px; border-color: VP.hair;
                     HorizontalLayout {
                         padding: 18px; spacing: 22px; alignment: start;
                         // Poster, ringed twice like the landing blocks: a violet
                         // edge with a green one inside it, drawn over the art.
                         Rectangle {
-                            width: 158px; height: 230px; border-radius: 8px; clip: true;
+                            width: 158px; height: 230px; border-radius: Surface.r(8px); clip: true;
                             background: VP.well; horizontal-stretch: 0; vertical-stretch: 0;
                             border-width: 2px; border-color: VP.c-info.with-alpha(0.75);
                             Image { source: root.stream-cover; image-fit: cover;
@@ -2939,7 +2987,7 @@ export component VideosPage inherits Rectangle {
                             Rectangle {
                                 x: 5px; y: 5px;
                                 width: parent.width - 10px; height: parent.height - 10px;
-                                border-radius: 5px; background: transparent;
+                                border-radius: Surface.r(5px); background: transparent;
                                 border-width: 1.5px; border-color: VP.c-play.with-alpha(0.60);
                             }
                         }
@@ -2952,7 +3000,7 @@ export component VideosPage inherits Rectangle {
                                         font-weight: 800; overflow: elide; } }
                                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                                     Rectangle {
-                                        width: 40px; height: 40px; border-radius: 8px;
+                                        width: 40px; height: 40px; border-radius: Surface.r(8px);
                                         background: root.stream-bookmarked ? VP.c-save : (bm.has-hover ? VP.btn-2-hi : VP.btn-2);
                                         border-width: 1px;
                                         border-color: root.stream-bookmarked ? VP.c-save : VP.c-save.with-alpha(0.55);
@@ -3289,7 +3337,7 @@ export component VideosPage inherits Rectangle {
         background: VP.scrim;
         scrim := TouchArea { clicked => { root.bm-confirm-id = ""; } }
         Rectangle {
-            width: 380px; height: 170px; border-radius: 14px;
+            width: 380px; height: 170px; border-radius: Surface.r(14px);
             background: VP.modal; border-width: 1px; border-color: VP.hair-2;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             // Swallow clicks so tapping the card doesn't dismiss.
@@ -3318,7 +3366,7 @@ export component VideosPage inherits Rectangle {
         background: VP.scrim;
         TouchArea { clicked => { root.dl-confirm-cancel = false; } }
         Rectangle {
-            width: 380px; height: 176px; border-radius: 14px;
+            width: 380px; height: 176px; border-radius: Surface.r(14px);
             background: VP.modal; border-width: 1px; border-color: VP.hair-2;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             TouchArea {}
@@ -3355,7 +3403,7 @@ export component VideosPage inherits Rectangle {
         background: VP.scrim;
         TouchArea { clicked => { root.dl-confirm-delete = -1; } }
         Rectangle {
-            width: 400px; height: 196px; border-radius: 14px;
+            width: 400px; height: 196px; border-radius: Surface.r(14px);
             background: VP.modal; border-width: 1px; border-color: VP.hair-2;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             TouchArea {}
@@ -3393,7 +3441,7 @@ export component VideosPage inherits Rectangle {
         background: VP.scrim;
         TouchArea { clicked => { root.dl-confirm-clear = false; } }
         Rectangle {
-            width: 380px; height: 176px; border-radius: 14px;
+            width: 380px; height: 176px; border-radius: Surface.r(14px);
             background: VP.modal; border-width: 1px; border-color: VP.hair-2;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             TouchArea {}
@@ -3429,7 +3477,7 @@ export component VideosPage inherits Rectangle {
         background: VP.scrim;
         TouchArea { clicked => { root.hist-confirm-clear = false; } }
         Rectangle {
-            width: 380px; height: 176px; border-radius: 14px;
+            width: 380px; height: 176px; border-radius: Surface.r(14px);
             background: VP.modal; border-width: 1px; border-color: VP.hair-2;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             TouchArea {}
@@ -3463,7 +3511,7 @@ export component VideosPage inherits Rectangle {
         background: VP.scrim;
         TouchArea { clicked => { root.stream-cast-open = false; } }
         Rectangle {
-            width: 380px; height: 340px; border-radius: 16px;
+            width: 380px; height: 340px; border-radius: Surface.r(16px);
             background: VP.modal; border-width: 1px; border-color: VP.hair-2;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             TouchArea {}   // swallow clicks so tapping the card doesn't dismiss
@@ -3508,14 +3556,14 @@ export component VideosPage inherits Rectangle {
         hscrim := TouchArea {
             clicked => { root.stream-hosts-open = false; root.hosts-check-clear(); } }
         Rectangle {
-            width: 540px; height: 512px; border-radius: 16px;
+            width: 540px; height: 512px; border-radius: Surface.r(16px);
             background: VP.modal; border-width: 1px; border-color: VP.hair-2;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
             TouchArea {}   // swallow clicks so tapping the card doesn't dismiss
             VerticalLayout {
                 padding: 22px; spacing: 12px;
                 HorizontalLayout { alignment: start; spacing: 10px; vertical-stretch: 0;
-                    Rectangle { width: 4px; height: 18px; border-radius: 2px; background: VP.accent;
+                    Rectangle { width: 4px; height: 18px; border-radius: Surface.r(2px); background: VP.accent;
                         horizontal-stretch: 0; vertical-stretch: 0; y: 1px; }
                     Text { text: "Stream Setting"; color: VP.text;
                         font-size: 16px; font-weight: 800; } }
@@ -3526,6 +3574,8 @@ export component VideosPage inherits Rectangle {
                         clicked => { root.settings-tab = "hosts"; } }
                     SettingTab { label: "Key"; active: root.settings-tab == "key";
                         clicked => { root.settings-tab = "key"; } }
+                    SettingTab { label: "Source"; active: root.settings-tab == "source";
+                        clicked => { root.settings-tab = "source"; root.stream-source-opened(); } }
                     SettingTab { label: "Player"; active: root.settings-tab == "player";
                         clicked => { root.settings-tab = "player"; } }
                     Rectangle { horizontal-stretch: 1; }
@@ -3535,7 +3585,7 @@ export component VideosPage inherits Rectangle {
                     color: VP.text-mute; font-size: 11px; vertical-stretch: 0; }
                 if root.settings-tab == "hosts": Rectangle {
                     vertical-stretch: 1; horizontal-stretch: 1;
-                    border-radius: 10px; background: VP.field;
+                    border-radius: Surface.r(10px); background: VP.field;
                     border-width: 1px; border-color: hostin.has-focus ? VP.accent : VP.field-edge;
                     clip: true;
                     hostin := TextInput {
@@ -3555,7 +3605,7 @@ export component VideosPage inherits Rectangle {
                     // "Applied ✓" for a couple of seconds once the save lands.
                     Rectangle {
                         width: savelay.preferred-width + 4px; height: 40px;
-                        horizontal-stretch: 0; vertical-stretch: 0; border-radius: 6px;
+                        horizontal-stretch: 0; vertical-stretch: 0; border-radius: Surface.r(6px);
                         background: sv.has-hover ? VP.c-play.brighter(0.18) : VP.c-play;
                         sv := TouchArea { mouse-cursor: pointer;
                             clicked => { root.stream-hosts-saved = false; root.stream-hosts-save(root.stream-hosts-text); } }
@@ -3602,13 +3652,13 @@ export component VideosPage inherits Rectangle {
                 if root.settings-tab == "hosts" && root.stream-host-health.length > 0: VerticalLayout {
                     spacing: 4px; vertical-stretch: 0;
                     for h in root.stream-host-health: Rectangle {
-                        height: 26px; border-radius: 6px; background: VP.row;
+                        height: 26px; border-radius: Surface.r(6px); background: VP.row;
                         border-width: 1px; border-color: VP.row-edge;
                         HorizontalLayout {
                             padding-left: 10px; padding-right: 10px; spacing: 8px;
                             VerticalLayout { alignment: center; horizontal-stretch: 0;
                                 Rectangle {
-                                    width: 7px; height: 7px; border-radius: 4px;
+                                    width: 7px; height: 7px; border-radius: Surface.r(4px);
                                     background: h.ok ? VP.c-play : VP.danger; } }
                             VerticalLayout { alignment: center; horizontal-stretch: 1;
                                 Text { text: h.host; color: VP.row-ink; font-size: 11px;
@@ -3620,6 +3670,50 @@ export component VideosPage inherits Rectangle {
                         }
                     }
                 }
+
+                // ── Source tab ─────────────────────────────────────────────
+                // 4KHDHub is scraped, not an API: it moves domain regularly and
+                // there is no host pool to fail over through, so the address is
+                // a single editable field.
+                if root.settings-tab == "source": Text {
+                    text: "4KHDHub address · https:// only";
+                    color: VP.text-mute; font-size: 11px; vertical-stretch: 0; }
+                if root.settings-tab == "source": Rectangle {
+                    height: 40px; vertical-stretch: 0;
+                    border-radius: Surface.r(10px); background: VP.field;
+                    border-width: 1px; border-color: fkin.has-focus ? VP.accent : VP.field-edge;
+                    clip: true;
+                    fkin := TextInput {
+                        x: 12px; y: 0; width: parent.width - 24px; height: 100%;
+                        text <=> root.stream-fourk-base;
+                        color: VP.text; font-size: 13px; font-family: "monospace";
+                        single-line: true; vertical-alignment: center;
+                    }
+                    if root.stream-fourk-base == "": Text {
+                        x: 13px; text: root.stream-fourk-default; color: VP.text-mute;
+                        font-size: 13px; font-family: "monospace";
+                        vertical-alignment: center; height: 100%;
+                        visible: !fkin.has-focus; }
+                }
+                if root.settings-tab == "source" && root.stream-fourk-error != "": Text {
+                    text: root.stream-fourk-error; color: Theme.dark ? #ff8a7a : #b91c1c;
+                    font-size: 12px; wrap: word-wrap; vertical-stretch: 0; }
+                if root.settings-tab == "source": HorizontalLayout {
+                    spacing: 10px; alignment: start; vertical-stretch: 0;
+                    PlexButton {
+                        compact: true;
+                        icon: root.stream-fourk-saved ? Icons.check : Icons.save;
+                        label: root.stream-fourk-saved ? "Applied ✓" : "Save";
+                        hue: VP.c-play;
+                        clicked => { root.stream-fourk-save(root.stream-fourk-base); } }
+                    PlexButton { compact: true; icon: Icons.rotate-ccw; label: "Reset"; hue: VP.c-back;
+                        clicked => { root.stream-fourk-reset(); } }
+                    Rectangle { horizontal-stretch: 1; }
+                }
+                if root.settings-tab == "source": Text {
+                    text: "MovieBox is a signed API and needs no address here — its servers are on the Hosts tab. 4KHDHub is a scraped site: if the page layout changes, results stop until the port catches up.";
+                    color: VP.text-mute; font-size: 11px; wrap: word-wrap;
+                    vertical-stretch: 1; }
 
                 // ── Player tab ─────────────────────────────────────────────
                 if root.settings-tab == "player": HorizontalLayout {
@@ -3669,7 +3763,7 @@ export component VideosPage inherits Rectangle {
                     color: VP.text-mute; font-size: 11px; wrap: word-wrap; vertical-stretch: 0; }
                 if root.settings-tab == "key": Rectangle {
                     height: 40px; horizontal-stretch: 1; vertical-stretch: 0;
-                    border-radius: 10px; background: VP.field;
+                    border-radius: Surface.r(10px); background: VP.field;
                     border-width: 1px; border-color: keyin.has-focus ? VP.accent : VP.field-edge;
                     clip: true;
                     keyin := TextInput {
@@ -3687,7 +3781,7 @@ export component VideosPage inherits Rectangle {
                     spacing: 10px; alignment: start; vertical-stretch: 0;
                     Rectangle {
                         width: keysavelay.preferred-width; height: 40px;
-                        horizontal-stretch: 0; vertical-stretch: 0; border-radius: 6px;
+                        horizontal-stretch: 0; vertical-stretch: 0; border-radius: Surface.r(6px);
                         background: ksv.has-hover ? VP.c-play.brighter(0.18) : VP.c-play;
                         ksv := TouchArea { mouse-cursor: pointer;
                             clicked => { root.stream-key-saved = false; root.stream-key-save(root.stream-key-text); } }

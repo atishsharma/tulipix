@@ -12,10 +12,11 @@ import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard, StreamCard,
 import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
 import { MusicPage, MusicFullscreen, MusicMini, PodcastMini, BookMini } from "page_music.slint";
 import { MusicSongRow, DownloaderRow, DlHistoryEntry, DlSearchEntry, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
-import { CloudPage, CloudRemote, CloudEntry, CloudJob, CloudUsage, CloudXfer } from "page_cloud.slint";
+import { CloudPage, CloudRemote, CloudEntry, CloudJob, CloudUsage, CloudXfer, CloudBackend, CloudOpt } from "page_cloud.slint";
 import { ToolsPage, ToolOpRow, ToolField, QueueJob, ToolStatus, DownloadItem, ToolInfoRow, ToolDiffRow, TrimSeg } from "page_tools.slint";
 import { TransferPage, TransferFile, TransferDevice, TransferUp, TransferRow, TransferIface } from "page_transfer.slint";
 import { ThemePicker, ThemeChoice } from "theme_picker.slint";
+import { Surface, Skin, DesignLangPicker } from "surface.slint";
 import { UserState } from "user_card.slint";
 import { CropDialog } from "crop_dialog.slint";
 import { Mode } from "mode_pill.slint";
@@ -41,6 +42,7 @@ import { FinancesPage, FinStat, FinAccountRow, FinTxnRow, FinRecurRow, FinObliga
           FinDueRow, FinBudgetRow, FinLoanRow, FinInstalment, FinCatSlice, FinMonthBar,
           FinCalDay, FinFlag, FinDiscipline, FinRate, FinPrice, FinProposal, FinImportRow,
           FinField, FinCatTrend } from "page_finances.slint";
+import { LiveTvPage, LiveChannel, LivePlaylist } from "page_livetv.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
 import { AppIcon, Icons } from "icons.slint";
@@ -65,13 +67,13 @@ export {
     ContextItem,
 }
 
-component SettingsTab inherits Rectangle {
+component SettingsTab inherits Skin {
     in property <string> label;
     in property <bool> active;
     callback clicked();
     min-height: 36px; max-height: 36px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 12px;
+    border-radius: Surface.r(12px);
     background: active ? Theme.panel-2 : (touch.has-hover ? Theme.panel : transparent);
     border-color: active ? Theme.outline-strong : transparent;
     border-width: 1px;
@@ -89,14 +91,14 @@ component SettingsTab inherits Rectangle {
 }
 
 // Pill button used in the photo viewer control bar.
-component ViewerButton inherits Rectangle {
+component ViewerButton inherits Skin {
     in property <string> label;
     in property <image> icon;
     in property <bool> primary: false;
     callback clicked();
     height: 38px; min-width: 96px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 19px;
+    border-radius: Surface.r(19px);
     background: primary
         ? Accent.color.with-alpha(touch.has-hover ? 0.40 : 0.28)
         : white.with-alpha(touch.has-hover ? 0.26 : 0.16);
@@ -115,14 +117,14 @@ component ViewerButton inherits Rectangle {
 }
 
 // Compact square-ish viewer control (zoom · shuffle · interval · info).
-component ViewerMini inherits Rectangle {
+component ViewerMini inherits Skin {
     in property <string> label;
     in property <image> icon;
     in property <bool> active: false;
     callback clicked();
     height: 38px; min-width: 46px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 19px;
+    border-radius: Surface.r(19px);
     background: active
         ? Accent.color.with-alpha(touch.has-hover ? 0.45 : 0.32)
         : white.with-alpha(touch.has-hover ? 0.26 : 0.14);
@@ -140,27 +142,27 @@ component ViewerMini inherits Rectangle {
     }
 }
 
-component ContentSurface inherits Rectangle {
+component ContentSurface inherits Skin {
     // Glass surface that wraps every section/page so the layout never
     // collapses to intrinsic size.
     border-radius: Theme.radius-lg;
     background: Theme.panel.with-alpha(0.55);
     border-width: 1px;
-    border-color: Theme.outline;
-    drop-shadow-blur: 32px;
+    border-color: Surface.hairline;
+    drop-shadow-blur: Surface.cast(32px);
     drop-shadow-color: #00000040;
     clip: true;
 }
 
 // Left-rail nav entry for the Settings page — icon + label, grouped under
 // small captions so ten flat tabs collapse into a scannable outline.
-component SettingsNavItem inherits Rectangle {
+component SettingsNavItem inherits Skin {
     in property <string> label;
     in property <image> icon;
     in property <bool> active;
     callback clicked();
     height: 38px;
-    border-radius: 10px;
+    border-radius: Surface.r(10px);
     background: active ? Accent.color.with-alpha(0.16) : (touch.has-hover ? Theme.panel : transparent);
     animate background { duration: 120ms; easing: ease-out; }
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
@@ -186,12 +188,12 @@ component SettingsNavCaption inherits Text {
 // name, click opens the project link.
 export struct CreditEntry { icon: image, label: string, link: string }
 
-component CreditTile inherits Rectangle {
+component CreditTile inherits Skin {
     in property <CreditEntry> entry;
     callback open();
-    background: Theme.panel-2;
-    border-width: 1px; border-color: Theme.outline;
-    border-radius: 10px;
+    background: Surface.body(Theme.panel-2);
+    border-width: 1px; border-color: Surface.hairline;
+    border-radius: Surface.r(10px);
     height: 74px;
     t := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
     VerticalLayout {
@@ -204,13 +206,13 @@ component CreditTile inherits Rectangle {
 }
 
 // Selectable sidebar-logo swatch in the Appearance card.
-component LogoChip inherits Rectangle {
+component LogoChip inherits Skin {
     in property <image> logo;
     in property <bool> selected: false;
     callback clicked();
-    width: 46px; height: 46px; border-radius: 12px;
+    width: 46px; height: 46px; border-radius: Surface.r(12px);
     clip: true;
-    background: Theme.panel;
+    background: Surface.body(Theme.panel);
     border-width: selected ? 2px : 1px;
     border-color: selected ? Accent.color : Theme.outline;
     TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
@@ -236,6 +238,7 @@ component SettingsPage inherits Rectangle {
     in-out property <bool> reduce-motion;
     callback reduce-motion-changed(bool);
     in property <bool> home-music-left;   // Home layout: music block on the left
+    in property <int> design-lang;        // 0 Standard · 1 Claymorphism · 2 Skeuomorphism
     in property <bool> account-sync-allowed;
     in property <UserState> user;
     // BUILT WITH credits — static, vendored logo assets (no runtime fetch).
@@ -314,7 +317,7 @@ component SettingsPage inherits Rectangle {
             width: 218px; spacing: 3px;
             HorizontalLayout {
                 spacing: 10px; alignment: start; height: 52px;
-                Rectangle { width: 36px; height: 36px; border-radius: 11px;
+                Rectangle { width: 36px; height: 36px; border-radius: Surface.r(11px);
                     y: 2px;
                     background: Accent.color.with-alpha(0.16);
                     AppIcon { source: Icons.settings; tint: Accent.color; width: 19px; height: 19px;
@@ -522,7 +525,7 @@ component SettingsPage inherits Rectangle {
                             border-radius: 65px; background: #00000022;
                         }
                         Rectangle {
-                            width: 110px; height: 28px; border-radius: 8px;
+                            width: 110px; height: 28px; border-radius: Surface.r(8px);
                             x: parent.width - self.width - 12px; y: parent.height - self.height - 12px;
                             background: cov-t.has-hover ? #000000aa : #00000077;
                             border-width: 1px; border-color: #ffffff55;
@@ -537,9 +540,9 @@ component SettingsPage inherits Rectangle {
                       alignment: center;
                       Rectangle {
                         width: min(540px, root.width - 40px);
-                        border-radius: 20px;
-                        background: Theme.panel-2; border-color: Theme.outline; border-width: 1px;
-                        drop-shadow-blur: 28px; drop-shadow-color: #00000038;
+                        border-radius: Surface.r(20px);
+                        background: Surface.body(Theme.panel-2); border-color: Surface.hairline; border-width: 1px;
+                        drop-shadow-blur: Surface.cast(28px); drop-shadow-color: #00000038;
 
                         VerticalLayout {
                             spacing: 12px;
@@ -561,7 +564,7 @@ component SettingsPage inherits Rectangle {
                                     horizontal-alignment: center;
                                 }
                                 Rectangle {
-                                    height: 2px; width: 180px; border-radius: 1px;
+                                    height: 2px; width: 180px; border-radius: Surface.r(1px);
                                     x: (parent.width - self.width) / 2;
                                     background: name-ti.has-focus ? Accent.color : Theme.outline;
                                     animate background { duration: 140ms; easing: ease-out; }
@@ -572,7 +575,7 @@ component SettingsPage inherits Rectangle {
                             HorizontalLayout {
                                 spacing: 8px; alignment: center;
                                 Rectangle {
-                                    height: 28px; border-radius: 14px;
+                                    height: 28px; border-radius: Surface.r(14px);
                                     horizontal-stretch: 0; vertical-stretch: 0;
                                     background: Accent.color.with-alpha(0.16);
                                     border-width: 1px; border-color: Accent.color.with-alpha(0.5);
@@ -581,10 +584,10 @@ component SettingsPage inherits Rectangle {
                                             font-size: 11px; font-weight: 700; vertical-alignment: center; } }
                                 }
                                 Rectangle {
-                                    height: 28px; border-radius: 14px;
+                                    height: 28px; border-radius: Surface.r(14px);
                                     horizontal-stretch: 0; vertical-stretch: 0;
                                     background: gh-t.has-hover ? Theme.panel : transparent;
-                                    border-width: 1px; border-color: Theme.outline;
+                                    border-width: 1px; border-color: Surface.hairline;
                                     gh-t := TouchArea { mouse-cursor: pointer;
                                         clicked => { root.open-url("https://github.com/atishsharma/tulipix"); } }
                                     HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 6px;
@@ -593,10 +596,10 @@ component SettingsPage inherits Rectangle {
                                         Text { text: "GitHub"; color: Theme.text; font-size: 11px; font-weight: 600; vertical-alignment: center; } }
                                 }
                                 Rectangle {
-                                    height: 28px; border-radius: 14px;
+                                    height: 28px; border-radius: Surface.r(14px);
                                     horizontal-stretch: 0; vertical-stretch: 0;
                                     background: rel-t.has-hover ? Theme.panel : transparent;
-                                    border-width: 1px; border-color: Theme.outline;
+                                    border-width: 1px; border-color: Surface.hairline;
                                     rel-t := TouchArea { mouse-cursor: pointer;
                                         clicked => { root.open-url("https://github.com/atishsharma/tulipix/releases"); } }
                                     HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 6px;
@@ -613,6 +616,25 @@ component SettingsPage inherits Rectangle {
                                 choice <=> root.theme-choice;
                                 changed(c) => { root.theme-changed(c); }
                             }
+
+                            // Design language. A second axis, not a fourth
+                            // theme: each of the three has to hold on light,
+                            // dark and OLED, so picking one here changes how
+                            // surfaces are painted and nothing else — no
+                            // layout moves, nothing is hidden, and Standard is
+                            // the look the app already shipped.
+                            VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Design language"; color: Theme.text; font-size: 13px; font-weight: 600; }
+                                Text { text: "How surfaces are painted — Home and the sidebar first"; color: Theme.text-dim; font-size: 11px; }
+                            }
+                            DesignLangPicker {
+                                choice: root.design-lang;
+                                changed(v) => {
+                                    root.setting-text("ui.design-language",
+                                        v == 1 ? "clay" : (v == 2 ? "skeuo" : "standard"));
+                                }
+                            }
                             HorizontalLayout {
                                 spacing: 12px;
                                 VerticalLayout {
@@ -624,12 +646,12 @@ component SettingsPage inherits Rectangle {
                                     width: 52px; height: 28px;
                                     horizontal-stretch: 0; vertical-stretch: 0;
                                     y: (parent.height - self.height) / 2;
-                                    border-radius: 14px;
+                                    border-radius: Surface.r(14px);
                                     background: root.reduce-motion ? Accent.color : Theme.outline;
                                     animate background { duration: 140ms; easing: ease-out; }
                                     TouchArea { mouse-cursor: pointer; clicked => { root.reduce-motion-changed(!root.reduce-motion); } }
                                     Rectangle {
-                                        width: 22px; height: 22px; border-radius: 11px;
+                                        width: 22px; height: 22px; border-radius: Surface.r(11px);
                                         background: #ffffff;
                                         x: root.reduce-motion ? parent.width - self.width - 3px : 3px;
                                         y: (parent.height - self.height) / 2;
@@ -638,32 +660,12 @@ component SettingsPage inherits Rectangle {
                                 }
                             }
 
-                            // Home music side — swap the music block to the left,
-                            // section grid follows to the right (np.p6.home).
-                            HorizontalLayout {
-                                spacing: 12px;
-                                VerticalLayout {
-                                    alignment: center; spacing: 2px; horizontal-stretch: 1;
-                                    Text { text: "Music block on left"; color: Theme.text; font-size: 13px; font-weight: 600; }
-                                    Text { text: "Home page — put the player on the left, sections on the right"; color: Theme.text-dim; font-size: 11px; }
-                                }
-                                Rectangle {
-                                    width: 52px; height: 28px;
-                                    horizontal-stretch: 0; vertical-stretch: 0;
-                                    y: (parent.height - self.height) / 2;
-                                    border-radius: 14px;
-                                    background: root.home-music-left ? Accent.color : Theme.outline;
-                                    animate background { duration: 140ms; easing: ease-out; }
-                                    TouchArea { mouse-cursor: pointer; clicked => { root.setting-toggle("home.music-left", !root.home-music-left); } }
-                                    Rectangle {
-                                        width: 22px; height: 22px; border-radius: 11px;
-                                        background: #ffffff;
-                                        x: root.home-music-left ? parent.width - self.width - 3px : 3px;
-                                        y: (parent.height - self.height) / 2;
-                                        animate x { duration: 140ms; easing: ease-out; }
-                                    }
-                                }
-                            }
+                            // "Music block on left" used to live here. It is gone
+                            // from Settings on purpose: the Home header already
+                            // carries the same flip as a one-click button next to
+                            // the block it moves, and a second control for it two
+                            // pages away was the wrong place to look for it. The
+                            // flag and the header button are untouched.
 
                             // Sidebar logo — pick one of the four bundled marks.
                             VerticalLayout {
@@ -691,7 +693,7 @@ component SettingsPage inherits Rectangle {
                             HorizontalLayout {
                                 alignment: center;
                                 Rectangle {
-                                    width: 180px; height: 36px; border-radius: 18px;
+                                    width: 180px; height: 36px; border-radius: Surface.r(18px);
                                     horizontal-stretch: 0; vertical-stretch: 0;
                                     background: just-saved ? #22c55e : (save-t.has-hover ? Accent.color.with-alpha(0.85) : Accent.color);
                                     animate background { duration: 120ms; easing: ease-out; }
@@ -714,7 +716,7 @@ component SettingsPage inherits Rectangle {
                             clip: true;
                             background: @linear-gradient(135deg, Theme.brand, Theme.brand-2);
                             border-width: 4px; border-color: av-pick.has-hover ? Accent.color : Theme.panel-2;
-                            drop-shadow-blur: 16px; drop-shadow-color: #00000055;
+                            drop-shadow-blur: Surface.cast(16px); drop-shadow-color: #00000055;
                             animate border-color { duration: 140ms; easing: ease-out; }
                             if user.avatar-image.width != 0: Image {
                                 source: user.avatar-image; image-fit: cover; width: 100%; height: 100%;
@@ -790,7 +792,10 @@ export component MainWindow inherits Window {
     min-height: 720px;
     preferred-width: 1320px;
     preferred-height: 840px;
-    background: Theme.bg;
+    // Flat for Standard and clay — clay wants its lumps to be the only lit
+    // things on screen — and a top-to-bottom falloff for the moulded language,
+    // which needs the page itself to look like a surface catching light.
+    background: Surface.canvas();
     default-font-family: Theme.font-family;
     default-font-size: 13px;
 
@@ -837,6 +842,10 @@ export component MainWindow inherits Window {
     in-out property <ThemeChoice> theme-choice: ThemeChoice.system;
     in-out property <bool> dark <=> Theme.dark;
     in-out property <bool> oled <=> Theme.oled;
+    // Design language — paint only. Orthogonal to the theme on purpose: each of
+    // the three languages has to hold on all three tiers, so this is a second
+    // axis rather than three more theme choices.
+    in-out property <int> design-lang <=> Surface.lang;
     in-out property <bool> reduce-motion <=> Theme.reduce-motion;
     callback reduce-motion-changed(bool);
     // Theme unified (2026-07-05): MusicTheme now derives from the app Theme, so
@@ -1005,6 +1014,39 @@ export component MainWindow inherits Window {
     callback video-stream-hosts-reset();
     callback video-stream-key-save(string);
     callback video-stream-key-reset();
+    // Which catalogue Stream searches, and the scraped source's own address.
+    in-out property <string> video-stream-source: "moviebox";
+    in-out property <string> video-stream-fourk-base: "";
+    in-out property <string> video-stream-fourk-default: "";
+    in-out property <string> video-stream-fourk-error: "";
+    in-out property <bool> video-stream-fourk-saved: false;
+    // ── Live TV (Videos → Live TV, left of Stream) ──
+    in-out property <[LiveChannel]> livetv-channels: [];
+    in-out property <[string]> livetv-groups: [];
+    in-out property <string> livetv-group: "";
+    in-out property <string> livetv-query: "";
+    in-out property <bool> livetv-busy: false;
+    in-out property <string> livetv-status: "";
+    in-out property <int> livetv-total: 0;
+    in-out property <int> livetv-picked-count: 0;
+    in-out property <bool> livetv-config-open: false;
+    in-out property <string> livetv-config-tab: "country";
+    in-out property <string> livetv-config-query: "";
+    in-out property <[LivePlaylist]> livetv-playlists: [];
+    callback livetv-enter();
+    callback livetv-search(string);
+    callback livetv-set-group(string);
+    callback livetv-play(int);
+    callback livetv-refresh();
+    callback livetv-config-opened();
+    callback livetv-config-search(string);
+    callback livetv-toggle-playlist(string);
+    callback livetv-config-clear();
+    callback livetv-config-save();
+    callback video-stream-set-source(string);
+    callback video-stream-source-opened();
+    callback video-stream-fourk-save(string);
+    callback video-stream-fourk-reset();
     // Right-click context menu for video posters — its own overlay state so it
     // doesn't collide with the photo grid's menu.
     in-out property <bool> vctx-open: false;
@@ -1298,7 +1340,23 @@ export component MainWindow inherits Window {
     in-out property <bool> cloud-connect-open: false;
     in-out property <string> cloud-form-name: "";
     in-out property <string> cloud-form-backend: "drive";
-    in-out property <string> cloud-form-opts: "";
+    // Generated rclone config form (schema from `rclone config providers`).
+    in-out property <[CloudBackend]> cloud-backends: [];
+    in-out property <[CloudOpt]> cloud-opts: [];
+    in-out property <int> cloud-connect-step: 0;
+    in-out property <bool> cloud-connect-edit: false;
+    in-out property <string> cloud-backend-query: "";
+    in-out property <bool> cloud-show-advanced: false;
+    in-out property <bool> cloud-form-oauth: false;
+    in-out property <bool> cloud-authorizing: false;
+    in-out property <string> cloud-connect-error: "";
+    in-out property <bool> cloud-connect-busy: false;
+    callback cloud-backend-search(string);
+    callback cloud-backend-pick(string);
+    callback cloud-opt-changed(string);
+    callback cloud-advanced-toggled();
+    callback cloud-authorize();
+    callback cloud-remote-edit(string);
     callback cloud-refresh();
     callback cloud-connect-open-dialog();
     callback cloud-connect-submit();
@@ -1438,8 +1496,12 @@ callback cloud-go-home();
     in property <string> transfer-hint: "";
     in property <string> transfer-attempts: "";
     in property <string> transfer-url: "";
+    in property <string> transfer-trust-url: "";
+    in property <string> transfer-host-url: "";
     in property <string> transfer-pin: "";
     in property <image> transfer-qr;
+    // The same code light-on-dark, for the enlarged view's invert toggle.
+    in property <image> transfer-qr-inv;
     in property <[TransferFile]> transfer-files: [];
     in property <string> transfer-total: "";
     in property <[TransferDevice]> transfer-devices: [];
@@ -1655,6 +1717,25 @@ callback cloud-go-home();
     in property <string> genesis-done-name: "";
     in property <string> genesis-done-detail: "";
     in-out property <string> genesis-terms: "";
+    // Result table: sorting + pagination, both computed over the whole result
+    // set in Rust rather than over the twelve rows on screen.
+    in property <int> genesis-page: 0;
+    in property <int> genesis-pages: 0;
+    in property <int> genesis-total: 0;
+    in property <string> genesis-sort: "";
+    in property <bool> genesis-sort-desc: false;
+    // Settings: download folder, mirror list, and the address answering now.
+    in-out property <bool> genesis-settings-open: false;
+    in-out property <string> genesis-mirrors: "";
+    in property <string> genesis-mirrors-default: "";
+    in property <bool> genesis-settings-saved: false;
+    in property <string> genesis-active-url: "";
+    callback genesis-set-page(int);
+    callback genesis-sort-clicked(string);
+    callback genesis-settings-opened();
+    callback genesis-settings-save();
+    callback genesis-settings-reset();
+    callback genesis-pick-dest();
     callback genesis-enter();
     callback genesis-back();
     callback genesis-search();
@@ -2884,7 +2965,36 @@ callback cloud-go-home();
                 slideshow-export(p) => { root.slideshow-export(p); }
                 smart-rule-test(j) => { root.smart-rule-test(j); }
                 smart-rule-save(aid, j) => { root.smart-rule-save(aid, j); } }
-            if active-section == "videos":   VideosPage { width: parent.width; height: parent.height; item-count: root.video-tiles.length; tiles: root.video-tiles;
+            // Live TV replaces the whole Videos body, so it carries the kind
+            // tabs itself — otherwise there is no way back to the library.
+            if active-section == "videos" && root.video-kind == "livetv": LiveTvPage {
+                width: parent.width; height: parent.height;
+                kind: root.video-kind;
+                set-kind(k) => { root.set-video-kind(k); }
+                channels: root.livetv-channels;
+                groups: root.livetv-groups;
+                group <=> root.livetv-group;
+                query <=> root.livetv-query;
+                busy: root.livetv-busy;
+                status: root.livetv-status;
+                total: root.livetv-total;
+                picked-count: root.livetv-picked-count;
+                config-open <=> root.livetv-config-open;
+                config-tab <=> root.livetv-config-tab;
+                config-query <=> root.livetv-config-query;
+                playlists: root.livetv-playlists;
+                init => { root.livetv-enter(); }
+                search(q) => { root.livetv-search(q); }
+                set-group(g) => { root.livetv-set-group(g); }
+                play(i) => { root.livetv-play(i); }
+                refresh => { root.livetv-refresh(); }
+                config-opened => { root.livetv-config-opened(); }
+                config-search(q) => { root.livetv-config-search(q); }
+                toggle-playlist(u) => { root.livetv-toggle-playlist(u); }
+                config-clear => { root.livetv-config-clear(); }
+                config-save => { root.livetv-config-save(); }
+            }
+            if active-section == "videos" && root.video-kind != "livetv":   VideosPage { width: parent.width; height: parent.height; item-count: root.video-tiles.length; tiles: root.video-tiles;
                 category <=> root.video-category;
                 kind <=> root.video-kind;
                 query <=> root.video-query;
@@ -2951,6 +3061,15 @@ callback cloud-go-home();
                 stream-key-text <=> root.video-stream-key-text;
                 stream-key-error: root.video-stream-key-error;
                 stream-key-saved <=> root.video-stream-key-saved;
+                stream-source: root.video-stream-source;
+                stream-fourk-base <=> root.video-stream-fourk-base;
+                stream-fourk-default: root.video-stream-fourk-default;
+                stream-fourk-error: root.video-stream-fourk-error;
+                stream-fourk-saved: root.video-stream-fourk-saved;
+                stream-set-source(s) => { root.video-stream-set-source(s); }
+                stream-source-opened => { root.video-stream-source-opened(); }
+                stream-fourk-save(u) => { root.video-stream-fourk-save(u); }
+                stream-fourk-reset => { root.video-stream-fourk-reset(); }
                 stream-search(q) => { root.video-stream-search(q); }
                 stream-open(id) => { root.video-stream-open(id); }
                 stream-back => { root.video-stream-back(); }
@@ -3487,7 +3606,22 @@ callback cloud-go-home();
                 connect-open <=> root.cloud-connect-open;
                 form-name <=> root.cloud-form-name;
                 form-backend <=> root.cloud-form-backend;
-                form-opts <=> root.cloud-form-opts;
+                backends: root.cloud-backends;
+                opts <=> root.cloud-opts;
+                connect-step <=> root.cloud-connect-step;
+                connect-edit <=> root.cloud-connect-edit;
+                backend-query <=> root.cloud-backend-query;
+                show-advanced <=> root.cloud-show-advanced;
+                form-oauth: root.cloud-form-oauth;
+                authorizing: root.cloud-authorizing;
+                connect-error: root.cloud-connect-error;
+                connect-busy: root.cloud-connect-busy;
+                backend-search(q) => { root.cloud-backend-search(q); }
+                backend-pick(b) => { root.cloud-backend-pick(b); }
+                opt-changed(k) => { root.cloud-opt-changed(k); }
+                advanced-toggled => { root.cloud-advanced-toggled(); }
+                authorize => { root.cloud-authorize(); }
+                remote-edit(n) => { root.cloud-remote-edit(n); }
                 tools-open <=> root.cloud-tools-open;
                 sync-src <=> root.cloud-sync-src;
                 sync-dst <=> root.cloud-sync-dst;
@@ -3619,8 +3753,11 @@ callback cloud-go-home();
                 hint: root.transfer-hint;
                 attempts: root.transfer-attempts;
                 url: root.transfer-url;
+                trust-url: root.transfer-trust-url;
+                host-url: root.transfer-host-url;
                 pin: root.transfer-pin;
                 qr: root.transfer-qr;
+                qr-inv: root.transfer-qr-inv;
                 files: root.transfer-files;
                 total: root.transfer-total;
                 devices: root.transfer-devices;
@@ -3890,6 +4027,22 @@ callback cloud-go-home();
                 done-name: root.genesis-done-name;
                 done-detail: root.genesis-done-detail;
                 terms <=> root.genesis-terms;
+                page: root.genesis-page;
+                pages: root.genesis-pages;
+                total: root.genesis-total;
+                sort: root.genesis-sort;
+                sort-desc: root.genesis-sort-desc;
+                settings-open <=> root.genesis-settings-open;
+                mirrors <=> root.genesis-mirrors;
+                mirrors-default: root.genesis-mirrors-default;
+                settings-saved: root.genesis-settings-saved;
+                active-url: root.genesis-active-url;
+                set-page(p) => { root.genesis-set-page(p); }
+                sort-clicked(k) => { root.genesis-sort-clicked(k); }
+                settings-opened => { root.genesis-settings-opened(); }
+                settings-save => { root.genesis-settings-save(); }
+                settings-reset => { root.genesis-settings-reset(); }
+                pick-dest => { root.genesis-pick-dest(); }
                 back => { root.genesis-back(); }
                 search => { root.genesis-search(); }
                 download(md5) => { root.genesis-download(md5); }
@@ -4012,6 +4165,7 @@ callback cloud-go-home();
                 reduce-motion <=> root.reduce-motion;
                 reduce-motion-changed(v) => { root.reduce-motion-changed(v); }
                 home-music-left: root.home-music-left;
+                design-lang: root.design-lang;
                 account-sync-allowed: root.account-sync-allowed;
                 user: root.user;
                 api-rows: root.api-rows;
@@ -4356,7 +4510,7 @@ callback cloud-go-home();
         // aspect ratio (100%–300%). A curved arc shows on hover.
         // Bottom-right.
         Rectangle { width: 24px; height: 24px; x: parent.width - self.width; y: parent.height - self.height;
-            Rectangle { width: 16px; height: 16px; border-radius: 8px; x: 2px; y: 2px;
+            Rectangle { width: 16px; height: 16px; border-radius: Surface.r(8px); x: 2px; y: 2px;
                 background: transparent; border-width: 2px;
                 border-color: brh.has-hover || brh.pressed ? root.music-np-accent : #ffffff55; }
             brh := TouchArea { mouse-cursor: nwse-resize;
@@ -4376,7 +4530,7 @@ callback cloud-go-home();
             opacity: 0.45 + 0.55 * Math.abs(Math.sin((animation-tick() / 1ms / 280) * 1rad)); }
         // Clipped circular art — spins like a record while playing.
         Rectangle { width: 56px; height: 56px; border-radius: 28px; clip: true; x: 2px; y: 2px;
-            background: #14141b; drop-shadow-blur: 26px; drop-shadow-color: root.music-np-accent;
+            background: #14141b; drop-shadow-blur: Surface.cast(26px); drop-shadow-color: root.music-np-accent;
             // Radio with no favicon — letter tile in the bubble too.
             if root.music-player-mode == "radio" && root.music-np-art.width == 0: Rectangle {
                 background: @linear-gradient(135deg, #14b8a6, #0ea5e9);
@@ -4386,7 +4540,7 @@ callback cloud-go-home();
                 transform-rotation: root.music-playing ? Math.mod(animation-tick() / 1ms / 14, 360) * 1deg : 0deg; }
             if root.music-np-title == "": AppIcon { source: Icons.music; tint: #ec4899; width: 24px; height: 24px; } }
         // Center spindle dot — the record-player hub.
-        Rectangle { width: 8px; height: 8px; border-radius: 4px; background: #14141b; border-width: 1.5px; border-color: #ffffffcc;
+        Rectangle { width: 8px; height: 8px; border-radius: Surface.r(4px); background: #14141b; border-width: 1.5px; border-color: #ffffffcc;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
         bta := TouchArea {
             mouse-cursor: pointer;
@@ -4657,7 +4811,7 @@ callback cloud-go-home();
                 HorizontalLayout {
                     Text { text: "Photo info"; color: white; font-size: 15px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
                     Rectangle {
-                        width: 26px; height: 26px; border-radius: 13px;
+                        width: 26px; height: 26px; border-radius: Surface.r(13px);
                         horizontal-stretch: 0; vertical-stretch: 0;
                         background: closex.has-hover ? white.with-alpha(0.18) : white.with-alpha(0.08);
                         closex := TouchArea { mouse-cursor: pointer; clicked => { root.viewer-info-open = false; } }
@@ -4725,7 +4879,7 @@ callback cloud-go-home();
         // corner. Declared after the edge tappers so it always wins clicks.
         if !root.viewer-slideshow: Rectangle {
             x: parent.width - self.width - 24px; y: 28px;
-            width: 40px; height: 40px; border-radius: 20px;
+            width: 40px; height: 40px; border-radius: Surface.r(20px);
             background: info-toggle.has-hover || root.viewer-info-open ? white.with-alpha(0.22) : white.with-alpha(0.10);
             info-toggle := TouchArea { mouse-cursor: pointer;
                 clicked => { root.viewer-info-open = !root.viewer-info-open; } }
@@ -4734,7 +4888,7 @@ callback cloud-go-home();
         // Close — sits just left of the ⓘ button (top-right corner).
         if !root.viewer-slideshow: Rectangle {
             x: parent.width - self.width - 24px - 48px; y: 28px;
-            width: 40px; height: 40px; border-radius: 20px;
+            width: 40px; height: 40px; border-radius: Surface.r(20px);
             background: closebtn.has-hover ? white.with-alpha(0.22) : white.with-alpha(0.10);
             closebtn := TouchArea { mouse-cursor: pointer; clicked => { root.close-viewer(); } }
             AppIcon { source: Icons.x; tint: white; width: 16px; height: 16px; }
@@ -4876,7 +5030,7 @@ callback cloud-go-home();
             border-radius: Theme.radius-lg;
             background: Theme.modal;
             border-color: Accent.color.with-alpha(0.5); border-width: 1px;
-            drop-shadow-blur: 32px; drop-shadow-color: #000000aa;
+            drop-shadow-blur: Surface.cast(32px); drop-shadow-color: #000000aa;
             TouchArea {} // swallow clicks so they don't dismiss
             VerticalLayout {
                 padding: 22px; spacing: 12px;
@@ -4893,7 +5047,7 @@ callback cloud-go-home();
                     { key: "radio",      icon: Icons.radio, label: "Radio",      sub: "Stream stations" },
                     { key: "youtube",    icon: Icons.play, label: "YouTube",     sub: "Downloads" },
                 ]: Rectangle {
-                    height: 44px; border-radius: 10px;
+                    height: 44px; border-radius: Surface.r(10px);
                     background: oa.has-hover ? Accent.color.with-alpha(0.16) : Theme.panel;
                     border-width: 1px; border-color: oa.has-hover ? Accent.color.with-alpha(0.5) : Theme.outline;
                     animate background { duration: 100ms; }
@@ -4907,9 +5061,9 @@ callback cloud-go-home();
                 }
                 Rectangle { vertical-stretch: 1; }
                 HorizontalLayout { alignment: end;
-                    Rectangle { width: 90px; height: 32px; border-radius: 8px;
+                    Rectangle { width: 90px; height: 32px; border-radius: Surface.r(8px);
                         background: ca.has-hover ? Theme.panel-2 : Theme.panel;
-                        border-width: 1px; border-color: Theme.outline;
+                        border-width: 1px; border-color: Surface.hairline;
                         ca := TouchArea { mouse-cursor: pointer; clicked => { root.music-add-section-open = false; } }
                         Text { text: "Cancel"; color: Theme.text; font-size: 12px;
                             horizontal-alignment: center; vertical-alignment: center; } } }
@@ -4927,7 +5081,7 @@ callback cloud-go-home();
         border-radius: Theme.radius-lg;
         background: Theme.modal;
         border-color: Accent.color.with-alpha(0.8); border-width: 1px;
-        drop-shadow-blur: 30px; drop-shadow-color: Accent.color.with-alpha(0.35);
+        drop-shadow-blur: Surface.cast(30px); drop-shadow-color: Accent.color.with-alpha(0.35);
         MilestoneConfetti { label: root.milestone; playing: true; }
         Timer { interval: 5s; running: root.milestone != ""; triggered => { root.milestone = ""; } }
     }
@@ -4941,7 +5095,7 @@ callback cloud-go-home();
         border-radius: Theme.radius-md;
         background: Theme.modal;
         border-color: Accent.color.with-alpha(0.6); border-width: 1px;
-        drop-shadow-blur: 24px; drop-shadow-color: #00000066;
+        drop-shadow-blur: Surface.cast(24px); drop-shadow-color: #00000066;
         nudge-timer := Timer {
             interval: 3s; running: root.caps-nudge != "";
             triggered => { root.caps-nudge = ""; }
@@ -4990,9 +5144,9 @@ callback cloud-go-home();
     if root.app-fullscreen && root.fs-peek: Rectangle {
         x: 0; y: 0; width: 100%; height: 42px;
         background: Theme.dark ? #161827f2 : #fffffff2;
-        border-color: Theme.outline;
+        border-color: Surface.hairline;
         border-width: 1px;
-        drop-shadow-blur: 18px;
+        drop-shadow-blur: Surface.cast(18px);
         drop-shadow-color: #00000040;
         // Hide once the pointer has left the bar AND its buttons (250ms grace
         // so hover hand-off between the bar and a button can't flicker it shut).
@@ -5008,7 +5162,7 @@ callback cloud-go-home();
             alignment: center; spacing: 10px;
             VerticalLayout { alignment: center;
                 Rectangle {
-                    width: 20px; height: 20px; border-radius: 6px; clip: true;
+                    width: 20px; height: 20px; border-radius: Surface.r(6px); clip: true;
                     Image { source: @image-url("../resources/appicons/sidebar-default.png");
                         image-fit: cover; width: 100%; height: 100%; }
                 } }
@@ -5020,7 +5174,7 @@ callback cloud-go-home();
             }
             VerticalLayout { alignment: center;
                 Rectangle {
-                    width: 30px; height: 30px; border-radius: 8px;
+                    width: 30px; height: 30px; border-radius: Surface.r(8px);
                     background: fsr-ta.has-hover ? Theme.panel : transparent;
                     AppIcon { source: Icons.maximize; tint: Theme.text;
                         width: 14px; height: 14px; }
@@ -5033,7 +5187,7 @@ callback cloud-go-home();
                 } }
             VerticalLayout { alignment: center;
                 Rectangle {
-                    width: 30px; height: 30px; border-radius: 8px;
+                    width: 30px; height: 30px; border-radius: Surface.r(8px);
                     background: fsx-ta.has-hover ? #e0518f33 : transparent;
                     AppIcon { source: Icons.x; tint: fsx-ta.has-hover ? #e0518f : Theme.text;
                         width: 14px; height: 14px; }

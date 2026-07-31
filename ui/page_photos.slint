@@ -6,6 +6,7 @@ import { AppIcon, Icons } from "icons.slint";
 import { MicBtn } from "voice.slint";
 import { HdrChip } from "section_header.slint";
 import { Theme } from "tokens.slint";
+import { Surface, Rim } from "surface.slint";
 
 // One date group in the timeline (e.g. "May 2026" + that month's tiles).
 export struct PhotoGroup { label: string, tiles: [PhotoTile] }
@@ -33,8 +34,15 @@ component GPhotoChip inherits Rectangle {
     horizontal-stretch: 0; vertical-stretch: 0;
     border-radius: 17px;
     clip: true;
-    background: active ? #1a73e8 : (touch.has-hover ? Theme.n-tile : Theme.n-chip);
+    background: active ? Surface.tile(#1a73e8)
+                       : Surface.body(touch.has-hover ? Theme.n-tile : Theme.n-chip);
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: parent.border-radius - 1px;
+        pressed: root.active;
+    }
     HorizontalLayout { alignment: center; spacing: 6px;
         if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: active ? #ffffff : Theme.n-ink3; width: 15px; height: 15px; } }
         Text {
@@ -69,9 +77,14 @@ component DedupeBtn inherits Rectangle {
     callback clicked();
     height: 34px; min-width: 80px; horizontal-stretch: 1;
     border-radius: self.height / 2; clip: true;
-    background: (dbta.has-hover || active) ? tint : tint.with-alpha(0.16);
+    background: (dbta.has-hover || active) ? Surface.tile(tint) : Surface.wash(tint, 0.16);
     animate background { duration: 140ms; easing: ease-out; }
     dbta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: parent.border-radius - 1px;
+    }
     HorizontalLayout { alignment: center; spacing: 6px; padding-left: 10px; padding-right: 10px;
         if root.icon.width > 0: VerticalLayout { alignment: center;
             AppIcon { source: root.icon; tint: (dbta.has-hover || active) ? #ffffff : root.tint; width: 15px; height: 15px; } }
@@ -100,13 +113,13 @@ component PhotoCell inherits Rectangle {
     // Modifiers captured on pointer-down so `clicked` can branch on them.
     property <bool> mod-ctrl: false;
     property <bool> mod-shift: false;
-    border-radius: 5px; clip: true;
+    border-radius: Surface.r(5px); clip: true;
     // Selected = solid blue frame; hover = gradient frame; else flat.
     background: tile.selected
         ? #1a73e8
         : (hovered
             ? @linear-gradient(135deg, #4285f4 0%, #a142f4 50%, #ea4335 100%)
-            : Theme.n-tile);
+            : Surface.body(Theme.n-tile));
     Image {
         source: tile.thumb; image-fit: cover;
         // Selected photos inset further (8px) so the blue frame reads clearly.
@@ -261,17 +274,28 @@ component PersonCardView inherits Rectangle {
             alignment: center;
             Rectangle {
                 width: 116px; height: 116px; border-radius: 58px; clip: true;
-                background: av.has-hover ? Theme.n-hover : Theme.n-tile;
+                background: Surface.body(av.has-hover ? Theme.n-hover : Theme.n-tile);
+                drop-shadow-blur: Surface.tile-shadow();
+                drop-shadow-color: Surface.shadow-ink;
+                drop-shadow-offset-y: Surface.tile-shadow-y();
                 av := TouchArea { mouse-cursor: pointer; clicked => { root.open(p.id); } }
                 if p.cover.width > 0: Image { source: p.cover; image-fit: cover; width: 100%; height: 100%; }
                 if p.cover.width == 0: AppIcon { source: Icons.user; width: 46px; height: 46px; }
+                if Surface.rim: Rim { width: 100%; height: 100%; radius: parent.border-radius; }
             }
         }
         // Inline rename — type a name and press Enter to label the cluster.
         Rectangle {
-            height: 28px; border-radius: 8px;
-            background: ni.has-focus ? Theme.n-hover : Theme.n-chip;
-            border-width: 1px; border-color: ni.has-focus ? #1a73e8 : transparent;
+            height: 28px; border-radius: Surface.r(8px);
+            background: Surface.body(ni.has-focus ? Theme.n-hover : Theme.n-chip);
+            border-width: Surface.edge-w(1px);
+            border-color: ni.has-focus ? #1a73e8 : transparent;
+            if Surface.rim: Rim {
+                x: 1px; y: 1px;
+                width: parent.width - 2px; height: parent.height - 2px;
+                radius: Math.max(2px, Surface.r(8px) - 1px);
+                pressed: true;
+            }
             ni := TextInput {
                 width: 100%; height: 100%;
                 text: p.named ? p.name : "";
@@ -298,8 +322,8 @@ component AlbumCardView inherits Rectangle {
     VerticalLayout {
         padding: 8px; spacing: 6px; alignment: start;
         Rectangle {
-            height: 150px; border-radius: 12px; clip: true;
-            background: cov.has-hover ? Theme.n-hover : Theme.n-tile;
+            height: 150px; border-radius: Surface.r(12px); clip: true;
+            background: Surface.body(cov.has-hover ? Theme.n-hover : Theme.n-tile);
             cov := TouchArea { mouse-cursor: pointer; clicked => { root.open(a.id); } }
             if a.cover.width > 0: Image { source: a.cover; image-fit: cover; width: 100%; height: 100%; }
             if a.cover.width == 0: AppIcon { source: Icons.image; width: 46px; height: 46px; }
@@ -312,9 +336,16 @@ component AlbumCardView inherits Rectangle {
             }
         }
         Rectangle {
-            height: 28px; border-radius: 8px;
-            background: ai.has-focus ? Theme.n-hover : Theme.n-chip;
-            border-width: 1px; border-color: ai.has-focus ? #1a73e8 : transparent;
+            height: 28px; border-radius: Surface.r(8px);
+            background: Surface.body(ai.has-focus ? Theme.n-hover : Theme.n-chip);
+            border-width: Surface.edge-w(1px);
+            border-color: ai.has-focus ? #1a73e8 : transparent;
+            if Surface.rim: Rim {
+                x: 1px; y: 1px;
+                width: parent.width - 2px; height: parent.height - 2px;
+                radius: Math.max(2px, Surface.r(8px) - 1px);
+                pressed: true;
+            }
             ai := TextInput {
                 width: 100%; height: 100%; text: a.name;
                 color: Theme.n-ink; font-size: 13px; font-weight: 600;
@@ -429,8 +460,8 @@ export component PhotosPage inherits Rectangle {
             HorizontalLayout {
                 padding-left: 28px; padding-right: 28px; spacing: 14px;
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Rectangle { width: 34px; height: 34px; border-radius: 10px;
-                        background: Theme.sec-photos.with-alpha(0.16);
+                    Rectangle { width: 34px; height: 34px; border-radius: Surface.r(10px);
+                        background: Surface.wash(Theme.sec-photos, 0.16);
                         AppIcon { source: Icons.image; tint: Theme.sec-photos; width: 18px; height: 18px;
                             x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
                 VerticalLayout {
@@ -445,7 +476,14 @@ export component PhotosPage inherits Rectangle {
                 VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
                     Rectangle {
-                        width: 560px; height: 44px; border-radius: 22px; background: Theme.n-chip;
+                        width: 560px; height: 44px; border-radius: 22px;
+                        background: Surface.body(Theme.n-chip);
+                        if Surface.rim: Rim {
+                            x: 1px; y: 1px;
+                            width: parent.width - 2px; height: parent.height - 2px;
+                            radius: parent.border-radius - 1px;
+                            pressed: true;
+                        }
                         HorizontalLayout {
                             padding-left: 18px; padding-right: 10px; spacing: 8px;
                             VerticalLayout { alignment: center; horizontal-stretch: 0;
@@ -470,7 +508,7 @@ export component PhotosPage inherits Rectangle {
                                 width: 28px; height: 28px; border-radius: 14px;
                                 horizontal-stretch: 0; vertical-stretch: 0;
                                 y: (parent.height - self.height) / 2;
-                                background: clearx.has-hover ? Theme.n-hover : Theme.n-chip;
+                                background: Surface.body(clearx.has-hover ? Theme.n-hover : Theme.n-chip);
                                 clearx := TouchArea {
                                     mouse-cursor: pointer;
                                     clicked => { root.query = ""; root.search(""); }
@@ -742,8 +780,8 @@ export component PhotosPage inherits Rectangle {
                         VerticalLayout {
                             padding: 6px; spacing: 4px; alignment: start;
                             Rectangle {
-                                height: 140px; border-radius: 10px; clip: true;
-                                background: Theme.n-tile;
+                                height: 140px; border-radius: Surface.r(10px); clip: true;
+                                background: Surface.body(Theme.n-tile);
                                 if cl.cover.width > 0: Image { source: cl.cover; image-fit: cover; width: 100%; height: 100%; }
                                 // Count badge overlay
                                 Rectangle {
@@ -805,7 +843,8 @@ export component PhotosPage inherits Rectangle {
                     background: @linear-gradient(135deg, #ec4899, #8b5cf6 50%, #06b6d4);
                     Rectangle {
                     x: 1.5px; y: 1.5px; width: parent.width - 3px; height: parent.height - 3px;
-                    border-radius: 10.5px; clip: true; background: Theme.n-card;
+                    border-radius: Surface.r(10.5px); clip: true;
+                    background: Surface.body(Theme.n-card);
                     VerticalLayout {
                         alignment: start;
                         padding: 12px; spacing: 10px;
@@ -829,7 +868,8 @@ export component PhotosPage inherits Rectangle {
                             VerticalLayout { alignment: start; spacing: 4px; horizontal-stretch: 1;
                                 Rectangle {
                                     width: dgrid.sqcell; height: dgrid.sqcell;
-                                    border-radius: 8px; clip: true; background: Theme.n-tile;
+                                    border-radius: Surface.r(8px); clip: true;
+                                    background: Surface.body(Theme.n-tile);
                                     if dg.left-thumb.width > 0: Image { source: dg.left-thumb; image-fit: contain; width: 100%; height: 100%; }
                                     lta := TouchArea { mouse-cursor: pointer; clicked => { root.dedupe-open(dg.cluster-id, true, false); } }
                                     Rectangle {
@@ -847,7 +887,8 @@ export component PhotosPage inherits Rectangle {
                             VerticalLayout { alignment: start; spacing: 4px; horizontal-stretch: 1;
                                 Rectangle {
                                     width: dgrid.sqcell; height: dgrid.sqcell;
-                                    border-radius: 8px; clip: true; background: Theme.n-tile;
+                                    border-radius: Surface.r(8px); clip: true;
+                                    background: Surface.body(Theme.n-tile);
                                     if dg.right-thumb.width > 0: Image { source: dg.right-thumb; image-fit: contain; width: 100%; height: 100%; }
                                     rta := TouchArea { mouse-cursor: pointer; clicked => { root.dedupe-open(dg.cluster-id, false, false); } }
                                     Rectangle {
@@ -908,17 +949,23 @@ export component PhotosPage inherits Rectangle {
                 }
                 for f[i] in root.folders: Rectangle {
                     height: 72px; horizontal-stretch: 1;
-                    border-radius: 10px;
-                    background: frow.has-hover ? Theme.n-chip : Theme.n-card;
-                    border-width: 1px; border-color: Theme.n-hair;
+                    border-radius: Surface.r(10px);
+                    background: Surface.body(frow.has-hover ? Theme.n-chip : Theme.n-card);
+                    border-width: Surface.edge-w(1px);
+                    border-color: Surface.clay ? transparent : Theme.n-hair;
+                    if Surface.rim: Rim {
+                        x: 1px; y: 1px;
+                        width: parent.width - 2px; height: parent.height - 2px;
+                        radius: Math.max(2px, Surface.r(10px) - 1px);
+                    }
                     frow := TouchArea { mouse-cursor: pointer; clicked => { root.folder-open(f.path); } }
                     HorizontalLayout {
                         padding: 12px; spacing: 14px;
                         Rectangle {
-                            width: 48px; height: 48px; border-radius: 8px; clip: true;
+                            width: 48px; height: 48px; border-radius: Surface.r(8px); clip: true;
                             horizontal-stretch: 0; vertical-stretch: 0;
                             y: (parent.height - self.height) / 2;
-                            background: Theme.n-tile;
+                            background: Surface.body(Theme.n-tile);
                             Image { source: f.cover; image-fit: cover; width: 100%; height: 100%; }
                         }
                         VerticalLayout {
@@ -950,7 +997,9 @@ export component PhotosPage inherits Rectangle {
                             Rectangle {
                                 horizontal-stretch: 0;
                                 height: 36px; border-radius: 10px;
-                                background: Theme.n-chip; border-width: 1px; border-color: Theme.n-hair;
+                                background: Surface.body(Theme.n-chip);
+                                border-width: Surface.edge-w(1px);
+                                border-color: Surface.clay ? transparent : Theme.n-hair;
                                 HorizontalLayout {
                                     padding-left: 12px; padding-right: 14px; spacing: 8px;
                                     Rectangle {
@@ -1047,9 +1096,15 @@ export component PhotosPage inherits Rectangle {
                 spacing: 8px;
                 Text { text: "Things"; color: Theme.n-ink; font-size: 15px; font-weight: 600; }
                 for t[i] in root.things: Rectangle {
-                    height: 56px; horizontal-stretch: 1; border-radius: 10px;
-                    background: trow.has-hover ? Theme.n-chip : Theme.n-card;
-                    border-width: 1px; border-color: Theme.n-hair;
+                    height: 56px; horizontal-stretch: 1; border-radius: Surface.r(10px);
+                    background: Surface.body(trow.has-hover ? Theme.n-chip : Theme.n-card);
+                    border-width: Surface.edge-w(1px);
+                    border-color: Surface.clay ? transparent : Theme.n-hair;
+                    if Surface.rim: Rim {
+                        x: 1px; y: 1px;
+                        width: parent.width - 2px; height: parent.height - 2px;
+                        radius: Math.max(2px, Surface.r(10px) - 1px);
+                    }
                     trow := TouchArea { mouse-cursor: pointer; clicked => { root.thing-open(t.label); } }
                     HorizontalLayout {
                         padding-left: 16px; padding-right: 16px; spacing: 12px;
@@ -1223,14 +1278,23 @@ export component PhotosPage inherits Rectangle {
         background: #00000066;
         TouchArea { clicked => { root.album-picker-open = false; } }
         Rectangle {
-            width: 420px; height: 460px; border-radius: 14px; background: Theme.n-canvas;
-            drop-shadow-blur: 30px; drop-shadow-color: #00000055;
+            width: 420px; height: 460px; border-radius: Surface.r(14px);
+            background: Surface.panel(Theme.n-canvas, Theme.sec-photos);
+            drop-shadow-blur: Surface.cast(30px);
+            drop-shadow-color: Surface.cast-ink(#00000055);
+            drop-shadow-offset-y: Surface.cast-y(30px);
+            if Surface.rim: Rim {
+                x: 1px; y: 1px;
+                width: parent.width - 2px; height: parent.height - 2px;
+                radius: Math.max(2px, Surface.r(14px) - 1px);
+            }
             TouchArea {}  // swallow clicks inside the card
             VerticalLayout {
                 padding: 20px; spacing: 12px;
                 Text { text: "Add " + root.select-count + " to album"; color: Theme.n-ink; font-size: 17px; font-weight: 700; }
                 Rectangle {
-                    height: 44px; border-radius: 10px; background: nan.has-hover ? Theme.n-accent-soft : Theme.n-chip;
+                    height: 44px; border-radius: Surface.r(10px);
+                    background: Surface.body(nan.has-hover ? Theme.n-accent-soft : Theme.n-chip);
                     nan := TouchArea { mouse-cursor: pointer; clicked => { root.album-add-new(); } }
                     HorizontalLayout { padding-left: 14px; spacing: 10px;
                         AppIcon { source: Icons.plus; tint: #1a73e8; width: 18px; height: 18px; }
@@ -1242,12 +1306,15 @@ export component PhotosPage inherits Rectangle {
                         alignment: start; spacing: 6px;
                         for a[i] in root.picker-albums: Rectangle {
                             height: 52px; border-radius: 10px;
-                            background: pr.has-hover ? Theme.n-chip : Theme.n-card; border-width: 1px; border-color: Theme.n-hair;
+                            background: Surface.body(pr.has-hover ? Theme.n-chip : Theme.n-card);
+                            border-width: Surface.edge-w(1px);
+                            border-color: Surface.clay ? transparent : Theme.n-hair;
                             pr := TouchArea { mouse-cursor: pointer; clicked => { root.album-add(a.id); } }
                             HorizontalLayout {
                                 padding-left: 10px; padding-right: 14px; spacing: 12px;
                                 Rectangle { width: 36px; height: 36px; border-radius: 6px; clip: true;
-                                    y: (parent.height - self.height)/2; horizontal-stretch: 0; background: Theme.n-tile;
+                                    y: (parent.height - self.height)/2; horizontal-stretch: 0;
+                                    background: Surface.body(Theme.n-tile);
                                     if a.cover.width > 0: Image { source: a.cover; image-fit: cover; width: 100%; height: 100%; } }
                                 VerticalLayout { alignment: center; horizontal-stretch: 1;
                                     Text { text: a.name; color: Theme.n-ink; font-size: 14px; font-weight: 600; overflow: elide; } }
@@ -1269,8 +1336,16 @@ export component PhotosPage inherits Rectangle {
         background: #00000066;
         TouchArea { clicked => { root.slideshow-dialog-open = false; } }
         Rectangle {
-            width: 420px; height: 240px; border-radius: 14px; background: Theme.n-canvas;
-            drop-shadow-blur: 30px; drop-shadow-color: #00000055;
+            width: 420px; height: 240px; border-radius: Surface.r(14px);
+            background: Surface.panel(Theme.n-canvas, Theme.sec-photos);
+            drop-shadow-blur: Surface.cast(30px);
+            drop-shadow-color: Surface.cast-ink(#00000055);
+            drop-shadow-offset-y: Surface.cast-y(30px);
+            if Surface.rim: Rim {
+                x: 1px; y: 1px;
+                width: parent.width - 2px; height: parent.height - 2px;
+                radius: Math.max(2px, Surface.r(14px) - 1px);
+            }
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             TouchArea {}
@@ -1279,7 +1354,8 @@ export component PhotosPage inherits Rectangle {
                 Text { text: "Export Slideshow"; color: Theme.n-ink; font-size: 17px; font-weight: 700; }
                 Text { text: "Output path (MP4):"; color: Theme.n-ink2; font-size: 13px; }
                 Rectangle {
-                    height: 40px; border-radius: 8px; background: Theme.n-chip;
+                    height: 40px; border-radius: Surface.r(8px);
+                    background: Surface.body(Theme.n-chip);
                     border-width: 1px; border-color: sli.has-focus ? #1a73e8 : transparent;
                     sli := TextInput {
                         width: 100%; height: 100%;
@@ -1304,8 +1380,16 @@ export component PhotosPage inherits Rectangle {
         background: #00000066;
         TouchArea { clicked => { root.smart-rule-open = false; } }
         Rectangle {
-            width: 460px; height: 280px; border-radius: 14px; background: Theme.n-canvas;
-            drop-shadow-blur: 30px; drop-shadow-color: #00000055;
+            width: 460px; height: 280px; border-radius: Surface.r(14px);
+            background: Surface.panel(Theme.n-canvas, Theme.sec-photos);
+            drop-shadow-blur: Surface.cast(30px);
+            drop-shadow-color: Surface.cast-ink(#00000055);
+            drop-shadow-offset-y: Surface.cast-y(30px);
+            if Surface.rim: Rim {
+                x: 1px; y: 1px;
+                width: parent.width - 2px; height: parent.height - 2px;
+                radius: Math.max(2px, Surface.r(14px) - 1px);
+            }
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             TouchArea {}
@@ -1314,7 +1398,8 @@ export component PhotosPage inherits Rectangle {
                 Text { text: "Smart Album"; color: Theme.n-ink; font-size: 17px; font-weight: 700; }
                 Text { text: "Rule JSON (e.g. {\"starred\": true} or {\"year\": {\">=\": 2024}}):"; color: Theme.n-ink2; font-size: 12px; }
                 Rectangle {
-                    height: 60px; border-radius: 8px; background: Theme.n-chip;
+                    height: 60px; border-radius: Surface.r(8px);
+                    background: Surface.body(Theme.n-chip);
                     border-width: 1px; border-color: sri.has-focus ? #1a73e8 : transparent;
                     sri := TextInput {
                         width: 100%; height: 100%;
@@ -1344,8 +1429,16 @@ export component PhotosPage inherits Rectangle {
         background: #00000066;
         TouchArea { clicked => { root.dedupe-trash-id = -1; } }
         Rectangle {
-            width: 440px; height: 220px; border-radius: 14px; background: Theme.n-canvas;
-            drop-shadow-blur: 30px; drop-shadow-color: #00000055;
+            width: 440px; height: 220px; border-radius: Surface.r(14px);
+            background: Surface.panel(Theme.n-canvas, Theme.sec-photos);
+            drop-shadow-blur: Surface.cast(30px);
+            drop-shadow-color: Surface.cast-ink(#00000055);
+            drop-shadow-offset-y: Surface.cast-y(30px);
+            if Surface.rim: Rim {
+                x: 1px; y: 1px;
+                width: parent.width - 2px; height: parent.height - 2px;
+                radius: Math.max(2px, Surface.r(14px) - 1px);
+            }
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             TouchArea {}  // swallow clicks inside the card

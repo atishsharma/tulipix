@@ -5,6 +5,7 @@
 // preserving the same contrast steps so everything stays readable. The pink
 // accent (#ec4899) is shared and unchanged across both themes.
 import { Theme } from "tokens.slint";
+import { Surface } from "surface.slint";
 export global MusicTheme {
     // Unified with the app Theme (2026-07-05): the Music section no longer keeps
     // an independent theme — `light`/`oled` are now DERIVED from the app Theme so
@@ -28,12 +29,28 @@ export global MusicTheme {
     // Solid surfaces — light greys mirroring the dark near-blacks; OLED collapses
     // them to black / hairline-grey.
     out property <color> surf-page:    light ? #f3f3f6 : (oled ? #000000 : #0f0f0f);
-    out property <color> surf-header:  light ? #ffffff : (oled ? #000000 : #18181c);
-    out property <color> surf-header2: light ? #f7f7fa : (oled ? #050505 : #131316);
-    out property <color> surf-player:  light ? #ffffff : (oled ? #000000 : #14141b);
-    out property <color> surf-pop:     light ? #ffffff : (oled ? #0a0a0a : #1c1c25);
-    out property <color> surf-pop2:    light ? #f1f1f5 : (oled ? #0a0a0a : #1c1c22);
-    out property <color> surf-thumb:   light ? #e6e6ea : (oled ? #161616 : #2a2a2e);
+    //
+    // The design language owns the *material* of these six, and only these six:
+    // the chrome, the popups and the thumbnail wells. Music keeps its own page
+    // backdrop and its own ink either way — a section that changed its text
+    // colour with the skin would be a different section, not a repainted one.
+    // Clay makes them all one matte body, the moulded language lights them from
+    // the top edge, and Standard keeps the exact near-black/near-white ramp.
+    out property <color> surf-header:  Surface.clay ? Surface.clay-shell
+        : (Surface.skeuo ? Surface.plate-top  : (light ? #ffffff : (oled ? #000000 : #18181c)));
+    out property <color> surf-header2: Surface.clay ? Surface.clay-shell
+        : (Surface.skeuo ? Surface.plate-bottom : (light ? #f7f7fa : (oled ? #050505 : #131316)));
+    out property <color> surf-player:  Surface.clay ? Surface.clay-shell
+        : (Surface.skeuo ? Surface.plate-top  : (light ? #ffffff : (oled ? #000000 : #14141b)));
+    // Popups and thumbnails sit *on* the chrome, so they take the key tone
+    // rather than the shell tone — a floating panel the same colour as the
+    // surface under it is a panel that has not floated.
+    out property <color> surf-pop:     Surface.clay ? Surface.clay-key
+        : (Surface.skeuo ? Surface.key-top    : (light ? #ffffff : (oled ? #0a0a0a : #1c1c25)));
+    out property <color> surf-pop2:    Surface.clay ? Surface.clay-key
+        : (Surface.skeuo ? Surface.key-bottom : (light ? #f1f1f5 : (oled ? #0a0a0a : #1c1c22)));
+    out property <color> surf-thumb:   Surface.clay ? Surface.clay-key
+        : (Surface.skeuo ? Surface.key-top    : (light ? #e6e6ea : (oled ? #161616 : #2a2a2e)));
     out property <color> surf-zen:    light ? #f6f6f9   : (oled ? #000000   : #07070a);
     out property <color> surf-zen-w1: light ? #f6f6f9e0 : (oled ? #000000e0 : #07070ae0);
     out property <color> surf-zen-w2: light ? #f6f6f9f2 : (oled ? #000000f2 : #07070af2);
@@ -41,7 +58,11 @@ export global MusicTheme {
     // Translucent overlays — dark uses faint white alpha; light uses STRONGER
     // black alpha so borders read as real dark outlines and buttons/chips have
     // a visible fill (the "faded mess" fix — light gets crisp dark edges).
-    out property <color> line:   light ? #0000003d : #ffffff22;
+    // 202 borders and separators across the section hang off this one token,
+    // which makes it the cheapest place to say what each language does about
+    // hairlines: clay has none at all, and the moulded one leans on them.
+    out property <color> line:   Surface.clay ? transparent
+        : (Surface.skeuo ? Theme.outline-strong : (light ? #0000003d : #ffffff22));
     out property <color> hov:    light ? #0000001a : #ffffff12;
     out property <color> hov2:   light ? #00000026 : #ffffff1f;
     out property <color> surf1:  light ? #0000001c : #ffffff14;

@@ -1,4 +1,5 @@
 import { Theme } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { ScrollView, ComboBox } from "std-widgets.slint";
 
 export struct LibraryRow {
@@ -14,13 +15,13 @@ export struct LibraryRow {
     music-section: string,
 }
 
-component Btn inherits Rectangle {
+component Btn inherits Skin {
     in property <string> label;
     in property <bool> danger: false;
     in property <bool> primary: false;
     callback clicked();
     height: 30px;
-    border-radius: 8px;
+    border-radius: Surface.r(8px);
     background: touch.has-hover
         ? (danger ? #b91c1c : (primary ? #6d28d9 : Theme.panel-2))
         : (danger ? #7f1d1d : (primary ? Theme.brand : Theme.panel));
@@ -39,7 +40,7 @@ component Btn inherits Rectangle {
     }
 }
 
-component RowItem inherits Rectangle {
+component RowItem inherits Skin {
     in property <LibraryRow> data;
     callback rescan();
     callback rethumb();
@@ -48,8 +49,8 @@ component RowItem inherits Rectangle {
     callback save-section(string); // music rows: persist the chosen section
     height: 80px;
     border-radius: Theme.radius-md;
-    background: Theme.panel-2;
-    border-color: Theme.outline;
+    background: Surface.body(Theme.panel-2);
+    border-color: Surface.hairline;
     border-width: 1px;
 
     HorizontalLayout {
@@ -137,13 +138,13 @@ export component SettingsLibraries inherits Rectangle {
                     color: Theme.text-dim; font-size: 11px; vertical-alignment: center; }
             }
             Rectangle {
-                height: 6px; border-radius: 3px; background: Theme.panel; clip: true;
-                border-width: 1px; border-color: Theme.outline;
+                height: 6px; border-radius: Surface.r(3px); background: Surface.body(Theme.panel); clip: true;
+                border-width: 1px; border-color: Surface.hairline;
                 // Determinate fill when busy-frac >= 0; a soft full bar otherwise.
                 Rectangle {
                     x: 0; y: 0; height: parent.height;
                     width: root.busy-frac >= 0 ? parent.width * Math.max(0, Math.min(1, root.busy-frac)) : parent.width;
-                    border-radius: 3px;
+                    border-radius: Surface.r(3px);
                     background: @linear-gradient(90deg, Theme.brand, #8b5cf6);
                     animate width { duration: 180ms; easing: ease-out; }
                 }
@@ -164,8 +165,8 @@ export component SettingsLibraries inherits Rectangle {
                 if root.rows.length == 0: Rectangle {
                     height: 80px;
                     border-radius: Theme.radius-md;
-                    background: Theme.panel;
-                    border-color: Theme.outline; border-width: 1px;
+                    background: Surface.body(Theme.panel);
+                    border-color: Surface.hairline; border-width: 1px;
                     VerticalLayout {
                         alignment: center;
                         Text {
@@ -192,9 +193,9 @@ export component SettingsLibraries inherits Rectangle {
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
             border-radius: Theme.radius-md;
-            background: Theme.panel;
+            background: Surface.body(Theme.panel);
             border-width: 1px; border-color: #7f1d1d;
-            drop-shadow-blur: 40px; drop-shadow-color: #000000cc;
+            drop-shadow-blur: Surface.cast(40px); drop-shadow-color: #000000cc;
             TouchArea {} // keep clicks on the card from closing the dialog
             dlg := VerticalLayout {
                 padding: 22px; spacing: 12px;

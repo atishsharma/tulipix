@@ -43,7 +43,12 @@ pub type Mirror = String;
 /// A search or download, plus the host that served it.
 pub struct Served<T> {
     pub value: T,
+    /// Bare host, for the status chip — `libgen.li`.
     pub mirror: Mirror,
+    /// The full base the request actually went to, scheme and all. The chip
+    /// wants the host; anyone asking "where are these books coming from" wants
+    /// something they can paste into a browser.
+    pub url: String,
 }
 
 /// The blocking facade the app drives.
@@ -148,7 +153,7 @@ impl GenesisService {
 
         let mut kept: Vec<Book> = books.into_iter().filter(|b| query.matches(b)).collect();
         kept.truncate(query.limit);
-        Ok(Served { value: kept, mirror: host_label(&base) })
+        Ok(Served { value: kept, mirror: host_label(&base), url: base.to_string() })
     }
 
     /// Resolve a record to a live URL and stream it to disk.
@@ -180,7 +185,7 @@ impl GenesisService {
         let merged = merge(book, &resolved.book);
         on_status(&format!("downloading from {}", host_label(&base)));
         let outcome = download::fetch(&self.http, &resolved.url, &merged, opts, report)?;
-        Ok(Served { value: outcome, mirror: host_label(&base) })
+        Ok(Served { value: outcome, mirror: host_label(&base), url: base.to_string() })
     }
 }
 

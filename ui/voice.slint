@@ -5,6 +5,7 @@
 // chosen in Settings → AI Features, then writes the text into the right
 // section's query + fires that section's search.
 import { AppIcon, Icons } from "icons.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 
 export global VoiceSearch {
     // "idle" | "listening" | "busy" (transcribing)
@@ -22,7 +23,7 @@ export component MicBtn inherits Rectangle {
     in property <string> target;
     in property <bool> dark: true;
     property <bool> live: VoiceSearch.target == root.target && VoiceSearch.state != "idle";
-    width: 28px; height: 28px; border-radius: 14px;
+    width: 28px; height: 28px; border-radius: Surface.r(14px);
     horizontal-stretch: 0; vertical-stretch: 0;
     background: live
         ? (VoiceSearch.state == "busy" ? #b45309 : #dc2626)

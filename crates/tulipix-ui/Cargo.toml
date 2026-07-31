@@ -18,5 +18,14 @@ dev-reload = ["slint/live-preview"]
 [dependencies]
 slint.workspace = true
 
+# No renderer here on purpose: tulipix-app picks one (skia for the embedded
+# player, femtovg for the lite build) and it unifies down into this crate. But
+# `cargo test -p tulipix-ui` on its own has no app above it, so the winit
+# backend sees zero renderers and stops with a compile_error!. A dev-dependency
+# names one for the test build only — it never reaches a release binary, which
+# keeps the renderer choice where it belongs.
+[dev-dependencies]
+slint = { workspace = true, features = ["renderer-femtovg"] }
+
 [build-dependencies]
 slint-build.workspace = true

@@ -1,4 +1,5 @@
 import { Theme, Accent } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { PanelFrost } from "frost.slint";
 
 export struct ScanProgress {
@@ -11,7 +12,7 @@ export struct ScanProgress {
     last_error: string,
 }
 
-component ProgressRow inherits Rectangle {
+component ProgressRow inherits Skin {
     in property <ScanProgress> data;
     horizontal-stretch: 1;
     vertical-stretch: 0;
@@ -47,15 +48,15 @@ component ProgressRow inherits Rectangle {
         Rectangle {
             height: 6px;
             horizontal-stretch: 1;
-            border-radius: 3px;
-            background: Theme.panel-2;
+            border-radius: Surface.r(3px);
+            background: Surface.body(Theme.panel-2);
             Rectangle {
                 x: 0;
                 width: data.total > 0
                     ? (parent.width * ((data.added + data.failed) / data.total))
                     : 0px;
                 height: parent.height;
-                border-radius: 3px;
+                border-radius: Surface.r(3px);
                 background: data.active
                     ? @linear-gradient(90deg, Accent.color 0%, Accent.color.with-alpha(0.6) 100%)
                     : (data.failed > 0 ? #f97316 : #16a34a);
@@ -113,10 +114,10 @@ export component ScanProgressCard inherits Rectangle {
                 Rectangle {
                     width: 24px; height: 24px;
                     horizontal-stretch: 0; vertical-stretch: 0;
-                    border-radius: 12px;
+                    border-radius: Surface.r(12px);
                     background: dismiss-ta.has-hover ? Theme.panel-2 : transparent;
                     border-width: 1px;
-                    border-color: Theme.outline;
+                    border-color: Surface.hairline;
                     Text {
                         text: "×";
                         color: Theme.text-dim;

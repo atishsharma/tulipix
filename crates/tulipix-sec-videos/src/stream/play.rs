@@ -23,12 +23,19 @@ pub fn stream_play(weak: slint::Weak<MainWindow>, index: i32) {
     set_status(&weak, format!("Starting {label}…"), true);
 
     tokio::runtime::Handle::current().spawn(async move {
+        let url = match playable_url(&file.url).await {
+            Ok(u) => u,
+            Err(e) => {
+                set_status(&weak, format!("That source could not be opened: {e}"), false);
+                return;
+            }
+        };
         let (tracks, chosen) = with_state(|st| (st.subs.clone(), st.sub_choice));
         let (mut args, named) = subtitle_args(&tracks, chosen).await;
         args.extend(subtitle_style_args());
         let resume = resume_point().await;
         spawn_mpv_windowed_tracked(
-            PathBuf::from(file.url),
+            PathBuf::from(url),
             resume,
             None,
             args,
@@ -85,7 +92,7 @@ fn prefetch_next() {
         if stream::cache::load(&pool, &key).await.is_some() {
             return; // already have it
         }
-        let Ok(c) = client().await else { return };
+        let Ok(c) = catalogue().await else { return };
         if let Ok(files) = c
             .resources(&subject_id, season.max(0) as usize, episode.max(0) as usize, &res)
             .await
@@ -385,10 +392,18 @@ pub fn stream_copy_link(weak: slint::Weak<MainWindow>, index: i32) {
         set_status(&weak, "That stream is no longer available.", false);
         return;
     };
-    match arboard::Clipboard::new().and_then(|mut c| c.set_text(file.url)) {
-        Ok(()) => set_status(&weak, "Stream link copied.", false),
-        Err(e) => set_status(&weak, format!("Could not copy: {e}"), false),
-    }
+    // Resolved first: the link on a 4KHDHub row points at a landing page, and
+    // pasting that somewhere is not what "copy the stream link" means.
+    tokio::runtime::Handle::current().spawn(async move {
+        let url = match playable_url(&file.url).await {
+            Ok(u) => u,
+            Err(e) => return set_status(&weak, format!("Could not resolve that link: {e}"), false),
+        };
+        match arboard::Clipboard::new().and_then(|mut c| c.set_text(url)) {
+            Ok(()) => set_status(&weak, "Stream link copied.", false),
+            Err(e) => set_status(&weak, format!("Could not copy: {e}"), false),
+        }
+    });
 }
 
 // ---- info-box actions ----

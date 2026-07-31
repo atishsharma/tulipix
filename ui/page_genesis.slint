@@ -14,6 +14,7 @@
 // endpoint 500s. That check is slow, and without something on screen naming it,
 // the wait reads as a hang.
 import { Theme } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { BookTheme } from "page_books.slint";
 import { ScrollView } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
@@ -37,11 +38,11 @@ export struct GenesisRow {
 export struct GenesisTopic { code: string, label: string, on: bool }
 
 // ── a pill, used for topics and for the field/format/language pickers ───────
-component Chip inherits Rectangle {
+component Chip inherits Skin {
     in property <string> label;
     in property <bool> on: false;
     callback clicked();
-    horizontal-stretch: 0; height: 32px; border-radius: 16px;
+    horizontal-stretch: 0; height: 32px; border-radius: Surface.r(16px);
     background: root.on ? BookTheme.tint-violet : BookTheme.pill-bg;
     border-width: 1.5px;
     border-color: root.on ? BookTheme.accent.with-alpha(0.45) : transparent;
@@ -62,11 +63,11 @@ component Chip inherits Rectangle {
 // Cycles through its options on click rather than opening a menu: there are at
 // most seven, and a popup that has to be positioned by hand is a lot of
 // machinery for "next value".
-component Picker inherits Rectangle {
+component Picker inherits Skin {
     in property <string> label;
     in property <string> value;
     callback clicked();
-    horizontal-stretch: 0; height: 32px; border-radius: 16px;
+    horizontal-stretch: 0; height: 32px; border-radius: Surface.r(16px);
     background: BookTheme.pill-bg;
     border-width: 1.5px;
     border-color: ta.has-hover ? BookTheme.accent.with-alpha(0.4) : BookTheme.hairline;
@@ -89,13 +90,83 @@ component Picker inherits Rectangle {
     animate border-color { duration: 120ms; }
 }
 
+// ── one page-step arrow ─────────────────────────────────────────────────────
+// Stays in place when it cannot move — a control that disappears at the ends
+// makes the row jump width every time the last page is reached.
+component PageArrow inherits Skin {
+    in property <image> icon;
+    in property <bool> enabled: true;
+    callback clicked();
+    horizontal-stretch: 0; width: 32px; height: 32px;
+    border-radius: Surface.r(16px);
+    opacity: root.enabled ? 1.0 : 0.35;
+    background: root.enabled && ta.has-hover ? BookTheme.tint-violet : BookTheme.pill-bg;
+    border-width: 1.5px;
+    border-color: root.enabled && ta.has-hover
+        ? BookTheme.accent.with-alpha(0.5) : BookTheme.hairline;
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { if (root.enabled) { root.clicked(); } }
+    }
+    AppIcon {
+        source: root.icon;
+        tint: root.enabled && ta.has-hover ? BookTheme.accent : BookTheme.ink-dim;
+        width: 14px; height: 14px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+    animate background, border-color, opacity { duration: 120ms; }
+}
+
+// ── a clickable column header ───────────────────────────────────────────────
+// Carries the arrow for the column it sorts by. Sorting happens over the whole
+// result set, so the arrow describes the table, not the page.
+component SortHead inherits Skin {
+    in property <string> label;
+    in property <string> key;
+    in property <string> active;
+    in property <bool> desc: false;
+    in property <bool> align-right: false;
+    callback clicked();
+    property <bool> on: root.active == root.key;
+    horizontal-stretch: 0; height: 100%;
+    background: transparent;
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        spacing: 4px;
+        alignment: root.align-right ? end : start;
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Text {
+                text: root.label;
+                color: root.on ? BookTheme.accent
+                    : (ta.has-hover ? BookTheme.ink : BookTheme.ink-dim);
+                font-size: 10.5px; font-weight: 700; letter-spacing: 0.8px;
+                vertical-alignment: center;
+            }
+        }
+        // Reserved even when unsorted, so a header does not shift sideways the
+        // first time it is clicked.
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Rectangle {
+                width: 10px; height: 10px; background: transparent;
+                if root.on: AppIcon {
+                    source: root.desc ? Icons.chevron-down : Icons.chevron-up;
+                    tint: BookTheme.accent; width: 10px; height: 10px;
+                }
+            }
+        }
+    }
+}
+
 // ── the mirror status chip in the header ────────────────────────────────────
 // Names the host that answered and how long it took. Not decoration: failover
 // between mirrors is otherwise completely silent.
-component MirrorChip inherits Rectangle {
+component MirrorChip inherits Skin {
     in property <string> text;
     in property <string> tone;   // ok | warn | bad
-    horizontal-stretch: 0; height: 32px; border-radius: 16px;
+    horizontal-stretch: 0; height: 32px; border-radius: Surface.r(16px);
     property <color> hue:
         root.tone == "ok"   ? #22c55e :
         root.tone == "warn" ? #f59e0b :
@@ -105,7 +176,7 @@ component MirrorChip inherits Rectangle {
         padding-left: 13px; padding-right: 15px; spacing: 8px; alignment: center;
         VerticalLayout {
             alignment: center; horizontal-stretch: 0;
-            Rectangle { width: 7px; height: 7px; border-radius: 4px; background: root.hue; }
+            Rectangle { width: 7px; height: 7px; border-radius: Surface.r(4px); background: root.hue; }
         }
         Text {
             text: root.text; color: BookTheme.ink; font-size: 12px; font-weight: 600;
@@ -117,8 +188,8 @@ component MirrorChip inherits Rectangle {
 // ── a skeleton line, for the searching state ────────────────────────────────
 // Width comes from the caller: a component's own root cannot read `parent`, so
 // a proportional width has to be computed where the parent is in scope.
-component Skel inherits Rectangle {
-    height: 12px; border-radius: 6px;
+component Skel inherits Skin {
+    height: 12px; border-radius: Surface.r(6px);
     background: BookTheme.track;
     opacity: 0.55;
     animate opacity { duration: 700ms; iteration-count: -1; direction: alternate; }
@@ -126,7 +197,7 @@ component Skel inherits Rectangle {
 }
 
 // ── one big centred message, for idle / empty / failed ──────────────────────
-component EmptyState inherits Rectangle {
+component EmptyState inherits Skin {
     in property <string> title;
     in property <string> body;
     in property <image> icon;
@@ -137,7 +208,7 @@ component EmptyState inherits Rectangle {
         HorizontalLayout {
             alignment: center;
             Rectangle {
-                width: 52px; height: 52px; border-radius: 16px;
+                width: 52px; height: 52px; border-radius: Surface.r(16px);
                 background: root.tint.with-alpha(0.13);
                 AppIcon {
                     source: root.icon; tint: root.tint; width: 26px; height: 26px;
@@ -184,6 +255,27 @@ export component GenesisPage inherits Rectangle {
     in property <string> done-name: "";
     in property <string> done-detail: "";
 
+    // ── result table: sorting + pagination ──
+    // Both run over the whole result set in Rust, not over the twelve rows on
+    // screen — sorting a page in place would only shuffle that page.
+    in property <int> page: 0;
+    in property <int> pages: 0;
+    in property <int> total: 0;
+    // "" = mirror order. Otherwise title|author|year|language|pages|size|format.
+    in property <string> sort: "";
+    in property <bool> sort-desc: false;
+
+    // ── settings ──
+    in-out property <bool> settings-open: false;
+    // Newline-separated mirror list, most-preferred first. Empty = the built-in
+    // seed list.
+    in-out property <string> mirrors: "";
+    in property <string> mirrors-default: "";
+    in property <bool> settings-saved: false;
+    // The mirror that answered the last search, as a full URL — the one thing
+    // that tells you *where* the books are actually coming from.
+    in property <string> active-url: "";
+
     in-out property <string> terms: "";
 
     callback back();
@@ -196,6 +288,12 @@ export component GenesisPage inherits Rectangle {
     callback cycle-language();
     callback retry();
     callback open-dest();
+    callback set-page(int);
+    callback sort-clicked(string);
+    callback settings-opened();
+    callback settings-save();
+    callback settings-reset();
+    callback pick-dest();
 
     background: BookTheme.canvas;
 
@@ -205,43 +303,93 @@ export component GenesisPage inherits Rectangle {
         // ── header ──────────────────────────────────────────────────────────
         HorizontalLayout {
             spacing: 14px;
+            // Back — outlined in the section accent so it reads as a control
+            // rather than as a blank tile in the corner.
             VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
                 Rectangle {
-                    width: 38px; height: 38px; border-radius: 12px;
-                    background: backt.has-hover ? BookTheme.track : BookTheme.pill-bg;
+                    width: 38px; height: 38px; border-radius: Surface.r(12px);
+                    background: backt.has-hover
+                        ? BookTheme.tint-violet : BookTheme.pill-bg;
+                    border-width: 1.5px;
+                    border-color: backt.has-hover
+                        ? BookTheme.accent : BookTheme.accent.with-alpha(0.45);
                     backt := TouchArea { mouse-cursor: pointer; clicked => { root.back(); } }
                     AppIcon {
-                        source: Icons.chevron-left; tint: BookTheme.ink;
+                        source: Icons.chevron-left;
+                        tint: backt.has-hover ? BookTheme.accent : BookTheme.ink;
                         width: 18px; height: 18px;
                         x: (parent.width - self.width) / 2;
                         y: (parent.height - self.height) / 2;
                     }
+                    animate background, border-color { duration: 120ms; }
                 }
             }
+            // Logo and wordmark share one outlined plate — two loose elements
+            // beside a search bar read as decoration; a bordered lockup reads as
+            // the name of the thing.
             VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
                 Rectangle {
-                    width: 40px; height: 40px; border-radius: 12px;
+                    height: 46px; border-radius: 23px;
                     background: BookTheme.tint-violet;
-                    AppIcon {
-                        source: Icons.download; tint: BookTheme.accent;
-                        width: 21px; height: 21px;
-                        x: (parent.width - self.width) / 2;
-                        y: (parent.height - self.height) / 2;
+                    border-width: 1.5px;
+                    border-color: BookTheme.accent.with-alpha(0.5);
+                    HorizontalLayout {
+                        padding-left: 7px; padding-right: 18px; spacing: 10px;
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Rectangle {
+                                width: 32px; height: 32px; border-radius: Surface.r(11px);
+                                background: BookTheme.accent;
+                                AppIcon {
+                                    source: Icons.download; tint: #ffffff;
+                                    width: 17px; height: 17px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Text {
+                                text: "Genesis"; color: BookTheme.ink;
+                                font-size: 22px; font-weight: 800;
+                                vertical-alignment: center;
+                            }
+                        }
                     }
                 }
             }
-            VerticalLayout {
-                alignment: center; horizontal-stretch: 1;
-                Text {
-                    text: "Genesis"; color: BookTheme.ink; font-size: 26px; font-weight: 800;
-                    vertical-alignment: center;
-                }
-            }
+            Rectangle { horizontal-stretch: 1; background: transparent; }
             if root.mirror != "": VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
                 MirrorChip { text: root.mirror; tone: root.mirror-tone; }
+            }
+            // Settings — download folder, mirror list, and the address the
+            // results are actually coming from.
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                Rectangle {
+                    width: 38px; height: 38px; border-radius: Surface.r(12px);
+                    background: setb.has-hover || root.settings-open
+                        ? BookTheme.tint-violet : BookTheme.pill-bg;
+                    border-width: 1.5px;
+                    border-color: root.settings-open
+                        ? BookTheme.accent : BookTheme.accent.with-alpha(0.35);
+                    setb := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.settings-open = true; root.settings-opened(); }
+                    }
+                    AppIcon {
+                        source: Icons.settings;
+                        tint: root.settings-open ? BookTheme.accent : BookTheme.ink;
+                        width: 18px; height: 18px;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+                    animate background, border-color { duration: 120ms; }
+                }
             }
         }
 
@@ -250,12 +398,15 @@ export component GenesisPage inherits Rectangle {
         // Enter and on the button, never per keystroke.
         HorizontalLayout {
             spacing: 12px;
+            // Filled in the section tint rather than left on the page colour —
+            // it is the one control the page exists for, and a bare outline put
+            // it level with the filter pills below it.
             Rectangle {
                 horizontal-stretch: 1; height: 52px; border-radius: 26px;
-                background: ti.has-focus ? BookTheme.card : BookTheme.pill-bg;
+                background: BookTheme.tint-violet;
                 border-width: 1.5px;
                 border-color: ti.has-focus
-                    ? BookTheme.accent.with-alpha(0.55) : BookTheme.hairline;
+                    ? BookTheme.accent : BookTheme.accent.with-alpha(0.4);
                 animate background, border-color { duration: 120ms; }
                 HorizontalLayout {
                     padding-left: 20px; padding-right: 16px; spacing: 12px;
@@ -285,7 +436,7 @@ export component GenesisPage inherits Rectangle {
                     if root.terms != "": VerticalLayout {
                         alignment: center; horizontal-stretch: 0;
                         Rectangle {
-                            width: 28px; height: 28px; border-radius: 14px;
+                            width: 28px; height: 28px; border-radius: Surface.r(14px);
                             background: clr.has-hover ? BookTheme.track : transparent;
                             clr := TouchArea {
                                 mouse-cursor: pointer;
@@ -333,12 +484,42 @@ export component GenesisPage inherits Rectangle {
             Picker { label: "Format"; value: root.format; clicked => { root.cycle-format(); } }
             Picker { label: "Language"; value: root.language; clicked => { root.cycle-language(); } }
             Rectangle { horizontal-stretch: 1; background: transparent; }
+
+            // Pager, right edge of this row rather than under the table: the
+            // table scrolls, so a control below it is off screen exactly when
+            // it is wanted. Hidden on a single page — a Previous and Next that
+            // can never do anything is noise.
+            if root.pages > 1: VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                HorizontalLayout {
+                    spacing: 6px;
+                    PageArrow {
+                        icon: Icons.chevron-left;
+                        enabled: root.page > 0;
+                        clicked => { root.set-page(root.page - 1); }
+                    }
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        Text {
+                            text: (root.page + 1) + " / " + root.pages
+                                + "  ·  " + root.total + " results";
+                            color: BookTheme.ink-dim; font-size: 12px; font-weight: 600;
+                            vertical-alignment: center;
+                        }
+                    }
+                    PageArrow {
+                        icon: Icons.chevron-right;
+                        enabled: root.page + 1 < root.pages;
+                        clicked => { root.set-page(root.page + 1); }
+                    }
+                }
+            }
         }
 
         // ── body ────────────────────────────────────────────────────────────
         Rectangle {
             vertical-stretch: 1;
-            border-radius: 16px;
+            border-radius: Surface.r(16px);
             background: BookTheme.card;
             border-width: 1px; border-color: BookTheme.hairline;
             clip: true;
@@ -403,7 +584,7 @@ export component GenesisPage inherits Rectangle {
                 HorizontalLayout {
                     alignment: center;
                     Rectangle {
-                        height: 38px; min-width: 118px; border-radius: 19px;
+                        height: 38px; min-width: 118px; border-radius: Surface.r(19px);
                         background: rt.has-hover ? BookTheme.accent.darker(0.1) : BookTheme.accent;
                         rt := TouchArea { mouse-cursor: pointer; clicked => { root.retry(); } }
                         Text {
@@ -438,46 +619,49 @@ export component GenesisPage inherits Rectangle {
                     height: 40px; background: BookTheme.pill-bg;
                     HorizontalLayout {
                         padding-left: 18px; padding-right: 18px; spacing: 12px;
-                        Text {
-                            text: "TITLE"; color: BookTheme.ink-dim; font-size: 10.5px;
-                            font-weight: 700; letter-spacing: 0.8px;
-                            horizontal-stretch: 1; vertical-alignment: center;
+                        // Title is the one column that stretches; the rest are
+                        // pinned min == max so a stretch factor cannot divide
+                        // leftover width unevenly between them.
+                        SortHead {
+                            label: "TITLE"; key: "title"; horizontal-stretch: 1;
+                            active: root.sort; desc: root.sort-desc;
+                            clicked => { root.sort-clicked("title"); }
                         }
-                        Text {
-                            text: "AUTHOR"; color: BookTheme.ink-dim; font-size: 10.5px;
-                            font-weight: 700; letter-spacing: 0.8px;
-                            min-width: 180px; max-width: 180px; horizontal-stretch: 0;
-                            vertical-alignment: center;
+                        SortHead {
+                            label: "AUTHOR"; key: "author";
+                            min-width: 180px; max-width: 180px;
+                            active: root.sort; desc: root.sort-desc;
+                            clicked => { root.sort-clicked("author"); }
                         }
-                        Text {
-                            text: "YEAR"; color: BookTheme.ink-dim; font-size: 10.5px;
-                            font-weight: 700; letter-spacing: 0.8px;
-                            min-width: 54px; max-width: 54px; horizontal-stretch: 0;
-                            vertical-alignment: center;
+                        SortHead {
+                            label: "YEAR"; key: "year";
+                            min-width: 54px; max-width: 54px;
+                            active: root.sort; desc: root.sort-desc;
+                            clicked => { root.sort-clicked("year"); }
                         }
-                        Text {
-                            text: "LANG"; color: BookTheme.ink-dim; font-size: 10.5px;
-                            font-weight: 700; letter-spacing: 0.8px;
-                            min-width: 78px; max-width: 78px; horizontal-stretch: 0;
-                            vertical-alignment: center;
+                        SortHead {
+                            label: "LANG"; key: "language";
+                            min-width: 78px; max-width: 78px;
+                            active: root.sort; desc: root.sort-desc;
+                            clicked => { root.sort-clicked("language"); }
                         }
-                        Text {
-                            text: "PAGES"; color: BookTheme.ink-dim; font-size: 10.5px;
-                            font-weight: 700; letter-spacing: 0.8px;
-                            min-width: 56px; max-width: 56px; horizontal-stretch: 0;
-                            horizontal-alignment: right; vertical-alignment: center;
+                        SortHead {
+                            label: "PAGES"; key: "pages"; align-right: true;
+                            min-width: 56px; max-width: 56px;
+                            active: root.sort; desc: root.sort-desc;
+                            clicked => { root.sort-clicked("pages"); }
                         }
-                        Text {
-                            text: "SIZE"; color: BookTheme.ink-dim; font-size: 10.5px;
-                            font-weight: 700; letter-spacing: 0.8px;
-                            min-width: 78px; max-width: 78px; horizontal-stretch: 0;
-                            horizontal-alignment: right; vertical-alignment: center;
+                        SortHead {
+                            label: "SIZE"; key: "size"; align-right: true;
+                            min-width: 78px; max-width: 78px;
+                            active: root.sort; desc: root.sort-desc;
+                            clicked => { root.sort-clicked("size"); }
                         }
-                        Text {
-                            text: "FORMAT"; color: BookTheme.ink-dim; font-size: 10.5px;
-                            font-weight: 700; letter-spacing: 0.8px;
-                            min-width: 74px; max-width: 74px; horizontal-stretch: 0;
-                            vertical-alignment: center;
+                        SortHead {
+                            label: "FORMAT"; key: "format";
+                            min-width: 74px; max-width: 74px;
+                            active: root.sort; desc: root.sort-desc;
+                            clicked => { root.sort-clicked("format"); }
                         }
                         Rectangle {
                             width: 106px; horizontal-stretch: 0; background: transparent;
@@ -490,9 +674,13 @@ export component GenesisPage inherits Rectangle {
                     viewport-width: self.width;
                     viewport-height: reslist.preferred-height;
                     // A new search must open at the top, or the second search
-                    // starts scrolled to wherever the first one was left.
+                    // starts scrolled to wherever the first one was left. Page
+                    // is watched separately: two full pages have the same row
+                    // count, so length alone would not notice the turn.
                     property <int> watch: root.rows.length;
+                    property <int> watch-page: root.page;
                     changed watch => { self.viewport-y = 0; }
+                    changed watch-page => { self.viewport-y = 0; }
                     init => { self.viewport-y = 0; }
 
                     reslist := VerticalLayout {
@@ -561,7 +749,7 @@ export component GenesisPage inherits Rectangle {
                                         HorizontalLayout {
                                             alignment: start;
                                             Rectangle {
-                                                height: 22px; border-radius: 6px;
+                                                height: 22px; border-radius: Surface.r(6px);
                                                 horizontal-stretch: 0;
                                                 background: BookTheme.tint-blue;
                                                 HorizontalLayout {
@@ -603,7 +791,7 @@ export component GenesisPage inherits Rectangle {
                                         }
                                         if !r.have: Rectangle {
                                             x: parent.width - self.width;
-                                            width: 88px; height: 32px; border-radius: 16px;
+                                            width: 88px; height: 32px; border-radius: Surface.r(16px);
                                             opacity: root.can-download && !root.busy ? 1.0 : 0.4;
                                             background: dlt.has-hover && root.can-download && !root.busy
                                                 ? BookTheme.tint-violet : transparent;
@@ -655,7 +843,7 @@ export component GenesisPage inherits Rectangle {
 
         // ── download strip ──────────────────────────────────────────────────
         if root.busy: Rectangle {
-            height: 66px; border-radius: 14px;
+            height: 66px; border-radius: Surface.r(14px);
             background: BookTheme.pill-bg;
             border-width: 1px; border-color: BookTheme.hairline;
             HorizontalLayout {
@@ -674,9 +862,9 @@ export component GenesisPage inherits Rectangle {
                         }
                     }
                     Rectangle {
-                        height: 6px; border-radius: 3px; background: BookTheme.track;
+                        height: 6px; border-radius: Surface.r(3px); background: BookTheme.track;
                         Rectangle {
-                            x: 0; y: 0; height: parent.height; border-radius: 3px;
+                            x: 0; y: 0; height: parent.height; border-radius: Surface.r(3px);
                             width: parent.width * root.busy-pct;
                             background: BookTheme.accent;
                             animate width { duration: 200ms; easing: ease-out; }
@@ -686,7 +874,7 @@ export component GenesisPage inherits Rectangle {
                 VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
                     Rectangle {
-                        height: 34px; min-width: 90px; border-radius: 17px;
+                        height: 34px; min-width: 90px; border-radius: Surface.r(17px);
                         background: cx.has-hover ? BookTheme.track : transparent;
                         border-width: 1.5px; border-color: BookTheme.hairline;
                         cx := TouchArea { mouse-cursor: pointer; clicked => { root.cancel(); } }
@@ -702,14 +890,14 @@ export component GenesisPage inherits Rectangle {
         }
 
         if !root.busy && root.done-name != "": Rectangle {
-            height: 62px; border-radius: 14px;
+            height: 62px; border-radius: Surface.r(14px);
             background: BookTheme.tint-green;
             HorizontalLayout {
                 padding: 14px; spacing: 14px;
                 VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
                     Rectangle {
-                        width: 32px; height: 32px; border-radius: 16px;
+                        width: 32px; height: 32px; border-radius: Surface.r(16px);
                         background: #22c55e.with-alpha(0.2);
                         AppIcon {
                             source: Icons.check; tint: #22c55e; width: 16px; height: 16px;
@@ -731,7 +919,7 @@ export component GenesisPage inherits Rectangle {
                 VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
                     Rectangle {
-                        height: 32px; min-width: 96px; border-radius: 16px;
+                        height: 32px; min-width: 96px; border-radius: Surface.r(16px);
                         background: opn.has-hover ? BookTheme.card : transparent;
                         border-width: 1.5px; border-color: #22c55e.with-alpha(0.4);
                         opn := TouchArea { mouse-cursor: pointer; clicked => { root.open-dest(); } }
@@ -740,6 +928,227 @@ export component GenesisPage inherits Rectangle {
                             font-size: 12px; font-weight: 600;
                             horizontal-alignment: center; vertical-alignment: center;
                             width: parent.width; height: parent.height;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── settings ────────────────────────────────────────────────────────────
+    // Declared after the layout, which is what puts it on top: Slint paints in
+    // declaration order.
+    if root.settings-open: FocusScope {
+        width: 100%; height: 100%;
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) { root.settings-open = false; return accept; }
+            return reject;
+        }
+        Rectangle {
+            background: #000000.with-alpha(0.55);
+            TouchArea { clicked => { root.settings-open = false; } }
+            Rectangle {
+                width: min(560px, parent.width - 48px);
+                height: min(560px, parent.height - 48px);
+                border-radius: BookTheme.radius;
+                background: BookTheme.card;
+                border-width: 1px; border-color: BookTheme.hairline;
+                drop-shadow-blur: Surface.cast(40px);
+                drop-shadow-color: Surface.cast-ink(#00000055);
+                drop-shadow-offset-y: Surface.cast-y(24px);
+                // Without this, a click inside would fall through to the scrim
+                // and close the dialog.
+                TouchArea {}
+                VerticalLayout {
+                    padding: 24px; spacing: 14px;
+
+                    HorizontalLayout {
+                        spacing: 10px; vertical-stretch: 0;
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Rectangle {
+                                width: 4px; height: 20px; border-radius: Surface.r(2px);
+                                background: BookTheme.accent;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 1;
+                            Text {
+                                text: "Genesis settings"; color: BookTheme.ink;
+                                font-size: 17px; font-weight: 800; vertical-alignment: center;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Rectangle {
+                                width: 30px; height: 30px; border-radius: Surface.r(15px);
+                                background: xs.has-hover ? BookTheme.track : transparent;
+                                xs := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.settings-open = false; }
+                                }
+                                AppIcon {
+                                    source: Icons.x; tint: BookTheme.ink-dim;
+                                    width: 14px; height: 14px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                        }
+                    }
+
+                    // ── download folder ──
+                    // Everything that lands here is registered as a library
+                    // root, so the books show up in My Library without a
+                    // separate import step. Changing it re-registers the new
+                    // one; the old folder keeps whatever is already in it.
+                    Text {
+                        text: "Download folder"; color: BookTheme.ink-dim;
+                        font-size: 11px; font-weight: 700; letter-spacing: 0.6px;
+                        vertical-stretch: 0;
+                    }
+                    HorizontalLayout {
+                        spacing: 8px; vertical-stretch: 0;
+                        Rectangle {
+                            horizontal-stretch: 1; height: 40px;
+                            border-radius: Surface.r(10px);
+                            background: BookTheme.pill-bg;
+                            border-width: 1px; border-color: BookTheme.hairline;
+                            clip: true;
+                            HorizontalLayout {
+                                padding-left: 12px; padding-right: 12px;
+                                Text {
+                                    text: root.dest == "" ? "not set" : root.dest;
+                                    color: root.dest == "" ? BookTheme.ink-dim : BookTheme.ink;
+                                    font-size: 12.5px; vertical-alignment: center;
+                                    overflow: elide;
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Rectangle {
+                                height: 40px; min-width: 96px;
+                                border-radius: Surface.r(10px);
+                                background: pd.has-hover
+                                    ? BookTheme.accent.darker(0.1) : BookTheme.accent;
+                                pd := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.pick-dest(); }
+                                }
+                                Text {
+                                    text: "Change…"; color: #ffffff;
+                                    font-size: 12.5px; font-weight: 700;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                    width: parent.width; height: parent.height;
+                                }
+                                animate background { duration: 120ms; }
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Watched by your library — anything downloaded here shows up in Books without importing it by hand.";
+                        color: BookTheme.ink-dim; font-size: 11px; wrap: word-wrap;
+                        vertical-stretch: 0;
+                    }
+
+                    // ── the mirror that is answering right now ──
+                    if root.active-url != "": Rectangle {
+                        height: 54px; border-radius: Surface.r(12px);
+                        background: BookTheme.tint-green;
+                        vertical-stretch: 0;
+                        HorizontalLayout {
+                            padding-left: 14px; padding-right: 14px; spacing: 10px;
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Rectangle {
+                                    width: 8px; height: 8px; border-radius: Surface.r(4px);
+                                    background: #22c55e;
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 1; spacing: 2px;
+                                Text {
+                                    text: "Working mirror"; color: BookTheme.ink-dim;
+                                    font-size: 10px; font-weight: 700; letter-spacing: 0.6px;
+                                }
+                                Text {
+                                    text: root.active-url; color: BookTheme.ink;
+                                    font-size: 12.5px; font-weight: 600; overflow: elide;
+                                }
+                            }
+                        }
+                    }
+
+                    // ── mirror list ──
+                    Text {
+                        text: "Mirrors — one per line, tried top to bottom";
+                        color: BookTheme.ink-dim; font-size: 11px; font-weight: 700;
+                        letter-spacing: 0.6px; vertical-stretch: 0;
+                    }
+                    Rectangle {
+                        vertical-stretch: 1; border-radius: Surface.r(10px);
+                        background: BookTheme.pill-bg;
+                        border-width: 1px;
+                        border-color: mi.has-focus ? BookTheme.accent : BookTheme.hairline;
+                        clip: true;
+                        mi := TextInput {
+                            x: 12px; y: 10px;
+                            width: parent.width - 24px; height: parent.height - 20px;
+                            text <=> root.mirrors;
+                            color: BookTheme.ink; font-size: 12.5px;
+                            font-family: "monospace";
+                            single-line: false; wrap: no-wrap;
+                            selection-background-color: BookTheme.accent.with-alpha(0.3);
+                        }
+                        if root.mirrors == "": Text {
+                            x: 13px; y: 11px;
+                            text: root.mirrors-default;
+                            color: BookTheme.ink-dim; font-size: 12.5px;
+                            font-family: "monospace";
+                            visible: !mi.has-focus;
+                        }
+                    }
+                    Text {
+                        text: "Leave empty for the built-in list. Each entry is health-checked with a real search before it is used — a mirror can serve a fine front page while its search endpoint is down.";
+                        color: BookTheme.ink-dim; font-size: 11px; wrap: word-wrap;
+                        vertical-stretch: 0;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 9px; alignment: end; vertical-stretch: 0;
+                        Rectangle {
+                            height: 38px; min-width: 96px; border-radius: Surface.r(19px);
+                            background: rs.has-hover ? BookTheme.track : transparent;
+                            border-width: 1.5px; border-color: BookTheme.hairline;
+                            rs := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.settings-reset(); }
+                            }
+                            Text {
+                                text: "Reset"; color: BookTheme.ink;
+                                font-size: 12.5px; font-weight: 600;
+                                horizontal-alignment: center; vertical-alignment: center;
+                                width: parent.width; height: parent.height;
+                            }
+                        }
+                        Rectangle {
+                            height: 38px; min-width: 120px; border-radius: Surface.r(19px);
+                            background: root.settings-saved
+                                ? #22c55e
+                                : (sv.has-hover ? BookTheme.accent.darker(0.1) : BookTheme.accent);
+                            sv := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.settings-save(); }
+                            }
+                            Text {
+                                text: root.settings-saved ? "Saved ✓" : "Save";
+                                color: #ffffff; font-size: 12.5px; font-weight: 700;
+                                horizontal-alignment: center; vertical-alignment: center;
+                                width: parent.width; height: parent.height;
+                            }
+                            animate background { duration: 120ms; }
                         }
                     }
                 }

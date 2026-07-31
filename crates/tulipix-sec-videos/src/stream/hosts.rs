@@ -116,6 +116,84 @@ pub fn stream_hosts_check(weak: slint::Weak<MainWindow>, text: String) {
     });
 }
 
+// ---- source ----
+
+/// Switch which catalogue the tab searches.
+///
+/// Every cached thing belongs to the old source and its ids mean nothing to the
+/// new one, so results, the open title, the file list and the preview cache are
+/// all dropped rather than left on screen under a heading that no longer
+/// describes them.
+pub fn stream_set_source(weak: slint::Weak<MainWindow>, name: String) {
+    let source = Source::parse(&name);
+    if source == active_source() {
+        return;
+    }
+    set_active_source(source);
+    with_state(|st| {
+        st.results.clear();
+        st.preview_cache.clear();
+        st.files.clear();
+        st.open_id.clear();
+        st.details = None;
+        st.query.clear();
+        st.page = 0;
+    });
+    next_epoch();
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        w.set_video_stream_source(source.key().into());
+        w.set_video_stream_results(slint::ModelRc::new(slint::VecModel::<StreamCard>::default()));
+        w.set_video_stream_detail_open(false);
+        w.set_video_stream_view("search".into());
+        w.set_video_stream_status(format!("Searching {} now.", source.label()).into());
+    });
+}
+
+/// Fill the Source tab with the configured 4KHDHub address.
+pub fn stream_source_load(weak: slint::Weak<MainWindow>) {
+    let base = stream::fourk::base();
+    // Shown as a placeholder rather than as text when it is the built-in one,
+    // so "unset" stays visibly different from "pinned to today's default".
+    let stored = if base == stream::fourk::DEFAULT_BASE { String::new() } else { base };
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        w.set_video_stream_fourk_base(stored.into());
+        w.set_video_stream_fourk_default(stream::fourk::DEFAULT_BASE.into());
+        w.set_video_stream_fourk_error("".into());
+        w.set_video_stream_fourk_saved(false);
+    });
+}
+
+pub fn stream_fourk_save(weak: slint::Weak<MainWindow>, url: String) {
+    match stream::fourk::set_base(&url) {
+        Ok(()) => {
+            let now = stream::fourk::base();
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_video_stream_fourk_error("".into());
+                w.set_video_stream_fourk_saved(true);
+                w.set_video_stream_status(format!("4KHDHub address set to {now}").into());
+            });
+        }
+        Err(msg) => {
+            let _ = weak.upgrade_in_event_loop(move |w| w.set_video_stream_fourk_error(msg.into()));
+        }
+    }
+}
+
+/// Clear the override back to the built-in address. Written immediately —
+/// there is nothing to review in an empty field.
+pub fn stream_fourk_reset(weak: slint::Weak<MainWindow>) {
+    let msg = match stream::fourk::set_base("") {
+        Ok(()) => "Back to the built-in 4KHDHub address.".to_string(),
+        Err(e) => format!("Could not save: {e}"),
+    };
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        w.set_video_stream_fourk_base("".into());
+        w.set_video_stream_fourk_error("".into());
+        w.set_video_stream_fourk_saved(true);
+        w.set_video_stream_status(msg.into());
+    });
+}
+
 /// "https://api5.aoneroom.com" → "api5.aoneroom.com", for a narrow row.
 fn short_host(host: &str) -> String {
     host.split_once("://").map(|(_, rest)| rest).unwrap_or(host).to_string()

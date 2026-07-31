@@ -1,4 +1,5 @@
 import { Theme, Accent } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { ScrollView } from "std-widgets.slint";
 
 export struct ApiKeyRow {
@@ -12,11 +13,11 @@ export struct ApiKeyRow {
     editing: bool,     // inline key editor open
 }
 
-component QuotaMeter inherits Rectangle {
+component QuotaMeter inherits Skin {
     in property <int> used;
     in property <int> limit;
     height: 4px;
-    border-radius: 2px;
+    border-radius: Surface.r(2px);
     background: Theme.outline;
     Rectangle {
         x: 0; y: 0;
@@ -33,14 +34,14 @@ component QuotaMeter inherits Rectangle {
     }
 }
 
-component Btn inherits Rectangle {
+component Btn inherits Skin {
     in property <string> label;
     in property <bool> primary: false;
     in property <bool> danger: false;
     callback clicked();
     min-width: 90px; height: 30px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 8px;
+    border-radius: Surface.r(8px);
     background: touch.has-hover
         ? (danger ? #b91c1c : (primary ? #6d28d9 : Theme.panel-2))
         : (danger ? #7f1d1d : (primary ? Theme.brand : Theme.panel));
@@ -57,7 +58,7 @@ component Btn inherits Rectangle {
     }
 }
 
-component KeyRow inherits Rectangle {
+component KeyRow inherits Skin {
     in property <ApiKeyRow> data;
     callback toggle-source();
     callback edit-key();        // open the inline editor
@@ -67,7 +68,7 @@ component KeyRow inherits Rectangle {
     callback test-connection();
     height: data.editing ? 118px : 72px;
     border-radius: Theme.radius-md;
-    background: Theme.panel-2;
+    background: Surface.body(Theme.panel-2);
     border-color: data.editing ? Accent.color.with-alpha(0.55) : Theme.outline;
     border-width: 1px;
     animate height { duration: 140ms; easing: ease-out; }
@@ -128,8 +129,8 @@ component KeyRow inherits Rectangle {
         if data.editing: HorizontalLayout {
             spacing: 8px;
             Rectangle {
-                height: 34px; border-radius: 9px; horizontal-stretch: 1;
-                background: Theme.panel;
+                height: 34px; border-radius: Surface.r(9px); horizontal-stretch: 1;
+                background: Surface.body(Theme.panel);
                 border-color: key-ti.has-focus ? Accent.color : Theme.outline; border-width: 1px;
                 key-ti := TextInput {
                     x: 12px; width: parent.width - 24px; height: parent.height;

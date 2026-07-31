@@ -6,8 +6,15 @@ use std::collections::HashMap;
 
 /// Wrong PINs from one address before that address is done for the session.
 pub const MAX_ATTEMPTS: u32 = 5;
-/// How long the QR's pairing key stays good. Long enough to walk to the phone.
-const PAIRING_TTL: u64 = 60;
+/// How long the QR's pairing key stays good.
+///
+/// Ten minutes, not one. A minute is plenty to walk to the phone, but the first
+/// connection from any device now goes through installing the root certificate
+/// first — a trip through the phone's Settings that takes several. At sixty
+/// seconds the key was always dead by the time the gateway crossed over, so the
+/// one flow that most needed pairing to be automatic was the one that always
+/// landed on the PIN form.
+const PAIRING_TTL: u64 = 600;
 /// "48 hours, then re-token."
 pub const TOKEN_TTL: u64 = 48 * 3600;
 /// Phones paired at once. The eleventh is refused rather than quietly evicting
@@ -17,6 +24,10 @@ pub const MAX_DEVICES: usize = 10;
 /// A device name has to fit inside a 56px circle's caption, so it is short by
 /// construction rather than elided at draw time.
 pub const NAME_MAX: usize = 10;
+/// Unspent pairing keys held at once. Four redraws' worth, which at one every
+/// five minutes is more than the ten a key lives — the cap exists so a desktop
+/// left sharing overnight cannot grow the list without bound.
+const MAX_PAIRING_KEYS: usize = 4;
 /// How long a device keeps counting as busy after the last byte moved. Long
 /// enough to bridge the gaps between chunks on a slow link, short enough that the
 /// ring goes out promptly when the transfer really has stopped.
@@ -95,7 +106,15 @@ impl Token {
 pub struct Auth {
     pin: String,
     attempts: HashMap<String, u32>,
-    pairing: Option<(String, u64)>, // (key, issued)
+    /// Unspent pairing keys, oldest first: `(key, issued)`.
+    ///
+    /// A list, not one slot. The QR is redrawn every few minutes so the code on
+    /// screen always has life left, and with a single slot each redraw silently
+    /// destroyed the key a phone was still holding — walk away to install a
+    /// certificate, come back, and the scan that started it all had been
+    /// invalidated by the desktop redrawing behind you. Every key still inside
+    /// its own ten minutes stays valid; each is still single-use.
+    pairing: Vec<(String, u64)>,
     tokens: HashMap<String, Token>,
 }
 
@@ -104,7 +123,7 @@ impl Auth {
         Self {
             pin: random_pin(),
             attempts: HashMap::new(),
-            pairing: None,
+            pairing: Vec::new(),
             tokens: HashMap::new(),
         }
     }
@@ -147,36 +166,40 @@ impl Auth {
         }
     }
 
-    /// A fresh key for the QR. Replaces any previous one: only the code
-    /// currently on screen should work.
+    /// A fresh key for the QR.
+    ///
+    /// Added alongside whatever is still unspent rather than replacing it — see
+    /// [`Auth::pairing`]. Expired entries are dropped here, so the list is
+    /// pruned by the same clock that fills it, and it is capped so a desktop
+    /// left running overnight cannot accumulate one per redraw.
     pub fn new_pairing_key(&mut self, now: u64) -> String {
         let key = random_hex(16);
-        self.pairing = Some((key.clone(), now));
+        self.pairing.retain(|(_, issued)| now.saturating_sub(*issued) < PAIRING_TTL);
+        if self.pairing.len() >= MAX_PAIRING_KEYS {
+            self.pairing.remove(0);
+        }
+        self.pairing.push((key.clone(), now));
         key
     }
 
     /// Is the code currently on screen still worth showing?
     ///
     /// False once it has been spent or once it is closer to expiry than half its
-    /// life. Both cases used to be invisible: the QR was drawn once per address
+    /// life — five minutes, which is what the code on screen is guaranteed to
+    /// have left. Both cases used to be invisible: the QR was drawn once per address
     /// and never again, so the first phone to scan it consumed the key and every
     /// later scan — including the same phone re-pairing after being forgotten —
     /// landed on the PIN form with the desktop still showing a dead code.
     pub fn pairing_live(&self, now: u64) -> bool {
-        match &self.pairing {
-            Some((_, issued)) => now.saturating_sub(*issued) < PAIRING_TTL / 2,
-            None => false,
-        }
+        self.pairing.iter().any(|(_, issued)| now.saturating_sub(*issued) < PAIRING_TTL / 2)
     }
 
     pub fn try_pairing_key(&mut self, given: &str, now: u64) -> Option<Token> {
-        let (key, issued) = self.pairing.as_ref()?;
-        let fresh = now.saturating_sub(*issued) < PAIRING_TTL;
-        let matches = constant_time_eq(given.as_bytes(), key.as_bytes());
-        if !(fresh && matches) {
-            return None;
-        }
-        self.pairing = None; // single use
+        let at = self.pairing.iter().position(|(key, issued)| {
+            now.saturating_sub(*issued) < PAIRING_TTL
+                && constant_time_eq(given.as_bytes(), key.as_bytes())
+        })?;
+        self.pairing.remove(at); // single use
         Some(Token::issue(now))
     }
 
@@ -402,8 +425,9 @@ mod tests {
         let key = a.new_pairing_key(at(0));
         assert!(a.pairing_live(at(0)));
         // Past half the TTL it is stale: the code on screen must always have
-        // enough life left to walk to the phone and scan it.
-        assert!(!a.pairing_live(at(31)));
+        // enough life left to scan it and finish a certificate install.
+        assert!(a.pairing_live(at(299)));
+        assert!(!a.pairing_live(at(301)));
 
         // Spending it is the case that actually bit — pair, forget, scan again.
         let mut b = Auth::new(at(0));
@@ -414,14 +438,47 @@ mod tests {
     }
 
     #[test]
-    fn pairing_key_expires_after_sixty_seconds() {
+    fn redrawing_the_qr_does_not_invalidate_a_key_someone_is_still_holding() {
+        let mut a = Auth::new(at(0));
+        // Scanned, then walked off to install a certificate.
+        let scanned = a.new_pairing_key(at(0));
+        // The desktop redraws behind them, twice, because the code on screen has
+        // to keep enough life left to be worth scanning.
+        let _ = a.new_pairing_key(at(300));
+        let _ = a.new_pairing_key(at(360));
+        // They come back. The scan that started this still works.
+        assert!(
+            a.try_pairing_key(&scanned, at(420)).is_some(),
+            "a redraw threw away the key that had already been scanned"
+        );
+        // Still single-use, redraws or not.
+        assert!(a.try_pairing_key(&scanned, at(430)).is_none());
+    }
+
+    #[test]
+    fn unspent_keys_do_not_pile_up_forever() {
+        let mut a = Auth::new(at(0));
+        for n in 0..12 {
+            let _ = a.new_pairing_key(at(n * 10));
+        }
+        assert!(a.pairing.len() <= MAX_PAIRING_KEYS, "the key list grew without bound");
+        // And an expired one is gone rather than merely capped away.
+        let old = a.new_pairing_key(at(1_000));
+        let _ = a.new_pairing_key(at(1_000 + PAIRING_TTL + 1));
+        assert!(a.try_pairing_key(&old, at(1_000 + PAIRING_TTL + 2)).is_none());
+    }
+
+    #[test]
+    fn pairing_key_expires_after_ten_minutes() {
         let mut a = Auth::new(at(0));
         let key = a.new_pairing_key(at(0));
-        assert!(a.try_pairing_key(&key, at(59)).is_some());
+        // Long enough to cover a first-run certificate install, which is the
+        // whole reason it is not sixty seconds.
+        assert!(a.try_pairing_key(&key, at(599)).is_some());
 
         let mut b = Auth::new(at(0));
         let key = b.new_pairing_key(at(0));
-        assert!(b.try_pairing_key(&key, at(61)).is_none(), "expired key accepted");
+        assert!(b.try_pairing_key(&key, at(601)).is_none(), "expired key accepted");
     }
 
     #[test]

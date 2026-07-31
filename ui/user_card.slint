@@ -1,4 +1,5 @@
 import { Theme } from "tokens.slint";
+import { Surface, Rim, Skin } from "surface.slint";
 import { ModePill, Mode } from "mode_pill.slint";
 import { PanelFrost, ModalFrost } from "frost.slint";
 import { Ripple } from "ripple.slint";
@@ -13,13 +14,13 @@ export struct UserState {
     avatar-image: image,
 }
 
-component MenuItem inherits Rectangle {
+component MenuItem inherits Skin {
     in property <string> label;
     in property <bool> prominent: false;
     in property <string> shortcut: "";
     callback clicked();
     height: 36px;
-    border-radius: 10px;
+    border-radius: Surface.r(10px);
     touch := TouchArea { clicked => { root.clicked(); } }
     background: touch.has-hover
         ? (prominent ? Theme.brand : Theme.panel-2)
@@ -70,7 +71,7 @@ export component UserCard inherits Rectangle {
             // Identity region — emoji avatar + name. Click opens the user dialog.
             Rectangle {
                 horizontal-stretch: 1;
-                border-radius: 12px;
+                border-radius: Surface.r(12px);
                 background: ident.has-hover ? Theme.panel-2 : transparent;
                 animate background { duration: 120ms; easing: ease-out; }
                 ident := TouchArea {
@@ -88,7 +89,7 @@ export component UserCard inherits Rectangle {
                         height: root.collapsed ? 34px : 42px;
                         horizontal-stretch: 0; vertical-stretch: 0;
                         y: (parent.height - self.height) / 2;
-                        border-radius: 12px;
+                        border-radius: Surface.r(12px);
                         background: Theme.glass-strong;
                         border-width: 1px; border-color: Theme.glass-border;
                         clip: true;

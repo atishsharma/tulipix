@@ -12,6 +12,11 @@ use tulipix_common::*;
 pub mod stream;
 pub use stream::*;
 
+// Live TV (Videos → Live TV): iptv-org playlists, a channel grid, and mpv.
+// Its own file for the same reason as Stream — it shares nothing with the
+// local-library queries below.
+pub mod livetv;
+
 // Map video tile index → absolute path so a click can hand the file to mpv.
 // Rebuilt by kick_video_refresh to match whatever tab is on screen.
 pub static VIDEO_PATHS: std::sync::OnceLock<std::sync::Mutex<Vec<PathBuf>>> = std::sync::OnceLock::new();

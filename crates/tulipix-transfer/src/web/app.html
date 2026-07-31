@@ -6,7 +6,16 @@
 <meta name="color-scheme" content="light dark">
 <title>Tulipix Transfer</title>
 <link rel="icon" href="/logo.png" type="image/png">
-<link rel="apple-touch-icon" href="/logo.png">
+<link rel="apple-touch-icon" href="/icon-192.png">
+<!-- Installable, on every platform that will have it. Android and desktop
+     Chrome read the manifest; iOS ignores most of it and reads the two apple-
+     prefixed tags below instead, which is why both sets are here. -->
+<link rel="manifest" href="/manifest.webmanifest">
+<meta name="theme-color" content="#0d0f17">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Tulipix">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="stylesheet" href="/app.css">
 </head>
 <body>
@@ -31,6 +40,23 @@
 
   <!-- 1 — PIN. Shown until a cookie exists; every 401 sends us back here. -->
   <section id="viewPin">
+    <!-- Scanning is the short way in, so it sits above the digits rather than
+         being mentioned under them. The camera needs a secure context, so this
+         whole block swaps itself for a line of advice when it cannot work. -->
+    <div class="scan" id="scan">
+      <button class="scan-btn" type="button" id="scanBtn">
+        <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3.5 8.5v-3a2 2 0 0 1 2-2h3M15.5 3.5h3a2 2 0 0 1 2 2v3M20.5 15.5v3a2 2 0 0 1-2 2h-3M8.5 20.5h-3a2 2 0 0 1-2-2v-3M3.5 12h17"/></svg>
+        <span>Scan the QR code</span>
+      </button>
+      <div class="scan-stage" id="scanStage" hidden>
+        <video id="scanVideo" playsinline muted></video>
+        <div class="scan-frame"></div>
+        <button class="scan-stop" type="button" id="scanStop">Stop</button>
+      </div>
+      <p class="scan-note" id="scanNote" hidden></p>
+      <div class="or"><span>or enter the PIN</span></div>
+    </div>
+
     <p class="pin-prompt">Enter the six digits shown on the desktop.</p>
     <div class="pin-boxes" id="pinBoxes"></div>
     <p class="pin-note" id="pinNote">Scanning the QR instead skips this step.</p>
