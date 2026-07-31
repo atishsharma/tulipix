@@ -1,15 +1,18 @@
-# Fast feedback on every push: the test suite, scoped lints, and a compile check
-# of the per-OS code that a Linux runner cannot see.
+# The test suite, scoped lints, and a compile check of the per-OS code that a
+# Linux runner cannot see.
 #
 # Deliberately not a release build. release.yml already does the heavy
 # embedded-mpv + skia builds and takes over an hour; this is meant to finish in
 # minutes, so it uses the lean femtovg feature set and skips packaging.
+#
+# Manual only. It used to run on every push, which meant a three-push session
+# spent 18 jobs on the same tree and left the release build queueing behind its
+# own repo. Start it with `gh workflow run ci.yml --ref <branch>` when a run is
+# actually wanted.
 
 name: ci
 on:
-  push:
-    branches: ["**"]
-  pull_request:
+  workflow_dispatch:
 
 env:
   CARGO_TERM_COLOR: always
