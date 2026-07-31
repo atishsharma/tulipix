@@ -31,18 +31,26 @@ jobs:
         run: |
           sudo rm -rf /usr/share/dotnet /usr/local/lib/android /opt/ghc \
             /opt/hostedtoolcache/CodeQL /usr/local/share/boost \
-            /usr/local/share/powershell /usr/share/swift 2>/dev/null || true
+            /usr/local/share/powershell /usr/share/swift \
+            /usr/local/.ghcup /usr/share/miniconda /opt/az \
+            /usr/local/lib/node_modules 2>/dev/null || true
           sudo docker image prune --all --force 2>/dev/null || true
           sudo swapoff -a || true
           sudo rm -f /mnt/swapfile || true
-          sudo fallocate -l 24G /mnt/swapfile || sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=24576
+          sudo fallocate -l 30G /mnt/swapfile || sudo dd if=/dev/zero of=/mnt/swapfile bs=1M count=30720
           sudo chmod 600 /mnt/swapfile
           sudo mkswap /mnt/swapfile
           sudo swapon /mnt/swapfile
           # Swapping is the point here — let the kernel use it before it starts
           # killing processes, and keep some file cache rather than dropping the
           # pages rustc is about to re-read.
-          sudo sysctl -w vm.swappiness=100 vm.vfs_cache_pressure=50 || true
+          #
+          # overcommit_memory=1: heuristic mode refuses a single allocation
+          # bigger than roughly RAM + swap/2, and rustc's LTO step asks for
+          # exactly that shape of block — it dies with "memory allocation of N
+          # bytes failed" while gigabytes of swap sit unused. Mode 1 always says
+          # yes and lets the pages land in the swapfile above.
+          sudo sysctl -w vm.swappiness=100 vm.vfs_cache_pressure=50 vm.overcommit_memory=1 || true
           echo "=== mem/disk after ==="; free -h; df -h / /mnt
 
       - name: System deps (libmpv link + skia/gl build deps + mpv to bundle)
@@ -433,93 +441,130 @@ jobs:
           body: |
             ## Highlights
 
-            ### Books — rebuilt
-            The Books section was rewritten end to end: ten formats, two reader
-            engines, and a library that understands series and collections.
+            Two whole new sections, a book search inside Books, live TV in
+            Videos, and a Transfer that now speaks HTTPS and installs on a
+            phone like an app.
 
-            - **Ten formats** — EPUB (including fixed-layout manga and magazines),
-              PDF, DjVu, CBZ, CBR, CB7, CBT, MOBI, AZW3 and FB2/FB2.zip.
-            - **Each format reads the way it should** — a reflowing paginator for
-              prose (two-page spread, single page, or a continuous column) and a
-              fixed-page reader for anything rasterised.
-            - **Double-page spreads show whole**, never split down the fold, with
-              the page pairing after them shifting to match.
-            - **Webtoon mode** — long-strip comics fit the width and scroll
-              vertically instead of rendering as an unreadable sliver.
-            - **Right-to-left manga order**, set from the archive's own metadata
-              rather than a manual toggle.
-            - **Page thumbnails** for navigating magazines and comics, which have
-              no chapter structure to aim at.
-            - **Sharpening zoom** — pages re-rasterise at higher resolution as you
-              zoom in, keeping your position instead of snapping back to fitted.
-            - **Margin trim** reclaims the white borders scans waste.
-            - **Read-aloud** via Kokoro neural TTS or espeak, with sentence
-              highlighting; page-anchored notes export as Markdown.
-            - **Next in series**, ordered naturally so volume 2 precedes volume 10.
-            - **ComicInfo.xml** read for series, volume and reading direction.
-            - **Calibre import** — point "Add books" at a Calibre library and its
-              catalogue comes across.
-            - **Smart collections** (saved filters that stay live), duplicate
-              detection, full-text search inside book contents, and reading stats
-              with streaks and a heatmap.
-            - **Baked 3D covers** — artwork warped onto a hardcover mockup.
+            ### Transfer — new section
+            The desktop becomes a small web server on your own network. A phone
+            opens a URL, enters a PIN or scans the QR, and moves files both
+            ways. No internet, no account, nothing installed on the phone.
 
-            ### Videos — the Stream tab
-            A remote catalogue browsed from inside the Videos section, using the
-            same players, queues and databases as everything local.
+            - **Send and receive** — a share tray the phone downloads from and
+              an inbox it uploads into, with ranged downloads so a 4 GB file
+              survives the screen locking.
+            - **HTTPS with a certificate the app signs itself**, reachable at
+              `tulipix.local` over mDNS. The point is not secrecy on a LAN
+              behind a PIN — it is that browsers hand out the camera only on a
+              secure origin, which is what the in-page QR scanner needs. A
+              trust page walks through installing the app's root once.
+            - **Installable phone page** — a real PWA (manifest, service
+              worker, icons), tick-to-select lists with select-all, one action
+              button per list, frosted segmented tabs, and its own theme
+              toggle that overrides the phone's.
+            - **Live QR** — the pairing key is single-use and expires in 60
+              seconds, so the code on screen is re-minted as it ages instead of
+              going dead a minute after the page loads.
+            - **Paired devices** live in Connection as round device-type
+              buttons, five to a row, each opening what is known about it.
+            - **Local-only by construction** — only private address ranges are
+              offered and the listener binds the one address on screen, never
+              `0.0.0.0`. Filename safety is its own module with its own tests.
+            - **Ledger** with sorting on all six columns in SQL over the whole
+              history, reveal-in-file-manager for sent rows as well as
+              received, and a clear-history dialog that spells out that it
+              erases the log, not the files.
+            - **Firewall help** for every platform, with the real port and link
+              name substituted in — the desktop cannot detect a default-deny
+              rule, because the bind succeeds and the packets simply die.
 
-            - **Search with suggestions** and paged results, over a user-editable
-              host list with a health check that tests each server in place and
-              can reorder them fastest-first.
-            - **A landing screen** carrying Continue Watching, trending titles and
-              trending vertical dramas — cached in the app database and refreshed
-              twice a day rather than on every visit.
-            - **Detail pane** per title: seasons, episodes (named where the
-              catalogue names them), audio cuts, resolutions and subtitle tracks,
-              each as its own column.
-            - **Sticky quality** — 720p until you play something else, and every
-              later episode arms the rung you last chose.
-            - **Resume and autoplay** — where you stopped is written back per
-              episode, the next one starts on its own, and the one after that
-              resolves in the background so choosing it is instant.
-            - **Downloads page** — a queue that survives a restart: retry, cancel,
-              reveal in the file manager, delete, and a live bar per job. The
-              subtitle you picked is fetched with the video and plays back with it.
-            - **Bookmarks** with new-episode badges, and a **History** page with
-              per-row resume.
-            - **Cast** to a DLNA renderer, watch the trailer, copy the direct link.
+            ### Finances — new section
+            Household money, offline. A subscription, a bill and an expense are
+            one thing at three points in its life, which is what makes this one
+            section rather than nine tools sharing a sidebar entry:
+            recurrence → obligation → transaction.
 
-            ### Home & lock screen
-            - Redesigned home with a fixed right rail and circular source/action tabs.
-            - **PIN-gated ambient lock screen** with slideshow and now-playing.
-            - Header lyric pill no longer depends on the spectrum toggle.
+            - **Nine tabs** — accounts, transactions, obligations, recurrences,
+              budgets, loans, insights, statements and settings — with a
+              sidebar badge for what is due.
+            - **Statement import** from CSV and OFX, recurring-charge detection
+              over your own history, loan amortisation, and receipt OCR.
+            - **Exports** as PDF and spreadsheet.
+            - **Live FX** for accounts held in another currency.
+            - **The numbers are honest by construction** — all money is integer
+              minor units, transfers are not spending, lending is not spending,
+              an estimate is never posted as a fact, and the SQL and Rust forms
+              of the balance rule are pinned together by a test.
+            - **Net worth is deliberately not computed**: liquid and debt are
+              both real and shown separately, and their difference would need a
+              market valuation the app would have to ask you to guess.
+            - No bank sync, no OAuth, no account — same as everything else here.
 
-            ### Music
-            - **Audiobook overhaul** with chapter-level resume.
-            - WirePlumber-safe mpv stop — fixes audio wedging until reboot.
-            - Music prewarm and parallel home fill for faster section loads.
-            - Downloader search improvements.
+            ### Books — Genesis search and download
+            A sub-page of Books that searches Library Genesis mirrors,
+            downloads a chosen record, and rescans so the book appears in My
+            Library without a restart.
 
-            ### Performance & correctness
-            - **Library views do far less work** — filter, sort, search and paging
-              no longer re-run a whole page of queries, and results page in SQL
-              instead of being fetched whole.
-            - **Smoother page turns** — page images decode off the UI thread.
-            - **Bounded caches** — the decoded-cover cache no longer grows without
-              limit while browsing a large library.
-            - **Faster startup** — section databases open once instead of racing
-              several initialisations, and a full-text scan that read every book's
-              contents on every launch was removed.
-            - Fixed a crash opening EPUBs that place a multi-byte character at a
-              text-scan boundary.
+            - **Mirror selection health-checks by running a real search** —
+              mirrors routinely serve a healthy front page while their search
+              endpoint fails, so a homepage ping would route you to a broken
+              one.
+            - **Downloads land in `<Downloads>/Genesis`**, registered as a
+              library root rather than mixed into a shelf you arranged.
+            - Resumable: cancelling leaves the partial file for the next try.
+            - Built on a port of Tomesole (MIT); its 109 tests came with it and
+              still pass.
+
+            ### Videos — Live TV and a new host
+            - **Live TV** — free-to-air channels from iptv-org, by country,
+              region, language or category, parsed from plain playlists with a
+              day-long cache. No API, no key, nothing to sign. Your selected
+              playlists persist with the rest of your settings.
+            - **4KHDHub** joins the Stream host list.
+            - Trending no longer empties the vertical-drama slider.
+            - Season grouping is rebuilt for shows opened outside of search.
+
+            ### Cloud — connect without editing config files
+            - **Provider catalogue** read from `rclone config providers`, so the
+              Connect dialog asks for "Region" with a list of regions instead of
+              a `key=value` textarea — and stays correct across rclone upgrades,
+              because the schema comes from the binary that will run.
+            - **Guided connect flow**, including OAuth-style authorise for the
+              backends that use it.
+
+            ### Desktop notifications
+            The notification sink has always been a stub, so no section has ever
+            raised a banner. It now goes through what each OS already ships —
+            `notify-send`, `osascript`, a WinRT toast — and falls back to the
+            stub on a headless machine. Available to every section, not only
+            Finances.
+
+            ### Interface
+            - A shared surface component behind cards and panels, with theme and
+              page restyling across the app.
+            - Fixed-height Transfer cards, so nothing moves when a file is
+              chosen or a phone pairs.
+            - Home's Quick Actions became Quick Launch, with a Transfer tile.
+
+            ### Fixes
+            - **ReplayGain scanning was broken outright** — it queried a column
+              that does not hold the path.
+            - A NaN in a music sort could abort the process; sorting is total now.
+            - Paths and URLs handed to OS shells are escaped.
+            - The Advanced settings panel reports only what it actually measures.
+            - A bundled binary that cannot start is no longer handed to callers
+              as if it could.
+            - Photos' dedupe list updates in place instead of swapping the model.
+            - A sentence's start is reported where its text actually starts.
 
             ### Under the hood
-            - Books and Videos wiring extracted into their own crates; `main()`
-              split into per-section wiring functions.
-            - Stream state lives in `videos.db`: watch progress, bookmarks, the
-              download ledger, resolved streams and the cached landing rows.
-            - Dead dependencies pruned.
-            - Linux release builds link with thin LTO — the fat-LTO link of the
-              whole program was killing the CI runner outright.
+            - The Linux tray is served by ksni over D-Bus; the whole GTK stack
+              is gone from the Linux build.
+            - Two HTTP clients are shared instead of 62 untimed ones being built.
+            - Ten dependencies dropped; Transfer, Finances and Genesis each
+              ship as a core crate plus a Slint glue crate, and Genesis and
+              Finances are behind their own cargo features.
+            - CI runs the test suite, scoped lints and the per-OS code, and
+              smoke-tests the Linux tarball before it can be published.
 
             ---
