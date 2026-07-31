@@ -73,6 +73,17 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          # Bumped when the cached layout changes: the caches saved before
+          # cache-directories existed hold ort-sys's build-script output but
+          # not the download it points at, so restoring one reproduces the
+          # failure this is meant to fix.
+          key: ort-dl-v2
+          # ort-sys downloads ONNX Runtime into a per-user cache directory and
+          # emits a rustc-link-search pointing at it. Cache `target/` without
+          # that directory and a restored build-script output sends rustc to a
+          # path this runner has never had — "could not find native static
+          # library `onnxruntime`". They have to travel together.
+          cache-directories: ~/.cache/ort.pyke.io
 
       - name: Resolve version
         run: |
@@ -255,6 +266,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          # Bumped when the cached layout changes: the caches saved before
+          # cache-directories existed hold ort-sys's build-script output but
+          # not the download it points at, so restoring one reproduces the
+          # failure this is meant to fix.
+          key: ort-dl-v2
+          # See the linux job: the ort download has to be cached alongside
+          # target/, or a restored build-script output points rustc at a
+          # directory this runner never had.
+          cache-directories: ~\AppData\Local\ort.pyke.io
       # lib.exe (import-lib generator) on PATH
       - uses: ilammy/msvc-dev-cmd@v1
 
@@ -388,6 +408,15 @@ jobs:
       - uses: Swatinem/rust-cache@v2
         with:
           cache-on-failure: true
+          # Bumped when the cached layout changes: the caches saved before
+          # cache-directories existed hold ort-sys's build-script output but
+          # not the download it points at, so restoring one reproduces the
+          # failure this is meant to fix.
+          key: ort-dl-v2
+          # See the linux job: the ort download has to be cached alongside
+          # target/, or a restored build-script output points rustc at a
+          # directory this runner never had.
+          cache-directories: ~/Library/Caches/ort.pyke.io
 
       - name: System deps (libmpv to link/bundle + bundler)
         run: brew install mpv dylibbundler ninja
