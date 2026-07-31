@@ -113,11 +113,14 @@ jobs:
           #  1. mold -> lld: mold holds the whole link in RAM. (RUSTFLAGS
           #     overrides the committed .cargo/config mold flag.)
           #  2. lld --threads=1: a threaded link keeps per-thread arenas alive.
-          #  3. thin LTO + 16 codegen units, Linux-only and via env so the
+          #  3. thin LTO + 256 codegen units, Linux-only and via env so the
           #     committed profile stays fat for local release builds. Thin LTO
           #     optimizes module-at-a-time instead of loading the program at
           #     once — this is the actual peak, and the one lever big enough to
-          #     matter. Costs a little binary size and inlining.
+          #     matter. Costs a little binary size and inlining. 256 rather
+          #     than 16 because the same 16 killed the Windows job inside a
+          #     single tulipix-ui codegen unit this cycle; the peak is one LLVM
+          #     module, so smaller modules are the lever.
           #  4. -j1: one crate at a time on the way there.
           # opt-level stays at the profile's "s": smaller code is less for the
           # LTO step and the linker to chew on, and it is what macOS survives on.
@@ -125,7 +128,7 @@ jobs:
           CARGO_BUILD_JOBS: "1"
           CARGO_PROFILE_RELEASE_DEBUG: "false"
           CARGO_PROFILE_RELEASE_LTO: "thin"
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
         run: |
           # A silent 143 leaves nothing to work from, so log memory while it
           # runs: the last sample before the kill says whether it was RAM, swap
@@ -295,6 +298,27 @@ jobs:
           lib.exe /def:mpv-dev\mpv.def /machine:x64 /out:mpv-dev\mpv.lib
           echo "TULIPIX_MPV_LIB_DIR=$PWD\mpv-dev" >> $env:GITHUB_ENV
 
+      # Windows has no swapon: the ceiling on a single allocation is the commit
+      # limit, which is RAM plus the pagefile, and the runner's pagefile is
+      # system-managed and small. That is the whole reason v0.7.0's first
+      # attempt died with "rustc-LLVM ERROR: out of memory / Allocation failed"
+      # on tulipix-ui. Put a fixed 32 GB pagefile on D: — the runner's large
+      # scratch disk, and the drive the build itself runs from.
+      - name: Pagefile headroom
+        shell: pwsh
+        run: |
+          $sys = Get-CimInstance Win32_ComputerSystem
+          if ($sys.AutomaticManagedPagefile) {
+            Set-CimInstance -InputObject $sys -Property @{AutomaticManagedPagefile = $false}
+          }
+          Get-CimInstance Win32_PageFileSetting | Remove-CimInstance -ErrorAction SilentlyContinue
+          New-CimInstance -ClassName Win32_PageFileSetting -Property @{
+            Name = 'D:\pagefile.sys'; InitialSize = 32768; MaximumSize = 32768
+          } -ErrorAction Stop | Out-Null
+          Get-CimInstance Win32_PageFileSetting | Format-List Name, InitialSize, MaximumSize
+          $os = Get-CimInstance Win32_OperatingSystem
+          "commit limit: {0:N0} MB" -f ($os.TotalVirtualMemorySize / 1KB)
+
       - name: "Build (full: embedded-mpv + skia)"
         env:
           # Same memory story as the linux job. Fat LTO makes every crate emit
@@ -304,10 +328,16 @@ jobs:
           # with several codegen units keeps each rustc well under the limit
           # and costs little runtime speed. Set here, not in Cargo.toml, so a
           # local release build still gets the smaller fat-LTO binary.
+          #
+          # 256 codegen units, not 16: at 16 the OOM was inside the codegen of
+          # ONE unit of tulipix-ui, whose generated Slint code grew by several
+          # thousand lines this cycle. The peak is one LLVM module, so the lever
+          # is how big a module gets — sixteen times smaller each. Thin LTO
+          # still inlines across them afterwards, so little is given up.
           CARGO_BUILD_JOBS: "1"
           CARGO_PROFILE_RELEASE_DEBUG: "false"
           CARGO_PROFILE_RELEASE_LTO: "thin"
-          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "16"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
         run: cargo build --release --locked -p tulipix-app --features full,ai-onnx
 
       - name: Assemble dist
@@ -372,6 +402,14 @@ jobs:
       - name: "Build (full: embedded-mpv + skia)"
         env:
           CARGO_BUILD_JOBS: "2"   # cap peak RAM — macos-14 (M1) has ~7 GB
+          # The committed profile is fat LTO with ONE codegen unit, so tulipix-ui
+          # compiles as a single LLVM module — the exact shape that just OOM'd
+          # the 16 GB Windows runner. This one has 7 GB and only survived it
+          # because macOS grows swap on demand. Give it the same thin/256 split
+          # the other two get rather than wait for the cycle where it doesn't.
+          CARGO_PROFILE_RELEASE_DEBUG: "false"
+          CARGO_PROFILE_RELEASE_LTO: "thin"
+          CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
         run: |
           export TULIPIX_MPV_LIB_DIR="$(brew --prefix mpv)/lib"
           cargo build --release --locked -p tulipix-app --features full,ai-onnx
