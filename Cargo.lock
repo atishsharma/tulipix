@@ -8221,6 +8221,7 @@ version = "0.8.0"
 dependencies = [
  "arboard",
  "reqwest",
+ "serde_json",
  "sha2 0.10.9",
  "slint",
  "sqlx",

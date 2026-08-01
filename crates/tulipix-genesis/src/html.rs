@@ -137,12 +137,29 @@ fn next_tag(html: &str, from: usize) -> Option<Tag<'_>> {
 
 /// Advance past a raw-text element's content, returning the offset of its
 /// closing tag.
+///
+/// Scans bytes in place rather than lowercasing the remainder of the document
+/// first: this is called once per `<script>` and `<style>` on the page, and
+/// allocating a copy of everything after each one makes parsing a long results
+/// page quadratic in its length.
 fn skip_raw_text(html: &str, name: &str, content_start: usize) -> usize {
-    let needle = format!("</{name}");
-    match html[content_start..].to_ascii_lowercase().find(&needle) {
-        Some(off) => content_start + off,
-        None => html.len(),
+    let haystack = html.as_bytes();
+    let needle = name.as_bytes();
+    // The shortest thing that could match is `</name`, so anything shorter than
+    // that has no closing tag left in it to find.
+    let Some(last) = haystack.len().checked_sub(needle.len() + 2) else {
+        return html.len();
+    };
+
+    for i in content_start..=last {
+        if haystack[i] == b'<'
+            && haystack[i + 1] == b'/'
+            && haystack[i + 2..i + 2 + needle.len()].eq_ignore_ascii_case(needle)
+        {
+            return i;
+        }
     }
+    html.len()
 }
 
 /// Given the offset just past an element's opening tag, return the byte range
@@ -351,7 +368,13 @@ fn collapse_whitespace(s: &str) -> String {
     let mut last_was_space = false;
     for c in s.chars() {
         // Non-breaking space counts as whitespace for display purposes.
-        if c.is_whitespace() || c == '\u{a0}' {
+        //
+        // Control characters are folded in with it. Everything this function
+        // produces is a title, an author or a publisher taken off a mirror and
+        // drawn straight into the results grid — or written to a log, or used
+        // to name a downloaded file — so a stray C0 escape is collapsed once
+        // here rather than at each of the several places that consume the text.
+        if c.is_whitespace() || c == '\u{a0}' || c.is_control() {
             if !last_was_space {
                 out.push(' ');
             }
@@ -554,6 +577,26 @@ mod tests {
     fn text_does_not_glue_words_across_tags() {
         assert_eq!(text("<td>a</td><td>b</td>"), "a b");
         assert_eq!(text("one<br>two"), "one two");
+    }
+
+    #[test]
+    fn control_characters_never_reach_the_caller() {
+        // Titles land in the results grid, in the logs, and in the filename a
+        // download is written under. A C0 escape that survived would be
+        // interpreted by at least one of those.
+        assert_eq!(text("<td>line\u{7}one</td>"), "line one");
+        assert_eq!(text("<td>\u{1b}[2Jwiped</td>"), "[2Jwiped");
+        assert_eq!(text("<td>a\u{0}b</td>"), "a b");
+    }
+
+    #[test]
+    fn raw_text_is_skipped_case_insensitively() {
+        // The scan compares bytes in place rather than lowercasing the rest of
+        // the document first, so the fold has to live in the comparison itself
+        // — a mirror closing with `</SCRIPT>` must still end the element.
+        let out = text("<div>keep<script>var x = '<td>hidden</td>';</SCRIPT>more</div>");
+        assert!(!out.contains("hidden"), "{out}");
+        assert!(out.contains("keep") && out.contains("more"), "{out}");
     }
 
     #[test]

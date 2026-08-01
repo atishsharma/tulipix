@@ -20,6 +20,8 @@ tokio.workspace = true
 tracing.workspace = true
 sqlx = { workspace = true }
 sha2 = "0.10"
+# Live TV: reading mpv's JSON IPC events (playback started, audio track changed).
+serde_json = { workspace = true }
 # Stream tab: poster caching for remote search results.
 reqwest = { workspace = true }
 # Stream tab: "Copy link". Slint exposes no clipboard API; arboard is what the

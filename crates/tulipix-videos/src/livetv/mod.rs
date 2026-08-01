@@ -38,6 +38,9 @@ pub struct Channel {
     /// The `group-title` the playlist put it in — usually a genre.
     pub group: String,
     pub url: String,
+    /// Vertical resolution in lines, from the `(720p)` iptv-org puts in the
+    /// display name. Zero when the playlist does not say.
+    pub res: u32,
 }
 
 /// How a playlist is picked in the UI.
@@ -238,7 +241,9 @@ pub fn parse_m3u(text: &str) -> Vec<Channel> {
                 // Everything after the last comma is the display name.
                 name: info.rsplit_once(',').map(|(_, n)| n.trim().to_string()).unwrap_or_default(),
                 url: String::new(),
+                res: 0,
             };
+            current.res = resolution(&current.name);
             continue;
         }
         if line.starts_with('#') {
@@ -264,6 +269,26 @@ pub fn parse_m3u(text: &str) -> Vec<Channel> {
         }
     }
     out
+}
+
+/// The vertical resolution iptv-org writes into a display name — "BBC News
+/// (720p)" — in lines, or zero when there is none.
+///
+/// The playlists carry no resolution attribute, so the name is the only place
+/// it is published. Names also carry unrelated brackets (`[Not 24/7]`) and
+/// occasionally a second parenthesis, so every `(…)` is inspected and the
+/// largest `<digits>p` wins.
+pub fn resolution(name: &str) -> u32 {
+    name.split('(')
+        .skip(1)
+        .filter_map(|seg| seg.split(')').next())
+        .filter_map(|tok| {
+            let t = tok.trim();
+            let digits = t.strip_suffix('p').or_else(|| t.strip_suffix('P'))?;
+            digits.parse::<u32>().ok()
+        })
+        .max()
+        .unwrap_or(0)
 }
 
 /// One `key="value"` attribute off an `#EXTINF:` line.
@@ -305,6 +330,19 @@ file:///etc/passwd
         // "Broken" has no URL line; "Local" points at the local disk, which a
         // downloaded playlist has no business doing.
         assert!(ch.iter().all(|c| c.name != "Broken" && c.name != "Local"));
+    }
+
+    #[test]
+    fn the_resolution_is_read_out_of_the_display_name() {
+        assert_eq!(resolution("BBC News (720p)"), 720);
+        assert_eq!(resolution("Star Plus (1080p) [Not 24/7]"), 1080);
+        // Two candidates: the better one is what the channel can serve.
+        assert_eq!(resolution("Mix (480p) (1080p)"), 1080);
+        // Nothing that looks like a resolution must ever parse as one, or the
+        // sort silently ranks channels by a number off a title.
+        assert_eq!(resolution("Channel 4"), 0);
+        assert_eq!(resolution("Radio (Hindi)"), 0);
+        assert_eq!(resolution("Sports (24/7)"), 0);
     }
 
     #[test]

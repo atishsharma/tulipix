@@ -199,9 +199,30 @@ pub fn discover(http: &Http, base: &Uri, policy: &NetPolicy) -> Vec<Uri> {
     found
 }
 
+/// Whether a host discovered by following links off a mirror is itself a
+/// Libgen mirror.
+///
+/// Matched on the registrable domain, not on the whole host: a bare substring
+/// test accepts `libgen.attacker.example`, and these hosts are harvested from
+/// pages a mirror serves, so anything it links to would be adopted into the
+/// pool on the strength of a chosen subdomain.
 fn looks_like_libgen(host: &str) -> bool {
     let host = host.to_ascii_lowercase();
-    host.contains("libgen") || host.contains("genesis")
+    let host = host.trim_end_matches('.');
+    // `libgen.li` → `libgen`; `mirror.libgen.gs` → `libgen`. The last label is
+    // the TLD, which moves constantly and says nothing.
+    let mut labels = host.rsplit('.').skip(1);
+    let Some(domain) = labels.next() else {
+        return false;
+    };
+    // Step over a two-part suffix, so `libgen.co.uk` is read as `libgen` rather
+    // than as `co`. Not a public-suffix list, just the handful that turn up.
+    let domain = if matches!(domain, "co" | "com" | "net" | "org" | "ac" | "gov") {
+        labels.next().unwrap_or(domain)
+    } else {
+        domain
+    };
+    domain.contains("libgen") || domain.contains("genesis")
 }
 
 /// An ordered set of mirrors to try, best first.
@@ -534,6 +555,13 @@ mod tests {
         assert!(looks_like_libgen("library.genesis.example"));
         assert!(!looks_like_libgen("ads.doubleclick.net"));
         assert!(!looks_like_libgen("evil.example"));
+        // The registrable domain is what counts. A substring test on the whole
+        // host adopts anything an already-compromised mirror cares to link to,
+        // because the subdomain is the attacker's to choose.
+        assert!(!looks_like_libgen("libgen.attacker.example"));
+        assert!(!looks_like_libgen("genesis.ads.example"));
+        assert!(looks_like_libgen("libgen.co.uk"), "a two-part suffix is stepped over");
+        assert!(!looks_like_libgen("libgen"), "a bare label has no registrable domain");
     }
 
     #[test]

@@ -146,6 +146,12 @@ pub struct SearchQuery {
     pub topics: Vec<Topic>,
     /// Maximum rows to show the user.
     pub limit: usize,
+    /// Which page of the mirror's own results to ask for, one-based.
+    ///
+    /// Only used once everything the first page yielded is already on screen —
+    /// the mirror serves 25, 50 or 100 rows a page and the client-side filters
+    /// run afterwards, so a page usually has plenty left in it.
+    pub page: usize,
     /// Client-side filter on file extension (lowercase, no dot).
     pub extension: Option<String>,
     /// Client-side filter on language, case-insensitive substring.
@@ -159,6 +165,7 @@ impl SearchQuery {
             fields: Vec::new(),
             topics: vec![Topic::Libgen, Topic::Fiction],
             limit: 25,
+            page: 1,
             extension: None,
             language: None,
         }

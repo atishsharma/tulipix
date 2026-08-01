@@ -13,14 +13,22 @@
 // search, because plenty of them serve a healthy front page while their search
 // endpoint 500s. That check is slow, and without something on screen naming it,
 // the wait reads as a hang.
+//
+// Results are a card grid, built the way every other grid in this app is built:
+// a plain Rectangle whose height is arithmetic, children placed by index, all
+// of it inside a ScrollView that is left to derive its own viewport. An earlier
+// table bound `viewport-height` to the row layout's `preferred-height` — a
+// viewport sizing the very thing it measures — and drew nothing while reporting
+// a full row count.
 import { Theme } from "tokens.slint";
 import { Surface, Rim, Skin } from "surface.slint";
 import { BookTheme } from "page_books.slint";
-import { ScrollView } from "std-widgets.slint";
+import { ScrollView, Slider } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
 
-// One row of search results. `have` marks a book already in the download
-// history, keyed on MD5 — the catalogue's own identity for a file.
+// One result card. `have` marks a book already in the download history, keyed
+// on MD5 — the catalogue's own identity for a file. `cover` is empty until the
+// cover pass fetches one, and stays empty for a book that has none.
 export struct GenesisRow {
     md5: string,
     title: string,
@@ -31,13 +39,46 @@ export struct GenesisRow {
     size: string,
     format: string,
     have: bool,
+    cover: image,
 }
 
 // One topic the search can be scoped to. Multi-select; the mirror takes them
 // as repeated query parameters.
 export struct GenesisTopic { code: string, label: string, on: bool }
 
-// ── a pill, used for topics and for the field/format/language pickers ───────
+// One past search, with the filters it ran under — the same words under a
+// different format filter is a different search, so running it again has to
+// restore all four.
+export struct GenesisSearch {
+    terms: string,
+    field: string,
+    format: string,
+    language: string,
+    results: int,
+    when: string,
+}
+
+// Everything the record page said about one book. Fetched once and cached, so
+// opening the same book twice costs nothing.
+export struct GenesisDetails {
+    md5: string,
+    title: string,
+    series: string,
+    authors: string,
+    publisher: string,
+    year: string,
+    isbn: string,
+    language: string,
+    pages: string,
+    size: string,
+    extension: string,
+    description: string,
+    source: string,
+    cover: image,
+    have: bool,
+}
+
+// ── a pill, used for topics, pickers and the sort control ───────────────────
 component Chip inherits Skin {
     in property <string> label;
     in property <bool> on: false;
@@ -59,110 +100,85 @@ component Chip inherits Skin {
     animate background, border-color { duration: 120ms; }
 }
 
-// ── a dropdown-looking value picker ─────────────────────────────────────────
-// Cycles through its options on click rather than opening a menu: there are at
-// most seven, and a popup that has to be positioned by hand is a lot of
-// machinery for "next value".
+// ── a real dropdown ─────────────────────────────────────────────────────────
+// A PopupMenu rather than a click-to-cycle pill: with seven options, cycling
+// makes picking the last one six clicks, and never shows what the choices are.
 component Picker inherits Skin {
     in property <string> label;
     in property <string> value;
-    callback clicked();
+    in property <[string]> options;
+    callback pick(string);
+
     horizontal-stretch: 0; height: 32px; border-radius: Surface.r(16px);
     background: BookTheme.pill-bg;
     border-width: 1.5px;
-    border-color: ta.has-hover ? BookTheme.accent.with-alpha(0.4) : BookTheme.hairline;
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    border-color: ta.has-hover ? BookTheme.accent.with-alpha(0.45) : transparent;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { menu.show(); }
+    }
     HorizontalLayout {
-        padding-left: 12px; padding-right: 10px; spacing: 7px; alignment: center;
+        padding-left: 13px; padding-right: 11px; spacing: 7px; alignment: center;
         Text {
-            text: root.label; color: BookTheme.ink-dim; font-size: 12.5px;
+            text: root.label; color: BookTheme.ink-dim;
+            font-size: 10.5px; font-weight: 700; letter-spacing: 0.6px;
             vertical-alignment: center;
         }
         Text {
-            text: root.value; color: BookTheme.ink; font-size: 12.5px; font-weight: 600;
-            vertical-alignment: center;
+            text: root.value; color: BookTheme.ink;
+            font-size: 12.5px; font-weight: 600; vertical-alignment: center;
         }
-        AppIcon {
-            source: Icons.chevron-down; tint: BookTheme.ink-dim;
-            width: 13px; height: 13px;
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            AppIcon {
+                source: Icons.chevron-down; tint: BookTheme.ink-dim;
+                width: 13px; height: 13px;
+            }
+        }
+    }
+
+    menu := PopupWindow {
+        x: 0; y: root.height + 4px;
+        width: 168px;
+        height: menucol.preferred-height;
+        close-policy: close-on-click-outside;
+        Rectangle {
+            border-radius: Surface.r(12px);
+            background: BookTheme.card;
+            border-width: 1px; border-color: BookTheme.hairline;
+            drop-shadow-blur: Surface.cast(24px);
+            drop-shadow-color: Surface.cast-ink(#00000055);
+            drop-shadow-offset-y: Surface.cast-y(10px);
+            menucol := VerticalLayout {
+                padding: 6px; spacing: 1px;
+                for o in root.options: Rectangle {
+                    height: 30px; border-radius: Surface.r(8px);
+                    background: o == root.value ? BookTheme.tint-violet
+                        : (ot.has-hover ? BookTheme.pill-bg : transparent);
+                    ot := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.pick(o); menu.close(); }
+                    }
+                    HorizontalLayout {
+                        padding-left: 11px; padding-right: 11px;
+                        Text {
+                            text: o;
+                            color: o == root.value ? BookTheme.accent : BookTheme.ink;
+                            font-size: 12.5px;
+                            font-weight: o == root.value ? 700 : 500;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+            }
         }
     }
     animate border-color { duration: 120ms; }
 }
 
-// ── one page-step arrow ─────────────────────────────────────────────────────
-// Stays in place when it cannot move — a control that disappears at the ends
-// makes the row jump width every time the last page is reached.
-component PageArrow inherits Skin {
-    in property <image> icon;
-    in property <bool> enabled: true;
-    callback clicked();
-    horizontal-stretch: 0; width: 32px; height: 32px;
-    border-radius: Surface.r(16px);
-    opacity: root.enabled ? 1.0 : 0.35;
-    background: root.enabled && ta.has-hover ? BookTheme.tint-violet : BookTheme.pill-bg;
-    border-width: 1.5px;
-    border-color: root.enabled && ta.has-hover
-        ? BookTheme.accent.with-alpha(0.5) : BookTheme.hairline;
-    ta := TouchArea {
-        mouse-cursor: root.enabled ? pointer : default;
-        clicked => { if (root.enabled) { root.clicked(); } }
-    }
-    AppIcon {
-        source: root.icon;
-        tint: root.enabled && ta.has-hover ? BookTheme.accent : BookTheme.ink-dim;
-        width: 14px; height: 14px;
-        x: (parent.width - self.width) / 2;
-        y: (parent.height - self.height) / 2;
-    }
-    animate background, border-color, opacity { duration: 120ms; }
-}
-
-// ── a clickable column header ───────────────────────────────────────────────
-// Carries the arrow for the column it sorts by. Sorting happens over the whole
-// result set, so the arrow describes the table, not the page.
-component SortHead inherits Skin {
-    in property <string> label;
-    in property <string> key;
-    in property <string> active;
-    in property <bool> desc: false;
-    in property <bool> align-right: false;
-    callback clicked();
-    property <bool> on: root.active == root.key;
-    horizontal-stretch: 0; height: 100%;
-    background: transparent;
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    HorizontalLayout {
-        spacing: 4px;
-        alignment: root.align-right ? end : start;
-        VerticalLayout {
-            alignment: center; horizontal-stretch: 0;
-            Text {
-                text: root.label;
-                color: root.on ? BookTheme.accent
-                    : (ta.has-hover ? BookTheme.ink : BookTheme.ink-dim);
-                font-size: 10.5px; font-weight: 700; letter-spacing: 0.8px;
-                vertical-alignment: center;
-            }
-        }
-        // Reserved even when unsorted, so a header does not shift sideways the
-        // first time it is clicked.
-        VerticalLayout {
-            alignment: center; horizontal-stretch: 0;
-            Rectangle {
-                width: 10px; height: 10px; background: transparent;
-                if root.on: AppIcon {
-                    source: root.desc ? Icons.chevron-down : Icons.chevron-up;
-                    tint: BookTheme.accent; width: 10px; height: 10px;
-                }
-            }
-        }
-    }
-}
-
 // ── the mirror status chip in the header ────────────────────────────────────
-// Names the host that answered and how long it took. Not decoration: failover
-// between mirrors is otherwise completely silent.
+// Names the host that answered. Not decoration: failover between mirrors is
+// otherwise completely silent.
 component MirrorChip inherits Skin {
     in property <string> text;
     in property <string> tone;   // ok | warn | bad
@@ -185,48 +201,370 @@ component MirrorChip inherits Skin {
     }
 }
 
-// ── a skeleton line, for the searching state ────────────────────────────────
-// Width comes from the caller: a component's own root cannot read `parent`, so
-// a proportional width has to be computed where the parent is in scope.
-component Skel inherits Skin {
-    height: 12px; border-radius: Surface.r(6px);
-    background: BookTheme.track;
-    opacity: 0.55;
-    animate opacity { duration: 700ms; iteration-count: -1; direction: alternate; }
-    init => { self.opacity = 1.0; }
+// ── a round icon button, for Back and Settings ──────────────────────────────
+component IconBtn inherits Skin {
+    in property <image> icon;
+    in property <length> side: 38px;
+    callback clicked();
+    horizontal-stretch: 0; width: root.side; height: root.side;
+    border-radius: Surface.r(12px);
+    background: ta.has-hover ? BookTheme.tint-violet : BookTheme.pill-bg;
+    border-width: 1.5px;
+    border-color: ta.has-hover ? BookTheme.accent : BookTheme.accent.with-alpha(0.45);
+    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    AppIcon {
+        source: root.icon;
+        tint: ta.has-hover ? BookTheme.accent : BookTheme.ink;
+        width: root.side * 0.47; height: root.side * 0.47;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+    animate background, border-color { duration: 120ms; }
 }
 
-// ── one big centred message, for idle / empty / failed ──────────────────────
-component EmptyState inherits Skin {
+// ── an empty / error state ──────────────────────────────────────────────────
+component EmptyState inherits Rectangle {
     in property <string> title;
     in property <string> body;
     in property <image> icon;
     in property <color> tint: BookTheme.accent;
-    height: 300px;
     VerticalLayout {
-        alignment: center; spacing: 8px;
+        alignment: center; spacing: 10px;
+        padding-left: 48px; padding-right: 48px;
         HorizontalLayout {
             alignment: center;
             Rectangle {
-                width: 52px; height: 52px; border-radius: Surface.r(16px);
+                width: 56px; height: 56px; border-radius: Surface.r(28px);
                 background: root.tint.with-alpha(0.13);
                 AppIcon {
-                    source: root.icon; tint: root.tint; width: 26px; height: 26px;
+                    source: root.icon; tint: root.tint;
+                    width: 25px; height: 25px;
                     x: (parent.width - self.width) / 2;
                     y: (parent.height - self.height) / 2;
                 }
             }
         }
-        Rectangle { height: 6px; background: transparent; }
         Text {
-            text: root.title; color: BookTheme.ink; font-size: 16px; font-weight: 700;
+            text: root.title; color: BookTheme.ink;
+            font-size: 15px; font-weight: 700;
             horizontal-alignment: center;
         }
         Text {
-            text: root.body; color: BookTheme.ink-dim; font-size: 13px;
-            horizontal-alignment: center; wrap: word-wrap;
+            text: root.body; color: BookTheme.ink-dim;
+            font-size: 12.5px; wrap: word-wrap;
+            horizontal-alignment: center;
         }
         @children
+    }
+}
+
+// ── are you sure? ───────────────────────────────────────────────────────────
+// Its own scrim, so it reads as a question asked on top of whatever is already
+// open. Fixed height rather than one derived from the body text: a wrapping
+// Text's preferred height depends on the width it is given, and asking a parent
+// to size itself from it is a loop.
+component ConfirmBox inherits Rectangle {
+    in property <string> title;
+    in property <string> body;
+    in property <string> confirm-label: "Clear";
+    callback confirmed();
+    callback dismissed();
+
+    background: #000000.with-alpha(0.55);
+    TouchArea { clicked => { root.dismissed(); } }
+    Rectangle {
+        width: min(400px, parent.width - 48px);
+        height: 186px;
+        border-radius: BookTheme.radius;
+        background: BookTheme.card;
+        border-width: 1px; border-color: BookTheme.hairline;
+        drop-shadow-blur: Surface.cast(40px);
+        drop-shadow-color: Surface.cast-ink(#00000055);
+        drop-shadow-offset-y: Surface.cast-y(24px);
+        TouchArea {}
+        VerticalLayout {
+            padding: 22px; spacing: 10px;
+            Text {
+                text: root.title; color: BookTheme.ink;
+                font-size: 15px; font-weight: 800; vertical-stretch: 0;
+            }
+            Text {
+                text: root.body; color: BookTheme.ink-dim;
+                font-size: 12.5px; wrap: word-wrap; vertical-stretch: 1;
+            }
+            HorizontalLayout {
+                spacing: 9px; alignment: end; vertical-stretch: 0;
+                Rectangle {
+                    height: 36px; min-width: 92px; border-radius: Surface.r(18px);
+                    background: cno.has-hover ? BookTheme.track : transparent;
+                    border-width: 1.5px; border-color: BookTheme.hairline;
+                    cno := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.dismissed(); }
+                    }
+                    Text {
+                        text: "Cancel"; color: BookTheme.ink;
+                        font-size: 12.5px; font-weight: 600;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: parent.width; height: parent.height;
+                    }
+                }
+                Rectangle {
+                    height: 36px; min-width: 104px; border-radius: Surface.r(18px);
+                    background: cyes.has-hover ? #ef4444.darker(0.15) : #ef4444;
+                    cyes := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.confirmed(); }
+                    }
+                    Text {
+                        text: root.confirm-label; color: #ffffff;
+                        font-size: 12.5px; font-weight: 700;
+                        horizontal-alignment: center; vertical-alignment: center;
+                        width: parent.width; height: parent.height;
+                    }
+                    animate background { duration: 120ms; }
+                }
+            }
+        }
+    }
+}
+
+// ── a skeleton block, for the searching state ───────────────────────────────
+component Skel inherits Rectangle {
+    border-radius: Surface.r(6px);
+    background: BookTheme.track;
+    opacity: 0.75;
+    animate opacity { duration: 900ms; iteration-count: -1; direction: alternate; }
+}
+
+// ── one book card ───────────────────────────────────────────────────────────
+// The cover plate is drawn, not fetched: the catalogue row carries no artwork,
+// so the format sets the tint and the title supplies the initial. Real cover
+// art is a separate fetch per record and belongs behind its own cache.
+component BookCard inherits Rectangle {
+    in property <GenesisRow> data;
+    in property <bool> can-download: true;
+    in property <bool> busy: false;
+    callback download(string);
+    callback details(string);
+
+    property <color> plate:
+        root.data.format == "PDF"  ? BookTheme.tint-pink :
+        root.data.format == "EPUB" ? BookTheme.tint-green :
+        root.data.format == "MOBI" ? BookTheme.tint-orange :
+        root.data.format == "CBZ"  ? BookTheme.tint-blue : BookTheme.tint-violet;
+
+    border-radius: Surface.r(14px);
+    background: ca.has-hover ? BookTheme.pill-bg : BookTheme.card;
+    border-width: 1px;
+    border-color: ca.has-hover ? BookTheme.accent.with-alpha(0.4) : BookTheme.hairline;
+    clip: true;
+    // The card itself opens the record. The Get button sits on top of this and
+    // stops the click, so downloading never opens the popup by accident.
+    ca := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { root.details(root.data.md5); }
+    }
+
+    VerticalLayout {
+        padding: 10px; spacing: 8px;
+
+        // ── cover ──
+        // Real art when the cover pass found some; otherwise a drawn plate,
+        // which is also what a book with no cover keeps for good.
+        Rectangle {
+            height: root.width * 1.18;
+            border-radius: Surface.r(10px);
+            background: root.plate;
+            clip: true;
+
+            if root.data.cover.width > 0: Image {
+                source: root.data.cover;
+                width: parent.width; height: parent.height;
+                image-fit: cover;
+            }
+
+            if root.data.cover.width == 0: Rectangle {
+                // Spine, so the plate reads as a book rather than a swatch.
+                Rectangle {
+                    x: 0; width: 7px; height: parent.height;
+                    background: BookTheme.accent.with-alpha(0.28);
+                }
+                Text {
+                    text: root.data.title == "" ? "?" : root.data.title;
+                    color: BookTheme.ink;
+                    font-size: 30px; font-weight: 800;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: parent.width - 26px; height: parent.height;
+                    x: 20px; overflow: elide;
+                    opacity: 0.22;
+                }
+            }
+            // Format badge, bottom-right of the plate.
+            Rectangle {
+                x: parent.width - self.width - 8px;
+                y: parent.height - self.height - 8px;
+                width: fmt.preferred-width + 16px; height: 22px;
+                border-radius: Surface.r(6px);
+                background: BookTheme.card;
+                fmt := Text {
+                    text: root.data.format; color: BookTheme.ink;
+                    font-size: 10.5px; font-weight: 700;
+                    horizontal-alignment: center; vertical-alignment: center;
+                    width: parent.width; height: parent.height;
+                }
+            }
+            // Already in the library: a check, not a button.
+            if root.data.have: Rectangle {
+                x: 8px; y: 8px;
+                width: 24px; height: 24px; border-radius: Surface.r(12px);
+                background: #22c55e;
+                AppIcon {
+                    source: Icons.check; tint: #ffffff;
+                    width: 13px; height: 13px;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
+            }
+        }
+
+        // ── title ──
+        Text {
+            text: root.data.title; color: BookTheme.ink;
+            font-size: 12.5px; font-weight: 700;
+            wrap: word-wrap; overflow: elide;
+            height: 32px; vertical-alignment: top;
+            vertical-stretch: 0;
+        }
+
+        // ── author ──
+        // `vertical-stretch: 0` on all three, or a card one pixel shorter than
+        // its contents takes the space back out of them and the author and the
+        // meta line vanish while the title keeps its two rows.
+        Text {
+            text: root.data.author == "" ? "Unknown author" : root.data.author;
+            color: BookTheme.ink-dim;
+            font-size: 11.5px; overflow: elide;
+            height: 15px; vertical-stretch: 0;
+        }
+
+        // ── year · pages · language ──
+        Text {
+            text: (root.data.year == "" ? "—" : root.data.year)
+                + (root.data.pages == "" ? "" : "  ·  " + root.data.pages + " pp")
+                + (root.data.language == "" ? "" : "  ·  " + root.data.language);
+            color: BookTheme.ink-dim; font-size: 10.5px; overflow: elide;
+            height: 14px; vertical-stretch: 0;
+        }
+
+        // ── size + Download, one filled pill ──
+        // The size used to sit outside the button as grey text, which put two
+        // separate things on a card that only ever does one. Filled, they read
+        // as a single control: what you are about to fetch, and how big it is.
+        if !root.data.have: Rectangle {
+            height: 30px; border-radius: Surface.r(15px);
+            vertical-stretch: 0;
+            opacity: root.can-download && !root.busy ? 1.0 : 0.45;
+            background: dl.has-hover && root.can-download && !root.busy
+                ? BookTheme.accent.darker(0.12) : BookTheme.accent;
+            dl := TouchArea {
+                mouse-cursor: root.can-download && !root.busy ? pointer : default;
+                clicked => {
+                    if (root.can-download && !root.busy) { root.download(root.data.md5); }
+                }
+            }
+            HorizontalLayout {
+                padding-left: 12px; padding-right: 12px; spacing: 7px;
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 1;
+                    Text {
+                        text: root.data.size; color: #ffffff;
+                        opacity: 0.82;
+                        font-size: 10.5px; font-weight: 700; overflow: elide;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    AppIcon {
+                        source: Icons.download; tint: #ffffff;
+                        width: 13px; height: 13px;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Text {
+                        text: "Download"; color: #ffffff;
+                        font-size: 11.5px; font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                }
+            }
+            animate background { duration: 120ms; }
+        }
+        if root.data.have: Rectangle {
+            height: 30px; border-radius: Surface.r(15px);
+            vertical-stretch: 0;
+            background: #22c55e.with-alpha(0.18);
+            HorizontalLayout {
+                padding-left: 12px; padding-right: 12px; spacing: 7px;
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 1;
+                    Text {
+                        text: root.data.size; color: BookTheme.ink-dim;
+                        font-size: 10.5px; font-weight: 700; overflow: elide;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    AppIcon {
+                        source: Icons.check; tint: #22c55e;
+                        width: 13px; height: 13px;
+                    }
+                }
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Text {
+                        text: "In library"; color: #22c55e;
+                        font-size: 11px; font-weight: 700; vertical-alignment: center;
+                    }
+                }
+            }
+        }
+    }
+    animate background, border-color { duration: 120ms; }
+}
+
+// ── the results grid ────────────────────────────────────────────────────────
+// Height is arithmetic and children are placed by index — the pattern every
+// working grid in this app uses. Nothing here measures a layout that something
+// else is sizing.
+component CardGrid inherits Rectangle {
+    in property <[GenesisRow]> rows;
+    in property <int> cols: 4;
+    in property <length> gap: 14px;
+    in property <bool> can-download: true;
+    in property <bool> busy: false;
+    callback download(string);
+    callback details(string);
+
+    property <length> cell: (self.width - (root.cols - 1) * root.gap) / root.cols;
+    // Cover is 1.18 × the cell, plus the text block: 20 padding + 4 gaps of 8
+    // + title 32 + author 15 + meta 14 + footer 30. Short by even a pixel and
+    // the layout takes it back out of the text rows.
+    property <length> cell-h: root.cell * 1.18 + 143px;
+
+    horizontal-stretch: 1;
+    height: Math.ceil(root.rows.length / root.cols) * (root.cell-h + root.gap);
+
+    for r[idx] in root.rows: BookCard {
+        x: Math.mod(idx, root.cols) * (root.cell + root.gap);
+        y: Math.floor(idx / root.cols) * (root.cell-h + root.gap);
+        width: root.cell; height: root.cell-h;
+        data: r;
+        can-download: root.can-download;
+        busy: root.busy;
+        download(md5) => { root.download(md5); }
+        details(md5) => { root.details(md5); }
     }
 }
 
@@ -239,8 +577,10 @@ export component GenesisPage inherits Rectangle {
     in property <[GenesisRow]> rows: [];
     in property <[GenesisTopic]> topics: [];
     in property <string> field: "Any";
-    in property <string> format: "Any";
-    in property <string> language: "Any";
+    // English EPUB out of the box — Rust sets the same pair on entry, and both
+    // stay wherever they are put after that.
+    in property <string> format: "epub";
+    in property <string> language: "English";
     in property <string> dest: "";
     // Empty when no Books library folder is configured. Downloading somewhere
     // the library cannot see is worse than refusing, so the Get buttons go
@@ -255,17 +595,47 @@ export component GenesisPage inherits Rectangle {
     in property <string> done-name: "";
     in property <string> done-detail: "";
 
-    // ── result table: sorting + pagination ──
-    // Both run over the whole result set in Rust, not over the twelve rows on
-    // screen — sorting a page in place would only shuffle that page.
-    in property <int> page: 0;
-    in property <int> pages: 0;
+    // Sorted in Rust over the whole result set, which is also all the grid
+    // shows: every result the mirror returned.
     in property <int> total: 0;
     // "" = mirror order. Otherwise title|author|year|language|pages|size|format.
     in property <string> sort: "";
     in property <bool> sort-desc: false;
 
+    // A search replayed from the history popup. Turns the Search button into a
+    // filling pill, so results that appear on their own are visibly the old
+    // search running again.
+    in property <bool> replay: false;
+
+    // ── load more ──
+    // A page of results in flight, and nothing left to load. The button hides
+    // itself on the second rather than going dead, because a permanently
+    // disabled control invites clicking.
+    in property <bool> more-busy: false;
+    in property <bool> more-done: false;
+    callback load-more();
+
+    // ── history ──
+    in property <[GenesisSearch]> history: [];
+    in-out property <bool> history-open: false;
+    property <bool> confirm-history-clear: false;
+    // Throwing away the page — results, words and all.
+    property <bool> confirm-clear: false;
+    // Ten a page, ten pages — the popup shows the last hundred searches.
+    property <int> history-page: 0;
+    property <int> history-per-page: 10;
+    property <int> history-pages:
+        max(1, min(10, Math.ceil(root.history.length / root.history-per-page)));
+
+    // ── record details ──
+    in-out property <bool> details-open: false;
+    in property <bool> details-loading: false;
+    in property <GenesisDetails> details;
+    in property <string> details-error: "";
+
     // ── settings ──
+    // Results one search asks the mirror for. Slider-backed, 1‥49.
+    in property <int> limit: 21;
     in-out property <bool> settings-open: false;
     // Newline-separated mirror list, most-preferred first. Empty = the built-in
     // seed list.
@@ -280,16 +650,25 @@ export component GenesisPage inherits Rectangle {
 
     callback back();
     callback search();
+    callback clear();
+    // The window's own browser opener, which checks the scheme before handing
+    // anything to the OS — mirror-supplied URLs must not go anywhere else.
+    callback open-url(string);
     callback download(string);
     callback cancel();
     callback toggle-topic(string);
-    callback cycle-field();
-    callback cycle-format();
-    callback cycle-language();
+    callback set-field(string);
+    callback set-format(string);
+    callback set-language(string);
+    callback set-limit(int);
     callback retry();
     callback open-dest();
-    callback set-page(int);
     callback sort-clicked(string);
+    callback history-opened();
+    callback history-run(GenesisSearch);
+    callback history-clear();
+    callback open-details(string);
+    callback close-details();
     callback settings-opened();
     callback settings-save();
     callback settings-reset();
@@ -298,63 +677,38 @@ export component GenesisPage inherits Rectangle {
     background: BookTheme.canvas;
 
     VerticalLayout {
-        padding: 24px; spacing: 18px;
+        padding: 24px; spacing: 16px;
 
         // ── header ──────────────────────────────────────────────────────────
         HorizontalLayout {
-            spacing: 14px;
-            // Back — outlined in the section accent so it reads as a control
-            // rather than as a blank tile in the corner.
+            spacing: 14px; vertical-stretch: 0;
             VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
-                Rectangle {
-                    width: 38px; height: 38px; border-radius: Surface.r(12px);
-                    background: backt.has-hover
-                        ? BookTheme.tint-violet : BookTheme.pill-bg;
-                    border-width: 1.5px;
-                    border-color: backt.has-hover
-                        ? BookTheme.accent : BookTheme.accent.with-alpha(0.45);
-                    backt := TouchArea { mouse-cursor: pointer; clicked => { root.back(); } }
-                    AppIcon {
-                        source: Icons.chevron-left;
-                        tint: backt.has-hover ? BookTheme.accent : BookTheme.ink;
-                        width: 18px; height: 18px;
-                        x: (parent.width - self.width) / 2;
-                        y: (parent.height - self.height) / 2;
-                    }
-                    animate background, border-color { duration: 120ms; }
-                }
+                IconBtn { icon: Icons.chevron-left; clicked => { root.back(); } }
             }
-            // Logo and wordmark share one outlined plate — two loose elements
-            // beside a search bar read as decoration; a bordered lockup reads as
-            // the name of the thing.
             VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
                 Rectangle {
-                    height: 46px; border-radius: 23px;
+                    height: 46px; border-radius: Surface.r(23px);
                     background: BookTheme.tint-violet;
                     border-width: 1.5px;
                     border-color: BookTheme.accent.with-alpha(0.5);
                     HorizontalLayout {
-                        padding-left: 7px; padding-right: 18px; spacing: 10px;
+                        padding-left: 16px; padding-right: 18px; spacing: 10px;
                         VerticalLayout {
                             alignment: center; horizontal-stretch: 0;
-                            Rectangle {
-                                width: 32px; height: 32px; border-radius: Surface.r(11px);
-                                background: BookTheme.accent;
-                                AppIcon {
-                                    source: Icons.download; tint: #ffffff;
-                                    width: 17px; height: 17px;
-                                    x: (parent.width - self.width) / 2;
-                                    y: (parent.height - self.height) / 2;
-                                }
+                            AppIcon {
+                                source: Icons.book-open; tint: BookTheme.accent;
+                                width: 19px; height: 19px;
                             }
                         }
                         VerticalLayout {
                             alignment: center; horizontal-stretch: 0;
                             Text {
-                                text: "Genesis"; color: BookTheme.ink;
-                                font-size: 22px; font-weight: 800;
+                                // The Books section's own button stays "Genesis";
+                                // once you are on the page, it says what it is.
+                                text: "Genesis - Book Finder"; color: BookTheme.ink;
+                                font-size: 16px; font-weight: 800;
                                 vertical-alignment: center;
                             }
                         }
@@ -366,29 +720,23 @@ export component GenesisPage inherits Rectangle {
                 alignment: center; horizontal-stretch: 0;
                 MirrorChip { text: root.mirror; tone: root.mirror-tone; }
             }
-            // Settings — download folder, mirror list, and the address the
-            // results are actually coming from.
             VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
-                Rectangle {
-                    width: 38px; height: 38px; border-radius: Surface.r(12px);
-                    background: setb.has-hover || root.settings-open
-                        ? BookTheme.tint-violet : BookTheme.pill-bg;
-                    border-width: 1.5px;
-                    border-color: root.settings-open
-                        ? BookTheme.accent : BookTheme.accent.with-alpha(0.35);
-                    setb := TouchArea {
-                        mouse-cursor: pointer;
-                        clicked => { root.settings-open = true; root.settings-opened(); }
+                IconBtn {
+                    icon: Icons.clock; side: 40px;
+                    clicked => {
+                        root.history-page = 0;
+                        root.confirm-history-clear = false;
+                        root.history-open = true;
+                        root.history-opened();
                     }
-                    AppIcon {
-                        source: Icons.settings;
-                        tint: root.settings-open ? BookTheme.accent : BookTheme.ink;
-                        width: 18px; height: 18px;
-                        x: (parent.width - self.width) / 2;
-                        y: (parent.height - self.height) / 2;
-                    }
-                    animate background, border-color { duration: 120ms; }
+                }
+            }
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                IconBtn {
+                    icon: Icons.settings; side: 40px;
+                    clicked => { root.settings-open = true; root.settings-opened(); }
                 }
             }
         }
@@ -397,17 +745,13 @@ export component GenesisPage inherits Rectangle {
         // No debounce: each search is a network round trip, so it fires on
         // Enter and on the button, never per keystroke.
         HorizontalLayout {
-            spacing: 12px;
-            // Filled in the section tint rather than left on the page colour —
-            // it is the one control the page exists for, and a bare outline put
-            // it level with the filter pills below it.
+            spacing: 12px; vertical-stretch: 0;
             Rectangle {
-                horizontal-stretch: 1; height: 52px; border-radius: 26px;
+                horizontal-stretch: 1; height: 52px; border-radius: Surface.r(26px);
                 background: BookTheme.tint-violet;
                 border-width: 1.5px;
                 border-color: ti.has-focus
                     ? BookTheme.accent : BookTheme.accent.with-alpha(0.4);
-                animate background, border-color { duration: 120ms; }
                 HorizontalLayout {
                     padding-left: 20px; padding-right: 16px; spacing: 12px;
                     VerticalLayout {
@@ -451,27 +795,56 @@ export component GenesisPage inherits Rectangle {
                         }
                     }
                 }
+                animate background, border-color { duration: 120ms; }
             }
             VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
                 Rectangle {
-                    height: 52px; min-width: 128px; border-radius: 26px;
-                    background: go.has-hover
-                        ? BookTheme.accent.darker(0.1) : BookTheme.accent;
-                    go := TouchArea { mouse-cursor: pointer; clicked => { root.search(); } }
+                    height: 52px; min-width: 156px; border-radius: Surface.r(26px);
+                    clip: true;
+                    // Replaying: the button becomes its own progress bar. The
+                    // fill is driven by the phase rather than by a timer, so
+                    // what it shows is the search actually moving — a mirror
+                    // being found, then queried, then answering.
+                    background: root.replay
+                        ? BookTheme.track
+                        : (go.has-hover ? BookTheme.accent.darker(0.1) : BookTheme.accent);
+                    if root.replay: Rectangle {
+                        x: 0; y: 0; height: parent.height;
+                        width: parent.width * (
+                            root.phase == "probing" ? 0.32 :
+                            root.phase == "searching" ? 0.72 : 1.0);
+                        background: BookTheme.accent;
+                        animate width { duration: 1100ms; easing: ease-out; }
+                    }
+                    go := TouchArea {
+                        mouse-cursor: root.replay ? default : pointer;
+                        clicked => { if (!root.replay) { root.search(); } }
+                    }
                     Text {
-                        text: "Search"; color: #ffffff; font-size: 14px; font-weight: 700;
+                        text: root.replay ? "Recent search…" : "Search";
+                        color: #ffffff;
+                        font-size: root.replay ? 12.5px : 14px; font-weight: 700;
                         horizontal-alignment: center; vertical-alignment: center;
                         width: parent.width; height: parent.height;
                     }
                     animate background { duration: 120ms; }
                 }
             }
+            // Start over. Only when there is something to throw away, and never
+            // without asking — this is the one control here that destroys work.
+            if root.phase != "idle" || root.terms != "": VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                IconBtn {
+                    icon: Icons.trash; side: 52px;
+                    clicked => { root.confirm-clear = true; }
+                }
+            }
         }
 
         // ── filters ─────────────────────────────────────────────────────────
         HorizontalLayout {
-            spacing: 9px; alignment: start;
+            spacing: 9px; alignment: start; vertical-stretch: 0;
             for t in root.topics: Chip {
                 label: t.label; on: t.on;
                 clicked => { root.toggle-topic(t.code); }
@@ -480,38 +853,109 @@ export component GenesisPage inherits Rectangle {
                 alignment: center; horizontal-stretch: 0;
                 Rectangle { width: 1px; height: 22px; background: BookTheme.hairline; }
             }
-            Picker { label: "Field"; value: root.field; clicked => { root.cycle-field(); } }
-            Picker { label: "Format"; value: root.format; clicked => { root.cycle-format(); } }
-            Picker { label: "Language"; value: root.language; clicked => { root.cycle-language(); } }
+            Picker {
+                label: "Field"; value: root.field;
+                options: ["Any", "Title", "Author", "Series", "Publisher", "Year", "ISBN"];
+                pick(v) => { root.set-field(v); }
+            }
+            Picker {
+                label: "Format"; value: root.format;
+                options: ["Any", "epub", "pdf", "mobi", "azw3", "djvu", "cbz"];
+                pick(v) => { root.set-format(v); }
+            }
+            Picker {
+                label: "Language"; value: root.language;
+                options: ["Any", "English", "Hindi", "German", "French", "Spanish", "Russian", "Italian"];
+                pick(v) => { root.set-language(v); }
+            }
+
             Rectangle { horizontal-stretch: 1; background: transparent; }
 
-            // Pager, right edge of this row rather than under the table: the
-            // table scrolls, so a control below it is off screen exactly when
-            // it is wanted. Hidden on a single page — a Previous and Next that
-            // can never do anything is noise.
-            if root.pages > 1: VerticalLayout {
+            // Sort lives at the right edge of this same row. Only with results
+            // on screen — sorting nothing is noise. Clicking the active key
+            // again flips the direction, which Rust owns.
+            if root.rows.length > 0: VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
-                HorizontalLayout {
-                    spacing: 6px;
-                    PageArrow {
-                        icon: Icons.chevron-left;
-                        enabled: root.page > 0;
-                        clicked => { root.set-page(root.page - 1); }
+                Text {
+                    text: root.total + " results  ·  SORT";
+                    color: BookTheme.ink-dim;
+                    font-size: 10.5px; font-weight: 700; letter-spacing: 0.6px;
+                    vertical-alignment: center;
+                }
+            }
+            if root.rows.length > 0: Chip {
+                label: root.sort == "title" ? (root.sort-desc ? "Title ↓" : "Title ↑") : "Title";
+                on: root.sort == "title";
+                clicked => { root.sort-clicked("title"); }
+            }
+            if root.rows.length > 0: Chip {
+                label: root.sort == "author" ? (root.sort-desc ? "Author ↓" : "Author ↑") : "Author";
+                on: root.sort == "author";
+                clicked => { root.sort-clicked("author"); }
+            }
+            if root.rows.length > 0: Chip {
+                label: root.sort == "year" ? (root.sort-desc ? "Year ↓" : "Year ↑") : "Year";
+                on: root.sort == "year";
+                clicked => { root.sort-clicked("year"); }
+            }
+            if root.rows.length > 0: Chip {
+                label: root.sort == "size" ? (root.sort-desc ? "Size ↓" : "Size ↑") : "Size";
+                on: root.sort == "size";
+                clicked => { root.sort-clicked("size"); }
+            }
+            // A page of results that failed to load. Only ever set here once
+            // results are up — a search clears it on the way in — so it says
+            // "that click did not work" rather than narrating the search.
+            if root.phase == "ready" && root.status != "": VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                Text {
+                    text: root.status; color: #ef4444;
+                    font-size: 10.5px; overflow: elide; vertical-alignment: center;
+                }
+            }
+
+            // Another `limit` results, from what the mirror already sent where
+            // possible and from its next page when that runs out.
+            if root.rows.length > 0 && !root.more-done: VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                Rectangle {
+                    height: 32px; min-width: 108px; border-radius: Surface.r(16px);
+                    background: root.more-busy
+                        ? #ef4444.with-alpha(0.55)
+                        : (lm.has-hover ? #ef4444.darker(0.15) : #ef4444);
+                    lm := TouchArea {
+                        mouse-cursor: root.more-busy ? default : pointer;
+                        clicked => { if (!root.more-busy) { root.load-more(); } }
                     }
-                    VerticalLayout {
-                        alignment: center; horizontal-stretch: 0;
-                        Text {
-                            text: (root.page + 1) + " / " + root.pages
-                                + "  ·  " + root.total + " results";
-                            color: BookTheme.ink-dim; font-size: 12px; font-weight: 600;
-                            vertical-alignment: center;
+                    HorizontalLayout {
+                        padding-left: 12px; padding-right: 13px; spacing: 6px;
+                        alignment: center;
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            AppIcon {
+                                source: root.more-busy ? Icons.rotate-cw : Icons.chevron-down;
+                                tint: #ffffff; width: 13px; height: 13px;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Text {
+                                text: root.more-busy ? "Loading…" : "Load More";
+                                color: #ffffff; font-size: 12px; font-weight: 700;
+                                vertical-alignment: center;
+                            }
                         }
                     }
-                    PageArrow {
-                        icon: Icons.chevron-right;
-                        enabled: root.page + 1 < root.pages;
-                        clicked => { root.set-page(root.page + 1); }
-                    }
+                    animate background { duration: 120ms; }
+                }
+            }
+
+            if root.rows.length == 0 && root.total > 0: VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                Text {
+                    text: root.total + " results";
+                    color: BookTheme.ink-dim; font-size: 12px; font-weight: 600;
+                    vertical-alignment: center;
                 }
             }
         }
@@ -545,32 +989,14 @@ export component GenesisPage inherits Rectangle {
             }
 
             if root.phase == "searching": VerticalLayout {
-                padding: 16px; spacing: 0px; alignment: start;
-                for i in 6: Rectangle {
-                    height: 62px;
-                    HorizontalLayout {
-                        padding-left: 12px; padding-right: 12px; spacing: 14px;
-                        VerticalLayout {
-                            alignment: center; horizontal-stretch: 1;
-                            Rectangle {
-                                height: 12px;
-                                Skel { x: 0; width: parent.width * 0.7; }
-                            }
-                        }
-                        VerticalLayout {
-                            alignment: center; horizontal-stretch: 0;
-                            Rectangle {
-                                width: 180px; height: 12px;
-                                Skel { x: 0; width: parent.width * 0.8; }
-                            }
-                        }
-                        VerticalLayout {
-                            alignment: center; horizontal-stretch: 0;
-                            Rectangle {
-                                width: 90px; height: 12px;
-                                Skel { x: 0; width: parent.width * 0.7; }
-                            }
-                        }
+                padding: 16px; spacing: 14px; alignment: start;
+                for i in 2: HorizontalLayout {
+                    spacing: 14px;
+                    for j in 4: VerticalLayout {
+                        spacing: 8px;
+                        Skel { height: 150px; }
+                        Skel { height: 12px; }
+                        Skel { height: 10px; width: 70%; }
                     }
                 }
             }
@@ -607,235 +1033,24 @@ export component GenesisPage inherits Rectangle {
                 tint: BookTheme.ink-dim;
             }
 
-            if root.phase == "ready" && root.rows.length > 0: VerticalLayout {
-                spacing: 0px;
-
-                // Column header. Widths repeat on every row below — Slint has
-                // no grid that spans a repeater, so the two are kept in step by
-                // hand. Every column but Title is pinned min == max, because a
-                // stretch factor divides only *leftover* width and would give
-                // wildly uneven columns.
-                Rectangle {
-                    height: 40px; background: BookTheme.pill-bg;
-                    HorizontalLayout {
-                        padding-left: 18px; padding-right: 18px; spacing: 12px;
-                        // Title is the one column that stretches; the rest are
-                        // pinned min == max so a stretch factor cannot divide
-                        // leftover width unevenly between them.
-                        SortHead {
-                            label: "TITLE"; key: "title"; horizontal-stretch: 1;
-                            active: root.sort; desc: root.sort-desc;
-                            clicked => { root.sort-clicked("title"); }
-                        }
-                        SortHead {
-                            label: "AUTHOR"; key: "author";
-                            min-width: 180px; max-width: 180px;
-                            active: root.sort; desc: root.sort-desc;
-                            clicked => { root.sort-clicked("author"); }
-                        }
-                        SortHead {
-                            label: "YEAR"; key: "year";
-                            min-width: 54px; max-width: 54px;
-                            active: root.sort; desc: root.sort-desc;
-                            clicked => { root.sort-clicked("year"); }
-                        }
-                        SortHead {
-                            label: "LANG"; key: "language";
-                            min-width: 78px; max-width: 78px;
-                            active: root.sort; desc: root.sort-desc;
-                            clicked => { root.sort-clicked("language"); }
-                        }
-                        SortHead {
-                            label: "PAGES"; key: "pages"; align-right: true;
-                            min-width: 56px; max-width: 56px;
-                            active: root.sort; desc: root.sort-desc;
-                            clicked => { root.sort-clicked("pages"); }
-                        }
-                        SortHead {
-                            label: "SIZE"; key: "size"; align-right: true;
-                            min-width: 78px; max-width: 78px;
-                            active: root.sort; desc: root.sort-desc;
-                            clicked => { root.sort-clicked("size"); }
-                        }
-                        SortHead {
-                            label: "FORMAT"; key: "format";
-                            min-width: 74px; max-width: 74px;
-                            active: root.sort; desc: root.sort-desc;
-                            clicked => { root.sort-clicked("format"); }
-                        }
-                        Rectangle {
-                            width: 106px; horizontal-stretch: 0; background: transparent;
-                        }
-                    }
-                }
-
-                res := ScrollView {
-                    vertical-stretch: 1;
-                    viewport-width: self.width;
-                    viewport-height: reslist.preferred-height;
-                    // A new search must open at the top, or the second search
-                    // starts scrolled to wherever the first one was left. Page
-                    // is watched separately: two full pages have the same row
-                    // count, so length alone would not notice the turn.
-                    property <int> watch: root.rows.length;
-                    property <int> watch-page: root.page;
-                    changed watch => { self.viewport-y = 0; }
-                    changed watch-page => { self.viewport-y = 0; }
-                    init => { self.viewport-y = 0; }
-
-                    reslist := VerticalLayout {
-                        width: parent.width;
-                        alignment: start;
-
-                        for r in root.rows: Rectangle {
-                            height: 58px;
-                            background: rowt.has-hover ? BookTheme.pill-bg : transparent;
-                            rowt := TouchArea { }
-                            Rectangle {
-                                y: parent.height - 1px; height: 1px;
-                                background: BookTheme.hairline;
-                            }
-                            HorizontalLayout {
-                                padding-left: 18px; padding-right: 18px; spacing: 12px;
-                                VerticalLayout {
-                                    alignment: center; horizontal-stretch: 1;
-                                    Text {
-                                        text: r.title; color: BookTheme.ink;
-                                        font-size: 13px; font-weight: 600; overflow: elide;
-                                    }
-                                }
-                                VerticalLayout {
-                                    alignment: center; horizontal-stretch: 0;
-                                    Text {
-                                        text: r.author; color: BookTheme.ink-dim;
-                                        font-size: 12.5px; overflow: elide;
-                                        min-width: 180px; max-width: 180px;
-                                    }
-                                }
-                                VerticalLayout {
-                                    alignment: center; horizontal-stretch: 0;
-                                    Text {
-                                        text: r.year; color: BookTheme.ink-dim; font-size: 12.5px;
-                                        min-width: 54px; max-width: 54px; overflow: elide;
-                                    }
-                                }
-                                VerticalLayout {
-                                    alignment: center; horizontal-stretch: 0;
-                                    Text {
-                                        text: r.language; color: BookTheme.ink-dim; font-size: 12.5px;
-                                        min-width: 78px; max-width: 78px; overflow: elide;
-                                    }
-                                }
-                                VerticalLayout {
-                                    alignment: center; horizontal-stretch: 0;
-                                    Text {
-                                        text: r.pages; color: BookTheme.ink-dim; font-size: 12.5px;
-                                        min-width: 56px; max-width: 56px;
-                                        horizontal-alignment: right;
-                                    }
-                                }
-                                VerticalLayout {
-                                    alignment: center; horizontal-stretch: 0;
-                                    Text {
-                                        text: r.size; color: BookTheme.ink-dim; font-size: 12.5px;
-                                        min-width: 78px; max-width: 78px;
-                                        horizontal-alignment: right;
-                                    }
-                                }
-                                VerticalLayout {
-                                    alignment: center; horizontal-stretch: 0;
-                                    Rectangle {
-                                        min-width: 74px; max-width: 74px;
-                                        HorizontalLayout {
-                                            alignment: start;
-                                            Rectangle {
-                                                height: 22px; border-radius: Surface.r(6px);
-                                                horizontal-stretch: 0;
-                                                background: BookTheme.tint-blue;
-                                                HorizontalLayout {
-                                                    padding-left: 9px; padding-right: 9px;
-                                                    Text {
-                                                        text: r.format; color: BookTheme.ink;
-                                                        font-size: 10.5px; font-weight: 700;
-                                                        vertical-alignment: center;
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                                // Already downloaded: a check, not a button.
-                                // The history is keyed on MD5, so this never
-                                // offers the same file twice.
-                                VerticalLayout {
-                                    alignment: center; horizontal-stretch: 0;
-                                    Rectangle {
-                                        min-width: 106px; max-width: 106px; height: 32px;
-                                        if r.have: HorizontalLayout {
-                                            alignment: end; spacing: 6px;
-                                            VerticalLayout {
-                                                alignment: center; horizontal-stretch: 0;
-                                                AppIcon {
-                                                    source: Icons.check; tint: #22c55e;
-                                                    width: 15px; height: 15px;
-                                                }
-                                            }
-                                            VerticalLayout {
-                                                alignment: center; horizontal-stretch: 0;
-                                                Text {
-                                                    text: "In library"; color: #22c55e;
-                                                    font-size: 12px; font-weight: 600;
-                                                    vertical-alignment: center;
-                                                }
-                                            }
-                                        }
-                                        if !r.have: Rectangle {
-                                            x: parent.width - self.width;
-                                            width: 88px; height: 32px; border-radius: Surface.r(16px);
-                                            opacity: root.can-download && !root.busy ? 1.0 : 0.4;
-                                            background: dlt.has-hover && root.can-download && !root.busy
-                                                ? BookTheme.tint-violet : transparent;
-                                            border-width: 1.5px;
-                                            border-color: dlt.has-hover && root.can-download && !root.busy
-                                                ? BookTheme.accent.with-alpha(0.5)
-                                                : BookTheme.hairline;
-                                            dlt := TouchArea {
-                                                mouse-cursor: root.can-download && !root.busy
-                                                    ? pointer : default;
-                                                clicked => {
-                                                    if (root.can-download && !root.busy) {
-                                                        root.download(r.md5);
-                                                    }
-                                                }
-                                            }
-                                            HorizontalLayout {
-                                                alignment: center; spacing: 6px;
-                                                VerticalLayout {
-                                                    alignment: center; horizontal-stretch: 0;
-                                                    AppIcon {
-                                                        source: Icons.download;
-                                                        tint: dlt.has-hover && root.can-download && !root.busy
-                                                            ? BookTheme.accent : BookTheme.ink-dim;
-                                                        width: 14px; height: 14px;
-                                                    }
-                                                }
-                                                VerticalLayout {
-                                                    alignment: center; horizontal-stretch: 0;
-                                                    Text {
-                                                        text: "Get";
-                                                        color: dlt.has-hover && root.can-download && !root.busy
-                                                            ? BookTheme.accent : BookTheme.ink;
-                                                        font-size: 12.5px; font-weight: 600;
-                                                        vertical-alignment: center;
-                                                    }
-                                                }
-                                            }
-                                            animate background, border-color { duration: 120ms; }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+            // The grid. The ScrollView is left to derive its own viewport from
+            // the grid's arithmetic height — binding `viewport-height` to
+            // something the viewport itself sizes is what blanked the old
+            // table while it reported a full row count.
+            if root.rows.length > 0: ScrollView {
+                width: 100%; height: 100%;
+                VerticalLayout {
+                    alignment: start;
+                    padding: 14px;
+                    grid := CardGrid {
+                        rows: root.rows;
+                        // Cards want ~200px; never fewer than two columns, or a
+                        // narrow window gives one enormous card per row.
+                        cols: max(2, Math.floor(root.width / 232px));
+                        can-download: root.can-download;
+                        busy: root.busy;
+                        download(md5) => { root.download(md5); }
+                        details(md5) => { root.open-details(md5); }
                     }
                 }
             }
@@ -846,6 +1061,7 @@ export component GenesisPage inherits Rectangle {
             height: 66px; border-radius: Surface.r(14px);
             background: BookTheme.pill-bg;
             border-width: 1px; border-color: BookTheme.hairline;
+            vertical-stretch: 0;
             HorizontalLayout {
                 padding: 14px; spacing: 16px;
                 VerticalLayout {
@@ -892,6 +1108,7 @@ export component GenesisPage inherits Rectangle {
         if !root.busy && root.done-name != "": Rectangle {
             height: 62px; border-radius: Surface.r(14px);
             background: BookTheme.tint-green;
+            vertical-stretch: 0;
             HorizontalLayout {
                 padding: 14px; spacing: 14px;
                 VerticalLayout {
@@ -966,13 +1183,6 @@ export component GenesisPage inherits Rectangle {
                     HorizontalLayout {
                         spacing: 10px; vertical-stretch: 0;
                         VerticalLayout {
-                            alignment: center; horizontal-stretch: 0;
-                            Rectangle {
-                                width: 4px; height: 20px; border-radius: Surface.r(2px);
-                                background: BookTheme.accent;
-                            }
-                        }
-                        VerticalLayout {
                             alignment: center; horizontal-stretch: 1;
                             Text {
                                 text: "Genesis settings"; color: BookTheme.ink;
@@ -1001,8 +1211,7 @@ export component GenesisPage inherits Rectangle {
                     // ── download folder ──
                     // Everything that lands here is registered as a library
                     // root, so the books show up in My Library without a
-                    // separate import step. Changing it re-registers the new
-                    // one; the old folder keeps whatever is already in it.
+                    // separate import step.
                     Text {
                         text: "Download folder"; color: BookTheme.ink-dim;
                         font-size: 11px; font-weight: 700; letter-spacing: 0.6px;
@@ -1051,6 +1260,39 @@ export component GenesisPage inherits Rectangle {
                         text: "Watched by your library — anything downloaded here shows up in Books without importing it by hand.";
                         color: BookTheme.ink-dim; font-size: 11px; wrap: word-wrap;
                         vertical-stretch: 0;
+                    }
+
+                    // ── results per search ──
+                    // Mirrors serve fixed page sizes, so anything past 49 is
+                    // rounded up to a second request rather than more books.
+                    Text {
+                        text: "Results per search — " + root.limit;
+                        color: BookTheme.ink-dim; font-size: 11px; font-weight: 700;
+                        letter-spacing: 0.6px; vertical-stretch: 0;
+                    }
+                    HorizontalLayout {
+                        spacing: 10px; vertical-stretch: 0;
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 1;
+                            Slider {
+                                minimum: 1; maximum: 49;
+                                value: root.limit;
+                                changed(v) => { root.set-limit(Math.round(v)); }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Rectangle {
+                                width: 46px; height: 28px; border-radius: Surface.r(8px);
+                                background: BookTheme.pill-bg;
+                                Text {
+                                    text: root.limit; color: BookTheme.ink;
+                                    font-size: 12.5px; font-weight: 700;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                    width: parent.width; height: parent.height;
+                                }
+                            }
+                        }
                     }
 
                     // ── the mirror that is answering right now ──
@@ -1152,6 +1394,463 @@ export component GenesisPage inherits Rectangle {
                         }
                     }
                 }
+            }
+        }
+    }
+
+    // ── search history ──────────────────────────────────────────────────────
+    // Ten rows a page, ten pages: the last hundred searches, which is as far
+    // back as anyone reaches for one. Paging is local — Rust hands over the
+    // whole list once and never hears about a page turn.
+    if root.history-open: FocusScope {
+        width: 100%; height: 100%;
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) {
+                // Backs out of the question first, then out of the popup.
+                if (root.confirm-history-clear) {
+                    root.confirm-history-clear = false;
+                } else {
+                    root.history-open = false;
+                }
+                return accept;
+            }
+            return reject;
+        }
+        Rectangle {
+            background: #000000.with-alpha(0.55);
+            TouchArea { clicked => { root.history-open = false; } }
+            Rectangle {
+                width: min(560px, parent.width - 48px);
+                height: min(560px, parent.height - 48px);
+                border-radius: BookTheme.radius;
+                background: BookTheme.card;
+                border-width: 1px; border-color: BookTheme.hairline;
+                drop-shadow-blur: Surface.cast(40px);
+                drop-shadow-color: Surface.cast-ink(#00000055);
+                drop-shadow-offset-y: Surface.cast-y(24px);
+                TouchArea {}
+                VerticalLayout {
+                    padding: 24px; spacing: 14px;
+
+                    // Paging and Clear live up here beside the close button, so
+                    // the popup is one block of searches with its controls on
+                    // one line rather than a strip at each end.
+                    HorizontalLayout {
+                        spacing: 8px; vertical-stretch: 0;
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 1;
+                            Text {
+                                text: "Recent searches"; color: BookTheme.ink;
+                                font-size: 17px; font-weight: 800; vertical-alignment: center;
+                            }
+                        }
+                        if root.history-pages > 1: VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            HorizontalLayout {
+                                spacing: 6px;
+                                Rectangle {
+                                    width: 28px; height: 28px; border-radius: Surface.r(14px);
+                                    background: hp.has-hover ? BookTheme.pill-bg : transparent;
+                                    border-width: 1.5px; border-color: BookTheme.hairline;
+                                    opacity: root.history-page > 0 ? 1.0 : 0.35;
+                                    hp := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            if (root.history-page > 0) {
+                                                root.history-page -= 1;
+                                            }
+                                        }
+                                    }
+                                    AppIcon {
+                                        source: Icons.chevron-left; tint: BookTheme.ink-dim;
+                                        width: 12px; height: 12px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    Text {
+                                        text: (root.history-page + 1) + " / " + root.history-pages;
+                                        color: BookTheme.ink-dim; font-size: 11.5px;
+                                        font-weight: 600; vertical-alignment: center;
+                                    }
+                                }
+                                Rectangle {
+                                    width: 28px; height: 28px; border-radius: Surface.r(14px);
+                                    background: hn.has-hover ? BookTheme.pill-bg : transparent;
+                                    border-width: 1.5px; border-color: BookTheme.hairline;
+                                    opacity: root.history-page + 1 < root.history-pages ? 1.0 : 0.35;
+                                    hn := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => {
+                                            if (root.history-page + 1 < root.history-pages) {
+                                                root.history-page += 1;
+                                            }
+                                        }
+                                    }
+                                    AppIcon {
+                                        source: Icons.chevron-right; tint: BookTheme.ink-dim;
+                                        width: 12px; height: 12px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                            }
+                        }
+                        if root.history.length > 0: VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Rectangle {
+                                height: 30px; min-width: 78px; border-radius: Surface.r(15px);
+                                background: hc.has-hover ? BookTheme.track : transparent;
+                                border-width: 1.5px; border-color: BookTheme.hairline;
+                                hc := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.confirm-history-clear = true; }
+                                }
+                                Text {
+                                    text: "Clear"; color: BookTheme.ink;
+                                    font-size: 12px; font-weight: 600;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                    width: parent.width; height: parent.height;
+                                }
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Rectangle {
+                                width: 30px; height: 30px; border-radius: Surface.r(15px);
+                                background: hx.has-hover ? BookTheme.track : transparent;
+                                hx := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.history-open = false; }
+                                }
+                                AppIcon {
+                                    source: Icons.x; tint: BookTheme.ink-dim;
+                                    width: 14px; height: 14px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                        }
+                    }
+
+                    if root.history.length == 0: VerticalLayout {
+                        vertical-stretch: 1; alignment: center;
+                        Text {
+                            text: "Nothing searched yet.";
+                            color: BookTheme.ink-dim; font-size: 12.5px;
+                            horizontal-alignment: center;
+                        }
+                    }
+
+                    if root.history.length > 0: VerticalLayout {
+                        vertical-stretch: 1; spacing: 2px; alignment: start;
+                        for i in root.history-per-page: hrow := Rectangle {
+                            property <int> at: root.history-page * root.history-per-page + i;
+                            height: hrow.at < root.history.length ? 46px : 0px;
+                            visible: hrow.at < root.history.length;
+                            border-radius: Surface.r(9px);
+                            background: ht.has-hover ? BookTheme.pill-bg : transparent;
+                            ht := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.history-run(root.history[hrow.at]); }
+                            }
+                            HorizontalLayout {
+                                padding-left: 12px; padding-right: 12px; spacing: 10px;
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    AppIcon {
+                                        source: Icons.search; tint: BookTheme.ink-dim;
+                                        width: 14px; height: 14px;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 1; spacing: 2px;
+                                    Text {
+                                        text: root.history[hrow.at].terms;
+                                        color: BookTheme.ink; font-size: 13px;
+                                        font-weight: 600; overflow: elide;
+                                    }
+                                    Text {
+                                        text: root.history[hrow.at].field + " · "
+                                            + root.history[hrow.at].format + " · "
+                                            + root.history[hrow.at].language
+                                            + "  ·  " + root.history[hrow.at].results
+                                            + " results";
+                                        color: BookTheme.ink-dim; font-size: 10.5px;
+                                        overflow: elide;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    Text {
+                                        text: root.history[hrow.at].when;
+                                        color: BookTheme.ink-dim; font-size: 10.5px;
+                                        vertical-alignment: center;
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                }
+            }
+        }
+
+        // Asked on top of the popup, and dismissed by the popup's own Escape
+        // handler — a second FocusScope here would take focus and never give it
+        // back, leaving Escape dead for the list underneath.
+        if root.confirm-history-clear: ConfirmBox {
+            width: 100%; height: 100%;
+            title: "Clear search history?";
+            body: "Every remembered search goes, on every page. Nothing that has been downloaded is touched.";
+            confirm-label: "Clear history";
+            dismissed => { root.confirm-history-clear = false; }
+            confirmed => {
+                root.confirm-history-clear = false;
+                root.history-page = 0;
+                root.history-clear();
+            }
+        }
+    }
+
+    // ── one record, in full ─────────────────────────────────────────────────
+    // Fetched from the mirror's record page the first time and cached in
+    // genesis.db, so opening the same book again costs nothing.
+    if root.details-open: FocusScope {
+        width: 100%; height: 100%;
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) { root.close-details(); return accept; }
+            return reject;
+        }
+        Rectangle {
+            background: #000000.with-alpha(0.55);
+            TouchArea { clicked => { root.close-details(); } }
+            Rectangle {
+                width: min(680px, parent.width - 48px);
+                // Exactly as tall as it needs to be: 24 padding twice, a 30px
+                // header, one 14px gap and the 240px cover. It used to be a
+                // fixed 600, which on most records was a cover and then a third
+                // of a dialog of nothing. Longer records scroll their fields.
+                height: min(332px, parent.height - 48px);
+                border-radius: BookTheme.radius;
+                background: BookTheme.card;
+                border-width: 1px; border-color: BookTheme.hairline;
+                drop-shadow-blur: Surface.cast(40px);
+                drop-shadow-color: Surface.cast-ink(#00000055);
+                drop-shadow-offset-y: Surface.cast-y(24px);
+                TouchArea {}
+                VerticalLayout {
+                    padding: 24px; spacing: 14px;
+
+                    HorizontalLayout {
+                        spacing: 10px; vertical-stretch: 0;
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 1;
+                            Text {
+                                text: "Book details"; color: BookTheme.ink;
+                                font-size: 17px; font-weight: 800; vertical-alignment: center;
+                            }
+                        }
+                        if root.details-loading: VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Text {
+                                text: "fetching…"; color: BookTheme.ink-dim;
+                                font-size: 11.5px; vertical-alignment: center;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Rectangle {
+                                width: 30px; height: 30px; border-radius: Surface.r(15px);
+                                background: dx.has-hover ? BookTheme.track : transparent;
+                                dx := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.close-details(); }
+                                }
+                                AppIcon {
+                                    source: Icons.x; tint: BookTheme.ink-dim;
+                                    width: 14px; height: 14px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                        }
+                    }
+
+                    HorizontalLayout {
+                        spacing: 18px; vertical-stretch: 1; height: 240px;
+
+                        // ── cover ──
+                        VerticalLayout {
+                            alignment: start; horizontal-stretch: 0;
+                            Rectangle {
+                                width: 176px; height: 240px;
+                                border-radius: Surface.r(12px);
+                                background: BookTheme.tint-violet;
+                                clip: true;
+                                if root.details.cover.width > 0: Image {
+                                    source: root.details.cover;
+                                    width: parent.width; height: parent.height;
+                                    image-fit: cover;
+                                }
+                                if root.details.cover.width == 0: Text {
+                                    text: root.details.extension;
+                                    color: BookTheme.ink; opacity: 0.3;
+                                    font-size: 26px; font-weight: 800;
+                                    horizontal-alignment: center; vertical-alignment: center;
+                                    width: parent.width; height: parent.height;
+                                }
+                            }
+                        }
+
+                        // ── fields ──
+                        ScrollView {
+                            horizontal-stretch: 1;
+                            VerticalLayout {
+                                alignment: start; spacing: 9px; padding-right: 6px;
+
+                                Text {
+                                    text: root.details.title; color: BookTheme.ink;
+                                    font-size: 16px; font-weight: 800; wrap: word-wrap;
+                                }
+                                if root.details.series != "": Text {
+                                    text: "Series: " + root.details.series;
+                                    color: BookTheme.ink-dim; font-size: 12px; wrap: word-wrap;
+                                }
+                                Text {
+                                    text: root.details.authors == "" ? "Unknown author" : root.details.authors;
+                                    color: BookTheme.accent; font-size: 12.5px;
+                                    font-weight: 600; wrap: word-wrap;
+                                }
+
+                                HorizontalLayout {
+                                    spacing: 8px; alignment: start;
+                                    if root.details.extension != "": Chip { label: root.details.extension; }
+                                    if root.details.year != "": Chip { label: root.details.year; }
+                                    if root.details.pages != "": Chip { label: root.details.pages + " pages"; }
+                                    if root.details.language != "": Chip { label: root.details.language; }
+                                    if root.details.size != "": Chip { label: root.details.size; }
+                                }
+
+                                if root.details.publisher != "": Text {
+                                    text: "Publisher: " + root.details.publisher;
+                                    color: BookTheme.ink-dim; font-size: 12px; wrap: word-wrap;
+                                }
+                                if root.details.isbn != "": Text {
+                                    text: "ISBN: " + root.details.isbn;
+                                    color: BookTheme.ink-dim; font-size: 12px; wrap: word-wrap;
+                                }
+                                Text {
+                                    text: "MD5: " + root.details.md5;
+                                    color: BookTheme.ink-dim; font-size: 11px;
+                                    font-family: "monospace"; wrap: word-wrap;
+                                }
+                                if root.details.description != "": Text {
+                                    text: root.details.description;
+                                    color: BookTheme.ink; font-size: 12px; wrap: word-wrap;
+                                }
+                                if root.details-error != "": Text {
+                                    text: root.details-error;
+                                    color: #ef4444; font-size: 11.5px; wrap: word-wrap;
+                                }
+                                // The record's own page, opened in the system
+                                // browser. Goes through the window's opener,
+                                // which refuses anything that is not http(s) —
+                                // this address came off a mirror.
+                                if root.details.source != "": Rectangle {
+                                    height: 20px;
+                                    su := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.open-url(root.details.source); }
+                                    }
+                                    Text {
+                                        x: 0; width: 100%; height: 100%;
+                                        text: root.details.source;
+                                        color: su.has-hover ? BookTheme.accent : BookTheme.ink-dim;
+                                        font-size: 10.5px; overflow: elide;
+                                        vertical-alignment: center;
+                                    }
+                                }
+
+                                // Directly under the address rather than pinned
+                                // to the bottom of the dialog, which left a
+                                // field's worth of nothing above it.
+                                HorizontalLayout {
+                                    alignment: start; padding-top: 6px;
+                                    if root.details.have: Text {
+                                        text: "Already in your library"; color: #22c55e;
+                                        font-size: 12px; font-weight: 600;
+                                        vertical-alignment: center;
+                                    }
+                                    if !root.details.have: Rectangle {
+                                        horizontal-stretch: 0;
+                                        height: 38px; min-width: 148px;
+                                        border-radius: Surface.r(19px);
+                                        opacity: root.can-download && !root.busy ? 1.0 : 0.4;
+                                        background: dg.has-hover && root.can-download && !root.busy
+                                            ? BookTheme.accent.darker(0.1) : BookTheme.accent;
+                                        dg := TouchArea {
+                                            mouse-cursor: root.can-download && !root.busy
+                                                ? pointer : default;
+                                            clicked => {
+                                                if (root.can-download && !root.busy) {
+                                                    root.download(root.details.md5);
+                                                    root.close-details();
+                                                }
+                                            }
+                                        }
+                                        HorizontalLayout {
+                                            alignment: center; spacing: 7px;
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                AppIcon {
+                                                    source: Icons.download; tint: #ffffff;
+                                                    width: 14px; height: 14px;
+                                                }
+                                            }
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                Text {
+                                                    text: "Download"; color: #ffffff;
+                                                    font-size: 13px; font-weight: 700;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                        }
+                                        animate background { duration: 120ms; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── start over ──────────────────────────────────────────────────────────
+    // Last in the file, so it draws over everything: results, words, mirror
+    // status and the download strip all go at once.
+    if root.confirm-clear: FocusScope {
+        width: 100%; height: 100%;
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) { root.confirm-clear = false; return accept; }
+            return reject;
+        }
+        ConfirmBox {
+            width: 100%; height: 100%;
+            title: "Clear this search?";
+            body: "The results and the words you typed go. Recent searches and anything already downloaded stay.";
+            confirm-label: "Clear";
+            dismissed => { root.confirm-clear = false; }
+            confirmed => {
+                root.confirm-clear = false;
+                root.clear();
             }
         }
     }

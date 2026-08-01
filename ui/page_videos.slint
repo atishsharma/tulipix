@@ -270,7 +270,7 @@ component PlexButton inherits Skin {
 // solid pill (was a wrapper over HdrChip, whose baked-in dark idle went invisible
 // on the light canvas). Active = solid indigo; inactive = solid indigo-tint —
 // visible and coloured in light / dark / OLED.
-component VideoTab inherits Skin {
+export component VideoTab inherits Skin {
     in property <string> label;
     in property <image> icon;
     in property <bool> active: false;
@@ -663,7 +663,7 @@ component BookmarkCard inherits Skin {
 }
 
 // Small sort-key chip for the Saved header.
-component SortChip inherits Skin {
+export component SortChip inherits Skin {
     in property <string> label;
     in property <bool> active: false;
     in property <color> hue: VP.accent;   // active fill — one colour per key

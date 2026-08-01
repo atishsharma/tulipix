@@ -22,6 +22,41 @@ CREATE TABLE IF NOT EXISTS downloads (
     at         INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS downloads_at_idx ON downloads (at DESC);
+
+-- What has been searched for, newest first, so a query can be run again
+-- without retyping it. Keyed on the terms plus the filters they ran under:
+-- the same words with a different format filter is a different search.
+CREATE TABLE IF NOT EXISTS searches (
+    terms    TEXT NOT NULL,
+    field    TEXT NOT NULL DEFAULT 'Any',
+    format   TEXT NOT NULL DEFAULT 'Any',
+    language TEXT NOT NULL DEFAULT 'Any',
+    results  INTEGER NOT NULL DEFAULT 0,
+    at       INTEGER NOT NULL,
+    PRIMARY KEY (terms, field, format, language)
+);
+CREATE INDEX IF NOT EXISTS searches_at_idx ON searches (at DESC);
+
+-- Record-page metadata, cached so opening the same book twice costs one
+-- request rather than two. `at` is when it was fetched, which is what a
+-- refresh checks against.
+CREATE TABLE IF NOT EXISTS details (
+    md5         TEXT PRIMARY KEY,
+    title       TEXT NOT NULL DEFAULT '',
+    series      TEXT NOT NULL DEFAULT '',
+    authors     TEXT NOT NULL DEFAULT '',
+    publisher   TEXT NOT NULL DEFAULT '',
+    year        TEXT NOT NULL DEFAULT '',
+    isbn        TEXT NOT NULL DEFAULT '',
+    language    TEXT NOT NULL DEFAULT '',
+    pages       TEXT NOT NULL DEFAULT '',
+    size        TEXT NOT NULL DEFAULT '',
+    extension   TEXT NOT NULL DEFAULT '',
+    description TEXT NOT NULL DEFAULT '',
+    cover_src   TEXT NOT NULL DEFAULT '',
+    source_url  TEXT NOT NULL DEFAULT '',
+    at          INTEGER NOT NULL
+);
 "#;
 
 pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
@@ -132,6 +167,151 @@ pub async fn recent(pool: &SqlitePool, limit: i64) -> Result<Vec<Entry>> {
 
 pub async fn clear(pool: &SqlitePool) -> Result<()> {
     sqlx::query("DELETE FROM downloads").execute(pool).await?;
+    Ok(())
+}
+
+// ── search history ──────────────────────────────────────────────────────────
+
+/// One past search, enough to run it again exactly as it was.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Search {
+    pub terms: String,
+    pub field: String,
+    pub format: String,
+    pub language: String,
+    pub results: i64,
+    pub at: i64,
+}
+
+/// Remember a search. Repeating one moves it back to the top rather than
+/// filling the list with the same words over and over.
+pub async fn record_search(
+    pool: &SqlitePool,
+    terms: &str,
+    field: &str,
+    format: &str,
+    language: &str,
+    results: i64,
+    at: i64,
+) -> Result<()> {
+    if terms.trim().is_empty() {
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO searches (terms, field, format, language, results, at)
+         VALUES (?, ?, ?, ?, ?, ?)
+         ON CONFLICT(terms, field, format, language)
+         DO UPDATE SET results = excluded.results, at = excluded.at",
+    )
+    .bind(terms.trim())
+    .bind(field)
+    .bind(format)
+    .bind(language)
+    .bind(results)
+    .bind(at)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
+/// The most recent searches, newest first.
+pub async fn recent_searches(pool: &SqlitePool, limit: i64) -> Result<Vec<Search>> {
+    let rows = sqlx::query_as::<_, (String, String, String, String, i64, i64)>(
+        "SELECT terms, field, format, language, results, at
+         FROM searches ORDER BY at DESC LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows
+        .into_iter()
+        .map(|(terms, field, format, language, results, at)| Search {
+            terms,
+            field,
+            format,
+            language,
+            results,
+            at,
+        })
+        .collect())
+}
+
+pub async fn clear_searches(pool: &SqlitePool) -> Result<()> {
+    sqlx::query("DELETE FROM searches").execute(pool).await?;
+    Ok(())
+}
+
+// ── record-page details ─────────────────────────────────────────────────────
+
+/// The cached record page for this MD5, if one was fetched before.
+pub async fn cached_details(pool: &SqlitePool, md5: &str) -> Result<Option<crate::details::Details>> {
+    let row = sqlx::query_as::<
+        _,
+        (String, String, String, String, String, String, String, String, String, String, String, String, String, String),
+    >(
+        "SELECT md5, title, series, authors, publisher, year, isbn, language, pages, size,
+                extension, description, cover_src, source_url
+         FROM details WHERE md5 = ?",
+    )
+    .bind(md5.to_ascii_lowercase())
+    .fetch_optional(pool)
+    .await?;
+
+    Ok(row.map(|r| crate::details::Details {
+        md5: r.0,
+        title: r.1,
+        series: r.2,
+        authors: r.3,
+        publisher: r.4,
+        year: r.5,
+        isbn: r.6,
+        language: r.7,
+        pages: r.8,
+        size: r.9,
+        extension: r.10,
+        description: r.11,
+        cover_src: r.12,
+        source_url: r.13,
+    }))
+}
+
+/// Cache a record page, replacing whatever was there.
+pub async fn store_details(
+    pool: &SqlitePool,
+    d: &crate::details::Details,
+    at: i64,
+) -> Result<()> {
+    sqlx::query(
+        "INSERT INTO details
+            (md5, title, series, authors, publisher, year, isbn, language, pages, size,
+             extension, description, cover_src, source_url, at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         ON CONFLICT(md5) DO UPDATE SET
+            title = excluded.title, series = excluded.series, authors = excluded.authors,
+            publisher = excluded.publisher, year = excluded.year, isbn = excluded.isbn,
+            language = excluded.language, pages = excluded.pages, size = excluded.size,
+            extension = excluded.extension, description = excluded.description,
+            cover_src = excluded.cover_src, source_url = excluded.source_url,
+            at = excluded.at",
+    )
+    .bind(d.md5.to_ascii_lowercase())
+    .bind(&d.title)
+    .bind(&d.series)
+    .bind(&d.authors)
+    .bind(&d.publisher)
+    .bind(&d.year)
+    .bind(&d.isbn)
+    .bind(&d.language)
+    .bind(&d.pages)
+    .bind(&d.size)
+    .bind(&d.extension)
+    .bind(&d.description)
+    .bind(&d.cover_src)
+    .bind(&d.source_url)
+    .bind(at)
+    .execute(pool)
+    .await?;
     Ok(())
 }
 

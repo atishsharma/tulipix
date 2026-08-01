@@ -6,19 +6,38 @@
 //! into it goes through `spawn_blocking` and comes back to the UI via
 //! `upgrade_in_event_loop`. Nothing here holds a lock across an await.
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 use slint::{ComponentHandle, Model, ModelRc, VecModel};
 use tulipix_genesis::model::{Book, Field, SearchQuery, Topic};
-use tulipix_genesis::{GenesisService, download, history};
+use tulipix_genesis::{GenesisService, details, download, history};
 use tulipix_sec_photos::replace_rows;
 use tulipix_ui::*;
 
 /// Settings key for an explicit mirror list, comma-separated. Lives in
 /// `Settings.advanced`, which is free-text, so it needs no schema change.
 const MIRRORS_KEY: &str = "genesis.mirrors";
+
+/// Settings key for how many results one search asks the mirror for.
+const LIMIT_KEY: &str = "genesis.limit";
+
+/// Results per search when nothing is configured, and the ceiling the slider
+/// allows. Mirrors serve fixed page sizes and round 49 up to 50, so asking for
+/// more than that buys a second request rather than more books.
+const DEFAULT_LIMIT: i32 = 21;
+const MAX_LIMIT: i32 = 49;
+
+/// What the filters start on. Both are client-side, applied after the mirror
+/// answers, so they are a preference rather than part of the query — set once
+/// on entry and left alone after that, because the alternative is resetting a
+/// choice someone made two searches ago.
+const DEFAULT_FORMAT: &str = "epub";
+const DEFAULT_LANGUAGE: &str = "English";
+
+/// Past searches kept for the history popup: ten a page, ten pages.
+const HISTORY_MAX: i64 = 100;
 
 /// Settings key for an override download folder. Empty means "the first Books
 /// library root", which is what makes the post-download rescan find the file.
@@ -34,11 +53,6 @@ const DONE_LINGER_MS: u64 = 6_000;
 /// Progress is reported per 64 KB chunk; at 20 MB/s that is 300 callbacks a
 /// second. Throttled to roughly 10 Hz before crossing into the event loop.
 const PROGRESS_MS: u128 = 100;
-
-/// Rows on screen at once. The mirror hands back up to `SearchQuery::limit`
-/// records in one answer, so paging is a slice of what is already in hand — no
-/// second round trip when the page turns.
-const PAGE: usize = 12;
 
 /// How long the "Saved" confirmation on the settings dialog stays.
 const SAVED_LINGER_MS: u64 = 2_000;
@@ -78,26 +92,33 @@ thread_local! {
     static DONE_TIMER: slint::Timer = slint::Timer::default();
     /// Clears the settings dialog's "Saved ✓".
     static SAVED_TIMER: slint::Timer = slint::Timer::default();
+    /// Puts the Search button back after a search replayed from history.
+    static REPLAY_TIMER: slint::Timer = slint::Timer::default();
 }
+
+/// How long the replay pill stays at full after its results land — without it
+/// the fill vanishes at the moment it completes, which reads as an interruption
+/// rather than as a finish.
+const REPLAY_LINGER_MS: u64 = 700;
 
 /// Which column the result table is ordered by, and which way.
 ///
 /// Kept here rather than on the window because sorting runs over the whole
-/// result set — the twelve rows the window holds are the *output* of it.
-/// Empty key = the order the mirror returned, which is its own relevance
-/// ranking and the only ordering that is not arbitrary.
+/// result set, which the window then shows in one list. Empty key = the order
+/// the mirror returned, which is its own relevance ranking and the only
+/// ordering that is not arbitrary.
 fn sort_state() -> MutexGuard<'static, (String, bool)> {
     static S: OnceLock<Mutex<(String, bool)>> = OnceLock::new();
     S.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// Which page of the current result set is on screen.
-static PAGE_AT: AtomicU64 = AtomicU64::new(0);
-
 // ── entry points ────────────────────────────────────────────────────────────
 
 pub fn wire(window: &MainWindow) {
     set_topics(window, &default_topics());
+    window.set_genesis_limit(configured_limit());
+    window.set_genesis_format(DEFAULT_FORMAT.into());
+    window.set_genesis_language(DEFAULT_LANGUAGE.into());
 
     let w = window.as_weak();
     window.on_genesis_enter(move || {
@@ -117,6 +138,7 @@ pub fn wire(window: &MainWindow) {
     let w = window.as_weak();
     window.on_genesis_search(move || {
         let Some(w) = w.upgrade() else { return };
+        w.set_genesis_replay(false);
         start_search(&w);
     });
 
@@ -126,7 +148,30 @@ pub fn wire(window: &MainWindow) {
         // A retry after "every mirror failed" must re-probe, or it just replays
         // the same dead pool from memory.
         let _ = with_mut(|svc| svc.refresh_mirrors());
+        w.set_genesis_replay(false);
         start_search(&w);
+    });
+
+    // Throw the page away: results, words, mirror status and all. Confirmed in
+    // the UI first — this is the one control on the page that destroys work.
+    let w = window.as_weak();
+    window.on_genesis_clear(move || {
+        let Some(w) = w.upgrade() else { return };
+        // Abandons anything still in flight, including the cover pass, which
+        // would otherwise keep writing into rows that are no longer shown.
+        SEARCH_GEN.fetch_add(1, Ordering::Relaxed);
+        stash(Vec::new(), Vec::new());
+        *paging() = Paging::default();
+        *sort_state() = (String::new(), false);
+        w.set_genesis_more_busy(false);
+        w.set_genesis_more_done(false);
+        w.set_genesis_terms("".into());
+        w.set_genesis_phase("idle".into());
+        w.set_genesis_status("".into());
+        w.set_genesis_error("".into());
+        w.set_genesis_done_name("".into());
+        w.set_genesis_replay(false);
+        push_rows(&w);
     });
 
     let w = window.as_weak();
@@ -162,25 +207,95 @@ pub fn wire(window: &MainWindow) {
         set_topics(&w, &topics);
     });
 
+    // The three filter dropdowns. The value comes back from the menu, so these
+    // only have to store it — no cycling, no wrapping.
     let w = window.as_weak();
-    window.on_genesis_cycle_field(move || {
+    window.on_genesis_set_field(move |value| {
         let Some(w) = w.upgrade() else { return };
-        let next = cycle(&w.get_genesis_field(), FIELDS);
-        w.set_genesis_field(next.into());
+        w.set_genesis_field(value);
     });
 
     let w = window.as_weak();
-    window.on_genesis_cycle_format(move || {
+    window.on_genesis_set_format(move |value| {
         let Some(w) = w.upgrade() else { return };
-        let next = cycle(&w.get_genesis_format(), FORMATS);
-        w.set_genesis_format(next.into());
+        w.set_genesis_format(value);
     });
 
     let w = window.as_weak();
-    window.on_genesis_cycle_language(move || {
+    window.on_genesis_set_language(move |value| {
         let Some(w) = w.upgrade() else { return };
-        let next = cycle(&w.get_genesis_language(), LANGUAGES);
-        w.set_genesis_language(next.into());
+        w.set_genesis_language(value);
+    });
+
+    let w = window.as_weak();
+    window.on_genesis_load_more(move || {
+        let Some(w) = w.upgrade() else { return };
+        load_more(&w);
+    });
+
+    // ── history ─────────────────────────────────────────────────────────────
+
+    let w = window.as_weak();
+    window.on_genesis_history_opened(move || {
+        let Some(w) = w.upgrade() else { return };
+        load_history(&w);
+    });
+
+    let w = window.as_weak();
+    window.on_genesis_history_run(move |entry| {
+        let Some(w) = w.upgrade() else { return };
+        // Restore the filters the search ran under, not just its words: the
+        // same terms with a different format filter is a different search, and
+        // running it under whatever happens to be selected now would not be
+        // the search being clicked on.
+        w.set_genesis_terms(entry.terms);
+        w.set_genesis_field(entry.field);
+        w.set_genesis_format(entry.format);
+        w.set_genesis_language(entry.language);
+        w.set_genesis_history_open(false);
+        // Turns the Search button into a filling pill, so the results that
+        // appear are visibly the old search running again rather than something
+        // the page decided to show on its own.
+        w.set_genesis_replay(true);
+        start_search(&w);
+    });
+
+    let w = window.as_weak();
+    window.on_genesis_history_clear(move || {
+        let Some(w) = w.upgrade() else { return };
+        let weak = w.as_weak();
+        spawn(async move {
+            if let Ok(pool) = history::open().await
+                && let Err(e) = history::clear_searches(&pool).await
+            {
+                tracing::warn!(error = %e, "genesis: could not clear the search history");
+            }
+            let _ = weak.upgrade_in_event_loop(|w| load_history(&w));
+        });
+    });
+
+    // ── record details ──────────────────────────────────────────────────────
+
+    let w = window.as_weak();
+    window.on_genesis_open_details(move |md5| {
+        let Some(w) = w.upgrade() else { return };
+        start_details(&w, md5.to_string());
+    });
+
+    let w = window.as_weak();
+    window.on_genesis_close_details(move || {
+        let Some(w) = w.upgrade() else { return };
+        w.set_genesis_details_open(false);
+    });
+
+    // ── results per search ──────────────────────────────────────────────────
+
+    let w = window.as_weak();
+    window.on_genesis_set_limit(move |value| {
+        let Some(w) = w.upgrade() else { return };
+        let value = value.clamp(1, MAX_LIMIT);
+        w.set_genesis_limit(value);
+        set_advanced(LIMIT_KEY, &value.to_string());
     });
 
     let w = window.as_weak();
@@ -209,13 +324,6 @@ pub fn wire(window: &MainWindow) {
     // ── result table ────────────────────────────────────────────────────────
 
     let w = window.as_weak();
-    window.on_genesis_set_page(move |page| {
-        let Some(w) = w.upgrade() else { return };
-        PAGE_AT.store(page.max(0) as u64, Ordering::Relaxed);
-        push_page(&w);
-    });
-
-    let w = window.as_weak();
     window.on_genesis_sort_clicked(move |key| {
         let Some(w) = w.upgrade() else { return };
         {
@@ -228,11 +336,7 @@ pub fn wire(window: &MainWindow) {
                 *s = (key.to_string(), false);
             }
         }
-        // Back to page one: the row someone was looking at is not on page four
-        // of the new ordering, and leaving the pager where it was would show a
-        // page of results that appear to have come from nowhere.
-        PAGE_AT.store(0, Ordering::Relaxed);
-        push_page(&w);
+        push_rows(&w);
     });
 
     // ── settings ────────────────────────────────────────────────────────────
@@ -303,6 +407,28 @@ pub fn wire(window: &MainWindow) {
     });
 }
 
+/// Let the replay pill finish filling, then put the Search button back.
+///
+/// A no-op unless a search was actually replayed from history, so the ordinary
+/// path never arms a timer.
+fn end_replay(w: &MainWindow) {
+    if !w.get_genesis_replay() {
+        return;
+    }
+    let weak = w.as_weak();
+    REPLAY_TIMER.with(|t| {
+        t.start(
+            slint::TimerMode::SingleShot,
+            std::time::Duration::from_millis(REPLAY_LINGER_MS),
+            move || {
+                if let Some(w) = weak.upgrade() {
+                    w.set_genesis_replay(false);
+                }
+            },
+        )
+    });
+}
+
 /// Show "Saved ✓" on the settings dialog, then put the button back.
 fn flash_saved(w: &MainWindow) {
     w.set_genesis_settings_saved(true);
@@ -330,6 +456,13 @@ fn start_search(w: &MainWindow) {
 
     let query = build_query(w, &terms);
     let seq = SEARCH_GEN.fetch_add(1, Ordering::Relaxed) + 1;
+
+    // A fresh search starts paging over: page one, nothing revealed yet, and
+    // the query kept so "load more" asks for the next page of *this* search
+    // rather than of whatever is in the box by then.
+    *paging() = Paging { query: Some(query.clone()), page: 1, shown: 0, exhausted: false };
+    w.set_genesis_more_busy(false);
+    w.set_genesis_more_done(false);
 
     // A cold pool means a real probe of every seed mirror, which is the slow
     // path worth naming; a warm one goes straight to the query.
@@ -364,6 +497,7 @@ fn start_search(w: &MainWindow) {
             if SEARCH_GEN.load(Ordering::Relaxed) != seq {
                 return;
             }
+            end_replay(&w);
             match result {
                 Some(Ok(served)) => {
                     w.set_genesis_mirror(served.mirror.clone().into());
@@ -371,7 +505,8 @@ fn start_search(w: &MainWindow) {
                     w.set_genesis_mirror_tone("ok".into());
                     w.set_genesis_status("".into());
                     w.set_genesis_phase("ready".into());
-                    fill_rows(&w, served.value);
+                    remember_search(&w, &terms, served.value.len() as i64);
+                    fill_rows(&w, served.value, seq);
                 }
                 Some(Err(e)) => {
                     w.set_genesis_error(e.to_string().into());
@@ -388,11 +523,11 @@ fn start_search(w: &MainWindow) {
     });
 }
 
-/// Stash the result set, mark what is already downloaded, and paint page one.
+/// Stash the result set, mark what is already downloaded, and paint the table.
 ///
 /// The history lookup is one query for the whole result set rather than one per
-/// row, which would be fifty round trips to paint twelve.
-fn fill_rows(w: &MainWindow, books: Vec<Book>) {
+/// row, which would be fifty round trips to paint one table.
+fn fill_rows(w: &MainWindow, books: Vec<Book>, seq: u64) {
     let md5s: Vec<String> = books.iter().map(|b| b.md5.clone()).collect();
     let weak = w.as_weak();
     spawn(async move {
@@ -405,19 +540,135 @@ fn fill_rows(w: &MainWindow, books: Vec<Book>) {
         };
         let _ = weak.upgrade_in_event_loop(move |w| {
             stash(books, known);
-            // A new search starts at page one, in the mirror's own order. Any
-            // other choice means the first thing shown after a search is page
-            // four of the previous one, sorted by something long forgotten.
-            PAGE_AT.store(0, Ordering::Relaxed);
+            // A new search shows the mirror's own order. Any other choice means
+            // the first thing shown is the new results sorted by a column
+            // someone clicked during the previous search and long forgot.
             *sort_state() = (String::new(), false);
-            push_page(&w);
+            reveal(&w, configured_limit().max(1) as usize, seq);
         });
     });
 }
 
+/// Put another `step` of the fetched records on screen.
+///
+/// Covers are fetched for exactly the rows this revealed. A mirror page can
+/// hold a hundred records and only a screenful is ever shown at once, so
+/// fetching art for all of them would be a hundred record-page requests for
+/// books nobody has looked at.
+fn reveal(w: &MainWindow, step: usize, seq: u64) {
+    let total = results().0.len();
+    let from = paging().shown;
+    let to = (from + step).min(total);
+    paging().shown = to;
+
+    push_rows(w);
+    if to > from {
+        let fresh: Vec<Book> = results().0[from..to].to_vec();
+        // Rows first, covers second: a cover lands in its row by MD5, and one
+        // arriving before the row exists would find nothing to fill.
+        fetch_covers(w, fresh, seq);
+    }
+    update_more(w);
+}
+
+/// Whether "Load more" still has anywhere to go: records fetched but not shown,
+/// or a mirror page that has not been asked for yet.
+fn update_more(w: &MainWindow) {
+    let total = results().0.len();
+    let p = paging();
+    w.set_genesis_more_done(p.shown >= total && p.exhausted);
+}
+
+/// Show more results, from what is already in hand where possible.
+fn load_more(w: &MainWindow) {
+    if w.get_genesis_more_busy() {
+        return;
+    }
+    let step = configured_limit().max(1) as usize;
+    let seq = SEARCH_GEN.load(Ordering::Relaxed);
+
+    // Spend the over-fetch first. No network, so this is instant.
+    let (shown, total) = (paging().shown, results().0.len());
+    if shown < total {
+        reveal(w, step, seq);
+        return;
+    }
+
+    let (query, page, exhausted) = {
+        let p = paging();
+        (p.query.clone(), p.page, p.exhausted)
+    };
+    if exhausted {
+        w.set_genesis_more_done(true);
+        return;
+    }
+    let Some(mut query) = query else { return };
+    query.page = page + 1;
+
+    w.set_genesis_more_busy(true);
+    w.set_genesis_status("".into());
+    let weak = w.as_weak();
+    spawn_blocking(move || {
+        let result = with_mut(|svc| svc.search(&query, &|_| {}));
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_genesis_more_busy(false);
+            // A newer search started while this page was in flight; its results
+            // are on screen and these belong to a query nobody is looking at.
+            if SEARCH_GEN.load(Ordering::Relaxed) != seq {
+                return;
+            }
+            match result {
+                Some(Ok(served)) => {
+                    let fresh = append(served.value);
+                    {
+                        let mut p = paging();
+                        p.page += 1;
+                        // Mirrors repeat the last page rather than 404 once you
+                        // walk off the end, so "nothing new" is the only honest
+                        // end-of-results signal there is.
+                        p.exhausted = fresh.is_empty();
+                    }
+                    mark_known(&w, fresh.iter().map(|b| b.md5.clone()).collect());
+                    reveal(&w, step, seq);
+                }
+                Some(Err(e)) => {
+                    // The results already on screen are still good, so this
+                    // says what happened and leaves the button up to try again
+                    // — the page is not torn down over one extra page failing.
+                    w.set_genesis_status(e.to_string().into());
+                }
+                None => w.set_genesis_more_done(true),
+            }
+        });
+    });
+}
+
+/// What a "load more" needs to know.
+///
+/// A mirror page holds 25, 50 or 100 records and the format and language
+/// filters run after it arrives, so one request usually carries several
+/// screens' worth. Those are spent before the mirror is asked for another page.
+#[derive(Default)]
+struct Paging {
+    /// The query the results in hand came from, so the next page is the same
+    /// search rather than whatever is in the search box now.
+    query: Option<SearchQuery>,
+    /// Last mirror page fetched, one-based.
+    page: usize,
+    /// How many of the fetched records are on screen.
+    shown: usize,
+    /// A page came back with nothing new in it — there is no more to load.
+    exhausted: bool,
+}
+
+fn paging() -> MutexGuard<'static, Paging> {
+    static P: OnceLock<Mutex<Paging>> = OnceLock::new();
+    P.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
 /// The last result set, kept so a Get click can name a full [`Book`] rather
-/// than re-searching to find the row the user pressed — and so sorting and
-/// paging never need the mirror again.
+/// than re-searching to find the row the user pressed — and so a sort never
+/// needs the mirror again.
 fn results() -> MutexGuard<'static, (Vec<Book>, Vec<String>)> {
     static ROWS: OnceLock<Mutex<(Vec<Book>, Vec<String>)>> = OnceLock::new();
     ROWS.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner())
@@ -427,19 +678,55 @@ fn stash(books: Vec<Book>, known: Vec<String>) {
     *results() = (books, known);
 }
 
-/// Order the whole result set, cut out the current page, and push it.
+/// Add records that are not already in hand, and hand back the new ones.
 ///
-/// Sorting is over every record the mirror returned, not over the twelve on
-/// screen: sorting a page in place would shuffle that page and leave the rest of
-/// the table alone, which is the one thing a sort must never do.
-fn push_page(w: &MainWindow) {
+/// Mirrors overlap their pages, and a repeat would otherwise show up as a
+/// duplicate card with the same MD5 — and be counted as progress.
+fn append(books: Vec<Book>) -> Vec<Book> {
+    let mut g = results();
+    let fresh: Vec<Book> =
+        books.into_iter().filter(|b| !g.0.iter().any(|h| h.md5 == b.md5)).collect();
+    g.0.extend(fresh.iter().cloned());
+    fresh
+}
+
+/// Fill in the "already downloaded" mark for freshly appended records.
+///
+/// One query for the whole batch, the same as a first search does — the flag is
+/// what turns a card's Download pill into "In library".
+fn mark_known(w: &MainWindow, md5s: Vec<String>) {
+    if md5s.is_empty() {
+        return;
+    }
+    let weak = w.as_weak();
+    spawn(async move {
+        let Ok(pool) = history::open().await else { return };
+        let Ok(known) = history::known(&pool, &md5s).await else { return };
+        if known.is_empty() {
+            return;
+        }
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            results().1.extend(known);
+            push_rows(&w);
+        });
+    });
+}
+
+/// Order what has been revealed so far and push it.
+///
+/// The cut is taken in the mirror's own order — its relevance ranking — and the
+/// sort is applied to what that yields. The other way round, changing the sort
+/// would change *which* books are on screen, so ordering by title would quietly
+/// swap the results for a different set of them.
+fn push_rows(w: &MainWindow) {
     let (key, desc) = sort_state().clone();
+    let shown = paging().shown;
     let (books, known) = {
         let g = results();
         (g.0.clone(), g.1.clone())
     };
 
-    let mut ordered: Vec<&Book> = books.iter().collect();
+    let mut ordered: Vec<&Book> = books.iter().take(shown).collect();
     if !key.is_empty() {
         ordered.sort_by(|a, b| {
             let ord = match key.as_str() {
@@ -462,16 +749,8 @@ fn push_page(w: &MainWindow) {
     }
 
     let total = ordered.len();
-    let pages = total.div_ceil(PAGE).max(1);
-    // A sort can never change how many pages there are, but a fresh search can,
-    // and the stored page has to be clamped into the new range.
-    let at = (PAGE_AT.load(Ordering::Relaxed) as usize).min(pages - 1);
-    PAGE_AT.store(at as u64, Ordering::Relaxed);
-
     let rows: Vec<GenesisRow> = ordered
         .into_iter()
-        .skip(at * PAGE)
-        .take(PAGE)
         .map(|b| GenesisRow {
             md5: b.md5.clone().into(),
             title: b.title.clone().into(),
@@ -482,15 +761,253 @@ fn push_page(w: &MainWindow) {
             size: b.size_human().into(),
             format: b.ext().to_uppercase().into(),
             have: known.contains(&b.md5),
+            // Whatever a past search already fetched shows immediately; the
+            // rest arrive as the cover pass works through them.
+            cover: cover_image(&b.md5),
         })
         .collect();
 
     set_rows(&w.get_genesis_rows(), rows, |rows| w.set_genesis_rows(rows));
-    w.set_genesis_page(at as i32);
-    w.set_genesis_pages(if total == 0 { 0 } else { pages as i32 });
     w.set_genesis_total(total as i32);
     w.set_genesis_sort(key.into());
     w.set_genesis_sort_desc(desc);
+}
+
+// ── search history ──────────────────────────────────────────────────────────
+
+/// Record a search so it can be run again from the history popup.
+///
+/// Fire and forget: failing to remember a search is not a reason to interrupt
+/// someone who is looking at its results.
+fn remember_search(w: &MainWindow, terms: &str, results: i64) {
+    let (terms, field, format, language) = (
+        terms.to_string(),
+        w.get_genesis_field().to_string(),
+        w.get_genesis_format().to_string(),
+        w.get_genesis_language().to_string(),
+    );
+    let at = now_secs();
+    spawn(async move {
+        let Ok(pool) = history::open().await else { return };
+        if let Err(e) =
+            history::record_search(&pool, &terms, &field, &format, &language, results, at).await
+        {
+            tracing::warn!(error = %e, "genesis: could not record the search");
+        }
+    });
+}
+
+/// Load the recent searches into the popup's model.
+fn load_history(w: &MainWindow) {
+    let weak = w.as_weak();
+    spawn(async move {
+        let list = match history::open().await {
+            Ok(pool) => history::recent_searches(&pool, HISTORY_MAX).await.unwrap_or_default(),
+            Err(e) => {
+                tracing::warn!(error = %e, "genesis: could not read the search history");
+                Vec::new()
+            }
+        };
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            let rows: Vec<GenesisSearch> = list
+                .into_iter()
+                .map(|s| GenesisSearch {
+                    terms: s.terms.into(),
+                    field: s.field.into(),
+                    format: s.format.into(),
+                    language: s.language.into(),
+                    results: s.results as i32,
+                    when: ago(s.at).into(),
+                })
+                .collect();
+            set_rows(&w.get_genesis_history(), rows, |rows| w.set_genesis_history(rows));
+        });
+    });
+}
+
+/// A coarse "how long ago", which is all a history row needs — the exact second
+/// someone ran a search is never the question being asked.
+fn ago(at: i64) -> String {
+    let secs = (now_secs() - at).max(0);
+    match secs {
+        0..=59 => "just now".to_string(),
+        60..=3599 => format!("{} min ago", secs / 60),
+        3600..=86399 => format!("{} h ago", secs / 3600),
+        _ => format!("{} d ago", secs / 86400),
+    }
+}
+
+// ── record details ──────────────────────────────────────────────────────────
+
+/// Open the details popup for one record.
+///
+/// The cache is consulted first and, when it answers, nothing touches the
+/// network — which is the point of storing it. A miss fetches the record page
+/// once and writes it back.
+fn start_details(w: &MainWindow, md5: String) {
+    let Some(book) = results().0.iter().find(|b| b.md5 == md5).cloned() else {
+        return;
+    };
+
+    w.set_genesis_details_open(true);
+    w.set_genesis_details_error("".into());
+    // Seed from the row already on screen, so the popup opens with the title
+    // and author filled in rather than blank while the page is fetched.
+    w.set_genesis_details(GenesisDetails {
+        md5: book.md5.clone().into(),
+        title: book.title.clone().into(),
+        authors: book.authors_or_unknown().to_string().into(),
+        year: book.year.clone().unwrap_or_default().into(),
+        language: book.language.clone().unwrap_or_default().into(),
+        pages: book.pages.clone().unwrap_or_default().into(),
+        size: book.size_human().into(),
+        extension: book.ext().to_uppercase().into(),
+        cover: cover_image(&book.md5),
+        ..Default::default()
+    });
+
+    let weak = w.as_weak();
+    spawn(async move {
+        // 1. The cache.
+        if let Ok(pool) = history::open().await
+            && let Ok(Some(cached)) = history::cached_details(&pool, &md5).await
+        {
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_genesis_details_loading(false);
+                push_details(&w, &cached);
+            });
+            return;
+        }
+
+        // 2. The mirror.
+        let _ = weak.upgrade_in_event_loop(|w| w.set_genesis_details_loading(true));
+        let fetch_weak = weak.clone();
+        spawn_blocking(move || {
+            let fetched = with_mut(|svc| svc.details(&book, &|_| {}));
+            let _ = fetch_weak.upgrade_in_event_loop(move |w| {
+                w.set_genesis_details_loading(false);
+                match fetched {
+                    Some(Ok(served)) => {
+                        push_details(&w, &served.value);
+                        cache_details(served.value);
+                    }
+                    Some(Err(e)) => w.set_genesis_details_error(e.to_string().into()),
+                    None => w
+                        .set_genesis_details_error("could not start the search client".into()),
+                }
+            });
+        });
+    });
+}
+
+/// Write a fetched record page into the popup.
+fn push_details(w: &MainWindow, d: &details::Details) {
+    w.set_genesis_details(GenesisDetails {
+        md5: d.md5.clone().into(),
+        title: d.title.clone().into(),
+        series: d.series.clone().into(),
+        authors: d.authors.clone().into(),
+        publisher: d.publisher.clone().into(),
+        year: d.year.clone().into(),
+        isbn: d.isbn.clone().into(),
+        language: d.language.clone().into(),
+        pages: d.pages.clone().into(),
+        size: d.size.clone().into(),
+        extension: d.extension.to_uppercase().into(),
+        description: d.description.clone().into(),
+        source: d.source_url.clone().into(),
+        cover: cover_image(&d.md5),
+        have: results().1.contains(&d.md5),
+    });
+}
+
+fn cache_details(d: details::Details) {
+    let at = now_secs();
+    spawn(async move {
+        let Ok(pool) = history::open().await else { return };
+        if let Err(e) = history::store_details(&pool, &d, at).await {
+            tracing::warn!(error = %e, "genesis: could not cache the record details");
+        }
+    });
+}
+
+// ── covers ──────────────────────────────────────────────────────────────────
+
+/// The cached cover for an MD5, or an empty image when there is none yet.
+///
+/// Decoding happens on the UI thread because `slint::Image` is not `Send`; the
+/// files are thumbnails, so this is cheap. The *fetching* is what runs off the
+/// event loop.
+fn cover_image(md5: &str) -> slint::Image {
+    match tulipix_genesis::cover::cached(md5) {
+        Some(Some(path)) => load_cover(&path),
+        _ => slint::Image::default(),
+    }
+}
+
+fn load_cover(path: &Path) -> slint::Image {
+    // Only ever load out of the cover cache: the path is derived from an MD5
+    // by the cover module, never from anything a mirror said.
+    if !tulipix_genesis::cover::is_cached_path(path) {
+        return slint::Image::default();
+    }
+    slint::Image::load_from_path(path).unwrap_or_default()
+}
+
+/// Fetch the covers for a result set, one book at a time, and drop each one
+/// into its row as it lands.
+///
+/// Sequential on purpose: a screenful of results is fifty records, and fifty
+/// concurrent requests to one mirror is the sort of thing that gets an address
+/// rate-limited. `seq` abandons the pass the moment a newer search starts.
+fn fetch_covers(w: &MainWindow, books: Vec<Book>, seq: u64) {
+    let weak = w.as_weak();
+    spawn_blocking(move || {
+        for book in books {
+            if SEARCH_GEN.load(Ordering::Relaxed) != seq {
+                return;
+            }
+            if cover_known(&book.md5) {
+                continue;
+            }
+            // Holds the service mutex for one record page plus one image, which
+            // is why this is a book at a time rather than the whole set inside
+            // a single lock.
+            let found = match with_mut(|svc| svc.cover(&book, &|_| {})) {
+                Some(Ok(Some(path))) => path,
+                _ => continue,
+            };
+            let md5 = book.md5.clone();
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                if SEARCH_GEN.load(Ordering::Relaxed) == seq {
+                    set_cover(&w, &md5, &found);
+                }
+            });
+        }
+    });
+}
+
+/// True when this MD5 has already been looked up — art or a "no cover" answer.
+fn cover_known(md5: &str) -> bool {
+    tulipix_genesis::cover::cached(md5).is_some()
+}
+
+/// Put a freshly fetched cover into the row it belongs to.
+///
+/// `set_row_data` on the live model rather than rebuilding the whole list:
+/// covers land one at a time, and re-pushing fifty rows per arrival would
+/// restart the grid's layout fifty times.
+fn set_cover(w: &MainWindow, md5: &str, path: &Path) {
+    let model = w.get_genesis_rows();
+    for i in 0..model.row_count() {
+        if let Some(mut row) = model.row_data(i)
+            && row.md5 == md5
+        {
+            row.cover = load_cover(path);
+            model.set_row_data(i, row);
+            return;
+        }
+    }
 }
 
 /// Case-folded sort key. Mirrors mix casing freely, so a byte compare would put
@@ -690,15 +1207,14 @@ fn mark_have(w: &MainWindow, md5: &str) {
 
 // ── query building ──────────────────────────────────────────────────────────
 
-const FIELDS: &[&str] = &["Any", "Title", "Author", "Series", "Publisher", "Year", "ISBN"];
-const FORMATS: &[&str] = &["Any", "epub", "pdf", "mobi", "azw3", "djvu", "cbz"];
-const LANGUAGES: &[&str] = &["Any", "English", "German", "French", "Spanish", "Russian", "Italian"];
-
-/// Next value in a fixed list, wrapping. Cheaper than a popup menu for a
-/// handful of options, and it needs no positioning logic.
-fn cycle(current: &str, options: &[&str]) -> String {
-    let at = options.iter().position(|o| *o == current).unwrap_or(0);
-    options[(at + 1) % options.len()].to_string()
+/// How many results one search asks for, clamped to what the slider allows.
+fn configured_limit() -> i32 {
+    advanced(LIMIT_KEY)
+        .trim()
+        .parse::<i32>()
+        .ok()
+        .map(|v| v.clamp(1, MAX_LIMIT))
+        .unwrap_or(DEFAULT_LIMIT)
 }
 
 fn build_query(w: &MainWindow, terms: &str) -> SearchQuery {
@@ -729,7 +1245,7 @@ fn build_query(w: &MainWindow, terms: &str) -> SearchQuery {
         "Any" => None,
         other => Some(other.to_string()),
     };
-    q.limit = 50;
+    q.limit = configured_limit().max(1) as usize;
     q
 }
 
@@ -944,12 +1460,30 @@ fn now_secs() -> i64 {
 mod tests {
     use super::*;
 
+    /// The slider offers 1‥49 and the setting is free text, so both a value
+    /// out of range and a value that is not a number have to land somewhere
+    /// sane rather than asking a mirror for zero results.
     #[test]
-    fn cycling_wraps_and_starts_over_from_an_unknown_value() {
-        assert_eq!(cycle("Any", FIELDS), "Title");
-        assert_eq!(cycle("ISBN", FIELDS), "Any", "the last option wraps");
-        // An unrecognised value restarts rather than sticking.
-        assert_eq!(cycle("nonsense", FIELDS), "Title");
+    fn the_results_limit_is_clamped_whatever_the_setting_says() {
+        assert_eq!(DEFAULT_LIMIT, 21);
+        assert_eq!(MAX_LIMIT, 49);
+        assert!(DEFAULT_LIMIT <= MAX_LIMIT);
+        for raw in ["0", "-5", "999", "not a number", ""] {
+            let parsed =
+                raw.trim().parse::<i32>().ok().map(|v| v.clamp(1, MAX_LIMIT)).unwrap_or(DEFAULT_LIMIT);
+            assert!((1..=MAX_LIMIT).contains(&parsed), "{raw} produced {parsed}");
+        }
+    }
+
+    #[test]
+    fn history_ages_read_as_durations_not_timestamps() {
+        let now = now_secs();
+        assert_eq!(ago(now), "just now");
+        assert_eq!(ago(now - 120), "2 min ago");
+        assert_eq!(ago(now - 7200), "2 h ago");
+        assert_eq!(ago(now - 172800), "2 d ago");
+        // A clock that moved backwards must not produce a negative age.
+        assert_eq!(ago(now + 60), "just now");
     }
 
     #[test]

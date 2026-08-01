@@ -1,9 +1,9 @@
 // Live TV — free-to-air channels from iptv-org, as a sibling of the Stream tab.
 //
-// Built on the Videos section's own palette (`VP`) rather than a new one, so it
-// reads as another Videos tab instead of a second app bolted on. The shapes are
-// Stream's: a header with the search on it, a filter strip, a card grid, and one
-// modal for configuration.
+// Built on the Videos section's own palette (`VP`) *and* its own header parts —
+// `VideoTab` and `SortChip` are imported rather than re-declared, so this page
+// cannot drift away from the section it lives in. An earlier private copy of the
+// tab chip is what turned the header's round pills into squares here.
 //
 // The one structural difference from Stream: there is nothing to search until a
 // playlist has been chosen. iptv-org publishes ~200 separate lists and there is
@@ -13,7 +13,7 @@ import { Theme } from "tokens.slint";
 import { Surface, Skin } from "surface.slint";
 import { AppIcon, Icons } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
-import { VP } from "page_videos.slint";
+import { VP, VideoTab, SortChip } from "page_videos.slint";
 
 // One channel on the grid. `logo` is filled by Rust; empty falls through to a
 // lettered placeholder, which most iptv-org entries need.
@@ -35,54 +35,24 @@ export struct LivePlaylist {
 
 // ── small parts ─────────────────────────────────────────────────────────────
 
-component LiveTab inherits Skin {
-    in property <string> label;
-    in property <image> icon;
-    in property <bool> active: false;
-    callback clicked();
-    height: 40px; horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: Surface.r(6px);
-    background: root.active
-        ? (ta.has-hover ? VP.accent-hi : VP.accent)
-        : (ta.has-hover ? VP.btn-2-hi : VP.btn-2);
-    border-width: root.active ? 0px : 1px;
-    border-color: VP.btn-2-edge;
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    HorizontalLayout {
-        alignment: center; spacing: 6px; padding-left: 12px; padding-right: 12px;
-        if root.icon.width > 0: VerticalLayout {
-            alignment: center;
-            AppIcon {
-                source: root.icon;
-                tint: root.active ? VP.accent-ink : VP.btn-2-ink;
-                width: 15px; height: 15px;
-            }
-        }
-        Text {
-            text: root.label; font-size: 13px; font-weight: 700;
-            color: root.active ? VP.accent-ink : VP.btn-2-ink;
-            vertical-alignment: center;
-        }
-    }
-}
-
-// A filter chip for the group strip.
-component GroupChip inherits Skin {
+// A category row in the right sidebar. Categories used to be a chip strip in a
+// second header; a loaded country list has dozens of them, which is a scroller
+// nobody reads. The sidebar shows them as a list.
+component GroupRow inherits Skin {
     in property <string> label;
     in property <bool> active: false;
     callback clicked();
-    height: 30px; horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: 15px;
-    background: root.active ? VP.accent : (ta.has-hover ? VP.btn-2-hi : VP.btn-2);
-    border-width: root.active ? 0px : 1px;
-    border-color: VP.btn-2-edge;
+    height: 32px; vertical-stretch: 0;
+    border-radius: Surface.r(8px);
+    background: root.active ? VP.accent : (ta.has-hover ? VP.btn-2-hi : transparent);
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
-        alignment: center; padding-left: 13px; padding-right: 13px;
+        padding-left: 10px; padding-right: 10px; spacing: 8px;
         Text {
-            text: root.label; font-size: 12px; font-weight: 700;
+            text: root.label; font-size: 12.5px;
+            font-weight: root.active ? 700 : 500;
             color: root.active ? VP.accent-ink : VP.text-dim;
-            vertical-alignment: center;
+            vertical-alignment: center; overflow: elide;
         }
     }
 }
@@ -90,21 +60,42 @@ component GroupChip inherits Skin {
 // One channel card. Fixed size so the grid can position by index — Slint has no
 // wrapping flow layout, so the geometry is arithmetic and both halves have to
 // agree on the cell size.
+//
+// Clicking: a single click plays when nothing is on. Once a channel is running,
+// switching takes a double click, so a stray click on the grid cannot kill a
+// stream that is already playing.
 component ChannelCard inherits Skin {
     in property <LiveChannel> ch;
-    callback clicked();
+    /// This card is the channel currently on.
+    in property <bool> playing: false;
+    /// Some channel — not necessarily this one — is currently on.
+    in property <bool> any-playing: false;
+    callback play();
     border-radius: Surface.r(10px);
     background: ta.has-hover ? VP.surface-2 : VP.surface;
-    border-width: 1px;
-    border-color: ta.has-hover ? VP.accent-44 : VP.hair;
+    border-width: root.playing ? 2px : 1px;
+    border-color: root.playing ? VP.accent : (ta.has-hover ? VP.accent-44 : VP.hair);
     drop-shadow-blur: ta.has-hover ? Surface.cast(16px) : 0px;
     drop-shadow-color: ta.has-hover ? VP.accent-22 : #00000000;
     drop-shadow-offset-y: ta.has-hover ? 4px : 0px;
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    clip: true;
+    ta := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { if (!root.any-playing) { root.play(); } }
+        double-clicked => { if (root.any-playing && !root.playing) { root.play(); } }
+    }
     VerticalLayout {
-        padding: 12px; spacing: 9px;
+        padding: 10px; spacing: 6px;
+        // The only stretchy child: the leftover height lands here instead of
+        // being shared out as gaps between the two labels.
         Rectangle {
-            height: 68px; border-radius: Surface.r(8px); background: VP.well;
+            vertical-stretch: 1; min-height: 62px;
+            border-radius: Surface.r(8px);
+            // Channel logos are overwhelmingly white-on-transparent PNGs. A
+            // light backdrop makes half of them invisible, so the well is grey
+            // in dark themes and black in light ones — the logo keeps its own
+            // colours either way.
+            background: Theme.dark ? #3a3f48 : #000000;
             clip: true;
             if root.ch.logo.width > 0: Image {
                 source: root.ch.logo;
@@ -116,20 +107,48 @@ component ChannelCard inherits Skin {
             // is a card that still reads as a channel.
             if root.ch.logo.width == 0: Text {
                 text: root.ch.name;
-                color: VP.ph-icon; font-size: 22px; font-weight: 800;
+                color: #ffffff8c; font-size: 20px; font-weight: 800;
                 horizontal-alignment: center; vertical-alignment: center;
                 width: parent.width; height: parent.height;
                 overflow: elide;
             }
+            // On-air marker.
+            if root.playing: Rectangle {
+                x: 6px; y: 6px; width: onair.preferred-width + 16px; height: 20px;
+                border-radius: 10px; background: VP.accent;
+                onair := Text {
+                    text: "ON AIR"; color: VP.accent-ink;
+                    font-size: 9px; font-weight: 800; letter-spacing: 0.8px;
+                    width: parent.width; height: parent.height;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+            }
+            // Without this the card looks broken: a single click does nothing
+            // while another channel is on.
+            if root.any-playing && !root.playing && ta.has-hover: Rectangle {
+                y: parent.height - self.height - 6px; height: 20px;
+                x: (parent.width - self.width) / 2;
+                width: hint.preferred-width + 16px;
+                border-radius: 10px; background: #000000b0;
+                hint := Text {
+                    text: "Double-click to switch"; color: #ffffff;
+                    font-size: 9px; font-weight: 700;
+                    width: parent.width; height: parent.height;
+                    horizontal-alignment: center; vertical-alignment: center;
+                }
+            }
         }
+        // Two lines at most: `max-height` clamps a long name, and the card
+        // clips what the elide cannot fit.
         Text {
             text: root.ch.name; color: VP.text; font-size: 12.5px; font-weight: 700;
-            overflow: elide; horizontal-alignment: center;
+            wrap: word-wrap; overflow: elide; max-height: 34px;
+            vertical-stretch: 0; horizontal-alignment: center;
         }
         Text {
             text: root.ch.group == "" ? "Live" : root.ch.group;
             color: VP.text-mute; font-size: 10.5px;
-            overflow: elide; horizontal-alignment: center;
+            overflow: elide; vertical-stretch: 0; horizontal-alignment: center;
         }
     }
     animate background, border-color { duration: 120ms; }
@@ -167,9 +186,26 @@ component PickRow inherits Skin {
     }
 }
 
+// One labelled line in the now-playing sheet.
+component InfoRow inherits HorizontalLayout {
+    in property <string> label;
+    in property <string> value;
+    spacing: 12px; vertical-stretch: 0;
+    Text {
+        text: root.label; color: VP.text-mute; font-size: 11px; font-weight: 800;
+        letter-spacing: 0.6px; width: 92px; horizontal-stretch: 0;
+    }
+    Text {
+        text: root.value == "" ? "—" : root.value;
+        color: VP.text; font-size: 12px; wrap: word-wrap; horizontal-stretch: 1;
+    }
+}
+
 export component LiveTvPage inherits Rectangle {
+    /// The current page of channels, already filtered, sorted and sliced by
+    /// Rust — the grid draws what it is handed.
     in property <[LiveChannel]> channels: [];
-    // Distinct `group-title` values across the loaded channels, for the strip.
+    // Distinct `group-title` values across the loaded channels, for the sidebar.
     in property <[string]> groups: [];
     in-out property <string> group: "";   // "" = every group
     in-out property <string> query: "";
@@ -177,9 +213,34 @@ export component LiveTvPage inherits Rectangle {
     in property <string> status: "";
     /// Channels loaded in total, before the search and group filter.
     in property <int> total: 0;
+    /// Channels that survived the search and the group filter.
+    in property <int> matched: 0;
     /// How many playlists are selected. Zero is the first-run state and drives
     /// the empty state below.
     in property <int> picked-count: 0;
+
+    // Paging and sorting. Both are driven from Rust so the page slice, the
+    // logo fetch and the grid can never disagree about what is on screen.
+    in property <int> page: 0;        // zero-based
+    in property <int> pages: 1;
+    in property <string> sort: "default";
+    in property <bool> asc: true;
+    callback set-page(int);
+    callback set-sort(string, bool);
+
+    // What is on air. `now-index` is -1 when nothing is.
+    in property <int> now-index: -1;
+    in property <string> now-name: "";
+    /// The same name, already cut to the pill's twenty characters.
+    in property <string> now-label: "";
+    in property <string> now-group: "";
+    in property <string> now-id: "";
+    in property <string> now-url: "";
+    in property <string> now-res: "";
+    in property <image> now-logo;
+    in property <string> now-cache: "";
+    in-out property <bool> info-open: false;
+    callback info-opened();
 
     // Playlist picker.
     in-out property <bool> config-open: false;
@@ -207,9 +268,14 @@ export component LiveTvPage inherits Rectangle {
 
     // Card geometry. Repeated in the grid height below — Slint has no wrapping
     // layout, so the two must be kept in step by hand.
-    property <length> cell-w: 190px;
-    property <length> cell-h: 178px;
-    property <int> cols: max(1, Math.floor((grid.width - 56px) / cell-w));
+    //
+    // The columns are capped at seven so a full page is the 7×6 the page size
+    // is cut for, and the cell width is what is left over *divided* by them
+    // rather than a fixed 190px — a fixed width left a dead strip against the
+    // categories sidebar on every window that did not divide evenly.
+    property <int> cols: min(7, max(1, Math.floor((grid.width - 42px) / 196px)));
+    property <length> cell-w: max(120px, min(300px, (grid.width - 42px) / root.cols));
+    property <length> cell-h: 196px;
 
     VerticalLayout {
         spacing: 0px;
@@ -225,7 +291,7 @@ export component LiveTvPage inherits Rectangle {
                         width: 34px; height: 34px; border-radius: Surface.r(10px);
                         background: VP.accent-22;
                         AppIcon {
-                            source: Icons.tv; tint: VP.accent; width: 18px; height: 18px;
+                            source: Icons.film; tint: VP.accent; width: 18px; height: 18px;
                             x: (parent.width - self.width) / 2;
                             y: (parent.height - self.height) / 2;
                         }
@@ -242,17 +308,17 @@ export component LiveTvPage inherits Rectangle {
                     alignment: center; horizontal-stretch: 0;
                     HorizontalLayout {
                         spacing: 8px;
-                        LiveTab { label: "TV";       active: root.kind == "tv";
+                        VideoTab { hue: VP.c-info; label: "TV";       active: root.kind == "tv";
                             clicked => { root.set-kind("tv"); } }
-                        LiveTab { label: "Movies";   active: root.kind == "movies";
+                        VideoTab { hue: VP.c-save; label: "Movies";   active: root.kind == "movies";
                             clicked => { root.set-kind("movies"); } }
-                        LiveTab { label: "Local";    active: root.kind == "local";
+                        VideoTab { hue: VP.c-dl; label: "Local";      active: root.kind == "local";
                             clicked => { root.set-kind("local"); } }
-                        LiveTab { label: "Discover"; active: root.kind == "discover";
+                        VideoTab { hue: VP.c-back; label: "Discover"; active: root.kind == "discover";
                             clicked => { root.set-kind("discover"); } }
-                        LiveTab { label: "Live TV";  active: root.kind == "livetv";
+                        VideoTab { hue: VP.c-copy; label: "Live TV";  active: root.kind == "livetv";
                             clicked => { root.set-kind("livetv"); } }
-                        LiveTab { label: "Stream";   active: root.kind == "stream";
+                        VideoTab { hue: VP.c-play; label: "Stream";   active: root.kind == "stream";
                             clicked => { root.set-kind("stream"); } }
                     }
                 }
@@ -261,7 +327,7 @@ export component LiveTvPage inherits Rectangle {
                 VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
                     Rectangle {
-                        width: 360px; height: 44px; border-radius: 22px; background: VP.hair;
+                        width: 300px; height: 44px; border-radius: 22px; background: VP.hair;
                         border-width: 1px; border-color: VP.glass-2;
                         HorizontalLayout {
                             padding-left: 18px; padding-right: 10px; spacing: 8px;
@@ -308,7 +374,8 @@ export component LiveTvPage inherits Rectangle {
 
                 VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
-                    LiveTab {
+                    VideoTab {
+                        hue: VP.c-save;
                         icon: Icons.list;
                         label: root.picked-count == 0
                             ? "Playlists"
@@ -319,20 +386,102 @@ export component LiveTvPage inherits Rectangle {
                 }
                 VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
-                    LiveTab {
+                    VideoTab {
+                        hue: VP.c-back;
                         icon: Icons.refresh-cw;
                         label: root.busy ? "Loading…" : "Refresh";
                         clicked => { if (!root.busy) { root.refresh(); } }
                     }
                 }
+
+                // Now playing — only while something is on. Opens the sheet
+                // with the channel's own details and what mpv is being fed.
+                // Keyed off the name, not the index: a reload can leave a
+                // stream playing that no selected playlist lists any more, and
+                // that still counts as on air.
+                if root.now-name != "": VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Rectangle {
+                        height: 44px;
+                        border-radius: 22px;
+                        background: np.has-hover ? VP.accent-hi : VP.accent;
+                        clip: true;
+                        np := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.info-open = true; root.info-opened(); }
+                        }
+                        // Two rings chasing each other *inside* the pill, so it
+                        // reads as live without the pill changing size — the
+                        // music header's ring is an outer 2px gradient frame,
+                        // which here would shove the whole header row along
+                        // every time playback started.
+                        property <float> phase: Math.mod(animation-tick() / 1ms, 2400) / 2400;
+                        Rectangle {
+                            x: 3px; y: 3px;
+                            width: parent.width - 6px; height: parent.height - 6px;
+                            border-radius: 19px; border-width: 1.5px;
+                            background: transparent;
+                            border-color: #ffffff.with-alpha(
+                                0.22 + 0.55 * (0.5 + 0.5 * Math.sin(parent.phase * 360deg)));
+                        }
+                        Rectangle {
+                            x: 7px; y: 7px;
+                            width: parent.width - 14px; height: parent.height - 14px;
+                            border-radius: 15px; border-width: 1px;
+                            background: transparent;
+                            // Half a turn behind the outer ring, and a different
+                            // colour, so the two never read as one thick line.
+                            border-color: #ffd166.with-alpha(
+                                0.18 + 0.5 * (0.5 + 0.5 * Math.sin(parent.phase * 360deg + 180deg)));
+                        }
+                        HorizontalLayout {
+                            padding-left: 12px; padding-right: 16px; spacing: 8px;
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Rectangle {
+                                    width: 26px; height: 26px; border-radius: 13px;
+                                    // Same well as the cards: channel logos are
+                                    // white-on-transparent, and the accent fill
+                                    // swallowed half of them.
+                                    background: Theme.dark ? #3a3f48 : #000000;
+                                    clip: true;
+                                    if root.now-logo.width > 0: Image {
+                                        source: root.now-logo; image-fit: contain;
+                                        width: parent.width - 6px; height: parent.height - 6px;
+                                        x: 3px; y: 3px;
+                                    }
+                                    if root.now-logo.width == 0: AppIcon {
+                                        source: Icons.radio; tint: #ffffffcc;
+                                        width: 13px; height: 13px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 1;
+                                Text {
+                                    // Already cut to twenty characters by Rust:
+                                    // Slint cannot slice a string, and eliding
+                                    // on width would make the pill's length
+                                    // depend on the font.
+                                    text: root.now-label; color: VP.accent-ink;
+                                    font-size: 12px; font-weight: 800;
+                                }
+                            }
+                        }
+                    }
+                }
+
                 if root.total > 0: VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
                     Rectangle {
-                        height: 44px; border-radius: 22px; background: VP.accent;
+                        height: 44px; border-radius: 22px; background: VP.btn-2;
+                        border-width: 1px; border-color: VP.btn-2-edge;
                         HorizontalLayout {
                             padding-left: 16px; padding-right: 16px;
                             Text {
-                                text: root.total + " channels"; color: VP.accent-ink;
+                                text: root.total + " channels"; color: VP.btn-2-ink;
                                 font-size: 12px; font-weight: 800; vertical-alignment: center;
                             }
                         }
@@ -341,29 +490,109 @@ export component LiveTvPage inherits Rectangle {
             }
         }
 
-        // ── group strip ─────────────────────────────────────────────────────
-        // Only when there is something to narrow: one chip reading "All" over an
-        // empty page is furniture.
-        if root.groups.length > 0: Rectangle {
+        // ── sort + pagination ───────────────────────────────────────────────
+        // The categories used to live here; they are in the right sidebar now.
+        if root.total > 0: Rectangle {
             height: 54px; horizontal-stretch: 1; background: VP.header;
-            Flickable {
-                x: 28px; y: 0; width: parent.width - 56px; height: 100%;
-                viewport-width: strip.preferred-width;
-                viewport-height: self.height;
-                strip := HorizontalLayout {
-                    spacing: 8px; alignment: start;
-                    VerticalLayout {
-                        alignment: center; horizontal-stretch: 0;
-                        GroupChip {
-                            label: "All"; active: root.group == "";
-                            clicked => { root.set-group(""); }
+            HorizontalLayout {
+                padding-left: 28px; padding-right: 28px; spacing: 10px; alignment: start;
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Text {
+                                text: "SORT"; color: VP.text-mute; font-size: 9px; font-weight: 800;
+                                letter-spacing: 1.2px; vertical-alignment: center;
+                            } }
+                        SortChip {
+                            label: "Playlist"; hue: VP.c-info; active: root.sort == "default";
+                            clicked => { root.set-sort("default", root.asc); }
+                        }
+                        SortChip {
+                            label: "Name"; hue: VP.c-dl; active: root.sort == "name";
+                            clicked => { root.set-sort("name", root.asc); }
+                        }
+                        SortChip {
+                            label: "Category"; hue: VP.c-back; active: root.sort == "group";
+                            clicked => { root.set-sort("group", root.asc); }
+                        }
+                        // Read out of the "(720p)" iptv-org writes into the
+                        // channel name — the playlists carry it nowhere else.
+                        SortChip {
+                            label: "Quality"; hue: VP.c-play; active: root.sort == "res";
+                            clicked => { root.set-sort("res", root.asc); }
+                        }
+                        Rectangle {
+                            width: 34px; height: 30px; border-radius: Surface.r(8px);
+                            horizontal-stretch: 0; vertical-stretch: 0;
+                            background: dirb.has-hover ? VP.btn-2-hi : VP.btn-2;
+                            dirb := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.set-sort(root.sort, !root.asc); }
+                            }
+                            AppIcon {
+                                source: root.asc ? Icons.arrow-up : Icons.arrow-down;
+                                tint: VP.accent; width: 14px; height: 14px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                     }
-                    for g in root.groups: VerticalLayout {
-                        alignment: center; horizontal-stretch: 0;
-                        GroupChip {
-                            label: g; active: root.group == g;
-                            clicked => { root.set-group(g); }
+                }
+
+                Rectangle { horizontal-stretch: 1; }
+
+                VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Text {
+                        text: root.matched + (root.matched == 1 ? " channel" : " channels")
+                            + (root.group == "" ? "" : " in " + root.group);
+                        color: VP.text-dim; font-size: 12px; vertical-alignment: center;
+                    }
+                }
+
+                if root.pages > 1: VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    HorizontalLayout {
+                        spacing: 6px;
+                        Rectangle {
+                            width: 34px; height: 34px; border-radius: Surface.r(8px);
+                            background: prevp.has-hover ? VP.btn-2-hi : VP.btn-2;
+                            opacity: root.page > 0 ? 1.0 : 0.4;
+                            prevp := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { if (root.page > 0) { root.set-page(root.page - 1); } }
+                            }
+                            AppIcon {
+                                source: Icons.chevron-left; tint: VP.icon;
+                                width: 15px; height: 15px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Text {
+                                text: (root.page + 1) + " / " + root.pages;
+                                color: VP.text-dim; font-size: 12px; font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
+                        Rectangle {
+                            width: 34px; height: 34px; border-radius: Surface.r(8px);
+                            background: nextp.has-hover ? VP.btn-2-hi : VP.btn-2;
+                            opacity: root.page + 1 < root.pages ? 1.0 : 0.4;
+                            nextp := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { if (root.page + 1 < root.pages) { root.set-page(root.page + 1); } }
+                            }
+                            AppIcon {
+                                source: Icons.chevron-right; tint: VP.icon;
+                                width: 15px; height: 15px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
                         }
                     }
                 }
@@ -371,76 +600,139 @@ export component LiveTvPage inherits Rectangle {
         }
 
         // ── body ────────────────────────────────────────────────────────────
-        grid := Rectangle {
-            vertical-stretch: 1; horizontal-stretch: 1; background: VP.bg;
+        HorizontalLayout {
+            vertical-stretch: 1; horizontal-stretch: 1; spacing: 0px;
 
-            // First run: nothing has been chosen, so there is nothing to show.
-            if root.picked-count == 0 && !root.busy: VerticalLayout {
-                alignment: center; spacing: 14px;
-                HorizontalLayout {
-                    alignment: center;
-                    Rectangle {
-                        width: 96px; height: 96px; border-radius: Surface.r(20px);
-                        background: VP.accent-22;
-                        AppIcon {
-                            source: Icons.tv; tint: VP.accent; width: 42px; height: 42px;
-                            x: (parent.width - self.width) / 2;
-                            y: (parent.height - self.height) / 2;
+            grid := Rectangle {
+                vertical-stretch: 1; horizontal-stretch: 1; background: VP.bg;
+
+                // First run: nothing has been chosen, so there is nothing to show.
+                if root.picked-count == 0 && !root.busy: VerticalLayout {
+                    alignment: center; spacing: 14px;
+                    HorizontalLayout {
+                        alignment: center;
+                        Rectangle {
+                            width: 96px; height: 96px; border-radius: Surface.r(20px);
+                            background: VP.accent-22;
+                            AppIcon {
+                                source: Icons.tv; tint: VP.accent; width: 42px; height: 42px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+                    }
+                    Text {
+                        text: "Pick some playlists"; color: VP.text;
+                        font-size: 22px; font-weight: 700; horizontal-alignment: center;
+                    }
+                    Text {
+                        text: "iptv-org publishes one list per country, language and category — there is no single list of everything, so choose the ones you want and they are merged into one grid.";
+                        color: VP.text-dim; font-size: 13px; horizontal-alignment: center;
+                        wrap: word-wrap; max-width: 520px;
+                    }
+                    HorizontalLayout {
+                        alignment: center;
+                        VideoTab {
+                            hue: VP.c-play; icon: Icons.list; label: "Choose playlists"; active: true;
+                            clicked => { root.config-open = true; root.config-opened(); }
                         }
                     }
                 }
-                Text {
-                    text: "Pick some playlists"; color: VP.text;
-                    font-size: 22px; font-weight: 700; horizontal-alignment: center;
+
+                // Chosen, but nothing matched the search or the group.
+                if root.picked-count > 0 && root.channels.length == 0 && !root.busy: VerticalLayout {
+                    alignment: center; spacing: 10px;
+                    Text {
+                        text: root.total == 0 ? "No channels loaded" : "Nothing matched";
+                        color: VP.text; font-size: 20px; font-weight: 700;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: root.total == 0
+                            ? "The chosen playlists came back empty — press Refresh to fetch them again."
+                            : "Clear the search or pick another category.";
+                        color: VP.text-dim; font-size: 13px; horizontal-alignment: center;
+                    }
                 }
-                Text {
-                    text: "iptv-org publishes one list per country, language and category — there is no single list of everything, so choose the ones you want and they are merged into one grid.";
-                    color: VP.text-dim; font-size: 13px; horizontal-alignment: center;
-                    wrap: word-wrap; max-width: 520px;
-                }
-                HorizontalLayout {
-                    alignment: center;
-                    LiveTab {
-                        icon: Icons.list; label: "Choose playlists"; active: true;
-                        clicked => { root.config-open = true; root.config-opened(); }
+
+                if root.channels.length > 0: ScrollView {
+                    width: 100%; height: 100%;
+                    viewport-width: self.width;
+                    viewport-height: Math.ceil(root.channels.length / root.cols) * root.cell-h + 56px;
+                    // A new playlist set, a new filter or a new page must open
+                    // at the top.
+                    property <int> watch: root.channels.length;
+                    property <string> watch-group: root.group;
+                    property <int> watch-page: root.page;
+                    changed watch => { self.viewport-y = 0; }
+                    changed watch-group => { self.viewport-y = 0; }
+                    changed watch-page => { self.viewport-y = 0; }
+                    init => { self.viewport-y = 0; }
+
+                    for ch[i] in root.channels: ChannelCard {
+                        x: 28px + Math.mod(i, root.cols) * root.cell-w;
+                        y: 28px + Math.floor(i / root.cols) * root.cell-h;
+                        width: root.cell-w - 14px;
+                        height: root.cell-h - 14px;
+                        ch: ch;
+                        playing: root.now-index == ch.index;
+                        any-playing: root.now-name != "";
+                        play => { root.play(ch.index); }
                     }
                 }
             }
 
-            // Chosen, but nothing matched the search or the group.
-            if root.picked-count > 0 && root.channels.length == 0 && !root.busy: VerticalLayout {
-                alignment: center; spacing: 10px;
-                Text {
-                    text: root.total == 0 ? "No channels loaded" : "Nothing matched";
-                    color: VP.text; font-size: 20px; font-weight: 700;
-                    horizontal-alignment: center;
+            // ── categories sidebar ──────────────────────────────────────────
+            if root.groups.length > 0: Rectangle {
+                width: 236px; horizontal-stretch: 0; background: VP.header;
+                Rectangle {
+                    x: 0; width: 1px; height: 100%; background: VP.hair;
                 }
-                Text {
-                    text: root.total == 0
-                        ? "The chosen playlists came back empty — press Refresh to fetch them again."
-                        : "Clear the search or pick another group.";
-                    color: VP.text-dim; font-size: 13px; horizontal-alignment: center;
-                }
-            }
-
-            if root.channels.length > 0: ScrollView {
-                width: 100%; height: 100%;
-                viewport-width: self.width;
-                viewport-height: Math.ceil(root.channels.length / root.cols) * root.cell-h + 56px;
-                // A new playlist set or a new filter must open at the top.
-                property <int> watch: root.channels.length;
-                property <string> watch-group: root.group;
-                changed watch => { self.viewport-y = 0; }
-                changed watch-group => { self.viewport-y = 0; }
-                init => { self.viewport-y = 0; }
-
-                for ch[i] in root.channels: ChannelCard {
-                    x: 28px + Math.mod(i, root.cols) * root.cell-w;
-                    y: 28px + Math.floor(i / root.cols) * root.cell-h;
-                    width: root.cell-w - 14px;
-                    height: root.cell-h - 14px;
-                    ch: ch;
-                    clicked => { root.play(ch.index); }
+                VerticalLayout {
+                    padding-top: 18px; padding-bottom: 14px;
+                    padding-left: 14px; padding-right: 12px; spacing: 10px;
+                    HorizontalLayout {
+                        spacing: 8px; vertical-stretch: 0;
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            AppIcon {
+                                source: Icons.tag; tint: VP.accent;
+                                width: 15px; height: 15px;
+                            }
+                        }
+                        Text {
+                            text: "Categories"; color: VP.text;
+                            font-size: 13px; font-weight: 800; vertical-alignment: center;
+                        }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Text {
+                                text: root.groups.length;
+                                color: VP.text-mute; font-size: 11px; font-weight: 700;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                    Rectangle {
+                        vertical-stretch: 1; clip: true;
+                        ScrollView {
+                            width: 100%; height: 100%;
+                            viewport-width: self.width;
+                            viewport-height: cats.preferred-height;
+                            cats := VerticalLayout {
+                                width: parent.width; alignment: start; spacing: 2px;
+                                GroupRow {
+                                    label: "All categories"; active: root.group == "";
+                                    clicked => { root.set-group(""); }
+                                }
+                                for g in root.groups: GroupRow {
+                                    label: g; active: root.group == g;
+                                    clicked => { root.set-group(g); }
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -461,9 +753,111 @@ export component LiveTvPage inherits Rectangle {
         }
     }
 
-    // ── playlist picker ─────────────────────────────────────────────────────
+    // ── now-playing sheet ───────────────────────────────────────────────────
     // Declared after the layout, which is what puts it on top: Slint paints in
     // declaration order.
+    if root.info-open: FocusScope {
+        width: 100%; height: 100%;
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) { root.info-open = false; return accept; }
+            return reject;
+        }
+        Rectangle {
+            background: VP.scrim;
+            TouchArea { clicked => { root.info-open = false; } }
+            Rectangle {
+                width: 520px;
+                // Ends where the last row does. The width is fixed, so the
+                // wrapping stream URL has a definite height and the sheet can
+                // be sized from its own contents instead of a guess.
+                height: sheet.preferred-height;
+                border-radius: Surface.r(16px);
+                background: VP.modal; border-width: 1px; border-color: VP.hair-2;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                TouchArea {}   // swallow clicks so tapping the card doesn't dismiss
+                sheet := VerticalLayout {
+                    padding: 22px; spacing: 14px;
+
+                    HorizontalLayout {
+                        spacing: 12px; vertical-stretch: 0;
+                        Rectangle {
+                            width: 64px; height: 64px; horizontal-stretch: 0;
+                            border-radius: Surface.r(10px);
+                            background: Theme.dark ? #3a3f48 : #000000;
+                            clip: true;
+                            if root.now-logo.width > 0: Image {
+                                source: root.now-logo; image-fit: contain;
+                                width: parent.width - 12px; height: parent.height - 12px;
+                                x: 6px; y: 6px;
+                            }
+                            if root.now-logo.width == 0: AppIcon {
+                                source: Icons.tv; tint: #ffffff8c;
+                                width: 26px; height: 26px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: center; spacing: 5px; horizontal-stretch: 1;
+                            HorizontalLayout {
+                                spacing: 8px; alignment: start;
+                                Rectangle {
+                                    width: 8px; height: 8px; border-radius: 4px;
+                                    background: #ef4444; y: 5px;
+                                    horizontal-stretch: 0; vertical-stretch: 0;
+                                }
+                                Text {
+                                    text: "ON AIR"; color: VP.text-mute;
+                                    font-size: 9px; font-weight: 800; letter-spacing: 1.2px;
+                                    vertical-alignment: center;
+                                }
+                            }
+                            Text {
+                                text: root.now-name; color: VP.text;
+                                font-size: 18px; font-weight: 800; overflow: elide;
+                            }
+                            Text {
+                                text: root.now-group == "" ? "Live" : root.now-group;
+                                color: VP.text-dim; font-size: 12px; overflow: elide;
+                            }
+                        }
+                        VerticalLayout {
+                            alignment: start; horizontal-stretch: 0;
+                            Rectangle {
+                                width: 30px; height: 30px; border-radius: Surface.r(8px);
+                                background: ix.has-hover ? VP.btn-2-hi : VP.btn-2;
+                                ix := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.info-open = false; }
+                                }
+                                AppIcon {
+                                    source: Icons.x; tint: VP.icon; width: 13px; height: 13px;
+                                    x: (parent.width - self.width) / 2;
+                                    y: (parent.height - self.height) / 2;
+                                }
+                            }
+                        }
+                    }
+
+                    Rectangle { height: 1px; background: VP.hair; vertical-stretch: 0; }
+
+                    InfoRow { label: "CHANNEL ID"; value: root.now-id; }
+                    InfoRow { label: "CATEGORY"; value: root.now-group; }
+                    // What the playlist claims, not what ffprobe found: probing
+                    // a live HLS stream that mpv already holds open means a
+                    // second connection and a wait, for a number the name
+                    // already carries.
+                    InfoRow { label: "QUALITY"; value: root.now-res; }
+                    InfoRow { label: "CACHE"; value: root.now-cache; }
+                    InfoRow { label: "STREAM"; value: root.now-url; }
+                }
+            }
+        }
+    }
+
+    // ── playlist picker ─────────────────────────────────────────────────────
     if root.config-open: FocusScope {
         width: 100%; height: 100%;
         init => { self.focus(); }
@@ -503,16 +897,16 @@ export component LiveTvPage inherits Rectangle {
 
                     HorizontalLayout {
                         spacing: 6px; alignment: start; vertical-stretch: 0;
-                        LiveTab {
-                            label: "Country"; active: root.config-tab == "country";
+                        VideoTab {
+                            hue: VP.c-info; label: "Country"; active: root.config-tab == "country";
                             clicked => { root.config-tab = "country"; root.config-search(root.config-query); }
                         }
-                        LiveTab {
-                            label: "Language"; active: root.config-tab == "language";
+                        VideoTab {
+                            hue: VP.c-dl; label: "Language"; active: root.config-tab == "language";
                             clicked => { root.config-tab = "language"; root.config-search(root.config-query); }
                         }
-                        LiveTab {
-                            label: "Category"; active: root.config-tab == "category";
+                        VideoTab {
+                            hue: VP.c-back; label: "Category"; active: root.config-tab == "category";
                             clicked => { root.config-tab = "category"; root.config-search(root.config-query); }
                         }
                         Rectangle { horizontal-stretch: 1; }
@@ -577,7 +971,8 @@ export component LiveTvPage inherits Rectangle {
 
                     HorizontalLayout {
                         spacing: 10px; alignment: start; vertical-stretch: 0;
-                        LiveTab {
+                        VideoTab {
+                            hue: VP.c-play;
                             icon: Icons.check;
                             label: root.picked-count == 0
                                 ? "Nothing chosen"
@@ -590,7 +985,8 @@ export component LiveTvPage inherits Rectangle {
                                 }
                             }
                         }
-                        LiveTab {
+                        VideoTab {
+                            hue: VP.c-save;
                             icon: Icons.x; label: "Clear all";
                             clicked => { root.config-clear(); }
                         }

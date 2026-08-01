@@ -15,6 +15,8 @@
 //! own re-exported `http::Uri` parser — the same parser that opens the
 //! connection — and swapping parsers would reopen the gap it closes.
 
+pub mod cover;
+pub mod details;
 pub mod download;
 pub mod error;
 pub mod fsutil;
@@ -136,6 +138,11 @@ impl GenesisService {
     /// Client-side filters (`extension`, `language`) are applied here because
     /// mirrors cannot express them in the query string — which is also why
     /// `SearchQuery::page_size` over-fetches when either is set.
+    ///
+    /// Everything that survived the filters comes back, not just `limit` of it:
+    /// the over-fetch means one request usually holds several screens' worth,
+    /// and "load more" should spend those before asking the mirror for another
+    /// page. `limit` still decides how large a page to request.
     pub fn search(
         &mut self,
         query: &SearchQuery,
@@ -151,9 +158,50 @@ impl GenesisService {
             },
         )?;
 
-        let mut kept: Vec<Book> = books.into_iter().filter(|b| query.matches(b)).collect();
-        kept.truncate(query.limit);
+        let kept: Vec<Book> = books.into_iter().filter(|b| query.matches(b)).collect();
         Ok(Served { value: kept, mirror: host_label(&base), url: base.to_string() })
+    }
+
+    /// Fetch one book's cover, from the on-disk cache when it is there.
+    ///
+    /// `Ok(None)` means the record genuinely has no cover — an answer that is
+    /// cached too, so a book without art costs one lookup ever, not one per
+    /// search that turns it up.
+    pub fn cover(&mut self, book: &Book, on_status: &dyn Fn(&str)) -> Result<Option<PathBuf>> {
+        // The cache answers without a mirror, which matters: covers are asked
+        // for a screenful at a time, and a cold pool would otherwise make the
+        // first one wait on a full probe.
+        if let Some(hit) = cover::cached(&book.md5) {
+            return Ok(hit);
+        }
+        self.ensure_pool(on_status)?;
+        let (pool, http) = (self.pool()?, &self.http);
+        // Silent on retry: covers are fetched a screenful at a time, and one
+        // status line per mirror per book would bury everything the status
+        // strip exists to say.
+        let (found, _) = pool.try_each(|base| cover::fetch(http, base, book), |_, _| {})?;
+        Ok(found)
+    }
+
+    /// Fetch a record page's full metadata.
+    ///
+    /// Always goes to the network; the caller owns the cache, because the same
+    /// call is what a "refresh" button needs.
+    pub fn details(
+        &mut self,
+        book: &Book,
+        on_status: &dyn Fn(&str),
+    ) -> Result<Served<details::Details>> {
+        self.ensure_pool(on_status)?;
+        let (pool, http) = (self.pool()?, &self.http);
+        let (found, base) = pool.try_each(
+            |base| details::fetch(http, base, book),
+            |base, why| {
+                let host = net::host_of(base).unwrap_or_else(|_| base.to_string());
+                on_status(&format!("{host} could not describe that book ({why})"));
+            },
+        )?;
+        Ok(Served { value: found, mirror: host_label(&base), url: base.to_string() })
     }
 
     /// Resolve a record to a live URL and stream it to disk.

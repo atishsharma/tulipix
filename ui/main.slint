@@ -36,7 +36,7 @@ import { Gated, GateMode } from "gated.slint";
 import { HomePage, HomeStats, HomeRemote, HomeContinue } from "page_home.slint";
 import { BooksPage, BookTile, BooksHero, BookStat, BookChip, CollChip, CollRow, StatBookRow } from "page_books.slint";
 import { BookReader, TocRow, BookmarkRow, SearchRow, AnnotRow, HlRect, ThumbRow } from "book_reader.slint";
-import { GenesisPage, GenesisRow, GenesisTopic } from "page_genesis.slint";
+import { GenesisPage, GenesisRow, GenesisTopic, GenesisSearch, GenesisDetails } from "page_genesis.slint";
 import { FinancesPage, FinStat, FinAccountRow, FinTxnRow, FinRecurRow, FinObligationRow,
           FinDueRow, FinBudgetRow, FinLoanRow, FinInstalment, FinCatSlice, FinMonthBar,
           FinCalDay, FinFlag, FinDiscipline, FinRate, FinPrice, FinProposal, FinImportRow,
@@ -1032,6 +1032,28 @@ export component MainWindow inherits Window {
     in-out property <string> livetv-config-tab: "country";
     in-out property <string> livetv-config-query: "";
     in-out property <[LivePlaylist]> livetv-playlists: [];
+    // Paging + sorting live in Rust: it owns the filter, the sort and the page
+    // slice, so the grid, the page counter and the logo fetch cannot disagree.
+    in-out property <int> livetv-page: 0;
+    in-out property <int> livetv-pages: 1;
+    in-out property <int> livetv-matched: 0;
+    in-out property <string> livetv-sort: "default";
+    in-out property <bool> livetv-asc: true;
+    // What is on air, for the header pill and its detail sheet. -1 = nothing.
+    in-out property <int> livetv-now-index: -1;
+    in-out property <string> livetv-now-name: "";
+    /// The same name, cut to what the header pill has room for.
+    in-out property <string> livetv-now-label: "";
+    in-out property <string> livetv-now-group: "";
+    in-out property <string> livetv-now-id: "";
+    in-out property <string> livetv-now-url: "";
+    in-out property <string> livetv-now-res: "";
+    in-out property <image> livetv-now-logo;
+    in-out property <string> livetv-now-cache: "";
+    in-out property <bool> livetv-info-open: false;
+    callback livetv-set-page(int);
+    callback livetv-set-sort(string, bool);
+    callback livetv-info-opened();
     callback livetv-enter();
     callback livetv-search(string);
     callback livetv-set-group(string);
@@ -1678,8 +1700,9 @@ callback cloud-go-home();
     in property <[GenesisRow]> genesis-rows: [];
     in property <[GenesisTopic]> genesis-topics: [];
     in property <string> genesis-field: "Any";
-    in property <string> genesis-format: "Any";
-    in property <string> genesis-language: "Any";
+    // English EPUB until picked otherwise; Rust sets the same pair on entry.
+    in property <string> genesis-format: "epub";
+    in property <string> genesis-language: "English";
     in property <string> genesis-dest: "";
     in property <bool> genesis-can-download: true;
     in property <bool> genesis-busy: false;
@@ -1689,11 +1712,25 @@ callback cloud-go-home();
     in property <string> genesis-done-name: "";
     in property <string> genesis-done-detail: "";
     in-out property <string> genesis-terms: "";
-    // Result table: sorting + pagination, both computed over the whole result
-    // set in Rust rather than over the twelve rows on screen.
-    in property <int> genesis-page: 0;
-    in property <int> genesis-pages: 0;
+    // Result grid: sorted in Rust over the whole result set, which is also all
+    // the grid shows — every result the mirror returned, in one list.
     in property <int> genesis-total: 0;
+    // Past searches, newest first; the popup pages through them locally.
+    in property <[GenesisSearch]> genesis-history: [];
+    in-out property <bool> genesis-history-open: false;
+    // One record in full, fetched from the mirror once and cached in genesis.db.
+    in-out property <bool> genesis-details-open: false;
+    in property <bool> genesis-details-loading: false;
+    in property <GenesisDetails> genesis-details;
+    in property <string> genesis-details-error: "";
+    // A search replayed from the history popup, which fills the Search button
+    // rather than letting results appear out of nowhere.
+    in property <bool> genesis-replay: false;
+    // "Load more": a page of results in flight, and nothing left to load.
+    in property <bool> genesis-more-busy: false;
+    in property <bool> genesis-more-done: false;
+    // Results one search asks the mirror for.
+    in property <int> genesis-limit: 21;
     in property <string> genesis-sort: "";
     in property <bool> genesis-sort-desc: false;
     // Settings: download folder, mirror list, and the address answering now.
@@ -1702,8 +1739,16 @@ callback cloud-go-home();
     in property <string> genesis-mirrors-default: "";
     in property <bool> genesis-settings-saved: false;
     in property <string> genesis-active-url: "";
-    callback genesis-set-page(int);
     callback genesis-sort-clicked(string);
+    callback genesis-set-field(string);
+    callback genesis-set-format(string);
+    callback genesis-set-language(string);
+    callback genesis-set-limit(int);
+    callback genesis-history-opened();
+    callback genesis-history-run(GenesisSearch);
+    callback genesis-history-clear();
+    callback genesis-open-details(string);
+    callback genesis-close-details();
     callback genesis-settings-opened();
     callback genesis-settings-save();
     callback genesis-settings-reset();
@@ -1714,9 +1759,8 @@ callback cloud-go-home();
     callback genesis-download(string);
     callback genesis-cancel();
     callback genesis-toggle-topic(string);
-    callback genesis-cycle-field();
-    callback genesis-cycle-format();
-    callback genesis-cycle-language();
+    callback genesis-clear();
+    callback genesis-load-more();
     callback genesis-retry();
     callback genesis-open-dest();
 
@@ -2955,6 +2999,24 @@ callback cloud-go-home();
                 config-tab <=> root.livetv-config-tab;
                 config-query <=> root.livetv-config-query;
                 playlists: root.livetv-playlists;
+                page: root.livetv-page;
+                pages: root.livetv-pages;
+                matched: root.livetv-matched;
+                sort: root.livetv-sort;
+                asc: root.livetv-asc;
+                now-index: root.livetv-now-index;
+                now-name: root.livetv-now-name;
+                now-label: root.livetv-now-label;
+                now-group: root.livetv-now-group;
+                now-id: root.livetv-now-id;
+                now-url: root.livetv-now-url;
+                now-res: root.livetv-now-res;
+                now-logo: root.livetv-now-logo;
+                now-cache: root.livetv-now-cache;
+                info-open <=> root.livetv-info-open;
+                set-page(p) => { root.livetv-set-page(p); }
+                set-sort(k, a) => { root.livetv-set-sort(k, a); }
+                info-opened => { root.livetv-info-opened(); }
                 init => { root.livetv-enter(); }
                 search(q) => { root.livetv-search(q); }
                 set-group(g) => { root.livetv-set-group(g); }
@@ -4001,8 +4063,6 @@ callback cloud-go-home();
                 done-name: root.genesis-done-name;
                 done-detail: root.genesis-done-detail;
                 terms <=> root.genesis-terms;
-                page: root.genesis-page;
-                pages: root.genesis-pages;
                 total: root.genesis-total;
                 sort: root.genesis-sort;
                 sort-desc: root.genesis-sort-desc;
@@ -4011,20 +4071,38 @@ callback cloud-go-home();
                 mirrors-default: root.genesis-mirrors-default;
                 settings-saved: root.genesis-settings-saved;
                 active-url: root.genesis-active-url;
-                set-page(p) => { root.genesis-set-page(p); }
+                limit: root.genesis-limit;
+                replay: root.genesis-replay;
+                more-busy: root.genesis-more-busy;
+                more-done: root.genesis-more-done;
+                load-more => { root.genesis-load-more(); }
+                history: root.genesis-history;
+                history-open <=> root.genesis-history-open;
+                details-open <=> root.genesis-details-open;
+                details-loading: root.genesis-details-loading;
+                details: root.genesis-details;
+                details-error: root.genesis-details-error;
                 sort-clicked(k) => { root.genesis-sort-clicked(k); }
+                set-limit(v) => { root.genesis-set-limit(v); }
+                history-opened => { root.genesis-history-opened(); }
+                history-run(e) => { root.genesis-history-run(e); }
+                history-clear => { root.genesis-history-clear(); }
+                open-details(md5) => { root.genesis-open-details(md5); }
+                close-details => { root.genesis-close-details(); }
                 settings-opened => { root.genesis-settings-opened(); }
                 settings-save => { root.genesis-settings-save(); }
                 settings-reset => { root.genesis-settings-reset(); }
                 pick-dest => { root.genesis-pick-dest(); }
                 back => { root.genesis-back(); }
                 search => { root.genesis-search(); }
+                clear => { root.genesis-clear(); }
+                open-url(u) => { root.open-url(u); }
                 download(md5) => { root.genesis-download(md5); }
                 cancel => { root.genesis-cancel(); }
                 toggle-topic(c) => { root.genesis-toggle-topic(c); }
-                cycle-field => { root.genesis-cycle-field(); }
-                cycle-format => { root.genesis-cycle-format(); }
-                cycle-language => { root.genesis-cycle-language(); }
+                set-field(v) => { root.genesis-set-field(v); }
+                set-format(v) => { root.genesis-set-format(v); }
+                set-language(v) => { root.genesis-set-language(v); }
                 retry => { root.genesis-retry(); }
                 open-dest => { root.genesis-open-dest(); }
             }

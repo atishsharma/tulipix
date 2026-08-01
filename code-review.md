@@ -509,16 +509,23 @@ shows up in dev memory (§10).
 
 ## 9. Testing
 
+Counted by `#[test]` / `#[tokio::test]` attributes as of v0.8.0, so a
+`cfg`-gated test still counts here even when the feature that compiles it is
+off. `tulipix-player` (95) is gone with the crate.
+
 | Crate | Tests | | Crate | Tests |
 |---|---|---|---|---|
-| tulipix-videos | 227 | | tulipix-platform | 29 |
-| tulipix-core | 159 | | tulipix-whisper | 28 |
-| tulipix-photos | 138 | | tulipix-books | 28 |
-| tulipix-music | 137 | | tulipix-mdl | 22 |
-| tulipix-player | 95 | | tulipix-sec-videos | 21 |
-| tulipix-tools | 72 | | tulipix-ai | 21 |
-| tulipix-cloud | 57 | | tulipix-sec-books | 6 |
-| | | | **sec-music / app** | **3 each** |
+| tulipix-videos | 260 | | tulipix-whisper | 28 |
+| tulipix-finances | 248 | | tulipix-books | 28 |
+| tulipix-core | 161 | | tulipix-sec-videos | 22 |
+| tulipix-music | 139 | | tulipix-mdl | 22 |
+| tulipix-photos | 138 | | tulipix-ai | 21 |
+| tulipix-genesis | 109 | | tulipix-sec-books | 6 |
+| tulipix-transfer | 80 | | tulipix-sec-genesis | 5 |
+| tulipix-tools | 72 | | tulipix-sec-transfer | 3 |
+| tulipix-cloud | 67 | | tulipix-sec-music | 3 |
+| tulipix-sec-finances | 34 | | tulipix-app | 3 |
+| tulipix-platform | 33 | | tulipix-common | 1 |
 | | | | **sec-tools, sec-photos, sec-cloud, ui, plugins, hot, cli** | **0** |
 
 ### P2 — CI immediately found a test that had been failing · *fixed*
@@ -539,7 +546,8 @@ are unaffected.
 That is the argument for §1 in one bug: a wrong result, in shipped code, sitting
 in a test that already described the correct behaviour.
 
-**1,047 tests total** — and the domain crates are genuinely well covered. The
+**1,483 tests total** (1,047 when this review was written) — and the domain
+crates are genuinely well covered. The
 Stream parsers are a good example: `per_season_subjects_fold_into_one_card`,
 `a_lone_season_one_is_not_treated_as_a_split_show`, and the
 `split_season_suffix` set pin down real edge cases, and they caught my own

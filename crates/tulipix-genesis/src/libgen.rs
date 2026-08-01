@@ -13,6 +13,7 @@
 
 use ureq::http::Uri;
 
+use crate::details::bibtex_field;
 use crate::error::{Context, Result};
 use crate::model::{Book, SearchQuery, is_md5, parse_size};
 use crate::net::{Http, encode_query_value, join_uri};
@@ -33,6 +34,11 @@ pub fn search_url(base: &Uri, query: &SearchQuery) -> Result<Uri> {
         qs.push_str(topic.code());
     }
     qs.push_str(&format!("&res={}&curtab=f", query.page_size()));
+    // Omitted for the first page: mirrors differ on whether they accept
+    // `page=1`, and every one of them defaults to it.
+    if query.page > 1 {
+        qs.push_str(&format!("&page={}", query.page));
+    }
 
     join_uri(base, &qs)
 }
@@ -296,36 +302,12 @@ pub struct Resolved {
     pub book: Book,
 }
 
-/// Read one `name = {value}` field out of the BibTeX block Libgen embeds in
-/// its interstitial pages.
-///
-/// The BibTeX block is used in preference to scraping the neighbouring
-/// "Title: … Author(s): …" text because it is delimited, so a value containing
-/// a label word cannot bleed into the next field.
-fn bibtex_field(text: &str, name: &str) -> Option<String> {
-    let needle = format!("{name} = {{");
-    let start = text.find(&needle)? + needle.len();
-    let mut depth = 1usize;
-    let mut value = String::new();
-    for c in text[start..].chars() {
-        match c {
-            '{' => {
-                depth += 1;
-                value.push(c);
-            }
-            '}' => {
-                depth -= 1;
-                if depth == 0 {
-                    break;
-                }
-                value.push(c);
-            }
-            c => value.push(c),
-        }
-    }
-    let value = value.trim().to_string();
-    if value.is_empty() { None } else { Some(value) }
-}
+// The BibTeX block Libgen embeds in its interstitial pages is read by
+// `details::bibtex_field`, which is now the only implementation. This file used
+// to carry its own, matching the literal `"title = {"` — spacing and all. That
+// survived here only because `html::text` collapses whitespace before it runs;
+// a mirror emitting `title={…}` with no spaces at all returned `None` for every
+// field, and a download started from a bare MD5 was then titled with the hash.
 
 /// Build a record from an interstitial page, for downloads started from an MD5
 /// where we never saw a search row.
@@ -492,6 +474,11 @@ mod tests {
         assert!(url.contains("topics%5B%5D=l"));
         assert!(url.contains("topics%5B%5D=f"));
         assert!(url.contains("res=25"));
+        assert!(!url.contains("page="), "the first page is the default");
+
+        q.page = 3;
+        let url = search_url(&base(), &q).unwrap().to_string();
+        assert!(url.contains("page=3"));
     }
 
     #[test]
@@ -568,6 +555,17 @@ mod tests {
         );
         assert_eq!(bibtex_field(text, "year").as_deref(), Some("2020"));
         assert_eq!(bibtex_field(text, "missing"), None);
+    }
+
+    #[test]
+    fn bibtex_spacing_does_not_decide_whether_a_book_has_a_title() {
+        // Matching the literal `"title = {"` read none of these. Whitespace
+        // collapsing hid the padded form; the unspaced form it could not hide,
+        // and the interstitial then named the book after its own MD5.
+        let page = "<html><body>@book{x, title={Unspaced}, author  =   {Someone}}</body></html>";
+        let book = parse_ads_metadata(page, "1b9159991f7fb1b3910c0be9ebf7e595");
+        assert_eq!(book.title, "Unspaced");
+        assert_eq!(book.authors.as_deref(), Some("Someone"));
     }
 
     #[test]
