@@ -82,7 +82,7 @@ fn vocab() -> &'static std::collections::HashMap<char, i64> {
     V.get_or_init(|| {
         let mut m = std::collections::HashMap::new();
         let mut id: i64 = 0;
-        let mut push = |c: char, m: &mut std::collections::HashMap<char, i64>, id: &mut i64| {
+        let push = |c: char, m: &mut std::collections::HashMap<char, i64>, id: &mut i64| {
             m.entry(c).or_insert_with(|| {
                 let v = *id;
                 *id += 1;
@@ -98,13 +98,15 @@ fn vocab() -> &'static std::collections::HashMap<char, i64> {
 }
 
 /// espeak language for a Kokoro voice id (af/am = US English, bf/bm = British).
-#[cfg(any(feature = "kokoro", test))]
+/// Feature-only: the tests cover the vocab/token path, not the espeak call, so
+/// building this under plain `test` would be dead code.
+#[cfg(feature = "kokoro")]
 fn voice_lang(voice: &str) -> &'static str {
     if voice.starts_with("bf") || voice.starts_with("bm") { "en-gb" } else { "en-us" }
 }
 
 /// Phonemize `text` to an IPA string via espeak-ng. Empty on failure.
-#[cfg(any(feature = "kokoro", test))]
+#[cfg(feature = "kokoro")]
 fn phonemize(text: &str, lang: &str) -> String {
     let out = crate::speech::espeak_command()
         .args(["-q", "--ipa=3", "-v", lang])
