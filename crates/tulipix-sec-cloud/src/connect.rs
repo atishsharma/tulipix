@@ -31,6 +31,17 @@ fn picked() -> MutexGuard<'static, String> {
     P.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// The token `rclone authorize` last handed back, held outside the form model.
+///
+/// rclone marks `token` as an *advanced* option on every OAuth backend, so with
+/// the Advanced switch off — the default — there is no `token` row to write it
+/// into and the whole browser dance would end in silence. Kept here and merged
+/// back in at submit time.
+fn authorized() -> MutexGuard<'static, String> {
+    static T: OnceLock<Mutex<String>> = OnceLock::new();
+    T.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
 pub fn wire(window: &MainWindow) {
     let w = window.as_weak();
     window.on_cloud_connect_open_dialog(move || {
@@ -49,6 +60,10 @@ pub fn wire(window: &MainWindow) {
     let w = window.as_weak();
     window.on_cloud_backend_pick(move |name| {
         let Some(w) = w.upgrade() else { return };
+        // A token belongs to the backend it was granted for — going back and
+        // picking a different one must not carry it over.
+        authorized().clear();
+        w.set_cloud_authorized(false);
         *picked() = name.to_string();
         w.set_cloud_form_backend(name.clone());
         w.set_cloud_form_oauth(
@@ -121,6 +136,8 @@ fn reset(w: &MainWindow, edit: bool) {
     w.set_cloud_connect_error("".into());
     w.set_cloud_connect_busy(false);
     w.set_cloud_authorizing(false);
+    w.set_cloud_authorized(false);
+    authorized().clear();
     w.set_cloud_connect_edit(edit);
     w.set_cloud_connect_step(if edit { 1 } else { 0 });
     w.set_cloud_opts(ModelRc::new(VecModel::<CloudOpt>::default()));
@@ -359,7 +376,13 @@ fn authorize(weak: slint::Weak<MainWindow>, backend: String) {
         let _ = weak.upgrade_in_event_loop(move |w| {
             w.set_cloud_authorizing(false);
             match outcome {
-                Ok(token) => set_opt(&w, "token", &token),
+                Ok(token) => {
+                    // Written to both: the row only exists with Advanced on, and
+                    // the stash is what `submit` falls back to when it does not.
+                    set_opt(&w, "token", &token);
+                    *authorized() = token;
+                    w.set_cloud_authorized(true);
+                }
                 Err(msg) => w.set_cloud_connect_error(msg.into()),
             }
         });
@@ -403,12 +426,19 @@ fn submit(w: &MainWindow) {
     // Blank means "leave it at rclone's default", so blanks are dropped rather
     // than written as empty strings — writing them would pin the option to ""
     // and override the default it was trying to keep.
-    let pairs: Vec<(String, String)> = w
+    let mut pairs: Vec<(String, String)> = w
         .get_cloud_opts()
         .iter()
         .filter(|o| !o.value.trim().is_empty())
         .map(|o| (o.key.to_string(), o.value.trim().to_string()))
         .collect();
+
+    // The token from the browser dance, when the form had no visible row to
+    // hold it. A value typed into that row with Advanced on wins.
+    let token = authorized().clone();
+    if !token.is_empty() && !pairs.iter().any(|(k, _)| k == "token") {
+        pairs.push(("token".into(), token));
+    }
 
     if let Some(missing) = w
         .get_cloud_opts()

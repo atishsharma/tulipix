@@ -530,6 +530,10 @@ export component CloudPage inherits Rectangle {
     // where rclone can actually do the dance.
     in property <bool> form-oauth: false;
     in property <bool> authorizing: false;
+    // The browser dance came back with a token. rclone keeps `token` in its
+    // advanced set, so with Advanced off there is no form row to show for it —
+    // the button itself is the receipt.
+    in property <bool> authorized: false;
     in property <string> connect-error: "";
     in property <bool> connect-busy: false;
     callback backend-search(string);
@@ -1320,8 +1324,10 @@ export component CloudPage inherits Rectangle {
                     if root.form-oauth: VerticalLayout {
                         alignment: center; horizontal-stretch: 0;
                         GradButton {
-                            icon: Icons.shield;
-                            label: root.authorizing ? "Waiting for browser…" : "Authorize";
+                            icon: root.authorized ? Icons.check : Icons.shield;
+                            label: root.authorizing
+                                ? "Waiting for browser…"
+                                : root.authorized ? "Authorized — press Connect" : "Authorize";
                             clicked => { if (!root.authorizing) { root.authorize(); } }
                         }
                     }
