@@ -792,6 +792,8 @@ export component TransferPage inherits Rectangle {
     /// Where a phone installs the root certificate, over plain http. Empty when
     /// the server is not on TLS, which is what hides the hint.
     in property <string> trust-url: "";
+    // SHA-256 of the certificate being served, for the phone's first-use check.
+    in property <string> fingerprint: "";
     /// The mDNS form of the address. Empty when there is no certificate, since
     /// the name is only worth offering when it is one the certificate covers.
     in property <string> host-url: "";
@@ -1822,14 +1824,14 @@ export component TransferPage inherits Rectangle {
                 // cards are a fixed height, and this would have cost all three of
                 // them 60px of it for a line that is read once per phone.
                 if root.trust-url != "": Rectangle {
-                    height: 52px; border-radius: Surface.r(12px);
+                    border-radius: Surface.r(12px);
                     background: Surface.wash(root.pair-tint, 0.08);
                     border-width: Surface.edge-w(1px);
                     border-color: Surface.edge(root.pair-tint, 0.32);
                     HorizontalLayout {
-                        padding-left: 14px; padding-right: 14px; spacing: 11px;
+                        padding: 11px; padding-left: 14px; padding-right: 14px; spacing: 11px;
                         VerticalLayout {
-                            alignment: center; horizontal-stretch: 0;
+                            alignment: start; horizontal-stretch: 0;
                             Rectangle {
                                 width: 30px; height: 30px; border-radius: 15px;
                                 background: Surface.wash(root.pair-tint, 0.18);
@@ -1842,15 +1844,24 @@ export component TransferPage inherits Rectangle {
                             }
                         }
                         VerticalLayout {
-                            alignment: center; horizontal-stretch: 1; spacing: 2px;
+                            alignment: center; horizontal-stretch: 1; spacing: 3px;
                             Text {
-                                text: "First time on a phone? It will ask you to install a certificate.";
+                                text: "First time on a phone? The browser asks about the certificate once.";
                                 color: Theme.text; font-size: 12px; font-weight: 700;
-                                overflow: elide;
+                                wrap: word-wrap;
                             }
                             Text {
-                                text: "Scanning the code takes it there — the page walks through it and opens Transfer by itself once it is done. Encrypts the connection, and is what lets the phone scan the code with its camera. Reachable any time at " + root.trust-url + ".";
+                                text: "The QR goes to " + root.trust-url + " — tap Continue, then Advanced and Proceed. The phone remembers this certificate from then on, and a different one on this address asks again. Nothing to install.";
                                 color: Theme.text-dim; font-size: 11px; wrap: word-wrap;
+                            }
+                            // The half of trust-on-first-use that makes it worth
+                            // anything: something to compare the phone's warning
+                            // against. Shown here because this is the end nobody
+                            // can tamper with from the network.
+                            if root.fingerprint != "": Text {
+                                text: root.fingerprint;
+                                color: Theme.text-dim; font-size: 10px;
+                                font-family: "monospace"; wrap: word-wrap;
                             }
                         }
                     }

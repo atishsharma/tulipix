@@ -77,10 +77,13 @@ pub struct Snapshot {
     /// address rather than instead of it: plenty of phones cannot resolve a
     /// `.local` name, and the address always works.
     pub host_url: String,
-    /// Where a phone goes to install the root certificate once. Plain HTTP by
-    /// design — the certificate cannot be fetched over a connection the browser
-    /// is refusing because it does not have that certificate yet.
+    /// Where a phone lands the first time. Plain HTTP by design — the page that
+    /// explains a certificate warning cannot sit behind that warning.
     pub trust_url: String,
+    /// SHA-256 of the certificate this run serves, colon-separated hex. What a
+    /// phone is accepting on first use, so it can be read off the desktop and
+    /// compared instead of waved through. Empty on plain HTTP.
+    pub fingerprint: String,
     /// Whether the server is actually on TLS.
     pub secure: bool,
     /// The interfaces a phone could reach, best first: `(name, ip)`.
@@ -448,6 +451,7 @@ impl TransferService {
             url: self.base_url(),
             host_url: format!("http://{}:{}", tls::HOST, run.port),
             trust_url: format!("http://{}:{}/trust", self.address(), run.port),
+            fingerprint: lock(&run.state.fingerprint).clone(),
             secure: run.secure,
             iface: self.address(),
             interfaces,

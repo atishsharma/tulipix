@@ -89,10 +89,14 @@ pub struct AppState {
     /// Bumped on every ledger write. The UI refetches Recent Transfers when it
     /// changes rather than polling the database on a timer.
     pub rev: AtomicU64,
-    /// `(PEM, DER)` of the root a phone has to install. `None` when the server
-    /// fell back to plain HTTP, in which case there is nothing to trust and the
-    /// download routes 404.
+    /// `(PEM, DER)` of the root, for the phones that opt into installing it.
+    /// `None` when the server fell back to plain HTTP, in which case there is
+    /// nothing to trust and the download routes 404.
     pub ca: Mutex<Option<(String, Vec<u8>)>>,
+    /// SHA-256 of the leaf this run is serving, colon-separated hex. Empty on
+    /// plain HTTP. Shown on the desktop and on the gateway so the certificate a
+    /// phone accepts on first use is one that can be checked.
+    pub fingerprint: Mutex<String>,
 }
 
 pub type Shared = Arc<AppState>;
@@ -188,6 +192,7 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
         next_upload: AtomicU64::new(0),
         rev: AtomicU64::new(0),
         ca: Mutex::new(None),
+        fingerprint: Mutex::new(String::new()),
     });
 
     let app = Router::new()
@@ -253,7 +258,8 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
     let secure = identity.is_some();
     if let Some(id) = &identity {
         *lock(&state.ca) = Some((id.ca_pem.clone(), id.ca_der.clone()));
-        tracing::info!(names = ?id.names, "transfer: serving HTTPS");
+        *lock(&state.fingerprint) = id.fingerprint.clone();
+        tracing::info!(names = ?id.names, fingerprint = %id.fingerprint, "transfer: serving HTTPS");
     }
 
     let mdns = crate::mdns::advertise(&ips, port, secure);
@@ -517,9 +523,11 @@ async fn ping() -> Response {
     StatusCode::NO_CONTENT.into_response()
 }
 
-/// The install instructions. Static, and identical on both schemes.
-async fn trust() -> Response {
-    asset(include_str!("web/trust.html"), "text/html; charset=utf-8")
+/// The gateway, identical on both schemes — the plaintext side serves the same
+/// page from `tls::Plain`, which is where a first-time phone actually meets it.
+async fn trust(State(st): State<Shared>) -> Response {
+    let page = crate::tls::gateway(&lock(&st.fingerprint));
+    ([(header::CONTENT_TYPE, "text/html; charset=utf-8")], page).into_response()
 }
 
 fn ca_download(st: &Shared, pem: bool) -> Response {

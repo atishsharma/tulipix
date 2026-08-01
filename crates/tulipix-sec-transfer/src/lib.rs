@@ -390,9 +390,10 @@ fn refresh(w: &MainWindow) {
     w.set_transfer_running(snap.running);
     w.set_transfer_url(snap.url.clone().into());
     w.set_transfer_pin(snap.pin.clone().into());
-    // Empty unless there is a certificate to install, which is what makes the
-    // hint in the Connection card conditional without a second flag.
+    // Empty unless there is a certificate at all, which is what makes the hint in
+    // the Connection card conditional without a second flag.
     w.set_transfer_trust_url(if snap.secure { snap.trust_url.clone().into() } else { "".into() });
+    w.set_transfer_fingerprint(snap.fingerprint.clone().into());
     w.set_transfer_host_url(snap.host_url.clone().into());
     w.set_transfer_inbox(snap.inbox.display().to_string().into());
     w.set_transfer_inbox_ok(snap.inbox_ok);

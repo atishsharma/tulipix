@@ -6,16 +6,30 @@
 //! origin. Over `http://192.168.x.x` the phone will not open its camera at all,
 //! which is what kept the in-page QR scanner from working.
 //!
-//! # Why a root CA and not just a self-signed leaf
+//! # Trust on first use, not a certificate to install
 //!
-//! No browser has silently accepted a self-signed certificate in years, and no
-//! hostname changes that — `tulipix.local` included, and no public CA will ever
-//! issue for a `.local` name anyway. The only arrangement that produces a real
-//! padlock is the ordinary one: a root the device trusts, signing a leaf. So the
-//! app keeps its own root CA, persisted in the data directory, and offers it for
-//! download. Install it once per phone and every later connection is clean.
-//! Skip the install and the browser shows its interstitial, which is exactly
-//! what a bare self-signed certificate would have done.
+//! No browser silently accepts a certificate it cannot chain to a root it knows,
+//! and no hostname changes that — `tulipix.local` included, and no public CA will
+//! ever issue for a `.local` name anyway. There are two ways out, and the default
+//! is the second one:
+//!
+//! 1. Install this app's root on the phone. Produces a real padlock, and used to
+//!    be the advice on the gateway page. It is also a genuinely bad thing to ask
+//!    of an Android phone: a user-installed CA makes the device fail Play
+//!    Integrity's basic verdict, and banking and payment apps refuse to run on a
+//!    phone carrying one. Trading someone's banking apps for a padlock on a LAN
+//!    file transfer is not a trade worth offering, so it is now the opt-in path.
+//! 2. Accept the warning once — SSH's model. The browser stores an exception
+//!    pinned to this exact certificate, and from then on a *different*
+//!    certificate on this address raises the warning again, which is the property
+//!    that matters: not "was this signed by someone", but "is this the same
+//!    machine I accepted before". The app shows the certificate's SHA-256
+//!    fingerprint so the first acceptance can be checked rather than guessed.
+//!
+//! TOFU only means anything if the certificate is stable, so the leaf is
+//! persisted beside the root and reused across runs — see [`load_or_create_leaf`].
+//! A leaf regenerated per start would re-raise the warning on every restart and
+//! train the one person who could notice a real change into clicking through it.
 //!
 //! # One port, two schemes
 //!
@@ -53,7 +67,10 @@ pub const HOST: &str = "tulipix.local";
 /// How long the root is good for. Long, because re-installing it on every phone
 /// in the house is the one part of this that cannot be automated.
 const CA_YEARS: i32 = 10;
-/// The leaf is regenerated on every start, so it only has to outlive a session.
+/// The leaf now outlives the process, so this is how long a phone can go between
+/// warnings. Not stretched to the root's ten: a certificate that chains to a
+/// locally installed root is exempt from the 398-day limit browsers enforce on
+/// public ones, but only just, and there is no reason to sit on that edge.
 const LEAF_YEARS: i32 = 2;
 
 /// The CA, as it sits on disk between runs.
@@ -162,51 +179,125 @@ fn current_year() -> i32 {
     1970 + (secs / 31_556_952) as i32
 }
 
-/// Everything the listener needs: the TLS config, and the CA bytes to hand out.
+/// The leaf, as it sits on disk between runs.
+pub struct Leaf {
+    der: Vec<u8>,
+    key_pem: String,
+    /// Every name and address it is good for.
+    names: Vec<String>,
+}
+
+/// Load the leaf from disk, or sign a new one and write it there.
+///
+/// The stored one is reused whenever it still covers every name the machine
+/// answers on now, and the name set only ever grows — plugging in a second
+/// adapter adds an address rather than replacing the certificate that every
+/// phone in the house has already accepted.
+///
+/// Reuse is what makes trust-on-first-use mean anything. A browser's exception is
+/// pinned to the certificate it was shown, so signing a fresh leaf each start
+/// would put the warning back on every restart, and a warning that appears every
+/// time is one nobody reads — including the time it means something.
+pub fn load_or_create_leaf(dir: &Path, ca: &Authority, want: &[String]) -> anyhow::Result<Leaf> {
+    let cert_path = dir.join("leaf.pem");
+    let key_path = dir.join("leaf.key.pem");
+    let names_path = dir.join("leaf.names");
+
+    // The SAN list is kept beside the certificate rather than read back out of
+    // it: recovering it would mean rcgen's `x509-parser` feature, a whole ASN.1
+    // stack for a list this function wrote itself.
+    let stored: Vec<String> = std::fs::read_to_string(&names_path)
+        .map(|s| s.lines().map(str::to_string).filter(|l| !l.is_empty()).collect())
+        .unwrap_or_default();
+
+    if want.iter().all(|n| stored.contains(n))
+        && let (Ok(pem), Ok(key_pem)) =
+            (std::fs::read_to_string(&cert_path), std::fs::read_to_string(&key_path))
+        && rcgen::KeyPair::from_pem(&key_pem).is_ok()
+        && let Some(der) = pem_to_der(&pem)
+    {
+        return Ok(Leaf { der, key_pem, names: stored });
+    }
+
+    let mut names = stored;
+    names.extend(want.iter().cloned());
+    names.sort();
+    names.dedup();
+
+    let ca_key = rcgen::KeyPair::from_pem(&ca.key_pem)?;
+    let issuer = rcgen::Issuer::new(ca_params()?, ca_key);
+
+    let mut params = rcgen::CertificateParams::new(names.clone())?;
+    params.distinguished_name = dn(HOST);
+    params.not_after = rcgen::date_time_ymd(current_year() + LEAF_YEARS, 1, 1);
+    params.use_authority_key_identifier_extension = true;
+    params.key_usages =
+        vec![rcgen::KeyUsagePurpose::DigitalSignature, rcgen::KeyUsagePurpose::KeyEncipherment];
+    params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+
+    let key = rcgen::KeyPair::generate()?;
+    let cert = params.signed_by(&key, &issuer)?;
+    let (pem, key_pem) = (cert.pem(), key.serialize_pem());
+
+    std::fs::create_dir_all(dir)?;
+    std::fs::write(&cert_path, &pem)?;
+    std::fs::write(&key_path, &key_pem)?;
+    std::fs::write(&names_path, names.join("\n"))?;
+    restrict(&key_path);
+
+    Ok(Leaf { der: cert.der().to_vec(), key_pem, names })
+}
+
+/// SHA-256 of a certificate, in the colon-separated hex every browser's
+/// certificate viewer prints. What the desktop shows so the first acceptance on a
+/// phone can be checked against something rather than taken on faith.
+pub fn fingerprint(der: &[u8]) -> String {
+    let digest = ring::digest::digest(&ring::digest::SHA256, der);
+    let mut out = String::with_capacity(95);
+    for (i, b) in digest.as_ref().iter().enumerate() {
+        if i > 0 {
+            out.push(':');
+        }
+        out.push_str(&format!("{b:02X}"));
+    }
+    out
+}
+
+/// Everything the listener needs: the TLS config, the CA bytes to hand out, and
+/// the leaf's fingerprint to show.
 pub struct Identity {
     pub config: Arc<ServerConfig>,
     pub ca_pem: String,
     pub ca_der: Vec<u8>,
+    /// SHA-256 of the leaf, colon-separated — the thing a phone is accepting.
+    pub fingerprint: String,
     /// Every name and address the leaf is good for, for the log line.
     pub names: Vec<String>,
 }
 
 impl Identity {
     /// A leaf for `tulipix.local`, localhost and every address this machine
-    /// answers on, signed by the persisted root.
+    /// answers on, signed by the persisted root and itself persisted.
     pub fn load(ips: &[IpAddr]) -> anyhow::Result<Self> {
         let dir = ca_dir().ok_or_else(|| anyhow::anyhow!("no data directory for the CA"))?;
         let ca = load_or_create_ca(&dir)?;
 
-        let ca_key = rcgen::KeyPair::from_pem(&ca.key_pem)?;
-        let issuer = rcgen::Issuer::new(ca_params()?, ca_key);
-
-        let mut names: Vec<String> = vec![HOST.to_string(), "localhost".to_string()];
+        let mut want: Vec<String> = vec![HOST.to_string(), "localhost".to_string()];
         for ip in ips {
-            names.push(ip.to_string());
+            want.push(ip.to_string());
         }
-        names.sort();
-        names.dedup();
+        want.sort();
+        want.dedup();
 
-        let mut params = rcgen::CertificateParams::new(names.clone())?;
-        params.distinguished_name = dn(HOST);
-        params.not_after = rcgen::date_time_ymd(current_year() + LEAF_YEARS, 1, 1);
-        params.use_authority_key_identifier_extension = true;
-        params.key_usages = vec![
-            rcgen::KeyUsagePurpose::DigitalSignature,
-            rcgen::KeyUsagePurpose::KeyEncipherment,
-        ];
-        params.extended_key_usages = vec![rcgen::ExtendedKeyUsagePurpose::ServerAuth];
+        let leaf = load_or_create_leaf(&dir, &ca, &want)?;
+        let fingerprint = fingerprint(&leaf.der);
+        let names = leaf.names;
 
-        let leaf_key = rcgen::KeyPair::generate()?;
-        let leaf = params.signed_by(&leaf_key, &issuer)?;
-
-        // DER straight out of rcgen rather than a PEM round-trip: it saves
-        // pulling in a PEM parser for data we already hold in the right shape.
-        let chain = vec![
-            CertificateDer::from(leaf.der().to_vec()),
-            CertificateDer::from(ca.ca_der.clone()),
-        ];
+        // The root goes out with the leaf so a phone that *did* install it gets a
+        // padlock rather than a chain it cannot complete.
+        let chain =
+            vec![CertificateDer::from(leaf.der), CertificateDer::from(ca.ca_der.clone())];
+        let leaf_key = rcgen::KeyPair::from_pem(&leaf.key_pem)?;
         let key = PrivateKeyDer::try_from(leaf_key.serialize_der())
             .map_err(|e| anyhow::anyhow!("leaf key rejected by rustls: {e}"))?;
 
@@ -228,7 +319,13 @@ impl Identity {
         let mut config = config;
         config.alpn_protocols = vec![b"http/1.1".to_vec()];
 
-        Ok(Self { config: Arc::new(config), ca_pem: ca.ca_pem, ca_der: ca.ca_der, names })
+        Ok(Self {
+            config: Arc::new(config),
+            ca_pem: ca.ca_pem,
+            ca_der: ca.ca_der,
+            fingerprint,
+            names,
+        })
     }
 }
 
@@ -273,6 +370,11 @@ fn base64_decode(s: &str) -> Option<Vec<u8>> {
 pub struct Plain {
     pub ca_pem: String,
     pub ca_der: Vec<u8>,
+    /// Printed on the gateway so the fingerprint the browser is about to show can
+    /// be compared with one that came from somewhere else. Over plaintext it
+    /// proves nothing on its own — but the desktop shows the same string, and
+    /// that copy is the one worth reading.
+    pub fingerprint: String,
 }
 
 impl Plain {
@@ -321,7 +423,12 @@ impl Plain {
             // gateway, which upgrades itself once it can: the page probes the
             // TLS port and only then moves across, carrying the query string —
             // including the QR's `?k=` — with it.
-            _ => raw("200 OK", "text/html; charset=utf-8", TRUST_PAGE.as_bytes(), None),
+            _ => raw(
+                "200 OK",
+                "text/html; charset=utf-8",
+                gateway(&self.fingerprint).as_bytes(),
+                None,
+            ),
         };
         let _ = stream.write_all(&out).await;
         let _ = stream.shutdown().await;
@@ -362,6 +469,7 @@ impl TlsListener {
             plain: Arc::new(Plain {
                 ca_pem: identity.ca_pem.clone(),
                 ca_der: identity.ca_der.clone(),
+                fingerprint: identity.fingerprint.clone(),
             }),
         }
     }
@@ -410,9 +518,18 @@ impl axum::serve::Listener for TlsListener {
     }
 }
 
-/// The page a phone lands on to install the root, reachable over plain HTTP so
-/// there is no certificate warning standing between it and the certificate.
+/// The page a phone lands on the first time, reachable over plain HTTP so there
+/// is no certificate warning standing between it and the explanation of the
+/// certificate warning.
 const TRUST_PAGE: &str = include_str!("web/trust.html");
+
+/// The gateway with this run's fingerprint written into it.
+///
+/// A `replace` on a 12 KB string per first visit, against a template engine or a
+/// second fetch the page would have to make. The phone hits this once.
+pub fn gateway(fingerprint: &str) -> String {
+    TRUST_PAGE.replace("{{FINGERPRINT}}", fingerprint)
+}
 
 /// The app mark, for the gateway's `<img>` and favicon.
 const LOGO: &[u8] = include_bytes!("web/logo.png");
@@ -541,5 +658,55 @@ mod tests {
         std::fs::write(dir.path().join("ca.key.pem"), "not a key").unwrap();
         let second = load_or_create_ca(dir.path()).unwrap();
         assert_ne!(first.ca_pem, second.ca_pem, "the unreadable CA was kept");
+    }
+
+    fn names(list: &[&str]) -> Vec<String> {
+        list.iter().map(|s| s.to_string()).collect()
+    }
+
+    #[test]
+    fn the_leaf_survives_a_restart_so_a_phones_exception_does_too() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = load_or_create_ca(dir.path()).unwrap();
+        let want = names(&["tulipix.local", "192.168.1.5"]);
+
+        let first = load_or_create_leaf(dir.path(), &ca, &want).unwrap();
+        let again = load_or_create_leaf(dir.path(), &ca, &want).unwrap();
+
+        // The whole of trust-on-first-use rests on this: a browser's exception is
+        // pinned to the certificate it was shown, so a different one here is the
+        // warning coming back on every restart.
+        assert_eq!(first.der, again.der, "the leaf was reminted");
+        assert_eq!(fingerprint(&first.der), fingerprint(&again.der));
+    }
+
+    #[test]
+    fn a_new_address_is_added_to_the_leaf_rather_than_replacing_the_old_ones() {
+        let dir = tempfile::tempdir().unwrap();
+        let ca = load_or_create_ca(dir.path()).unwrap();
+
+        let first = load_or_create_leaf(dir.path(), &ca, &names(&["192.168.1.5"])).unwrap();
+        let second = load_or_create_leaf(dir.path(), &ca, &names(&["10.0.0.9"])).unwrap();
+
+        assert_ne!(first.der, second.der, "a name it did not cover was ignored");
+        // Plugging in a second adapter must not invalidate the certificate every
+        // phone on the first one has already accepted.
+        assert!(second.names.contains(&"192.168.1.5".to_string()));
+        assert!(second.names.contains(&"10.0.0.9".to_string()));
+
+        // And once it covers everything, it settles again.
+        let third = load_or_create_leaf(dir.path(), &ca, &names(&["192.168.1.5"])).unwrap();
+        assert_eq!(second.der, third.der);
+    }
+
+    #[test]
+    fn a_fingerprint_reads_like_the_one_a_browser_shows() {
+        // 32 bytes as colon-separated uppercase hex — what every certificate
+        // viewer prints, so the two can be compared without transcription.
+        let fp = fingerprint(b"anything");
+        assert_eq!(fp.len(), 95);
+        assert_eq!(fp.split(':').count(), 32);
+        assert!(fp.chars().all(|c| c.is_ascii_hexdigit() || c == ':'));
+        assert!(!fp.chars().any(|c| c.is_ascii_lowercase()));
     }
 }
