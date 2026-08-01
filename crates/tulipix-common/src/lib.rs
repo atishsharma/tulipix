@@ -506,12 +506,37 @@ pub fn spawn_mpv_windowed_tracked(
             .arg("--keep-open=no")
             .arg(format!("--input-ipc-server={}", sock.display()));
         if let Some(r) = resume { if r > 1.0 { cmd.arg(format!("--start={r}")); } }
-        // GLSL upscale chain (np.p3.player.upscale) — opt-in + shaders present.
+        // Settings → Playback. These used to be pushed into libmpv at runtime by
+        // the in-app player; with playback out-of-process they go in as CLI
+        // options at spawn, which is also why they only take effect on the next
+        // play. Everything here is opt-in except the subtitle style.
         let s = tulipix_core::settings::Settings::load().unwrap_or_default();
+        // GLSL upscale chain — opt-in + shaders present.
         if s.flag("playback.upscale", false) {
             if let Some((chain, _)) = anime4k_shader_args() {
                 cmd.arg(format!("--glsl-shaders={chain}"));
             }
+        }
+        // Subtitle styling. mpv's own renderer draws every track now, so the
+        // style projects onto mpv options rather than the deleted Slint overlay.
+        let mut style = tulipix_videos::sub_styling::SubtitleStyle::default();
+        if let Some(v) = s.advanced.get("playback.sub-size").and_then(|x| x.trim().parse::<f32>().ok()) {
+            style.font_size_px = v;
+        }
+        if let Some(c) = s.advanced.get("playback.sub-color").map(|c| c.trim()).filter(|c| !c.is_empty()) {
+            style.color = c.to_string();
+        }
+        style.clamp();
+        for (k, v) in style.to_mpv_options() {
+            cmd.arg(format!("--{k}={v}"));
+        }
+        // Motion interpolation — heavy on integrated GPUs, hence opt-in.
+        if s.flag("playback.interpolation", false) {
+            cmd.arg("--interpolation=yes").arg("--video-sync=display-resample");
+        }
+        // Bit-perfect output straight to the device; silences other apps.
+        if s.flag("playback.audio-exclusive", false) {
+            cmd.arg("--audio-exclusive=yes");
         }
         cmd.args(&extra_args);
         mpv_die_with_parent(&mut cmd);
