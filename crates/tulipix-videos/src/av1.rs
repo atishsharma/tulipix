@@ -1,8 +1,8 @@
 //! AV1 hardware decode + encode picker.
 //!
-//! Decode side is libmpv's job — we just probe the host (via
-//! `tulipix-player::hwdec`) and tell the transcoder + Tools UI which codec to
-//! advertise. Encode side picks the best AV1 encoder available:
+//! Decode side is mpv's job — we just probe the host and tell the transcoder +
+//! Tools UI which codec to advertise. Encode side picks the best AV1 encoder
+//! available:
 //!
 //!   1. Intel QSV  — `av1_qsv`           (Arc & 11th-gen iGPU+)
 //!   2. NVENC      — `av1_nvenc`         (RTX 40+)

@@ -2,7 +2,7 @@
 # Linux runner cannot see.
 #
 # Deliberately not a release build. release.yml already does the heavy
-# embedded-mpv + skia builds and takes over an hour; this is meant to finish in
+# skia builds and takes over an hour; this is meant to finish in
 # minutes, so it uses the lean femtovg feature set and skips packaging.
 #
 # Manual only. It used to run on every push, which meant a three-push session
@@ -57,7 +57,7 @@ jobs:
       # next one. Three pre-existing failures surfaced this way, one at a time.
       - run: >
           cargo test --no-fail-fast -p tulipix-core -p tulipix-videos -p tulipix-music -p tulipix-photos
-          -p tulipix-books -p tulipix-tools -p tulipix-cloud -p tulipix-player
+          -p tulipix-books -p tulipix-tools -p tulipix-cloud
           -p tulipix-whisper -p tulipix-ai -p tulipix-mdl -p tulipix-platform
           -p tulipix-plugins -p tulipix-cli -p tulipix-transfer -p tulipix-genesis
           -p tulipix-finances
@@ -82,7 +82,7 @@ jobs:
       # once these are green and quiet.
       - run: >
           cargo clippy -p tulipix-core -p tulipix-videos -p tulipix-music -p tulipix-photos
-          -p tulipix-books -p tulipix-tools -p tulipix-cloud -p tulipix-player
+          -p tulipix-books -p tulipix-tools -p tulipix-cloud
           -p tulipix-whisper -p tulipix-ai -p tulipix-mdl -p tulipix-platform
           -p tulipix-plugins -p tulipix-cli -p tulipix-transfer -p tulipix-genesis
           -p tulipix-finances --all-targets --
@@ -110,8 +110,8 @@ jobs:
       - run: cargo check -p tulipix-app --no-default-features --features renderer-femtovg,genesis,finances
 
   # The UI-glue crates' own tests (~30). They need a renderer selected, which
-  # only tulipix-app's features can do, so the app is built alongside them and
-  # its default embedded-mpv is dropped — that would want libmpv on the runner.
+  # only tulipix-app's features can do, so the app is built alongside them —
+  # with femtovg, which skips the skia-bindings C++ build on the runner.
   test-ui:
     runs-on: ubuntu-24.04
     steps:

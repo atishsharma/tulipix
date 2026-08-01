@@ -3,7 +3,7 @@
 //!
 //! Pure helpers only: parse `mpv --audio-device=help` into a device list and
 //! build the mpv `--key=value` options to route playback to a chosen sink.
-//! The actual enumeration call + IPC live in main.rs / tulipix-player.
+//! The actual enumeration call + IPC live in main.rs / tulipix-common.
 
 #[derive(Debug, Clone, PartialEq)]
 pub struct AudioDevice {

@@ -1,8 +1,8 @@
-//! `np.p4.music.player` — libmpv audio path config (gapless, crossfade,
+//! `np.p4.music.player` — mpv audio path config (gapless, crossfade,
 //! ReplayGain).
 //!
-//! The actual playback lives behind the shared libmpv handle in
-//! tulipix-player; this module owns the audio-specific option set we hand mpv
+//! The actual playback is an out-of-process mpv driven over its IPC socket
+//! (tulipix_common::player); this module owns the option set we hand mpv
 //! and the ReplayGain gain→volume math, both of which need to be exactly right
 //! and are easy to unit-test in isolation.
 

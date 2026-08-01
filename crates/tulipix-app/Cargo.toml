@@ -15,18 +15,19 @@ path = "src/main.rs"
 # (whisper, AI execution providers, large models, plugin sandboxes) are
 # behind their own feature flag so the base binary stays ~40% smaller and
 # loads them lazily on first use.
-# `embedded-mpv` on by default: links libmpv for the in-app Videos player
-# (render API → Slint texture) and forces the skia-opengl renderer. Build with
-# `--no-default-features` to drop the libmpv link entirely (e.g. Windows without
-# mpv.lib); the Videos embedded player goes inert, while music/podcast/radio/
-# YouTube keep using out-of-process mpv.exe. Because the renderer rides on
-# embedded-mpv, a `--no-default-features` build MUST add a renderer feature —
-# `--features renderer-skia` (parity) or `--features renderer-femtovg` (lean).
-# See build.rs + src/mpv_stub.rs.
+# There was an `embedded-mpv` feature here: libmpv linked into the process,
+# rendering into a Slint texture. It was removed, along with the tulipix-player
+# crate and ui/player.slint. The render path blocked Slint's render thread on
+# weak iGPUs and every play call site had already been routed to an external mpv
+# window; nothing set `player-open`, so the overlay could not be reached at all.
+# All playback — Videos, Live TV, music, podcasts, radio, YouTube — is
+# out-of-process mpv, driven over its IPC socket, which also gets mpv's own OSC
+# for embedded audio/subtitle tracks for free. See tulipix_common::spawn_mpv_*.
+#
 # alloc-mimalloc on by default: 10-20% on the thumb pipeline + DB pool. The
 # global_allocator is cfg-gated to Linux/Windows (macOS keeps system malloc),
 # so this is a no-op allocator-wise on mac.
-default = ["embedded-mpv", "alloc-mimalloc", "genesis", "finances"]
+default = ["renderer-skia", "alloc-mimalloc", "genesis", "finances"]
 # Genesis — book search and download inside Books. Gated so a build that should
 # not carry it drops the crate entirely rather than shipping it switched off.
 genesis = ["dep:tulipix-sec-genesis"]
@@ -35,15 +36,14 @@ genesis = ["dep:tulipix-sec-genesis"]
 # recipe passes --no-default-features, so a section added only to `default`
 # ships dead in the lite build. Genesis was broken for a cycle exactly that way.
 finances = ["dep:tulipix-sec-finances"]
-# The embedded player hands libmpv frames to Slint as a BorrowedOpenGLTexture,
-# which only the skia-opengl surface provides — so embedded-mpv pulls skia.
-embedded-mpv = ["renderer-skia"]
-
 # Renderer selection (Slint feature-unifies, so pick exactly one).
-#   skia    — default; GPU, best text/AA, required by embedded-mpv. Larger binary.
-#   femtovg — size-lean GPU renderer for a "lite" build. Incompatible with the
-#             in-app video player, so pair it with --no-default-features:
-#               cargo build -p tulipix-app --release --no-default-features --features renderer-femtovg
+#   skia    — default; GPU, best text/AA. Larger binary, needs the skia-bindings
+#             C++ build.
+#   femtovg — size-lean GPU renderer for a "lite" build, and a far faster cold
+#             build. No longer excludes anything — pair with
+#             --no-default-features and re-add the sections:
+#               cargo build -p tulipix-app --release --no-default-features \
+#                 --features renderer-femtovg,alloc-mimalloc,genesis,finances
 renderer-skia = ["slint/renderer-skia", "slint/renderer-skia-opengl"]
 renderer-femtovg = ["slint/renderer-femtovg"]
 
@@ -110,7 +110,6 @@ tulipix-core = { path = "../tulipix-core" }
 tulipix-platform = { path = "../tulipix-platform", features = ["tray"] }
 tulipix-photos = { path = "../tulipix-photos" }
 tulipix-videos = { path = "../tulipix-videos" }
-tulipix-player = { path = "../tulipix-player" }
 tulipix-music = { path = "../tulipix-music" }
 tulipix-sec-tools = { path = "../tulipix-sec-tools" }
 tulipix-sec-transfer = { path = "../tulipix-sec-transfer" }

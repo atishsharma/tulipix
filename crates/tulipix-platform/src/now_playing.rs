@@ -5,7 +5,7 @@
 //!   * macOS: `MPNowPlayingInfoCenter` + `MPRemoteCommandCenter`.
 //!
 //! Each sink consumes the same `Track` + `PlaybackState` so a single
-//! tulipix-player callback covers media keys, BT next/prev, lockscreen
+//! playback callback covers media keys, BT next/prev, lockscreen
 //! controls, and control-centre artwork.
 
 use anyhow::Result;

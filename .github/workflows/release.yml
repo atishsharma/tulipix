@@ -53,7 +53,7 @@ jobs:
           sudo sysctl -w vm.swappiness=100 vm.vfs_cache_pressure=50 vm.overcommit_memory=1 || true
           echo "=== mem/disk after ==="; free -h; df -h / /mnt
 
-      - name: System deps (libmpv link + skia/gl build deps + mpv to bundle)
+      - name: System deps (skia/gl build deps + mpv to bundle)
         run: |
           sudo apt-get update
           # mold: the committed .cargo/config.toml links Linux builds with it.
@@ -64,7 +64,7 @@ jobs:
           # the feature set — that build REQUIRES clang (GN toolchain) and libclang
           # (bindgen). Their absence is what failed the Skia step ~7 min in.
           sudo apt-get install -y --no-install-recommends \
-            libmpv-dev mpv mold cmake ninja-build libdbus-1-dev \
+            mpv mold cmake ninja-build libdbus-1-dev \
             libfontconfig1-dev libfreetype6-dev libgl1-mesa-dev libegl1-mesa-dev \
             libxkbcommon-dev libwayland-dev \
             clang libclang-dev llvm-dev python3 lld time
@@ -104,7 +104,7 @@ jobs:
           cmake --build /tmp/whisper.cpp/build --target whisper-cli
           install -m755 /tmp/whisper.cpp/build/bin/whisper-cli resources/bin/linux-x86_64/whisper-cli
 
-      - name: "Build (full: embedded-mpv + skia)"
+      - name: "Build (full: skia)"
         # Force skia-bindings to DOWNLOAD its prebuilt binary (as win/macOS do)
         # instead of silently falling back to a 40-min source build that exhausts
         # the runner and kills the job with no log. Prebuilts for
@@ -167,7 +167,7 @@ jobs:
         run: |
           cargo generate-rpm -p crates/tulipix-app -o dist/tulipix-${VERSION}-linux-x86_64.rpm
 
-      - name: Package AppImage (bundles libmpv + mpv player)
+      - name: Package AppImage (bundles the mpv player + its libs)
         env:
           APPIMAGE_EXTRACT_AND_RUN: "1"
         run: |
@@ -189,8 +189,8 @@ jobs:
       - name: Package tar.gz (opt layout)
         env:
           # Flip to "1" to also bundle the mpv player + the shared libs the
-          # AppImage step already collected (linuxdeploy resolved libmpv and
-          # friends into AppDir). Adds ~90 MB; off by default because deb/rpm
+          # AppImage step already collected (linuxdeploy resolved mpv's dylib
+          # tree into AppDir). Adds ~90 MB; off by default because deb/rpm
           # declare an mpv dependency and most tar.gz users (Arch) have mpv.
           BUNDLE_MPV_IN_TARBALL: "1"
         run: |
@@ -218,8 +218,9 @@ jobs:
               'exec "$DIR/tulipix" "$@"' > stage/tulipix/tulipix.sh
             chmod +x stage/tulipix/tulipix.sh
             # The shipped .desktop is the distro one (Exec=tulipix, correct for
-            # deb/rpm). This layout needs the launcher, since the app itself
-            # links libmpv out of lib/ on hosts that have no system copy.
+            # deb/rpm). This layout needs the launcher so the bundled mpv — which
+            # the app spawns, and which inherits the exported path — finds its
+            # libs in lib/ on hosts that have no system copy.
             sed -i 's|^Exec=tulipix$|Exec=./tulipix.sh|' stage/tulipix/tulipix.desktop
           fi
           tar -C stage -czf dist/tulipix-${VERSION}-linux-x86_64.tar.gz tulipix
@@ -288,35 +289,23 @@ jobs:
       - name: Fetch bundled tools (ffmpeg, yt-dlp, mpv.exe, whisper, exiftool, rclone, model)
         run: cargo run -p fetch-resources
 
-      - name: mpv player + libmpv dev (GitHub mirror — SourceForge 403s CI IPs)
+      # The player binary only. There was a second half here that downloaded
+      # mpv-dev, rebuilt an import .def from the DLL's export table and ran
+      # lib.exe to produce mpv.lib — all of it for the embedded player's libmpv
+      # link, which no longer exists. Playback shells out to this mpv.exe.
+      - name: mpv player (GitHub mirror — SourceForge 403s CI IPs)
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           $rel = gh api repos/zhongfly/mpv-winbuild/releases/latest | ConvertFrom-Json
           $mpv = $rel.assets | Where-Object name -match '^mpv-x86_64-\d'     | Select-Object -First 1
-          $dev = $rel.assets | Where-Object name -match '^mpv-dev-x86_64-\d' | Select-Object -First 1
-          Write-Host "player: $($mpv.name)`ndev: $($dev.name)"
+          Write-Host "player: $($mpv.name)"
           curl.exe -sSfL -o mpv.7z $mpv.browser_download_url
-          curl.exe -sSfL -o mpv-dev.7z $dev.browser_download_url
           7z x -ompv-pkg mpv.7z
-          7z x -ompv-dev mpv-dev.7z
           # bundle the standalone player next to the other tools
           Copy-Item mpv-pkg\mpv.exe resources\bin\windows-x86_64\
           if (Test-Path mpv-pkg\mpv.com) { Copy-Item mpv-pkg\mpv.com resources\bin\windows-x86_64\ }
-          # Import lib for the embedded-mpv link. The dev package ships no .def
-          # (only a GNU libmpv.dll.a, useless to MSVC), so build the .def from
-          # the DLL's real export table — a stale bundled def once missed
-          # mpv_render_context_free and broke the final link.
-          $dll = Get-ChildItem -Recurse mpv-dev -Filter "*mpv*.dll" | Select-Object -First 1
-          $lines = dumpbin /exports $dll.FullName
-          $names = $lines | Select-String '^\s+\d+\s+[0-9A-Fa-f]+\s+[0-9A-Fa-f]{8}\s+(\S+)' |
-            ForEach-Object { $_.Matches[0].Groups[1].Value }
-          if ($names.Count -lt 50) { throw "export parse failed: $($names.Count) symbols" }
-          Set-Content mpv-dev\mpv.def -Encoding ascii -Value ("LIBRARY $($dll.Name)`nEXPORTS")
-          Add-Content mpv-dev\mpv.def -Encoding ascii -Value $names
-          lib.exe /def:mpv-dev\mpv.def /machine:x64 /out:mpv-dev\mpv.lib
-          echo "TULIPIX_MPV_LIB_DIR=$PWD\mpv-dev" >> $env:GITHUB_ENV
 
       # Windows has no swapon: the ceiling on a single allocation is the commit
       # limit, which is RAM plus the pagefile, and the runner's pagefile is
@@ -352,7 +341,7 @@ jobs:
           "commit limit: {0:N0} MB" -f ($os.TotalVirtualMemorySize / 1KB)
           exit 0
 
-      - name: "Build (full: embedded-mpv + skia)"
+      - name: "Build (full: skia)"
         env:
           # Same memory story as the linux job. Fat LTO makes every crate emit
           # whole-program bitcode into a single codegen unit, and on the 16 GB
@@ -379,8 +368,8 @@ jobs:
           New-Item -ItemType Directory -Force dist\app\resources\bin | Out-Null
           Copy-Item target\release\tulipix.exe dist\app\
           Copy-Item -Recurse resources\bin\windows-x86_64 dist\app\resources\bin\windows-x86_64
-          # runtime libmpv DLL next to the exe
-          Get-ChildItem -Recurse mpv-dev -Filter *mpv*.dll | ForEach-Object { Copy-Item $_.FullName dist\app\ }
+          # No libmpv DLL beside the exe any more — nothing links it. The bundled
+          # mpv.exe under resources\bin is what plays.
 
       - name: Portable zip
         shell: pwsh
@@ -418,7 +407,7 @@ jobs:
           # directory this runner never had.
           cache-directories: ~/Library/Caches/ort.pyke.io
 
-      - name: System deps (libmpv to link/bundle + bundler)
+      - name: System deps (mpv to bundle + bundler)
         run: brew install mpv dylibbundler ninja
 
       - name: Resolve version
@@ -441,7 +430,7 @@ jobs:
           cmake --build /tmp/whisper.cpp/build --target whisper-cli
           install -m755 /tmp/whisper.cpp/build/bin/whisper-cli resources/bin/macos-aarch64/whisper-cli
 
-      - name: "Build (full: embedded-mpv + skia)"
+      - name: "Build (full: skia)"
         env:
           CARGO_BUILD_JOBS: "2"   # cap peak RAM — macos-14 (M1) has ~7 GB
           # The committed profile is fat LTO with ONE codegen unit, so tulipix-ui
@@ -453,7 +442,6 @@ jobs:
           CARGO_PROFILE_RELEASE_LTO: "thin"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
         run: |
-          export TULIPIX_MPV_LIB_DIR="$(brew --prefix mpv)/lib"
           cargo build --release --locked -p tulipix-app --features full,ai-onnx
 
       - name: Assemble Tulipix.app
@@ -471,7 +459,7 @@ jobs:
             sips -z $s $s resources/icons/tulipix-256.png --out "tulipix.iconset/icon_${s}x${s}.png" >/dev/null
           done
           iconutil -c icns tulipix.iconset -o "$APP/Contents/Resources/tulipix.icns"
-          # pull libmpv + its dylib tree into the bundle, rewrite install names
+          # pull each binary's dylib tree into the bundle, rewrite install names
           dylibbundler -od -b -x "$APP/Contents/MacOS/tulipix" \
             -d "$APP/Contents/libs" -p @executable_path/../libs/
           dylibbundler -od -b -x "$APP/Contents/MacOS/mpv" \

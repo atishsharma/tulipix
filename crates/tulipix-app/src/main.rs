@@ -32,7 +32,7 @@ pub(crate) use tulipix_common::{
     human_size, kill_all_mpv, load_folder_sections, load_watched_folders,
     music_ipc, music_proc, music_section_key, music_section_label,
     now_secs, on_path, pool_for, set_folder_section, spawn_mpv_windowed,
-    stop_music_child, video_ipc, watched_folders_path, MUSIC_GEN,
+    stop_music_child, watched_folders_path, MUSIC_GEN,
 };
 // MPRIS/SMTC handle storage now lives in common; setup_media_controls in main
 // writes to it.
@@ -46,7 +46,7 @@ use tulipix_sec_photos::*;
 // in main keep calling its helpers unqualified.
 use tulipix_sec_music::*;
 // Videos library (grid/show models, season parsing, TMDB, discover) lives in
-// tulipix-sec-videos; the embedded player stays in main and calls into it.
+// tulipix-sec-videos; main owns the wire-up and launches mpv for playback.
 use tulipix_sec_videos::*;
 
 /// Idle threshold meaning "never" — pushed a year out so the idle listener never
@@ -57,12 +57,6 @@ const IDLE_NEVER_SECS: u64 = 60 * 60 * 24 * 365;
 mod dev_reload;
 #[cfg(feature = "hot")]
 mod hot;
-#[cfg(feature = "embedded-mpv")]
-mod mpv;
-// No-op stand-in when libmpv isn't linked (e.g. Windows --no-default-features).
-#[cfg(not(feature = "embedded-mpv"))]
-#[path = "mpv_stub.rs"]
-mod mpv;
 mod profile_image;
 
 fn detect_dark() -> bool {
@@ -134,13 +128,11 @@ static READY_MS: OnceLock<u64> = OnceLock::new();
 
 fn main() -> Result<()> {
     let _ = APP_START.set(std::time::Instant::now());
-    // The embedded player hands libmpv frames to Slint as a BorrowedOpenGLTexture,
-    // which requires the OpenGL skia surface (so the rendering notifier yields a
-    // NativeOpenGL context). Force it unless the user overrode the backend.
+    // Name the backend that matches the renderer feature, unless the user
+    // overrode it. Slint would pick one on its own; saying it here keeps a box
+    // with several GL stacks from choosing a different one run to run.
     if std::env::var_os("SLINT_BACKEND").is_none() {
         // Safety: set at the very top of main, before any threads spawn.
-        // skia-opengl is required for the embedded-mpv texture path; a lean
-        // femtovg build (no embedded player) uses the femtovg backend instead.
         #[cfg(feature = "renderer-skia")]
         unsafe { std::env::set_var("SLINT_BACKEND", "winit-skia-opengl"); }
         #[cfg(all(not(feature = "renderer-skia"), feature = "renderer-femtovg"))]
@@ -245,116 +237,6 @@ fn main() -> Result<()> {
         }
     }
 
-    // ── Embedded player (np.p3.player.*) ── libmpv renders into a GL texture
-    // presented by Slint. The rendering notifier is the only place the GL
-    // context is current, so frames are produced there.
-    mpv::set_window(window.as_weak());
-    {
-        let wk = window.as_weak();
-        if let Err(e) = window.window().set_rendering_notifier(move |state, api| {
-            match state {
-                slint::RenderingState::BeforeRendering => {
-                    if let slint::GraphicsAPI::NativeOpenGL { get_proc_address } = api {
-                        if let Some(w) = wk.upgrade() {
-                            let sz = w.window().size();
-                            if let Some(img) = mpv::render_frame(get_proc_address, sz.width as i32, sz.height as i32) {
-                                w.set_player_frame(img);
-                            }
-                        }
-                    }
-                }
-                slint::RenderingState::RenderingTeardown => mpv::teardown(),
-                _ => {}
-            }
-        }) {
-            tracing::error!(error = %e, "rendering notifier unavailable — embedded video disabled");
-        }
-    }
-    // mpv property changes → UI.
-    {
-        let wk = window.as_weak();
-        mpv::on_update(move |u| {
-            let wk = wk.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                let Some(w) = wk.upgrade() else { return; };
-                use mpv::Update::*;
-                match u {
-                    TimePos(t)  => { w.set_player_pos(t as f32); w.set_player_pos_label(fmt_clock(t).into()); }
-                    Duration(d) => { w.set_player_duration(d as f32); w.set_player_dur_label(fmt_clock(d).into()); }
-                    Pause(p)    => w.set_player_paused(p),
-                    Volume(v)   => w.set_player_volume(v as f32),
-                    Speed(s)    => w.set_player_speed(s as f32),
-                    Mute(m)     => w.set_player_muted(m),
-                    Idle(i)     => w.set_player_buffering(i && !w.get_player_paused()),
-                    Chapter(_)  => {}
-                    FileLoaded  => {
-                        // Apply the pending resume seek now the file is loaded.
-                        if let Some(r) = player_resume().lock().ok().and_then(|mut g| g.take()) {
-                            if r > 1.0 { mpv::command(&["seek", &r.to_string(), "absolute"]); }
-                        }
-                        // Subtitle styling / HDR / audio / interpolation / sleep.
-                        apply_playback_prefs();
-                        // Auto-load the best sibling subtitle if one exists next to
-                        // the video (np.p3.sub.local); mpv lists it alongside any
-                        // embedded tracks and selects it.
-                        if let Some(p) = player_path().lock().ok().and_then(|g| g.clone()) {
-                            if let Some(c) = tulipix_videos::sub_local::autopick(&p, &["en", "eng"]) {
-                                let sp = c.path.to_string_lossy().into_owned();
-                                mpv::command(&["sub-add", &sp, "select"]);
-                                tracing::info!(sub = %sp, "auto-loaded sibling subtitle");
-                            }
-                        }
-                    }
-                    EndFile => {
-                        if w.get_player_open() {
-                            // Natural end → mark finished, then close.
-                            if let Some(id) = *player_item().lock().unwrap_or_else(|p| p.into_inner()) {
-                                let handle = tokio::runtime::Handle::current();
-                                handle.spawn(async move {
-                                    if let Ok(pool) = pool_for("videos").await {
-                                        let _ = tulipix_videos::watch_progress::mark_finished(&pool, id, true).await;
-                                    }
-                                });
-                            }
-                            // Distinguish a real EOF from a `stop`: only auto-close
-                            // when we're near the end.
-                            let (pos, dur) = (w.get_player_pos() as f64, w.get_player_duration() as f64);
-                            if dur > 0.0 && pos >= dur * 0.98 { player_close(&w); }
-                        }
-                    }
-                }
-            });
-        });
-    }
-    // Track / chapter / hwdec lists → UI (rebuilt on each file load).
-    {
-        let wk = window.as_weak();
-        mpv::on_tracks(move |tracks, chapters, hwdec| {
-            let wk = wk.clone();
-            let _ = slint::invoke_from_event_loop(move || {
-                let Some(w) = wk.upgrade() else { return; };
-                let mut audio: Vec<PlayerTrack> = Vec::new();
-                let mut subs: Vec<PlayerTrack> = vec![PlayerTrack { id: -1, label: "Off".into(), selected: false }];
-                for t in &tracks {
-                    let row = PlayerTrack { id: t.id as i32, label: t.label.clone().into(), selected: t.selected };
-                    match t.kind.as_str() {
-                        "audio" => audio.push(row),
-                        "sub"   => { if t.selected { subs[0].selected = false; } subs.push(row); }
-                        _ => {}
-                    }
-                }
-                let chaps: Vec<PlayerChapter> = chapters.iter().map(|c| PlayerChapter {
-                    index: c.index as i32, title: c.title.clone().into(), time: fmt_clock(c.time).into(),
-                }).collect();
-                w.set_player_audio_tracks(slint::ModelRc::new(slint::VecModel::from(audio)));
-                w.set_player_sub_tracks(slint::ModelRc::new(slint::VecModel::from(subs)));
-                w.set_player_chapters(slint::ModelRc::new(slint::VecModel::from(chaps)));
-                w.set_player_hwdec(hwdec.into());
-            });
-        });
-    }
-    // Player control callbacks.
-    register_player_controls(&window);
     // Idle threshold: an env override wins (test hook); otherwise the
     // Settings → Security auto-lock timeout when enabled, else the 600 s
     // ambient default.
@@ -3633,106 +3515,11 @@ fn register_bundled_fonts() {
 
 // fmt_duration / fmt_clock / fmt_date moved to tulipix_common.
 
-// Currently-playing item (for watch_progress writeback) + pending resume seek.
-static PLAYER_ITEM: std::sync::OnceLock<std::sync::Mutex<Option<i64>>> = std::sync::OnceLock::new();
-fn player_item() -> &'static std::sync::Mutex<Option<i64>> {
-    PLAYER_ITEM.get_or_init(|| std::sync::Mutex::new(None))
-}
-static PLAYER_RESUME: std::sync::OnceLock<std::sync::Mutex<Option<f64>>> = std::sync::OnceLock::new();
-fn player_resume() -> &'static std::sync::Mutex<Option<f64>> {
-    PLAYER_RESUME.get_or_init(|| std::sync::Mutex::new(None))
-}
-static PLAYER_PATH: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> = std::sync::OnceLock::new();
-fn player_path() -> &'static std::sync::Mutex<Option<PathBuf>> {
-    PLAYER_PATH.get_or_init(|| std::sync::Mutex::new(None))
-}
 // Source path picked for the profile cover/avatar cropper — stashed between
 // the file-picker callback and crop-confirm (np.p1.profile.cover).
 static CROP_SOURCE: std::sync::OnceLock<std::sync::Mutex<Option<PathBuf>>> = std::sync::OnceLock::new();
 fn crop_source() -> &'static std::sync::Mutex<Option<PathBuf>> {
     CROP_SOURCE.get_or_init(|| std::sync::Mutex::new(None))
-}
-static PLAYER_FS: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-/// PiP state (np.p3.player.pip) — floating always-on-top mini mpv window.
-static PLAYER_PIP: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-
-/// Apply per-playback mpv preferences once a file is loaded: subtitle styling
-/// (np.p3.sub.styling), HDR routing (np.p3.player.hdr), exclusive audio output
-/// (np.p3.player.audio), optional motion interpolation (np.p3.player.upscale),
-/// and keep-display-awake while playing (np.p3.player.sleep). Tunables live in
-/// Settings → System ("PLAYBACK").
-fn apply_playback_prefs() {
-    use tulipix_player::{audio, hdr};
-    let s = tulipix_core::settings::Settings::load().unwrap_or_default();
-
-    // Subtitle styling → mpv sub-* properties.
-    let mut style = tulipix_videos::sub_styling::SubtitleStyle::default();
-    if let Some(v) = s.advanced.get("playback.sub-size").and_then(|x| x.trim().parse::<f32>().ok()) {
-        style.font_size_px = v;
-    }
-    if let Some(c) = s.advanced.get("playback.sub-color") {
-        if !c.trim().is_empty() { style.color = c.trim().to_string(); }
-    }
-    style.clamp();
-    for (k, v) in style.to_mpv_options() { mpv::set_string(&k, &v); }
-
-    // HDR routing — detect the source transfer from mpv; tone-map to an SDR
-    // panel by default (Linux has no reliable display-HDR probe).
-    let src = match mpv::get_prop("video-params/gamma").as_deref() {
-        Some("pq") => hdr::SourceHdr::Hdr10,
-        Some("hlg") => hdr::SourceHdr::Hlg,
-        _ => hdr::SourceHdr::Sdr,
-    };
-    let plan = hdr::plan(src, &hdr::DisplayCaps::default());
-    for (k, v) in plan.mpv_opts { mpv::set_string(&k, &v); }
-
-    // Exclusive audio output (opt-in) → ao backend opts.
-    let mode = if s.flag("playback.audio-exclusive", false) {
-        audio::AudioMode::Exclusive
-    } else {
-        audio::AudioMode::Shared
-    };
-    let backend = audio::pick_backend(mode);
-    for (k, v) in audio::mpv_opts(backend) { mpv::set_string(&k, &v); }
-
-    // Motion interpolation (opt-in — heavy on integrated GPUs).
-    if s.flag("playback.interpolation", false) {
-        mpv::set_string("video-sync", "display-resample");
-        mpv::set_flag("interpolation", true);
-    } else {
-        mpv::set_flag("interpolation", false);
-    }
-
-    // Keep the display awake while a video is open (np.p3.player.sleep).
-    mpv::set_flag("stop-screensaver", true);
-}
-
-/// Persist the current playhead to watch_progress + refresh the Continue tab.
-fn player_persist_progress(weak: slint::Weak<MainWindow>, pos: f64, dur: f64) {
-    let id = *player_item().lock().unwrap_or_else(|p| p.into_inner());
-    let Some(id) = id else { return; };
-    if pos <= 0.0 { return; }
-    let dur_opt = if dur > 0.0 { Some(dur) } else { None };
-    let handle = tokio::runtime::Handle::current();
-    handle.spawn(async move {
-        if let Ok(pool) = pool_for("videos").await {
-            let _ = tulipix_videos::watch_progress::update(&pool, id, pos, dur_opt).await;
-        }
-        let _ = weak.upgrade_in_event_loop(|w| {
-            let cat = w.get_video_category().to_string();
-            kick_video_refresh(w.as_weak(), cat);
-        });
-    });
-}
-
-/// Close the embedded player, saving progress.
-fn player_close(w: &MainWindow) {
-    let (pos, dur) = (w.get_player_pos() as f64, w.get_player_duration() as f64);
-    mpv::stop();
-    w.set_player_open(false);
-    if PLAYER_FS.swap(false, std::sync::atomic::Ordering::AcqRel) { w.window().set_fullscreen(false); }
-    player_persist_progress(w.as_weak(), pos, dur);
-    *player_item().lock().unwrap_or_else(|p| p.into_inner()) = None;
 }
 
 // watched_folders_path / load_watched_folders moved to tulipix_common.
@@ -3771,9 +3558,9 @@ fn persist_watched_folder(path: &std::path::Path) {
 // folders so the assignment survives restarts.
 // MUSIC_SECTIONS + folder-section helpers moved to tulipix_common.
 
-/// Open a library video in the embedded player (np.p3.player.*): resume from
-/// the stored position (np.p3.watch-progress) and record the access for the
-/// Continue rail (np.p3.last-accessed). libmpv renders the frames in-window.
+/// Open a library video in an external mpv window: resume from the stored
+/// position (np.p3.watch-progress) and record the access for the Continue rail
+/// (np.p3.last-accessed).
 fn play_video_at(weak: slint::Weak<MainWindow>, idx: i32) {
     let Some(path) = video_paths().lock().ok().and_then(|g| g.get(idx as usize).cloned()) else {
         tracing::warn!(idx, "play-video: no path for index");
@@ -3795,10 +3582,13 @@ fn play_video_at(weak: slint::Weak<MainWindow>, idx: i32) {
                 r
             } else { None }
         } else { None };
-        // Play in an external mpv window — the embedded libmpv/skia-opengl render
-        // path froze the whole UI on weak iGPUs (Intel HD 5500: it blocks the
-        // render thread). mpv's own window + OSC gives full controls and never
-        // blocks Slint. Resume + progress writeback still flow via the IPC socket.
+        // Play in an external mpv window. There was an in-app player here once,
+        // libmpv rendering into a Slint texture; it froze the whole UI on weak
+        // iGPUs (Intel HD 5500 — the render happens on Slint's render thread and
+        // blocks it), so every call site was routed here and the player was
+        // deleted in v0.8.0. mpv's own window + OSC gives full controls,
+        // including embedded audio and subtitle tracks, and never blocks Slint.
+        // Resume + progress writeback flow via the IPC socket.
         spawn_mpv_windowed(path.clone(), resume, item_id);
         let _ = weak.upgrade_in_event_loop(move |w| {
             // A fresh access — refresh the Continue tab if it's showing, and the
@@ -3817,81 +3607,6 @@ fn play_video_at(weak: slint::Weak<MainWindow>, idx: i32) {
 
 // spawn_mpv_windowed moved to tulipix_common (playback core).
 
-/// Hook up the embedded player's control callbacks (transport, tracks, speed,
-/// fullscreen, and keyboard gestures via tulipix-player::gestures).
-fn register_player_controls(window: &MainWindow) {
-    use std::sync::atomic::Ordering;
-    window.on_player_toggle_pause(|| mpv::command(&["cycle", "pause"]));
-    window.on_player_seek(|s| mpv::command(&["seek", &(s as f64).to_string(), "absolute"]));
-    window.on_player_seek_rel(|d| mpv::command(&["seek", &(d as f64).to_string(), "relative"]));
-    window.on_player_set_volume(|v| mpv::set_double("volume", v as f64));
-    window.on_player_toggle_mute(|| mpv::command(&["cycle", "mute"]));
-    window.on_player_set_speed(|s| mpv::set_double("speed", s as f64));
-    window.on_player_set_audio(|id| mpv::set_string("aid", &id.to_string()));
-    window.on_player_set_sub(|id| {
-        if id < 0 { mpv::set_string("sid", "no"); } else { mpv::set_string("sid", &id.to_string()); }
-    });
-    // Manual subtitle file picker (np.p3.sub.manual) — adds + selects it.
-    window.on_player_load_sub(|| {
-        if let Some(path) = rfd::FileDialog::new()
-            .set_title("Load subtitle")
-            .add_filter("Subtitles", &["srt", "vtt", "ass", "ssa", "sub", "ttml"])
-            .pick_file()
-        {
-            let p = path.to_string_lossy().into_owned();
-            mpv::command(&["sub-add", &p, "select"]);
-            tracing::info!(sub = %p, "manual subtitle loaded");
-        }
-    });
-    window.on_player_set_chapter(|i| mpv::set_string("chapter", &i.to_string()));
-    let w = window.as_weak();
-    window.on_player_close(move || { if let Some(w) = w.upgrade() { player_close(&w); } });
-    let w = window.as_weak();
-    window.on_player_toggle_fullscreen(move || {
-        if let Some(w) = w.upgrade() {
-            let on = !PLAYER_FS.load(Ordering::Acquire);
-            PLAYER_FS.store(on, Ordering::Release);
-            w.window().set_fullscreen(on);
-        }
-    });
-    let w = window.as_weak();
-    window.on_player_key(move |k, shift| {
-        let Some(w) = w.upgrade() else { return; };
-        use tulipix_player::gestures::{map_key, KeyAction::*};
-        let Some(a) = map_key(&k.to_lowercase(), shift) else { return; };
-        match a {
-            Play | Pause => mpv::command(&["cycle", "pause"]),
-            Stop => player_close(&w),
-            SeekShortBack => mpv::command(&["seek", "-5", "relative"]),
-            SeekShortFwd  => mpv::command(&["seek", "5", "relative"]),
-            SeekLongBack  => mpv::command(&["seek", "-60", "relative"]),
-            SeekLongFwd   => mpv::command(&["seek", "60", "relative"]),
-            VolUp   => mpv::set_double("volume", (w.get_player_volume() as f64 + 5.0).min(130.0)),
-            VolDown => mpv::set_double("volume", (w.get_player_volume() as f64 - 5.0).max(0.0)),
-            MuteToggle => mpv::command(&["cycle", "mute"]),
-            SpeedUp    => mpv::set_double("speed", (w.get_player_speed() as f64 + 0.25).min(4.0)),
-            SpeedDown  => mpv::set_double("speed", (w.get_player_speed() as f64 - 0.25).max(0.25)),
-            SpeedReset => mpv::set_double("speed", 1.0),
-            Fullscreen => {
-                let on = !PLAYER_FS.load(Ordering::Acquire);
-                PLAYER_FS.store(on, Ordering::Release);
-                w.window().set_fullscreen(on);
-            }
-            // PiP (np.p3.player.pip): float the external mpv window — always-
-            // on-top mini player at 1/3 scale, toggling back to normal. Talks
-            // to the windowed instance over its IPC socket.
-            Pip => {
-                let on = !PLAYER_PIP.load(Ordering::Acquire);
-                PLAYER_PIP.store(on, Ordering::Release);
-                video_ipc(&["set_property", "ontop", if on { "true" } else { "false" }]);
-                video_ipc(&["set_property", "border", if on { "false" } else { "true" }]);
-                video_ipc(&["set_property", "window-scale", if on { "0.33" } else { "1.0" }]);
-                video_ipc(&["set_property", "window-maximized", if on { "false" } else { "true" }]);
-            }
-            ToggleSubs => mpv::command(&["cycle", "sub"]),
-        }
-    });
-}
 
 
 

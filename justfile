@@ -48,10 +48,10 @@ run-dev:
       nice -n 15 ionice -c3 \
       cargo +nightly {{fast}} run -j 1 -p tulipix-app --features dev-reload
 
-# Fast cold-build dev loop — drops embedded-mpv (so NO skia-bindings C++ build,
-# the single biggest compile cost) and renders with the lean femtovg backend.
-# Trade-off: the in-app Videos player goes inert; music/podcast/radio/YouTube
-# still play via out-of-process mpv. Uses a SEPARATE target dir so it never
+# Fast cold-build dev loop — renders with the lean femtovg backend, so NO
+# skia-bindings C++ build, the single biggest compile cost. No feature trade-off
+# left: every section builds either way now that playback is out-of-process mpv
+# and nothing needs the GL texture path. Uses a SEPARATE target dir so it never
 # invalidates the skia-cached `run-dev` artifacts (switching renderer feature
 # would otherwise force a full rebuild back and forth). Same .slint hot-reload.
 run-dev-lite:

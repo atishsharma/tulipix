@@ -220,7 +220,6 @@ crates/
   tulipix-music/      music.db / podcasts.db / radio.db / youtube.db + scanners + tags
   tulipix-books/      books.db + ten-format parsers + comicvine
   tulipix-cloud/      cloud.db + rclone driver
-  tulipix-player/     libmpv wrapper + GPU surface bridge
   tulipix-ai/         LLM chat, captions, onboarding model catalogue
   tulipix-whisper/    whisper.cpp subprocess + FIFO queue
   tulipix-tools/      background job queue (recording, conversion)

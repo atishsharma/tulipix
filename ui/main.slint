@@ -9,7 +9,6 @@ import { PhotoEditor } from "photo_editor.slint";
 import { SharedHero, HeroRect } from "shared_element.slint";
 import { MilestoneConfetti } from "empty_state.slint";
 import { VideosPage, VideoTile, ShowCard, VideoSeason, DiscoverCard, StreamCard, StreamChip, StreamFileRow, StreamEpisode, StreamHostHealth, StreamHistoryRow, StreamDownloadRow } from "page_videos.slint";
-import { PlayerOverlay, PlayerTrack, PlayerChapter } from "player.slint";
 import { MusicPage, MusicFullscreen, MusicMini, PodcastMini, BookMini } from "page_music.slint";
 import { MusicSongRow, DownloaderRow, DlHistoryEntry, DlSearchEntry, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
 import { CloudPage, CloudRemote, CloudEntry, CloudJob, CloudUsage, CloudXfer, CloudBackend, CloudOpt } from "page_cloud.slint";
@@ -1059,35 +1058,6 @@ export component MainWindow inherits Window {
     callback video-clear-thumbs();
 
     // ── Embedded media player (np.p3.player.*) ──
-    in-out property <bool> player-open: false;
-    in-out property <image> player-frame;
-    in-out property <string> player-title: "";
-    in-out property <float> player-pos: 0;
-    in-out property <float> player-duration: 0;
-    in-out property <string> player-pos-label: "0:00";
-    in-out property <string> player-dur-label: "0:00";
-    in-out property <bool> player-paused: false;
-    in-out property <float> player-volume: 100;
-    in-out property <bool> player-muted: false;
-    in-out property <float> player-speed: 1.0;
-    in-out property <bool> player-buffering: false;
-    in-out property <string> player-hwdec: "";
-    in-out property <[PlayerTrack]> player-audio-tracks: [];
-    in-out property <[PlayerTrack]> player-sub-tracks: [];
-    in-out property <[PlayerChapter]> player-chapters: [];
-    callback player-toggle-pause();
-    callback player-seek(float);
-    callback player-seek-rel(float);
-    callback player-set-volume(float);
-    callback player-toggle-mute();
-    callback player-set-speed(float);
-    callback player-set-audio(int);
-    callback player-set-sub(int);
-    callback player-load-sub();
-    callback player-set-chapter(int);
-    callback player-close();
-    callback player-key(string, bool);
-    callback player-toggle-fullscreen();
     in-out property <[PhotoTile]> music-tiles: [];
     // Tracks grid only: music-tiles minus folders assigned to other music
     // sections (audiobooks etc.) — tile.index stays the playback position.
@@ -1349,6 +1319,7 @@ export component MainWindow inherits Window {
     in-out property <bool> cloud-show-advanced: false;
     in-out property <bool> cloud-form-oauth: false;
     in-out property <bool> cloud-authorizing: false;
+    in-out property <bool> cloud-authorized: false;
     in-out property <string> cloud-connect-error: "";
     in-out property <bool> cloud-connect-busy: false;
     callback cloud-backend-search(string);
@@ -1497,6 +1468,7 @@ callback cloud-go-home();
     in property <string> transfer-attempts: "";
     in property <string> transfer-url: "";
     in property <string> transfer-trust-url: "";
+    in property <string> transfer-fingerprint: "";
     in property <string> transfer-host-url: "";
     in property <string> transfer-pin: "";
     in property <image> transfer-qr;
@@ -3614,6 +3586,7 @@ callback cloud-go-home();
                 show-advanced <=> root.cloud-show-advanced;
                 form-oauth: root.cloud-form-oauth;
                 authorizing: root.cloud-authorizing;
+                authorized: root.cloud-authorized;
                 connect-error: root.cloud-connect-error;
                 connect-busy: root.cloud-connect-busy;
                 backend-search(q) => { root.cloud-backend-search(q); }
@@ -3754,6 +3727,7 @@ callback cloud-go-home();
                 attempts: root.transfer-attempts;
                 url: root.transfer-url;
                 trust-url: root.transfer-trust-url;
+                fingerprint: root.transfer-fingerprint;
                 host-url: root.transfer-host-url;
                 pin: root.transfer-pin;
                 qr: root.transfer-qr;
@@ -4243,39 +4217,6 @@ callback cloud-go-home();
         chosen(id) => { root.video-context-action(root.vctx-index, id); }
     }
 
-    // Embedded media player (np.p3.player.*) — top of the z-stack.
-    PlayerOverlay {
-        width: 100%; height: 100%;
-        open: root.player-open;
-        frame: root.player-frame;
-        title: root.player-title;
-        pos: root.player-pos;
-        duration: root.player-duration;
-        pos-label: root.player-pos-label;
-        dur-label: root.player-dur-label;
-        paused: root.player-paused;
-        volume: root.player-volume;
-        muted: root.player-muted;
-        speed: root.player-speed;
-        buffering: root.player-buffering;
-        hwdec: root.player-hwdec;
-        audio-tracks: root.player-audio-tracks;
-        sub-tracks: root.player-sub-tracks;
-        chapters: root.player-chapters;
-        toggle-pause => { root.player-toggle-pause(); }
-        seek(s) => { root.player-seek(s); }
-        seek-rel(s) => { root.player-seek-rel(s); }
-        set-volume(v) => { root.player-set-volume(v); }
-        toggle-mute => { root.player-toggle-mute(); }
-        set-speed(s) => { root.player-set-speed(s); }
-        set-audio(i) => { root.player-set-audio(i); }
-        set-sub(i) => { root.player-set-sub(i); }
-                load-sub => { root.player-load-sub(); }
-        set-chapter(i) => { root.player-set-chapter(i); }
-        close => { root.player-close(); }
-        key(k, sh) => { root.player-key(k, sh); }
-        toggle-fullscreen => { root.player-toggle-fullscreen(); }
-    }
 
     // Full-screen music player page (above all sections).
     if root.music-fullscreen: MusicFullscreen {
