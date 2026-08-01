@@ -985,7 +985,10 @@ export component MainWindow inherits Window {
     callback video-stream-set-to-library(bool);
     callback video-stream-search(string);
     callback video-stream-open(string);
+    callback video-stream-open-resume(string);
+    callback video-stream-open-pick(string);
     callback video-stream-back();
+    callback video-stream-home();
     callback video-stream-play(int);
     callback video-stream-set-dub(string);
     callback video-stream-set-season(int);
@@ -3106,7 +3109,10 @@ callback cloud-go-home();
                 stream-fourk-reset => { root.video-stream-fourk-reset(); }
                 stream-search(q) => { root.video-stream-search(q); }
                 stream-open(id) => { root.video-stream-open(id); }
+                stream-open-resume(id) => { root.video-stream-open-resume(id); }
+                stream-open-pick(id) => { root.video-stream-open-pick(id); }
                 stream-back => { root.video-stream-back(); }
+                stream-home => { root.video-stream-home(); }
                 stream-play(i) => { root.video-stream-play(i); }
                 stream-set-dub(id) => { root.video-stream-set-dub(id); }
                 stream-set-season(s) => { root.video-stream-set-season(s); }

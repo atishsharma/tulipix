@@ -451,6 +451,45 @@ pub fn anime4k_shader_args() -> Option<(String, usize)> {
     Some((files.join(":"), files.len()))
 }
 
+/// mpv flags that make a remote **video-on-demand** stream properly seekable.
+///
+/// The symptom without these is that seeking only works forward, and only as
+/// far as the cache already reaches. Two things cause that, and both are here:
+///
+/// * A host that answers a Range request with a plain `200` instead of `206`
+///   makes mpv mark the stream unseekable, at which point every seek is served
+///   out of the demuxer cache or refused. `--force-seekable=yes` makes mpv issue
+///   the seek regardless; when the host genuinely cannot serve it the seek fails
+///   and playback continues, which beats never trying.
+/// * Seeking *backwards* needs the cache to have kept what is behind the
+///   playhead, and mpv's default back-buffer is small enough that stepping back
+///   much at all forces a refetch — the exact request the hosts above fumble.
+///
+/// `--hr-seek=yes` is what makes a chapter jump land on the chapter mark rather
+/// than the nearest keyframe before it. Chapter navigation itself is mpv's own
+/// (its built-in bindings, PgUp/PgDn) and needs nothing from us — it just could
+/// not work while seeking was broken.
+///
+/// Deliberately **not** applied to Live TV: a live stream has nothing behind the
+/// playhead worth keeping, and a back-buffer this size on a channel left running
+/// is real memory for no benefit.
+///
+/// ponytail: the cache sizes are a fixed guess, not a measurement. At a typical
+/// 1080p bitrate 128MiB is roughly three or four minutes of back-seek. Raise
+/// them if that proves short; they are peak RSS for the mpv process, not ours.
+pub fn network_seek_args() -> Vec<String> {
+    [
+        "--force-seekable=yes",
+        "--cache=yes",
+        "--demuxer-max-bytes=128MiB",
+        "--demuxer-max-back-bytes=128MiB",
+        "--hr-seek=yes",
+    ]
+    .iter()
+    .map(|s| s.to_string())
+    .collect()
+}
+
 /// Launch a video in an external mpv window with resume + watch-progress
 /// writeback over the JSON IPC socket. Runs entirely off the UI thread so the
 /// app never blocks on playback (np.p3.player — windowed path).

@@ -264,8 +264,11 @@ impl Pool {
             }
         }
 
+        // Named a `tomesole mirrors --refresh` CLI this build does not have.
+        // The caller drops the pool on this error, so the next search re-probes
+        // on its own and the advice is simply to try again.
         Err(err!(
-            "every mirror failed:\n{}\n\nTry `tomesole mirrors --refresh` to re-probe.",
+            "every mirror failed:\n{}\n\nThe mirror list has been dropped — search again to re-probe.",
             failures.join("\n")
         ))
     }

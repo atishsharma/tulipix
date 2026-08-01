@@ -91,11 +91,8 @@ component ChannelCard inherits Skin {
         Rectangle {
             vertical-stretch: 1; min-height: 62px;
             border-radius: Surface.r(8px);
-            // Channel logos are overwhelmingly white-on-transparent PNGs. A
-            // light backdrop makes half of them invisible, so the well is grey
-            // in dark themes and black in light ones — the logo keeps its own
-            // colours either way.
-            background: Theme.dark ? #3a3f48 : #000000;
+            // One shared token, so the three wells cannot drift apart.
+            background: VP.logo-well;
             clip: true;
             if root.ch.logo.width > 0: Image {
                 source: root.ch.logo;
@@ -107,7 +104,7 @@ component ChannelCard inherits Skin {
             // is a card that still reads as a channel.
             if root.ch.logo.width == 0: Text {
                 text: root.ch.name;
-                color: #ffffff8c; font-size: 20px; font-weight: 800;
+                color: VP.logo-well-ink; font-size: 20px; font-weight: 800;
                 horizontal-alignment: center; vertical-alignment: center;
                 width: parent.width; height: parent.height;
                 overflow: elide;
@@ -440,10 +437,9 @@ export component LiveTvPage inherits Rectangle {
                                 alignment: center; horizontal-stretch: 0;
                                 Rectangle {
                                     width: 26px; height: 26px; border-radius: 13px;
-                                    // Same well as the cards: channel logos are
-                                    // white-on-transparent, and the accent fill
-                                    // swallowed half of them.
-                                    background: Theme.dark ? #3a3f48 : #000000;
+                                    // Same well as the cards: the accent fill
+                                    // swallowed half the logos.
+                                    background: VP.logo-well;
                                     clip: true;
                                     if root.now-logo.width > 0: Image {
                                         source: root.now-logo; image-fit: contain;
@@ -451,7 +447,7 @@ export component LiveTvPage inherits Rectangle {
                                         x: 3px; y: 3px;
                                     }
                                     if root.now-logo.width == 0: AppIcon {
-                                        source: Icons.radio; tint: #ffffffcc;
+                                        source: Icons.radio; tint: VP.logo-well-ink;
                                         width: 13px; height: 13px;
                                         x: (parent.width - self.width) / 2;
                                         y: (parent.height - self.height) / 2;
@@ -785,7 +781,7 @@ export component LiveTvPage inherits Rectangle {
                         Rectangle {
                             width: 64px; height: 64px; horizontal-stretch: 0;
                             border-radius: Surface.r(10px);
-                            background: Theme.dark ? #3a3f48 : #000000;
+                            background: VP.logo-well;
                             clip: true;
                             if root.now-logo.width > 0: Image {
                                 source: root.now-logo; image-fit: contain;
@@ -793,7 +789,7 @@ export component LiveTvPage inherits Rectangle {
                                 x: 6px; y: 6px;
                             }
                             if root.now-logo.width == 0: AppIcon {
-                                source: Icons.tv; tint: #ffffff8c;
+                                source: Icons.tv; tint: VP.logo-well-ink;
                                 width: 26px; height: 26px;
                                 x: (parent.width - self.width) / 2;
                                 y: (parent.height - self.height) / 2;

@@ -133,6 +133,34 @@ impl GenesisService {
         self.pool.as_ref().ok_or_else(|| err!("no mirror has been resolved yet"))
     }
 
+    /// Run `op` against the pool, and throw the pool away if nothing answered.
+    ///
+    /// Every mirror failing at once almost never means Libgen is gone — it
+    /// means the ranking we are holding has gone stale, or the shared gateway
+    /// in front of the `.li` family had a bad minute. Without this, the ranking
+    /// survives in memory for the life of the process and on disk for the
+    /// cache's six hours, so one bad minute replays the same dead list for the
+    /// rest of the day while the site loads fine in a browser. Dropping it
+    /// costs one re-probe on the next attempt and lets the section heal itself
+    /// instead of waiting for the user to find the refresh button.
+    fn on_each_mirror<T>(
+        &mut self,
+        on_status: &dyn Fn(&str),
+        mut op: impl FnMut(&Http, &Uri) -> Result<T>,
+        on_retry: impl FnMut(&Uri, &str),
+    ) -> Result<(T, Uri)> {
+        self.ensure_pool(on_status)?;
+        // Scoped so both shared borrows of `self` end before the mutation.
+        let result = {
+            let http = &self.http;
+            self.pool()?.try_each(|base| op(http, base), on_retry)
+        };
+        if result.is_err() {
+            self.refresh_mirrors();
+        }
+        result
+    }
+
     /// Run a search, trying each mirror in turn until one answers.
     ///
     /// Client-side filters (`extension`, `language`) are applied here because
@@ -148,10 +176,9 @@ impl GenesisService {
         query: &SearchQuery,
         on_status: &dyn Fn(&str),
     ) -> Result<Served<Vec<Book>>> {
-        self.ensure_pool(on_status)?;
-        let (pool, http) = (self.pool()?, &self.http);
-        let (books, base) = pool.try_each(
-            |base| libgen::search(http, base, query),
+        let (books, base) = self.on_each_mirror(
+            on_status,
+            |http, base| libgen::search(http, base, query),
             |base, why| {
                 let host = net::host_of(base).unwrap_or_else(|_| base.to_string());
                 on_status(&format!("{host} failed ({why}) — trying the next mirror"));
@@ -174,12 +201,11 @@ impl GenesisService {
         if let Some(hit) = cover::cached(&book.md5) {
             return Ok(hit);
         }
-        self.ensure_pool(on_status)?;
-        let (pool, http) = (self.pool()?, &self.http);
         // Silent on retry: covers are fetched a screenful at a time, and one
         // status line per mirror per book would bury everything the status
         // strip exists to say.
-        let (found, _) = pool.try_each(|base| cover::fetch(http, base, book), |_, _| {})?;
+        let (found, _) =
+            self.on_each_mirror(on_status, |http, base| cover::fetch(http, base, book), |_, _| {})?;
         Ok(found)
     }
 
@@ -192,10 +218,9 @@ impl GenesisService {
         book: &Book,
         on_status: &dyn Fn(&str),
     ) -> Result<Served<details::Details>> {
-        self.ensure_pool(on_status)?;
-        let (pool, http) = (self.pool()?, &self.http);
-        let (found, base) = pool.try_each(
-            |base| details::fetch(http, base, book),
+        let (found, base) = self.on_each_mirror(
+            on_status,
+            |http, base| details::fetch(http, base, book),
             |base, why| {
                 let host = net::host_of(base).unwrap_or_else(|_| base.to_string());
                 on_status(&format!("{host} could not describe that book ({why})"));
@@ -216,11 +241,10 @@ impl GenesisService {
         report: download::Report<'_>,
         on_status: &dyn Fn(&str),
     ) -> Result<Served<download::Outcome>> {
-        self.ensure_pool(on_status)?;
-        let (pool, http) = (self.pool()?, &self.http);
         let md5 = book.md5.clone();
-        let (resolved, base) = pool.try_each(
-            |base| libgen::resolve_download(http, base, &md5),
+        let (resolved, base) = self.on_each_mirror(
+            on_status,
+            |http, base| libgen::resolve_download(http, base, &md5),
             |base, why| {
                 let host = net::host_of(base).unwrap_or_else(|_| base.to_string());
                 on_status(&format!("{host} would not hand over a link ({why})"));

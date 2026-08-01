@@ -153,8 +153,22 @@ fn main() -> Result<()> {
             }
         }
     }
+    // `icu_provider=error` mutes one warning we cannot act on: parley (via
+    // i-slint-core) builds its word segmenter with
+    // `WordSegmenter::new_for_non_complex_scripts`, which loads no complex-script
+    // data, so every CJK or Southeast Asian string that reaches a text element
+    // logs "No segmentation model for language: ja". The consequence is that the
+    // run is treated as one word — word selection and word-wise cursor movement
+    // inside it, nothing about rendering or line wrapping. It fires per string,
+    // which is what makes it console noise rather than information.
+    //
+    // Scoped to the default only: RUST_LOG still wins, so `RUST_LOG=icu_provider=warn`
+    // brings it back without a rebuild.
     tracing_subscriber::fmt()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
+        .with_env_filter(
+            EnvFilter::try_from_default_env()
+                .unwrap_or_else(|_| EnvFilter::new("info,icu_provider=error")),
+        )
         .init();
     tulipix_core::crash::install_panic_hook();
     let _ = tulipix_core::logging::LOG.write_event("info", "tulipix", "startup");
@@ -575,7 +589,13 @@ fn main() -> Result<()> {
     let w = window.as_weak();
     window.on_video_stream_open(move |id| stream_open(w.clone(), id.to_string()));
     let w = window.as_weak();
+    window.on_video_stream_open_resume(move |id| stream_open_resume(w.clone(), id.to_string()));
+    let w = window.as_weak();
+    window.on_video_stream_open_pick(move |id| stream_open_pick(w.clone(), id.to_string()));
+    let w = window.as_weak();
     window.on_video_stream_back(move || stream_back(w.clone()));
+    let w = window.as_weak();
+    window.on_video_stream_home(move || stream_home(w.clone()));
     let w = window.as_weak();
     window.on_video_stream_play(move |i| stream_play(w.clone(), i));
     let w = window.as_weak();

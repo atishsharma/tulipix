@@ -27,6 +27,49 @@ pub fn stream_search(weak: slint::Weak<MainWindow>, query: String) {
     run_search(weak, query, 1);
 }
 
+/// Back to the Stream landing screen from anywhere in the section.
+///
+/// Every property here used to be written from `stream-go-home()` on the
+/// `.slint` side, synchronously, inside the click handler of a button that
+/// lives in the toolbar those same writes tear down.
+///
+/// That is a re-entrancy trap. `stream-query` is two-way bound into a live
+/// `TextInput`, and the toolbar field and the landing field that replaces it
+/// are two mutually-exclusive conditionals bound to the *same* property — so
+/// clearing the query hands the binding from one field to the other while the
+/// write that caused the swap is still on the stack, and Slint aborts with
+/// "Recursion detected". Coming out of the detail pane was the only route that
+/// reached it, because the Back button there calls `stream_back` instead and
+/// never writes a Slint property from the handler.
+///
+/// Doing it here puts every write on a later event-loop turn, with no binding
+/// evaluation and no half-swapped element tree underneath it.
+pub fn stream_home(weak: slint::Weak<MainWindow>) {
+    next_epoch(); // abandon any search or detail still in flight
+    clear_open_title();
+    // Not just an empty model: this also bumps the suggestion sequence, so a
+    // lookup already in flight cannot land after us and repopulate the list.
+    stream_suggest_clear(weak.clone());
+    with_state(|st| {
+        st.query.clear();
+        st.page = 0;
+        st.results.clear();
+    });
+    let _ = weak.upgrade_in_event_loop(|w| {
+        w.set_video_stream_detail_open(false);
+        w.set_video_stream_results(slint::ModelRc::new(slint::VecModel::from(
+            Vec::<StreamCard>::new(),
+        )));
+        w.set_video_stream_more(false);
+        w.set_video_stream_status("".into());
+        w.set_video_stream_busy(false);
+        // Last: these two are what the toolbar/landing conditionals key off, so
+        // the tree only swaps once everything it reads is already settled.
+        w.set_video_stream_query("".into());
+        w.set_video_stream_view("search".into());
+    });
+}
+
 /// Pull the next page of the search on screen and append it.
 ///
 /// The catalogue pages at 20 a time and never says how many there are, so a

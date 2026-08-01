@@ -35,6 +35,14 @@ pub const USER_AGENT: &str = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) \
 /// Cap on HTML pages we parse, so a hostile mirror cannot exhaust memory.
 pub const MAX_PAGE_BYTES: u64 = 8 * 1024 * 1024;
 
+/// Extra attempts for a page that came back as a gateway error. Small on
+/// purpose: this rides on top of the per-request deadline, and the point is to
+/// survive a blip, not to wait out an outage.
+const GATEWAY_RETRIES: usize = 2;
+
+/// Backoff before a gateway retry, multiplied by the attempt number.
+const GATEWAY_RETRY_DELAY: Duration = Duration::from_millis(500);
+
 /// Policy knobs the CLI can flip.
 #[derive(Debug, Clone, Copy)]
 pub struct NetPolicy {
@@ -368,18 +376,45 @@ impl Http {
     /// Decoding is lossy on purpose: a few mirrors serve mislabelled encodings
     /// and we would rather parse a slightly mangled title than fail outright.
     pub fn get_text(&self, uri: &Uri) -> Result<String> {
-        let fetched = self.get(uri, None)?;
-        if !(200..300).contains(&fetched.status) {
+        let mut attempt = 0usize;
+        loop {
+            let fetched = self.get(uri, None)?;
+            if (200..300).contains(&fetched.status) {
+                return fetched
+                    .body
+                    .into_with_config()
+                    .limit(MAX_PAGE_BYTES)
+                    .lossy_utf8(true)
+                    .read_to_string()
+                    .with_context(|| format!("could not read response body from {uri}"));
+            }
+
+            // The gateway in front of the Libgen mirrors emits sporadic
+            // 502/503/504 under load while the origin behind it is fine — which
+            // is why the site loads in a browser at the moment the app declares
+            // every mirror dead. One blip must not evict a mirror for the whole
+            // operation, and it especially must not evict all of them at once.
+            //
+            // Only these statuses retry. A refused connection or a timeout
+            // propagates out of `get` immediately, so a mirror that is genuinely
+            // gone still fails as fast as it did before.
+            if is_transient_gateway(fetched.status) && attempt < GATEWAY_RETRIES {
+                attempt += 1;
+                std::thread::sleep(GATEWAY_RETRY_DELAY * attempt as u32);
+                continue;
+            }
             bail!("{uri} returned HTTP {}", fetched.status);
         }
-        fetched
-            .body
-            .into_with_config()
-            .limit(MAX_PAGE_BYTES)
-            .lossy_utf8(true)
-            .read_to_string()
-            .with_context(|| format!("could not read response body from {uri}"))
     }
+}
+
+/// Whether a status says "the gateway could not reach the origin right now".
+///
+/// Deliberately not "any 5xx": a 500 from Libgen is its search endpoint being
+/// broken, which is exactly the condition the mirror probe exists to detect and
+/// must not paper over.
+fn is_transient_gateway(status: u16) -> bool {
+    matches!(status, 502 | 503 | 504)
 }
 
 fn header_string(headers: &ureq::http::HeaderMap, name: &str) -> Option<String> {
@@ -644,6 +679,20 @@ mod tests {
         assert_eq!(encode_query_value("c++ & co"), "c%2B%2B+%26+co");
         assert_eq!(encode_query_value("naïve"), "na%C3%AFve");
         assert_eq!(encode_query_value("a-b_c.d~e"), "a-b_c.d~e");
+    }
+
+    #[test]
+    fn only_gateway_statuses_are_retried() {
+        // A blip in front of the origin: worth another go.
+        for s in [502, 503, 504] {
+            assert!(is_transient_gateway(s), "{s} should retry");
+        }
+        // 500 is Libgen's own search endpoint failing, which is the exact thing
+        // the probe is meant to catch — retrying it would route users to a
+        // mirror that cannot search. The rest are permanent answers.
+        for s in [200, 301, 403, 404, 429, 500, 501] {
+            assert!(!is_transient_gateway(s), "{s} should not retry");
+        }
     }
 
     #[test]

@@ -23,6 +23,7 @@ CREATE TABLE IF NOT EXISTS stream_progress (
     duration_s  REAL    NOT NULL DEFAULT 0,
     finished    INTEGER NOT NULL DEFAULT 0,
     updated     INTEGER NOT NULL,
+    source      TEXT    NOT NULL DEFAULT '',
     PRIMARY KEY (subject_id, season, episode)
 );
 CREATE INDEX IF NOT EXISTS stream_progress_updated_idx ON stream_progress(updated DESC);
@@ -30,6 +31,14 @@ CREATE INDEX IF NOT EXISTS stream_progress_updated_idx ON stream_progress(update
 
 pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
     sqlx::raw_sql(SCHEMA).execute(pool).await?;
+    // `CREATE TABLE IF NOT EXISTS` leaves an existing table alone, so the column
+    // has to be added separately for anyone who already has a progress table.
+    // Failure is the "column already exists" case and nothing else worth acting
+    // on — rows written before this land with '', which reads as "unknown" and
+    // falls back to whichever source is selected.
+    let _ = sqlx::query("ALTER TABLE stream_progress ADD COLUMN source TEXT NOT NULL DEFAULT ''")
+        .execute(pool)
+        .await;
     Ok(())
 }
 
@@ -53,6 +62,10 @@ pub struct Entry {
     pub duration_s: f64,
     pub finished: bool,
     pub updated: i64,
+    /// Which catalogue this was played from (`Source::key`). Empty on rows
+    /// written before the column existed, and on those the caller falls back to
+    /// whichever source is selected rather than guessing.
+    pub source: String,
 }
 
 impl Entry {
@@ -89,10 +102,10 @@ fn now_secs() -> i64 {
         .unwrap_or(0)
 }
 
-type Row = (String, i64, i64, String, String, i64, f64, f64, i64, i64);
+type Row = (String, i64, i64, String, String, i64, f64, f64, i64, i64, String);
 
 const COLUMNS: &str = "subject_id, season, episode, title, cover_url, is_series, \
-                       position_s, duration_s, finished, updated";
+                       position_s, duration_s, finished, updated, source";
 
 fn entry_of(r: Row) -> Entry {
     Entry {
@@ -106,6 +119,7 @@ fn entry_of(r: Row) -> Entry {
         duration_s: r.7,
         finished: r.8 != 0,
         updated: r.9,
+        source: r.10,
     }
 }
 
@@ -125,7 +139,7 @@ pub async fn record(pool: &SqlitePool, e: &Entry) -> Result<()> {
     let updated = if e.updated > 0 { e.updated } else { now_secs() };
     sqlx::query(&format!(
         "INSERT INTO stream_progress ({COLUMNS})
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
          ON CONFLICT(subject_id, season, episode) DO UPDATE SET
              title      = excluded.title,
              cover_url  = excluded.cover_url,
@@ -133,7 +147,11 @@ pub async fn record(pool: &SqlitePool, e: &Entry) -> Result<()> {
              position_s = excluded.position_s,
              duration_s = excluded.duration_s,
              finished   = excluded.finished,
-             updated    = excluded.updated"
+             updated    = excluded.updated,
+             -- A blank means the caller did not know; keep what is already
+             -- there rather than erasing a source we can still resume with.
+             source     = CASE WHEN excluded.source = '' THEN stream_progress.source
+                               ELSE excluded.source END"
     ))
     .bind(&e.subject_id)
     .bind(e.season)
@@ -145,6 +163,7 @@ pub async fn record(pool: &SqlitePool, e: &Entry) -> Result<()> {
     .bind(e.duration_s.max(0.0))
     .bind(finished as i64)
     .bind(updated)
+    .bind(&e.source)
     .execute(pool)
     .await?;
     Ok(())
@@ -190,12 +209,14 @@ pub async fn history(pool: &SqlitePool, limit: i64) -> Vec<Entry> {
     rows.into_iter().map(entry_of).collect()
 }
 
-/// The Continue Watching row: the most recent unfinished episode of each show,
-/// newest first. One card per show, never one per episode.
+/// The Continue Watching row: the most recent unfinished title, newest first.
+/// One card per show, never one per episode.
 ///
-/// Series only. A part-watched film is still in the History page, but it does
-/// not belong on a row about carrying on where you left off — there is no next
-/// episode to carry on to.
+/// Films count as well as series. They were excluded on the reasoning that a
+/// film has no next episode to carry on to — but resuming is about picking a
+/// part-watched thing back up, which is exactly what a film left half-finished
+/// is. Both catalogues feed the same table, so the row already mixes sources;
+/// `source` on the entry is what lets the card open against the right one.
 pub async fn continue_watching(pool: &SqlitePool, limit: usize) -> Vec<Entry> {
     if limit == 0 {
         return Vec::new();
@@ -204,7 +225,7 @@ pub async fn continue_watching(pool: &SqlitePool, limit: usize) -> Vec<Entry> {
     // trick; the candidate set is small, so the loop below is the honest version.
     let rows: Vec<Row> = sqlx::query_as(&format!(
         "SELECT {COLUMNS} FROM stream_progress
-         WHERE finished = 0 AND is_series = 1 AND position_s > ?
+         WHERE finished = 0 AND position_s > ?
          ORDER BY updated DESC LIMIT 200"
     ))
     .bind(RESUME_FLOOR_S)
@@ -232,9 +253,32 @@ pub async fn continue_watching(pool: &SqlitePool, limit: usize) -> Vec<Entry> {
 /// leaves two ids for one show and the row shows it twice. The season-stripped
 /// title is what a viewer means by the show, so that is the key — falling back
 /// to the id when a row was written without a title.
+/// Now that films are on the row too, the kind is part of the key: a film and a
+/// series sharing a name are two different things to carry on with, and folding
+/// them together would hide whichever was watched less recently.
 fn show_key(e: &Entry) -> String {
     let base = super::split_season_suffix(e.title.trim()).0;
-    if base.is_empty() { e.subject_id.clone() } else { base.to_lowercase() }
+    let name = if base.is_empty() { e.subject_id.clone() } else { base.to_lowercase() };
+    format!("{}:{name}", e.is_series as u8)
+}
+
+/// Which catalogue a title was last played from, or `None` when nothing was
+/// recorded — an unplayed title, or a row written before the column existed.
+///
+/// Newest row wins: the two catalogues carry unrelated id namespaces, so in
+/// practice a subject only ever has one, but a title re-watched from the other
+/// source should open against wherever it was actually watched.
+pub async fn source_of(pool: &SqlitePool, subject_id: &str) -> Option<String> {
+    let row: Option<(String,)> = sqlx::query_as(
+        "SELECT source FROM stream_progress
+         WHERE subject_id = ? AND source <> '' ORDER BY updated DESC LIMIT 1",
+    )
+    .bind(subject_id)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten();
+    row.map(|r| r.0)
 }
 
 /// Forget one title — every episode of it.
@@ -273,6 +317,7 @@ mod tests {
             duration_s: dur,
             finished: false,
             updated: 0,
+            source: "moviebox".into(),
         }
     }
 
@@ -344,19 +389,53 @@ mod tests {
         record(&pool, &at(200, mk("s1", 1, 2, 300.0, 1000.0))).await.unwrap(); // in progress
         record(&pool, &at(300, mk("s2", 0, 0, 400.0, 2000.0))).await.unwrap();
         record(&pool, &at(400, mk("s3", 1, 1, 10.0, 1000.0))).await.unwrap(); // false start
-        // A film has no next episode, so it never joins this row.
+        // A part-watched film belongs here too — it is a thing left unfinished,
+        // which is all this row is about.
         let film = Entry { is_series: false, ..mk("m1", 0, 0, 600.0, 3000.0) };
         record(&pool, &at(500, film)).await.unwrap();
 
         let cw = continue_watching(&pool, 10).await;
-        assert_eq!(cw.len(), 2, "{cw:#?}");
-        assert_eq!(cw[0].subject_id, "s2", "newest first");
+        assert_eq!(cw.len(), 3, "{cw:#?}");
+        assert_eq!(cw[0].subject_id, "m1", "newest first");
         let s1 = cw.iter().find(|e| e.subject_id == "s1").unwrap();
         assert_eq!(s1.episode, 2, "the unfinished episode, not the watched one");
         assert!(!cw.iter().any(|e| e.subject_id == "s3"), "a false start is not resumable");
-        assert!(!cw.iter().any(|e| e.subject_id == "m1"), "films stay out of Continue Watching");
 
         assert_eq!(continue_watching(&pool, 1).await.len(), 1, "limit honoured");
+    }
+
+    /// A film and a series can share a name; folding them onto one card would
+    /// hide whichever was watched less recently.
+    #[tokio::test]
+    async fn a_film_and_a_series_of_the_same_name_are_two_cards() {
+        let (_t, pool) = open_pool().await;
+        let show = Entry { title: "Dune".into(), ..mk("d-show", 1, 2, 300.0, 1000.0) };
+        let film = Entry { title: "Dune".into(), is_series: false, ..mk("d-film", 0, 0, 600.0, 3000.0) };
+        record(&pool, &at(100, show)).await.unwrap();
+        record(&pool, &at(200, film)).await.unwrap();
+
+        let cw = continue_watching(&pool, 10).await;
+        assert_eq!(cw.len(), 2, "{cw:#?}");
+    }
+
+    /// The card has to reopen against the catalogue it was played from, so the
+    /// source rides on the row — and a later write that does not know it must
+    /// not wipe what is already there.
+    #[tokio::test]
+    async fn the_source_is_remembered_and_never_blanked() {
+        let (_t, pool) = open_pool().await;
+        let watched = Entry { source: "fourk".into(), ..mk("f1", 1, 1, 300.0, 1000.0) };
+        record(&pool, &at(100, watched)).await.unwrap();
+        assert_eq!(source_of(&pool, "f1").await.as_deref(), Some("fourk"));
+        assert_eq!(continue_watching(&pool, 10).await[0].source, "fourk");
+
+        // Same episode, further along, written by a caller with no source.
+        let later = Entry { source: String::new(), ..mk("f1", 1, 1, 500.0, 1000.0) };
+        record(&pool, &at(200, later)).await.unwrap();
+        assert_eq!(source_of(&pool, "f1").await.as_deref(), Some("fourk"), "kept");
+
+        // Nothing recorded at all: the caller falls back to the selection.
+        assert_eq!(source_of(&pool, "nobody").await, None);
     }
 
     #[tokio::test]

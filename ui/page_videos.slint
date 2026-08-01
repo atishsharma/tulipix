@@ -32,6 +32,14 @@ export global VP {
 
     // --- Surfaces ---
     out property <color> bg:        Theme.bg;
+    // The well a channel logo sits in. Logos are overwhelmingly
+    // white-on-transparent PNGs, so the backdrop is what decides whether they
+    // read at all — hence its own token rather than a literal at each of the
+    // three places that draw one.
+    out property <color> logo-well: Theme.dark ? #3a3f48 : #9ba3b0;
+    // Fallback initial / icon drawn when a channel has no logo. Follows the
+    // well: white on the light-grey backdrop is not readable.
+    out property <color> logo-well-ink: Theme.dark ? #ffffff8c : #00000073;
     // The design language owns the material of the six surfaces this section is
     // built out of. Clay makes them one matte body, the moulded language lights
     // them from the top edge, and Standard keeps the exact tones it always had.
@@ -510,6 +518,9 @@ component DiscoverRail inherits Skin {
 component StreamSearchField inherits Skin {
     in-out property <string> query;
     in property <bool> large: false;
+    // What the field offers to find. Provider-dependent: 4KHDHub is a films-only
+    // site, so promising series there is a promise it cannot keep.
+    in property <string> placeholder: "Search movies and series";
     callback search(string);
     callback edited(string);
     height: large ? 64px : 44px;
@@ -548,7 +559,7 @@ component StreamSearchField inherits Skin {
                 edited => { root.edited(self.text); }
             }
             if root.query == "": Text {
-                text: "Search movies and series"; color: VP.text-dim;
+                text: root.placeholder; color: VP.text-dim;
                 font-size: root.large ? 22px : 14px;
                 font-weight: root.large ? 600 : 400;
                 vertical-alignment: center; height: 100%;
@@ -1503,16 +1514,17 @@ export component VideosPage inherits Rectangle {
     in-out property <string> bm-confirm-id: "";  // pending remove confirmation
     property <int> bm-per-page: 9;
     property <int> bm-pages: Math.max(1, Math.ceil(root.stream-bookmarks.length / bm-per-page));
-    // Back to the Stream landing screen from anywhere in the section: leave
-    // whatever page is open, drop the query, and let the empty search close any
-    // open title and clear the grid.
-    // The view switch comes last on purpose: it tears down the page the button
-    // was clicked in, so anything after it would run against a dead element.
+    // Back to the Stream landing screen from anywhere in the section.
+    //
+    // Every write this used to do inline now happens in Rust, on a later
+    // event-loop turn. `stream-query` is two-way bound into a live TextInput,
+    // and the toolbar field and the landing field that replaces it are two
+    // mutually-exclusive conditionals bound to the same property — clearing it
+    // from inside the click handler of a button the toolbar owns handed the
+    // binding over mid-write and panicked with "Recursion detected". Nothing
+    // may be written here; the handler has to return before the tree swaps.
     function stream-go-home() {
-        root.stream-query = "";
-        root.stream-suggest-clear();
-        root.stream-search("");
-        root.stream-view = "search";
+        root.stream-home();
     }
     // Which resume card the slider is showing, and the card itself.
     property <int> resume-idx: 0;
@@ -1557,6 +1569,13 @@ export component VideosPage inherits Rectangle {
     // Landing = nothing to show yet, so the search field takes the centre of
     // the page. Any result (or an opened title) promotes it into the toolbar.
     property <bool> stream-landing: !root.stream-detail-open && root.stream-results.length == 0;
+    // The provider switcher above the search box. Named in parts because two
+    // places need the gap alone and two need the whole row: the side blocks
+    // reserve the full height so their frames start on the same line as the
+    // search box's, and a change here has to move all four together.
+    property <length> switcher-tab-h: 36px;   // VideoTab's own height
+    property <length> switcher-gap: 14px;
+    property <length> switcher-row-h: root.switcher-tab-h + root.switcher-gap;
     // Hosts editor — the server list is user-editable, stored one per line.
     in-out property <bool> stream-hosts-open: false;
     in-out property <string> stream-hosts-text: "";
@@ -1630,6 +1649,16 @@ export component VideosPage inherits Rectangle {
     in property <bool> stream-autoplay: true;
     in property <bool> stream-to-library: true;
     callback stream-search(string);
+    callback stream-home();
+    // The landing screen is the one place showing cards that did not come from
+    // the active provider, so those two open through their own callbacks. Both
+    // pick the catalogue the id actually belongs to before the detail fetch
+    // goes out; plain stream-open would hand a MovieBox id to 4KHDHub.
+    //
+    //   resume — Continue Watching and History, source read off the row
+    //   pick   — trending and vertical dramas, always MovieBox
+    callback stream-open-resume(string);
+    callback stream-open-pick(string);
     callback stream-search-more();
     callback stream-feed-load();
     callback stream-downloads-load();
@@ -1863,21 +1892,10 @@ export component VideosPage inherits Rectangle {
                     }
                 }
 
-                // Which catalogue is being searched. Two unrelated services, so
-                // this sits beside the search rather than inside the settings
-                // modal — it changes what every result on the page came from.
-                if root.kind == "stream": VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    HorizontalLayout { spacing: 6px;
-                        VideoTab {
-                            hue: VP.c-play; label: "MovieBox";
-                            active: root.stream-source == "moviebox";
-                            clicked => { root.stream-set-source("moviebox"); } }
-                        VideoTab {
-                            hue: VP.c-save; label: "4KHDHub";
-                            active: root.stream-source == "fourk";
-                            clicked => { root.stream-set-source("fourk"); } }
-                    }
-                }
+                // The catalogue switcher used to sit here. It now lives above the
+                // search block on the landing screen — it changes what every
+                // result came from, so it belongs with the search, not in a
+                // header row of unrelated destinations.
 
                 // Stream: Saved + Hosts, right side of the header.
                 // Downloads sits left of Bookmarks and carries the queue count.
@@ -2218,6 +2236,8 @@ export component VideosPage inherits Rectangle {
                     VerticalLayout { alignment: center; horizontal-stretch: 0;
                         StreamSearchField {
                             width: 420px;
+                            placeholder: root.stream-source == "fourk"
+                                ? "Search Movies in 4K" : "Search movies and series";
                             query <=> root.stream-query;
                             search(q) => { root.stream-suggest-clear(); root.stream-search(q); }
                             edited(q) => { root.stream-suggest(q); }
@@ -2400,6 +2420,13 @@ export component VideosPage inherits Rectangle {
                 // Two rings with a gap between them (outer indigo-tinted, inner
                 // subtle) over a translucent theme fill, so the backdrop shows
                 // through like frosted glass.
+                //
+                // The three columns are top-aligned, not centred: the search
+                // block grows downward whenever the suggestion list opens, and
+                // centring made both side blocks slide down with it. Each side
+                // block carries the same spacer as the switcher row above the
+                // search box, so all three start on one line — hence the shared
+                // property rather than the number written out three times.
                 HorizontalLayout { alignment: center; spacing: 18px;
                     // ── Vertical dramas, left of the search block ───────────
                     // Same double-outline frame as the search box, one card at a
@@ -2409,7 +2436,8 @@ export component VideosPage inherits Rectangle {
                     // row stretches it to match the search box, and the block
                     // grows every time the suggestion list opens.
                     if root.stream-vertical.length > 0: VerticalLayout {
-                        alignment: center; horizontal-stretch: 0;
+                        alignment: start; horizontal-stretch: 0;
+                        Rectangle { height: root.switcher-row-h; vertical-stretch: 0; }
                     Rectangle {
                         width: 260px; horizontal-stretch: 0; vertical-stretch: 0;
                         border-radius: 22px;
@@ -2441,7 +2469,7 @@ export component VideosPage inherits Rectangle {
                                                 height: 275px;
                                                 card: root.vert-card;
                                                 idx: 4;   // teal, matching the frame
-                                                clicked => { root.stream-open(root.vert-card.id); }
+                                                clicked => { root.stream-open-pick(root.vert-card.id); }
                                             }
                                         }
                                         VerticalLayout { alignment: center; horizontal-stretch: 0;
@@ -2453,6 +2481,32 @@ export component VideosPage inherits Rectangle {
                         }
                     }
                     }
+                    // The search block, with the catalogue switcher above it.
+                    // Wrapped in its own column so the buttons centre on the
+                    // search box rather than on the whole row — the vertical
+                    // dramas block sits to the left and would pull them off it.
+                    VerticalLayout {
+                        alignment: start; horizontal-stretch: 0; spacing: 0px;
+
+                        // Which catalogue is being searched. Two unrelated
+                        // services, so it sits with the search: it decides what
+                        // every result on the page came from. Note this is the
+                        // landing screen only — once there are results the
+                        // toolbar takes over, and Home comes back here.
+                        HorizontalLayout {
+                            alignment: center; spacing: 8px;
+                            horizontal-stretch: 0; vertical-stretch: 0;
+                            VideoTab {
+                                hue: VP.c-play; label: "MovieBox";
+                                active: root.stream-source == "moviebox";
+                                clicked => { root.stream-set-source("moviebox"); } }
+                            VideoTab {
+                                hue: VP.c-save; label: "4KHDHub";
+                                active: root.stream-source == "fourk";
+                                clicked => { root.stream-set-source("fourk"); } }
+                        }
+                        Rectangle { height: root.switcher-gap; vertical-stretch: 0; }
+
                     Rectangle {
                         width: 640px; horizontal-stretch: 0; vertical-stretch: 0;
                         border-radius: 22px;
@@ -2466,10 +2520,12 @@ export component VideosPage inherits Rectangle {
                                 VerticalLayout {
                                     padding: 26px; spacing: 0px;
 
-                                    // Header — the Stream mark, title, subtitle.
-                                    // The mark is the section's own badge rather
-                                    // than a repeat of the icon already sitting
-                                    // in the field below it.
+                                    // Header — the Stream mark and title. The
+                                    // mark is the section's own badge rather than
+                                    // a repeat of the icon already sitting in the
+                                    // field below it. No subtitle: the block has
+                                    // to keep a fixed height, and a line of prose
+                                    // is the cheapest one to give up.
                                     HorizontalLayout { alignment: center;
                                         Rectangle { width: 104px; height: 104px; border-radius: 30px;
                                             background: VP.accent-22;
@@ -2482,14 +2538,14 @@ export component VideosPage inherits Rectangle {
                                     Text { text: root.stream-busy ? "Searching…" : "Stream";
                                         color: VP.text; font-size: 26px; font-weight: 800;
                                         horizontal-alignment: center; }
-                                    Text { text: "Find a movie or series and play it straight away.";
-                                        color: VP.text-dim; font-size: 13px; horizontal-alignment: center; }
                                     Rectangle { height: 22px; }
 
                                     // The centred field.
                                     HorizontalLayout { alignment: center;
                                         StreamSearchField {
                                             width: 560px; large: true;
+                                            placeholder: root.stream-source == "fourk"
+                                                ? "Search Movies in 4K" : "Search movies and series";
                                             query <=> root.stream-query;
                                             search(q) => { root.stream-suggest-clear(); root.stream-search(q); }
                                             edited(q) => { root.stream-suggest(q); }
@@ -2533,13 +2589,15 @@ export component VideosPage inherits Rectangle {
                             }
                         }
                     }
+                    }
                     // ── Recent searches, right of the search block ─────────
                     // Only once there is a history to show, and framed like the
                     // search box so the three columns read as one unit.
                     // Wrapped for the same reason as the dramas block: its height
                     // is its own, not the search box's.
                     if root.stream-recent.length > 0: VerticalLayout {
-                        alignment: center; horizontal-stretch: 0;
+                        alignment: start; horizontal-stretch: 0;
+                        Rectangle { height: root.switcher-row-h; vertical-stretch: 0; }
                     Rectangle {
                         width: 260px; horizontal-stretch: 0; vertical-stretch: 0;
                         border-radius: 22px;
@@ -2627,7 +2685,7 @@ export component VideosPage inherits Rectangle {
                                     horizontal-stretch: 1; vertical-stretch: 1;
                                     outline: VP.c-save;
                                     card: root.resume-card;
-                                    continued => { root.stream-open(root.resume-card.id); }
+                                    continued => { root.stream-open-resume(root.resume-card.id); }
                                 }
                                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                                     SlideArrow { icon: Icons.chevron-right;
@@ -2664,7 +2722,7 @@ export component VideosPage inherits Rectangle {
                                     width: trend.card-w;
                                     card: card;
                                     idx: idx;
-                                    clicked => { root.stream-open(card.id); }
+                                    clicked => { root.stream-open-pick(card.id); }
                                 }
                             }
                         }
@@ -2784,7 +2842,7 @@ export component VideosPage inherits Rectangle {
                         for item in root.stream-history: HistoryRow {
                             entry: item;
                             play => { root.stream-history-play(item.id, item.season, item.episode); }
-                            opened => { root.stream-open(item.id); }
+                            opened => { root.stream-open-resume(item.id); }
                             remove => { root.stream-history-remove(item.id, root.stream-history-page); }
                         }
                     }

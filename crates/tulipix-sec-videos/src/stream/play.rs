@@ -33,6 +33,10 @@ pub fn stream_play(weak: slint::Weak<MainWindow>, index: i32) {
         let (tracks, chosen) = with_state(|st| (st.subs.clone(), st.sub_choice));
         let (mut args, named) = subtitle_args(&tracks, chosen).await;
         args.extend(subtitle_style_args());
+        // Both catalogues hand back plain HTTP video-on-demand, so seeking —
+        // scrub bar, arrow keys, and chapter jumps where the container has
+        // chapters — should reach the whole file rather than the cached window.
+        args.extend(network_seek_args());
         let resume = resume_point().await;
         spawn_mpv_windowed_tracked(
             PathBuf::from(url),
@@ -143,6 +147,10 @@ fn progress_sink(weak: slint::Weak<MainWindow>) -> Option<PlaybackEnd> {
             .map(|d| (d.title.clone(), d.cover.clone(), d.is_series))
             .unwrap_or_default()
     });
+    // Snapshotted with the title, not read inside the hook: by the time mpv
+    // exits the user may have switched catalogues, and the row has to say where
+    // this actually came from for Continue Watching to reopen it correctly.
+    let source = active_source().key().to_string();
     let rt = tokio::runtime::Handle::current();
 
     Some(std::sync::Arc::new(move |position_s: f64, duration_s: f64| {
@@ -160,6 +168,7 @@ fn progress_sink(weak: slint::Weak<MainWindow>) -> Option<PlaybackEnd> {
             is_series,
             position_s,
             duration_s,
+            source: source.clone(),
             ..Default::default()
         };
         let finished = stream::progress::is_finished(position_s, duration_s);

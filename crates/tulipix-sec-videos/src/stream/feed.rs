@@ -127,6 +127,56 @@ pub fn stream_feed_load(weak: slint::Weak<MainWindow>) {
     });
 }
 
+/// Open a title against a named catalogue rather than whichever one the provider
+/// button is showing.
+///
+/// The landing screen is the one place where cards on screen did not come from
+/// the active source, so opening one there has to say which catalogue its id
+/// belongs to. The two id namespaces are unrelated — a MovieBox subject id means
+/// nothing to 4KHDHub — so getting this wrong is an empty detail page, not a
+/// wrong-looking one.
+fn open_against(weak: slint::Weak<MainWindow>, subject_id: String, source: Source) {
+    // A no-op when it already matches. It clears the open title, so it has to
+    // run before the open, not after.
+    if source != active_source() {
+        stream_set_source(weak.clone(), source.key().to_string());
+    }
+    stream_open(weak, subject_id);
+}
+
+/// Open a trending or vertical-drama pick.
+///
+/// Both lists are built from MovieBox's feed whatever the provider button says
+/// — `stream_feed_load` goes to `client()` directly and never consults
+/// `catalogue()` — so their ids only ever mean something to MovieBox.
+pub fn stream_open_pick(weak: slint::Weak<MainWindow>, subject_id: String) {
+    if subject_id.is_empty() {
+        return;
+    }
+    open_against(weak, subject_id, Source::MovieBox);
+}
+
+/// Open a Continue Watching card against the catalogue it was actually played
+/// from.
+///
+/// The resume row mixes both sources — one progress table, and playback records
+/// into it whichever catalogue was in use. A row with no recorded source
+/// (written before the column existed) opens against the current selection,
+/// which is what it did before.
+pub fn stream_open_resume(weak: slint::Weak<MainWindow>, subject_id: String) {
+    if subject_id.is_empty() {
+        return;
+    }
+    tokio::runtime::Handle::current().spawn(async move {
+        let recorded = match pool_for("videos").await {
+            Ok(pool) => stream::progress::source_of(&pool, &subject_id).await,
+            Err(_) => None,
+        };
+        let source = recorded.map_or_else(active_source, |k| Source::parse(&k));
+        open_against(weak, subject_id, source);
+    });
+}
+
 /// Cache keys for the two landing lists.
 const KIND_TRENDING: &str = "trending";
 const KIND_VERTICAL: &str = "vertical";
