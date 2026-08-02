@@ -57,6 +57,13 @@ const OVERVIEW_TXNS: usize = 6;
 /// Label for "no account filter". Matched by value, so it is a constant.
 const ALL_ACCOUNTS: &str = "All accounts";
 const ALL_CATEGORIES: &str = "All categories";
+const EVERY_MONTH: &str = "Every month";
+const ANY_SOURCE: &str = "Any source";
+const EVERY_SUB_CATEGORY: &str = "Every category";
+const EVERY_CURRENCY: &str = "Every currency";
+
+/// How many months of dues history the settled card carries.
+const DUES_HISTORY_DAYS: i64 = 182;
 
 #[derive(Default)]
 struct State {
@@ -70,8 +77,13 @@ struct State {
     subs_filter: String,
     /// Which dues the Dues tab is showing: all|to-me|i-owe|closed.
     dues_filter: String,
-    /// `YYYY-MM` the Calendar tab is looking at.
+    /// `YYYY-MM` the Calendar tab is looking at, and whether it is showing the
+    /// day grid or the twelve-month summary.
     cal_period: String,
+    cal_view: String,
+    /// `YYYY-MM` the Bills tab is looking at. The list is dated, so without this
+    /// it shows whatever window the loader happened to ask for.
+    bills_period: String,
     /// Which sheet is open, and what it is editing.
     sheet_kind: String,
     sheet_id: i64,
@@ -135,6 +147,8 @@ pub fn wire(window: &MainWindow) {
         let mut st = state();
         st.budget_period = date::ym(today);
         st.cal_period = date::ym(today);
+        st.bills_period = date::ym(today);
+        st.cal_view = "month".into();
         st.bills_filter = "all".into();
         st.subs_filter = "all".into();
         st.dues_filter = "all".into();
@@ -288,6 +302,29 @@ pub fn wire(window: &MainWindow) {
         }
     });
 
+    // A recount is a reconcile — the same form, the same posting. The word is
+    // different because the physical act is: nobody "reconciles" a wallet, they
+    // count what is in it.
+    let w = window.as_weak();
+    window.on_fin_account_recount(move |id| {
+        if let Some(w) = w.upgrade() {
+            open_sheet(&w, "reconcile", id as i64);
+        }
+    });
+
+    // Paying a card is a transfer, never an expense. Booking it as spending is
+    // the second of the two mistakes that make a home-grown tracker's numbers
+    // wrong — the money was already counted when it was spent on the card.
+    let w = window.as_weak();
+    window.on_fin_account_pay_card(move |id| {
+        let Some(w) = w.upgrade() else { return };
+        open_sheet(&w, "txn", 0);
+        let mut st = state();
+        st.prefill.insert("kind".into(), "Transfer".into());
+        st.prefill.insert("to_account".into(), format!("#{id}"));
+        st.prefill.insert("description".into(), "Card payment".into());
+    });
+
     let w = window.as_weak();
     window.on_fin_account_close(move |id, closed| act(&w, move |pool| async move {
         accounts::set_closed(&pool, id as i64, closed).await
@@ -345,7 +382,28 @@ pub fn wire(window: &MainWindow) {
         let Some(w) = w.upgrade() else { return };
         {
             let mut st = state();
-            st.cal_period = step_period(&st.cal_period, delta);
+            // In the year view a step is a year, not a month. Stepping one month
+            // through a twelve-month summary would redraw the same twelve.
+            let by = if st.cal_view == "year" { delta * 12 } else { delta };
+            st.cal_period = step_period(&st.cal_period, by);
+        }
+        refresh(&w);
+    });
+
+    let w = window.as_weak();
+    window.on_fin_set_cal_view(move |v| {
+        let Some(w) = w.upgrade() else { return };
+        state().cal_view = v.to_string();
+        w.set_fin_cal_view(v);
+        refresh(&w);
+    });
+
+    let w = window.as_weak();
+    window.on_fin_bills_step(move |delta| {
+        let Some(w) = w.upgrade() else { return };
+        {
+            let mut st = state();
+            st.bills_period = step_period(&st.bills_period, delta);
         }
         refresh(&w);
     });
@@ -377,6 +435,10 @@ pub fn wire(window: &MainWindow) {
         let Some(w) = w.upgrade() else { return };
         match (kind.as_str(), key.as_str()) {
             ("import", "preset") if value.as_str() != NO_PRESET => apply_preset(&w, value.as_str()),
+            // Correcting a column re-reads the file straight away. The preview
+            // under it is the whole reason to correct one, and a mapping that
+            // only took effect on Import would be confirmed blind.
+            ("import", k) if k.starts_with("map_") => remap(&w),
             ("txn", "category") => envelope_note(&w, value.as_str()),
             _ => {}
         }
@@ -476,6 +538,15 @@ pub fn wire(window: &MainWindow) {
         state().subs_filter = f.to_string();
         w.set_fin_subs_filter(f);
         refresh(&w);
+    });
+
+    // The two dropdowns write their own properties before firing, so this only
+    // has to redraw — the filter values are read back out in `refresh`.
+    let w = window.as_weak();
+    window.on_fin_subs_filter_changed(move || {
+        if let Some(w) = w.upgrade() {
+            refresh(&w);
+        }
     });
 
     let w = window.as_weak();
@@ -924,9 +995,20 @@ fn open_sheet(window: &MainWindow, kind: &str, id: i64) {
                     // and correct it.
                     let prefill = std::mem::take(&mut st.prefill);
                     for f in built.fields.iter_mut() {
-                        if let Some(v) = prefill.get(&f.key) {
-                            f.value = v.clone();
-                        }
+                        let Some(v) = prefill.get(&f.key) else { continue };
+                        // A caller with an id but no name asks for `#7`. Resolved
+                        // against the field's own options here, because a value
+                        // that is not one of them shows in the box and cannot be
+                        // selected back once the user opens it.
+                        f.value = match v.strip_prefix('#').and_then(|i| i.parse::<i64>().ok()) {
+                            Some(id) => f
+                                .options
+                                .iter()
+                                .find(|o| sheet::id_from_label(o) == Some(id))
+                                .cloned()
+                                .unwrap_or_else(|| f.value.clone()),
+                            None => v.clone(),
+                        };
                     }
                     st.form.clear();
                     for f in &built.fields {
@@ -1118,10 +1200,47 @@ fn submit_with(window: &MainWindow, again: bool) {
                         }
                     }
                     match import::ingest(&pool, account_id, &preview).await {
-                        Ok(got) => Ok(Some(format!(
-                            "{} added, {} already there.",
-                            got.added, got.duplicates
-                        ))),
+                        // What the rows became, not just how many. Every line is
+                        // something the user would otherwise have to go and check:
+                        // which rows still need a category, which bills the file
+                        // closed off, and whether the account now agrees with the
+                        // statement it came from.
+                        Ok(got) => {
+                            let base = tulipix_finances::fx::base_currency();
+                            let mut parts = vec![format!(
+                                "{} added, {} already there.",
+                                got.added, got.duplicates
+                            )];
+                            if got.categorised > 0 {
+                                parts.push(format!(
+                                    "{} categorised from what you filed the same merchants under before.",
+                                    got.categorised
+                                ));
+                            }
+                            if got.uncategorised > 0 {
+                                parts.push(format!(
+                                    "{} still need a category.",
+                                    got.uncategorised
+                                ));
+                            }
+                            if got.matched_bills > 0 {
+                                parts.push(format!(
+                                    "{} matched an open bill and closed it.",
+                                    got.matched_bills
+                                ));
+                            }
+                            match got.balance_gap_minor {
+                                Some(0) => parts.push(
+                                    "Closing balance matches the ledger.".to_string(),
+                                ),
+                                Some(gap) => parts.push(format!(
+                                    "Closing balance is {} off the ledger — something is missing or duplicated.",
+                                    money::format_minor(gap.abs(), &base)
+                                )),
+                                None => {}
+                            }
+                            Ok(Some(parts.join(" ")))
+                        }
                         Err(e) => Err(e),
                     }
                 }
@@ -1133,7 +1252,10 @@ fn submit_with(window: &MainWindow, again: bool) {
             // A result to show: the sheet stays open with the answer in it. That
             // is the whole point of the prepayment and import sheets.
             Ok(Some(message)) => {
-                let stays_open = sheet_kind == "prepay";
+                // An import's report is the point of having run it — closing the
+                // sheet on it would throw away the one moment the user could act
+                // on "8 still need a category".
+                let stays_open = sheet_kind == "prepay" || sheet_kind == "import";
                 let _ = weak.upgrade_in_event_loop(move |w| {
                     w.set_fin_sheet_busy(false);
                     if stays_open {
@@ -1311,7 +1433,7 @@ fn pick_statement(window: &MainWindow) {
             }
         };
 
-        show_preview(weak, &pool, text, None, None, Some((kind, skipped))).await;
+        show_preview(weak, &pool, text, None, None, None, Some((kind, skipped))).await;
     });
 }
 
@@ -1331,6 +1453,8 @@ async fn show_preview(
     pool: &sqlx::SqlitePool,
     text: String,
     preset: Option<import::Preset>,
+    // A mapping the user has corrected by hand, which outranks the preset's.
+    override_map: Option<import::csv::ColumnMap>,
     override_format: Option<DateFormat>,
     // What the file was before it became this text, for a PDF or a spreadsheet, and
     // how many of its lines the converter could not use. `None` for a file that was
@@ -1365,7 +1489,7 @@ async fn show_preview(
         .and_then(|c| preset_labels.iter().find(|l| l.ends_with(&format!("  #{}", c.id))).cloned())
         .unwrap_or_else(|| NO_PRESET.to_string());
 
-    let map = preset.as_ref().map(|p| p.column_map.clone());
+    let map = override_map.or_else(|| preset.as_ref().map(|p| p.column_map.clone()));
     let fmt = override_format.or(preset.as_ref().map(|p| p.date_format));
 
     match import::preview(&text, &account.currency, map.as_ref(), fmt) {
@@ -1403,6 +1527,12 @@ async fn show_preview(
             // are built on the other side, because a FinField owns a ModelRc and a
             // ModelRc is an Rc.
             let column_map = p.column_map.clone();
+            // The file's own column names, so the mapping rows can be dropdowns
+            // the user corrects rather than a guess they can only read. An OFX
+            // states its own structure and has none, which is the signal to show
+            // the mapping read-only.
+            let file_headers =
+                import::csv::headers(&text).unwrap_or_default();
             // With no format settled there is nothing to import yet, so the
             // button re-reads the file with the chosen order instead.
             let primary = if needs_format { "Read it again" } else { "Import" };
@@ -1456,6 +1586,13 @@ async fn show_preview(
                 for f in &fields {
                     st.form.insert(f.key.clone(), f.value.clone());
                 }
+                // The mapping rows live in their own model rather than in `form`,
+                // so seed them here too — otherwise correcting one column would
+                // read every other one as untouched and re-derive it from the
+                // guess the user is in the middle of correcting.
+                for f in view::import_map(&column_map, &file_headers) {
+                    st.form.insert(f.key.to_string(), f.value.to_string());
+                }
                 st.import = Some((p, account.id, text));
             }
             let _ = weak.upgrade_in_event_loop(move |w| {
@@ -1469,7 +1606,7 @@ async fn show_preview(
                 w.set_fin_import_needs_format(needs_format);
                 w.set_fin_import_summary(summary.into());
                 w.set_fin_import_rows(view::model(rows));
-                w.set_fin_import_map(view::model(view::import_map(&column_map)));
+                w.set_fin_import_map(view::model(view::import_map(&column_map, &file_headers)));
                 w.set_fin_form(view::model(to_fields(&fields)));
                 w.set_fin_sheet_busy(false);
             });
@@ -1543,7 +1680,33 @@ fn apply_preset(window: &MainWindow, label: &str) {
     spawn(async move {
         let Ok(pool) = pool().await else { return };
         let found = import::presets(&pool).await.unwrap_or_default().into_iter().find(|p| p.id == id);
-        show_preview(weak, &pool, text, found, None, origin).await;
+        show_preview(weak, &pool, text, found, None, None, origin).await;
+    });
+}
+
+/// Re-read the loaded file with the mapping the user has just corrected.
+///
+/// The preview is the point of the mapping rows: getting debit and credit the
+/// wrong way round inverts a whole statement and every total still looks
+/// plausible, so a correction has to show its effect before anything posts.
+fn remap(window: &MainWindow) {
+    let Some((cached, _, text)) = state().import.clone() else { return };
+    let corrected = {
+        let st = state();
+        view::column_map_from(&cached.column_map, |k| st.form.get(k).cloned())
+    };
+    if corrected == cached.column_map {
+        return;
+    }
+    // The file has not changed, only how it is being read — so the date order
+    // already settled on stays settled, and a converted file stays converted.
+    let fmt = cached.date_format;
+    let origin = cached.kind.converted().then_some((cached.kind, 0));
+    let weak = window.as_weak();
+    window.set_fin_sheet_busy(true);
+    spawn(async move {
+        let Ok(pool) = pool().await else { return };
+        show_preview(weak, &pool, text, None, Some(corrected), fmt, origin).await;
     });
 }
 
@@ -1555,6 +1718,10 @@ pub fn refresh(window: &MainWindow) {
     let filter_account = window.get_fin_txn_account().to_string();
     let filter_category = window.get_fin_txn_category().to_string();
     let filter_kind = window.get_fin_txn_kind().to_string();
+    let filter_period = window.get_fin_txn_period().to_string();
+    let filter_source = window.get_fin_txn_source().to_string();
+    let subs_category = window.get_fin_subs_category().to_string();
+    let subs_currency = window.get_fin_subs_currency().to_string();
     let sort = TxnSort::parse(&window.get_fin_txn_sort().to_lowercase());
     let desc = window.get_fin_txn_desc();
 
@@ -1564,12 +1731,23 @@ pub fn refresh(window: &MainWindow) {
         let base = tulipix_finances::fx::base_currency();
         let today = date::today();
 
-        let (page_no, budget_period, cal_period, bills_filter, subs_filter, dues_filter) = {
+        let (
+            page_no,
+            budget_period,
+            cal_period,
+            cal_view,
+            bills_period,
+            bills_filter,
+            subs_filter,
+            dues_filter,
+        ) = {
             let st = state();
             (
                 st.page,
                 st.budget_period.clone(),
                 st.cal_period.clone(),
+                st.cal_view.clone(),
+                st.bills_period.clone(),
                 st.bills_filter.clone(),
                 st.subs_filter.clone(),
                 st.dues_filter.clone(),
@@ -1592,6 +1770,16 @@ pub fn refresh(window: &MainWindow) {
         let account_id = pick_id(&account_pairs, &filter_account);
         let category_id = pick_id(&category_pairs, &filter_category);
 
+        // The month filter narrows in SQL, not after paging: filtering a page
+        // that was already cut to 25 rows would show four of them and call it
+        // page one of fifty.
+        let (period_from, period_to) = match filter_period.as_str() {
+            EVERY_MONTH => (None, None),
+            p => match date::month_bounds(p) {
+                Ok((f, t)) => (Some(f), Some(t)),
+                Err(_) => (None, None),
+            },
+        };
         let filter = TxnFilter {
             account_id,
             category_id,
@@ -1601,11 +1789,13 @@ pub fn refresh(window: &MainWindow) {
                 "Transfer" => Some(TxnKind::Transfer),
                 _ => None,
             },
-            from: None,
-            to: None,
+            from: period_from,
+            to: period_to,
             search: Some(filter_search).filter(|s| !s.trim().is_empty()),
-            source: None,
+            source: Some(filter_source).filter(|s| s != ANY_SOURCE),
         };
+        let txn_periods = txn::periods(&pool).await.unwrap_or_default();
+        let txn_sources = txn::sources(&pool).await.unwrap_or_default();
         let running_shown = account_id.is_some() && sort == TxnSort::Date;
         let page = txn::page(&pool, &filter, sort, desc, page_no).await.unwrap_or_default();
 
@@ -1623,10 +1813,21 @@ pub fn refresh(window: &MainWindow) {
             .unwrap_or_default();
         let bill_templates =
             recur::list(&pool, Some(recur::RecurKind::Bill), true).await.unwrap_or_default();
-        let (bill_from, bill_to) = (
-            date::iso(today - chrono::Duration::days(90)),
-            date::iso(today + chrono::Duration::days(60)),
-        );
+        // The month the tab is pointed at, widened backwards so a bill that was
+        // due last month and is still unpaid stays in front of the user rather
+        // than falling off the end of a calendar boundary.
+        let (bill_from, bill_to) = match date::month_bounds(&bills_period) {
+            Ok((f, t)) => (
+                date::parse(&f)
+                    .map(|d| date::iso(d - chrono::Duration::days(31)))
+                    .unwrap_or(f),
+                t,
+            ),
+            Err(_) => (
+                date::iso(today - chrono::Duration::days(90)),
+                date::iso(today + chrono::Duration::days(60)),
+            ),
+        };
         let bills = obligations::between(&pool, &bill_from, &bill_to, today).await.unwrap_or_default();
         let subs_yearly = recur::yearly_total(&pool, &base).await.unwrap_or(0);
 
@@ -1635,12 +1836,25 @@ pub fn refresh(window: &MainWindow) {
         let due_totals = dues::totals(&pool).await.unwrap_or_default();
         let account_totals = accounts::totals(&pool).await.unwrap_or_default();
         let loan_rows = loans::list(&pool).await.unwrap_or_default();
+        let account_details =
+            accounts::details(&pool, &from, &to, today).await.unwrap_or_default();
 
         // Budgets.
         let (elapsed, total_days) = budgets::month_progress(&budget_period, today);
         let budget_rows = budgets::list(&pool, &budget_period).await.unwrap_or_default();
         let allocation = budgets::allocation(&pool, &budget_period).await.unwrap_or_default();
         let disc = budgets::discipline(&pool, DISCIPLINE_MONTHS, today).await.unwrap_or_default();
+        let (disc_periods, disc_rows) = budgets::envelope_history(&pool, DISCIPLINE_MONTHS, today)
+            .await
+            .unwrap_or_default();
+        // The fixed obligations of the month the *Budgets* tab is showing. Its
+        // own query rather than the Bills tab's window: the two tabs step
+        // independently, and a "not budgeted" list for a different month than
+        // the envelopes above it is worse than no list.
+        let budget_fixed = match date::month_bounds(&budget_period) {
+            Ok((f, t)) => obligations::between(&pool, &f, &t, today).await.unwrap_or_default(),
+            Err(_) => Vec::new(),
+        };
 
         // Calendar. Income comes from the ledger rather than from a schedule:
         // salary that has actually landed is a fact, and a projected credit would
@@ -1649,6 +1863,40 @@ pub fn refresh(window: &MainWindow) {
         let cal_items = obligations::between(&pool, &cal_from, &cal_to, today).await.unwrap_or_default();
         let cal_income = txn::income_by_day(&pool, &cal_from, &cal_to).await.unwrap_or_default();
         let low = insights::cash_flow_low_point(&pool, today, 30).await.unwrap_or_default();
+
+        // Twelve months around the one being viewed, for the Year toggle. Only
+        // loaded when that view is on: it is twelve times the work of the grid
+        // and nothing on the month view reads it.
+        let mut cal_year: Vec<(String, Vec<obligations::Obligation>, i64)> = Vec::new();
+        if cal_view == "year"
+            && let Some(jan) = date::parse(&cal_from).ok().and_then(|d| d.with_month(1))
+        {
+            for m in 1..=12u32 {
+                let Some(first) = jan.with_month(m) else { continue };
+                let period = date::ym(first);
+                let Ok((f, t)) = date::month_bounds(&period) else { continue };
+                let items =
+                    obligations::between(&pool, &f, &t, today).await.unwrap_or_default();
+                let income = txn::income_between(&pool, &f, &t).await.unwrap_or(0);
+                cal_year.push((period, items, income));
+            }
+        }
+
+        // What actually falls on the heaviest day, so the card can list it
+        // rather than only totalling it.
+        let heaviest_on = {
+            let mut by_day: std::collections::BTreeMap<&str, i64> = Default::default();
+            for o in &cal_items {
+                if let Some(m) = o.shown_minor() {
+                    *by_day.entry(o.due_on.as_str()).or_default() += m;
+                }
+            }
+            by_day.into_iter().max_by_key(|(_, m)| *m).map(|(d, _)| d.to_string())
+        };
+        let cal_heaviest_items: Vec<obligations::Obligation> = match &heaviest_on {
+            Some(d) => cal_items.iter().filter(|o| &o.due_on == d).cloned().collect(),
+            None => Vec::new(),
+        };
 
         // The overview's own short ledger, unfiltered — the Transactions tab's
         // filters must not silently change what "recent" means on the dashboard.
@@ -1674,10 +1922,26 @@ pub fn refresh(window: &MainWindow) {
 
         // Insights and the badge.
         let flags = insights::flags(&pool, today).await.unwrap_or_default();
+        let savings_rows =
+            insights::savings_history(&pool, TREND_MONTHS).await.unwrap_or_default();
+        let projection = insights::projection(&pool, today, &flags, &savings_rows)
+            .await
+            .unwrap_or_default();
         let demo = tulipix_finances::demo::present(&pool).await.unwrap_or(false);
         let badge = obligations::badge_count(&pool, today, tulipix_finances::lead_days())
             .await
             .unwrap_or(0);
+        // Overdue makes the badge an alarm rather than a count. Read separately
+        // from `badge`, which counts everything inside the notice window.
+        let badge_overdue = !obligations::overdue_names(&pool, today)
+            .await
+            .unwrap_or_default()
+            .is_empty();
+        // Nothing at all yet — no real account, no posting. The first-run door
+        // stands in for an Overview that would otherwise be nine zeroes.
+        let empty = page.total == 0
+            && account_rows.iter().all(|a| a.kind == accounts::AccountKind::Virtual)
+            && filter.search.is_none();
 
         // Everything built off the UI thread; only the assignment happens on it.
         let ui_stats = view::stats(&snap, &base);
@@ -1692,7 +1956,6 @@ pub fn refresh(window: &MainWindow) {
         let counts = view::bill_counts(&bills);
         let shown = view::filter_bills(&bills, &bills_filter);
         let ui_bills = view::obligations(&shown);
-        let ui_bill_templates = view::recurrences(&bill_templates, &base);
         // Unused-subscription figures come from the same flag the Insights tab
         // shows, so the two tabs cannot disagree about what is unused.
         let last_playback = insights::last_video_playback().await;
@@ -1700,6 +1963,17 @@ pub fn refresh(window: &MainWindow) {
             .await
             .unwrap_or_default();
         let unused_names: Vec<String> = unused.iter().map(|f| f.title.clone()).collect();
+        let idle_days = last_playback
+            .map(|d| date::days_between(d, today))
+            .unwrap_or(0);
+        // Name → days idle, for the row pill. Keyed on the recurrence's own name
+        // rather than the flag's sentence, so a rename cannot orphan the pill.
+        let unused_pairs: Vec<(String, i64)> = subs
+            .iter()
+            .filter(|r| unused_names.iter().any(|t| t.starts_with(&r.name)))
+            .map(|r| (r.name.clone(), idle_days))
+            .collect();
+        let ui_bill_templates = view::recurrences(&bill_templates, &base, &[]);
         let unused_yearly: i64 = subs
             .iter()
             .filter(|r| unused.iter().any(|f| f.title.starts_with(&r.name)))
@@ -1707,23 +1981,69 @@ pub fn refresh(window: &MainWindow) {
             .sum();
         let ui_sub_stats = view::sub_stats(&subs, &base, &unused_names, unused_yearly);
         let sub_counts = view::sub_counts(&subs);
-        let ui_subs = view::recurrences(&view::filter_subs(&subs, &subs_filter), &base);
+        let ui_sub_categories = view::sub_categories(&subs);
+        let ui_sub_currencies = view::sub_currencies(&subs);
+        let ui_subs = view::recurrences(
+            &view::filter_subs(
+                &subs,
+                &subs_filter,
+                Some(subs_category.as_str()).filter(|c| *c != EVERY_SUB_CATEGORY),
+                Some(subs_currency.as_str()).filter(|c| *c != EVERY_CURRENCY),
+            ),
+            &base,
+            &unused_pairs,
+        );
         let due_settled = dues::settled_since(
             &pool,
-            &date::iso(today - chrono::Duration::days(182)),
+            &date::iso(today - chrono::Duration::days(DUES_HISTORY_DAYS)),
         )
         .await
         .unwrap_or_default();
         let ui_due_stats = view::due_stats(&due_totals, &due_settled, &due_rows, &base);
         let due_counts = view::due_counts(&due_rows);
         let ui_dues = view::dues(&view::filter_dues(&due_rows, &dues_filter));
-        let ui_accounts = view::accounts(&account_rows, &base);
-        let ui_loans = view::loans(&loan_rows);
+        // Closed inside the history window. `due_settled` above is the totals for
+        // the stat strip; the card needs the rows themselves, which are already
+        // in hand — `due_rows` is every due whatever its status.
+        let settled_from = date::iso(today - chrono::Duration::days(DUES_HISTORY_DAYS));
+        let settled_rows: Vec<dues::Due> = due_rows
+            .iter()
+            .filter(|d| !matches!(d.status, dues::Status::Open))
+            .filter(|d| d.settled_on.as_deref().is_none_or(|on| on >= settled_from.as_str()))
+            .cloned()
+            .collect();
+        let ui_dues_settled = view::dues(&settled_rows);
+        let ui_accounts = view::accounts(&account_rows, &account_details, &base);
+        let ui_position = view::position(
+            &account_rows,
+            due_totals.owed_to_me_minor - due_totals.i_owe_minor,
+            &base,
+        );
+        let ui_loans = view::loans(&loan_rows, today);
         let ui_budgets = view::budgets(&budget_rows, &base, elapsed, total_days);
         let ui_disc = view::discipline(&disc, &base);
+        let ui_disc_months = view::period_labels(&disc_periods);
+        // No `ui_envelope_history` here, for the same reason as `ui_trend`: each
+        // row holds a nested model of its cells, a `ModelRc` is an `Rc`, and the
+        // struct is therefore `!Send`. The raw rows travel; the models are built
+        // on the UI thread below.
+        let (ui_fixed_items, fixed_total_minor) =
+            view::fixed_items(&budget_fixed, &subs, &base);
         let ui_cal = view::calendar(&cal_period, today, &cal_items, &cal_income, &base);
+        let ui_cal_months = view::calendar_year(&cal_year, &cal_period, &base);
+        let ui_cal_flow = view::cash_flow(
+            account_totals.liquid_minor,
+            &cal_items,
+            snap.income_this_month_minor,
+            low.as_ref(),
+            &base,
+        );
+        let ui_cal_heaviest_items = view::obligations(&cal_heaviest_items);
         let ui_agenda = view::obligations(&cal_items);
         let ui_flags = view::flags(&flags);
+        let ui_savings = view::savings(&savings_rows, &base);
+        let ui_savings_summary = view::savings_summary(&savings_rows, &base);
+        let (ui_projection, projection_note) = view::projection(&projection, &base);
         // No `ui_trend` here: a `FinCatTrend` holds a nested model of its months, and
         // a `ModelRc` is an `Rc`, so the struct is `!Send` and cannot cross into the
         // event loop. The raw months are plain data and travel fine; the rows are
@@ -1765,6 +2085,19 @@ pub fn refresh(window: &MainWindow) {
         account_names.extend(account_pairs.iter().map(|(n, _)| slint::SharedString::from(n)));
         let mut category_names = vec![slint::SharedString::from(ALL_CATEGORIES)];
         category_names.extend(category_pairs.iter().map(|(n, _)| slint::SharedString::from(n)));
+        // Month labels are long-form for the dropdown ("July 2026") but the
+        // filter is keyed on the period, so the sentinel and the raw periods go
+        // through and the box shows those. A prettier label would need a second
+        // list and a lookup between them for no gain.
+        let shared = |v: &String| slint::SharedString::from(v.as_str());
+        let mut period_names = vec![slint::SharedString::from(EVERY_MONTH)];
+        period_names.extend(txn_periods.iter().map(shared));
+        let mut source_names = vec![slint::SharedString::from(ANY_SOURCE)];
+        source_names.extend(txn_sources.iter().map(shared));
+        let mut sub_category_names = vec![slint::SharedString::from(EVERY_SUB_CATEGORY)];
+        sub_category_names.extend(ui_sub_categories.iter().map(shared));
+        let mut sub_currency_names = vec![slint::SharedString::from(EVERY_CURRENCY)];
+        sub_currency_names.extend(ui_sub_currencies.iter().map(shared));
 
         let spent_total = money::format_minor(snap.spent_this_month_minor, &base);
         let month_label = view::month_long(&period);
@@ -1778,7 +2111,25 @@ pub fn refresh(window: &MainWindow) {
         let (alloc_income, alloc_budgeted, alloc_left, alloc_pct) =
             view::allocation(&allocation, &base);
         let budget_label = view::month_long(&budget_period);
-        let cal_label = view::month_long(&cal_period);
+        let bills_label = view::month_long(&bills_period);
+        // In the year view the header names the year, not a month inside it.
+        let cal_label = if cal_view == "year" {
+            cal_period.split('-').next().unwrap_or(&cal_period).to_string()
+        } else {
+            view::month_long(&cal_period)
+        };
+        let fixed_total = money::format_minor(fixed_total_minor, &base);
+        // Measured against the income of the month being *viewed*, not of today —
+        // the tab steps, and a share of a different month's income is a ratio of
+        // two unrelated numbers.
+        let fixed_share = if allocation.income_minor > 0 {
+            format!(
+                "{}% of what came in that month",
+                (fixed_total_minor as i128 * 100 / allocation.income_minor as i128).min(999)
+            )
+        } else {
+            "No income recorded that month to measure it against.".to_string()
+        };
         let low_label = low
             .filter(|l| l.balance_minor < 0)
             .map(|l| format!("Lowest around {}: {}", l.on, money::format_minor(l.balance_minor, &base)))
@@ -1823,13 +2174,32 @@ pub fn refresh(window: &MainWindow) {
             put!(get_fin_bill_templates, set_fin_bill_templates, ui_bill_templates);
             put!(get_fin_subs, set_fin_subs, ui_subs);
             put!(get_fin_dues, set_fin_dues, ui_dues);
+            put!(get_fin_dues_settled, set_fin_dues_settled, ui_dues_settled);
             put!(get_fin_accounts, set_fin_accounts, ui_accounts);
+            put!(get_fin_position, set_fin_position, ui_position);
             put!(get_fin_loans, set_fin_loans, ui_loans);
             put!(get_fin_budgets, set_fin_budgets, ui_budgets);
+            put!(get_fin_fixed_items, set_fin_fixed_items, ui_fixed_items);
             put!(get_fin_discipline, set_fin_discipline, ui_disc);
+            put!(get_fin_discipline_months, set_fin_discipline_months, ui_disc_months);
+            put!(
+                get_fin_envelope_history,
+                set_fin_envelope_history,
+                view::envelope_history(&disc_rows, &base)
+            );
             put!(get_fin_cal_days, set_fin_cal_days, ui_cal);
+            put!(get_fin_cal_months, set_fin_cal_months, ui_cal_months);
+            put!(get_fin_cal_flow, set_fin_cal_flow, ui_cal_flow);
+            put!(
+                get_fin_cal_heaviest_items,
+                set_fin_cal_heaviest_items,
+                ui_cal_heaviest_items
+            );
             put!(get_fin_cal_agenda, set_fin_cal_agenda, ui_agenda);
             put!(get_fin_flags, set_fin_flags, ui_flags);
+            put!(get_fin_savings, set_fin_savings, ui_savings);
+            put!(get_fin_savings_summary, set_fin_savings_summary, ui_savings_summary);
+            put!(get_fin_projection, set_fin_projection, ui_projection);
             put!(
                 get_fin_trend,
                 set_fin_trend,
@@ -1858,7 +2228,18 @@ pub fn refresh(window: &MainWindow) {
             );
             put!(get_fin_account_names, set_fin_account_names, account_names);
             put!(get_fin_category_names, set_fin_category_names, category_names);
+            put!(get_fin_txn_periods, set_fin_txn_periods, period_names);
+            put!(get_fin_source_names, set_fin_source_names, source_names);
+            put!(get_fin_subs_categories, set_fin_subs_categories, sub_category_names);
+            put!(get_fin_subs_currencies, set_fin_subs_currencies, sub_currency_names);
 
+            w.set_fin_bills_period(bills_label.into());
+            w.set_fin_cal_view(cal_view.into());
+            w.set_fin_fixed_total(fixed_total.into());
+            w.set_fin_fixed_share(fixed_share.into());
+            w.set_fin_projection_note(projection_note.into());
+            w.set_fin_badge_overdue(badge_overdue);
+            w.set_fin_empty(empty);
             w.set_fin_demo(demo);
             w.set_fin_spent_total(spent_total.into());
             w.set_fin_month_label(month_label.into());

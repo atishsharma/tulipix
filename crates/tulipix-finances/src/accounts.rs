@@ -95,6 +95,9 @@ pub struct AccountRow {
     pub opening_minor: i64,
     pub credit_limit_minor: Option<i64>,
     pub statement_day: Option<i64>,
+    /// Last time this balance was checked against a real statement, ISO date.
+    /// `None` means it never has been.
+    pub reconciled_on: Option<String>,
     pub closed: bool,
     pub sort_order: i64,
     /// Derived: opening plus every posting that touches this account.
@@ -122,7 +125,7 @@ pub async fn list(pool: &SqlitePool, include_closed: bool) -> Result<Vec<Account
     let signed = SIGNED.replace('?', "a.id");
     let sql = format!(
         "SELECT a.id, a.name, a.kind, a.currency, a.opening_minor, a.credit_limit_minor,
-                a.statement_day, a.closed, a.sort_order,
+                a.statement_day, a.reconciled_on, a.closed, a.sort_order,
                 a.opening_minor + COALESCE((
                     SELECT SUM({signed}) FROM transactions
                      WHERE account_id = a.id OR to_account_id = a.id
@@ -137,7 +140,20 @@ pub async fn list(pool: &SqlitePool, include_closed: bool) -> Result<Vec<Account
     );
     let rows = sqlx::query_as::<
         _,
-        (i64, String, String, String, i64, Option<i64>, Option<i64>, i64, i64, i64, i64),
+        (
+            i64,
+            String,
+            String,
+            String,
+            i64,
+            Option<i64>,
+            Option<i64>,
+            Option<String>,
+            i64,
+            i64,
+            i64,
+            i64,
+        ),
     >(&sql)
     .bind(i64::from(include_closed))
     .fetch_all(pool)
@@ -153,10 +169,11 @@ pub async fn list(pool: &SqlitePool, include_closed: bool) -> Result<Vec<Account
             opening_minor: r.4,
             credit_limit_minor: r.5,
             statement_day: r.6,
-            closed: r.7 != 0,
-            sort_order: r.8,
-            balance_minor: r.9,
-            txn_count: r.10,
+            reconciled_on: r.7,
+            closed: r.8 != 0,
+            sort_order: r.9,
+            balance_minor: r.10,
+            txn_count: r.11,
         })
         .collect())
 }
@@ -326,6 +343,15 @@ pub async fn reconcile(
     on: &str,
 ) -> Result<Option<i64>> {
     let derived = balance(pool, account_id).await?;
+    // Stamped whether or not there is a gap. A reconcile that agrees posts
+    // nothing, and "checked, agreed" has to be distinguishable from "never
+    // checked" — otherwise the only account the user keeps honest is the only
+    // one that looks unverified.
+    sqlx::query("UPDATE accounts SET reconciled_on = ? WHERE id = ?")
+        .bind(on)
+        .bind(account_id)
+        .execute(pool)
+        .await?;
     let diff = actual_minor - derived;
     if diff == 0 {
         return Ok(None);
@@ -347,6 +373,135 @@ pub async fn reconcile(
     t.category_id = category_id;
     t.note = Some(format!("Statement said {actual_minor}; ledger said {derived}"));
     Ok(Some(txn::post(pool, &t).await?))
+}
+
+/// What one account's card shows under its balance.
+///
+/// All derived. Every field is optional because the interesting fact differs by
+/// kind: a bank account has a reconcile and a month's flow, a card has a
+/// statement date and a minimum, a wallet has whatever tops it up. Asking for
+/// them all and rendering the ones that came back beats four near-identical
+/// queries.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Detail {
+    pub account_id: i64,
+    /// Money in and out of this account inside the given month.
+    pub in_month_minor: i64,
+    pub out_month_minor: i64,
+    /// Cards only: the next statement date, ISO, from `statement_day`.
+    pub statement_on: Option<String>,
+    /// Cards only. The industry-standard 5% of the outstanding balance, floored
+    /// at one currency unit — a figure to plan around, not a quote from the
+    /// issuer, and the UI says so.
+    pub minimum_due_minor: Option<i64>,
+    /// Wallets only: which account last topped this one up, and with how much.
+    pub topped_from: Option<String>,
+    pub last_topup_minor: Option<i64>,
+    pub last_topup_on: Option<String>,
+    /// Cash only: what the last recount had to correct by.
+    ///
+    /// Deliberately *not* "drift since the last count" — that is unknowable
+    /// without counting, which is the whole reason a recount exists. This is the
+    /// gap the last count actually found, which is real and is what tells someone
+    /// whether their cash habit needs watching.
+    pub drift_minor: Option<i64>,
+}
+
+/// Month-flow, statement, top-up and drift for every account at once.
+///
+/// One pass per fact rather than per account: four aggregate queries over the
+/// whole ledger are cheaper than four per row, and the section refreshes all of
+/// these together anyway.
+pub async fn details(
+    pool: &SqlitePool,
+    from: &str,
+    to: &str,
+    today: chrono::NaiveDate,
+) -> Result<Vec<Detail>> {
+    let rows = list(pool, false).await?;
+    let mut out: Vec<Detail> = rows
+        .iter()
+        .map(|a| Detail { account_id: a.id, ..Detail::default() })
+        .collect();
+
+    // Money in and out, this month. A transfer counts on both sides — it left one
+    // account and arrived in another, and a wallet whose only inflow is a top-up
+    // must still show that it was topped up.
+    let flow = sqlx::query_as::<_, (i64, i64, i64)>(
+        "SELECT a.id,
+                COALESCE((SELECT SUM(t.base_minor) FROM transactions t
+                           WHERE t.occurred_on BETWEEN ?1 AND ?2
+                             AND ((t.account_id = a.id AND t.kind = 'income')
+                               OR (t.to_account_id = a.id AND t.kind = 'transfer'))), 0),
+                COALESCE((SELECT SUM(t.base_minor) FROM transactions t
+                           WHERE t.occurred_on BETWEEN ?1 AND ?2
+                             AND t.account_id = a.id
+                             AND t.kind IN ('expense', 'transfer')), 0)
+           FROM accounts a WHERE a.closed = 0",
+    )
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await?;
+    for (id, inflow, outflow) in flow {
+        if let Some(d) = out.iter_mut().find(|d| d.account_id == id) {
+            d.in_month_minor = inflow;
+            d.out_month_minor = outflow;
+        }
+    }
+
+    // The last transfer into each account, for the wallet cards.
+    let topups = sqlx::query_as::<_, (i64, String, i64, String)>(
+        "SELECT t.to_account_id, a.name, t.base_minor, t.occurred_on
+           FROM transactions t JOIN accounts a ON a.id = t.account_id
+          WHERE t.kind = 'transfer' AND t.to_account_id IS NOT NULL
+          ORDER BY t.occurred_on DESC, t.id DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+    for (to_id, from_name, amount, on) in topups {
+        if let Some(d) = out.iter_mut().find(|d| d.account_id == to_id) {
+            // Ordered newest first, so the first one seen for an account wins.
+            if d.topped_from.is_none() {
+                d.topped_from = Some(from_name);
+                d.last_topup_minor = Some(amount);
+                d.last_topup_on = Some(on);
+            }
+        }
+    }
+
+    for a in &rows {
+        let Some(d) = out.iter_mut().find(|d| d.account_id == a.id) else { continue };
+        if a.kind == AccountKind::Card {
+            d.statement_on = a.statement_day.and_then(|day| crate::date::next_on_day(today, day));
+            let owed = (-a.balance_minor).max(0);
+            d.minimum_due_minor =
+                (owed > 0).then(|| (owed / 20).max(100.min(owed)));
+        }
+        if a.kind == AccountKind::Cash
+            && let Some(counted_on) = a.reconciled_on.as_deref()
+        {
+            // What the last recount corrected by, which is the adjustment it
+            // booked on the day it ran. Not "everything since then": a recount
+            // stamps the date and books the gap in the same breath, so anything
+            // measured *after* the stamp is always zero.
+            let drift: i64 = sqlx::query_scalar(
+                "SELECT COALESCE(SUM(CASE WHEN kind = 'income' THEN base_minor
+                                          ELSE -base_minor END), 0)
+                   FROM transactions
+                  WHERE account_id = ? AND occurred_on = ?
+                    AND description = 'Reconciliation adjustment'",
+            )
+            .bind(a.id)
+            .bind(counted_on)
+            .fetch_one(pool)
+            .await
+            .unwrap_or(0);
+            d.drift_minor = Some(drift);
+        }
+    }
+
+    Ok(out)
 }
 
 /// The id of a seeded virtual holding account, by name.

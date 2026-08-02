@@ -328,6 +328,69 @@ pub async fn mark_paid(
     Ok(txn_id)
 }
 
+/// Close an obligation against a transaction that already exists.
+///
+/// The importer's counterpart to [`mark_paid`]: the money has demonstrably moved
+/// — it is on the statement — so posting a second transaction for it would
+/// double-count the payment. This only records that the two are the same event,
+/// and inherits the recurrence's category onto the imported row, which is the
+/// one thing a bank narration can never supply.
+///
+/// Refuses an obligation that is already paid, so a re-import cannot re-close
+/// something and overwrite what was actually recorded the first time.
+pub async fn attach(
+    pool: &SqlitePool,
+    id: i64,
+    transaction_id: i64,
+    actual_minor: i64,
+    on: &str,
+) -> Result<()> {
+    let recurrence_id: Option<i64> = sqlx::query_scalar(
+        "SELECT recurrence_id FROM obligations WHERE id = ? AND status <> 'paid'",
+    )
+    .bind(id)
+    .fetch_optional(pool)
+    .await?
+    .flatten();
+
+    let affected = sqlx::query(
+        "UPDATE obligations SET status = 'paid', actual_minor = ?, transaction_id = ?
+          WHERE id = ? AND status <> 'paid'",
+    )
+    .bind(actual_minor)
+    .bind(transaction_id)
+    .bind(id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if affected == 0 {
+        bail!("that obligation is already closed");
+    }
+
+    let category_id: Option<i64> = match recurrence_id {
+        Some(r) => sqlx::query_scalar("SELECT category_id FROM recurrences WHERE id = ?")
+            .bind(r)
+            .fetch_optional(pool)
+            .await?
+            .flatten(),
+        None => None,
+    };
+    sqlx::query(
+        "UPDATE transactions
+            SET obligation_id = ?, recurrence_id = ?, occurred_on = ?,
+                category_id = COALESCE(category_id, ?)
+          WHERE id = ?",
+    )
+    .bind(id)
+    .bind(recurrence_id)
+    .bind(on)
+    .bind(category_id)
+    .bind(transaction_id)
+    .execute(pool)
+    .await?;
+    Ok(())
+}
+
 /// Decide not to pay this instance. Posts nothing.
 pub async fn skip(pool: &SqlitePool, id: i64) -> Result<()> {
     sqlx::query("UPDATE obligations SET status = 'skipped' WHERE id = ? AND status <> 'paid'")

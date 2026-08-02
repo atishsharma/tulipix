@@ -53,6 +53,7 @@ pub mod schema;
 pub mod txn;
 
 use anyhow::Result;
+use chrono::NaiveDate;
 use sqlx::SqlitePool;
 
 /// Settings key for how many days ahead an obligation starts being announced.
@@ -112,6 +113,21 @@ pub struct TickResult {
     pub overdue: Vec<String>,
     /// Sample rows dropped because the user now has real data of that kind.
     pub demo_pruned: u64,
+    /// A day inside the notice window where several things land at once, and
+    /// what they add up to. The design's second notification trigger: a run of
+    /// bills that is fine individually and painful on one morning.
+    pub heavy_day: Option<HeavyDay>,
+    /// Envelopes that went over their limit. The third trigger.
+    pub broken_envelopes: Vec<String>,
+}
+
+/// Several obligations falling on one date.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct HeavyDay {
+    pub on: String,
+    pub count: usize,
+    pub total_minor: i64,
+    pub currency: String,
 }
 
 impl TickResult {
@@ -119,6 +135,12 @@ impl TickResult {
         !self.created.is_empty() || self.swept > 0 || self.demo_pruned > 0
     }
 }
+
+/// How many obligations on one date make it worth mentioning.
+const HEAVY_DAY_ITEMS: usize = 3;
+
+/// And how far ahead to look for one.
+const HEAVY_DAY_WINDOW: i64 = 14;
 
 /// Bring the database up to date with the calendar.
 ///
@@ -134,7 +156,49 @@ pub async fn tick(pool: &SqlitePool) -> Result<TickResult> {
     // Sample data steps aside as the user's own arrives. Cheap enough to check
     // every tick, and a no-op once the last sample is gone.
     let demo_pruned = demo::prune(pool).await.unwrap_or(0);
-    Ok(TickResult { created, swept, overdue, demo_pruned })
+    let heavy_day = heaviest_day_ahead(pool, today).await.unwrap_or_default();
+    let broken_envelopes = broken_envelopes(pool, today).await.unwrap_or_default();
+    Ok(TickResult { created, swept, overdue, demo_pruned, heavy_day, broken_envelopes })
+}
+
+/// The worst single day in the next two weeks, when there is one worth naming.
+///
+/// Only counts what is still open: a day whose bills are already paid is not
+/// something to warn about, and warning about it once a month for the rest of
+/// the month is how a notification becomes noise the user turns off.
+async fn heaviest_day_ahead(pool: &SqlitePool, today: NaiveDate) -> Result<Option<HeavyDay>> {
+    let base = fx::base_currency();
+    let items = obligations::needs_you(pool, today, HEAVY_DAY_WINDOW).await?;
+    let mut by_day: std::collections::BTreeMap<String, (usize, i64)> = Default::default();
+    for o in items {
+        if !o.status.is_open() {
+            continue;
+        }
+        let Some(amount) = o.shown_minor() else { continue };
+        let slot = by_day.entry(o.due_on.clone()).or_default();
+        slot.0 += 1;
+        slot.1 += amount;
+    }
+    Ok(by_day
+        .into_iter()
+        .filter(|(_, (count, _))| *count >= HEAVY_DAY_ITEMS)
+        .max_by_key(|(_, (_, total))| *total)
+        .map(|(on, (count, total_minor))| HeavyDay {
+            on,
+            count,
+            total_minor,
+            currency: base.clone(),
+        }))
+}
+
+/// Envelopes over their limit this month.
+async fn broken_envelopes(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<String>> {
+    Ok(budgets::list(pool, &date::ym(today))
+        .await?
+        .into_iter()
+        .filter(|b| b.id.is_some() && b.over_budget())
+        .map(|b| b.category_name)
+        .collect())
 }
 
 /// One line for a desktop notification, or `None` when there is nothing worth
@@ -142,23 +206,53 @@ pub async fn tick(pool: &SqlitePool) -> Result<TickResult> {
 ///
 /// Kept here rather than in the UI crate because the wording is a product
 /// decision and this is the crate with the tests.
+/// The three triggers, in the order the design fixes them: something is late,
+/// a heavy day is coming, an envelope broke. One notification, not three — the
+/// most urgent thing wins, and the rest are on the page when it opens.
 pub fn notice(t: &TickResult) -> Option<(String, String)> {
     if !notify_enabled() {
         return None;
     }
-    match (t.overdue.len(), t.created.len()) {
-        (0, 0) => None,
-        (0, n) => Some((
+    match t.overdue.len() {
+        0 => {}
+        1 => {
+            return Some((
+                format!("{} is late", t.overdue[0]),
+                "Open Finances to mark it paid.".into(),
+            ))
+        }
+        n => return Some((format!("{n} bills are late"), t.overdue.join(", "))),
+    }
+
+    if let Some(h) = &t.heavy_day {
+        return Some((
+            format!("{} clears on {}", money::format_minor(h.total_minor, &h.currency), h.on),
+            format!("{} things land on the same day.", h.count),
+        ));
+    }
+
+    match t.broken_envelopes.len() {
+        0 => {}
+        1 => {
+            return Some((
+                format!("{} is over budget", t.broken_envelopes[0]),
+                "Open Budgets to see by how much.".into(),
+            ))
+        }
+        n => {
+            return Some((
+                format!("{n} envelopes are over budget"),
+                t.broken_envelopes.join(", "),
+            ))
+        }
+    }
+
+    // Nothing wrong, but the calendar grew. Worth a line, not an alarm.
+    match t.created.len() {
+        0 => None,
+        n => Some((
             format!("{n} thing{} coming up", if n == 1 { "" } else { "s" }),
             "Finances has new obligations on the calendar.".into(),
-        )),
-        (1, _) => Some((
-            format!("{} is late", t.overdue[0]),
-            "Open Finances to mark it paid.".into(),
-        )),
-        (n, _) => Some((
-            format!("{n} bills are late"),
-            t.overdue.join(", "),
         )),
     }
 }
@@ -166,6 +260,48 @@ pub fn notice(t: &TickResult) -> Option<(String, String)> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The three triggers in the order the design fixes them, and only ever one
+    /// notification. A tick that found all three at once must not fire three
+    /// banners — the other two are on the page when it opens.
+    #[test]
+    fn the_most_urgent_trigger_is_the_one_that_notifies() {
+        let heavy = HeavyDay {
+            on: "2026-08-05".into(),
+            count: 4,
+            total_minor: 6_175_200,
+            currency: "INR".into(),
+        };
+        let all = TickResult {
+            created: vec![1, 2],
+            swept: 0,
+            overdue: vec!["Water".into()],
+            demo_pruned: 0,
+            heavy_day: Some(heavy.clone()),
+            broken_envelopes: vec!["Eating out".into()],
+        };
+        assert!(
+            notice(&all).unwrap().0.contains("Water"),
+            "late beats a heavy day and a broken envelope"
+        );
+
+        let no_overdue = TickResult { overdue: Vec::new(), ..all.clone() };
+        assert!(
+            notice(&no_overdue).unwrap().0.contains("2026-08-05"),
+            "a heavy day beats a broken envelope"
+        );
+
+        let only_envelope =
+            TickResult { heavy_day: None, ..no_overdue.clone() };
+        assert!(notice(&only_envelope).unwrap().0.contains("Eating out"));
+
+        // Nothing wrong at all, but the calendar grew: a line, not an alarm.
+        let quiet = TickResult { broken_envelopes: Vec::new(), ..only_envelope.clone() };
+        assert!(notice(&quiet).unwrap().0.contains("2 things coming up"));
+
+        // And a tick that found nothing says nothing.
+        assert_eq!(notice(&TickResult::default()), None);
+    }
 
     /// The real open path, against a temp file rather than the user's data dir,
     /// so WAL mode and the on-disk schema are exercised and not just

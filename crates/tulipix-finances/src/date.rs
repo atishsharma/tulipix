@@ -141,6 +141,23 @@ pub fn days_between(a: NaiveDate, b: NaiveDate) -> i64 {
     (b - a).num_days()
 }
 
+/// The next occurrence of day-of-month `day`, on or after `from`.
+///
+/// Clamped to the length of whichever month it lands in, so a statement day of
+/// 31 falls on 28 February rather than vanishing. Returns `None` only for a day
+/// outside 1-31, which is not a day.
+pub fn next_on_day(from: NaiveDate, day: i64) -> Option<String> {
+    let day = u32::try_from(day).ok().filter(|d| (1..=31).contains(d))?;
+    let this = {
+        let dim = days_in_month(from.year(), from.month());
+        from.with_day(day.min(dim))?
+    };
+    if this >= from {
+        return Some(iso(this));
+    }
+    Some(iso(add_months_anchored(from, 1, day)))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,6 +173,23 @@ mod tests {
         assert_eq!(days_in_month(2100, 2), 28, "2100 is not, despite being divisible by 4");
         assert_eq!(days_in_month(2026, 12), 31);
         assert_eq!(days_in_month(2026, 4), 30);
+    }
+
+    #[test]
+    fn the_next_statement_day_is_this_month_or_the_next_one() {
+        // Still to come this month.
+        assert_eq!(next_on_day(d("2026-07-02"), 5).as_deref(), Some("2026-07-05"));
+        // Today counts as on or after itself.
+        assert_eq!(next_on_day(d("2026-07-05"), 5).as_deref(), Some("2026-07-05"));
+        // Already gone, so it rolls forward.
+        assert_eq!(next_on_day(d("2026-07-20"), 5).as_deref(), Some("2026-08-05"));
+        // A 31st statement day in a 30-day month lands on the 30th, and comes
+        // back to the 31st afterwards — the anchor rule, applied here too.
+        assert_eq!(next_on_day(d("2026-04-01"), 31).as_deref(), Some("2026-04-30"));
+        assert_eq!(next_on_day(d("2026-05-01"), 31).as_deref(), Some("2026-05-31"));
+        // Not a day of any month.
+        assert_eq!(next_on_day(d("2026-07-02"), 0), None);
+        assert_eq!(next_on_day(d("2026-07-02"), 32), None);
     }
 
     #[test]

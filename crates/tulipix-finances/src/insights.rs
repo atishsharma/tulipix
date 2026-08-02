@@ -56,6 +56,11 @@ pub struct Flag {
     pub title: String,
     pub detail: String,
     pub action: Action,
+    /// What acting on this flag would put back each month, when that is a real
+    /// figure. `None` for anything the app can only point at — a due that is
+    /// old, a card running hot — because those are not savings, and summing
+    /// them into "act on everything and you keep ₹X" would be an invented total.
+    pub monthly_saving_minor: Option<i64>,
 }
 
 /// How long without playback before a video subscription is called unused.
@@ -85,6 +90,7 @@ pub async fn flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
                 title: format!("{} is {} days overdue", o.name, -o.days_until),
                 detail: format!("{amount}, was due {}.", o.due_on),
                 action: Action::Obligation(o.id),
+                monthly_saving_minor: None,
             });
         } else {
             out.push(Flag {
@@ -96,6 +102,7 @@ pub async fn flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
                 },
                 detail: format!("{amount}, due {}.", o.due_on),
                 action: Action::Obligation(o.id),
+                monthly_saving_minor: None,
             });
         }
     }
@@ -115,6 +122,7 @@ pub async fn flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
                     money::format_minor(rise * r.cycle.per_year(), &r.currency)
                 ),
                 action: Action::Recurrence(r.id),
+                monthly_saving_minor: None,
             });
         }
     }
@@ -136,6 +144,9 @@ pub async fn flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
                     fmt(b.allowance_minor())
                 ),
                 action: Action::Category(b.category_id),
+                // Holding the envelope next month is worth exactly what it went
+                // over by. Real money, and the only budget figure that is.
+                monthly_saving_minor: Some(b.spent_minor - b.allowance_minor()),
             });
         } else if b.off_pace(elapsed, total_days) {
             out.push(Flag {
@@ -148,6 +159,7 @@ pub async fn flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
                     fmt(b.allowance_minor())
                 ),
                 action: Action::Category(b.category_id),
+                monthly_saving_minor: None,
             });
         }
     }
@@ -164,6 +176,7 @@ pub async fn flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
                 fmt(low.balance_minor)
             ),
             action: Action::None,
+            monthly_saving_minor: None,
         });
     }
 
@@ -181,6 +194,7 @@ pub async fn flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
                     fmt(a.credit_limit_minor.unwrap_or(0))
                 ),
                 action: Action::Account(a.id),
+                monthly_saving_minor: None,
             });
         }
     }
@@ -195,6 +209,7 @@ pub async fn flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
                 "Those amounts are being counted at 1:1, so every {base} total containing them is wrong."
             ),
             action: Action::Rates,
+            monthly_saving_minor: None,
         });
     }
 
@@ -213,6 +228,7 @@ pub async fn flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
                     d.opened_on
                 ),
                 action: Action::Due(d.id),
+                monthly_saving_minor: None,
             });
         }
     }
@@ -225,6 +241,7 @@ pub async fn flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
             title: format!("{name} keeps coming in {} than estimated", if delta > 0 { "higher" } else { "lower" }),
             detail: format!("Last bill was {} off the estimate.", fmt(delta.abs())),
             action: Action::None,
+            monthly_saving_minor: None,
         });
     }
 
@@ -236,6 +253,7 @@ pub async fn flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
             title: format!("Saving {rate}% of income this month"),
             detail: format!("{} in, {} out.", fmt(alloc.income_minor), fmt(alloc.spent_minor)),
             action: Action::None,
+            monthly_saving_minor: None,
         });
     }
 
@@ -251,6 +269,7 @@ pub async fn flags(pool: &SqlitePool, today: NaiveDate) -> Result<Vec<Flag>> {
             title: format!("Subscriptions and bills cost {} a year", fmt(yearly)),
             detail: format!("Across every active recurrence{share}."),
             action: Action::None,
+            monthly_saving_minor: None,
         });
     }
 
@@ -318,6 +337,10 @@ pub async fn unused_subscription_flags(
                     money::format_minor(r.yearly_minor, &r.currency)
                 ),
                 action: Action::Recurrence(r.id),
+                // Cancelling it stops the whole charge, so the saving is its
+                // yearly cost spread over twelve — which is the figure that is
+                // comparable with every other monthly number on the page.
+                monthly_saving_minor: Some(r.yearly_minor / 12),
             })
         })
         .collect())
@@ -409,6 +432,116 @@ impl Snapshot {
     pub fn saved_this_month_minor(&self) -> i64 {
         self.income_this_month_minor - self.spent_this_month_minor
     }
+}
+
+/// One month of the savings-rate chart.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MonthSavings {
+    pub period: String,
+    pub income_minor: i64,
+    pub spent_minor: i64,
+    pub saved_minor: i64,
+    /// Saved as a share of income, 0-100. `None` when nothing came in that
+    /// month: a rate against zero income is a division, not a fact.
+    pub rate_pct: Option<i64>,
+}
+
+/// Savings rate month by month, oldest first.
+///
+/// Months with no income at all are kept in the series with `rate_pct: None`
+/// rather than dropped. A gap in a chart is information — a month where the
+/// salary landed late reads as a hole, and silently closing it up would draw a
+/// smooth line through something that did not happen.
+pub async fn savings_history(pool: &SqlitePool, months: u32) -> Result<Vec<MonthSavings>> {
+    Ok(crate::txn::monthly_totals(pool, months)
+        .await?
+        .into_iter()
+        .map(|m| {
+            let saved = m.income_minor - m.expense_minor;
+            MonthSavings {
+                period: m.period,
+                income_minor: m.income_minor,
+                spent_minor: m.expense_minor,
+                saved_minor: saved,
+                rate_pct: (m.income_minor > 0)
+                    .then(|| ((saved as i128 * 100) / m.income_minor as i128) as i64),
+            }
+        })
+        .collect())
+}
+
+/// Where the last few months lead if nothing changes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Projection {
+    /// How many months of history this was built from. Below three the figures
+    /// are shown with that number attached rather than as a forecast, because a
+    /// twelve-month projection off one month is arithmetic dressed as insight.
+    pub months_of_history: usize,
+    pub spend_12m_minor: i64,
+    pub saved_12m_minor: i64,
+    /// Principal that scheduled EMIs will clear over the next twelve months.
+    /// Interest is not included: it is a cost, not debt repaid.
+    pub debt_cleared_12m_minor: i64,
+    /// What acting on every actionable flag would save each month.
+    pub actionable_monthly_minor: i64,
+    /// Savings rate now, and what it becomes if the flags are acted on.
+    pub rate_now_pct: Option<i64>,
+    pub rate_after_pct: Option<i64>,
+}
+
+/// Twelve months ahead, from the average of what has actually happened.
+///
+/// A mean of the recorded months rather than an extrapolation of the current
+/// one: a month with a yearly insurance premium in it is not the year.
+pub async fn projection(
+    pool: &SqlitePool,
+    today: NaiveDate,
+    flags: &[Flag],
+    savings: &[MonthSavings],
+) -> Result<Projection> {
+    let n = savings.len();
+    if n == 0 {
+        return Ok(Projection::default());
+    }
+    let avg = |total: i64| total / n as i64;
+    let spend: i64 = savings.iter().map(|m| m.spent_minor).sum();
+    let income: i64 = savings.iter().map(|m| m.income_minor).sum();
+    let monthly_spend = avg(spend);
+    let monthly_income = avg(income);
+
+    // Principal only, from the real amortisation schedule of each loan, so a
+    // front-loaded home loan is not credited with the interest it pays.
+    let mut cleared = 0i64;
+    for l in crate::loans::list(pool).await.unwrap_or_default() {
+        // From what is outstanding now, not from the original principal: the
+        // question is what the next twelve months clear, and a schedule started
+        // at origination would re-pay years that are already behind us.
+        let schedule = crate::loans::schedule(
+            l.balance_minor.max(0),
+            l.rate_bp,
+            l.remaining_months(),
+            l.emi_minor,
+            today,
+            l.emi_day,
+        );
+        cleared += schedule.iter().take(12).map(|i| i.principal_minor).sum::<i64>();
+    }
+
+    let actionable: i64 = flags.iter().filter_map(|f| f.monthly_saving_minor).sum();
+    let rate = |saved: i64| {
+        (monthly_income > 0)
+            .then(|| ((saved as i128 * 100) / monthly_income as i128) as i64)
+    };
+
+    Ok(Projection {
+        months_of_history: n,
+        spend_12m_minor: monthly_spend * 12,
+        saved_12m_minor: (monthly_income - monthly_spend) * 12,
+        debt_cleared_12m_minor: cleared,
+        actionable_monthly_minor: actionable,
+        rate_now_pct: rate(monthly_income - monthly_spend),
+        rate_after_pct: rate(monthly_income - monthly_spend + actionable),
+    })
 }
 
 /// The Overview strip, in one call.

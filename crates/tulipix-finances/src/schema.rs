@@ -24,6 +24,11 @@ CREATE TABLE IF NOT EXISTS accounts (
     opening_minor      INTEGER NOT NULL DEFAULT 0,
     credit_limit_minor INTEGER,                      -- cards only
     statement_day      INTEGER,                      -- cards only, 1-31
+    -- Last time the derived balance was checked against a real statement. A
+    -- reconcile that matches posts no transaction, so there would otherwise be
+    -- nothing in the ledger to say it happened — and "never checked" and
+    -- "checked, agreed" are the two things the Accounts tab must tell apart.
+    reconciled_on      TEXT,
     closed             INTEGER NOT NULL DEFAULT 0,
     sort_order         INTEGER NOT NULL DEFAULT 0,
     created_at         INTEGER NOT NULL
@@ -242,9 +247,10 @@ pub async fn apply_schema(pool: &SqlitePool) -> Result<()> {
 /// Kept to `ADD COLUMN` with a default on purpose: anything that rewrites or drops
 /// data needs a considered migration, not a list.
 async fn add_missing_columns(pool: &SqlitePool) -> Result<()> {
-    for (table, column, decl) in
-        [("fx_rates", "source", "TEXT NOT NULL DEFAULT 'manual'")]
-    {
+    for (table, column, decl) in [
+        ("fx_rates", "source", "TEXT NOT NULL DEFAULT 'manual'"),
+        ("accounts", "reconciled_on", "TEXT"),
+    ] {
         let exists: bool = sqlx::query_scalar(
             "SELECT EXISTS(SELECT 1 FROM pragma_table_info(?) WHERE name = ?)",
         )

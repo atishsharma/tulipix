@@ -167,6 +167,12 @@ async fn seed_now(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
     )
     .await?;
 
+    // A second bank, so the Accounts grid is a grid and the account filter on the
+    // ledger has something to narrow to. Left un-reconciled on purpose: "never
+    // checked" beside two accounts that have been is the contrast that makes the
+    // reconcile line mean anything.
+    let savings = accounts::create(pool, &NewAccount::bank("SBI Emergency fund", 45_000_000)).await?;
+
     // ── a loan, which is an account with a negative balance ─────────────────
     let loan = loans::create(
         pool,
@@ -271,10 +277,19 @@ async fn seed_now(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
         );
         earlier.kind = TxnKind::Income;
         rows.push((earlier, Some(salary)));
+        // One posting per budgeted category, every month. An envelope with a
+        // limit but no spending behind it leaves a blank cell in the six-month
+        // grid, which reads as a bug rather than as a quiet month.
         for (day, amount, desc, c, acct) in [
             (5i64, 1_850_000 + vary, "Groceries and household", groceries, bank),
             (8, 3_800_000, "Rent", rent_cat, bank),
+            (11, 260_000 + vary / 4, "Shopping", shopping, card),
             (13, 640_000 - vary / 2, "Eating out", food, card),
+            // From the bank, not from cash: eleven months of it would drain a
+            // ₹5,000 wallet several times over and the sample would open
+            // overdrawn, which `the_sample_month_is_internally_consistent`
+            // refuses to let ship.
+            (15, 190_000, "Metro card recharge", transport, bank),
             (17, 420_000 + vary / 3, "Fuel", fuel, card),
             (21, 310_000, "Pharmacy", health, bank),
         ] {
@@ -288,22 +303,32 @@ async fn seed_now(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
     // This month, in detail. Every category the donut can show needs a posting in
     // it, or the chart is three slices wide and says nothing about where the money
     // actually goes.
+    //
+    // Several merchants appear more than once on purpose. A merchant the ledger
+    // has seen before is what lets an imported statement categorise itself, and a
+    // sample where every description is unique would never exercise that.
     for (days, amount, desc, c, acct) in [
-        (24i64, 462_000, "BigBasket — monthly groceries", groceries, bank),
+        (27i64, 118_000, "Blinkit", groceries, card),
+        (26, 64_000, "Swiggy", food, card),
+        (24, 462_000, "BigBasket — monthly groceries", groceries, bank),
         (23, 3_800_000, "Rent — August", rent_cat, bank),
         (22, 289_000, "Croma — kettle", shopping, card),
         (21, 34_000, "Auto to office", transport, cash),
         (20, 64_900, "Netflix", subs_cat, card),
         (19, 128_000, "Dinner — Toit", food, card),
         (18, 245_000, "Apollo Pharmacy", health, bank),
+        (17, 349_900, "Amazon — headphones", shopping, card),
         (16, 89_900, "Petrol — Indian Oil", fuel, card),
         (15, 142_000, "Electricity — BESCOM", bills_cat, bank),
         (14, 356_000, "Myntra — shirts", shopping, card),
+        (13, 84_000, "Blinkit", groceries, card),
         (12, 24_000, "Chai and samosa", food, cash),
         (11, 78_000, "Uber to airport", transport, wallet),
+        (10, 52_000, "Swiggy", food, card),
         (9, 156_000, "Blinkit — top-up shop", groceries, wallet),
         (8, 199_000, "Spotify family", subs_cat, card),
         (7, 92_000, "Dr Rao — consultation", health, cash),
+        (6, 41_000, "Auto to office", transport, cash),
         (5, 45_000, "Metro card recharge", transport, bank),
         (4, 268_000, "Swiggy — weekend", food, card),
         (3, 121_000, "Petrol — Shell", fuel, card),
@@ -332,6 +357,37 @@ async fn seed_now(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
     )
     .await?;
 
+    // A wallet top-up and a standing transfer into savings. Both are transfers,
+    // neither is spending, and the wallet card has nothing to say without one.
+    txn::post(pool, &NewTxn::transfer(bank, wallet, 200_000, "INR", &iso(ago(10)), "Paytm top-up"))
+        .await?;
+    for k in 0..4i64 {
+        let Some(month) = month_start(today, k) else { continue };
+        txn::post(
+            pool,
+            &NewTxn::transfer(
+                bank,
+                savings,
+                1_500_000,
+                "INR",
+                &iso(month + Duration::days(2)),
+                "Monthly saving",
+            ),
+        )
+        .await?;
+    }
+
+    // ── reconciles ──────────────────────────────────────────────────────────
+    // One that agreed and one that did not. A balance nobody has ever checked
+    // against a statement and one checked last week look identical without this,
+    // and the difference is the whole point of the Accounts tab.
+    let bank_balance = accounts::balance(pool, bank).await?;
+    accounts::reconcile(pool, bank, bank_balance, &iso(ago(9))).await?;
+    // Cash always comes up short. ₹120 missing is the kind of gap a real wallet
+    // has and the reason a recount books rather than silently adjusts.
+    let cash_balance = accounts::balance(pool, cash).await?;
+    accounts::reconcile(pool, cash, cash_balance - 12_000, &iso(ago(6))).await?;
+
     // ── subscriptions ───────────────────────────────────────────────────────
     // One that auto-posts, one in a foreign currency, one paused, and one whose
     // price went up — the four states the tab has to render.
@@ -347,31 +403,83 @@ async fn seed_now(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
     recur::record_price(pool, netflix, 49_900, "INR", &iso(ago(400))).await?;
     recur::record_price(pool, netflix, 64_900, "INR", &iso(ago(92))).await?;
 
-    {
-        let mut r = NewRecurrence::subscription("Some SaaS", 999, &iso(ahead(11)));
-        r.currency = "USD".into();
+    // Three foreign-currency ones, in two currencies. The stored amount is what
+    // the service charges; the rupee figure beside it is always derived, so a rate
+    // edit can never rewrite what last March cost.
+    for (name, amount, currency, days) in [
+        ("Claude Pro", 2_000i64, "USD", 11i64),
+        ("GitHub Copilot", 1_000, "USD", 17),
+        ("Proton Unlimited", 499, "EUR", 8),
+    ] {
+        let mut r = NewRecurrence::subscription(name, amount, &iso(ahead(days)));
+        r.currency = currency.into();
         r.account_id = Some(card);
         r.category_id = Some(subs_cat);
         recur::create(pool, &r).await?;
     }
-    // Without a rate the foreign subscription is counted at 1:1, so the sample
-    // supplies one — as a *fetched* rate, dated a day old. That way the first visit
-    // to the section replaces it with today's real one, which is both more accurate
-    // and the only way to see that the daily refresh works. Seeding it as
-    // hand-typed would have exempted it from exactly that.
+    // Without a rate a foreign subscription is counted at 1:1, so the sample
+    // supplies them — as *fetched* rates, dated a day old. That way the first visit
+    // to the section replaces them with today's real ones, which is both more
+    // accurate and the only way to see that the daily refresh works. Seeding them
+    // as hand-typed would have exempted them from exactly that.
     crate::fx::apply_live(
         pool,
-        &[("USD".to_string(), 83_600_000)],
+        &[("USD".to_string(), 83_600_000), ("EUR".to_string(), 90_500_000)],
         crate::schema::unix_now() - crate::fx::REFRESH_SECS,
     )
     .await?;
 
+    // The rest of a realistic stack. Enough of them that the yearly total is a
+    // number worth looking at, which is the argument for the tab existing.
+    for (name, amount, days, cycle) in [
+        ("Spotify", 11_900i64, 2i64, Cycle::Monthly),
+        ("iCloud+ 200 GB", 7_500, 26, Cycle::Monthly),
+        ("Amazon Prime", 149_900, 14, Cycle::Yearly),
+    ] {
+        let mut r = NewRecurrence::subscription(name, amount, &iso(ahead(days)));
+        r.account_id = Some(card);
+        r.category_id = Some(subs_cat);
+        r.cycle = cycle;
+        recur::create(pool, &r).await?;
+    }
+
+    // A second price rise, so the hike flag is a pattern rather than one row.
+    let youtube = {
+        let mut r = NewRecurrence::subscription("YouTube Premium", 14_900, &iso(ahead(18)));
+        r.account_id = Some(card);
+        r.category_id = Some(subs_cat);
+        recur::create(pool, &r).await?
+    };
+    recur::record_price(pool, youtube, 12_900, "INR", &iso(ago(500))).await?;
+    recur::record_price(pool, youtube, 14_900, "INR", &iso(ago(210))).await?;
+
+    // Entertainment-categorised, so the cross-section "paid for, not watched"
+    // flag has something to find once Videos has playback history. It is the one
+    // thing on this page a generic finance app could never say.
+    {
+        let mut r = NewRecurrence::subscription("JioHotstar", 29_900, &iso(ahead(22)));
+        r.account_id = Some(card);
+        r.category_id = Some(category(pool, "Entertainment").await?);
+        recur::create(pool, &r).await?;
+    }
+
     let paused = {
         let mut r = NewRecurrence::subscription("Gym", 150_000, &iso(ahead(20)));
         r.account_id = Some(bank);
+        r.category_id = Some(health);
         recur::create(pool, &r).await?
     };
     recur::set_status(pool, paused, recur::Status::Paused).await?;
+
+    // And one already stopped. Kept visible rather than deleted: money that used
+    // to leave every month is context for the ones that still do.
+    let cancelled = {
+        let mut r = NewRecurrence::subscription("Adobe Creative Cloud", 191_500, &iso(ahead(28)));
+        r.account_id = Some(card);
+        r.category_id = Some(subs_cat);
+        recur::create(pool, &r).await?
+    };
+    recur::set_status(pool, cancelled, recur::Status::Cancelled).await?;
 
     // ── bills ───────────────────────────────────────────────────────────────
     // A variable one with history, so the estimate is a real mean of three and
@@ -396,10 +504,35 @@ async fn seed_now(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
     {
         let mut r = NewRecurrence::subscription("Rent", 3_800_000, &iso(ahead(4)));
         r.account_id = Some(bank);
+        r.category_id = Some(rent_cat);
         r.cycle = Cycle::Monthly;
         r.anchor_day = Some(1);
         r.reminder_days = 7;
         recur::create(pool, &r).await?;
+    }
+
+    // The rest of a household's fixed month. A calendar with three things on it
+    // does not show the shape the Calendar tab exists to show — which is that
+    // most of the outgo clears in one week.
+    for (name, amount, days, auto, acct) in [
+        ("Internet — ACT Fibernet", 118_000i64, 15i64, true, card),
+        ("Housekeeping", 400_000, 1, false, cash),
+        ("Phone — Airtel postpaid", 79_900, 12, true, card),
+    ] {
+        let mut r = NewRecurrence::subscription(name, amount, &iso(ahead(days)));
+        r.kind = recur::RecurKind::Bill;
+        r.account_id = Some(acct);
+        r.category_id = Some(bills_cat);
+        r.auto_post = auto;
+        recur::create(pool, &r).await?;
+    }
+
+    // An irregular one, already paid, so the Paid filter and the variance line
+    // are not empty states.
+    {
+        let gas = obligations::create_one_off(pool, "Gas cylinder — Indane", &iso(ago(11)), Some(115_000))
+            .await?;
+        obligations::mark_paid(pool, gas, 115_200, ago(11), wallet, "INR").await?;
     }
 
     // One that is late, because an overdue row is the state most worth seeing
@@ -407,25 +540,53 @@ async fn seed_now(pool: &SqlitePool, today: NaiveDate) -> Result<bool> {
     obligations::create_one_off(pool, "Water bill", &iso(ago(6)), Some(84_000)).await?;
 
     obligations::create_one_off(pool, "Society maintenance", &iso(ahead(7)), Some(250_000)).await?;
+    // A yearly one, far enough out to sit in the Calendar's year view rather than
+    // this month's grid.
+    obligations::create_one_off(pool, "Property tax — BBMP", &iso(ahead(64)), Some(840_000)).await?;
 
     // ── dues, in both directions ────────────────────────────────────────────
     dues::create(pool, &NewDue::lent("Ravi", 500_000, &iso(ago(34)), bank)).await?;
+    dues::create(pool, &NewDue::lent("Ankit", 240_000, &iso(ago(23)), bank)).await?;
     dues::create(pool, &NewDue::borrowed("Dad", 1_500_000, &iso(ago(67)), bank)).await?;
+    dues::create(pool, &NewDue::borrowed("Sneha", 185_000, &iso(ago(8)), bank)).await?;
     // A part-settled one, so the remainder-still-open path is exercised.
     let part = dues::create(pool, &NewDue::lent("Meera", 300_000, &iso(ago(20)), bank)).await?;
     dues::settle(pool, part, 100_000, ago(4), bank).await?;
 
+    // Closed ones, so the Settled card has a history to show. The useful question
+    // about a person is whether this comes back, and that needs the ones that did
+    // sitting beside the ones that have not.
+    for (person, amount, opened, closed) in
+        [("Vikram", 320_000i64, 60i64, 49i64), ("Rohit", 800_000, 140, 45)]
+    {
+        let id = dues::create(pool, &NewDue::lent(person, amount, &iso(ago(opened)), bank)).await?;
+        dues::settle(pool, id, amount, ago(closed), bank).await?;
+    }
+    // And one given up on. The only direction in which a due ever becomes a real
+    // expense, which is worth having on screen once.
+    {
+        let id = dues::create(pool, &NewDue::lent("Karan", 120_000, &iso(ago(400)), bank)).await?;
+        dues::write_off(pool, id, ago(30)).await?;
+    }
+
     // ── budgets ─────────────────────────────────────────────────────────────
-    // One comfortably inside, one over. Both states have their own colour and
-    // neither is visible without data.
-    // Set for the last four months, not only this one: the discipline table shows
-    // six months and only counts a category that had an envelope that month, so
-    // one period's worth of envelopes leaves it empty.
-    for k in 0..4i64 {
+    // Six envelopes over six months, which is what the discipline grid is sized
+    // for: one row per envelope, one column per month, and a habit visible along
+    // a row. Three envelopes over four months left half of it blank.
+    //
+    // Eating out is deliberately set below what the ledger actually spends, so the
+    // over-budget state — its colour, its pill and its Insights flag — is on screen
+    // rather than only reachable by the user overspending.
+    for k in 0..6i64 {
         let Some(period) = month_start(today, k).map(date::ym) else { continue };
-        for (c, amount, rollover) in
-            [(groceries, 800_000, true), (food, 250_000, false), (transport, 300_000, false)]
-        {
+        for (c, amount, rollover) in [
+            (groceries, 800_000, true),
+            (food, 250_000, false),
+            (transport, 300_000, false),
+            (shopping, 600_000, false),
+            (health, 300_000, false),
+            (fuel, 500_000, false),
+        ] {
             budgets::set(pool, c, &period, amount, rollover).await?;
         }
     }
@@ -684,9 +845,17 @@ mod tests {
         assert!(count(&p, "transactions").await > 5);
         assert!(count(&p, "recurrences").await >= 5);
         assert!(count(&p, "obligations").await > 3);
-        assert_eq!(count(&p, "dues").await, 3);
-        // Three envelopes across four months.
-        assert_eq!(count(&p, "budgets").await, 12);
+        // Open in both directions, one part-settled, two settled and one written
+        // off — the Settled card needs closed rows to have anything to show.
+        assert_eq!(count(&p, "dues").await, 8);
+        let closed: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM dues WHERE status <> 'open'")
+            .fetch_one(&p)
+            .await
+            .unwrap();
+        assert_eq!(closed, 3, "two settled and one written off");
+        // Six envelopes across six months, which is what the discipline grid is
+        // sized for.
+        assert_eq!(count(&p, "budgets").await, 36);
         // Every one of the twelve chart columns has something in it. Six left five
         // empty bars, which reads as missing data rather than as a quiet year.
         let months = txn::monthly_totals(&p, 12).await.unwrap();
@@ -873,5 +1042,72 @@ mod tests {
         .await
         .unwrap();
         assert!(recur::estimate_for(&p, power).await.unwrap().is_some());
+    }
+
+    /// The states the new Accounts, Subscriptions and Budgets cards were built
+    /// around. Each is invisible without data of exactly one shape, so a sample
+    /// that happens to omit one silently ships an untested card.
+    #[tokio::test]
+    async fn the_sample_reaches_every_state_the_tabs_can_render() {
+        let p = pool().await;
+        seed(&p, today()).await.unwrap();
+        let rows = accounts::list(&p, false).await.unwrap();
+
+        // One account checked against a statement, one never — the contrast is
+        // what makes the reconcile line mean anything.
+        assert!(rows.iter().any(|a| a.reconciled_on.is_some()), "something has been reconciled");
+        assert!(
+            rows.iter().any(|a| a.reconciled_on.is_none() && a.kind == AccountKind::Bank),
+            "and something has not"
+        );
+
+        let (from, to) = date::month_bounds(&date::ym(today())).unwrap();
+        let details = accounts::details(&p, &from, &to, today()).await.unwrap();
+        // Cash came up short at its last count, which is what a real wallet does.
+        assert!(
+            details.iter().any(|d| d.drift_minor.is_some_and(|m| m != 0)),
+            "the cash recount found a gap"
+        );
+        // The wallet says what tops it up.
+        assert!(details.iter().any(|d| d.topped_from.is_some()), "a wallet has a top-up behind it");
+        // The card has a statement date and a minimum to plan around.
+        assert!(details.iter().any(|d| d.statement_on.is_some() && d.minimum_due_minor.is_some()));
+
+        // Every subscription status, and more than one currency.
+        let subs = recur::list(&p, Some(recur::RecurKind::Subscription), true).await.unwrap();
+        for want in [recur::Status::Active, recur::Status::Paused, recur::Status::Cancelled] {
+            assert!(subs.iter().any(|r| r.status == want), "no {want:?} subscription");
+        }
+        let mut currencies: Vec<&str> = subs.iter().map(|r| r.currency.as_str()).collect();
+        currencies.sort_unstable();
+        currencies.dedup();
+        assert!(currencies.len() >= 3, "only {currencies:?} — the FX path needs more than one");
+        assert!(
+            subs.iter().filter(|r| r.hike_from_minor.is_some()).count() >= 2,
+            "a single price rise reads as a one-off rather than as a pattern"
+        );
+
+        // The envelope grid: six months, every one of them with spending in every
+        // budgeted category, or the row has a hole in it.
+        let (periods, history) = budgets::envelope_history(&p, 6, today()).await.unwrap();
+        assert_eq!(periods.len(), 6);
+        assert!(history.len() >= 6, "only {} envelopes", history.len());
+        for h in &history {
+            // The current month is still running, so only the closed ones must be
+            // complete.
+            assert!(
+                h.spent.iter().take(5).all(|c| c.is_some_and(|m| m > 0)),
+                "{} has an empty month behind it",
+                h.name
+            );
+        }
+
+        // And something is actually over budget, so that state is on screen
+        // rather than only reachable by the user overspending.
+        let now = budgets::list(&p, &date::ym(today())).await.unwrap();
+        assert!(
+            now.iter().any(|b| b.id.is_some() && b.over_budget()),
+            "no envelope is over, so the over-budget colour never shows"
+        );
     }
 }

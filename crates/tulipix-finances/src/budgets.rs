@@ -27,6 +27,12 @@ pub struct BudgetRow {
     pub rollover_minor: i64,
     pub rollover: bool,
     pub spent_minor: i64,
+    /// How many postings made up `spent_minor`, and the largest single one.
+    /// An envelope broken by one purchase is a different problem from one
+    /// broken by forty, and the number is the only thing that says which.
+    pub txn_count: i64,
+    pub biggest_minor: i64,
+    pub biggest_name: String,
 }
 
 impl BudgetRow {
@@ -96,26 +102,37 @@ pub fn month_progress(period: &str, today: NaiveDate) -> (i64, i64) {
 pub async fn list(pool: &SqlitePool, period: &str) -> Result<Vec<BudgetRow>> {
     let (from, to) = date::month_bounds(period)?;
 
-    let rows = sqlx::query_as::<_, (Option<i64>, i64, String, Option<String>, i64, i64, i64)>(
+    let rows = sqlx::query_as::<
+        _,
+        (Option<i64>, i64, String, Option<String>, i64, i64, i64, i64, i64, Option<String>),
+    >(
         "SELECT b.id, c.id, c.name, c.color,
                 COALESCE(b.amount_minor, 0), COALESCE(b.rollover, 0),
                 COALESCE((SELECT SUM(t.base_minor) FROM transactions t
                            WHERE t.category_id = c.id AND t.kind = 'expense'
-                             AND t.occurred_on BETWEEN ? AND ?), 0)
+                             AND t.occurred_on BETWEEN ?1 AND ?2), 0),
+                COALESCE((SELECT COUNT(*) FROM transactions t
+                           WHERE t.category_id = c.id AND t.kind = 'expense'
+                             AND t.occurred_on BETWEEN ?1 AND ?2), 0),
+                COALESCE((SELECT MAX(t.base_minor) FROM transactions t
+                           WHERE t.category_id = c.id AND t.kind = 'expense'
+                             AND t.occurred_on BETWEEN ?1 AND ?2), 0),
+                (SELECT t.description FROM transactions t
+                  WHERE t.category_id = c.id AND t.kind = 'expense'
+                    AND t.occurred_on BETWEEN ?1 AND ?2
+                  ORDER BY t.base_minor DESC LIMIT 1)
            FROM categories c
-           LEFT JOIN budgets b ON b.category_id = c.id AND b.period = ?
+           LEFT JOIN budgets b ON b.category_id = c.id AND b.period = ?3
           WHERE c.kind = 'expense'
             AND (b.id IS NOT NULL OR EXISTS (
                   SELECT 1 FROM transactions t
                    WHERE t.category_id = c.id AND t.kind = 'expense'
-                     AND t.occurred_on BETWEEN ? AND ?))
+                     AND t.occurred_on BETWEEN ?1 AND ?2))
           ORDER BY b.id IS NULL, c.name COLLATE NOCASE",
     )
     .bind(&from)
     .bind(&to)
     .bind(period)
-    .bind(&from)
-    .bind(&to)
     .fetch_all(pool)
     .await?;
 
@@ -132,6 +149,9 @@ pub async fn list(pool: &SqlitePool, period: &str) -> Result<Vec<BudgetRow>> {
             rollover_minor,
             rollover,
             spent_minor: r.6,
+            txn_count: r.7,
+            biggest_minor: r.8,
+            biggest_name: r.9.unwrap_or_default(),
         });
     }
     Ok(out)
@@ -265,6 +285,100 @@ pub async fn discipline(pool: &SqlitePool, months: u32, today: NaiveDate) -> Res
     Ok(out)
 }
 
+/// One envelope's spending across several months.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EnvelopeHistory {
+    pub category_id: i64,
+    pub name: String,
+    /// Spending per period, in the same order as the periods returned alongside.
+    /// `None` for a month the category was not budgeted in — an empty cell, not
+    /// a zero, because "no envelope" and "spent nothing" are not the same claim.
+    pub spent: Vec<Option<i64>>,
+    /// Mean of `spent` minus mean of the envelope, over the months that had one.
+    /// Positive means habitually over.
+    pub avg_delta_minor: i64,
+}
+
+/// The envelope-by-month grid, newest column last.
+///
+/// Returns the periods alongside the rows so the caller does not have to
+/// recompute the same month arithmetic to label the columns. Only categories
+/// that carried an envelope at some point in the window appear: a category that
+/// was never budgeted has nothing to be disciplined about.
+pub async fn envelope_history(
+    pool: &SqlitePool,
+    months: u32,
+    today: NaiveDate,
+) -> Result<(Vec<String>, Vec<EnvelopeHistory>)> {
+    let mut periods = Vec::new();
+    let mut cursor = today;
+    for _ in 0..months {
+        let period = date::ym(cursor);
+        let (from, _) = date::month_bounds(&period)?;
+        periods.push(period);
+        let first = date::parse(&from)?;
+        cursor = first.pred_opt().unwrap_or(first);
+    }
+    periods.reverse();
+    if periods.is_empty() {
+        return Ok((periods, Vec::new()));
+    }
+
+    // Every category budgeted anywhere in the window, in one query rather than
+    // one per month.
+    let marks = std::iter::repeat_n("?", periods.len()).collect::<Vec<_>>().join(", ");
+    let sql = format!(
+        "SELECT DISTINCT c.id, c.name FROM budgets b JOIN categories c ON c.id = b.category_id
+          WHERE b.period IN ({marks}) ORDER BY c.name COLLATE NOCASE"
+    );
+    let mut q = sqlx::query_as::<_, (i64, String)>(&sql);
+    for p in &periods {
+        q = q.bind(p);
+    }
+    let cats = q.fetch_all(pool).await?;
+
+    let mut out = Vec::with_capacity(cats.len());
+    for (category_id, name) in cats {
+        let mut spent = Vec::with_capacity(periods.len());
+        let mut spent_sum = 0i64;
+        let mut budget_sum = 0i64;
+        let mut counted = 0i64;
+        for period in &periods {
+            let (from, to) = date::month_bounds(period)?;
+            let budgeted: Option<i64> = sqlx::query_scalar(
+                "SELECT amount_minor FROM budgets WHERE category_id = ? AND period = ?",
+            )
+            .bind(category_id)
+            .bind(period)
+            .fetch_optional(pool)
+            .await?;
+            match budgeted {
+                None => spent.push(None),
+                Some(budget) => {
+                    let s: i64 = sqlx::query_scalar(
+                        "SELECT COALESCE(SUM(base_minor), 0) FROM transactions
+                          WHERE category_id = ? AND kind = 'expense'
+                            AND occurred_on BETWEEN ? AND ?",
+                    )
+                    .bind(category_id)
+                    .bind(&from)
+                    .bind(&to)
+                    .fetch_one(pool)
+                    .await?;
+                    spent.push(Some(s));
+                    spent_sum += s;
+                    budget_sum += budget;
+                    counted += 1;
+                }
+            }
+        }
+        let avg_delta_minor =
+            if counted > 0 { (spent_sum - budget_sum) / counted } else { 0 };
+        out.push(EnvelopeHistory { category_id, name, spent, avg_delta_minor });
+    }
+    Ok((periods, out))
+}
+
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Allocation {
     pub income_minor: i64,
@@ -390,6 +504,9 @@ mod tests {
             rollover_minor: 0,
             rollover: false,
             spent_minor: 300_000,
+            txn_count: 0,
+            biggest_minor: 0,
+            biggest_name: String::new(),
         };
         // ₹3,000 spent by the 10th of a 31-day month projects to ₹9,300.
         assert_eq!(row.projected_minor(10, 31), 930_000);
@@ -412,6 +529,9 @@ mod tests {
             rollover_minor: 0,
             rollover: false,
             spent_minor: 100_000,
+            txn_count: 0,
+            biggest_minor: 0,
+            biggest_name: String::new(),
         };
         assert_eq!(row.used_pct(), 100);
         assert!(row.over_budget());

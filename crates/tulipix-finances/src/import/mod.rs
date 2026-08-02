@@ -37,6 +37,9 @@ pub struct Preview {
     pub date_format: Option<DateFormat>,
     pub currency: String,
     pub kind: FileKind,
+    /// What the file says the account stood at after its latest row, when it
+    /// carries a balance column. Checked against the ledger after posting.
+    pub closing_balance_minor: Option<i64>,
 }
 
 impl Preview {
@@ -197,6 +200,10 @@ pub fn preview(
                 date_format: Some(DateFormat::Iso),
                 currency,
                 kind: FileKind::Ofx,
+                // OFX carries `<LEDGERBAL>`, but not every exporter writes it and
+                // the ones that do disagree about whether it is as-of the file or
+                // as-of the request. Left unread rather than half-trusted.
+                closing_balance_minor: None,
             })
         }
         // A PDF or a spreadsheet has already been converted to CSV text by the time
@@ -222,6 +229,8 @@ pub fn preview(
                 Some(f) => csv::parse(text, &map, f, account_currency)?,
                 None => (Vec::new(), 0),
             };
+            let closing_balance_minor =
+                fmt.and_then(|f| csv::closing_balance(text, &map, f, account_currency));
             Ok(Preview {
                 rows,
                 unreadable,
@@ -229,6 +238,7 @@ pub fn preview(
                 date_format: fmt,
                 currency: account_currency.to_uppercase(),
                 kind: FileKind::Csv,
+                closing_balance_minor,
             })
         }
     }
@@ -239,7 +249,21 @@ pub struct Ingested {
     pub added: usize,
     /// Rows the dedup index already had. A re-import is all of them.
     pub duplicates: usize,
+    /// New rows that a past posting of the same merchant could categorise.
+    pub categorised: usize,
+    /// New rows still sitting with no category, waiting for the user.
+    pub uncategorised: usize,
+    /// Open obligations closed out by a row in this file.
+    pub matched_bills: usize,
+    /// The file's closing balance against the ledger's, once everything is
+    /// posted. `None` when the file had no balance column to check.
+    pub balance_gap_minor: Option<i64>,
 }
+
+/// How far apart a bill's due date and a posting may be and still be the same
+/// event. A direct debit clears a day or two either side of its nominal date;
+/// beyond a week it is next month's bill, not this one's.
+const BILL_MATCH_DAYS: i64 = 7;
 
 /// Post a previewed file into one account.
 ///
@@ -255,6 +279,32 @@ pub async fn ingest(pool: &SqlitePool, account_id: i64, p: &Preview) -> Result<I
     let rate = crate::fx::rate_for(pool, &p.currency, &base).await?;
     let mut out = Ingested::default();
 
+    // Open obligations anywhere near this file's span, so a posted row can close
+    // the bill it paid. Loaded once: matching inside the row loop would be a
+    // query per row of a 200-row statement.
+    let mut open_bills = match p.span() {
+        Some((from, to)) => {
+            let today = crate::date::today();
+            let widen = |d: &str, days: i64| {
+                crate::date::parse(d)
+                    .map(|d| crate::date::iso(d + chrono::Duration::days(days)))
+                    .unwrap_or_else(|_| d.to_string())
+            };
+            crate::obligations::between(
+                pool,
+                &widen(&from, -BILL_MATCH_DAYS),
+                &widen(&to, BILL_MATCH_DAYS),
+                today,
+            )
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|o| o.status.is_open())
+            .collect()
+        }
+        None => Vec::new(),
+    };
+
     for row in &p.rows {
         let mut t = NewTxn::expense(
             account_id,
@@ -266,14 +316,85 @@ pub async fn ingest(pool: &SqlitePool, account_id: i64, p: &Preview) -> Result<I
         t.kind = if row.is_credit { TxnKind::Income } else { TxnKind::Expense };
         t.rate_micro = rate;
         t.source = p.kind.as_str().to_string();
-        let (_, is_new) = txn::post_reporting(pool, &t).await?;
-        if is_new {
-            out.added += 1;
-        } else {
+        // What this merchant was filed under last time. A statement narration is
+        // the same string month after month, so one past decision categorises
+        // every future row of it — which is the whole of "auto-categorised by
+        // rule" without a rules table to maintain and get out of date.
+        t.category_id = learned_category(pool, &row.description).await;
+        let (txn_id, is_new) = txn::post_reporting(pool, &t).await?;
+        if !is_new {
             out.duplicates += 1;
+            continue;
+        }
+        out.added += 1;
+        if t.category_id.is_some() {
+            out.categorised += 1;
+        } else {
+            out.uncategorised += 1;
+        }
+
+        // A debit that matches an open bill on amount and lands near its due
+        // date is that bill being paid. Marked off rather than left to be
+        // confirmed by hand, and only on an exact amount — a near miss is a
+        // different payment, and closing the wrong obligation is worse than
+        // leaving a real one open.
+        if !row.is_credit
+            && let Some(i) = open_bills.iter().position(|o| {
+                o.shown_minor() == Some(row.amount_minor)
+                    && days_apart(&o.due_on, &row.occurred_on) <= BILL_MATCH_DAYS
+            })
+        {
+            let o = open_bills.remove(i);
+            if crate::obligations::attach(pool, o.id, txn_id, row.amount_minor, &row.occurred_on)
+                .await
+                .is_ok()
+            {
+                out.matched_bills += 1;
+            }
         }
     }
+
+    if let Some(stated) = p.closing_balance_minor {
+        let derived = crate::accounts::balance(pool, account_id).await.unwrap_or(0);
+        out.balance_gap_minor = Some(stated - derived);
+    }
     Ok(out)
+}
+
+/// Whole days between two ISO dates, unsigned. `i64::MAX` when either is junk,
+/// so an unparseable date can never look like a match.
+fn days_apart(a: &str, b: &str) -> i64 {
+    match (crate::date::parse(a), crate::date::parse(b)) {
+        (Ok(a), Ok(b)) => (b - a).num_days().abs(),
+        _ => i64::MAX,
+    }
+}
+
+/// The category this merchant was last filed under, if it ever was.
+///
+/// Matches on `merchant_norm`, the same normalised form the dedup index uses, so
+/// `NETFLIX 4471` and `NETFLIX*4471` are one merchant. Takes the most recent
+/// decision rather than the most common one: a re-categorisation is the user
+/// correcting the app, and the correction has to win.
+///
+/// ponytail: one query per row, so a 200-row statement is 200 lookups. Fine at
+/// statement size and on the indexed `merchant_norm`; pre-load the distinct
+/// merchants into a map first if a multi-year export ever gets slow.
+async fn learned_category(pool: &SqlitePool, description: &str) -> Option<i64> {
+    let norm = txn::normalise_merchant(description);
+    if norm.is_empty() {
+        return None;
+    }
+    sqlx::query_scalar(
+        "SELECT category_id FROM transactions
+          WHERE merchant_norm = ? AND category_id IS NOT NULL
+          ORDER BY occurred_on DESC, id DESC LIMIT 1",
+    )
+    .bind(&norm)
+    .fetch_optional(pool)
+    .await
+    .ok()
+    .flatten()
 }
 
 // ── per-bank presets ────────────────────────────────────────────────────────

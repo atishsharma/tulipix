@@ -21,6 +21,10 @@ component NavRow inherits Rectangle {
     // Only Finances sets it today; it lives on NavRow rather than on that one
     // row so a second section wanting a count does not need a second mechanism.
     in property <int> badge: 0;
+    // Whether that count contains something already late. An overdue bill and a
+    // bill due on Friday are not the same news, and one dot colour for both
+    // teaches the user to ignore the colour.
+    in property <bool> badge-alarm: false;
     callback clicked();
     property <length> row-h: root.collapsed ? 46px : 58px;
     min-height: root.row-h; max-height: root.row-h;
@@ -125,15 +129,15 @@ component NavRow inherits Rectangle {
     // the top-right. Placed by hand rather than in the layout — in the layout it
     // was a count pill wide enough to push the row's content past the border and
     // spill outside it, and the corner is where a badge is looked for anyway.
-    // `error` rather than the section accent: this is the one thing on the row
-    // meant to interrupt, and the lime Finances accent deliberately does not
-    // read as an alarm.
+    // `error` when something is actually late — the one thing on the row meant
+    // to interrupt. Otherwise the section's own accent, which says "there is
+    // something here" without claiming anything is wrong.
     if root.badge > 0: Rectangle {
         x: parent.width - self.width - (root.collapsed ? 9px : 8px);
         y: root.collapsed ? 9px : 8px;
         width: 9px; height: 9px;
         border-radius: 4.5px;
-        background: Theme.error;
+        background: root.badge-alarm ? Theme.error : root.accent;
         // A ring in the shell colour on the rail, where the dot sits over the
         // glyph tile and needs cutting out of it. Expanded it sits on the row's
         // own empty corner, so the ring would only be a second outline.
@@ -317,6 +321,7 @@ export component Sidebar inherits Rectangle {
     // Bills and subscriptions coming due inside the alert lead. Set by
     // tulipix-sec-finances on every tick.
     in property <int> finances-badge: 0;
+    in property <bool> finances-badge-overdue: false;
     callback section-changed(string);
     callback user-action(string);
     callback theme-cycled();   // fired after the theme toggle cycles light/dark/OLED (persist)
@@ -407,6 +412,7 @@ export component Sidebar inherits Rectangle {
         NavRow { icon-img: Icons.wallet; label: "Finances"; accent: Theme.sec-finances; collapsed: root.collapsed;
             active: root.active-section == "finances";
             badge: root.finances-badge;
+            badge-alarm: root.finances-badge-overdue;
             clicked => { root.active-section = "finances"; root.section-changed("finances"); }
         }
 

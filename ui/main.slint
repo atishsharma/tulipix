@@ -40,7 +40,8 @@ import { GenesisPage, GenesisRow, GenesisTopic, GenesisSearch, GenesisDetails } 
 import { FinancesPage, FinStat, FinAccountRow, FinTxnRow, FinRecurRow, FinObligationRow,
           FinDueRow, FinBudgetRow, FinLoanRow, FinInstalment, FinCatSlice, FinMonthBar,
           FinCalDay, FinFlag, FinDiscipline, FinRate, FinPrice, FinProposal, FinImportRow,
-          FinField, FinCatTrend } from "page_finances.slint";
+          FinField, FinCatTrend, FinKv, FinCalMonth, FinEnvelopeHistory,
+          FinSavingsMonth } from "page_finances.slint";
 import { LiveTvPage, LiveChannel, LivePlaylist } from "page_livetv.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
@@ -1567,16 +1568,22 @@ callback cloud-go-home();
     in property <bool> fin-running-shown: false;
     in property <string> fin-txn-spent: "";
     in property <string> fin-txn-income: "";
+    in property <[string]> fin-txn-periods: [];
+    in-out property <string> fin-txn-period: "Every month";
+    in property <[string]> fin-source-names: [];
+    in-out property <string> fin-txn-source: "Any source";
     in property <[FinObligationRow]> fin-bills: [];
     in property <[FinRecurRow]> fin-bill-templates: [];
     in property <[FinRecurRow]> fin-subs: [];
     in property <string> fin-subs-yearly: "";
     in property <[FinDueRow]> fin-dues: [];
+    in property <[FinDueRow]> fin-dues-settled: [];
     in property <string> fin-owed-to-me: "";
     in property <string> fin-i-owe: "";
     in property <[FinAccountRow]> fin-accounts: [];
     in property <string> fin-liquid-total: "";
     in property <string> fin-debt-total: "";
+    in property <[FinKv]> fin-position: [];
     in property <[FinLoanRow]> fin-loans: [];
     in property <[FinBudgetRow]> fin-budgets: [];
     in property <string> fin-budget-period: "";
@@ -1584,14 +1591,31 @@ callback cloud-go-home();
     in property <string> fin-budget-allocated: "";
     in property <string> fin-budget-unallocated: "";
     in property <int> fin-budget-allocated-pct: 0;
+    in property <[FinKv]> fin-fixed-items: [];
+    in property <string> fin-fixed-total: "";
+    in property <string> fin-fixed-share: "";
     in property <[FinDiscipline]> fin-discipline: [];
+    in property <[string]> fin-discipline-months: [];
+    in property <[FinEnvelopeHistory]> fin-envelope-history: [];
     in property <[FinCalDay]> fin-cal-days: [];
     in property <string> fin-cal-label: "";
     in property <[FinObligationRow]> fin-cal-agenda: [];
     in property <string> fin-cal-low-point: "";
+    in-out property <string> fin-cal-view: "month";
+    in property <[FinCalMonth]> fin-cal-months: [];
+    in property <[FinKv]> fin-cal-flow: [];
+    in property <[FinObligationRow]> fin-cal-heaviest-items: [];
     in property <[FinFlag]> fin-flags: [];
+    in property <[FinSavingsMonth]> fin-savings: [];
+    in property <[FinKv]> fin-savings-summary: [];
+    in property <[FinKv]> fin-projection: [];
+    in property <string> fin-projection-note: "";
     // Bills and subscriptions due inside the alert lead. Drives the sidebar badge.
     in property <int> fin-badge: 0;
+    // …and whether any of that count is already late, which decides its colour.
+    in property <bool> fin-badge-overdue: false;
+    // Nothing entered yet. Drives the first-run door on the Overview.
+    in property <bool> fin-empty: false;
     // Sample data is still on screen. Drives the pulsing header warning.
     in property <bool> fin-demo: false;
     // A rate fetch is in flight, from the Refresh button in the rates sheet.
@@ -1611,6 +1635,12 @@ callback cloud-go-home();
     in property <int> fin-subs-active: 0;
     in property <int> fin-subs-paused: 0;
     in property <int> fin-subs-cancelled: 0;
+    in property <[string]> fin-subs-categories: [];
+    in-out property <string> fin-subs-category: "Every category";
+    in property <[string]> fin-subs-currencies: [];
+    in-out property <string> fin-subs-currency: "Every currency";
+    // Which month the Bills table is showing.
+    in property <string> fin-bills-period: "";
     // Dues tab.
     in property <[FinStat]> fin-due-stats: [];
     in-out property <string> fin-dues-filter: "all";
@@ -1686,6 +1716,11 @@ callback cloud-go-home();
     callback fin-set-bills-filter(string);
     callback fin-set-subs-filter(string);
     callback fin-set-dues-filter(string);
+    callback fin-subs-filter-changed();
+    callback fin-bills-step(int);
+    callback fin-set-cal-view(string);
+    callback fin-account-recount(int);
+    callback fin-account-pay-card(int);
     callback fin-find-missing();
     callback fin-submit-again();
     callback fin-refresh();
@@ -2894,6 +2929,7 @@ callback cloud-go-home();
             logo-choice: root.app-logo-choice;
             festival: root.festival-logo;
             finances-badge: root.fin-badge;
+            finances-badge-overdue: root.fin-badge-overdue;
             user-action(a) => { root.user-action(a); }
             section-changed(s) => { root.section-changed(s); }
             theme-cycled => { root.music-theme-changed(); }
@@ -3857,6 +3893,10 @@ callback cloud-go-home();
                 running-shown: root.fin-running-shown;
                 txn-spent: root.fin-txn-spent;
                 txn-income: root.fin-txn-income;
+                txn-periods: root.fin-txn-periods;
+                txn-period <=> root.fin-txn-period;
+                source-names: root.fin-source-names;
+                txn-source <=> root.fin-txn-source;
                 bills: root.fin-bills;
                 bill-templates: root.fin-bill-templates;
                 subs: root.fin-subs;
@@ -3864,9 +3904,11 @@ callback cloud-go-home();
                 dues: root.fin-dues;
                 owed-to-me: root.fin-owed-to-me;
                 i-owe: root.fin-i-owe;
+                dues-settled: root.fin-dues-settled;
                 accounts: root.fin-accounts;
                 liquid-total: root.fin-liquid-total;
                 debt-total: root.fin-debt-total;
+                position: root.fin-position;
                 loans: root.fin-loans;
                 budgets: root.fin-budgets;
                 budget-period: root.fin-budget-period;
@@ -3874,13 +3916,28 @@ callback cloud-go-home();
                 budget-allocated: root.fin-budget-allocated;
                 budget-unallocated: root.fin-budget-unallocated;
                 budget-allocated-pct: root.fin-budget-allocated-pct;
+                fixed-items: root.fin-fixed-items;
+                fixed-total: root.fin-fixed-total;
+                fixed-share: root.fin-fixed-share;
                 discipline: root.fin-discipline;
+                discipline-months: root.fin-discipline-months;
+                envelope-history: root.fin-envelope-history;
                 cal-days: root.fin-cal-days;
                 cal-label: root.fin-cal-label;
                 cal-agenda: root.fin-cal-agenda;
                 cal-low-point: root.fin-cal-low-point;
+                cal-view <=> root.fin-cal-view;
+                cal-months: root.fin-cal-months;
+                cal-flow: root.fin-cal-flow;
+                cal-heaviest-items: root.fin-cal-heaviest-items;
                 flags: root.fin-flags;
+                savings: root.fin-savings;
+                savings-summary: root.fin-savings-summary;
+                projection: root.fin-projection;
+                projection-note: root.fin-projection-note;
                 badge: root.fin-badge;
+                badge-overdue: root.fin-badge-overdue;
+                empty: root.fin-empty;
                 demo: root.fin-demo;
                 rates-busy: root.fin-rates-busy;
                 bill-stats: root.fin-bill-stats;
@@ -3897,7 +3954,17 @@ callback cloud-go-home();
                 subs-active: root.fin-subs-active;
                 subs-paused: root.fin-subs-paused;
                 subs-cancelled: root.fin-subs-cancelled;
+                subs-categories: root.fin-subs-categories;
+                subs-category <=> root.fin-subs-category;
+                subs-currencies: root.fin-subs-currencies;
+                subs-currency <=> root.fin-subs-currency;
+                bills-period: root.fin-bills-period;
                 set-subs-filter(f) => { root.fin-set-subs-filter(f); }
+                subs-filter-changed() => { root.fin-subs-filter-changed(); }
+                bills-step(d) => { root.fin-bills-step(d); }
+                set-cal-view(v) => { root.fin-set-cal-view(v); }
+                account-recount(i) => { root.fin-account-recount(i); }
+                account-pay-card(i) => { root.fin-account-pay-card(i); }
                 due-stats: root.fin-due-stats;
                 dues-filter <=> root.fin-dues-filter;
                 dues-all: root.fin-dues-all;

@@ -30,6 +30,14 @@ pub struct ColumnMap {
     pub debit: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub credit: Option<String>,
+    /// The running-balance column, when the file has one.
+    ///
+    /// Not a transaction field: it is what the bank says the account stood at
+    /// after each row, which lets the import check its own work against the
+    /// ledger in the same pass. A missing entry then surfaces on import day
+    /// rather than at month end.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub balance: Option<String>,
 }
 
 impl ColumnMap {
@@ -83,6 +91,12 @@ pub fn guess(headers: &[String]) -> ColumnMap {
     } else {
         m.amount = find(headers, &["amount", "value"]);
     }
+    // Looked for after the amount columns are settled, and never allowed to be
+    // one of them: "Closing Balance" contains "balance" but a file whose only
+    // numeric column is a running total has no amounts at all, and reading the
+    // balance as an amount would post the account's whole worth as one expense.
+    m.balance = find(headers, &["closing balance", "running balance", "balance"])
+        .filter(|b| Some(b) != m.amount.as_ref());
     m
 }
 
@@ -229,6 +243,45 @@ pub fn parse(text: &str, map: &ColumnMap, fmt: DateFormat, currency: &str) -> Re
     Ok((rows, skipped))
 }
 
+/// What the file says the account stood at after its last dated row.
+///
+/// A second pass rather than a field on `RawRow`: the balance belongs to the
+/// statement, not to any one transaction, and threading it through every row so
+/// one of them could be picked back out would put a number on 183 rows that is
+/// only ever read from one.
+///
+/// Rows are compared by date, not by file order — plenty of exports are sorted
+/// oldest-first and plenty are not, and taking "the last line" would pick the
+/// wrong balance for half of them.
+pub fn closing_balance(
+    text: &str,
+    map: &ColumnMap,
+    fmt: DateFormat,
+    currency: &str,
+) -> Option<i64> {
+    let name = map.balance.as_ref()?;
+    let mut rdr = reader(text);
+    let head: Vec<String> = rdr.headers().ok()?.iter().map(|h| h.trim().to_string()).collect();
+    let i_bal = head.iter().position(|h| h.eq_ignore_ascii_case(name))?;
+    let i_date = head.iter().position(|h| h.eq_ignore_ascii_case(&map.date))?;
+
+    let mut best: Option<(String, i64)> = None;
+    for rec in rdr.records().flatten() {
+        let Some(raw_date) = cell(&rec, Some(i_date)) else { continue };
+        let Ok(on) = dates::parse(raw_date, fmt) else { continue };
+        let Some(raw_bal) = cell(&rec, Some(i_bal)) else { continue };
+        // A balance can legitimately be negative (an overdraft), so the sign is
+        // kept rather than taken as a direction the way an amount's is.
+        let Ok(balance) = money::parse_amount(raw_bal, currency) else { continue };
+        let on = crate::date::iso(on);
+        match &best {
+            Some((seen, _)) if *seen >= on => {}
+            _ => best = Some((on, balance)),
+        }
+    }
+    best.map(|(_, b)| b)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -310,6 +363,27 @@ Transaction Date,Description,Amount
         let (rows, skipped) = parse(HDFC, &m, DateFormat::DayFirst, "INR").unwrap();
         assert_eq!(rows.len(), 3);
         assert_eq!(skipped, 1, "the closing-balance line is not a transaction");
+    }
+
+    #[test]
+    fn the_balance_column_is_found_but_never_read_as_an_amount() {
+        let m = guess(&headers(HDFC).unwrap());
+        assert_eq!(m.balance.as_deref(), Some("Closing Balance"));
+        assert_eq!(m.debit.as_deref(), Some("Withdrawal Amt."));
+        assert_eq!(m.amount, None, "a debit/credit pair must not also claim an amount");
+
+        // The latest *dated* row's balance, not the last line in the file: the
+        // trailing summary has no date, and plenty of exports are sorted
+        // oldest-first while plenty are not.
+        let closing = closing_balance(HDFC, &m, DateFormat::DayFirst, "INR");
+        assert_eq!(closing, Some(985_000), "26 July is the latest dated row");
+    }
+
+    #[test]
+    fn a_file_with_no_balance_column_reports_none_rather_than_guessing() {
+        let m = guess(&headers(US).unwrap());
+        assert_eq!(m.balance, None);
+        assert_eq!(closing_balance(US, &m, DateFormat::MonthFirst, "USD"), None);
     }
 
     #[test]

@@ -660,6 +660,29 @@ pub async fn spent_between(pool: &SqlitePool, from: &str, to: &str) -> Result<i6
     .await?)
 }
 
+/// Every month the ledger has a posting in, newest first.
+///
+/// For the Transactions tab's month filter. Built from what is actually there
+/// rather than from a range: a ledger with a gap should not offer to filter to
+/// an empty month.
+pub async fn periods(pool: &SqlitePool) -> Result<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT DISTINCT substr(occurred_on, 1, 7) AS period FROM transactions
+          ORDER BY period DESC",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Every distinct `source` value present, for the same reason.
+pub async fn sources(pool: &SqlitePool) -> Result<Vec<String>> {
+    Ok(sqlx::query_scalar(
+        "SELECT DISTINCT source FROM transactions WHERE source <> '' ORDER BY source",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
 /// Total income in a date range.
 pub async fn income_between(pool: &SqlitePool, from: &str, to: &str) -> Result<i64> {
     Ok(sqlx::query_scalar(

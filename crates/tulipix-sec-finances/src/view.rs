@@ -17,13 +17,13 @@
 use chrono::{Datelike, NaiveDate};
 use slint::{ModelRc, SharedString, VecModel};
 use tulipix_finances::{
-    accounts::AccountRow,
+    accounts::{AccountRow, Detail as AccountDetail},
     budgets::{self, BudgetRow, MonthDiscipline},
     date,
     dues::{self, Due},
     fx::Rate,
     import::{csv::RawRow, detect::Proposal},
-    insights::{Flag, Severity, Snapshot},
+    insights::{Flag, MonthSavings, Projection, Severity, Snapshot},
     loans::{Instalment, LoanRow},
     money,
     obligations::{Obligation, Status as ObStatus},
@@ -893,7 +893,10 @@ pub fn bill_stats(
     ]
 }
 
-pub fn recurrences(rows: &[RecurRow], base: &str) -> Vec<FinRecurRow> {
+/// `unused` is the set of names Insights found no playback for, and how long
+/// ago; passed in rather than looked up so the two tabs cannot disagree about
+/// what "unused" means.
+pub fn recurrences(rows: &[RecurRow], base: &str, unused: &[(String, i64)]) -> Vec<FinRecurRow> {
     let today = date::today();
     rows.iter()
         .map(|r| FinRecurRow {
@@ -931,8 +934,36 @@ pub fn recurrences(rows: &[RecurRow], base: &str) -> Vec<FinRecurRow> {
             auto_post: r.auto_post,
             last_paid: opt(r.last_paid_on.clone()),
             cat_hue: category_hue(0, r.category_name.as_deref().unwrap_or(""), None),
+            unused_days: unused
+                .iter()
+                .find(|(name, _)| *name == r.name)
+                .map(|(_, days)| *days as i32)
+                .unwrap_or(0),
+            // Only when it differs from base. Printing "₹649 (₹649)" beside every
+            // domestic row to make one foreign row consistent is noise.
+            original: s(match r.amount_minor {
+                Some(a) if r.currency != base => money::format_minor(a, &r.currency),
+                _ => String::new(),
+            }),
         })
         .collect()
+}
+
+/// Distinct category names across a set of recurrences, for the filter dropdown.
+pub fn sub_categories(rows: &[RecurRow]) -> Vec<String> {
+    let mut out: Vec<String> =
+        rows.iter().filter_map(|r| r.category_name.clone()).collect();
+    out.sort_unstable();
+    out.dedup();
+    out
+}
+
+/// Distinct currencies, same idea.
+pub fn sub_currencies(rows: &[RecurRow]) -> Vec<String> {
+    let mut out: Vec<String> = rows.iter().map(|r| r.currency.clone()).collect();
+    out.sort_unstable();
+    out.dedup();
+    out
 }
 
 /// How many subscriptions are in each status.
@@ -956,13 +987,30 @@ pub fn sub_counts(rows: &[RecurRow]) -> SubCounts {
     c
 }
 
-pub fn filter_subs(rows: &[RecurRow], filter: &str) -> Vec<RecurRow> {
+/// `category` and `currency` are the dropdown labels; the "every" sentinels mean
+/// no narrowing. Matched by name rather than id because that is what a Slint
+/// `ComboBox` can carry, and a name that no longer exists simply matches nothing
+/// — an empty table, not a panic.
+pub fn filter_subs(
+    rows: &[RecurRow],
+    filter: &str,
+    category: Option<&str>,
+    currency: Option<&str>,
+) -> Vec<RecurRow> {
     rows.iter()
         .filter(|r| match filter {
             "active" => matches!(r.status, recur::Status::Active),
             "paused" => matches!(r.status, recur::Status::Paused),
             "cancelled" => matches!(r.status, recur::Status::Cancelled),
             _ => true,
+        })
+        .filter(|r| match category {
+            Some(c) => r.category_name.as_deref() == Some(c),
+            None => true,
+        })
+        .filter(|r| match currency {
+            Some(c) => r.currency == c,
+            None => true,
         })
         .cloned()
         .collect()
@@ -1088,27 +1136,129 @@ pub fn dues(rows: &[Due]) -> Vec<FinDueRow> {
 
 // ── accounts and loans ──────────────────────────────────────────────────────
 
-pub fn accounts(rows: &[AccountRow], base: &str) -> Vec<FinAccountRow> {
+pub fn accounts(rows: &[AccountRow], details: &[AccountDetail], base: &str) -> Vec<FinAccountRow> {
     rows.iter()
-        .map(|a| FinAccountRow {
-            id: a.id as i32,
-            name: s(&a.name),
-            kind: s(a.kind.as_str()),
-            // Foreign-currency accounts still report in base: balances are summed
-            // from `base_minor`, so labelling one with its own symbol would claim
-            // a precision the derivation does not have.
-            balance: s(money::format_minor(a.balance_minor, base)),
-            sub: s(match a.utilisation_pct() {
-                Some(pct) => format!("{} · {pct}% of limit", kind_label(a.kind.as_str())),
-                None if a.currency != base => format!("{} · {}", kind_label(a.kind.as_str()), a.currency),
-                None => kind_label(a.kind.as_str()).to_string(),
-            }),
-            util_pct: a.utilisation_pct().unwrap_or(0) as i32,
-            negative: a.balance_minor < 0,
-            closed: a.closed,
-            txn_count: a.txn_count as i32,
+        .map(|a| {
+            let d = details.iter().find(|d| d.account_id == a.id);
+            let f = |m: i64| money::format_minor(m, base);
+            let drift = d.and_then(|d| d.drift_minor).filter(|m| *m != 0);
+            FinAccountRow {
+                id: a.id as i32,
+                name: s(&a.name),
+                kind: s(a.kind.as_str()),
+                // Foreign-currency accounts still report in base: balances are summed
+                // from `base_minor`, so labelling one with its own symbol would claim
+                // a precision the derivation does not have.
+                balance: s(money::format_minor(a.balance_minor, base)),
+                sub: s(match a.utilisation_pct() {
+                    Some(pct) => format!("{} · {pct}% of limit", kind_label(a.kind.as_str())),
+                    None if a.currency != base => {
+                        format!("{} · {}", kind_label(a.kind.as_str()), a.currency)
+                    }
+                    None => kind_label(a.kind.as_str()).to_string(),
+                }),
+                util_pct: a.utilisation_pct().unwrap_or(0) as i32,
+                negative: a.balance_minor < 0,
+                closed: a.closed,
+                txn_count: a.txn_count as i32,
+                // "Never checked" rather than a blank: an unverified balance is a
+                // fact about the account, and the blank reads as "fine".
+                reconciled: s(match (&a.reconciled_on, a.kind.as_str()) {
+                    (_, "virtual") | (_, "loan") => String::new(),
+                    (Some(on), _) => format!("Checked {}", day_month(on)),
+                    (None, _) => "Never checked".to_string(),
+                }),
+                in_month: s(d.filter(|d| d.in_month_minor > 0).map(|d| f(d.in_month_minor)).unwrap_or_default()),
+                out_month: s(d.filter(|d| d.out_month_minor > 0).map(|d| f(d.out_month_minor)).unwrap_or_default()),
+                limit_note: s(match (a.credit_limit_minor, a.utilisation_pct()) {
+                    (Some(limit), Some(pct)) => format!("{pct}% of a {} limit", f(limit)),
+                    _ => String::new(),
+                }),
+                statement: s(d.and_then(|d| d.statement_on.as_deref()).map(day_month).unwrap_or_default()),
+                minimum_due: s(d.and_then(|d| d.minimum_due_minor).map(f).unwrap_or_default()),
+                drift: s(drift.map(|m| f(m.abs())).unwrap_or_default()),
+                // Money missing is the case worth colouring. Finding more cash
+                // than the ledger expected is a nice surprise, not a problem.
+                drift_bad: drift.is_some_and(|m| m < 0),
+                topped_from: s(d.and_then(|d| d.topped_from.clone()).unwrap_or_default()),
+                last_topup: s(match d {
+                    Some(d) => match (d.last_topup_minor, &d.last_topup_on) {
+                        (Some(m), Some(on)) => format!("{} on {}", f(m), day_month(on)),
+                        _ => String::new(),
+                    },
+                    None => String::new(),
+                }),
+            }
         })
         .collect()
+}
+
+/// `2026-07-21` → `21 Jul`. Returns the input unchanged if it is not a date,
+/// so a malformed value shows itself rather than becoming an empty cell.
+fn day_month(iso: &str) -> String {
+    match date::parse(iso) {
+        Ok(d) => format!("{} {}", d.day(), MONTHS_SHORT[(d.month0()) as usize]),
+        Err(_) => iso.to_string(),
+    }
+}
+
+const MONTHS_SHORT: [&str; 12] = [
+    "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
+];
+
+/// Bank, card and cash all in one walk, in the order the design states them.
+///
+/// Deliberately stops at liquid and debt. There is no net-worth row here or
+/// anywhere: it would need the market value of things the app can only ask the
+/// user to guess at, and a guess printed beside two real figures reads as a
+/// third real figure.
+pub fn position(
+    accounts: &[AccountRow],
+    dues_net_minor: i64,
+    base: &str,
+) -> Vec<FinKv> {
+    let f = |m: i64| money::format_minor(m, base);
+    let sum = |pred: fn(&AccountRow) -> bool| -> i64 {
+        accounts.iter().filter(|a| !a.closed).filter(|a| pred(a)).map(|a| a.balance_minor).sum()
+    };
+    let cash = sum(|a| a.kind.is_liquid());
+    let cards: i64 = sum(|a| a.kind.as_str() == "card");
+    let loans: i64 = sum(|a| a.kind.as_str() == "loan");
+
+    let mut out = vec![
+        FinKv { label: s("Bank, cash and wallets"), value: s(f(cash)), tone: s("flat"), strong: false },
+    ];
+    if cards != 0 {
+        out.push(FinKv {
+            label: s("Card outstanding"),
+            value: s(f(cards)),
+            tone: s("bad"),
+            strong: false,
+        });
+    }
+    out.push(FinKv {
+        label: s("Liquid"),
+        value: s(f(cash + cards)),
+        tone: s("flat"),
+        strong: true,
+    });
+    if loans != 0 {
+        out.push(FinKv {
+            label: s("Loans outstanding"),
+            value: s(f(loans)),
+            tone: s("bad"),
+            strong: false,
+        });
+    }
+    if dues_net_minor != 0 {
+        out.push(FinKv {
+            label: s("Dues, net"),
+            value: s(f(dues_net_minor)),
+            tone: s(if dues_net_minor < 0 { "bad" } else { "ok" }),
+            strong: false,
+        });
+    }
+    out
 }
 
 fn kind_label(kind: &str) -> &'static str {
@@ -1122,22 +1272,57 @@ fn kind_label(kind: &str) -> &'static str {
     }
 }
 
-pub fn loans(rows: &[LoanRow]) -> Vec<FinLoanRow> {
+pub fn loans(rows: &[LoanRow], today: NaiveDate) -> Vec<FinLoanRow> {
     rows.iter()
-        .map(|l| FinLoanRow {
-            account_id: l.account_id as i32,
-            name: s(&l.name),
-            balance: s(money::format_minor(l.balance_minor, &l.currency)),
-            principal: s(money::format_minor(l.principal_minor, &l.currency)),
-            emi: s(money::format_minor(l.emi_minor, &l.currency)),
-            // Basis points back to a percentage: 840 → "8.4%".
-            rate: s(format!("{}.{}%", l.rate_bp / 100, (l.rate_bp % 100) / 10)),
-            progress_pct: l.progress_pct() as i32,
-            remaining_months: l.remaining_months() as i32,
-            tenure_months: l.tenure_months as i32,
-            next_due: s(&l.started_on),
+        .map(|l| {
+            // The remaining schedule, from what is outstanding now. The first
+            // row of it is the split the card shows, and the last is when the
+            // loan actually closes — both of which move as it is paid down, so
+            // neither can be read off the original terms.
+            let rest = tulipix_finances::loans::schedule(
+                l.balance_minor.max(0),
+                l.rate_bp,
+                l.remaining_months(),
+                l.emi_minor,
+                today,
+                l.emi_day,
+            );
+            let next = rest.first();
+            let interest_left: i64 = rest.iter().map(|i| i.interest_minor).sum();
+            FinLoanRow {
+                account_id: l.account_id as i32,
+                name: s(&l.name),
+                balance: s(money::format_minor(l.balance_minor, &l.currency)),
+                principal: s(money::format_minor(l.principal_minor, &l.currency)),
+                emi: s(money::format_minor(l.emi_minor, &l.currency)),
+                // Basis points back to a percentage: 840 → "8.4%".
+                rate: s(format!("{}.{}%", l.rate_bp / 100, (l.rate_bp % 100) / 10)),
+                progress_pct: l.progress_pct() as i32,
+                remaining_months: l.remaining_months() as i32,
+                tenure_months: l.tenure_months as i32,
+                next_due: s(next.map(|i| i.due_on.clone()).unwrap_or_else(|| l.started_on.clone())),
+                emi_principal: s(next
+                    .map(|i| money::format_minor(i.principal_minor, &l.currency))
+                    .unwrap_or_default()),
+                emi_interest: s(next
+                    .map(|i| money::format_minor(i.interest_minor, &l.currency))
+                    .unwrap_or_default()),
+                closes: s(rest.last().map(|i| month_year(&i.due_on)).unwrap_or_default()),
+                interest_left: s(money::format_minor(interest_left, &l.currency)),
+                // A no-cost EMI has nothing to warn about, and colouring a zero
+                // red would make the cheapest loan on the page look worst.
+                interest_free: interest_left == 0,
+            }
         })
         .collect()
+}
+
+/// `2041-03-05` → `Mar 2041`.
+fn month_year(iso: &str) -> String {
+    match date::parse(iso) {
+        Ok(d) => format!("{} {}", MONTHS_SHORT[d.month0() as usize], d.year()),
+        Err(_) => iso.to_string(),
+    }
 }
 
 pub fn schedule(rows: &[Instalment], currency: &str) -> Vec<FinInstalment> {
@@ -1184,6 +1369,130 @@ pub fn budgets(rows: &[BudgetRow], base: &str, elapsed: i64, total: i64) -> Vec<
                 String::new()
             }),
             unset: b.id.is_none(),
+            detail: s(envelope_detail(b, base)),
+            over_by: s(if b.over_budget() {
+                format!("over by {}", money::format_minor(b.spent_minor - b.allowance_minor(), base))
+            } else {
+                String::new()
+            }),
+        })
+        .collect()
+}
+
+/// "14 transactions · biggest ₹1,240 Toit".
+///
+/// The count is what separates an envelope broken by one purchase from one
+/// broken by a habit, and only one of those is worth changing the envelope over.
+fn envelope_detail(b: &BudgetRow, base: &str) -> String {
+    if b.txn_count == 0 {
+        return String::new();
+    }
+    let plural = if b.txn_count == 1 { "transaction" } else { "transactions" };
+    let mut out = format!("{} {plural}", b.txn_count);
+    // Only when one posting is a real share of the envelope. On forty even
+    // spends the largest is not the story, and naming it implies it is.
+    if b.txn_count > 1 && b.biggest_minor * 3 >= b.spent_minor {
+        out.push_str(&format!(" · biggest {}", money::format_minor(b.biggest_minor, base)));
+        if !b.biggest_name.is_empty() {
+            out.push(' ');
+            out.push_str(b.biggest_name.trim());
+        }
+    }
+    out
+}
+
+/// Everything that leaves the month whatever the user decides, itemised.
+///
+/// The design's "not budgeted" card. Shown so the page adds up: envelopes cover
+/// a quarter of a normal month, and a Budgets tab that shows only them implies
+/// the rest is discretionary too.
+pub fn fixed_items(
+    bills: &[Obligation],
+    subs: &[RecurRow],
+    base: &str,
+) -> (Vec<FinKv>, i64) {
+    let mut rows: Vec<(String, i64)> = bills
+        .iter()
+        .filter(|o| !matches!(o.status, ObStatus::Skipped))
+        .filter_map(|o| o.shown_minor().map(|m| (o.name.clone(), m)))
+        .collect();
+
+    // Subscriptions as one line rather than eleven: individually they are noise
+    // next to an EMI, and together they are one of the larger numbers here.
+    let subs_monthly: i64 = subs
+        .iter()
+        .filter(|r| r.status == recur::Status::Active)
+        .map(|r| r.yearly_minor / 12)
+        .sum();
+    if subs_monthly > 0 {
+        rows.push((format!("Subscriptions · {}", subs.len()), subs_monthly));
+    }
+    rows.sort_by_key(|(_, m)| std::cmp::Reverse(*m));
+    let total: i64 = rows.iter().map(|(_, m)| m).sum();
+
+    (
+        rows.into_iter()
+            .map(|(label, m)| FinKv {
+                label: s(label),
+                value: s(money::format_minor(m, base)),
+                tone: s("flat"),
+                strong: false,
+            })
+            .collect(),
+        total,
+    )
+}
+
+/// The envelope-by-month grid.
+///
+/// A month the envelope did not exist in is an empty cell, never a zero: "no
+/// envelope" and "spent nothing" are different claims and the grid must not
+/// merge them into a run of good months.
+/// The column labels come from [`period_labels`] on the same periods; this only
+/// builds the cells, which are already in that order.
+pub fn envelope_history(
+    rows: &[budgets::EnvelopeHistory],
+    base: &str,
+) -> Vec<FinEnvelopeHistory> {
+    rows.iter()
+        .map(|h| FinEnvelopeHistory {
+            name: s(&h.name),
+            cells: model(
+                h.spent
+                    .iter()
+                    .map(|c| match c {
+                        Some(m) => s(money::format_minor(*m, base)),
+                        None => s("—"),
+                    })
+                    .collect(),
+            ),
+            // Over is decided against the average, not against each month's own
+            // envelope: the row is a habit, and one bad month inside six is not
+            // one.
+            over: model(
+                h.spent.iter().map(|c| c.is_some_and(|m| m > 0 && h.avg_delta_minor > 0)).collect(),
+            ),
+            avg_delta: s(format!(
+                "{}{}",
+                if h.avg_delta_minor > 0 { "+" } else { "−" },
+                money::format_minor(h.avg_delta_minor.abs(), base)
+            )),
+            avg_over: h.avg_delta_minor > 0,
+        })
+        .collect()
+}
+
+/// Short month labels for the grid's columns.
+pub fn period_labels(periods: &[String]) -> Vec<SharedString> {
+    periods
+        .iter()
+        .map(|p| {
+            s(p.split('-')
+                .nth(1)
+                .and_then(|m| m.parse::<usize>().ok())
+                .filter(|m| (1..=12).contains(m))
+                .map(|m| MONTHS_SHORT[m - 1].to_string())
+                .unwrap_or_else(|| p.clone()))
         })
         .collect()
 }
@@ -1240,6 +1549,29 @@ pub fn calendar(
             // and a single net number would say it was.
             let earned: i64 = income.iter().filter(|(d, _)| *d == iso).map(|(_, v)| *v).sum();
             let credits = income.iter().filter(|(d, _)| *d == iso).count();
+
+            // A dot per thing due, coloured by its category, biggest first. Four
+            // slots: the point is "a loan and two bills", which is legible at a
+            // glance in a 62px cell, and a fifth dot is not.
+            let mut pips: Vec<slint::Color> = {
+                let mut with_amount: Vec<&&Obligation> = on_day.iter().collect();
+                with_amount.sort_by_key(|o| std::cmp::Reverse(o.shown_minor().unwrap_or(0)));
+                with_amount
+                    .iter()
+                    .enumerate()
+                    .map(|(i, o)| {
+                        category_hue(i, o.category_name.as_deref().unwrap_or(""), None)
+                    })
+                    .collect()
+            };
+            if earned > 0 {
+                // Income leads: it is the one dot whose colour means something
+                // different from all the others.
+                pips.insert(0, category_hue(0, "income", None));
+            }
+            let pip =
+                |i: usize| pips.get(i).copied().unwrap_or(slint::Color::from_argb_encoded(0));
+
             FinCalDay {
                 day: if in_month { day as i32 } else { 0 },
                 in_month,
@@ -1249,9 +1581,108 @@ pub fn calendar(
                 income: s(if earned > 0 { money::format_minor(earned, base) } else { String::new() }),
                 money_out: sum > 0,
                 overdue: on_day.iter().any(|o| o.status.as_str() == "overdue"),
+                pip_count: pips.len().min(4) as i32,
+                pip1: pip(0),
+                pip2: pip(1),
+                pip3: pip(2),
+                pip4: pip(3),
             }
         })
         .collect()
+}
+
+/// Twelve months at a glance, for the calendar's Year view.
+///
+/// Bars are shares of the busiest month rather than of income: the question this
+/// view answers is which months are heavy, and scaling to income would flatten
+/// every month of a year where income does not change.
+pub fn calendar_year(
+    months: &[(String, Vec<Obligation>, i64)],
+    current: &str,
+    base: &str,
+) -> Vec<FinCalMonth> {
+    let totals: Vec<i64> = months
+        .iter()
+        .map(|(_, items, _)| items.iter().filter_map(|o| o.shown_minor()).sum())
+        .collect();
+    let peak = totals.iter().copied().max().unwrap_or(0).max(1);
+
+    months
+        .iter()
+        .zip(totals)
+        .map(|((period, items, income), out)| FinCalMonth {
+            label: s(month_long(period)),
+            out: s(if out > 0 { money::format_minor(out, base) } else { String::new() }),
+            income: s(if *income > 0 {
+                money::format_minor(*income, base)
+            } else {
+                String::new()
+            }),
+            pct: ((out as i128 * 100) / peak as i128) as i32,
+            current: period == current,
+            count: items.len() as i32,
+        })
+        .collect()
+}
+
+/// The cash-flow walk the design puts beside the grid.
+///
+/// Every row is something that has actually been recorded. Expected income is
+/// deliberately not projected forward: a salary that has not landed is not
+/// money, and a closing balance built on one would be a forecast wearing a
+/// ledger's clothes. The closing row therefore only appears once the month's
+/// income is in.
+pub fn cash_flow(
+    opening_minor: i64,
+    items: &[Obligation],
+    income_minor: i64,
+    low: Option<&tulipix_finances::insights::LowPoint>,
+    base: &str,
+) -> Vec<FinKv> {
+    let f = |m: i64| money::format_minor(m, base);
+    let out: i64 = items
+        .iter()
+        .filter(|o| o.status.is_open())
+        .filter_map(|o| o.shown_minor())
+        .sum();
+
+    let mut rows = vec![FinKv {
+        label: s("In the bank now"),
+        value: s(f(opening_minor)),
+        tone: s("flat"),
+        strong: false,
+    }];
+    if out > 0 {
+        rows.push(FinKv {
+            label: s("Still to leave this month"),
+            value: s(f(-out)),
+            tone: s("bad"),
+            strong: false,
+        });
+    }
+    if let Some(l) = low {
+        rows.push(FinKv {
+            label: s(format!("Low point · {}", day_month(&l.on))),
+            value: s(f(l.balance_minor)),
+            tone: s(if l.balance_minor < 0 { "bad" } else { "warn" }),
+            strong: false,
+        });
+    }
+    if income_minor > 0 {
+        rows.push(FinKv {
+            label: s("In this month"),
+            value: s(f(income_minor)),
+            tone: s("ok"),
+            strong: false,
+        });
+    }
+    rows.push(FinKv {
+        label: s("Where it closes"),
+        value: s(f(opening_minor - out)),
+        tone: s(if opening_minor - out < 0 { "bad" } else { "flat" }),
+        strong: true,
+    });
+    rows
 }
 
 // ── insights ────────────────────────────────────────────────────────────────
@@ -1288,6 +1719,129 @@ pub fn flags(rows: &[Flag]) -> Vec<FinFlag> {
         .collect()
 }
 
+/// The savings-rate bars, oldest left.
+///
+/// A month with no income is drawn as a gap, not as a zero: the salary landing
+/// on the 1st instead of the 31st is a calendar accident, and a bar at the floor
+/// would report it as the worst month on record.
+pub fn savings(rows: &[MonthSavings], base: &str) -> Vec<FinSavingsMonth> {
+    let last = rows.last().map(|m| m.period.clone()).unwrap_or_default();
+    rows.iter()
+        .map(|m| FinSavingsMonth {
+            label: s(period_labels(std::slice::from_ref(&m.period))
+                .first()
+                .map(|l| l.to_string())
+                .unwrap_or_default()),
+            // Negative rates clamp to zero for the bar's height only; the figure
+            // beside it still says what actually happened.
+            pct: m.rate_pct.unwrap_or(0).clamp(0, 100) as i32,
+            known: m.rate_pct.is_some(),
+            current: m.period == last,
+            amount: s(match m.rate_pct {
+                Some(p) => format!("{p}% · {}", money::format_minor(m.saved_minor, base)),
+                None => "no income".to_string(),
+            }),
+        })
+        .collect()
+}
+
+/// This month, the average, the best and the worst — under the bars.
+pub fn savings_summary(rows: &[MonthSavings], base: &str) -> Vec<FinKv> {
+    let known: Vec<&MonthSavings> = rows.iter().filter(|m| m.rate_pct.is_some()).collect();
+    if known.is_empty() {
+        return Vec::new();
+    }
+    let kv = |label: String, m: &MonthSavings, tone: &str| FinKv {
+        label: s(label),
+        value: s(format!(
+            "{}% · {}",
+            m.rate_pct.unwrap_or(0),
+            money::format_minor(m.saved_minor, base)
+        )),
+        tone: s(tone),
+        strong: false,
+    };
+    let mean = known.iter().filter_map(|m| m.rate_pct).sum::<i64>() / known.len() as i64;
+    let best = known.iter().max_by_key(|m| m.rate_pct).copied();
+    let worst = known.iter().min_by_key(|m| m.rate_pct).copied();
+
+    let mut out = Vec::new();
+    if let Some(now) = known.last().copied() {
+        out.push(kv(month_long(&now.period), now, "flat"));
+    }
+    out.push(FinKv {
+        label: s(format!("{}-month average", known.len())),
+        value: s(format!("{mean}%")),
+        tone: s("flat"),
+        strong: false,
+    });
+    // Only when there is more than one month; "best and worst" over a single
+    // month is the same month twice.
+    if known.len() > 1 {
+        if let Some(b) = best {
+            out.push(kv(format!("Best · {}", month_long(&b.period)), b, "ok"));
+        }
+        if let Some(w) = worst {
+            out.push(kv(format!("Worst · {}", month_long(&w.period)), w, "warn"));
+        }
+    }
+    out
+}
+
+/// "If nothing changes" — twelve months out, from what has actually happened.
+pub fn projection(p: &Projection, base: &str) -> (Vec<FinKv>, String) {
+    if p.months_of_history == 0 {
+        return (Vec::new(), String::new());
+    }
+    let f = |m: i64| money::format_minor(m, base);
+    let mut rows = vec![
+        FinKv {
+            label: s("Spend, next 12 months"),
+            value: s(f(p.spend_12m_minor)),
+            tone: s("flat"),
+            strong: false,
+        },
+        FinKv {
+            label: s("Saved, next 12 months"),
+            value: s(f(p.saved_12m_minor)),
+            tone: s(if p.saved_12m_minor < 0 { "bad" } else { "ok" }),
+            strong: false,
+        },
+    ];
+    if p.debt_cleared_12m_minor > 0 {
+        rows.push(FinKv {
+            label: s("Debt cleared, next 12 months"),
+            value: s(f(p.debt_cleared_12m_minor)),
+            tone: s("flat"),
+            strong: false,
+        });
+    }
+    if p.actionable_monthly_minor > 0 {
+        rows.push(FinKv {
+            label: s("Acting on every flag above"),
+            value: s(format!("{} a month", f(p.actionable_monthly_minor))),
+            tone: s("ok"),
+            strong: true,
+        });
+    }
+
+    // The honesty line. Two months of history cannot forecast a year, and the
+    // figures above are still worth showing — with that said out loud rather
+    // than left for the user to work out.
+    let note = match (p.months_of_history, p.rate_now_pct, p.rate_after_pct) {
+        (n, _, _) if n < 3 => format!(
+            "Built from {n} month{} of history, which is not enough to forecast a year. Treat it as arithmetic, not a plan.",
+            if n == 1 { "" } else { "s" }
+        ),
+        (_, Some(now), Some(after)) if after > now => format!(
+            "Acting on the flags above is {} a year, and takes the savings rate from {now}% to {after}%.",
+            f(p.actionable_monthly_minor * 12)
+        ),
+        _ => String::new(),
+    };
+    (rows, note)
+}
+
 // ── rates, import, detection ────────────────────────────────────────────────
 
 pub fn rates(rows: &[Rate], base: &str) -> Vec<FinRate> {
@@ -1322,30 +1876,87 @@ pub fn rates(rows: &[Rate], base: &str) -> Vec<FinRate> {
 /// Shown in the import sheet because the mapping is *guessed*. Getting debit and
 /// credit the wrong way round inverts every row in a statement and leaves all the
 /// totals looking plausible, so the guess has to be visible before anything posts.
-pub fn import_map(map: &tulipix_finances::import::csv::ColumnMap) -> Vec<FinField> {
-    let row = |label: &str, value: Option<&str>| FinField {
-        key: s(label),
+/// `headers` are the file's own column names. Given them, each row becomes a
+/// dropdown the user can correct; without them (an OFX, which states its own
+/// structure) they fall back to read-only text.
+pub const NO_COLUMN: &str = "— none —";
+
+pub fn import_map(
+    map: &tulipix_finances::import::csv::ColumnMap,
+    headers: &[String],
+) -> Vec<FinField> {
+    let options: Vec<String> = std::iter::once(NO_COLUMN.to_string())
+        .chain(headers.iter().cloned())
+        .collect();
+    let editable = !headers.is_empty();
+    let row = |key: &str, label: &str, value: Option<&str>| FinField {
+        key: s(key),
         label: s(label),
-        kind: s("static"),
-        value: s(value.unwrap_or("")),
+        kind: s(if editable { "dropdown" } else { "static" }),
+        value: s(value.filter(|v| !v.is_empty()).unwrap_or(NO_COLUMN)),
         hint: s(""),
-        options: model(Vec::new()),
+        options: model(options.iter().map(|o| s(o)).collect()),
         required: false,
     };
     let mut out = vec![
-        row("Date", Some(&map.date)),
-        row("Description", Some(&map.description)),
+        row("map_date", "Date", Some(&map.date)),
+        row("map_description", "Description", Some(&map.description)),
     ];
     // Either one signed column or a debit/credit pair — never both, and which one it
     // is tells the user something about their bank's export.
     match (&map.amount, &map.debit, &map.credit) {
-        (Some(a), _, _) => out.push(row("Amount (signed)", Some(a))),
+        (Some(a), _, _) => out.push(row("map_amount", "Amount (signed)", Some(a))),
         (None, d, c) => {
-            out.push(row("Money out", d.as_deref()));
-            out.push(row("Money in", c.as_deref()));
+            out.push(row("map_debit", "Money out", d.as_deref()));
+            out.push(row("map_credit", "Money in", c.as_deref()));
         }
     }
+    // Worth mapping even though it is not a transaction field: it lets the import
+    // reconcile the account in the same pass, so a missing entry surfaces on
+    // import day rather than at month end.
+    out.push(row("map_balance", "Running balance", map.balance.as_deref()));
     out
+}
+
+/// Rebuild a column map from what the mapping dropdowns now say.
+///
+/// Keeps the shape the file was read as: a statement with a debit/credit pair
+/// stays a pair. Flipping between shapes from a dropdown would mean deciding
+/// what an empty "Amount (signed)" means, and the answer is not obvious.
+/// A key the form has never carried leaves its column alone; a key explicitly
+/// set to [`NO_COLUMN`] clears it. Those are different intentions and collapsing
+/// them would drop the whole mapping the second time this runs.
+pub fn column_map_from(
+    original: &tulipix_finances::import::csv::ColumnMap,
+    get: impl Fn(&str) -> Option<String>,
+) -> tulipix_finances::import::csv::ColumnMap {
+    // `None` = untouched, `Some(None)` = cleared, `Some(Some(v))` = chosen.
+    let pick = |key: &str| -> Option<Option<String>> {
+        get(key).map(|v| (!v.is_empty() && v != NO_COLUMN).then_some(v))
+    };
+    let mut m = original.clone();
+    if let Some(Some(v)) = pick("map_date") {
+        m.date = v;
+    }
+    if let Some(Some(v)) = pick("map_description") {
+        m.description = v;
+    }
+    if original.amount.is_some() {
+        if let Some(v) = pick("map_amount") {
+            m.amount = v;
+        }
+    } else {
+        if let Some(v) = pick("map_debit") {
+            m.debit = v;
+        }
+        if let Some(v) = pick("map_credit") {
+            m.credit = v;
+        }
+    }
+    if let Some(v) = pick("map_balance") {
+        m.balance = v;
+    }
+    m
 }
 
 pub fn import_rows(rows: &[RawRow], currency: &str, limit: usize) -> Vec<FinImportRow> {
