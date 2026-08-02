@@ -300,17 +300,7 @@ pub async fn unused_subscription_flags(
         return Ok(Vec::new());
     }
 
-    let ids: Vec<i64> = sqlx::query_scalar(
-        "WITH RECURSIVE tree(id) AS (
-             SELECT id FROM categories WHERE name = 'Entertainment'
-             UNION ALL
-             SELECT c.id FROM categories c JOIN tree t ON c.parent_id = t.id
-         )
-         SELECT r.id FROM recurrences r
-          WHERE r.status = 'active' AND r.category_id IN (SELECT id FROM tree)",
-    )
-    .fetch_all(pool)
-    .await?;
+    let ids = video_subscription_ids(pool).await?;
     if ids.is_empty() {
         return Ok(Vec::new());
     }
@@ -346,6 +336,25 @@ pub async fn unused_subscription_flags(
         .collect())
 }
 
+/// The subscriptions the unused check applies to: active ones under the
+/// Entertainment category tree.
+///
+/// Public because the edit sheet says, on the row itself, whether the rule can
+/// reach it — a flag nobody can find the source of is worse than no flag.
+pub async fn video_subscription_ids(pool: &SqlitePool) -> Result<Vec<i64>> {
+    Ok(sqlx::query_scalar(
+        "WITH RECURSIVE tree(id) AS (
+             SELECT id FROM categories WHERE name = 'Entertainment'
+             UNION ALL
+             SELECT c.id FROM categories c JOIN tree t ON c.parent_id = t.id
+         )
+         SELECT r.id FROM recurrences r
+          WHERE r.status = 'active' AND r.category_id IN (SELECT id FROM tree)",
+    )
+    .fetch_all(pool)
+    .await?)
+}
+
 /// The most recent playback recorded in the Videos section.
 ///
 /// Opens `videos.db` read-only through the shared handle. Returns `None` on any
@@ -360,11 +369,20 @@ pub async fn last_video_playback() -> Option<NaiveDate> {
         return None;
     }
     let pool = handle.pool().await.ok()?;
-    let latest: Option<i64> = sqlx::query_scalar("SELECT MAX(updated) FROM watch_progress")
-        .fetch_optional(&pool)
-        .await
-        .ok()
-        .flatten();
+    // `MAX()` over an empty table is one row of NULL, and a NULL decoded as a
+    // plain `i64` arrives as 0 rather than an error — which read as a playback
+    // on 1970-01-01 and put "Unused 20667d" on every subscription in the table.
+    // Decoding into `Option<i64>` is what makes the empty case say "no data",
+    // and the `> 0` guard covers a row written with a broken clock.
+    let latest: Option<i64> = sqlx::query_scalar::<_, Option<i64>>(
+        "SELECT MAX(updated) FROM watch_progress",
+    )
+    .fetch_optional(&pool)
+    .await
+    .ok()
+    .flatten()
+    .flatten()
+    .filter(|secs| *secs > 0);
     pool.close().await;
     let secs = latest?;
     chrono::DateTime::<chrono::Utc>::from_timestamp(secs, 0).map(|dt| dt.with_timezone(&chrono::Local).date_naive())
@@ -580,6 +598,229 @@ pub async fn snapshot(pool: &SqlitePool, today: NaiveDate) -> Result<Snapshot> {
         subscriptions_yearly_minor: recur::yearly_total(pool, &crate::fx::base_currency()).await?,
         open_obligations: obligations::badge_count(pool, today, 14).await?,
     })
+}
+
+// ── health score ────────────────────────────────────────────────────────────
+
+/// One component of the health score.
+///
+/// `possible` is what this component is worth, `earned` what it scored. A part
+/// that could not be measured carries `possible: 0` and drops out of both sides
+/// of the fraction — the score stays out of 100 rather than punishing someone
+/// for a thing the ledger has no opinion about yet.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct HealthPart {
+    pub label: String,
+    pub earned: i64,
+    pub possible: i64,
+    /// The figure behind the marks, in words. Always a number the user can go
+    /// and check, never advice.
+    pub detail: String,
+    pub measured: bool,
+}
+
+impl HealthPart {
+    /// Marks as a percentage of what this part was worth, for its bar.
+    pub fn pct(&self) -> i64 {
+        if self.possible <= 0 {
+            return 0;
+        }
+        (self.earned * 100) / self.possible
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Health {
+    /// 0-100, or `None` when not one component could be measured. A score of
+    /// zero and no score at all are different things and must not print the same.
+    pub score: Option<i64>,
+    pub parts: Vec<HealthPart>,
+}
+
+impl Health {
+    /// What the number means, in a word.
+    pub fn band(&self) -> &'static str {
+        match self.score {
+            None => "Not enough history",
+            Some(s) if s >= 80 => "Strong",
+            Some(s) if s >= 60 => "Steady",
+            Some(s) if s >= 40 => "Stretched",
+            _ => "Strained",
+        }
+    }
+}
+
+/// Straight-line marks between two thresholds.
+///
+/// `worst` scores nothing and `best` scores everything, in whatever unit the
+/// caller is working in; `best` below `worst` simply means lower is better.
+/// Anything outside the pair is clamped rather than allowed past the ends, so a
+/// twelve-month buffer cannot earn marks the component was never worth.
+fn band_points(value: i64, worst: i64, best: i64, points: i64) -> i64 {
+    if worst == best {
+        return points;
+    }
+    let (lo, hi) = (worst.min(best), worst.max(best));
+    let v = value.clamp(lo, hi);
+    let travelled = if best > worst { v - worst } else { worst - v };
+    (travelled * points) / (hi - lo)
+}
+
+/// A single figure for "how is this going", out of 100.
+///
+/// Six components, all of them things the ledger can actually show: what share
+/// of income survives the month, how long the liquid balance would last, how
+/// much is owed against a year's income, whether the envelopes held, whether
+/// bills were paid on time, and what the subscriptions cost against income.
+///
+/// Deliberately *not* in it: net worth, which this app refuses to guess at, and
+/// anything about assets it has never been told about. The score is a reading of
+/// the ledger, not a verdict on a life — which is why the popup behind it shows
+/// every component and its number rather than the total alone.
+///
+/// A pure function of figures already loaded for the rest of the section: it
+/// runs on every refresh and must not add a round of queries to do it.
+pub fn health(
+    snap: &Snapshot,
+    savings: &[MonthSavings],
+    budgets: &[crate::budgets::BudgetRow],
+    overdue: i64,
+    base: &str,
+) -> Health {
+    let with_income: Vec<&MonthSavings> = savings.iter().filter(|m| m.income_minor > 0).collect();
+    let months = with_income.len() as i64;
+    let monthly_income = (months > 0)
+        .then(|| with_income.iter().map(|m| m.income_minor).sum::<i64>() / months)
+        .unwrap_or(0);
+    let monthly_spend = (months > 0)
+        .then(|| with_income.iter().map(|m| m.spent_minor).sum::<i64>() / months)
+        .unwrap_or(0);
+    let annual_income = monthly_income * 12;
+
+    let unmeasured = |label: &str, why: &str| HealthPart {
+        label: label.to_string(),
+        earned: 0,
+        possible: 0,
+        detail: why.to_string(),
+        measured: false,
+    };
+
+    let mut parts = Vec::new();
+
+    // 1. What share of income survives the month. Averaged over the recorded
+    //    months rather than taken from this one, which may only be half over.
+    parts.push(if months == 0 {
+        unmeasured("Savings rate", "No month with income on record yet.")
+    } else {
+        let rate = if monthly_income > 0 {
+            ((monthly_income - monthly_spend) as i128 * 100 / monthly_income as i128) as i64
+        } else {
+            0
+        };
+        HealthPart {
+            label: "Savings rate".into(),
+            // Twenty per cent is the whole of it; spending everything that comes
+            // in scores nothing, and spending more than that cannot score less.
+            earned: band_points(rate, 0, 20, 25),
+            possible: 25,
+            detail: format!("{rate}% of income kept, averaged over {months} month(s). 20% earns full marks."),
+            measured: true,
+        }
+    });
+
+    // 2. How long what is liquid would last at the usual rate of spending.
+    parts.push(if monthly_spend <= 0 {
+        unmeasured("Emergency buffer", "No spending on record to measure it against.")
+    } else {
+        // Tenths of a month, so 2.4 months is not rounded to 2 before scoring.
+        let tenths = (snap.liquid_minor.max(0) as i128 * 10 / monthly_spend as i128) as i64;
+        HealthPart {
+            label: "Emergency buffer".into(),
+            earned: band_points(tenths, 0, 60, 20),
+            possible: 20,
+            detail: format!(
+                "{} covers {}.{} months at {} a month. Six months earns full marks.",
+                money::format_minor(snap.liquid_minor, base),
+                tenths / 10,
+                tenths % 10,
+                money::format_minor(monthly_spend, base)
+            ),
+            measured: true,
+        }
+    });
+
+    // 3. What is owed, against a year of income. Cards and loans together: both
+    //    are money that has to come out of future income.
+    parts.push(if annual_income <= 0 {
+        unmeasured("Debt load", "No income on record to weigh it against.")
+    } else {
+        let pct = (snap.debt_minor as i128 * 100 / annual_income as i128) as i64;
+        HealthPart {
+            label: "Debt load".into(),
+            // Owing nothing is full marks; owing two years of income is none.
+            earned: band_points(pct, 200, 0, 20),
+            possible: 20,
+            detail: format!(
+                "{} owed — {pct}% of a year's income ({}).",
+                money::format_minor(snap.debt_minor, base),
+                money::format_minor(annual_income, base)
+            ),
+            measured: true,
+        }
+    });
+
+    // 4. Whether the envelopes held. Counted per envelope rather than by amount:
+    //    one envelope broken by a lot and five broken by a little are both
+    //    "the budget did not hold", and the amount is already in the rate above.
+    parts.push(if budgets.is_empty() {
+        unmeasured("Envelopes held", "No envelopes set for this month.")
+    } else {
+        let kept = budgets.iter().filter(|b| b.spent_minor <= b.allowance_minor()).count() as i64;
+        let total = budgets.len() as i64;
+        HealthPart {
+            label: "Envelopes held".into(),
+            earned: band_points((kept * 100) / total, 0, 100, 15),
+            possible: 15,
+            detail: format!("{kept} of {total} envelopes still inside their limit."),
+            measured: true,
+        }
+    });
+
+    // 5. Bills paid on time. Three overdue is as bad as this component gets —
+    //    past that the number stops changing what needs doing.
+    parts.push(HealthPart {
+        label: "Bills on time".into(),
+        earned: band_points(overdue, 3, 0, 10),
+        possible: 10,
+        detail: if overdue == 0 {
+            "Nothing overdue.".into()
+        } else {
+            format!("{overdue} bill(s) past their date and unpaid.")
+        },
+        measured: true,
+    });
+
+    // 6. What the subscriptions cost against income. Not whether they are worth
+    //    it — the section cannot know that — only what share of a year they take.
+    parts.push(if annual_income <= 0 {
+        unmeasured("Subscription load", "No income on record to weigh it against.")
+    } else {
+        let pct = (snap.subscriptions_yearly_minor as i128 * 100 / annual_income as i128) as i64;
+        HealthPart {
+            label: "Subscription load".into(),
+            earned: band_points(pct, 10, 0, 10),
+            possible: 10,
+            detail: format!(
+                "{} a year in subscriptions — {pct}% of income.",
+                money::format_minor(snap.subscriptions_yearly_minor, base)
+            ),
+            measured: true,
+        }
+    });
+
+    let earned: i64 = parts.iter().map(|p| p.earned).sum();
+    let possible: i64 = parts.iter().map(|p| p.possible).sum();
+    Health { score: (possible > 0).then(|| (earned * 100) / possible), parts }
 }
 
 #[cfg(test)]
@@ -910,5 +1151,72 @@ mod tests {
         assert_eq!(s.saved_this_month_minor(), 10_000_000 - 64_900);
         // Lending left the bank, so liquid is down by it.
         assert_eq!(s.liquid_minor, 10_839_000 + 10_000_000 - 500_000);
+    }
+
+    fn month(period: &str, income: i64, spent: i64) -> MonthSavings {
+        MonthSavings {
+            period: period.into(),
+            income_minor: income,
+            spent_minor: spent,
+            saved_minor: income - spent,
+            rate_pct: (income > 0).then(|| ((income - spent) * 100) / income),
+        }
+    }
+
+    #[test]
+    fn a_component_with_nothing_behind_it_leaves_the_score_alone() {
+        // The case that decides whether the number is honest. A first-week ledger
+        // has no income months, no envelopes and no spending to measure a buffer
+        // against — and scoring those as zero would open the section on "0/100"
+        // for someone who has done nothing wrong.
+        let empty = Snapshot::default();
+        let h = health(&empty, &[], &[], 0, "INR");
+        // Only "bills on time" can be answered, and nothing is overdue.
+        assert_eq!(h.score, Some(100));
+        assert_eq!(h.parts.iter().filter(|p| p.measured).count(), 1);
+        assert!(h.parts.iter().filter(|p| !p.measured).all(|p| p.possible == 0));
+
+        // With no bills paid on time either, there is nothing at all to score.
+        let none = Health::default();
+        assert_eq!(none.score, None);
+        assert_eq!(none.band(), "Not enough history");
+    }
+
+    #[test]
+    fn the_score_moves_with_the_things_it_claims_to_measure() {
+        let savings = [month("2026-06", 10_000_000, 7_000_000), month("2026-07", 10_000_000, 7_000_000)];
+        // 30% saved, six months of buffer, nothing owed, nothing overdue.
+        let good = Snapshot {
+            liquid_minor: 42_000_000,
+            debt_minor: 0,
+            subscriptions_yearly_minor: 0,
+            ..Snapshot::default()
+        };
+        let h = health(&good, &savings, &[], 0, "INR");
+        assert_eq!(h.score, Some(100), "{:?}", h.parts);
+        assert_eq!(h.band(), "Strong");
+
+        // Same income, spending all of it, two years of income owed, three bills
+        // late. Every component that can be answered scores nothing.
+        let flat = [month("2026-06", 10_000_000, 10_000_000), month("2026-07", 10_000_000, 10_000_000)];
+        let bad = Snapshot {
+            liquid_minor: 0,
+            debt_minor: 240_000_000,
+            subscriptions_yearly_minor: 24_000_000,
+            ..Snapshot::default()
+        };
+        let h = health(&bad, &flat, &[], 3, "INR");
+        assert_eq!(h.score, Some(0), "{:?}", h.parts);
+        assert_eq!(h.band(), "Strained");
+    }
+
+    #[test]
+    fn a_ratio_never_scores_past_what_its_component_is_worth() {
+        // Both ends clamped: a two-year buffer is not worth more than six months
+        // of one, and owing three years of income is not worth less than nothing.
+        assert_eq!(band_points(240, 0, 60, 20), 20);
+        assert_eq!(band_points(-10, 0, 60, 20), 0);
+        assert_eq!(band_points(300, 200, 0, 20), 0);
+        assert_eq!(band_points(30, 0, 60, 20), 10, "halfway earns half");
     }
 }

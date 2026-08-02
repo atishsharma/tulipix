@@ -39,6 +39,9 @@ use tulipix_ui::*;
 /// right; the full file still imports.
 const IMPORT_PREVIEW_ROWS: usize = 40;
 
+/// Instalments per page in the amortisation sheet.
+const SCHEDULE_PAGE: usize = 10;
+
 /// How many months of budget-versus-actual the discipline table shows.
 const DISCIPLINE_MONTHS: u32 = 6;
 
@@ -100,6 +103,15 @@ struct State {
     proposals: Vec<detect::Proposal>,
     /// A parsed statement waiting to be confirmed, and the account it lands in.
     import: Option<(Preview, i64, String)>,
+    /// The amortisation schedule the sheet is showing, and where in it we are.
+    ///
+    /// Held whole so stepping a page is a slice rather than a query, and pushed
+    /// [`SCHEDULE_PAGE`] rows at a time: a twenty-year loan is 240 instalments,
+    /// and building all of them as six cells each is what made the sheet take a
+    /// visible moment to open and scroll badly once it had.
+    schedule: Vec<tulipix_finances::loans::Instalment>,
+    schedule_currency: String,
+    schedule_page: usize,
 }
 
 fn state() -> MutexGuard<'static, State> {
@@ -342,6 +354,25 @@ pub fn wire(window: &MainWindow) {
         }
     });
 
+    // Paging the schedule never goes back to the database: the whole thing is in
+    // hand, and a page is a slice of it.
+    let w = window.as_weak();
+    window.on_fin_schedule_step(move |delta| {
+        let Some(w) = w.upgrade() else { return };
+        let (rows, page, pages) = {
+            let mut st = state();
+            let pages = st.schedule.len().div_ceil(SCHEDULE_PAGE).max(1);
+            let next = (st.schedule_page as i64 + delta as i64).clamp(0, pages as i64 - 1) as usize;
+            st.schedule_page = next;
+            let from = next * SCHEDULE_PAGE;
+            let to = (from + SCHEDULE_PAGE).min(st.schedule.len());
+            (view::schedule(&st.schedule[from..to], &st.schedule_currency), next, pages)
+        };
+        w.set_fin_schedule(view::model(rows));
+        w.set_fin_schedule_page(page as i32 + 1);
+        w.set_fin_schedule_pages(pages as i32);
+    });
+
     let w = window.as_weak();
     window.on_fin_loan_prepay(move |id| {
         if let Some(w) = w.upgrade() {
@@ -496,19 +527,31 @@ pub fn wire(window: &MainWindow) {
     let w = window.as_weak();
     window.on_fin_demo_remove(move || {
         let Some(w) = w.upgrade() else { return };
+        // Set before the work starts, cleared by the refresh that follows it.
+        // Both operations take long enough to look like nothing happened, and the
+        // popup that started them has already closed itself.
+        w.set_fin_demo_busy("Clearing the section…".into());
         let weak = w.as_weak();
         spawn(async move {
             let Ok(pool) = pool().await else { return };
-            if let Err(e) = tulipix_finances::demo::remove_all(&pool).await {
-                tracing::warn!("finances: could not remove the sample data: {e}");
+            // `wipe`, not `remove_all`: the button says "remove all of it", and the
+            // marker-scoped version can only reach rows the seed itself wrote —
+            // anything grown from them since stayed, and held a sample account
+            // open with it.
+            if let Err(e) = tulipix_finances::demo::wipe(&pool).await {
+                tracing::warn!("finances: could not clear the section: {e}");
             }
-            let _ = weak.upgrade_in_event_loop(|w| refresh(&w));
+            let _ = weak.upgrade_in_event_loop(|w| {
+                w.set_fin_demo_busy("".into());
+                refresh(&w);
+            });
         });
     });
 
     let w = window.as_weak();
     window.on_fin_demo_add(move || {
         let Some(w) = w.upgrade() else { return };
+        w.set_fin_demo_busy("Adding sample data…".into());
         let weak = w.as_weak();
         spawn(async move {
             let Ok(pool) = pool().await else { return };
@@ -520,7 +563,10 @@ pub fn wire(window: &MainWindow) {
             {
                 tracing::warn!("finances: could not add the sample data: {e}");
             }
-            let _ = weak.upgrade_in_event_loop(|w| refresh(&w));
+            let _ = weak.upgrade_in_event_loop(|w| {
+                w.set_fin_demo_busy("".into());
+                refresh(&w);
+            });
         });
     });
 
@@ -784,6 +830,8 @@ fn close_sheet(window: &MainWindow) {
         st.sheet_id = 0;
         st.form.clear();
         st.import = None;
+        st.schedule.clear();
+        st.schedule_page = 0;
     }
     window.set_fin_sheet("".into());
     window.set_fin_sheet_error("".into());
@@ -831,11 +879,26 @@ fn open_sheet(window: &MainWindow, kind: &str, id: i64) {
         match kind.as_str() {
             "rates" => {
                 let base = tulipix_finances::fx::base_currency();
-                let rows = tulipix_finances::fx::list(&pool).await.unwrap_or_default();
+                let rows =
+                    tulipix_finances::fx::monitor(&pool, &base).await.unwrap_or_default();
                 let rates = view::rates(&rows, &base);
+                let checked = tulipix_finances::fx::last_checked(&pool)
+                    .await
+                    .ok()
+                    .flatten()
+                    .and_then(|at| chrono::DateTime::<chrono::Utc>::from_timestamp(at, 0))
+                    .map(|dt| {
+                        dt.with_timezone(&chrono::Local).format("%d %b %H:%M").to_string()
+                    })
+                    .unwrap_or_else(|| "never".to_string());
                 let _ = weak.upgrade_in_event_loop(move |w| {
                     w.set_fin_sheet_title("Exchange rates".into());
-                    w.set_fin_sheet_hint(format!("Everything is reported in {base}.").into());
+                    w.set_fin_sheet_hint(
+                        format!(
+                            "Everything is reported in {base}. Checked once a day — last checked {checked}."
+                        )
+                        .into(),
+                    );
                     w.set_fin_sheet_primary("Add or update".into());
                     w.set_fin_rates(view::model(rates));
                     w.set_fin_form(view::model(to_fields(&[])));
@@ -905,7 +968,14 @@ fn open_sheet(window: &MainWindow, kind: &str, id: i64) {
                 let currency = loan.as_ref().map(|l| l.currency.clone()).unwrap_or_else(|| "INR".into());
                 let name = loan.as_ref().map(|l| l.name.clone()).unwrap_or_default();
                 let interest = loans::total_interest(&rows);
-                let ui = view::schedule(&rows, &currency);
+                let pages = rows.len().div_ceil(SCHEDULE_PAGE).max(1);
+                let ui = view::schedule(&rows[..SCHEDULE_PAGE.min(rows.len())], &currency);
+                {
+                    let mut st = state();
+                    st.schedule = rows;
+                    st.schedule_currency = currency.clone();
+                    st.schedule_page = 0;
+                }
                 let _ = weak.upgrade_in_event_loop(move |w| {
                     w.set_fin_sheet_title(format!("{name} — amortisation").into());
                     w.set_fin_sheet_hint(
@@ -917,6 +987,8 @@ fn open_sheet(window: &MainWindow, kind: &str, id: i64) {
                     );
                     w.set_fin_sheet_primary("".into());
                     w.set_fin_schedule(view::model(ui));
+                    w.set_fin_schedule_page(1);
+                    w.set_fin_schedule_pages(pages as i32);
                     w.set_fin_sheet_busy(false);
                 });
                 return;
@@ -1794,27 +1866,14 @@ pub fn refresh(window: &MainWindow) {
             search: Some(filter_search).filter(|s| !s.trim().is_empty()),
             source: Some(filter_source).filter(|s| s != ANY_SOURCE),
         };
-        let txn_periods = txn::periods(&pool).await.unwrap_or_default();
-        let txn_sources = txn::sources(&pool).await.unwrap_or_default();
+        // Every window this pass needs, worked out before a single query goes
+        // out. Pure date arithmetic, so none of the reads below depends on
+        // another one and they can all be in flight at once.
         let running_shown = account_id.is_some() && sort == TxnSort::Date;
-        let page = txn::page(&pool, &filter, sort, desc, page_no).await.unwrap_or_default();
-
-        // Overview.
-        let snap = insights::snapshot(&pool, today).await.unwrap_or_default();
         let period = date::ym(today);
         let (from, to) = date::month_bounds(&period).unwrap_or_default();
-        let cats = txn::spend_by_category(&pool, &from, &to).await.unwrap_or_default();
-        let month_rows = txn::monthly_totals(&pool, 12).await.unwrap_or_default();
-        let needs = obligations::needs_you(&pool, today, 14).await.unwrap_or_default();
-
-        // Recurrences.
-        let subs = recur::list(&pool, Some(recur::RecurKind::Subscription), true)
-            .await
-            .unwrap_or_default();
-        let bill_templates =
-            recur::list(&pool, Some(recur::RecurKind::Bill), true).await.unwrap_or_default();
-        // The month the tab is pointed at, widened backwards so a bill that was
-        // due last month and is still unpaid stays in front of the user rather
+        // The month the Bills tab is pointed at, widened backwards so a bill that
+        // was due last month and is still unpaid stays in front of the user rather
         // than falling off the end of a calendar boundary.
         let (bill_from, bill_to) = match date::month_bounds(&bills_period) {
             Ok((f, t)) => (
@@ -1828,41 +1887,100 @@ pub fn refresh(window: &MainWindow) {
                 date::iso(today + chrono::Duration::days(60)),
             ),
         };
-        let bills = obligations::between(&pool, &bill_from, &bill_to, today).await.unwrap_or_default();
-        let subs_yearly = recur::yearly_total(&pool, &base).await.unwrap_or(0);
+        let (cal_from, cal_to) = date::month_bounds(&cal_period).unwrap_or_default();
+        // The Budgets tab's own month. Its own query rather than the Bills tab's
+        // window: the two tabs step independently, and a "not budgeted" list for a
+        // different month than the envelopes above it is worse than no list.
+        let (budget_from, budget_to) = date::month_bounds(&budget_period).unwrap_or_default();
 
-        // Dues, accounts, loans.
-        let due_rows = dues::list(&pool, None).await.unwrap_or_default();
-        let due_totals = dues::totals(&pool).await.unwrap_or_default();
-        let account_totals = accounts::totals(&pool).await.unwrap_or_default();
-        let loan_rows = loans::list(&pool).await.unwrap_or_default();
-        let account_details =
-            accounts::details(&pool, &from, &to, today).await.unwrap_or_default();
+        // One pass for the whole section, run together rather than one after
+        // another.
+        //
+        // Every tab is loaded on every refresh, not just the visible one: there is
+        // one database under all nine of them, and loading only the active tab
+        // leaves the other eight showing whatever they last had — which is exactly
+        // how a tab comes to be opened onto stale figures. Sequentially that was
+        // some thirty round trips end to end. The pool holds eight connections, so
+        // awaiting them together is the same work in a fraction of the time.
+        let (txn_periods, txn_sources, page, snap, cats, month_rows, needs) = tokio::join!(
+            txn::periods(&pool),
+            txn::sources(&pool),
+            txn::page(&pool, &filter, sort, desc, page_no),
+            insights::snapshot(&pool, today),
+            txn::spend_by_category(&pool, &from, &to),
+            txn::monthly_totals(&pool, 12),
+            obligations::needs_you(&pool, today, 14),
+        );
+        let txn_periods = txn_periods.unwrap_or_default();
+        let txn_sources = txn_sources.unwrap_or_default();
+        let page = page.unwrap_or_default();
+        let snap = snap.unwrap_or_default();
+        let cats = cats.unwrap_or_default();
+        let month_rows = month_rows.unwrap_or_default();
+        let needs = needs.unwrap_or_default();
 
-        // Budgets.
+        let (
+            subs,
+            bill_templates,
+            bills,
+            subs_yearly,
+            due_rows,
+            due_totals,
+            account_totals,
+            loan_rows,
+            account_details,
+        ) = tokio::join!(
+            recur::list(&pool, Some(recur::RecurKind::Subscription), true),
+            recur::list(&pool, Some(recur::RecurKind::Bill), true),
+            obligations::between(&pool, &bill_from, &bill_to, today),
+            recur::yearly_total(&pool, &base),
+            dues::list(&pool, None),
+            dues::totals(&pool),
+            accounts::totals(&pool),
+            loans::list(&pool),
+            accounts::details(&pool, &from, &to, today),
+        );
+        let subs = subs.unwrap_or_default();
+        let bill_templates = bill_templates.unwrap_or_default();
+        let bills = bills.unwrap_or_default();
+        let subs_yearly = subs_yearly.unwrap_or(0);
+        let due_rows = due_rows.unwrap_or_default();
+        let due_totals = due_totals.unwrap_or_default();
+        let account_totals = account_totals.unwrap_or_default();
+        let loan_rows = loan_rows.unwrap_or_default();
+        let account_details = account_details.unwrap_or_default();
+
         let (elapsed, total_days) = budgets::month_progress(&budget_period, today);
-        let budget_rows = budgets::list(&pool, &budget_period).await.unwrap_or_default();
-        let allocation = budgets::allocation(&pool, &budget_period).await.unwrap_or_default();
-        let disc = budgets::discipline(&pool, DISCIPLINE_MONTHS, today).await.unwrap_or_default();
-        let (disc_periods, disc_rows) = budgets::envelope_history(&pool, DISCIPLINE_MONTHS, today)
-            .await
-            .unwrap_or_default();
-        // The fixed obligations of the month the *Budgets* tab is showing. Its
-        // own query rather than the Bills tab's window: the two tabs step
-        // independently, and a "not budgeted" list for a different month than
-        // the envelopes above it is worse than no list.
-        let budget_fixed = match date::month_bounds(&budget_period) {
-            Ok((f, t)) => obligations::between(&pool, &f, &t, today).await.unwrap_or_default(),
-            Err(_) => Vec::new(),
-        };
-
-        // Calendar. Income comes from the ledger rather than from a schedule:
+        // Calendar income comes from the ledger rather than from a schedule:
         // salary that has actually landed is a fact, and a projected credit would
         // be a guess sitting on the same grid as real obligations.
-        let (cal_from, cal_to) = date::month_bounds(&cal_period).unwrap_or_default();
-        let cal_items = obligations::between(&pool, &cal_from, &cal_to, today).await.unwrap_or_default();
-        let cal_income = txn::income_by_day(&pool, &cal_from, &cal_to).await.unwrap_or_default();
-        let low = insights::cash_flow_low_point(&pool, today, 30).await.unwrap_or_default();
+        let (
+            budget_rows,
+            allocation,
+            disc,
+            disc_history,
+            budget_fixed,
+            cal_items,
+            cal_income,
+            low,
+        ) = tokio::join!(
+            budgets::list(&pool, &budget_period),
+            budgets::allocation(&pool, &budget_period),
+            budgets::discipline(&pool, DISCIPLINE_MONTHS, today),
+            budgets::envelope_history(&pool, DISCIPLINE_MONTHS, today),
+            obligations::between(&pool, &budget_from, &budget_to, today),
+            obligations::between(&pool, &cal_from, &cal_to, today),
+            txn::income_by_day(&pool, &cal_from, &cal_to),
+            insights::cash_flow_low_point(&pool, today, 30),
+        );
+        let budget_rows = budget_rows.unwrap_or_default();
+        let allocation = allocation.unwrap_or_default();
+        let disc = disc.unwrap_or_default();
+        let (disc_periods, disc_rows) = disc_history.unwrap_or_default();
+        let budget_fixed = budget_fixed.unwrap_or_default();
+        let cal_items = cal_items.unwrap_or_default();
+        let cal_income = cal_income.unwrap_or_default();
+        let low = low.unwrap_or_default();
 
         // Twelve months around the one being viewed, for the Year toggle. Only
         // loaded when that view is on: it is twelve times the work of the grid
@@ -1920,23 +2038,36 @@ pub fn refresh(window: &MainWindow) {
             trend_months.push((period, rows));
         }
 
-        // Insights and the badge.
-        let flags = insights::flags(&pool, today).await.unwrap_or_default();
-        let savings_rows =
-            insights::savings_history(&pool, TREND_MONTHS).await.unwrap_or_default();
+        // Insights and the badge. `projection` is the one read here that has to
+        // wait: it is computed *from* the flags and the savings history.
+        //
+        // Overdue is read separately from `badge`, which counts everything inside
+        // the notice window: overdue makes the badge an alarm rather than a count.
+        let (flags, savings_rows, demo, badge, overdue) = tokio::join!(
+            insights::flags(&pool, today),
+            insights::savings_history(&pool, TREND_MONTHS),
+            tulipix_finances::demo::present(&pool),
+            obligations::badge_count(&pool, today, tulipix_finances::lead_days()),
+            obligations::overdue_names(&pool, today),
+        );
+        let flags = flags.unwrap_or_default();
+        let savings_rows = savings_rows.unwrap_or_default();
+        let demo = demo.unwrap_or(false);
+        let badge = badge.unwrap_or(0);
+        let overdue = overdue.unwrap_or_default();
         let projection = insights::projection(&pool, today, &flags, &savings_rows)
             .await
             .unwrap_or_default();
-        let demo = tulipix_finances::demo::present(&pool).await.unwrap_or(false);
-        let badge = obligations::badge_count(&pool, today, tulipix_finances::lead_days())
-            .await
-            .unwrap_or(0);
-        // Overdue makes the badge an alarm rather than a count. Read separately
-        // from `badge`, which counts everything inside the notice window.
-        let badge_overdue = !obligations::overdue_names(&pool, today)
-            .await
-            .unwrap_or_default()
-            .is_empty();
+        let badge_overdue = !overdue.is_empty();
+        // The health score is always about *this* month, whatever month the
+        // Budgets tab happens to be parked on — a score that moved when you
+        // stepped a tab would be measuring the interface, not the money.
+        let health_budgets = if budget_period == period {
+            budget_rows.clone()
+        } else {
+            budgets::list(&pool, &period).await.unwrap_or_default()
+        };
+        let health = insights::health(&snap, &savings_rows, &health_budgets, overdue.len() as i64, &base);
         // Nothing at all yet — no real account, no posting. The first-run door
         // stands in for an Overview that would otherwise be nine zeroes.
         let empty = page.total == 0
@@ -1944,7 +2075,13 @@ pub fn refresh(window: &MainWindow) {
             && filter.search.is_none();
 
         // Everything built off the UI thread; only the assignment happens on it.
-        let ui_stats = view::stats(&snap, &base);
+        let ui_stats = view::stats(&snap, &health, &base);
+        let ui_health = view::health_parts(&health.parts);
+        let health_score = match health.score {
+            Some(n) => format!("{n} / 100"),
+            None => "—".to_string(),
+        };
+        let health_band = health.band().to_string();
         let ui_slices = view::slices(&cats, &base);
         let ui_months = view::months(&month_rows, &base);
         let ui_needs = view::obligations(&needs);
@@ -2107,6 +2244,15 @@ pub fn refresh(window: &MainWindow) {
         let i_owe = money::format_minor(due_totals.i_owe_minor, &base);
         let liquid = money::format_minor(account_totals.liquid_minor, &base);
         let debt = money::format_minor(account_totals.debt_minor, &base);
+        // Loans alone. `debt_minor` is every negative balance there is, cards
+        // included, and heading the Loans grid with it would count the credit
+        // card as a loan.
+        // `LoanRow::balance_minor` is already flipped positive by `loans::list` —
+        // it is what is outstanding, not the account's negative balance. Negating
+        // it here made every term zero and the Loans heading read "0 outstanding"
+        // over a grid of live loans.
+        let loans_out =
+            money::format_minor(loan_rows.iter().map(|l| l.balance_minor.max(0)).sum(), &base);
         let subs_yearly = money::format_minor(subs_yearly, &base);
         let (alloc_income, alloc_budgeted, alloc_left, alloc_pct) =
             view::allocation(&allocation, &base);
@@ -2149,6 +2295,9 @@ pub fn refresh(window: &MainWindow) {
                 };
             }
             put!(get_fin_stats, set_fin_stats, ui_stats);
+            put!(get_fin_health_parts, set_fin_health_parts, ui_health);
+            w.set_fin_health_score(health_score.into());
+            w.set_fin_health_band(health_band.into());
             put!(get_fin_slices, set_fin_slices, ui_slices);
             put!(get_fin_months, set_fin_months, ui_months);
             put!(get_fin_needs_you, set_fin_needs_you, ui_needs);
@@ -2254,6 +2403,7 @@ pub fn refresh(window: &MainWindow) {
             w.set_fin_i_owe(i_owe.into());
             w.set_fin_liquid_total(liquid.into());
             w.set_fin_debt_total(debt.into());
+            w.set_fin_loans_total(loans_out.into());
             w.set_fin_budget_period(budget_label.into());
             w.set_fin_budget_income(alloc_income.into());
             w.set_fin_budget_allocated(alloc_budgeted.into());

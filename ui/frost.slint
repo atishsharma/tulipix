@@ -31,6 +31,24 @@ export component PanelFrost inherits Rectangle {
     }
 }
 
+// The backdrop behind a modal.
+//
+// Same caveat as the rest of this file: there is no backdrop-filter to blur what
+// is behind it, so the frosting is layered instead — a dense atmosphere fill
+// that washes the page out, a soft accent bloom under the panel, and a vignette
+// that darkens the edges. The page behind reads as pushed back and out of focus
+// rather than merely dimmed, which is what a flat black scrim gets wrong.
+export component ScrimFrost inherits Rectangle {
+    in property <color> accent: Theme.brand;
+    background: Theme.dark ? #05070c.with-alpha(0.80) : #eef0f4.with-alpha(0.78);
+    Rectangle {
+        background: @radial-gradient(circle, root.accent.with-alpha(0.10) 0%, transparent 62%);
+    }
+    Rectangle {
+        background: @radial-gradient(circle, #00000000 40%, #00000059 100%);
+    }
+}
+
 export component ModalFrost inherits Rectangle {
     in property <color> accent: Theme.brand;
     border-radius: Theme.radius-lg;

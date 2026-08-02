@@ -32,7 +32,9 @@ pub fn decimals(code: &str) -> u32 {
     }
 }
 
-fn symbol(code: &str) -> Option<&'static str> {
+/// The symbol for a currency, or `None` when it has no short one and the code
+/// itself is what gets printed.
+pub fn symbol(code: &str) -> Option<&'static str> {
     match code {
         "INR" => Some("₹"),
         "USD" => Some("$"),

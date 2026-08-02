@@ -4434,6 +4434,18 @@ fn save_home_cont_dismissed() {
     }
 }
 
+/// Cap a CONTINUE card title at 50 characters, then "...". Counted in chars,
+/// not bytes, so a Devanagari or accented title is not cut mid-codepoint.
+const CONTINUE_TITLE_CHARS: usize = 50;
+
+fn clip_title(title: &str) -> String {
+    if title.chars().count() <= CONTINUE_TITLE_CHARS {
+        return title.to_string();
+    }
+    let head: String = title.chars().take(CONTINUE_TITLE_CHARS).collect();
+    format!("{}...", head.trim_end())
+}
+
 /// Push the cached CONTINUE rows through the active kind filter (≤4 cards —
 /// the strip has four fixed pill slots). "All" shows ONE card per kind (the
 /// newest of each — video/book/podcast/audiobook), kind tabs show up to 4.
@@ -4448,7 +4460,7 @@ fn push_home_continue(weak: &slint::Weak<MainWindow>) {
             .take(4)
             .map(|r| HomeContinue {
                 kind: r.kind.into(),
-                title: r.title.into(),
+                title: clip_title(&r.title).into(),
                 author: r.author.into(),
                 sub: r.sub.into(),
                 frac: r.frac,

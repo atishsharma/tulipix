@@ -40,6 +40,42 @@ pub const REFRESH_SECS: i64 = 86_400;
 /// Keyless, no attribution header, base-relative. `{}` is the base currency.
 const ENDPOINT: &str = "https://open.er-api.com/v6/latest/{}";
 
+/// The currencies the app keeps a rate for whether or not anything is priced in
+/// them yet — the ten most traded, plus the app's own default base.
+///
+/// Before this, a rate existed only once money had already been posted in that
+/// currency, which made the rates panel a form for typing numbers into rather
+/// than something you could read. Ten rows fetched daily is one request either
+/// way, and it means a foreign amount converts correctly the *first* time it is
+/// entered instead of silently posting at 1:1 until someone notices.
+///
+/// Every rate is stored against the base, so any pair converts through it:
+/// `A → B` is `micro(A) / micro(B)`. That is why ten rows are enough for ninety
+/// pairs, and why nothing here needs a cross-rate table.
+pub const TOP_CURRENCIES: &[(&str, &str)] = &[
+    ("USD", "US dollar"),
+    ("EUR", "Euro"),
+    ("JPY", "Japanese yen"),
+    ("GBP", "Pound sterling"),
+    ("CNY", "Chinese yuan"),
+    ("AUD", "Australian dollar"),
+    ("CAD", "Canadian dollar"),
+    ("CHF", "Swiss franc"),
+    ("INR", "Indian rupee"),
+    ("SGD", "Singapore dollar"),
+];
+
+/// The English name of a currency, for the rates panel. The code itself when it
+/// is not one of the ten — a rate the user added by hand is still legible.
+pub fn currency_name(code: &str) -> String {
+    let code = code.trim().to_uppercase();
+    TOP_CURRENCIES
+        .iter()
+        .find(|(c, _)| *c == code)
+        .map(|(_, name)| name.to_string())
+        .unwrap_or(code)
+}
+
 /// Where to fetch rates relative to `base`.
 pub fn endpoint(base: &str) -> String {
     ENDPOINT.replace("{}", &base.trim().to_uppercase())
@@ -107,6 +143,62 @@ pub async fn list(pool: &SqlitePool) -> Result<Vec<Rate>> {
             live: source == "live",
         })
         .collect())
+}
+
+/// One line of the rates monitor: a currency the app watches, and the rate it
+/// has for it — if it has one yet.
+#[derive(Clone, Debug)]
+pub struct Monitored {
+    pub code: String,
+    pub name: String,
+    /// `None` before the first successful fetch. Shown as such rather than as a
+    /// 1:1 placeholder, which would read as a real rate.
+    pub rate_micro: Option<i64>,
+    pub edited_at: i64,
+    pub live: bool,
+}
+
+/// Every currency the app watches, in trading order, with whatever rate it holds.
+///
+/// The list is [`needed_codes`], so it is the ten majors plus anything the user
+/// actually uses — which means the panel is a monitor to read rather than a form
+/// to type into, and a currency shows up before the first transaction in it does.
+pub async fn monitor(pool: &SqlitePool, base: &str) -> Result<Vec<Monitored>> {
+    let held = list(pool).await?;
+    let wanted = needed_codes(pool, base).await?;
+    // The majors first and in their own order — a monitor sorted alphabetically
+    // buries the dollar under the dirham. Everything else follows, sorted.
+    let mut order: Vec<String> = TOP_CURRENCIES
+        .iter()
+        .map(|(c, _)| c.to_string())
+        .filter(|c| wanted.contains(c))
+        .collect();
+    let mut rest: Vec<String> = wanted.into_iter().filter(|c| !order.contains(c)).collect();
+    rest.sort();
+    order.extend(rest);
+
+    Ok(order
+        .into_iter()
+        .map(|code| {
+            let found = held.iter().find(|r| r.code.eq_ignore_ascii_case(&code));
+            Monitored {
+                name: currency_name(&code),
+                rate_micro: found.map(|r| r.rate_micro),
+                edited_at: found.map(|r| r.edited_at).unwrap_or(0),
+                live: found.map(|r| r.live).unwrap_or(true),
+                code,
+            }
+        })
+        .collect())
+}
+
+/// When the last fetched rate was written, for the "checked" line. `None` when
+/// nothing has ever been fetched.
+pub async fn last_checked(pool: &SqlitePool) -> Result<Option<i64>> {
+    Ok(sqlx::query_scalar("SELECT MAX(edited_at) FROM fx_rates WHERE source = 'live'")
+        .fetch_optional(pool)
+        .await?
+        .flatten())
 }
 
 /// Store a hand-typed rate. Marked `manual`, so the daily refresh leaves it alone.
@@ -208,8 +300,9 @@ pub async fn apply_live(
     Ok(n)
 }
 
-/// The currencies worth having a rate for: everything already in `fx_rates`, plus
-/// every currency money has actually been posted in, minus the base.
+/// The currencies worth having a rate for: the ten in [`TOP_CURRENCIES`], plus
+/// everything already in `fx_rates`, plus every currency money has actually been
+/// posted in — minus the base, which is always exactly 1 and is never a row.
 pub async fn needed_codes(pool: &SqlitePool, base: &str) -> Result<Vec<String>> {
     let base = base.trim().to_uppercase();
     let rows: Vec<String> = sqlx::query_scalar(
@@ -221,7 +314,12 @@ pub async fn needed_codes(pool: &SqlitePool, base: &str) -> Result<Vec<String>> 
     )
     .fetch_all(pool)
     .await?;
-    Ok(rows.into_iter().map(|c| c.to_uppercase()).filter(|c| *c != base).collect())
+    let mut out: Vec<String> = TOP_CURRENCIES.iter().map(|(c, _)| c.to_string()).collect();
+    out.extend(rows.into_iter().map(|c| c.to_uppercase()));
+    out.retain(|c| *c != base);
+    out.sort_unstable();
+    out.dedup();
+    Ok(out)
 }
 
 /// Whether the fetched rates are older than a day.
@@ -383,16 +481,25 @@ mod tests {
 
         assert_eq!(rate_for(&p, "USD", "INR").await.unwrap(), 90_000_000, "theirs stands");
         assert_eq!(rate_for(&p, "EUR", "INR").await.unwrap(), 90_538_705, "this one is fetched");
-        assert_eq!(written, 1, "only EUR");
-        // JPY is in the response but nothing in this database is priced in it.
-        assert!(list(&p).await.unwrap().iter().all(|r| r.code != "JPY"));
+        assert!(written >= 1, "EUR at least");
+        // The hand-typed one is not among what was written, whatever else was.
+        let held = list(&p).await.unwrap();
+        assert!(held.iter().any(|r| r.code == "USD" && !r.live), "USD is still theirs");
+        // A major is kept whether or not anything is priced in it yet — that is
+        // what makes the rates panel a monitor rather than a form.
+        assert!(held.iter().any(|r| r.code == "JPY" && r.live));
+        // A currency that is neither a major nor in use is still not stored: the
+        // response lists well over a hundred and this database uses three.
+        assert!(held.iter().all(|r| r.code != "KWD"));
     }
 
     #[tokio::test]
     async fn rates_go_stale_after_a_day_and_never_before() {
         let p = pool().await;
-        // Nothing foreign in the database, so there is nothing to fetch for.
-        assert!(!stale(&p, 100_000).await.unwrap());
+        // The ten majors are always wanted now, so an untouched database has
+        // something to fetch for from the start — which is the point: a rate has
+        // to be there *before* the first foreign amount is entered, not after.
+        assert!(stale(&p, 100_000).await.unwrap(), "nothing fetched yet");
 
         sqlx::query(
             "INSERT INTO recurrences (kind, name, currency, cycle, created_at)

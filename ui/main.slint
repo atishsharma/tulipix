@@ -41,7 +41,7 @@ import { FinancesPage, FinStat, FinAccountRow, FinTxnRow, FinRecurRow, FinObliga
           FinDueRow, FinBudgetRow, FinLoanRow, FinInstalment, FinCatSlice, FinMonthBar,
           FinCalDay, FinFlag, FinDiscipline, FinRate, FinPrice, FinProposal, FinImportRow,
           FinField, FinCatTrend, FinKv, FinCalMonth, FinEnvelopeHistory,
-          FinSavingsMonth } from "page_finances.slint";
+          FinSavingsMonth, FinHealthPart } from "page_finances.slint";
 import { LiveTvPage, LiveChannel, LivePlaylist } from "page_livetv.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
@@ -1545,6 +1545,9 @@ callback cloud-go-home();
     // arithmetic on money happens in .slint and no rounding bug can start here.
     in-out property <string> fin-tab: "overview";
     in property <[FinStat]> fin-stats: [];
+    in property <[FinHealthPart]> fin-health-parts: [];
+    in property <string> fin-health-score: "";
+    in property <string> fin-health-band: "";
     in property <[FinCatSlice]> fin-slices: [];
     in property <string> fin-spent-total: "";
     in property <[FinMonthBar]> fin-months: [];
@@ -1583,6 +1586,7 @@ callback cloud-go-home();
     in property <[FinAccountRow]> fin-accounts: [];
     in property <string> fin-liquid-total: "";
     in property <string> fin-debt-total: "";
+    in property <string> fin-loans-total: "";
     in property <[FinKv]> fin-position: [];
     in property <[FinLoanRow]> fin-loans: [];
     in property <[FinBudgetRow]> fin-budgets: [];
@@ -1618,6 +1622,8 @@ callback cloud-go-home();
     in property <bool> fin-empty: false;
     // Sample data is still on screen. Drives the pulsing header warning.
     in property <bool> fin-demo: false;
+    // Non-empty while the sample data is being written or cleared.
+    in property <string> fin-demo-busy: "";
     // A rate fetch is in flight, from the Refresh button in the rates sheet.
     in property <bool> fin-rates-busy: false;
     // Bills tab: the stat strip, the active filter and its chip counts.
@@ -1674,6 +1680,8 @@ callback cloud-go-home();
     in property <bool> fin-sheet-busy: false;
     in property <[FinPrice]> fin-prices: [];
     in property <[FinInstalment]> fin-schedule: [];
+    in property <int> fin-schedule-page: 1;
+    in property <int> fin-schedule-pages: 1;
     in property <[FinImportRow]> fin-import-rows: [];
     in property <string> fin-import-summary: "";
     in property <bool> fin-import-needs-format: false;
@@ -1702,6 +1710,7 @@ callback cloud-go-home();
     callback fin-account-close(int, bool);
     callback fin-account-delete(int);
     callback fin-loan-schedule(int);
+    callback fin-schedule-step(int);
     callback fin-loan-prepay(int);
     callback fin-budget-remove(int);
     callback fin-budget-copy-forward();
@@ -3872,6 +3881,9 @@ callback cloud-go-home();
                 width: parent.width; height: parent.height;
                 tab <=> root.fin-tab;
                 stats: root.fin-stats;
+                health-parts: root.fin-health-parts;
+                health-score: root.fin-health-score;
+                health-band: root.fin-health-band;
                 slices: root.fin-slices;
                 spent-total: root.fin-spent-total;
                 months: root.fin-months;
@@ -3908,6 +3920,7 @@ callback cloud-go-home();
                 accounts: root.fin-accounts;
                 liquid-total: root.fin-liquid-total;
                 debt-total: root.fin-debt-total;
+                loans-total: root.fin-loans-total;
                 position: root.fin-position;
                 loans: root.fin-loans;
                 budgets: root.fin-budgets;
@@ -3939,6 +3952,7 @@ callback cloud-go-home();
                 badge-overdue: root.fin-badge-overdue;
                 empty: root.fin-empty;
                 demo: root.fin-demo;
+                demo-busy: root.fin-demo-busy;
                 rates-busy: root.fin-rates-busy;
                 bill-stats: root.fin-bill-stats;
                 bills-filter <=> root.fin-bills-filter;
@@ -3993,6 +4007,8 @@ callback cloud-go-home();
                 sheet-busy: root.fin-sheet-busy;
                 prices: root.fin-prices;
                 schedule: root.fin-schedule;
+                schedule-page: root.fin-schedule-page;
+                schedule-pages: root.fin-schedule-pages;
                 import-rows: root.fin-import-rows;
                 import-summary: root.fin-import-summary;
                 import-needs-format: root.fin-import-needs-format;
@@ -4021,6 +4037,7 @@ callback cloud-go-home();
                 account-close(i, c) => { root.fin-account-close(i, c); }
                 account-delete(i) => { root.fin-account-delete(i); }
                 loan-schedule(i) => { root.fin-loan-schedule(i); }
+                schedule-step(d) => { root.fin-schedule-step(d); }
                 loan-prepay(i) => { root.fin-loan-prepay(i); }
                 budget-remove(i) => { root.fin-budget-remove(i); }
                 budget-copy-forward() => { root.fin-budget-copy-forward(); }
@@ -4107,6 +4124,7 @@ callback cloud-go-home();
                 // Jump straight to Videos → Stream. set-video-kind (not a bare
                 // property set) so the backend warms the tab.
                 open-stream => { root.set-video-kind("stream"); root.video-kind = "stream"; root.active-section = "videos"; root.section-changed("videos"); }
+                open-livetv => { root.set-video-kind("livetv"); root.video-kind = "livetv"; root.active-section = "videos"; root.section-changed("videos"); }
                 // Music Downloader lives in Music → My Music → Downloader tab;
                 // set-lib-tab (not a bare property set) so the backend refreshes it.
                 open-download => { root.music-view = "mymusic"; root.music-set-lib-tab("downloader"); root.active-section = "music"; root.section-changed("music"); }

@@ -294,11 +294,33 @@ pub async fn delete(pool: &SqlitePool, id: i64) -> Result<()> {
     if used > 0 {
         bail!("{used} transactions use this account — close it instead of deleting it");
     }
+    // `transactions` is not the only table pointing here. A recurrence names the
+    // account it is paid from, and that foreign key has no `ON DELETE` clause —
+    // so an account with a subscription attached and no postings yet passed the
+    // check above and then failed inside SQLite as a bare "FOREIGN KEY constraint
+    // failed", which tells the user nothing about which account or why.
+    let templates: i64 =
+        sqlx::query_scalar("SELECT COUNT(*) FROM recurrences WHERE account_id = ?")
+            .bind(id)
+            .fetch_one(pool)
+            .await?;
+    if templates > 0 {
+        bail!(
+            "{templates} subscriptions or bills are paid from this account — \
+             point them somewhere else first, or close the account instead"
+        );
+    }
     let is_virtual: Option<String> =
         sqlx::query_scalar("SELECT kind FROM accounts WHERE id = ?").bind(id).fetch_optional(pool).await?;
     if is_virtual.as_deref() == Some("virtual") {
         bail!("the lending holding accounts are part of how dues work and cannot be deleted");
     }
+    // An import preset remembers which account a file was mapped onto. That is a
+    // convenience, not history, so it is detached rather than standing in the way.
+    sqlx::query("UPDATE import_presets SET account_id = NULL WHERE account_id = ?")
+        .bind(id)
+        .execute(pool)
+        .await?;
     sqlx::query("DELETE FROM accounts WHERE id = ?").bind(id).execute(pool).await?;
     Ok(())
 }

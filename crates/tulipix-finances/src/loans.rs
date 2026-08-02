@@ -243,8 +243,10 @@ pub fn prepay(
 
 // ── storage ─────────────────────────────────────────────────────────────────
 
-/// Create the loan account and its detail row together.
-pub async fn create(pool: &SqlitePool, l: &NewLoan) -> Result<i64> {
+/// Check the terms and settle on an EMI: the one given, or the one the figures
+/// imply. Shared by [`create`] and [`update`] so a loan cannot be edited into a
+/// shape it could never have been created in.
+fn vet(l: &NewLoan) -> Result<i64> {
     if l.name.trim().is_empty() {
         bail!("a loan needs a name");
     }
@@ -263,6 +265,12 @@ pub async fn create(pool: &SqlitePool, l: &NewLoan) -> Result<i64> {
     if emi <= 0 {
         bail!("could not work out an EMI from those numbers");
     }
+    Ok(emi)
+}
+
+/// Create the loan account and its detail row together.
+pub async fn create(pool: &SqlitePool, l: &NewLoan) -> Result<i64> {
+    let emi = vet(l)?;
 
     let account_id = crate::accounts::create(
         pool,
@@ -293,6 +301,46 @@ pub async fn create(pool: &SqlitePool, l: &NewLoan) -> Result<i64> {
     .execute(pool)
     .await?;
     Ok(account_id)
+}
+
+/// Rewrite a loan's terms.
+///
+/// The principal is the account's opening balance — that is how a loan totals
+/// with everything else — so correcting one has to correct the other, or the
+/// balance stops matching the schedule it is drawn from. Instalments already
+/// paid are transactions and are left exactly where they are: this edits the
+/// terms, it does not rewrite the history.
+pub async fn update(pool: &SqlitePool, account_id: i64, l: &NewLoan) -> Result<()> {
+    let emi = vet(l)?;
+
+    sqlx::query("UPDATE accounts SET name = ?, currency = ?, opening_minor = ? WHERE id = ?")
+        .bind(l.name.trim())
+        .bind(l.currency.to_uppercase())
+        .bind(-l.principal_minor)
+        .bind(account_id)
+        .execute(pool)
+        .await?;
+
+    let n = sqlx::query(
+        "UPDATE loans
+            SET principal_minor = ?, rate_bp = ?, tenure_months = ?,
+                started_on = ?, emi_minor = ?, emi_day = ?
+          WHERE account_id = ?",
+    )
+    .bind(l.principal_minor)
+    .bind(l.rate_bp.max(0))
+    .bind(l.tenure_months)
+    .bind(&l.started_on)
+    .bind(emi)
+    .bind(l.emi_day.clamp(1, 31))
+    .bind(account_id)
+    .execute(pool)
+    .await?
+    .rows_affected();
+    if n == 0 {
+        bail!("no such loan");
+    }
+    Ok(())
 }
 
 pub async fn list(pool: &SqlitePool) -> Result<Vec<LoanRow>> {
@@ -375,8 +423,13 @@ pub async fn pay_emi(
 }
 
 pub async fn delete(pool: &SqlitePool, account_id: i64) -> Result<()> {
+    // The account goes first. `accounts::delete` refuses one with history, and
+    // dropping the loan row before finding that out left an account behind with
+    // no terms attached to it — a debt the section could still see and no longer
+    // explain. Cascading from `loans.account_id` takes the loan row with it.
+    crate::accounts::delete(pool, account_id).await?;
     sqlx::query("DELETE FROM loans WHERE account_id = ?").bind(account_id).execute(pool).await?;
-    crate::accounts::delete(pool, account_id).await
+    Ok(())
 }
 
 #[cfg(test)]
@@ -406,6 +459,37 @@ mod tests {
             emi_day: 5,
             currency: "INR".into(),
         }
+    }
+
+    #[tokio::test]
+    async fn editing_the_terms_moves_the_opening_balance_with_them() {
+        // The trap this guards: the principal lives in two places — the loan row
+        // and the account's opening balance — and correcting only one leaves a
+        // balance that no longer matches the schedule drawn from it.
+        let p = pool().await;
+        let id = create(&p, &home_loan()).await.unwrap();
+
+        let mut edited = home_loan();
+        edited.name = "HDFC home loan (refinanced)".into();
+        edited.principal_minor = 300_000_000;
+        edited.rate_bp = 790;
+        edited.emi_minor = None;
+        update(&p, id, &edited).await.unwrap();
+
+        let l = get(&p, id).await.unwrap().unwrap();
+        assert_eq!(l.name, "HDFC home loan (refinanced)");
+        assert_eq!(l.principal_minor, 300_000_000);
+        assert_eq!(l.rate_bp, 790);
+        assert_eq!(l.emi_minor, emi_for(300_000_000, 790, 180), "the EMI is recomputed");
+        assert_eq!(
+            accounts::balance(&p, id).await.unwrap(),
+            -300_000_000,
+            "and the account owes the new principal, not the old one"
+        );
+
+        // Terms that could never have been created cannot be edited into either.
+        edited.tenure_months = 0;
+        assert!(update(&p, id, &edited).await.is_err());
     }
 
     #[test]

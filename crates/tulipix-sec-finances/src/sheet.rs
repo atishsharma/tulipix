@@ -19,6 +19,7 @@ use tulipix_finances::{
     budgets, date,
     date::Cycle,
     dues::{self, Direction, NewDue},
+    insights,
     loans::{self, NewLoan},
     money, obligations,
     recur::{self, NewRecurrence, RecurKind},
@@ -157,6 +158,52 @@ fn cycle_label(c: Cycle) -> String {
         Cycle::Monthly => "Monthly",
     }
     .to_string()
+}
+
+/// Where the "Unused" pill on the subscriptions table comes from, in the one
+/// place someone would go looking for it.
+///
+/// It is the only figure in this section that is not entered and not derived
+/// from money, so a row can wear a red pill nobody can account for. The note
+/// states the rule and then this row's own standing against it, because a rule
+/// without the current reading is still not an explanation.
+async fn unused_rule_note(pool: &SqlitePool, id: i64) -> String {
+    let mut out = format!(
+        "\"Unused\" is not something you set here. A subscription earns it when both \
+         are true: its category sits under Entertainment, and the Videos section has \
+         recorded no playback for {} days or more. Cancel nothing on it blindly — it \
+         reads what Videos watched, not what you watched.",
+        insights::UNUSED_DAYS
+    );
+
+    let counted = if id == 0 {
+        None
+    } else {
+        insights::video_subscription_ids(pool).await.ok().map(|ids| ids.contains(&id))
+    };
+    match counted {
+        Some(true) => out.push_str("\n\nThis one is under Entertainment, so the rule reaches it."),
+        Some(false) => out.push_str(
+            "\n\nThis one is not under Entertainment (or is not active), so the rule never \
+             reaches it and it will not be flagged.",
+        ),
+        None => {}
+    }
+
+    match insights::last_video_playback().await {
+        Some(last) => {
+            let idle = date::days_between(last, date::today());
+            out.push_str(&format!(
+                " Videos last recorded playback on {} — {idle} day{} ago.",
+                date::iso(last),
+                if idle == 1 { "" } else { "s" }
+            ));
+        }
+        None => out.push_str(
+            " Videos has recorded no playback at all, so nothing is being flagged right now.",
+        ),
+    }
+    out
 }
 
 // ── building ────────────────────────────────────────────────────────────────
@@ -369,8 +416,15 @@ pub async fn build(pool: &SqlitePool, kind: &str, id: i64) -> Result<Sheet> {
                         .map(|r| r.reminder_days.to_string())
                         .unwrap_or_else(|| tulipix_finances::lead_days().to_string()))
                     .hint("Per item. 0 means only on the day itself."),
-                text("note", "Note").v(existing.as_ref().and_then(|r| r.note.clone()).unwrap_or_default()),
+                text("note", "Note")
+                    .v(existing.as_ref().and_then(|r| r.note.clone()).unwrap_or_default())
+                    .hint("Shown under the name in the table — the plan, usually."),
             ];
+            if is_sub {
+                sheet.fields.push(Field::new("unused_rule", "Unused", "note").v(
+                    unused_rule_note(pool, id).await,
+                ));
+            }
         }
 
         "one-off" => {
@@ -416,14 +470,14 @@ pub async fn build(pool: &SqlitePool, kind: &str, id: i64) -> Result<Sheet> {
         }
 
         "due" => {
-            sheet.title = "Record a due".into();
+            sheet.title = "Lend or borrow".into();
             sheet.hint = "Lending is not spending: this posts a transfer into a holding account and comes back when it settles.".into();
             let accounts_opts = account_options(pool, false).await?;
             sheet.fields = vec![
                 text("person", "Person").hint("Free text. No contacts, no profiles.").req(),
                 Field::new("direction", "Which way", "dropdown")
-                    .v("They owe me")
-                    .opts(vec!["They owe me".into(), "I owe them".into()]),
+                    .v("I lent it to them")
+                    .opts(vec!["I lent it to them".into(), "I borrowed it from them".into()]),
                 money_field("amount", "Amount").req(),
                 text("currency", "Currency").v(base.clone()),
                 date_field("opened_on", "Since").req(),
@@ -485,19 +539,52 @@ pub async fn build(pool: &SqlitePool, kind: &str, id: i64) -> Result<Sheet> {
         }
 
         "loan" => {
-            sheet.title = "New loan".into();
-            sheet.hint = "A loan is an account with a negative balance, so it totals with everything else. Leave the EMI blank to have it worked out.".into();
+            // `id` is the loan's *account* id, which is what the Loans cards
+            // carry — a loan has no id of its own.
+            let existing = if id == 0 { None } else { loans::get(pool, id).await? };
+            sheet.title = if existing.is_some() { "Edit loan".into() } else { "New loan".into() };
+            sheet.hint = if existing.is_some() {
+                "Editing the terms leaves the instalments already paid exactly where they are. The amount borrowed is the account's opening balance, so correcting it moves the balance too.".into()
+            } else {
+                "A loan is an account with a negative balance, so it totals with everything else. Leave the EMI blank to have it worked out.".into()
+            };
+            let currency = existing.as_ref().map(|l| l.currency.clone()).unwrap_or_else(|| base.clone());
             sheet.fields = vec![
-                text("name", "Name").v("").req(),
-                money_field("principal", "Amount borrowed").req(),
-                Field::new("rate", "Interest rate", "number").hint("A year, as a percentage. 8.4 for 8.4%.").req(),
-                Field::new("tenure_months", "Tenure in months", "number").v("180").req(),
-                date_field("started_on", "First instalment").req(),
-                Field::new("emi_day", "EMI day", "number").v("5").req(),
-                money_field("emi", "EMI").hint("Leave blank to compute it from the figures above."),
-                text("currency", "Currency").v(base.clone()),
+                text("name", "Name")
+                    .v(existing.as_ref().map(|l| l.name.clone()).unwrap_or_default())
+                    .req(),
+                money_field("principal", "Amount borrowed")
+                    .v(existing
+                        .as_ref()
+                        .map(|l| minor_to_input(l.principal_minor, &currency))
+                        .unwrap_or_default())
+                    .req(),
+                // Basis points back to the percentage the field asks for: 840 → "8.4".
+                Field::new("rate", "Interest rate", "number")
+                    .v(existing
+                        .as_ref()
+                        .map(|l| format!("{}.{}", l.rate_bp / 100, (l.rate_bp % 100) / 10))
+                        .unwrap_or_default())
+                    .hint("A year, as a percentage. 8.4 for 8.4%.")
+                    .req(),
+                Field::new("tenure_months", "Tenure in months", "number")
+                    .v(existing.as_ref().map(|l| l.tenure_months.to_string()).unwrap_or_else(|| "180".into()))
+                    .req(),
+                date_field("started_on", "First instalment")
+                    .v(existing.as_ref().map(|l| l.started_on.clone()).unwrap_or_default())
+                    .req(),
+                Field::new("emi_day", "EMI day", "number")
+                    .v(existing.as_ref().map(|l| l.emi_day.to_string()).unwrap_or_else(|| "5".into()))
+                    .req(),
+                money_field("emi", "EMI")
+                    .v(existing
+                        .as_ref()
+                        .map(|l| minor_to_input(l.emi_minor, &currency))
+                        .unwrap_or_default())
+                    .hint("Leave blank to compute it from the figures above."),
+                text("currency", "Currency").v(currency),
             ];
-            sheet.primary = "Add loan".into();
+            sheet.primary = if existing.is_some() { "Save".into() } else { "Add loan".into() };
         }
 
         "reconcile" => {
@@ -718,7 +805,9 @@ pub async fn submit(pool: &SqlitePool, kind: &str, id: i64, form: &Form) -> Resu
             let currency = currency_of(form, &base);
             let d = NewDue {
                 person: get(form, "person"),
-                direction: if get(form, "direction") == "I owe them" {
+                // Matched on the dropdown's own label. Renaming one of these
+                // without the other silently files every borrowing as a lending.
+                direction: if get(form, "direction") == "I borrowed it from them" {
                     Direction::IOwe
                 } else {
                     Direction::OwedToMe
@@ -771,7 +860,11 @@ pub async fn submit(pool: &SqlitePool, kind: &str, id: i64, form: &Form) -> Resu
                 emi_day: opt_num(form, "emi_day").unwrap_or(1),
                 currency,
             };
-            loans::create(pool, &l).await?;
+            if id == 0 {
+                loans::create(pool, &l).await?;
+            } else {
+                loans::update(pool, id, &l).await?;
+            }
         }
 
         "reconcile" => {
@@ -940,7 +1033,7 @@ mod tests {
         let acct = accounts::create(&p, &NewAccount::bank("HDFC", 1_000_000)).await.unwrap();
         let f = form(&[
             ("person", "Ravi"),
-            ("direction", "They owe me"),
+            ("direction", "I lent it to them"),
             ("amount", "5000"),
             ("opened_on", "2026-07-20"),
             ("account", &format!("HDFC  #{acct}")),

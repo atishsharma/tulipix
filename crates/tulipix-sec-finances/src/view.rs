@@ -17,13 +17,13 @@
 use chrono::{Datelike, NaiveDate};
 use slint::{ModelRc, SharedString, VecModel};
 use tulipix_finances::{
-    accounts::{AccountRow, Detail as AccountDetail},
+    accounts::{AccountKind, AccountRow, Detail as AccountDetail},
     budgets::{self, BudgetRow, MonthDiscipline},
     date,
     dues::{self, Due},
-    fx::Rate,
+    fx,
     import::{csv::RawRow, detect::Proposal},
-    insights::{Flag, MonthSavings, Projection, Severity, Snapshot},
+    insights::{Flag, Health, HealthPart, MonthSavings, Projection, Severity, Snapshot},
     loans::{Instalment, LoanRow},
     money,
     obligations::{Obligation, Status as ObStatus},
@@ -86,6 +86,75 @@ fn category_hue(i: usize, name: &str, stored: Option<&str>) -> slint::Color {
     slint::Color::from_argb_encoded(SLICE_HUES[i % SLICE_HUES.len()])
 }
 
+/// Colours for the account and loan badges.
+///
+/// Picked from the account's own name rather than its position in the list, so
+/// adding an account does not recolour every card below it — a badge is a thing
+/// you learn to recognise, and one that moves is worse than none.
+const BADGE_HUES: &[u32] = &[
+    0xFF3b82f6, 0xFFef4444, 0xFF10b981, 0xFF06b6d4, 0xFFf472b6, 0xFF8b5cf6, 0xFFf97316,
+    0xFFfacc15, 0xFF14b8a6, 0xFF6366f1,
+];
+
+/// Hands out badge colours, one grid at a time.
+///
+/// A name alone is not enough. Ten colours and six accounts collide about eighty
+/// per cent of the time, and two cards wearing the same colour is exactly the
+/// thing a badge exists to prevent — so the name only picks where to *start*,
+/// and a taken colour steps on to the next free one.
+#[derive(Default)]
+struct HuePicker {
+    used: Vec<usize>,
+}
+
+impl HuePicker {
+    fn pick(&mut self, name: &str) -> slint::Color {
+        // A sum of the bytes. Not a hash worth the name, and it does not need to
+        // be: all that rides on it is which square is painted which colour.
+        let n: usize = name.bytes().map(usize::from).sum();
+        let start = n % BADGE_HUES.len();
+        let idx = (0..BADGE_HUES.len())
+            .map(|k| (start + k) % BADGE_HUES.len())
+            .find(|i| !self.used.contains(i))
+            // More accounts than colours. Repeating is all that is left.
+            .unwrap_or(start);
+        self.used.push(idx);
+        slint::Color::from_argb_encoded(BADGE_HUES[idx])
+    }
+}
+
+/// The glyph on an account's badge: its initial, or the currency symbol when it
+/// holds cash. A wallet of notes is not "C for Cash", it is money.
+fn badge(name: &str, kind: AccountKind, base: &str) -> String {
+    if kind == AccountKind::Cash
+        && let Some(sym) = money::symbol(base)
+    {
+        return sym.to_string();
+    }
+    initial(name)
+}
+
+/// The first *alphanumeric* character, uppercased — so a service called
+/// "₹ spare change" or "  HDFC" gets a letter rather than a symbol or a space.
+fn initial(name: &str) -> String {
+    name.chars()
+        .find(|c| c.is_alphanumeric())
+        .map(|c| c.to_uppercase().to_string())
+        .unwrap_or_else(|| "•".to_string())
+}
+
+/// A badge colour from the name alone.
+///
+/// Unlike the account grid, this one does not step around collisions. The
+/// subscription table is filtered, sorted and paged, so a colour that depended
+/// on which rows happen to be on screen would change under the user — and a
+/// badge you cannot learn to recognise is worth nothing. Stable beats unique;
+/// the letter carries the difference when two colours land on the same hue.
+fn stable_hue(name: &str) -> slint::Color {
+    let n: usize = name.bytes().map(usize::from).sum();
+    slint::Color::from_argb_encoded(BADGE_HUES[n % BADGE_HUES.len()])
+}
+
 /// `#rrggbb` or `#aarrggbb`. Returns `None` on anything else rather than
 /// substituting a colour, so the palette fallback takes over.
 fn parse_hex(s: &str) -> Option<slint::Color> {
@@ -116,7 +185,7 @@ fn opt(v: Option<String>) -> SharedString {
 
 // ── overview ────────────────────────────────────────────────────────────────
 
-pub fn stats(snap: &Snapshot, base: &str) -> Vec<FinStat> {
+pub fn stats(snap: &Snapshot, health: &Health, base: &str) -> Vec<FinStat> {
     let f = |m: i64| money::format_minor(m, base);
     // Month-on-month change in spending, as a signed figure and a direction. Up is
     // the bad direction here — this labels spending, not growth.
@@ -139,6 +208,7 @@ pub fn stats(snap: &Snapshot, base: &str) -> Vec<FinStat> {
             tone: s(if snap.liquid_minor < 0 { "bad" } else { "flat" }),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
         FinStat {
             label: s("SPENT THIS MONTH"),
@@ -147,6 +217,7 @@ pub fn stats(snap: &Snapshot, base: &str) -> Vec<FinStat> {
             tone: s("flat"),
             delta: s(delta),
             delta_up,
+            action: s(""),
         },
         FinStat {
             label: s("SAVED THIS MONTH"),
@@ -160,6 +231,7 @@ pub fn stats(snap: &Snapshot, base: &str) -> Vec<FinStat> {
             tone: s(if snap.saved_this_month_minor() >= 0 { "ok" } else { "bad" }),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
         FinStat {
             label: s("DEBT"),
@@ -168,8 +240,60 @@ pub fn stats(snap: &Snapshot, base: &str) -> Vec<FinStat> {
             tone: s(if snap.debt_minor > 0 { "warn" } else { "flat" }),
             delta: s(""),
             delta_up: false,
+            action: s(""),
+        },
+        // The one card on the strip that is not a figure off the ledger but a
+        // reading of six of them, so it is the one card that opens: the total
+        // alone would be a verdict with nothing behind it.
+        FinStat {
+            label: s("HEALTH SCORE"),
+            value: s(match health.score {
+                Some(n) => format!("{n}"),
+                None => "—".to_string(),
+            }),
+            sub: s(match health.score {
+                Some(_) => format!("{} · out of 100", health.band()),
+                None => health.band().to_string(),
+            }),
+            tone: s(match health.score {
+                Some(n) if n >= 80 => "ok",
+                Some(n) if n >= 60 => "flat",
+                Some(n) if n >= 40 => "warn",
+                Some(_) => "bad",
+                None => "flat",
+            }),
+            delta: s(""),
+            delta_up: false,
+            action: s("health"),
         },
     ]
+}
+
+/// The health score broken into the parts it was added up from.
+pub fn health_parts(parts: &[HealthPart]) -> Vec<FinHealthPart> {
+    parts
+        .iter()
+        .map(|p| FinHealthPart {
+            label: s(&p.label),
+            points: s(if p.measured {
+                format!("{} / {}", p.earned, p.possible)
+            } else {
+                "not measured".to_string()
+            }),
+            pct: p.pct() as i32,
+            detail: s(&p.detail),
+            measured: p.measured,
+            tone: s(if !p.measured {
+                "flat"
+            } else if p.pct() >= 75 {
+                "ok"
+            } else if p.pct() >= 40 {
+                "warn"
+            } else {
+                "bad"
+            }),
+        })
+        .collect()
 }
 
 /// Share of this month's income that survived, to one decimal place.
@@ -548,6 +672,7 @@ pub fn insight_stats(
             tone: s(if bad > 0 { "bad" } else if warn > 0 { "warn" } else { "ok" }),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
         FinStat {
             label: s("SAVINGS RATE"),
@@ -569,6 +694,7 @@ pub fn insight_stats(
             }),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
         FinStat {
             label: s("IF NOTHING CHANGES"),
@@ -577,6 +703,7 @@ pub fn insight_stats(
             tone: s(if saved < 0 { "bad" } else { "ok" }),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
         FinStat {
             label: s("SUBSCRIPTIONS"),
@@ -585,6 +712,7 @@ pub fn insight_stats(
             tone: s("flat"),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
     ]
 }
@@ -747,7 +875,7 @@ pub fn due_stats(
 
     vec![
         FinStat {
-            label: s("OWED TO YOU"),
+            label: s("LENT OUT"),
             value: s(f(totals.owed_to_me_minor)),
             sub: s(format!(
                 "{} open",
@@ -756,9 +884,10 @@ pub fn due_stats(
             tone: s(if totals.owed_to_me_minor > 0 { "ok" } else { "flat" }),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
         FinStat {
-            label: s("YOU OWE"),
+            label: s("BORROWED"),
             value: s(f(totals.i_owe_minor)),
             sub: s(format!(
                 "{} open",
@@ -767,6 +896,7 @@ pub fn due_stats(
             tone: s(if totals.i_owe_minor > 0 { "warn" } else { "flat" }),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
         FinStat {
             label: s("NET POSITION"),
@@ -781,6 +911,7 @@ pub fn due_stats(
             tone: s(if net < 0 { "bad" } else if net > 0 { "ok" } else { "flat" }),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
         FinStat {
             label: s("CAME BACK, 6 MONTHS"),
@@ -795,6 +926,7 @@ pub fn due_stats(
             tone: s(if stale > 0 { "warn" } else { "flat" }),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
     ]
 }
@@ -856,6 +988,7 @@ pub fn bill_stats(
             tone: s(if overdue.is_empty() { "flat" } else { "bad" }),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
         FinStat {
             label: s("DUE THIS MONTH"),
@@ -869,6 +1002,7 @@ pub fn bill_stats(
             tone: s("flat"),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
         FinStat {
             label: s("AUTO-DEBITED"),
@@ -881,6 +1015,7 @@ pub fn bill_stats(
             tone: s("flat"),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
         FinStat {
             label: s("FIXED MONTHLY FLOOR"),
@@ -889,6 +1024,7 @@ pub fn bill_stats(
             tone: s("flat"),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
     ]
 }
@@ -919,9 +1055,31 @@ pub fn recurrences(rows: &[RecurRow], base: &str, unused: &[(String, i64)]) -> V
                 .and_then(|d| date::parse(d).ok())
                 .map(|d| date::days_between(today, d) as i32)
                 .unwrap_or(0),
+            next_short: s(r.next_due_on.as_deref().map(day_month).unwrap_or_default()),
             status: s(r.status.as_str()),
             account: opt(r.account_name.clone()),
             category: opt(r.category_name.clone()),
+            badge: s(initial(&r.name)),
+            hue: stable_hue(&r.name),
+            // What the service itself charges, under its own name — the plan
+            // line in the mockup. The stored amount and currency are the truth;
+            // the base-currency columns beside it are the derived figures.
+            plan: s(match (r.note.as_deref(), r.shown_minor()) {
+                (Some(n), _) if !n.trim().is_empty() => {
+                    format!("{} · {}", n.trim(), r.currency)
+                }
+                (_, Some(a)) => format!("{} · {}", money::format_minor(a, &r.currency), r.currency),
+                (_, None) => "amount varies".to_string(),
+            }),
+            // How far the price has risen since the oldest one on record, as a
+            // whole percent. 0 when it has never risen, which is what keeps the
+            // pill off every row that has nothing to report.
+            hike_pct: match (r.hike_from_minor, r.shown_minor()) {
+                (Some(from), Some(now)) if from > 0 && now > from => {
+                    (((now - from) * 100 + from / 2) / from) as i32
+                }
+                _ => 0,
+            },
             yearly: s(money::format_minor(r.yearly_minor, base)),
             // A twelfth of the year, in the base currency: the point of the column
             // is comparing a yearly plan against a monthly one, and two currencies
@@ -1050,6 +1208,7 @@ pub fn sub_stats(rows: &[RecurRow], base: &str, unused: &[String], unused_minor:
             tone: s("flat"),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
         FinStat {
             label: s("A MONTH, ACTIVE"),
@@ -1058,6 +1217,7 @@ pub fn sub_stats(rows: &[RecurRow], base: &str, unused: &[String], unused_minor:
             tone: s("flat"),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
         FinStat {
             label: s("NEXT CHARGE"),
@@ -1075,10 +1235,15 @@ pub fn sub_stats(rows: &[RecurRow], base: &str, unused: &[String], unused_minor:
             tone: s("flat"),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
         FinStat {
             label: s("PAID, NOT USED"),
             value: s(if unused.is_empty() { "—".to_string() } else { f(unused_minor) }),
+            // A count, not the names. Joined, four flagged services ran to a line
+            // several times longer than any other card's, and a stat strip sizes
+            // its cards from their content — so one long line squeezed the other
+            // three. The names are on the rows below and on the Insights flag.
             sub: s(if unused.is_empty() {
                 if paused > 0 {
                     format!("{} a year is paused", f(paused))
@@ -1086,11 +1251,12 @@ pub fn sub_stats(rows: &[RecurRow], base: &str, unused: &[String], unused_minor:
                     "nothing flagged".to_string()
                 }
             } else {
-                unused.join(", ")
+                format!("{} subscription{}", unused.len(), if unused.len() == 1 { "" } else { "s" })
             }),
             tone: s(if unused.is_empty() { "flat" } else { "warn" }),
             delta: s(""),
             delta_up: false,
+            action: s(""),
         },
     ]
 }
@@ -1136,16 +1302,29 @@ pub fn dues(rows: &[Due]) -> Vec<FinDueRow> {
 
 // ── accounts and loans ──────────────────────────────────────────────────────
 
+/// The Accounts grid.
+///
+/// Two kinds never appear as a plain card. A loan has its own block underneath,
+/// with the amortisation and the prepayment calculator its terms are actually
+/// edited from — repeating it here put the same account on the page twice, and
+/// the copy in the grid could only edit the account, never the loan. And the two
+/// virtual holding accounts are two halves of one fact, so they arrive as one
+/// card carrying both figures.
 pub fn accounts(rows: &[AccountRow], details: &[AccountDetail], base: &str) -> Vec<FinAccountRow> {
-    rows.iter()
+    let f = |m: i64| money::format_minor(m, base);
+    let mut hues = HuePicker::default();
+    let mut out: Vec<FinAccountRow> = rows
+        .iter()
+        .filter(|a| !matches!(a.kind, AccountKind::Loan | AccountKind::Virtual))
         .map(|a| {
             let d = details.iter().find(|d| d.account_id == a.id);
-            let f = |m: i64| money::format_minor(m, base);
             let drift = d.and_then(|d| d.drift_minor).filter(|m| *m != 0);
             FinAccountRow {
                 id: a.id as i32,
                 name: s(&a.name),
                 kind: s(a.kind.as_str()),
+                badge: s(badge(&a.name, a.kind, base)),
+                hue: hues.pick(&a.name),
                 // Foreign-currency accounts still report in base: balances are summed
                 // from `base_minor`, so labelling one with its own symbol would claim
                 // a precision the derivation does not have.
@@ -1188,9 +1367,37 @@ pub fn accounts(rows: &[AccountRow], details: &[AccountDetail], base: &str) -> V
                     },
                     None => String::new(),
                 }),
+                ..Default::default()
             }
         })
-        .collect()
+        .collect();
+
+    // Lent out and Borrowed, as one card. Neither is an account anything can be
+    // done to on its own — they are the two directions of the same outstanding
+    // balance — and two cards side by side reading "holding" said that twice.
+    // Kept at kind `virtual` so every guard that already refuses to edit, delete
+    // or reconcile a holding account keeps refusing.
+    let held = |name: &str| rows.iter().find(|a| a.kind == AccountKind::Virtual && a.name == name);
+    if let (Some(lent), Some(borrowed)) =
+        (held(tulipix_finances::schema::LENT_OUT), held(tulipix_finances::schema::BORROWED))
+    {
+        let net = lent.balance_minor + borrowed.balance_minor;
+        out.push(FinAccountRow {
+            id: 0,
+            name: s("Lending"),
+            kind: s("virtual"),
+            balance: s(f(net)),
+            sub: s("Holding accounts · net"),
+            badge: s("L"),
+            hue: hues.pick("Lending"),
+            negative: net < 0,
+            lent: s(f(lent.balance_minor)),
+            // Stored as a negative balance, shown as what is owed.
+            borrowed: s(f(borrowed.balance_minor.abs())),
+            ..Default::default()
+        });
+    }
+    out
 }
 
 /// `2026-07-21` → `21 Jul`. Returns the input unchanged if it is not a date,
@@ -1252,7 +1459,7 @@ pub fn position(
     }
     if dues_net_minor != 0 {
         out.push(FinKv {
-            label: s("Dues, net"),
+            label: s("Lending, net"),
             value: s(f(dues_net_minor)),
             tone: s(if dues_net_minor < 0 { "bad" } else { "ok" }),
             strong: false,
@@ -1273,6 +1480,9 @@ fn kind_label(kind: &str) -> &'static str {
 }
 
 pub fn loans(rows: &[LoanRow], today: NaiveDate) -> Vec<FinLoanRow> {
+    // Its own picker, not the accounts grid's: the two grids are read separately,
+    // and sharing one would exhaust the palette twice as fast.
+    let mut hues = HuePicker::default();
     rows.iter()
         .map(|l| {
             // The remaining schedule, from what is outstanding now. The first
@@ -1292,6 +1502,8 @@ pub fn loans(rows: &[LoanRow], today: NaiveDate) -> Vec<FinLoanRow> {
             FinLoanRow {
                 account_id: l.account_id as i32,
                 name: s(&l.name),
+                badge: s(badge(&l.name, AccountKind::Loan, &l.currency)),
+                hue: hues.pick(&l.name),
                 balance: s(money::format_minor(l.balance_minor, &l.currency)),
                 principal: s(money::format_minor(l.principal_minor, &l.currency)),
                 emi: s(money::format_minor(l.emi_minor, &l.currency)),
@@ -1700,7 +1912,7 @@ pub fn flags(rows: &[Flag]) -> Vec<FinFlag> {
                 Action::Recurrence(i) => ("Open", format!("recurrence:{i}")),
                 Action::Category(i) => ("Open budget", format!("category:{i}")),
                 Action::Account(i) => ("Open account", format!("account:{i}")),
-                Action::Due(i) => ("Open due", format!("due:{i}")),
+                Action::Due(i) => ("Open it in Lending", format!("due:{i}")),
                 Action::Rates => ("Set a rate", "rates:0".to_string()),
             };
             FinFlag {
@@ -1844,29 +2056,53 @@ pub fn projection(p: &Projection, base: &str) -> (Vec<FinKv>, String) {
 
 // ── rates, import, detection ────────────────────────────────────────────────
 
-pub fn rates(rows: &[Rate], base: &str) -> Vec<FinRate> {
+/// Millionths as a decimal, to `dp` places. Integer arithmetic throughout: this
+/// is the number every converted total is multiplied by, and a float here would
+/// round differently from the one the posting used.
+fn micro_str(micro: i64, dp: u32) -> String {
+    let scale = 10i64.pow(dp);
+    let scaled = (micro as i128 * scale as i128 + 500_000) / 1_000_000;
+    let whole = scaled as i64 / scale;
+    let frac = (scaled as i64 % scale).abs();
+    format!("{whole}.{frac:0width$}", width = dp as usize)
+}
+
+/// The rate monitor: what the app watches, what it holds, and how old it is.
+pub fn rates(rows: &[fx::Monitored], base: &str) -> Vec<FinRate> {
     rows.iter()
         .map(|r| FinRate {
             code: s(&r.code),
-            // Six decimal places back to something readable: 83_600_000 → "83.60".
-            rate: s(format!(
-                "1 {} = {}.{:02} {}",
-                r.code,
-                r.rate_micro / 1_000_000,
-                (r.rate_micro % 1_000_000) / 10_000,
-                base
-            )),
+            name: s(&r.name),
+            rate: s(match r.rate_micro {
+                // Four places: two is not enough for a currency worth less than a
+                // hundredth of the base, and the yen is exactly that.
+                Some(m) => format!("1 {} = {} {}", r.code, micro_str(m, 4), base),
+                None => "not fetched yet".to_string(),
+            }),
+            // Every rate is stored against the base, so the reverse is the
+            // reciprocal — and with all ten held, any pair converts through it.
+            inverse: s(match r.rate_micro {
+                Some(m) if m > 0 => {
+                    let back = (1_000_000i128 * 1_000_000i128 / m as i128) as i64;
+                    format!("1 {base} = {} {}", micro_str(back, 6), r.code)
+                }
+                _ => String::new(),
+            }),
             // Where it came from and when, because a converted total is only as
             // trustworthy as the age of the rate behind it.
-            edited: s(match chrono::DateTime::<chrono::Utc>::from_timestamp(r.edited_at, 0) {
-                Some(dt) => format!(
+            edited: s(match (
+                r.rate_micro,
+                chrono::DateTime::<chrono::Utc>::from_timestamp(r.edited_at, 0),
+            ) {
+                (Some(_), Some(dt)) => format!(
                     "{} {}",
                     if r.live { "fetched" } else { "typed" },
                     dt.with_timezone(&chrono::Local).date_naive()
                 ),
-                None => String::new(),
+                _ => String::new(),
             }),
             live: r.live,
+            known: r.rate_micro.is_some(),
         })
         .collect()
 }

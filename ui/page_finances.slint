@@ -7,7 +7,7 @@
 //   txns      — the ledger, 25 rows a page, sorted in SQL
 //   bills     — estimate vs actual, mark paid, overdue
 //   subs      — fixed recurring charges, price history, pause, cancel
-//   dues      — money between you and named people, both directions
+//   dues      — "Lending": money between you and named people, both directions
 //   accounts  — balances and reconcile; loans with amortisation
 //   budgets   — envelopes, pace, six-month discipline
 //   calendar  — every dated thing, and the cash-flow low point
@@ -25,6 +25,7 @@ import { Theme } from "tokens.slint";
 import { Surface, Rim, Skin } from "surface.slint";
 import { ScrollView, LineEdit, ComboBox, Switch } from "std-widgets.slint";
 import { AppIcon, Icons } from "icons.slint";
+import { ScrimFrost } from "frost.slint";
 // The same header primitives Photos · Videos · Music · Books · Cloud · Tools use.
 // This section had its own chip and its own search box; two headers built from one
 // set of parts is the reason every page in the app reads as the same app.
@@ -80,12 +81,30 @@ export struct FinStat {
     tone: string,
     delta: string,
     delta-up: bool,
+    // Non-empty when the card opens something. Only the health score does: the
+    // rest are single figures off the ledger with nothing more to say.
+    action: string,
+}
+
+// One component of the health score, for the popup behind it.
+export struct FinHealthPart {
+    label: string,
+    points: string,        // "18 / 25", or "not measured"
+    pct: int,              // 0-100 of what this part was worth
+    detail: string,
+    measured: bool,
+    tone: string,
 }
 
 export struct FinAccountRow {
     id: int,
     name: string,
     kind: string,          // bank|cash|card|wallet|loan|virtual
+    // The badge: one glyph — the account's initial, or the currency symbol when
+    // it holds cash — on a colour picked from its own name, so the same account
+    // keeps the same badge however the list reorders.
+    badge: string,
+    hue: color,
     balance: string,
     sub: string,           // "•••• 4471 · 25% of limit" or the account kind
     util-pct: int,         // 0 when there is no credit limit
@@ -106,6 +125,11 @@ export struct FinAccountRow {
     drift-bad: bool,
     topped-from: string,
     last-topup: string,
+    // The merged holding card only. Lent out and Borrowed are two halves of one
+    // fact — what is outstanding between you and other people — so they are one
+    // card with both figures rather than two cards with one each.
+    lent: string,
+    borrowed: string,
 }
 
 export struct FinTxnRow {
@@ -132,10 +156,21 @@ export struct FinRecurRow {
     is-estimate: bool,
     cycle: string,
     next-due: string,
+    // The same date as `next-due` without its year, for the table column. Slint
+    // cannot slice a string, so both forms are built in Rust.
+    next-short: string,
     days: int,             // negative when overdue
     status: string,        // active|paused|cancelled
     account: string,
     category: string,
+    // First letter of the name, and the colour of the square it sits on.
+    badge: string,
+    hue: color,
+    // What the service charges under its own name — its note, or its own-currency
+    // price, and the currency code. The columns beside it are base-currency.
+    plan: string,
+    // Whole percent above the oldest recorded price. 0 when it has never risen.
+    hike-pct: int,
     yearly: string,
     // The same commitment as `yearly`, per month. Both are shown: a monthly figure
     // is what someone feels and a yearly one is what they cancel on.
@@ -212,6 +247,8 @@ export struct FinBudgetRow {
 export struct FinLoanRow {
     account-id: int,
     name: string,
+    badge: string,
+    hue: color,
     balance: string,
     principal: string,
     emi: string,
@@ -350,7 +387,20 @@ export struct FinCatTrend {
 
 // One row of the exchange-rate editor. `live` is false when the user typed the
 // rate, which is also what stops the daily refresh replacing it.
-export struct FinRate { code: string, rate: string, edited: string, live: bool }
+// One line of the exchange-rate monitor.
+export struct FinRate {
+    code: string,
+    // "US dollar" — a code alone is a puzzle for eight of the ten.
+    name: string,
+    rate: string,
+    // The same rate the other way round, so the pair converts in both directions
+    // without anyone dividing in their head.
+    inverse: string,
+    edited: string,
+    live: bool,
+    // Watched, but nothing fetched for it yet.
+    known: bool,
+}
 
 export struct FinPrice { amount: string, from: string }
 
@@ -426,30 +476,48 @@ component Pill inherits Skin {
     in property <string> label;
     in property <color> hue: FinTheme.ink-dim;
     in property <bool> solid: false;
+    // A status pill leads with a filled dot in its own colour — the difference
+    // between "this is a tag" and "this is a state right now".
+    in property <bool> dot: false;
+    // Section headings wear the same pill at a larger size, so a tag on a row
+    // and the title above a grid cannot drift into two different shapes.
+    in property <length> h: 22px;
+    property <length> lead: root.dot ? root.h * 0.3 + 5px : 0px;
     horizontal-stretch: 0;
-    height: 22px;
-    min-width: t.width + 18px;
-    max-width: t.width + 18px;
-    border-radius: Surface.r(11px);
+    // `height`, not min/max: two of these are placed by hand inside a plain
+    // Rectangle, where layout constraints do nothing and the pill would collapse.
+    height: root.h;
+    min-width: t.width + root.h * 0.82 + root.lead;
+    max-width: t.width + root.h * 0.82 + root.lead;
+    border-radius: Surface.r(root.h / 2);
     background: root.solid ? root.hue : root.hue.with-alpha(0.15);
+    if root.dot: Rectangle {
+        x: root.h * 0.41;
+        y: (parent.height - self.height) / 2;
+        width: root.h * 0.3; height: self.width;
+        border-radius: self.width / 2;
+        background: root.solid ? #ffffff : root.hue;
+    }
     t := Text {
-        x: (parent.width - self.width) / 2;
+        // Centred without a dot (`lead` is 0, and the padding either side is the
+        // same 0.41h), pushed off the dot with one.
+        x: root.h * 0.41 + root.lead;
         y: (parent.height - self.height) / 2;
         text: root.label;
         color: root.solid ? #ffffff : root.hue;
-        font-size: 11px;
+        font-size: root.h * 0.5;
         font-weight: 700;
     }
 }
 
 // The 32px rounded square that opens a list row — the mockup's `.logo`.
 //
-// The mockup fills it with a brand colour and an initial (Netflix red "N", HDFC
-// blue "H"). Neither is available here: the app has no brand table, and Slint has
-// no way to take the first character of a string. So the tile carries what this
-// section *does* know — what kind of thing the row is — as an icon on a wash of
-// its meaning colour. Same shape and rhythm in the row, and it stays correct for
-// a merchant nobody has a logo for.
+// The lettered version of this — a name's initial on its own colour — is
+// `AccountBadge`, fed from Rust because Slint cannot take the first character of
+// a string. Use that where the row is a *named* thing (an account, a service).
+// This one is for rows that are not: a transaction has a merchant, not an
+// identity, so it carries what the section does know — what kind of thing the
+// row is — as an icon on a wash of its meaning colour.
 component Tile inherits Skin {
     in property <image> icon;
     in property <color> hue: FinTheme.accent;
@@ -507,6 +575,45 @@ component WarnPulse inherits Skin {
     }
 }
 
+// The same chip while the sample data is being written or cleared.
+//
+// Seeding a year of accounts, postings, bills and budgets takes long enough to
+// look like nothing happened, and the button that started it had already closed
+// its own popup. An indeterminate sweep rather than a percentage: the work is a
+// few hundred inserts of wildly different cost, and a progress bar that jumps
+// from 4% to 90% is a worse lie than no number at all.
+component BusyPill inherits Skin {
+    in property <string> label;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    min-height: 44px; max-height: 44px;
+    min-width: bl.width + 60px; max-width: bl.width + 60px;
+    border-radius: 22px;
+    background: FinTheme.accent.with-alpha(0.12);
+    border-width: 1.5px;
+    border-color: FinTheme.accent.with-alpha(0.45);
+    clip: true;
+    Rectangle {
+        width: parent.width * 0.4;
+        height: parent.height;
+        // One pass every 1.1s, entering from the left edge and leaving past the
+        // right, so the chip reads as working rather than as merely tinted.
+        x: (parent.width + self.width) * Math.mod(animation-tick() / 1100ms, 1.0) - self.width;
+        background: @linear-gradient(90deg,
+            #ffffff00 0%, FinTheme.accent.with-alpha(0.28) 50%, #ffffff00 100%);
+    }
+    AppIcon {
+        source: Icons.refresh-cw; tint: FinTheme.accent;
+        width: 16px; height: 16px;
+        x: 16px; y: (parent.height - self.height) / 2;
+        transform-rotation: (Math.mod(animation-tick() / 1100ms, 1.0) * 360) * 1deg;
+    }
+    bl := Text {
+        x: 40px; y: (parent.height - self.height) / 2;
+        text: root.label; color: FinTheme.accent;
+        font-size: 13px; font-weight: 700;
+    }
+}
+
 // A 30px filter chip with an optional count — the mockup's `.chip.sm`. Filters are
 // not tabs, so these are quieter than `FinTab`: accent fill when on, glass when not,
 // and no gradient.
@@ -520,8 +627,13 @@ component FilterChip inherits HdrChip {
     dk-hover: FinTheme.card-2;
     dk-text: FinTheme.ink-dim;
     dk-border: FinTheme.hairline;
+    // A fixed width when the caller asks for one. Chips that each size to their
+    // own label make a ragged row, and the counts inside them change length as
+    // the data does — so the row reflows while it is being read.
+    in property <length> w: 0px;
     height: 30px;
-    min-width: 72px;
+    min-width: root.w > 0px ? root.w : 72px;
+    max-width: root.w > 0px ? root.w : 100000px;
 }
 
 // Section tab — the shared header chip with this section's gradient baked in.
@@ -544,7 +656,7 @@ component FinTab inherits HdrChip {
     collapsible: root.compact;
     min-width: root.compact ? (self.revealed ? root.wide : 44px) : root.wide;
     animate min-width { duration: 200ms; easing: ease-out; }
-    // Width when the label is showing. Per-tab because "Subscriptions" and "Dues"
+    // Width when the label is showing. Per-tab because "Subscriptions" and "Lending"
     // do not want the same pill.
     in property <length> wide: 104px;
 }
@@ -604,16 +716,23 @@ component IconBtn inherits Skin {
     in property <image> icon;
     in property <string> tip;
     in property <color> hue: FinTheme.ink-dim;
+    // Greyed and inert rather than hidden, so a pager keeps its shape at the
+    // ends of the range instead of shuffling the row about.
+    in property <bool> enabled: true;
     callback clicked();
     horizontal-stretch: 0;
     min-width: 30px; max-width: 30px;
     min-height: 30px; max-height: 30px;
     border-radius: Surface.r(9px);
-    background: ta.has-hover ? FinTheme.pill-bg : transparent;
-    ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    opacity: root.enabled ? 1.0 : 0.35;
+    background: root.enabled && ta.has-hover ? FinTheme.pill-bg : transparent;
+    ta := TouchArea {
+        mouse-cursor: root.enabled ? MouseCursor.pointer : MouseCursor.default;
+        clicked => { if (root.enabled) { root.clicked(); } }
+    }
     AppIcon {
         source: root.icon;
-        tint: ta.has-hover ? FinTheme.ink : root.hue;
+        tint: root.enabled && ta.has-hover ? FinTheme.ink : root.hue;
         width: 16px; height: 16px;
         x: (parent.width - self.width) / 2;
         y: (parent.height - self.height) / 2;
@@ -658,6 +777,114 @@ component KvRow inherits Rectangle {
         y: parent.height - 1px;
         height: 1px; width: parent.width;
         background: FinTheme.hairline;
+    }
+}
+
+// The frame the account and loan detail popups share: scrim, centred panel,
+// title block, big figure, close button, and whatever the caller puts inside.
+//
+// Same geometry and chrome as the edit sheet on purpose — pressing Edit swaps
+// one for the other, and a panel that jumped size or position between the two
+// would read as a second dialog rather than as the same one changing mode.
+// An account's mark: one glyph on a solid colour. A letter beats an icon here —
+// four accounts of the same kind get four identical wallet icons, and the thing
+// being told apart is the bank, not the kind.
+component AccountBadge inherits Rectangle {
+    in property <string> glyph;
+    in property <color> hue;
+    in property <length> side: 30px;
+    width: root.side; height: root.side;
+    border-radius: Surface.r(root.side / 3.3);
+    background: root.hue;
+    Text {
+        text: root.glyph;
+        // White on every hue in the palette, which is what keeps a badge legible
+        // when the theme flips: the square brings its own background.
+        color: #ffffff;
+        font-size: root.side * 0.46; font-weight: 800;
+        width: 100%; height: 100%;
+        horizontal-alignment: center; vertical-alignment: center;
+    }
+}
+
+// Escape closes it, Enter takes the primary action, a click on the backdrop
+// closes it. Same three keys as every other modal in the app.
+component DetailModal inherits Rectangle {
+    in property <string> title;
+    in property <string> subtitle;
+    in property <string> amount;
+    in property <bool> amount-bad;
+    in property <string> badge;
+    in property <color> hue;
+    callback closed();
+    callback confirmed();
+    width: 100%; height: 100%;
+    background: transparent;
+    ScrimFrost { width: 100%; height: 100%; accent: FinTheme.accent; }
+    TouchArea { clicked => { root.closed(); } }
+
+    FocusScope {
+        width: 100%; height: 100%;
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) { root.closed(); return accept; }
+            if (e.text == Key.Return) { root.confirmed(); return accept; }
+            reject
+        }
+
+        Rectangle {
+            width: Math.min(root.width - 64px, 560px);
+            height: Math.min(root.height - 64px, Math.max(220px, dbody.preferred-height));
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: Surface.r(20px);
+            background: Theme.modal;
+            border-width: 1px;
+            border-color: FinTheme.hairline;
+            drop-shadow-blur: Surface.cast(40px);
+            drop-shadow-color: #00000070;
+            // Swallows clicks inside the panel so they never reach the scrim.
+            TouchArea { }
+
+            dbody := VerticalLayout {
+                padding: 20px; spacing: 12px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        AccountBadge { glyph: root.badge; hue: root.hue; side: 38px; }
+                    }
+                    VerticalLayout {
+                        horizontal-stretch: 1; spacing: 2px; alignment: center;
+                        Text { text: root.title; color: FinTheme.ink;
+                            font-size: 17px; font-weight: 800; overflow: elide; }
+                        if root.subtitle != "": Text { text: root.subtitle;
+                            color: FinTheme.ink-dim; font-size: 11.5px; overflow: elide; }
+                    }
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        IconBtn { icon: Icons.x; clicked => { root.closed(); } }
+                    }
+                }
+                Text {
+                    text: root.amount;
+                    color: root.amount-bad ? FinTheme.bad : FinTheme.ink;
+                    font-size: 26px; font-weight: 800;
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    preferred-height: dinner.preferred-height;
+                    dinner := VerticalLayout {
+                        padding-right: 6px; spacing: 10px; alignment: start;
+                        @children
+                    }
+                }
+                Text {
+                    text: "Enter to edit · Esc to close";
+                    color: FinTheme.ink-dim.with-alpha(0.7); font-size: 9.5px;
+                }
+            }
+        }
     }
 }
 
@@ -739,22 +966,47 @@ component Delta inherits Skin {
 // A card whose tone is not flat is outlined in its tone as well as coloured — the
 // mockup's red-bordered Overdue card. Colour alone carries it for most people and
 // an outline carries it for the rest.
-component StatStrip inherits HorizontalLayout {
+component StatStrip inherits Rectangle {
     in property <[FinStat]> stats;
-    spacing: 12px;
-    for s in root.stats: sc := Card {
-        horizontal-stretch: 1;
-        min-height: 96px; max-height: 96px;
+    // Fired by a card that carries an action. Nothing happens for the rest.
+    callback picked(string);
+    property <length> gap: 12px;
+    property <int> n: Math.max(1, root.stats.length);
+    // Hand-placed rather than laid out. A HorizontalLayout hands out only the
+    // *leftover* width, so a card whose text happens to be longer starts wider
+    // and stays wider, and equalising the bases only ever got them close. Divided
+    // from the strip's own width, every card is exactly the same and the row is
+    // exactly filled. Nothing inside is allowed to influence the strip's width,
+    // which is what keeps this out of the binding loop the layout version hit.
+    property <length> cell: (root.width - root.gap * (root.n - 1)) / root.n;
+    // Absolute children give a Rectangle no height of its own.
+    height: 96px;
+    for s[i] in root.stats: sc := Card {
+        x: i * (root.cell + root.gap);
+        y: 0;
+        width: root.cell;
+        height: parent.height;
         property <color> tone-hue: s.tone == "bad"  ? FinTheme.bad
                                 : s.tone == "warn" ? FinTheme.warn
                                 : s.tone == "ok"   ? FinTheme.good : FinTheme.ink;
-        border-color: s.tone == "flat" ? FinTheme.hairline : sc.tone-hue.with-alpha(0.4);
+        border-color: s.action != "" && scta.has-hover
+                        ? sc.tone-hue.with-alpha(0.75)
+                        : s.tone == "flat" ? FinTheme.hairline
+                                           : sc.tone-hue.with-alpha(0.4);
+        animate border-color { duration: 120ms; easing: ease-out; }
+        // Declared before the content so nothing inside loses its own clicks.
+        // A card with no action still gets the area; it just has nothing to fire.
+        scta := TouchArea {
+            mouse-cursor: s.action == "" ? MouseCursor.default : MouseCursor.pointer;
+            clicked => { if (s.action != "") { root.picked(s.action); } }
+        }
         VerticalLayout {
             padding: 14px; spacing: 4px; alignment: center;
             Text {
                 text: s.label;
                 color: s.tone == "flat" ? FinTheme.ink-dim : sc.tone-hue;
                 font-size: 11px; font-weight: 700;
+                overflow: elide;
             }
             Text {
                 text: s.value; color: sc.tone-hue;
@@ -787,6 +1039,11 @@ component Cell inherits Rectangle {
     horizontal-stretch: root.flex ? 1 : 0;
     min-width: root.flex ? 80px : root.w;
     max-width: root.flex ? 100000px : root.w;
+    // The cell's own text is positioned by hand, so it contributes nothing to
+    // the layout's height. Every table that wraps its rows in a fixed-height
+    // Rectangle got away with that; the one that did not stacked all ten of its
+    // rows on top of each other at y=0.
+    min-height: 28px;
     background: transparent;
     Text {
         x: root.right ? parent.width - self.width : 0px;
@@ -1063,6 +1320,9 @@ component NeedsRow inherits Skin {
 component FinFieldRow inherits VerticalLayout {
     in property <FinField> field;
     callback set(string, string);
+    // Enter inside a field. A LineEdit consumes the key itself, so it never
+    // reaches the panel's key handler and has to be forwarded from here.
+    callback confirm();
     spacing: 6px;
     if root.field.kind != "note": Text {
         text: root.field.label + (root.field.required ? "  *" : "");
@@ -1071,6 +1331,7 @@ component FinFieldRow inherits VerticalLayout {
     if root.field.kind == "text": LineEdit {
         text: root.field.value; placeholder-text: root.field.hint;
         edited(t) => { root.set(root.field.key, t); }
+        accepted(t) => { root.set(root.field.key, t); root.confirm(); }
     }
     // Money and number both take a number; they are separate kinds so the hint
     // can say which unit is expected without the caller composing labels.
@@ -1078,11 +1339,13 @@ component FinFieldRow inherits VerticalLayout {
         text: root.field.value;
         placeholder-text: root.field.hint;
         edited(t) => { root.set(root.field.key, t); }
+        accepted(t) => { root.set(root.field.key, t); root.confirm(); }
     }
     if root.field.kind == "date": LineEdit {
         text: root.field.value;
         placeholder-text: root.field.hint == "" ? "YYYY-MM-DD" : root.field.hint;
         edited(t) => { root.set(root.field.key, t); }
+        accepted(t) => { root.set(root.field.key, t); root.confirm(); }
     }
     if root.field.kind == "dropdown": ComboBox {
         model: root.field.options; current-value: root.field.value;
@@ -1120,6 +1383,12 @@ export component FinancesPage inherits Rectangle {
 
     // Strip + charts
     in property <[FinStat]> stats;
+    // The health score, and everything that was added up to reach it. The strip
+    // carries the total; this is what the card opens.
+    in property <[FinHealthPart]> health-parts;
+    in property <string> health-score: "";
+    in property <string> health-band: "";
+    property <bool> health-open: false;
     in property <[FinCatSlice]> slices;
     in property <string> spent-total;
     in property <[FinMonthBar]> months;
@@ -1178,6 +1447,17 @@ export component FinancesPage inherits Rectangle {
     in-out property <string> subs-category: "Every category";
     in property <[string]> subs-currencies;
     in-out property <string> subs-currency: "Every currency";
+    // Which page of the subscription table is on screen. Held here rather than in
+    // Rust: the rows are already all in the model, so paging is a matter of which
+    // of them are drawn, and a round trip to the database to draw fewer rows of
+    // the same list would buy nothing.
+    property <int> subs-page: 0;
+    property <int> subs-per-page: 11;
+    property <int> subs-pages: Math.max(1, Math.ceil(root.subs.length / root.subs-per-page));
+    // Clamped rather than assigned, so a filter that shrinks the list under the
+    // current page lands on the last one instead of on nothing at all.
+    property <int> subs-pg: Math.min(root.subs-page, root.subs-pages - 1);
+    property <int> subs-from: root.subs-pg * root.subs-per-page;
     // Which month the bills table is showing. The list is dated, so without this
     // it is whatever window the loader happened to ask for.
     in property <string> bills-period: "";
@@ -1200,10 +1480,21 @@ export component FinancesPage inherits Rectangle {
     in property <[FinAccountRow]> accounts;
     in property <string> liquid-total: "";
     in property <string> debt-total: "";
+    // Loans only. `debt-total` is every negative balance including the credit
+    // card, which is not a loan and must not head the Loans grid.
+    in property <string> loans-total: "";
     // The position walk: cash, card, liquid, loans, dues. Never summed into a
     // net worth — see the note on the Accounts tab.
     in property <[FinKv]> position;
     in property <[FinLoanRow]> loans;
+    // The detail popup a card opens. Purely local: the row is already on the
+    // page, so nothing has to be fetched to show it in full — the grid card is
+    // a square with a fixed height and clips whatever does not fit, and this is
+    // where the rest of it lives.
+    property <bool> detail-open: false;
+    property <bool> detail-loan-open: false;
+    property <FinAccountRow> detail-account;
+    property <FinLoanRow> detail-loan;
     in property <[FinBudgetRow]> budgets;
     in property <string> budget-period: "";
     in property <string> budget-income: "";
@@ -1269,6 +1560,10 @@ export component FinancesPage inherits Rectangle {
     // nothing to fetch, so routing it through `sheet` would mean building a form in
     // Rust to say two paragraphs.
     in-out property <bool> demo-open: false;
+    // Non-empty while the sample data is being written or cleared, and what to
+    // call it. A string rather than a bool: the two operations take about the same
+    // time and look identical, so the chip has to say which one is running.
+    in property <string> demo-busy: "";
     // Clearing the sample data removes the warning chip, and the chip was the only
     // door to the "add it again" button — so the header logo opens the explainer too,
     // and leaves the chip on screen afterwards as a quiet way back in.
@@ -1285,9 +1580,21 @@ export component FinancesPage inherits Rectangle {
     // An answer rather than a complaint: what an envelope has left, what OCR read.
     in property <string> sheet-note: "";
     in property <bool> sheet-busy: false;
+    // What Enter does in a sheet. A function rather than the callback itself, so
+    // the two places that fire it — the panel's key handler and a field's own
+    // Enter — cannot disagree about when a submit is allowed. A sheet with no
+    // primary action (the schedule, the rate list) is read-only, and one that is
+    // already saving must not be told to save again.
+    function sheet-confirm() {
+        if (root.sheet-primary != "" && !root.sheet-busy) { root.submit-sheet(); }
+    }
     // Extra content some sheets show alongside the form.
     in property <[FinPrice]> prices;
     in property <[FinInstalment]> schedule;
+    // Which slice of the amortisation the sheet is showing. The whole schedule
+    // stays in Rust; only ten instalments cross into the UI at a time.
+    in property <int> schedule-page: 1;
+    in property <int> schedule-pages: 1;
     in property <[FinImportRow]> import-rows;
     in property <string> import-summary: "";
     in property <bool> import-needs-format: false;
@@ -1324,6 +1631,7 @@ export component FinancesPage inherits Rectangle {
     callback account-close(int, bool);
     callback account-delete(int);
     callback loan-schedule(int);
+    callback schedule-step(int);
     callback loan-prepay(int);
     callback budget-remove(int);
     callback budget-copy-forward();
@@ -1397,7 +1705,11 @@ export component FinancesPage inherits Rectangle {
             // so this sits in the header rather than on one tab, and it pulses
             // because a static notice beside eight other controls is a notice
             // nobody reads. It disappears for good once the last sample is gone.
-            if root.demo || root.demo-peek: VerticalLayout {
+            if root.demo-busy != "": VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                BusyPill { label: root.demo-busy; }
+            }
+            if root.demo-busy == "" && (root.demo || root.demo-peek): VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
                 WarnPulse {
                     label: root.demo ? "Sample data" : "Add sample data";
@@ -1476,7 +1788,7 @@ export component FinancesPage inherits Rectangle {
                 compact: root.tabs-compact; active: root.tab == "subs";
                 count: root.subs.length;
                 clicked => { root.set-tab("subs"); } }
-            FinTab { label: "Dues"; icon: Icons.users;
+            FinTab { label: "Lending"; icon: Icons.users;
                 wide: root.dues.length > 0 ? 100px : 84px;
                 compact: root.tabs-compact; active: root.tab == "dues";
                 count: root.dues.length;
@@ -1565,7 +1877,10 @@ export component FinancesPage inherits Rectangle {
                     alignment: start;
                     padding-right: 6px; spacing: 14px;
 
-                    StatStrip { stats: root.stats; }
+                    StatStrip {
+                        stats: root.stats;
+                        picked(what) => { if (what == "health") { root.health-open = true; } }
+                    }
 
                     // breakdown + needs-you
                     HorizontalLayout {
@@ -1687,7 +2002,7 @@ export component FinancesPage inherits Rectangle {
                                         // would leave its gap behind as a hole in this one.
                                         spacing: 0px; horizontal-stretch: 1;
                                         Text {
-                                            text: "Owed to you · " + root.owed-to-me;
+                                            text: "Lent out · " + root.owed-to-me;
                                             color: FinTheme.good; font-size: 12px; font-weight: 700;
                                         }
                                         for d in root.dues: Rectangle {
@@ -1724,7 +2039,7 @@ export component FinancesPage inherits Rectangle {
                                         // would leave its gap behind as a hole in this one.
                                         spacing: 0px; horizontal-stretch: 1;
                                         Text {
-                                            text: "You owe · " + root.i-owe;
+                                            text: "Borrowed · " + root.i-owe;
                                             color: FinTheme.bad; font-size: 12px; font-weight: 700;
                                         }
                                         for d in root.dues: Rectangle {
@@ -2427,19 +2742,21 @@ export component FinancesPage inherits Rectangle {
 
                     HorizontalLayout {
                         spacing: 8px; alignment: start;
-                        FilterChip { label: "All"; count: root.subs-all;
+                        // All four the same width, sized for the longest label
+                        // and its count. Left to themselves "All 11" and
+                        // "Cancelled 1" are two very different chips.
+                        FilterChip { label: "All"; count: root.subs-all; w: 116px;
                             on: root.subs-filter == "all";
-                            clicked => { root.set-subs-filter("all"); } }
-                        FilterChip { label: "Active"; count: root.subs-active;
+                            clicked => { root.subs-page = 0; root.set-subs-filter("all"); } }
+                        FilterChip { label: "Active"; count: root.subs-active; w: 116px;
                             on: root.subs-filter == "active";
-                            clicked => { root.set-subs-filter("active"); } }
-                        FilterChip { label: "Paused"; count: root.subs-paused;
+                            clicked => { root.subs-page = 0; root.set-subs-filter("active"); } }
+                        FilterChip { label: "Paused"; count: root.subs-paused; w: 116px;
                             on: root.subs-filter == "paused";
-                            clicked => { root.set-subs-filter("paused"); } }
-                        FilterChip { label: "Cancelled"; count: root.subs-cancelled;
-                            min-width: 108px;
+                            clicked => { root.subs-page = 0; root.set-subs-filter("paused"); } }
+                        FilterChip { label: "Cancelled"; count: root.subs-cancelled; w: 116px;
                             on: root.subs-filter == "cancelled";
-                            clicked => { root.set-subs-filter("cancelled"); } }
+                            clicked => { root.subs-page = 0; root.set-subs-filter("cancelled"); } }
                         Rectangle { horizontal-stretch: 1; background: transparent; }
                         // Narrowed in Rust like the chips are, for the same reason:
                         // a hidden-but-present row would still be counted by the
@@ -2451,6 +2768,7 @@ export component FinancesPage inherits Rectangle {
                                 current-value: root.subs-category;
                                 min-width: 160px;
                                 selected(v) => {
+                                    root.subs-page = 0;
                                     root.subs-category = v;
                                     root.subs-filter-changed();
                                 }
@@ -2463,6 +2781,7 @@ export component FinancesPage inherits Rectangle {
                                 current-value: root.subs-currency;
                                 min-width: 140px;
                                 selected(v) => {
+                                    root.subs-page = 0;
                                     root.subs-currency = v;
                                     root.subs-filter-changed();
                                 }
@@ -2479,7 +2798,7 @@ export component FinancesPage inherits Rectangle {
                             alignment: start;
                             padding: 0px; spacing: 0px;
                             Rectangle {
-                                min-height: 36px; max-height: 36px;
+                                min-height: 38px; max-height: 38px;
                                 background: FinTheme.card-2;
                                 HorizontalLayout {
                                     padding-left: 14px; padding-right: 14px; spacing: 10px;
@@ -2490,12 +2809,12 @@ export component FinancesPage inherits Rectangle {
                                     // you feel and a yearly one is what you decide on.
                                     HeadCell { label: "COST / MO"; w: 92px; right: true;
                                         sortable: false; }
-                                    HeadCell { label: "COST / YR"; w: 96px; right: true;
+                                    HeadCell { label: "COST / YR"; w: 92px; right: true;
                                         sortable: false; }
-                                    HeadCell { label: "NEXT CHARGE"; w: 100px; sortable: false; }
+                                    HeadCell { label: "NEXT CHARGE"; w: 92px; sortable: false; }
                                     HeadCell { label: "PAYS FROM"; w: 104px; sortable: false; }
-                                    HeadCell { label: "STATUS"; w: 96px; sortable: false; }
-                                    HeadCell { label: ""; w: 118px; sortable: false; }
+                                    HeadCell { label: "STATUS"; w: 118px; sortable: false; }
+                                    HeadCell { label: ""; w: 100px; sortable: false; }
                                 }
                             }
                             Rectangle { min-height: 1px; max-height: 1px;
@@ -2510,8 +2829,18 @@ export component FinancesPage inherits Rectangle {
                                 icon: Icons.repeat;
                             }
 
-                            for s in root.subs: srow := Rectangle {
-                                min-height: 46px; max-height: 46px;
+                            // Only the current page is drawn. The whole list is in
+                            // the model either way, so this is a question of what is
+                            // on screen, not of what was loaded.
+                            for s[i] in root.subs: srow := Rectangle {
+                                property <bool> on-page:
+                                    i >= root.subs-from && i < root.subs-from + root.subs-per-page;
+                                // A row off the page collapses instead of hiding, so
+                                // it takes no space in the column it is not part of.
+                                min-height: srow.on-page ? 54px : 0px;
+                                max-height: srow.on-page ? 54px : 0px;
+                                visible: srow.on-page;
+                                clip: true;
                                 background: sta.has-hover ? FinTheme.card-2 : transparent;
                                 // A paused or cancelled row is dimmed rather than
                                 // hidden: it is still money committed until it is
@@ -2521,41 +2850,36 @@ export component FinancesPage inherits Rectangle {
                                 HorizontalLayout {
                                     padding-left: 14px; padding-right: 14px; spacing: 10px;
                                     Rectangle {
-                                        horizontal-stretch: 1; min-width: 130px;
+                                        horizontal-stretch: 1; min-width: 150px;
                                         background: transparent; clip: true;
                                         HorizontalLayout {
                                             spacing: 10px;
                                             VerticalLayout {
                                                 alignment: center; horizontal-stretch: 0;
-                                                Tile {
-                                                    size: 28px;
-                                                    hue: s.hike-from != "" ? FinTheme.warn
-                                                                           : FinTheme.accent;
-                                                    icon: Icons.repeat;
+                                                // The service's own initial on its own
+                                                // colour. There is no brand table behind
+                                                // it and there should not be one: a
+                                                // hardcoded list of logos is wrong within
+                                                // a year and misses whatever the user
+                                                // actually pays for.
+                                                AccountBadge {
+                                                    glyph: s.badge; hue: s.hue; side: 34px;
                                                 }
                                             }
                                             VerticalLayout {
                                                 alignment: center; horizontal-stretch: 1;
-                                                spacing: 1px;
+                                                spacing: 2px;
                                                 Text { text: s.name; color: FinTheme.ink;
-                                                    font-size: 12.5px; font-weight: 600;
+                                                    font-size: 13px; font-weight: 700;
                                                     overflow: elide; }
                                                 Text {
-                                                    // The price rise this section
-                                                    // exists to make visible, then
-                                                    // what the service actually
-                                                    // charges when that is not the
-                                                    // base currency — the stored
-                                                    // amount is the truth and the
-                                                    // converted one is derived.
-                                                    text: s.hike-from != ""
-                                                        ? "was " + s.hike-from
-                                                        : (s.original != "" ? s.original
-                                                           : (s.last-paid == "" ? "never charged yet"
-                                                              : "last " + s.last-paid));
-                                                    color: s.hike-from != "" ? FinTheme.warn
-                                                                            : FinTheme.ink-dim;
-                                                    font-size: 10px; overflow: elide;
+                                                    // What the service charges under its
+                                                    // own name. The price rise it used to
+                                                    // carry is a state, not a price, and
+                                                    // now lives in the status pill.
+                                                    text: s.plan;
+                                                    color: FinTheme.ink-dim;
+                                                    font-size: 10.5px; overflow: elide;
                                                 }
                                             }
                                         }
@@ -2571,43 +2895,55 @@ export component FinancesPage inherits Rectangle {
                                     }
                                     Cell { text: s.cycle; w: 76px; dim: true; }
                                     Cell { text: s.monthly; w: 92px; right: true; strong: true; }
-                                    Cell { text: s.yearly; w: 96px; right: true; dim: true; }
-                                    Cell { text: s.next-due; w: 100px;
+                                    Cell { text: s.yearly; w: 92px; right: true; dim: true; }
+                                    Cell { text: s.next-short; w: 92px;
                                         dim: s.status != "active"; }
                                     Cell { text: s.account; w: 104px; dim: true; }
                                     Rectangle {
                                         horizontal-stretch: 0;
-                                        min-width: 96px; max-width: 96px;
+                                        min-width: 118px; max-width: 118px;
                                         background: transparent; clip: true;
-                                        // Paid for and not opened, from what Videos
-                                        // actually recorded. It outranks Active
-                                        // because it is the one thing on this row a
-                                        // generic finance app could never say.
-                                        Pill {
+                                        // One pill, in priority order. Unused outranks
+                                        // a price rise because it is the one thing on
+                                        // this row a generic finance app could never
+                                        // say; a price rise outranks Active because
+                                        // Active is the state you already assumed.
+                                        stp := Pill {
                                             x: 0; y: (parent.height - self.height) / 2;
+                                            dot: true;
                                             label: s.unused-days > 0
                                                 ? "Unused \{s.unused-days}d"
-                                                : (s.status == "active"
-                                                   ? (s.auto-post ? "Auto" : "Active")
-                                                   : s.status);
+                                                : (s.hike-pct > 0
+                                                   ? "Price ↑ \{s.hike-pct}%"
+                                                   : (s.status == "active"
+                                                      ? (s.auto-post ? "Auto" : "Active")
+                                                      : s.status));
                                             hue: s.unused-days > 0 ? FinTheme.bad
+                                               : s.hike-pct > 0 ? FinTheme.warn
                                                : s.status == "active" ? FinTheme.good
                                                                       : FinTheme.ink-dim;
+                                        }
+                                        // The pill is the price history's own handle —
+                                        // it is what named the rise, so it is what opens
+                                        // the record of it. Sized to the pill so the rest
+                                        // of the column stays inert.
+                                        if s.hike-pct > 0: TouchArea {
+                                            x: stp.x; y: stp.y;
+                                            width: stp.width; height: stp.height;
+                                            mouse-cursor: MouseCursor.pointer;
+                                            clicked => { root.open-sheet("prices", s.id); }
                                         }
                                     }
                                     Rectangle {
                                         horizontal-stretch: 0;
-                                        min-width: 118px; max-width: 118px;
+                                        min-width: 100px; max-width: 100px;
                                         background: transparent;
                                         HorizontalLayout {
                                             alignment: end; spacing: 3px;
                                             VerticalLayout {
                                                 alignment: center; horizontal-stretch: 0;
-                                                if s.hike-from != "": IconBtn {
-                                                    icon: Icons.trending-up; tip: "Price history";
-                                                    hue: FinTheme.warn;
-                                                    clicked => { root.open-sheet("prices", s.id); }
-                                                }
+                                                IconBtn { icon: Icons.pencil; tip: "Edit";
+                                                    clicked => { root.open-sheet("sub", s.id); } }
                                             }
                                             VerticalLayout {
                                                 alignment: center; horizontal-stretch: 0;
@@ -2623,11 +2959,6 @@ export component FinancesPage inherits Rectangle {
                                             }
                                             VerticalLayout {
                                                 alignment: center; horizontal-stretch: 0;
-                                                IconBtn { icon: Icons.pencil; tip: "Edit";
-                                                    clicked => { root.open-sheet("sub", s.id); } }
-                                            }
-                                            VerticalLayout {
-                                                alignment: center; horizontal-stretch: 0;
                                                 IconBtn { icon: Icons.x; tip: "Delete";
                                                     clicked => { root.recur-delete(s.id); } }
                                             }
@@ -2640,12 +2971,55 @@ export component FinancesPage inherits Rectangle {
                                     background: FinTheme.hairline;
                                 }
                             }
+
+                            // Footer: what is on screen out of what there is, and the
+                            // pager. Shown even on a single page so the count of a
+                            // filtered list is always readable.
+                            if root.subs.length > 0: Rectangle {
+                                min-height: 46px; max-height: 46px;
+                                background: FinTheme.card-2;
+                                HorizontalLayout {
+                                    padding-left: 14px; padding-right: 14px; spacing: 8px;
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 1;
+                                        Text {
+                                            text: "Showing \{root.subs-from + 1}–"
+                                                + "\{Math.min(root.subs-from + root.subs-per-page, root.subs.length)}"
+                                                + " of \{root.subs.length}";
+                                            color: FinTheme.ink-dim; font-size: 11.5px;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        IconBtn {
+                                            icon: Icons.chevron-left; tip: "Previous page";
+                                            enabled: root.subs-pg > 0;
+                                            clicked => { root.subs-page = root.subs-pg - 1; }
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        Pill {
+                                            label: "\{root.subs-pg + 1} of \{root.subs-pages}";
+                                            hue: FinTheme.accent; h: 24px;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        IconBtn {
+                                            icon: Icons.chevron-right; tip: "Next page";
+                                            enabled: root.subs-pg < root.subs-pages - 1;
+                                            clicked => { root.subs-page = root.subs-pg + 1; }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
                 }
             }
 
-            // ══ DUES ════════════════════════════════════════════════════════
+            // ══ LENDING ═════════════════════════════════════════════════════
             if root.tab == "dues": ScrollView {
                 property <int> watch: root.dues.length;
                 changed watch => { self.viewport-y = 0; }
@@ -2658,23 +3032,20 @@ export component FinancesPage inherits Rectangle {
 
                     HorizontalLayout {
                         spacing: 8px; alignment: start;
-                        FilterChip { label: "All"; count: root.dues-all;
+                        FilterChip { label: "All"; count: root.dues-all; w: 128px;
                             on: root.dues-filter == "all";
                             clicked => { root.set-dues-filter("all"); } }
-                        FilterChip { label: "Owed to you"; count: root.dues-to-me;
-                            min-width: 122px;
+                        FilterChip { label: "Lent out"; count: root.dues-to-me; w: 128px;
                             on: root.dues-filter == "to-me";
                             clicked => { root.set-dues-filter("to-me"); } }
-                        FilterChip { label: "You owe"; count: root.dues-i-owe;
-                            min-width: 100px;
+                        FilterChip { label: "Borrowed"; count: root.dues-i-owe; w: 128px;
                             on: root.dues-filter == "i-owe";
                             clicked => { root.set-dues-filter("i-owe"); } }
-                        FilterChip { label: "Closed"; count: root.dues-closed;
-                            min-width: 96px;
+                        FilterChip { label: "Squared up"; count: root.dues-closed; w: 128px;
                             on: root.dues-filter == "closed";
                             clicked => { root.set-dues-filter("closed"); } }
                         Rectangle { horizontal-stretch: 1; background: transparent; }
-                        Btn { label: "Record a due"; icon: Icons.plus; h: 30px; primary: true;
+                        Btn { label: "Lend or borrow"; icon: Icons.plus; h: 30px; primary: true;
                             clicked => { root.open-sheet("due", 0); } }
                     }
 
@@ -2689,11 +3060,11 @@ export component FinancesPage inherits Rectangle {
                                 HorizontalLayout {
                                     padding-left: 14px; padding-right: 14px; spacing: 10px;
                                     HeadCell { label: "PERSON"; w: 150px; sortable: false; }
-                                    HeadCell { label: "DIRECTION"; w: 108px; sortable: false; }
+                                    HeadCell { label: "WHICH WAY"; w: 108px; sortable: false; }
                                     HeadCell { label: "NOTE"; flex: true; sortable: false; }
-                                    HeadCell { label: "SETTLED"; w: 104px; right: true;
+                                    HeadCell { label: "BACK SO FAR"; w: 104px; right: true;
                                         sortable: false; }
-                                    HeadCell { label: "OPEN FOR"; w: 92px; right: true;
+                                    HeadCell { label: "OUTSTANDING"; w: 92px; right: true;
                                         sortable: false; }
                                     HeadCell { label: "AMOUNT"; w: 104px; right: true;
                                         sortable: false; }
@@ -2707,8 +3078,8 @@ export component FinancesPage inherits Rectangle {
                                 title: root.dues-all == 0 ? "Nothing owed either way"
                                                           : "Nothing in that filter";
                                 body: root.dues-all == 0
-                                    ? "Money lent to or borrowed from a named person. Lending posts as a transfer, not as spending — it is still yours until it is written off."
-                                    : "Every due is in one of the other groups.";
+                                    ? "Money you have lent to or borrowed from a named person. Lending posts as a transfer, not as spending — it is still your money until you write it off."
+                                    : "Everything here is in one of the other groups.";
                                 icon: Icons.users;
                             }
 
@@ -2754,7 +3125,7 @@ export component FinancesPage inherits Rectangle {
                                         Pill {
                                             x: 0; y: (parent.height - self.height) / 2;
                                             label: d.direction == "owed_to_me"
-                                                ? "Owed to you" : "You owe";
+                                                ? "Lent out" : "Borrowed";
                                             hue: drow.hue;
                                         }
                                     }
@@ -2833,8 +3204,8 @@ export component FinancesPage inherits Rectangle {
                             alignment: start;
                             padding: 16px; spacing: 8px;
                             CardTitle {
-                                title: "Settled";
-                                hint: "The last six months.";
+                                title: "Squared up";
+                                hint: "Paid back, paid off or written off — the last six months.";
                             }
                             for d in root.dues-settled: HorizontalLayout {
                                 spacing: 10px;
@@ -2843,8 +3214,8 @@ export component FinancesPage inherits Rectangle {
                                     vertical-alignment: center; min-width: 120px; }
                                 Pill {
                                     label: d.status == "written_off" ? "written off"
-                                         : d.direction == "owed_to_me" ? "They paid you"
-                                                                       : "You paid them";
+                                         : d.direction == "owed_to_me" ? "They paid you back"
+                                                                       : "You paid them back";
                                     hue: d.status == "written_off" ? FinTheme.warn
                                        : d.direction == "owed_to_me" ? FinTheme.good
                                                                      : FinTheme.ink-dim;
@@ -2855,7 +3226,7 @@ export component FinancesPage inherits Rectangle {
                                 // How long it stayed open. The number that says
                                 // whether a person is slow or simply forgetful.
                                 Text {
-                                    text: d.age-days > 0 ? "open \{d.age-days} days" : "";
+                                    text: d.age-days > 0 ? "took \{d.age-days} days" : "";
                                     color: FinTheme.ink-dim; font-size: 11px;
                                     vertical-alignment: center; min-width: 110px;
                                     horizontal-alignment: right;
@@ -2883,205 +3254,323 @@ export component FinancesPage inherits Rectangle {
                 property <int> watch: root.accounts.length + root.loans.length;
                 changed watch => { self.viewport-y = 0; }
                 init => { self.viewport-y = 0; }
-                VerticalLayout {
+                acol := VerticalLayout {
                     alignment: start;
-                    padding-right: 6px; spacing: 14px;
+                    padding-right: 6px; spacing: 12px;
 
+                    // One height for every card on the tab, accounts and loans
+                    // alike, taken from the fullest card there is — a credit
+                    // card, which carries the whole stack: header, balance,
+                    // utilisation bar, five detail rows and a row of buttons.
+                    // Sizing each card to its own content made a grid of ragged
+                    // rows, and sizing them square made them enormous.
+                    //
+                    // pad(32) + head(32) + balance(26) + note and bar(22)
+                    //  + five rows(150) + buttons(26) + seven gaps(49) = 337,
+                    // rounded up to clear the loan card, whose extra progress
+                    // line needs another sixteen.
+                    property <length> card-h: 356px;
+
+                    // A caption, not three stat cards. The totals belong to the
+                    // grid underneath them, and a card each pushed the accounts
+                    // themselves below the fold. Net worth still is not printed —
+                    // the reason why is on the Position card at the bottom.
                     HorizontalLayout {
-                        spacing: 14px;
-                        Card {
-                            horizontal-stretch: 1; min-height: 84px; max-height: 84px;
-                            VerticalLayout {
-                                padding: 14px; spacing: 4px; alignment: center;
-                                Text { text: "LIQUID"; color: FinTheme.ink-dim;
-                                    font-size: 11px; font-weight: 700; }
-                                Text { text: root.liquid-total; color: FinTheme.ink;
-                                    font-size: 22px; font-weight: 800; }
-                            }
+                        spacing: 8px;
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Pill { label: "LIQUID · " + root.liquid-total;
+                                   hue: FinTheme.accent; h: 28px; }
                         }
-                        Card {
-                            horizontal-stretch: 1; min-height: 84px; max-height: 84px;
-                            VerticalLayout {
-                                padding: 14px; spacing: 4px; alignment: center;
-                                Text { text: "DEBT"; color: FinTheme.ink-dim;
-                                    font-size: 11px; font-weight: 700; }
-                                Text { text: root.debt-total; color: FinTheme.bad;
-                                    font-size: 22px; font-weight: 800; }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                        Btn { label: "New account"; h: 30px; primary: true;
+                            clicked => { root.open-sheet("account", 0); } }
+                    }
+
+                    // A card each rather than one row each, and side by side
+                    // rather than stacked. Every kind of account has a different
+                    // interesting fact under its balance — a reconcile, a
+                    // statement, a drift, a top-up — so a table would have to
+                    // show all four columns for all four kinds, mostly blank;
+                    // and one full-width row per account fits three on a screen.
+                    agrid := Rectangle {
+                        horizontal-stretch: 1;
+                        property <int> cols: self.width < 480px ? 1
+                                           : self.width < 760px ? 2 : 3;
+                        property <length> gap: 18px;
+                        property <length> cardw: (self.width - (cols - 1) * gap) / cols;
+                        property <length> cardh: acol.card-h;
+                        height: Math.ceil(root.accounts.length / cols) * (cardh + gap);
+                        for a[ai] in root.accounts: Rectangle {
+                            x: Math.mod(ai, agrid.cols) * (agrid.cardw + agrid.gap);
+                            y: Math.floor(ai / agrid.cols) * (agrid.cardh + agrid.gap);
+                            width: agrid.cardw; height: agrid.cardh;
+                            border-radius: Surface.r(14px);
+                            background: FinTheme.card;
+                            border-width: 1px;
+                            border-color: acta.has-hover ? FinTheme.accent.with-alpha(0.55)
+                                                         : FinTheme.hairline;
+                            opacity: a.closed ? 0.55 : 1.0;
+                            clip: true;
+                            animate border-color { duration: 120ms; easing: ease-out; }
+                            // Declared first so the buttons below sit on top of it
+                            // and keep their own clicks.
+                            acta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.detail-account = a; root.detail-loan-open = false;
+                                             root.detail-open = true; }
                             }
-                        }
-                        Card {
-                            horizontal-stretch: 1; min-height: 84px; max-height: 84px;
                             VerticalLayout {
-                                padding: 14px; spacing: 4px; alignment: center;
-                                Text { text: "NET WORTH"; color: FinTheme.ink-dim;
-                                    font-size: 11px; font-weight: 700; }
-                                // Not computed on purpose. It would need the value
-                                // of things the app would have to ask you to guess,
-                                // and a number built from a guess should not be
-                                // printed next to two that are real.
-                                Text { text: "Not shown"; color: FinTheme.ink-dim;
-                                    font-size: 13px; font-weight: 600; }
-                                Text { text: "Both figures above are real; their difference is not.";
-                                    color: FinTheme.ink-dim; font-size: 10px; wrap: word-wrap; }
+                                alignment: start;
+                                padding: 16px; spacing: 7px;
+
+                                HorizontalLayout {
+                                    spacing: 9px;
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        AccountBadge { glyph: a.badge; hue: a.hue; }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 1; spacing: 1px;
+                                        HorizontalLayout {
+                                            spacing: 6px; alignment: start;
+                                            Text { text: a.name; color: FinTheme.ink;
+                                                font-size: 12.5px; font-weight: 700;
+                                                overflow: elide;
+                                                vertical-alignment: center; }
+                                            if a.kind == "virtual": Pill {
+                                                label: "holding"; hue: FinTheme.ink-dim; }
+                                            if a.closed: Pill {
+                                                label: "closed"; hue: FinTheme.ink-dim; }
+                                        }
+                                        Text { text: a.sub; color: FinTheme.ink-dim;
+                                            font-size: 10.5px; overflow: elide; }
+                                    }
+                                }
+
+                                // Its own line, left-aligned under the name: in a
+                                // column this narrow a balance pinned to the right
+                                // of the header collides with the name.
+                                Text {
+                                    text: a.balance;
+                                    color: a.negative ? FinTheme.bad : FinTheme.ink;
+                                    font-size: 19px; font-weight: 800;
+                                    overflow: elide;
+                                }
+
+                                // A card's headroom, drawn rather than stated:
+                                // "9.5%" and a bar nearly empty say the same
+                                // thing, and only one of them is read at speed.
+                                if a.limit-note != "": VerticalLayout {
+                                    spacing: 3px;
+                                    Text { text: a.limit-note; color: FinTheme.ink-dim;
+                                        font-size: 10.5px; overflow: elide; }
+                                    Bar {
+                                        pct: a.util-pct; thickness: 5px;
+                                        hue: a.util-pct >= 70 ? FinTheme.warn
+                                                              : FinTheme.accent;
+                                    }
+                                }
+
+                                if a.lent != "": KvRow {
+                                    kv: { label: "Lent out", value: a.lent,
+                                          tone: "ok", strong: false };
+                                }
+                                if a.borrowed != "": KvRow {
+                                    kv: { label: "Borrowed", value: a.borrowed,
+                                          tone: "warn", strong: false };
+                                }
+                                if a.reconciled != "": KvRow {
+                                    kv: { label: "Balance", value: a.reconciled,
+                                          tone: "flat", strong: false };
+                                }
+                                if a.in-month != "": KvRow {
+                                    kv: { label: "In this month", value: a.in-month,
+                                          tone: "ok", strong: false };
+                                }
+                                if a.out-month != "": KvRow {
+                                    kv: { label: "Out this month", value: a.out-month,
+                                          tone: "flat", strong: false };
+                                }
+                                if a.statement != "": KvRow {
+                                    kv: { label: "Statement", value: a.statement,
+                                          tone: "flat", strong: false };
+                                }
+                                if a.minimum-due != "": KvRow {
+                                    kv: { label: "Minimum due", value: a.minimum-due,
+                                          tone: "flat", strong: false };
+                                }
+                                if a.drift != "": KvRow {
+                                    kv: { label: "Last count was out by",
+                                          value: a.drift,
+                                          tone: a.drift-bad ? "warn" : "ok",
+                                          strong: false };
+                                }
+                                if a.topped-from != "": KvRow {
+                                    kv: { label: "Topped up from", value: a.topped-from,
+                                          tone: "flat", strong: false };
+                                }
+                                if a.last-topup != "": KvRow {
+                                    kv: { label: "Last top-up", value: a.last-topup,
+                                          tone: "flat", strong: false };
+                                }
+
+                                // The one thing each kind of account actually
+                                // needs doing to it, named the way the act is
+                                // named: a wallet is counted, not reconciled.
+                                if a.kind == "cash": Text {
+                                    text: "Cash always drifts. A recount sets the balance and books the gap.";
+                                    color: FinTheme.ink-dim; font-size: 10px;
+                                    wrap: word-wrap;
+                                }
+                                if a.kind == "wallet": Text {
+                                    text: "Top-ups are transfers, not spending. Only what leaves the wallet counts.";
+                                    color: FinTheme.ink-dim; font-size: 10px;
+                                    wrap: word-wrap;
+                                }
+                                if a.kind == "virtual": Text {
+                                    text: "Lending is not spending. Money moves here when a due opens and comes back when it settles.";
+                                    color: FinTheme.ink-dim; font-size: 10px;
+                                    wrap: word-wrap;
+                                }
+
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                                HorizontalLayout {
+                                    spacing: 5px; alignment: start;
+                                    if a.kind == "cash": Btn {
+                                        label: "Recount"; h: 26px;
+                                        clicked => { root.account-recount(a.id); } }
+                                    if a.kind != "cash" && a.kind != "virtual": Btn {
+                                        label: "Reconcile"; h: 26px;
+                                        clicked => { root.account-reconcile(a.id); } }
+                                    if a.kind == "card" && a.negative: Btn {
+                                        label: "Pay it off"; h: 26px;
+                                        clicked => { root.account-pay-card(a.id); } }
+                                    if a.kind != "virtual": Btn {
+                                        label: "Edit"; h: 26px;
+                                        clicked => { root.open-sheet("account", a.id); } }
+                                    if a.kind != "virtual" && a.txn-count == 0: IconBtn {
+                                        icon: Icons.x;
+                                        clicked => { root.account-delete(a.id); } }
+                                }
                             }
                         }
                     }
 
-                    Card {
+                    Text {
+                        text: "Balances are derived from the ledger, never stored.";
+                        color: FinTheme.ink-dim; font-size: 10.5px;
+                    }
+
+                    HorizontalLayout {
+                        spacing: 8px;
                         VerticalLayout {
-                            alignment: start;
-                            padding: 16px; spacing: 12px;
-                            HorizontalLayout {
-                                spacing: 10px;
-                                CardTitle {
-                                    title: "Accounts";
-                                    hint: "Balances are derived from the ledger, never stored.";
-                                }
-                                Btn { label: "New account"; h: 32px; primary: true;
-                                    clicked => { root.open-sheet("account", 0); } }
+                            alignment: center; horizontal-stretch: 0;
+                            Pill { label: root.loans.length == 0 ? "LOANS"
+                                        : "LOANS · " + root.loans-total + " OUTSTANDING";
+                                   hue: FinTheme.bad; h: 28px; }
+                        }
+                        Rectangle { horizontal-stretch: 1; background: transparent; }
+                        Btn { label: "New loan"; h: 30px; primary: true;
+                            clicked => { root.open-sheet("loan", 0); } }
+                    }
+                    if root.loans.length == 0: Text {
+                        text: "No loans tracked.";
+                        color: FinTheme.ink-dim; font-size: 12.5px;
+                    }
+                    lgrid := Rectangle {
+                        horizontal-stretch: 1;
+                        property <int> cols: self.width < 480px ? 1
+                                           : self.width < 760px ? 2 : 3;
+                        property <length> gap: 18px;
+                        property <length> cardw: (self.width - (cols - 1) * gap) / cols;
+                        property <length> cardh: acol.card-h;
+                        height: Math.ceil(root.loans.length / cols) * (cardh + gap);
+                        for l[li] in root.loans: Rectangle {
+                            x: Math.mod(li, lgrid.cols) * (lgrid.cardw + lgrid.gap);
+                            y: Math.floor(li / lgrid.cols) * (lgrid.cardh + lgrid.gap);
+                            width: lgrid.cardw; height: lgrid.cardh;
+                            border-radius: Surface.r(14px);
+                            background: FinTheme.card;
+                            border-width: 1px;
+                            border-color: lcta.has-hover ? FinTheme.accent.with-alpha(0.55)
+                                                         : FinTheme.hairline;
+                            clip: true;
+                            animate border-color { duration: 120ms; easing: ease-out; }
+                            lcta := TouchArea {
+                                mouse-cursor: pointer;
+                                clicked => { root.detail-loan = l; root.detail-loan-open = true;
+                                             root.detail-open = true; }
                             }
+                            VerticalLayout {
+                                alignment: start;
+                                padding: 16px; spacing: 6px;
+                                HorizontalLayout {
+                                    spacing: 9px;
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        AccountBadge { glyph: l.badge; hue: l.hue; }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 1; spacing: 1px;
+                                        Text { text: l.name; color: FinTheme.ink;
+                                            font-size: 12.5px; font-weight: 700;
+                                            overflow: elide; }
+                                        Text { text: l.rate; color: FinTheme.ink-dim;
+                                            font-size: 10.5px; overflow: elide; }
+                                    }
+                                }
+                                Text {
+                                    text: l.balance; color: FinTheme.bad;
+                                    font-size: 19px; font-weight: 800;
+                                    overflow: elide;
+                                }
+                                Text {
+                                    text: "\{l.progress-pct}% repaid · "
+                                          + "\{l.remaining-months} of "
+                                          + "\{l.tenure-months} left";
+                                    color: FinTheme.ink-dim; font-size: 10.5px;
+                                    overflow: elide;
+                                }
+                                Bar { pct: l.progress-pct; hue: FinTheme.accent; toned: false; }
+                                KvRow {
+                                    kv: { label: "EMI", value: l.emi,
+                                          tone: "flat", strong: false };
+                                }
 
-                            // A card each rather than one row each. Every kind of
-                            // account has a different interesting fact under its
-                            // balance — a reconcile, a statement, a drift, a
-                            // top-up — and a table would have to show all four
-                            // columns for all four kinds, mostly blank.
-                            for a in root.accounts: Rectangle {
-                                min-height: 176px;
-                                border-radius: Surface.r(12px);
-                                background: FinTheme.card-2;
-                                opacity: a.closed ? 0.55 : 1.0;
-                                VerticalLayout {
-                                    alignment: start;
-                                    padding: 14px; spacing: 8px;
+                                // How the next instalment divides. The number
+                                // that answers "I have paid this for five
+                                // years, why has it barely moved".
+                                if l.emi-principal != "": KvRow {
+                                    kv: { label: "This EMI · principal",
+                                          value: l.emi-principal, tone: "ok",
+                                          strong: false };
+                                }
+                                if l.emi-interest != "": KvRow {
+                                    kv: { label: "This EMI · interest",
+                                          value: l.emi-interest,
+                                          tone: l.interest-free ? "flat" : "warn",
+                                          strong: false };
+                                }
+                                if l.closes != "": KvRow {
+                                    kv: { label: "Closes", value: l.closes,
+                                          tone: "flat", strong: false };
+                                }
+                                if l.interest-left != "": KvRow {
+                                    kv: { label: "Interest left",
+                                          value: l.interest-left,
+                                          tone: l.interest-free ? "ok" : "bad",
+                                          strong: false };
+                                    rule: false;
+                                }
 
-                                    HorizontalLayout {
-                                        spacing: 10px;
-                                        VerticalLayout {
-                                            alignment: center; horizontal-stretch: 0;
-                                            Rectangle {
-                                                width: 34px; height: 34px;
-                                                border-radius: Surface.r(10px);
-                                                background: FinTheme.accent.with-alpha(0.14);
-                                                AppIcon {
-                                                    source: a.kind == "card" ? Icons.credit-card
-                                                          : a.kind == "loan" ? Icons.trending-down
-                                                                             : Icons.wallet;
-                                                    tint: FinTheme.accent;
-                                                    width: 17px; height: 17px;
-                                                    x: (parent.width - self.width) / 2;
-                                                    y: (parent.height - self.height) / 2;
-                                                }
-                                            }
-                                        }
-                                        VerticalLayout {
-                                            alignment: center; horizontal-stretch: 1; spacing: 2px;
-                                            HorizontalLayout {
-                                                spacing: 8px; alignment: start;
-                                                Text { text: a.name; color: FinTheme.ink;
-                                                    font-size: 13px; font-weight: 700;
-                                                    vertical-alignment: center; }
-                                                if a.kind == "virtual": Pill {
-                                                    label: "holding"; hue: FinTheme.ink-dim; }
-                                                if a.closed: Pill {
-                                                    label: "closed"; hue: FinTheme.ink-dim; }
-                                            }
-                                            Text { text: a.sub; color: FinTheme.ink-dim;
-                                                font-size: 11px; }
-                                        }
-                                        VerticalLayout {
-                                            alignment: center; horizontal-stretch: 0;
-                                            Text {
-                                                text: a.balance;
-                                                color: a.negative ? FinTheme.bad : FinTheme.ink;
-                                                font-size: 19px; font-weight: 800;
-                                                horizontal-alignment: right;
-                                            }
-                                        }
-                                    }
-
-                                    // A card's headroom, drawn rather than stated:
-                                    // "9.5%" and a bar nearly empty say the same
-                                    // thing, and only one of them is read at speed.
-                                    if a.limit-note != "": VerticalLayout {
-                                        spacing: 4px;
-                                        Text { text: a.limit-note; color: FinTheme.ink-dim;
-                                            font-size: 11px; }
-                                        Bar {
-                                            pct: a.util-pct; thickness: 6px;
-                                            hue: a.util-pct >= 70 ? FinTheme.warn
-                                                                  : FinTheme.accent;
-                                        }
-                                    }
-
-                                    if a.reconciled != "": KvRow {
-                                        kv: { label: "Balance", value: a.reconciled,
-                                              tone: "flat", strong: false };
-                                    }
-                                    if a.in-month != "": KvRow {
-                                        kv: { label: "In this month", value: a.in-month,
-                                              tone: "ok", strong: false };
-                                    }
-                                    if a.out-month != "": KvRow {
-                                        kv: { label: "Out this month", value: a.out-month,
-                                              tone: "flat", strong: false };
-                                    }
-                                    if a.statement != "": KvRow {
-                                        kv: { label: "Statement", value: a.statement,
-                                              tone: "flat", strong: false };
-                                    }
-                                    if a.minimum-due != "": KvRow {
-                                        kv: { label: "Minimum due", value: a.minimum-due,
-                                              tone: "flat", strong: false };
-                                    }
-                                    if a.drift != "": KvRow {
-                                        kv: { label: "Last count was out by",
-                                              value: a.drift,
-                                              tone: a.drift-bad ? "warn" : "ok",
-                                              strong: false };
-                                    }
-                                    if a.topped-from != "": KvRow {
-                                        kv: { label: "Topped up from", value: a.topped-from,
-                                              tone: "flat", strong: false };
-                                    }
-                                    if a.last-topup != "": KvRow {
-                                        kv: { label: "Last top-up", value: a.last-topup,
-                                              tone: "flat", strong: false };
-                                    }
-
-                                    // The one thing each kind of account actually
-                                    // needs doing to it, named the way the act is
-                                    // named: a wallet is counted, not reconciled.
-                                    if a.kind == "cash": Text {
-                                        text: "Cash always drifts. A recount sets the balance and books the gap.";
-                                        color: FinTheme.ink-dim; font-size: 10.5px;
-                                        wrap: word-wrap;
-                                    }
-                                    if a.kind == "wallet": Text {
-                                        text: "Top-ups are transfers, not spending. Only what leaves the wallet counts.";
-                                        color: FinTheme.ink-dim; font-size: 10.5px;
-                                        wrap: word-wrap;
-                                    }
-
-                                    Rectangle { vertical-stretch: 1; background: transparent; }
-                                    HorizontalLayout {
-                                        spacing: 6px; alignment: start;
-                                        if a.kind == "cash": Btn {
-                                            label: "Recount"; h: 28px;
-                                            clicked => { root.account-recount(a.id); } }
-                                        if a.kind != "cash" && a.kind != "virtual": Btn {
-                                            label: "Reconcile"; h: 28px;
-                                            clicked => { root.account-reconcile(a.id); } }
-                                        if a.kind == "card" && a.negative: Btn {
-                                            label: "Pay it off"; h: 28px;
-                                            clicked => { root.account-pay-card(a.id); } }
-                                        if a.kind != "virtual": Btn {
-                                            label: "Edit"; h: 28px;
-                                            clicked => { root.open-sheet("account", a.id); } }
-                                        if a.kind != "virtual" && a.txn-count == 0: IconBtn {
-                                            icon: Icons.x;
-                                            clicked => { root.account-delete(a.id); } }
-                                    }
+                                Rectangle { vertical-stretch: 1; background: transparent; }
+                                HorizontalLayout {
+                                    spacing: 5px; alignment: start;
+                                    Btn { label: "Schedule"; h: 26px;
+                                        clicked => { root.loan-schedule(l.account-id); } }
+                                    Btn { label: "Prepay?"; h: 26px;
+                                        clicked => { root.loan-prepay(l.account-id); } }
                                 }
                             }
                         }
@@ -3103,93 +3592,6 @@ export component FinancesPage inherits Rectangle {
                             Text {
                                 text: "No net-worth figure. It would need the market value of things you would have to guess at, and a number built from a guess should not sit beside two that are real.";
                                 color: FinTheme.ink-dim; font-size: 10.5px; wrap: word-wrap;
-                            }
-                        }
-                    }
-
-                    Card {
-                        VerticalLayout {
-                            alignment: start;
-                            padding: 16px; spacing: 12px;
-                            HorizontalLayout {
-                                spacing: 10px;
-                                CardTitle {
-                                    title: "Loans";
-                                    hint: "A loan is an account with a negative balance, so it totals with everything else.";
-                                }
-                                Btn { label: "New loan"; h: 32px; primary: true;
-                                    clicked => { root.open-sheet("loan", 0); } }
-                            }
-                            if root.loans.length == 0: Text {
-                                text: "No loans tracked.";
-                                color: FinTheme.ink-dim; font-size: 12.5px;
-                            }
-                            for l in root.loans: Rectangle {
-                                min-height: 190px;
-                                border-radius: Surface.r(12px);
-                                background: FinTheme.card-2;
-                                VerticalLayout {
-                                    alignment: start;
-                                    padding: 12px; spacing: 6px;
-                                    HorizontalLayout {
-                                        spacing: 10px;
-                                        Text { text: l.name; color: FinTheme.ink;
-                                            font-size: 13px; font-weight: 700;
-                                            vertical-alignment: center; horizontal-stretch: 1; }
-                                        Text {
-                                            text: l.emi + " a month · " + l.rate;
-                                            color: FinTheme.ink-dim; font-size: 11.5px;
-                                            vertical-alignment: center; horizontal-stretch: 0;
-                                        }
-                                        Text {
-                                            text: l.balance; color: FinTheme.bad;
-                                            font-size: 15px; font-weight: 800;
-                                            vertical-alignment: center; horizontal-stretch: 0;
-                                        }
-                                    }
-                                    Bar { pct: l.progress-pct; hue: FinTheme.accent; toned: false; }
-                                    Text {
-                                        text: "\{l.progress-pct}% repaid · "
-                                              + "\{l.remaining-months} of "
-                                              + "\{l.tenure-months} instalments left";
-                                        color: FinTheme.ink-dim; font-size: 11px;
-                                    }
-
-                                    // How the next instalment divides. The number
-                                    // that answers "I have paid this for five
-                                    // years, why has it barely moved".
-                                    if l.emi-principal != "": KvRow {
-                                        kv: { label: "Next instalment · principal",
-                                              value: l.emi-principal, tone: "ok",
-                                              strong: false };
-                                    }
-                                    if l.emi-interest != "": KvRow {
-                                        kv: { label: "Next instalment · interest",
-                                              value: l.emi-interest,
-                                              tone: l.interest-free ? "flat" : "warn",
-                                              strong: false };
-                                    }
-                                    if l.closes != "": KvRow {
-                                        kv: { label: "Closes", value: l.closes,
-                                              tone: "flat", strong: false };
-                                    }
-                                    if l.interest-left != "": KvRow {
-                                        kv: { label: "Interest still to pay",
-                                              value: l.interest-left,
-                                              tone: l.interest-free ? "ok" : "bad",
-                                              strong: false };
-                                        rule: false;
-                                    }
-
-                                    Rectangle { vertical-stretch: 1; background: transparent; }
-                                    HorizontalLayout {
-                                        spacing: 6px; alignment: start;
-                                        Btn { label: "Schedule"; h: 26px;
-                                            clicked => { root.loan-schedule(l.account-id); } }
-                                        Btn { label: "What if I prepay?"; h: 26px;
-                                            clicked => { root.loan-prepay(l.account-id); } }
-                                    }
-                                }
                             }
                         }
                     }
@@ -4093,10 +4495,13 @@ export component FinancesPage inherits Rectangle {
                     VerticalLayout {
                         alignment: center; horizontal-stretch: 1;
                         Text {
+                            // The remove button empties the section outright, so
+                            // this says so rather than leaving it to be discovered.
                             text: root.demo
-                                ? "Adding it again replaces what is left of it."
-                                : "Nothing of yours is touched either way.";
-                            color: FinTheme.ink-dim; font-size: 11px; wrap: word-wrap;
+                                ? "Remove all of it empties the section — every account, posting, bill and budget, yours as well as the sample's."
+                                : "Adding it puts a year of invented money in, labelled everywhere it appears.";
+                            color: root.demo ? FinTheme.warn : FinTheme.ink-dim;
+                            font-size: 11px; wrap: word-wrap;
                         }
                     }
                     Btn {
@@ -4104,8 +4509,11 @@ export component FinancesPage inherits Rectangle {
                         primary: !root.demo;
                         clicked => { root.demo-add(); root.demo-open = false; }
                     }
-                    // Nothing to remove once it is gone.
-                    if root.demo: Btn {
+                    // Offered whenever there is anything to clear, which after the
+                    // sample has gone is the user's own data — the button is the
+                    // section's reset, and hiding it once the samples went made it
+                    // look as though only invented money could be removed.
+                    Btn {
                         label: "Remove all of it"; icon: Icons.trash; h: 36px; danger: true;
                         clicked => { root.demo-remove(); root.demo-open = false; }
                     }
@@ -4114,12 +4522,197 @@ export component FinancesPage inherits Rectangle {
         }
     }
 
+    // ── health score ────────────────────────────────────────────────────────
+    // The total on the strip is a claim; this is the working behind it. Every
+    // component shows what it was worth, what it scored and the figure that
+    // decided it, so the number can be argued with rather than believed.
+    if root.health-open: DetailModal {
+        title: "Financial Health Score";
+        subtitle: root.health-band;
+        amount: root.health-score;
+        badge: "%";
+        hue: FinTheme.accent;
+        closed => { root.health-open = false; }
+        confirmed => { root.health-open = false; }
+
+        for p in root.health-parts: VerticalLayout {
+            spacing: 4px;
+            HorizontalLayout {
+                spacing: 10px;
+                Text { text: p.label;
+                    color: p.measured ? FinTheme.ink : FinTheme.ink-dim;
+                    font-size: 12.5px; font-weight: 700;
+                    vertical-alignment: center; horizontal-stretch: 1; }
+                Text { text: p.points;
+                    color: p.tone == "bad"  ? FinTheme.bad
+                         : p.tone == "warn" ? FinTheme.warn
+                         : p.tone == "ok"   ? FinTheme.good : FinTheme.ink-dim;
+                    font-size: 12.5px; font-weight: 800;
+                    vertical-alignment: center; horizontal-stretch: 0; }
+            }
+            // No bar on a component that was not measured — an empty bar reads
+            // as a zero, and "no envelopes yet" is not a score of nothing.
+            if p.measured: Bar {
+                pct: p.pct; thickness: 6px; toned: false;
+                hue: p.tone == "bad"  ? FinTheme.bad
+                   : p.tone == "warn" ? FinTheme.warn
+                   : p.tone == "ok"   ? FinTheme.good : FinTheme.accent;
+            }
+            Text { text: p.detail; color: FinTheme.ink-dim;
+                font-size: 11px; wrap: word-wrap; }
+        }
+
+        Text {
+            text: "Six readings of the ledger, weighted and added up. A component with nothing behind it yet is left out of both sides of the fraction rather than scored as a zero, so the total stays out of 100. Nothing here is guessed at: there is no net worth in it, and nothing about anything the app has not been told.";
+            color: FinTheme.ink-dim; font-size: 10.5px; wrap: word-wrap;
+        }
+    }
+
+    // ── account detail ──────────────────────────────────────────────────────
+    if root.detail-open && !root.detail-loan-open: DetailModal {
+        property <FinAccountRow> a: root.detail-account;
+        title: a.name;
+        subtitle: a.sub;
+        amount: a.balance;
+        amount-bad: a.negative;
+        badge: a.badge;
+        hue: a.hue;
+        closed => { root.detail-open = false; }
+        // A holding account has no edit sheet, so Enter has nothing to confirm.
+        confirmed => {
+            if (a.kind != "virtual") {
+                root.detail-open = false; root.open-sheet("account", a.id);
+            }
+        }
+
+        if a.limit-note != "": VerticalLayout {
+            spacing: 4px;
+            Text { text: a.limit-note; color: FinTheme.ink-dim; font-size: 11px; }
+            Bar { pct: a.util-pct; thickness: 6px;
+                  hue: a.util-pct >= 70 ? FinTheme.warn : FinTheme.accent; }
+        }
+        if a.lent != "": KvRow {
+            kv: { label: "Lent out", value: a.lent, tone: "ok", strong: false }; }
+        if a.borrowed != "": KvRow {
+            kv: { label: "Borrowed", value: a.borrowed, tone: "warn", strong: false }; }
+        if a.reconciled != "": KvRow {
+            kv: { label: "Balance", value: a.reconciled, tone: "flat", strong: false }; }
+        if a.in-month != "": KvRow {
+            kv: { label: "In this month", value: a.in-month, tone: "ok", strong: false }; }
+        if a.out-month != "": KvRow {
+            kv: { label: "Out this month", value: a.out-month, tone: "flat", strong: false }; }
+        if a.statement != "": KvRow {
+            kv: { label: "Statement", value: a.statement, tone: "flat", strong: false }; }
+        if a.minimum-due != "": KvRow {
+            kv: { label: "Minimum due", value: a.minimum-due, tone: "flat", strong: false }; }
+        if a.drift != "": KvRow {
+            kv: { label: "Last count was out by", value: a.drift,
+                  tone: a.drift-bad ? "warn" : "ok", strong: false }; }
+        if a.topped-from != "": KvRow {
+            kv: { label: "Topped up from", value: a.topped-from, tone: "flat", strong: false }; }
+        if a.last-topup != "": KvRow {
+            kv: { label: "Last top-up", value: a.last-topup, tone: "flat", strong: false }; }
+        KvRow {
+            kv: { label: "Transactions", value: "\{a.txn-count}", tone: "flat", strong: false };
+            rule: false;
+        }
+
+        if a.kind == "cash": Text {
+            text: "Cash always drifts. A recount sets the balance and books the gap.";
+            color: FinTheme.ink-dim; font-size: 11px; wrap: word-wrap; }
+        if a.kind == "wallet": Text {
+            text: "Top-ups are transfers, not spending. Only what leaves the wallet counts.";
+            color: FinTheme.ink-dim; font-size: 11px; wrap: word-wrap; }
+        if a.kind == "virtual": Text {
+            text: "A holding account, not one of yours. Money moves here when a due opens and comes back when it settles, which is why lending never counts as spending.";
+            color: FinTheme.ink-dim; font-size: 11px; wrap: word-wrap; }
+
+        HorizontalLayout {
+            spacing: 8px; alignment: start;
+            if a.kind == "cash": Btn { label: "Recount"; h: 30px;
+                clicked => { root.detail-open = false; root.account-recount(a.id); } }
+            if a.kind != "cash" && a.kind != "virtual": Btn { label: "Reconcile"; h: 30px;
+                clicked => { root.detail-open = false; root.account-reconcile(a.id); } }
+            if a.kind == "card" && a.negative: Btn { label: "Pay it off"; h: 30px;
+                clicked => { root.detail-open = false; root.account-pay-card(a.id); } }
+            // Edit opens the sheet in the same frame this panel uses, so the
+            // popup reads as changing mode rather than stacking a second dialog.
+            if a.kind != "virtual": Btn { label: "Edit"; h: 30px; primary: true;
+                clicked => { root.detail-open = false; root.open-sheet("account", a.id); } }
+            if a.kind != "virtual" && a.txn-count == 0: Btn {
+                label: "Delete"; h: 30px; danger: true;
+                clicked => { root.detail-open = false; root.account-delete(a.id); } }
+        }
+    }
+
+    // ── loan detail ─────────────────────────────────────────────────────────
+    if root.detail-open && root.detail-loan-open: DetailModal {
+        property <FinLoanRow> l: root.detail-loan;
+        title: l.name;
+        subtitle: l.rate + " · " + l.emi + " a month";
+        amount: l.balance;
+        amount-bad: true;
+        badge: l.badge;
+        hue: l.hue;
+        closed => { root.detail-open = false; }
+        confirmed => { root.detail-open = false; root.open-sheet("loan", l.account-id); }
+
+        VerticalLayout {
+            spacing: 5px;
+            Bar { pct: l.progress-pct; hue: FinTheme.accent; toned: false; }
+            Text {
+                text: "\{l.progress-pct}% repaid · \{l.remaining-months} of \{l.tenure-months} instalments left";
+                color: FinTheme.ink-dim; font-size: 11px;
+            }
+        }
+        KvRow { kv: { label: "Borrowed", value: l.principal, tone: "flat", strong: false }; }
+        KvRow { kv: { label: "EMI", value: l.emi, tone: "flat", strong: false }; }
+        KvRow { kv: { label: "Next instalment", value: l.next-due, tone: "flat", strong: false }; }
+        if l.emi-principal != "": KvRow {
+            kv: { label: "This EMI · principal", value: l.emi-principal,
+                  tone: "ok", strong: false }; }
+        if l.emi-interest != "": KvRow {
+            kv: { label: "This EMI · interest", value: l.emi-interest,
+                  tone: l.interest-free ? "flat" : "warn", strong: false }; }
+        if l.closes != "": KvRow {
+            kv: { label: "Closes", value: l.closes, tone: "flat", strong: false }; }
+        if l.interest-left != "": KvRow {
+            kv: { label: "Interest still to pay", value: l.interest-left,
+                  tone: l.interest-free ? "ok" : "bad", strong: false };
+            rule: false; }
+
+        HorizontalLayout {
+            spacing: 8px; alignment: start;
+            Btn { label: "Schedule"; h: 30px;
+                clicked => { root.detail-open = false; root.loan-schedule(l.account-id); } }
+            Btn { label: "What if I prepay?"; h: 30px;
+                clicked => { root.detail-open = false; root.loan-prepay(l.account-id); } }
+            // A loan's terms live on the loan, not on the account behind it —
+            // editing it as a plain account could only ever rename it.
+            Btn { label: "Edit"; h: 30px; primary: true;
+                clicked => { root.detail-open = false; root.open-sheet("loan", l.account-id); } }
+        }
+    }
+
     if root.sheet != "": Rectangle {
         width: 100%; height: 100%;
-        background: #000000a0;
+        background: transparent;
+        ScrimFrost { width: 100%; height: 100%; accent: FinTheme.accent; }
         // Swallows clicks so the page behind cannot be operated through the
         // scrim, and closes on a click outside the panel.
         TouchArea { clicked => { root.close-sheet(); } }
+
+        // Escape closes, Enter saves. The scope wraps the panel rather than
+        // sitting beside it: a key pressed while a field has the focus only
+        // reaches a handler that is an *ancestor* of that field.
+        FocusScope {
+        width: 100%; height: 100%;
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) { root.close-sheet(); return accept; }
+            if (e.text == Key.Return) { root.sheet-confirm(); return accept; }
+            reject
+        }
 
         Rectangle {
             width: Math.min(root.width - 64px, 640px);
@@ -4178,6 +4771,7 @@ export component FinancesPage inherits Rectangle {
                         for f in root.form: FinFieldRow {
                             field: f;
                             set(k, v) => { root.set-field(k, v); }
+                            confirm => { root.sheet-confirm(); }
                         }
 
                         // ── price history ───────────────────────────────────
@@ -4277,37 +4871,64 @@ export component FinancesPage inherits Rectangle {
                         if root.sheet == "rates": VerticalLayout {
                             spacing: 10px;
                             Text {
-                                text: "Fetched once a day. A rate you type is kept and never overwritten. Every transaction stores the rate in force when it was posted, so nothing here rewrites what last March cost.";
+                                text: "The ten most traded currencies, checked once a day. Every rate is held against the base, so any pair converts through it. A rate you type is kept and never overwritten — and none of this touches money already posted: a transaction stores the rate that was in force when it was entered, so a refresh changes what is still to come and nothing that has already happened.";
                                 color: FinTheme.ink-dim; font-size: 11.5px; wrap: word-wrap;
                             }
-                            if root.rates.length == 0: Text {
-                                text: "No rates yet — nothing in this section is priced in another currency.";
-                                color: FinTheme.ink-dim; font-size: 12px;
-                            }
-                            for r in root.rates: HorizontalLayout {
-                                spacing: 10px;
-                                VerticalLayout {
-                                    alignment: center; horizontal-stretch: 0;
-                                    // Fetched or typed, at a glance: the distinction
-                                    // decides whether the daily refresh will touch it.
-                                    Tile {
-                                        size: 26px;
-                                        hue: r.live ? FinTheme.accent : FinTheme.warn;
-                                        icon: r.live ? Icons.refresh-cw : Icons.pencil;
+                            for r in root.rates: Rectangle {
+                                min-height: 46px; max-height: 46px;
+                                background: transparent;
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        // The code on its own square, the same badge
+                                        // the accounts grid uses, so a currency is
+                                        // findable by shape rather than by reading.
+                                        AccountBadge {
+                                            glyph: r.code;
+                                            hue: r.known
+                                                ? (r.live ? FinTheme.accent : FinTheme.warn)
+                                                : FinTheme.ink-dim;
+                                            side: 34px;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 1;
+                                        spacing: 2px;
+                                        Text { text: r.name; color: FinTheme.ink;
+                                            font-size: 12.5px; font-weight: 700;
+                                            overflow: elide; }
+                                        Text {
+                                            text: r.rate;
+                                            color: r.known ? FinTheme.ink-dim : FinTheme.warn;
+                                            font-size: 11px; overflow: elide;
+                                        }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        spacing: 2px;
+                                        Text {
+                                            text: r.inverse; color: FinTheme.ink-dim;
+                                            font-size: 11px;
+                                            horizontal-alignment: right;
+                                        }
+                                        Text {
+                                            text: r.edited; color: FinTheme.ink-dim;
+                                            font-size: 10px;
+                                            horizontal-alignment: right;
+                                        }
                                     }
                                 }
-                                Text { text: r.code; color: FinTheme.ink; font-size: 12.5px;
-                                    font-weight: 700; vertical-alignment: center;
-                                    min-width: 42px; }
-                                Text { text: r.rate; color: FinTheme.ink; font-size: 12.5px;
-                                    vertical-alignment: center; horizontal-stretch: 1; }
-                                Text { text: r.edited; color: FinTheme.ink-dim; font-size: 11px;
-                                    vertical-alignment: center; }
+                                Rectangle {
+                                    y: parent.height - 1px;
+                                    height: 1px; width: parent.width;
+                                    background: FinTheme.hairline;
+                                }
                             }
                             HorizontalLayout {
                                 spacing: 8px; alignment: start;
                                 Btn {
-                                    label: root.rates-busy ? "Fetching…" : "Refresh now";
+                                    label: root.rates-busy ? "Checking…" : "Check now";
                                     icon: Icons.refresh-cw; h: 32px;
                                     enabled: !root.rates-busy;
                                     clicked => { root.rates-refresh(); }
@@ -4318,8 +4939,26 @@ export component FinancesPage inherits Rectangle {
                         // ── amortisation schedule ───────────────────────────
                         if root.schedule.length > 0: VerticalLayout {
                             spacing: 6px;
-                            Text { text: "Amortisation"; color: FinTheme.ink;
-                                font-size: 12.5px; font-weight: 700; }
+                            HorizontalLayout {
+                                spacing: 8px;
+                                Text { text: "Amortisation"; color: FinTheme.ink;
+                                    font-size: 12.5px; font-weight: 700;
+                                    vertical-alignment: center; horizontal-stretch: 1; }
+                                // Ten at a time. A twenty-year loan is 240
+                                // instalments and the sheet built every one of
+                                // them before showing anything.
+                                IconBtn { icon: Icons.chevron-left;
+                                    enabled: root.schedule-page > 1;
+                                    clicked => { root.schedule-step(-1); } }
+                                Text {
+                                    text: "\{root.schedule-page} of \{root.schedule-pages}";
+                                    color: FinTheme.ink-dim; font-size: 11.5px;
+                                    vertical-alignment: center;
+                                }
+                                IconBtn { icon: Icons.chevron-right;
+                                    enabled: root.schedule-page < root.schedule-pages;
+                                    clicked => { root.schedule-step(1); } }
+                            }
                             HorizontalLayout {
                                 spacing: 8px;
                                 HeadCell { label: "#"; w: 34px; sortable: false; }
@@ -4333,16 +4972,25 @@ export component FinancesPage inherits Rectangle {
                                 HeadCell { label: "LEFT"; flex: true; right: true;
                                     sortable: false; }
                             }
-                            for i in root.schedule: HorizontalLayout {
-                                spacing: 8px;
-                                Cell { text: "\{i.n}"; w: 34px; dim: true; }
-                                Cell { text: i.due; w: 88px; dim: true; }
-                                Cell { text: i.emi; w: 92px; right: true; strong: true; }
-                                Cell { text: i.principal; w: 92px; right: true;
-                                    ink: FinTheme.good; }
-                                Cell { text: i.interest; w: 92px; right: true;
-                                    ink: FinTheme.warn; }
-                                Cell { text: i.balance; flex: true; right: true; dim: true; }
+                            for i in root.schedule: Rectangle {
+                                min-height: 30px; max-height: 30px;
+                                background: transparent;
+                                HorizontalLayout {
+                                    spacing: 8px;
+                                    Cell { text: "\{i.n}"; w: 34px; dim: true; }
+                                    Cell { text: i.due; w: 88px; dim: true; }
+                                    Cell { text: i.emi; w: 92px; right: true; strong: true; }
+                                    Cell { text: i.principal; w: 92px; right: true;
+                                        ink: FinTheme.good; }
+                                    Cell { text: i.interest; w: 92px; right: true;
+                                        ink: FinTheme.warn; }
+                                    Cell { text: i.balance; flex: true; right: true; dim: true; }
+                                }
+                                Rectangle {
+                                    y: parent.height - 1px;
+                                    height: 1px; width: parent.width;
+                                    background: FinTheme.hairline;
+                                }
                             }
                         }
 
@@ -4475,7 +5123,14 @@ export component FinancesPage inherits Rectangle {
                         clicked => { root.submit-sheet(); }
                     }
                 }
+
+                if root.sheet-primary != "": Text {
+                    text: "Enter to " + root.sheet-primary.to-lowercase() + " · Esc to cancel";
+                    color: FinTheme.ink-dim.with-alpha(0.7); font-size: 9.5px;
+                    horizontal-alignment: right;
+                }
             }
+        }
         }
     }
 }
