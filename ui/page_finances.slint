@@ -5,14 +5,16 @@
 //
 //   overview  — liquid/spent/saved/debt strip, spend breakdown, what needs you
 //   txns      — the ledger, 25 rows a page, sorted in SQL
+//   accounts  — balances and reconcile; loans with amortisation
+//   planning  — what to do next: health, cash flow, timeline, what needs you,
+//               envelopes, predictions, trends, habits, review, advice. One
+//               scroll, no sub-tabs, and no link off it to another tab. The
+//               tables it summarises open as modals off `plan-modal` —
+//               calendar, flow, budgets, trends, review, subs — which is where
+//               the Plan, Budgets, Calendar and Insights tabs went.
 //   bills     — estimate vs actual, mark paid, overdue
 //   subs      — fixed recurring charges, price history, pause, cancel
 //   dues      — "Lending": money between you and named people, both directions
-//   accounts  — balances and reconcile; loans with amortisation
-//   plan      — budgets and calendar merged: one month, decided and dated
-//   budgets   — envelopes, pace, six-month discipline
-//   calendar  — every dated thing, and the cash-flow low point
-//   insights  — claims with numbers and buttons
 //
 // Every amount arriving here is already a formatted string. Money is `i64` minor
 // units everywhere in `tulipix-finances`, and the only place a decimal point is
@@ -194,7 +196,7 @@ export struct FinObligationRow {
     name: string,
     kind: string,          // subscription|bill|one-off
     due: string,
-    // Day of the month, so the Plan tab's agenda can pick one day's rows out of
+    // Day of the month, so the calendar's agenda can pick one day's rows out of
     // the month it already has rather than asking SQL again on every click.
     day: int,
     days: int,
@@ -385,7 +387,7 @@ export struct FinDiscipline { period: string, budget: string, spent: string, wit
 // One month of one category's six-month trend. `pct` is a share of that category's
 // own worst month, not of the whole ledger — otherwise every category but the
 // largest is a flat line at the bottom.
-export struct FinTrendMonth { label: string, pct: int, current: bool }
+export struct FinTrendMonth { label: string, pct: int, current: bool, amount: string }
 
 /// One month of the savings-rate chart. `known` is false for a month with no
 /// income at all — drawn as a gap rather than as a zero, because "the salary
@@ -407,6 +409,69 @@ export struct FinCatTrend {
     delta: string,
     up: bool,
     months: [FinTrendMonth],
+    // The same six months as a shape: SVG commands over a 100×100 viewbox, one
+    // stroked line and one closed area under it. Built in Rust for the same
+    // reason the donut's arcs are — Slint has no way to accumulate a path over a
+    // model, and a bar per month said nothing about the direction between them.
+    line: string,
+    area: string,
+}
+
+// ── Planning ────────────────────────────────────────────────────────────────
+
+/// One card on the Planning timeline: a day this month does something.
+///
+/// A day, not an obligation. Three bills on the 8th are one thing that happens
+/// on the 8th, and drawing them as three cards makes a busy day look like a busy
+/// week.
+export struct FinTimelineEvent {
+    day: int,
+    // Where that day sits in `cal-days`, so clicking a card can hand the calendar
+    // the cell itself rather than a number it would have to search for.
+    // -1 when the day is not on the grid, which nothing built from the same
+    // month can be.
+    idx: int,
+    name: string,
+    amount: string,
+    sub: string,
+    hue: color,
+    income: bool,
+    // The closing balance. Not an event — it is where the row leads, and the
+    // design puts it at the end of the row for exactly that reason.
+    closing: bool,
+    count: int,
+}
+
+/// An envelope and the date it runs out on at the pace it is going.
+export struct FinPrediction {
+    name: string,
+    finish: string,
+    note: string,
+    hue: color,
+    // Runs out before the month does. The whole point of the card.
+    soon: bool,
+    // Daily spend, each a share of this envelope's own worst day. Its own worst
+    // day rather than the month's, so a small envelope still shows its shape.
+    points: [int],
+}
+
+/// One row of the habits list. `pct` is only drawn when `bar` is set — two of
+/// the four are counts, and a bar under a count would be measuring nothing.
+export struct FinHabit {
+    label: string,
+    value: string,
+    pct: int,
+    hue: color,
+    bar: bool,
+    action-label: string,
+    action: string,
+}
+
+/// One metric of the six-month chart. The chart shows one at a time and the
+/// selector picks which, so all of them travel and the switch costs no query.
+export struct FinTrendSeries {
+    name: string,
+    months: [FinSavingsMonth],
 }
 
 // One row of the exchange-rate editor. `live` is false when the user typed the
@@ -679,13 +744,13 @@ component FilterChip inherits HdrChip {
 
 // Section tab — the shared header chip with this section's gradient baked in.
 //
-// All nine carry the same lime→yellow ramp rather than a colour each: the accent
-// is the section's identity, and nine hues in one row would compete with the
+// All seven carry the same lime→yellow ramp rather than a colour each: the accent
+// is the section's identity, and seven hues in one row would compete with the
 // category colours in the charts below, which *are* meaningful.
 //
-// `collapsible` is what lets nine tabs live on one row: icon-only at rest,
-// expanding to icon + name on hover or when active. Same behaviour as the Music
-// header, which solved this first.
+// `collapsible` is what keeps the row on one line at any width: icon-only at
+// rest, expanding to icon + name on hover or when active. Same behaviour as the
+// Music header, which solved this first.
 component FinTab inherits HdrChip {
     in property <bool> compact: false;
     has-grad: true;
@@ -950,6 +1015,81 @@ component DetailModal inherits Rectangle {
                     preferred-height: dinner.preferred-height;
                     dinner := VerticalLayout {
                         padding-right: 6px; spacing: 10px; alignment: start;
+                        @children
+                    }
+                }
+            }
+        }
+    }
+}
+
+// A read-only drill-down: a title, a close, and whatever the caller puts in it.
+//
+// Planning is one page, which is the whole point of it — so the tables the page
+// was summarised from live behind the links the design puts on each section
+// rather than in tabs of their own. Escape and the backdrop both close it, like
+// every other modal in the app; there is nothing to confirm, so Enter does not.
+component PlanModal inherits Rectangle {
+    in property <string> title;
+    in property <string> hint;
+    callback closed();
+    width: 100%; height: 100%;
+    background: transparent;
+    ScrimFrost { width: 100%; height: 100%; accent: FinTheme.accent; }
+    TouchArea { clicked => { root.closed(); } }
+
+    FocusScope {
+        width: 100%; height: 100%;
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if (e.text == Key.Escape) { root.closed(); return accept; }
+            reject
+        }
+
+        Rectangle {
+            width: Math.min(root.width - 64px, 980px);
+            // Ends where its contents do, up to the window — the same measure
+            // the sheet uses. A fixed slab the height of the screen left a short
+            // drill-down, four flags and a table, above a hand's width of empty
+            // card, and the emptiest ones were the ones that needed no scroll.
+            height: Math.min(root.height - 72px, Math.max(220px, body.preferred-height));
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: Surface.r(20px);
+            background: Theme.modal;
+            border-width: 1px;
+            border-color: FinTheme.hairline;
+            drop-shadow-blur: Surface.cast(40px);
+            drop-shadow-color: #00000070;
+            // Swallows clicks inside the panel so they never reach the scrim.
+            TouchArea { }
+
+            body := VerticalLayout {
+                padding: 20px; spacing: 12px;
+                HorizontalLayout {
+                    spacing: 12px;
+                    VerticalLayout {
+                        horizontal-stretch: 1; spacing: 2px; alignment: center;
+                        Text { text: root.title; color: FinTheme.ink;
+                            font-size: 17px; font-weight: 800; overflow: elide; }
+                        if root.hint != "": Text { text: root.hint;
+                            color: FinTheme.ink-dim; font-size: 11.5px; overflow: elide; }
+                    }
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        IconBtn { icon: Icons.x; clicked => { root.closed(); } }
+                    }
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    // A ScrollView's own `preferred-height` is 100% of whatever
+                    // holds it, so a panel measured through one measures nothing.
+                    // Reporting what is inside makes the panel as tall as its
+                    // content and hands scrolling back when there is too much.
+                    preferred-height: inner.preferred-height;
+                    inner := VerticalLayout {
+                        alignment: start;
+                        padding-right: 6px; spacing: 14px;
                         @children
                     }
                 }
@@ -1310,6 +1450,61 @@ component StatStrip inherits Rectangle {
             if s.delta != "": HorizontalLayout {
                 alignment: start;
                 Delta { label: s.delta; up: s.delta-up; }
+            }
+        }
+    }
+}
+
+// One of the four cards Planning opens with.
+//
+// The same `FinStat` the strips elsewhere carry, drawn larger and with an icon
+// on a wash of its own colour. Those four are the first thing on the page and
+// the design gives them a colour each; every strip below them stays uncoloured,
+// which is what keeps these four reading as the headline rather than as the
+// first of nine equal rows.
+//
+// The tone still wins over the hue for the figure itself: a "Month status" card
+// that is red because the month is at risk must not be lime because Planning is.
+component PlanCard inherits Card {
+    in property <FinStat> stat;
+    in property <image> icon;
+    in property <color> hue: FinTheme.accent;
+    property <color> tone: root.stat.tone == "bad"  ? FinTheme.bad
+                         : root.stat.tone == "warn" ? FinTheme.warn
+                         : root.stat.tone == "ok"   ? FinTheme.good
+                         : FinTheme.ink;
+    min-height: 104px; max-height: 104px;
+    background: root.hue.with-alpha(FinTheme.light ? 0.07 : 0.11);
+    border-color: root.hue.with-alpha(0.28);
+    HorizontalLayout {
+        padding: 16px; spacing: 10px;
+        VerticalLayout {
+            spacing: 3px; horizontal-stretch: 1; alignment: center;
+            Text {
+                text: root.stat.label; color: FinTheme.ink-dim;
+                font-size: 10.5px; font-weight: 700; overflow: elide;
+            }
+            Text {
+                text: root.stat.value; color: root.tone;
+                font-size: 21px; font-weight: 800; overflow: elide;
+            }
+            Text {
+                text: root.stat.sub; color: FinTheme.ink-dim;
+                font-size: 11px; wrap: word-wrap;
+            }
+        }
+        VerticalLayout {
+            alignment: start; horizontal-stretch: 0;
+            Rectangle {
+                width: 34px; height: 34px;
+                border-radius: Surface.r(11px);
+                background: root.hue.with-alpha(0.18);
+                AppIcon {
+                    source: root.icon; tint: root.hue;
+                    width: 17px; height: 17px;
+                    x: (parent.width - self.width) / 2;
+                    y: (parent.height - self.height) / 2;
+                }
             }
         }
     }
@@ -1897,16 +2092,15 @@ component FinFieldRow inherits VerticalLayout {
 // table rather than as a ragged run of tiles. Rows share whatever height the
 // block has, which is how the grid ends flush above the legend.
 //
-// Two tabs draw it — Calendar, and the Plan tab that merges Calendar with
-// Budgets — which is why it is a component and not markup inside one of them.
-// `selected` is 0 on the tab that has no agenda beside it to point a day at, and
-// nothing is highlighted then.
+// A component rather than markup, because the year view sits beside it under the
+// same selector and both are reached from the same drill-down. `selected` is 0
+// when no day has been picked, and nothing is highlighted then.
 component CalGrid inherits VerticalLayout {
     in property <[FinCalDay]> days;
     in property <int> selected: 0;
-    // The floor a row will not go below. The Calendar tab lays the grid out at
-    // its own preferred height and gets this; the Plan tab gives it a fixed block
-    // to fill and the rows divide that instead.
+    // The floor a row will not go below. A caller that lays the grid out at its
+    // own preferred height gets this; one that gives it a fixed block to fill
+    // divides that between the rows instead.
     in property <length> row-min: 62px;
     callback picked(FinCalDay);
     // Days are contiguous, so the sixth row is in use exactly when its first cell
@@ -2083,14 +2277,14 @@ component CalYear inherits VerticalLayout {
 
 // ── the page ────────────────────────────────────────────────────────────────
 export component FinancesPage inherits Rectangle {
-    // Which of the ten views is showing.
+    // Which of the seven sections is showing.
     in-out property <string> tab: "overview";
 
-    // Half-window guard: below this the ten tabs collapse to icon-only and expand
-    // on hover. Widened by the 86px Plan tab and the gap in front of it — the
-    // guard has to move with the row, or the row overruns the header at exactly
-    // the widths this is here to protect.
-    property <bool> tabs-compact: root.width < 1304px;
+    // Half-window guard: below this the tabs collapse to icon-only and expand on
+    // hover. The row is 854px of chips since Plan went, and the guard has to sit
+    // far enough above that for the header's own contents — the search box and
+    // the Add button — to still have room beside it.
+    property <bool> tabs-compact: root.width < 1024px;
 
     // Strip + charts
     in property <[FinStat]> stats;
@@ -2201,7 +2395,7 @@ export component FinancesPage inherits Rectangle {
         { key: "one-off", label: "One-off", label-2: "Bill", icon: Icons.calendar-clock,
           hue: FinTheme.accent-2, hue-2: FinTheme.good, ink: #ffffff },
     ];
-    // The Plan tab is about the month ahead, so its four are the four things that
+    // Planning is about the month ahead, so its four are the four things that
     // put something into one: an envelope, a bill, a one-off, a payment.
     property <[FinAction]> acts-plan: [
         { key: "budget", label: "Set an", label-2: "Envelope", icon: Icons.pie-chart,
@@ -2215,7 +2409,7 @@ export component FinancesPage inherits Rectangle {
     ];
     property <[FinAction]> acts: root.tab == "accounts" ? root.acts-accounts
         : root.tab == "bills" ? root.acts-bills
-        : root.tab == "plan" ? root.acts-plan
+        : root.tab == "planning" ? root.acts-plan
         : root.acts-ledger;
     // Two tabs have exactly one thing to add, and a popup offering one choice is a
     // dialog asking you to confirm that you meant the button you just pressed.
@@ -2361,10 +2555,10 @@ export component FinancesPage inherits Rectangle {
     in property <[FinEnvelopeHistory]> envelope-history;
     in property <[FinCalDay]> cal-days;
     in property <string> cal-label: "";
-    // ── Plan ────────────────────────────────────────────────────────────────
-    // Budgets and Calendar are the same month seen twice: one says what was
-    // decided, the other says when it lands. Plan is both on one surface, and
-    // owns nothing of its own — every figure below already existed.
+    // ── the month being planned ─────────────────────────────────────────────
+    // Budgets and Calendar were the same month seen twice: one said what was
+    // decided, the other when it lands. Planning is both, and owns nothing of
+    // its own — every figure below already existed.
     //
     // The day the agenda opens on. Rust picks it, because "today, unless you have
     // stepped away from this month" is a claim about a date and not a layout.
@@ -2390,19 +2584,59 @@ export component FinancesPage inherits Rectangle {
     // the month steps, and the focus arrives one refresh later than the first paint.
     changed cal-label => { root.plan-reset(); }
     changed cal-focus => { root.plan-reset(); }
-    // One column rule for both rows: the wide half is the calendar and the
-    // envelopes under it, the narrow half is everything that comments on them.
-    // Row one is fixed so the block does not resize as months of different
-    // shapes step past — the grid divides whatever height it is given.
-    property <length> plan-avail: Math.max(760px, root.width - 42px);
-    property <length> plan-cal-w: (root.plan-avail - 14px) * 0.575;
-    property <length> plan-row-h: 528px;
-    property <length> plan-half: (root.plan-row-h - 14px) / 2;
-    // The second row takes its height from its right-hand column, which is two
-    // cards of equal height. The envelopes beside them scroll to fit rather than
-    // setting the row, because "how many envelopes are set" is not a layout.
-    property <length> plan-row2-h: 434px;
-    property <length> plan-half2: (root.plan-row2-h - 14px) / 2;
+
+    // ── Planning · the dashboard ────────────────────────────────────────────
+    // The one view in this section that is not a table of what happened. Every
+    // block below either decides something, predicts something or offers a
+    // button — a statistic with none of the three belongs on Overview.
+    in property <[FinStat]> plan-health;
+    in property <[FinTimelineEvent]> timeline;
+    in property <[FinFlag]> attention;
+    in property <[FinFlag]> recos;
+    in property <[FinPrediction]> predictions;
+    in property <[FinHabit]> habits;
+    in property <[FinStat]> review;
+    in property <[FinTrendSeries]> trends;
+    // Which of the four six-month metrics the chart is drawing. Local: all four
+    // series are already here, so switching between them is a redraw and not a
+    // reason to go back to the database.
+    property <int> trend-metric: 0;
+    // Which of Planning's five drill-downs is open, "" for none. The page holds
+    // the answer to "what should I do next"; the tables the answer came out of
+    // are one link away rather than one tab away, because a tab beside this one
+    // is a tab that has to be read to be dismissed.
+    // `in-out` rather than private: an insight opened from Overview routes here,
+    // and the route is a modal now that nothing on this section links to a tab.
+    in-out property <string> plan-modal: "";
+    // The month statement: what came in, less what has a claim on it. Not the
+    // bank walk in `cal-flow` — that one carries every month before this one.
+    in property <[FinKv]> plan-statement;
+    // Income less commitments less envelopes. The slice the bar draws, so the
+    // number under it cannot be a different subtraction.
+    in property <string> plan-free: "";
+    // Which month the Trends drill-down is reading, one selector per chart
+    // because the two series are built from different windows: the category
+    // trend always has six months, the savings history only has the months that
+    // had a transaction in them. −1 means "the latest", which is what a chart
+    // shows before anyone has picked anything and what it falls back to when the
+    // month that was picked is no longer in the series.
+    property <int> trend-month: -1;
+    property <int> sav-month: -1;
+    property <int> trend-n:
+        root.trend.length > 0 ? root.trend[0].months.length : 0;
+    property <int> tm: root.trend-month < 0 || root.trend-month >= root.trend-n
+        ? Math.max(0, root.trend-n - 1) : root.trend-month;
+    property <int> sm: root.sav-month < 0 || root.sav-month >= root.savings.length
+        ? Math.max(0, root.savings.length - 1) : root.sav-month;
+    property <int> trend-count: root.trends.length;
+    // A shorter list of metrics cannot leave the selector pointing past its end.
+    changed trend-count => { root.trend-metric = 0; }
+    callback plan-goto(int);
+    // What no one has claimed. Floored at zero: a month whose commitments and
+    // envelopes together come to more than its income has nothing free, and a
+    // negative slice would be drawn as a bar running backwards.
+    property <int> plan-free-pct:
+        Math.max(0, 100 - root.fixed-pct - root.budget-allocated-pct);
     in property <[FinObligationRow]> cal-agenda;
     in property <string> cal-low-point: "";
     // Month grid or twelve-month summary.
@@ -2543,8 +2777,8 @@ export component FinancesPage inherits Rectangle {
     // things in a row.
     callback submit-again();
     callback refresh();
-    // One selector over both halves of the Plan tab, so its envelopes and its
-    // due dates are always the same month.
+    // One selector over envelopes and due dates alike, so Planning's blocks are
+    // always talking about the same month.
     callback plan-step(int);
 
     // What the header button and Ctrl+N both do, so the two cannot drift apart.
@@ -2624,7 +2858,7 @@ export component FinancesPage inherits Rectangle {
                 }
             }
             // Search is the ledger's search wherever it is typed: there is one
-            // table underneath all nine tabs, so a second "search everything" box
+            // table underneath every tab, so a second "search everything" box
             // would be the same query with a different name. Typing here goes to
             // the tab that can show the answer.
             VerticalLayout {
@@ -2654,11 +2888,15 @@ export component FinancesPage inherits Rectangle {
             }
         }
 
-        // ── row 2 · the ten tabs, on one row ────────────────────────────────
-        // Two rows put half the section below a fold that moved with the window.
-        // One row, and below 1210px the tabs collapse to their icons and re-expand
-        // on hover — the same rule the Music header uses, so the two sections
-        // behave identically at the same window width.
+        // ── row 2 · the seven sections, on one row ──────────────────────────
+        // Seven, not ten. Plan, Budgets, Calendar and Insights were four answers
+        // to one question — what should I do next — and four tabs asking it meant
+        // the answer was only ever a quarter visible. They are one page and its
+        // drill-downs now; none of what they showed was deleted.
+        //
+        // Ordered as the design states it: what happened, where it happened,
+        // where the money is, what to do next, then the three lists of things
+        // that repeat.
         HorizontalLayout {
             spacing: 8px; alignment: start;
             FinTab { label: "Overview"; icon: Icons.pie-chart; wide: 110px;
@@ -2667,10 +2905,16 @@ export component FinancesPage inherits Rectangle {
             FinTab { label: "Transactions"; icon: Icons.trending-up; wide: 134px;
                 compact: root.tabs-compact; active: root.tab == "txns";
                 clicked => { root.set-tab("txns"); } }
-            // No counts on any of the nine. Each tab's own filter row carries them,
-            // and a number on a tab is a number you have to read past to find the
-            // name of the thing you wanted. The Bills badge is still on the
-            // sidebar, which is where a thing that needs you belongs.
+            FinTab { label: "Accounts"; icon: Icons.credit-card; wide: 112px;
+                compact: root.tabs-compact; active: root.tab == "accounts";
+                clicked => { root.set-tab("accounts"); } }
+            FinTab { label: "Planning"; icon: Icons.calendar-clock; wide: 112px;
+                compact: root.tabs-compact; active: root.tab == "planning";
+                clicked => { root.set-tab("planning"); } }
+            // No counts on any of the seven. Each tab's own filter row carries
+            // them, and a number on a tab is a number you have to read past to
+            // find the name of the thing you wanted. The Bills badge is still on
+            // the sidebar, which is where a thing that needs you belongs.
             FinTab { label: "Bills"; icon: Icons.receipt; wide: 88px;
                 compact: root.tabs-compact; active: root.tab == "bills";
                 clicked => { root.set-tab("bills"); } }
@@ -2681,21 +2925,6 @@ export component FinancesPage inherits Rectangle {
             FinTab { label: "Lending"; icon: Icons.users; wide: 104px;
                 compact: root.tabs-compact; active: root.tab == "dues";
                 clicked => { root.set-tab("dues"); } }
-            FinTab { label: "Accounts"; icon: Icons.credit-card; wide: 112px;
-                compact: root.tabs-compact; active: root.tab == "accounts";
-                clicked => { root.set-tab("accounts"); } }
-            FinTab { label: "Plan"; icon: Icons.calendar-clock; wide: 86px;
-                compact: root.tabs-compact; active: root.tab == "plan";
-                clicked => { root.set-tab("plan"); } }
-            FinTab { label: "Budgets"; icon: Icons.sliders; wide: 108px;
-                compact: root.tabs-compact; active: root.tab == "budgets";
-                clicked => { root.set-tab("budgets"); } }
-            FinTab { label: "Calendar"; icon: Icons.calendar; wide: 112px;
-                compact: root.tabs-compact; active: root.tab == "calendar";
-                clicked => { root.set-tab("calendar"); } }
-            FinTab { label: "Insights"; icon: Icons.sparkles; wide: 106px;
-                compact: root.tabs-compact; active: root.tab == "insights";
-                clicked => { root.set-tab("insights"); } }
             Rectangle { horizontal-stretch: 1; background: transparent; }
         }
 
@@ -4530,98 +4759,184 @@ export component FinancesPage inherits Rectangle {
                 }
             }
 
-            // ══ PLAN ════════════════════════════════════════════════════════
-            // Budgets and Calendar are one month seen twice: one says what was
-            // decided, the other says when it lands. They stepped independently,
-            // so you could read July's envelopes above August's due dates and
-            // nothing on either screen said so — this has one selector over both.
+            // ══ PLANNING · DASHBOARD ════════════════════════════════════════
+            // Overview says what happened. Transactions says where. Accounts
+            // says where the money is. This says what to do next, and every
+            // block on it is a decision, a prediction or a button — a figure
+            // with none of the three belongs on Overview, which already has it.
             //
-            // The allocation bar at the top is the only thing here that is new.
-            // Budgets implied the envelopes were the month and Calendar implied
-            // the commitments were; they are two slices of the same income, and
-            // the third — the part spoken for by nothing — was invisible on both.
-            if root.tab == "plan": ScrollView {
-                property <int> watch: root.cal-days.length + root.budgets.length
-                    + root.envelope-history.length;
+            // One long scroll rather than four tabs, in the order the questions
+            // occur to someone: can I afford this month, what is coming, what
+            // needs me, am I inside my envelopes, where does this end up, and
+            // am I getting better at it.
+            if root.tab == "planning": dashsv := ScrollView {
+                property <int> watch: root.timeline.length + root.attention.length
+                    + root.predictions.length + root.budgets.length;
                 changed watch => { self.viewport-y = 0; }
                 init => { self.viewport-y = 0; }
-                VerticalLayout {
-                    padding-right: 6px; spacing: 14px;
+                // Pinned, not left to grow. A Flickable sizes its viewport to
+                // what the content would like to be, and one un-wrapping line of
+                // text anywhere in this page asks for more than the window has —
+                // at which point every full-width card is laid out against that
+                // wider viewport and runs off the right edge. The page scrolls
+                // one way only, so the viewport is exactly the visible width.
+                viewport-width: self.visible-width;
+                dash := VerticalLayout {
+                    alignment: start;
+                    // 14px of this is the scrollbar, which is drawn over the
+                    // right edge of the viewport rather than beside it, and 6px
+                    // is the gutter that keeps a card from touching it.
+                    padding-right: 20px; spacing: 14px;
 
-                    // ── one income, three slices ─────────────────────────────
+                    // What a row on this page actually has to fill, measured off
+                    // the scroll view rather than worked out from the page width.
+                    // Four cards and three gaps add up to exactly this, so an
+                    // estimate that is one scrollbar out does not shrink the
+                    // fourth card — it takes its right edge off the screen.
+                    property <length> avail: Math.max(360px, dashsv.visible-width - 20px);
+                    property <length> quarter: (self.avail - 3 * 12px) / 4;
+                    property <length> halfw: (self.avail - 14px) / 2;
+                    property <int> proj-n: Math.max(1, root.projection.length);
+                    property <length> proj-w:
+                        (self.avail - 12px * (self.proj-n - 1)) / self.proj-n;
+
+                    // ── the month this page is about ─────────────────────────
+                    Card {
+                        HorizontalLayout {
+                            padding: 16px; spacing: 12px;
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Rectangle {
+                                    width: 40px; height: 40px;
+                                    border-radius: Surface.r(13px);
+                                    background: FinTheme.accent-grad;
+                                    AppIcon {
+                                        source: Icons.calendar-clock;
+                                        tint: FinTheme.on-accent;
+                                        width: 20px; height: 20px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center; spacing: 2px; horizontal-stretch: 1;
+                                Text { text: "Planning"; color: FinTheme.ink;
+                                    font-size: 17px; font-weight: 800; }
+                                Text {
+                                    text: "Plan smarter. Spend better. Build wealth.";
+                                    color: FinTheme.ink-dim; font-size: 12px;
+                                }
+                            }
+                            // One control, not four. The month this page is
+                            // about is the only thing the header decides, so it
+                            // gets the room the three jump chips were using —
+                            // and the year, which used to live on Plan, opens
+                            // the same calendar the timeline does.
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                HorizontalLayout {
+                                    spacing: 8px; alignment: end;
+                                    IconBtn { icon: Icons.chevron-left;
+                                        clicked => { root.plan-step(-1); } }
+                                    Text {
+                                        text: root.cal-label; color: FinTheme.ink;
+                                        font-size: 18px; font-weight: 800;
+                                        vertical-alignment: center;
+                                        horizontal-alignment: center;
+                                        min-width: 176px;
+                                    }
+                                    IconBtn { icon: Icons.chevron-right;
+                                        clicked => { root.plan-step(1); } }
+                                    FilterChip {
+                                        label: "Year"; w: 74px;
+                                        on: root.cal-view == "year";
+                                        clicked => {
+                                            root.set-cal-view("year");
+                                            root.plan-modal = "calendar";
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── can I afford this month ──────────────────────────────
+                    // Four cards, always four: what have I got, where does it
+                    // close, how much am I keeping — and then the verdict on the
+                    // three, which is last because it is a reading of them.
+                    HorizontalLayout {
+                        spacing: 12px;
+                        for s[i] in root.plan-health: PlanCard {
+                            width: dash.quarter;
+                            stat: s;
+                            icon: i == 0 ? Icons.wallet
+                                : i == 1 ? Icons.trending-up
+                                : i == 2 ? Icons.pie-chart
+                                         : Icons.square-check;
+                            hue: i == 0 ? #f472b6
+                               : i == 1 ? #38bdf8
+                               : i == 2 ? #a78bfa
+                                        : FinTheme.good;
+                        }
+                    }
+
+                    // ── where the month's income is spoken for ────────────────
+                    // One income, three claims on it. Committed is dated and not
+                    // up for discussion, envelopes are the part actually being
+                    // steered, and free is the only part a decision can still be
+                    // made about — which is why it is a slice and not a leftover.
                     Card {
                         VerticalLayout {
-                            alignment: start;
                             padding: 16px; spacing: 12px;
-
-                            // Zoom first, then the thing being zoomed. The chips
-                            // decide what a step means — a month or a year — so
-                            // they read ahead of the arrows rather than after them.
                             HorizontalLayout {
                                 spacing: 10px;
-                                FilterChip {
-                                    label: "Month"; min-width: 84px;
-                                    on: root.cal-view != "year";
-                                    clicked => { root.set-cal-view("month"); }
+                                Text { text: "Cash flow this month"; color: FinTheme.ink;
+                                    font-size: 13.5px; font-weight: 700;
+                                    vertical-alignment: center; horizontal-stretch: 1; }
+                                Btn {
+                                    label: "The full statement"; h: 28px;
+                                    clicked => { root.plan-modal = "flow"; }
                                 }
-                                FilterChip {
-                                    label: "Year"; min-width: 78px;
-                                    on: root.cal-view == "year";
-                                    clicked => { root.set-cal-view("year"); }
-                                }
-                                IconBtn { icon: Icons.chevron-left;
-                                    clicked => { root.plan-step(-1); } }
-                                Text { text: root.cal-label; color: FinTheme.ink;
-                                    font-size: 15px; font-weight: 700;
-                                    vertical-alignment: center; }
-                                IconBtn { icon: Icons.chevron-right;
-                                    clicked => { root.plan-step(1); } }
-                                Text {
-                                    text: root.budget-income == ""
-                                        ? "no income recorded"
-                                        : root.budget-income + " came in";
-                                    color: FinTheme.ink-dim; font-size: 11.5px;
-                                    vertical-alignment: center;
-                                }
-                                Rectangle { horizontal-stretch: 1; background: transparent; }
-                                if root.cal-low-point != "": Pill {
-                                    label: root.cal-low-point; hue: FinTheme.warn; }
                             }
-
-                            // Committed, then envelopes, then whatever is left.
-                            // Hand-placed: a HorizontalLayout hands out leftover
-                            // width, and these three are shares of the whole.
                             Rectangle {
-                                height: 16px;
-                                border-radius: Surface.r(8px);
+                                height: 18px;
+                                border-radius: Surface.r(9px);
                                 background: FinTheme.pill-bg;
                                 clip: true;
-                                committed := Rectangle {
+                                fixed := Rectangle {
                                     x: 0;
                                     width: parent.width * root.fixed-pct / 100;
                                     height: parent.height;
                                     background: @linear-gradient(90deg, #f472b6, #fb923c);
                                 }
-                                Rectangle {
-                                    x: committed.width;
+                                planned := Rectangle {
+                                    x: fixed.width;
                                     width: parent.width * root.budget-allocated-pct / 100;
                                     height: parent.height;
                                     background: FinTheme.accent-grad;
                                 }
+                                Rectangle {
+                                    x: fixed.width + planned.width;
+                                    width: parent.width * root.plan-free-pct / 100;
+                                    height: parent.height;
+                                    background: #38bdf8;
+                                }
                             }
-
                             HorizontalLayout {
                                 spacing: 16px;
                                 for k in [
-                                    { c: #fb923c, v: root.fixed-total,
+                                    { c: #16a34a, t: "Income", v: root.budget-income,
+                                      p: 100, n: "What came in this month." },
+                                    { c: #f472b6, t: "Committed", v: root.fixed-total,
                                       p: root.fixed-pct,
-                                      n: "Committed. Loans, bills and subscriptions — dated, not decided." },
-                                    { c: FinTheme.accent, v: root.budget-allocated,
+                                      n: "Loans, bills and subscriptions. Dated, not decided." },
+                                    { c: FinTheme.accent, t: "Planned", v: root.budget-allocated,
                                       p: root.budget-allocated-pct,
-                                      n: "Envelopes. The part of the month you actually steer." },
-                                    { c: FinTheme.ink-dim, v: root.budget-unallocated,
-                                      p: Math.max(0, 100 - root.fixed-pct - root.budget-allocated-pct),
-                                      n: "Unallocated. Not saved — just not spoken for yet." },
+                                      n: "Envelopes — the part of the month you steer." },
+                                    { c: #38bdf8, t: "Free to use", v: root.plan-free,
+                                      p: root.plan-free-pct,
+                                      n: "What is left after the two above it. Not saved — just not spoken for yet." },
                                 ]: HorizontalLayout {
                                     spacing: 8px; horizontal-stretch: 1;
                                     VerticalLayout {
@@ -4637,14 +4952,17 @@ export component FinancesPage inherits Rectangle {
                                         spacing: 2px; horizontal-stretch: 1;
                                         HorizontalLayout {
                                             spacing: 6px;
-                                            Text { text: k.v == "" ? "—" : k.v;
-                                                color: FinTheme.ink; font-size: 13px;
-                                                font-weight: 800; horizontal-stretch: 0; }
-                                            Text { text: "· \{k.p}%";
-                                                color: FinTheme.ink-dim; font-size: 11px;
-                                                vertical-alignment: center;
-                                                horizontal-stretch: 1; }
+                                            Text { text: k.t; color: FinTheme.ink-dim;
+                                                font-size: 11px; font-weight: 700;
+                                                horizontal-stretch: 0;
+                                                vertical-alignment: center; }
+                                            Text { text: "\{k.p}%"; color: FinTheme.ink-dim;
+                                                font-size: 11px; horizontal-stretch: 1;
+                                                vertical-alignment: center; }
                                         }
+                                        Text { text: k.v == "" ? "—" : k.v;
+                                            color: FinTheme.ink; font-size: 13px;
+                                            font-weight: 800; }
                                         Text { text: k.n; color: FinTheme.ink-dim;
                                             font-size: 11px; wrap: word-wrap; }
                                     }
@@ -4653,943 +4971,111 @@ export component FinancesPage inherits Rectangle {
                         }
                     }
 
-                    // Every figure here already existed on one of the two tabs.
-                    // Nothing is computed twice, so nothing can disagree.
-                    StatStrip {
-                        stats: [
-                            { label: root.cal-warning == "" ? "CASH FLOW HOLDS"
-                                                            : "CASH FLOW WARNING",
-                              value: root.cal-warning == "" ? "Covered" : "Short",
-                              sub: root.cal-warning == ""
-                                ? "Everything dated this month is covered by what is in the bank."
-                                : root.cal-warning,
-                              tone: root.cal-warning == "" ? "ok" : "warn",
-                              delta: "", delta-up: false, action: "" },
-                            { label: root.cal-heaviest-label == ""
-                                ? "HEAVIEST DAY"
-                                : "HEAVIEST DAY — " + root.cal-heaviest-label,
-                              value: root.cal-heaviest == "" ? "—" : root.cal-heaviest,
-                              sub: root.cal-heaviest-sub,
-                              tone: "flat", delta: "", delta-up: false, action: "" },
-                            { label: "ENVELOPES SPENT",
-                              value: root.envelopes-spent == "" ? "—" : root.envelopes-spent,
-                              sub: root.budget-allocated == ""
-                                ? "No envelope set this month."
-                                : "of " + root.budget-allocated + " set aside",
-                              tone: "flat", delta: "", delta-up: false, action: "" },
-                            { label: "NOT BUDGETED",
-                              value: root.fixed-total == "" ? "—" : root.fixed-total,
-                              sub: "You cannot overspend a bill — you can only fail to pay it.",
-                              tone: "flat", delta: "", delta-up: false, action: "" },
-                        ];
-                    }
-
-                    // ── timing on the left, what it closes at on the right ────
-                    HorizontalLayout {
-                        spacing: 14px;
-
-                        Card {
-                            width: root.plan-cal-w;
-                            height: root.plan-row-h;
-                            VerticalLayout {
-                                padding: 16px; spacing: 12px;
-                                CardTitle {
-                                    title: "When it lands";
-                                    hint: root.cal-label;
-                                    hue: FinTheme.accent-2;
-                                }
-                                if root.cal-view == "year": CalYear {
-                                    months: root.cal-months; }
-                                // Fills whatever the title leaves, so the last row
-                                // of days ends flush above the legend however many
-                                // rows the month needs.
-                                if root.cal-view != "year": CalGrid {
-                                    days: root.cal-days;
-                                    selected: root.plan-day;
-                                    row-min: 48px;
-                                    vertical-stretch: 1;
-                                    picked(d) => {
-                                        root.plan-day = d.day;
-                                        root.plan-sel = d;
-                                    }
-                                }
-                                if root.cal-view == "year": Rectangle {
-                                    vertical-stretch: 1; background: transparent; }
-                            }
-                        }
-
-                        VerticalLayout {
-                            spacing: 14px;
-
-                            Card {
-                                height: root.plan-half;
-                                VerticalLayout {
-                                    padding: 16px; spacing: 8px;
-                                    CardTitle {
-                                        title: "Where " + root.cal-label + " closes";
-                                        hint: "nothing projected";
-                                        hue: FinTheme.good;
-                                    }
-                                    ScrollView {
-                                        vertical-stretch: 1;
-                                        VerticalLayout {
-                                            alignment: start;
-                                            padding-right: 6px; spacing: 2px;
-                                            for f in root.cal-flow: KvRow { kv: f; }
-                                            if root.cal-flow.length == 0: Text {
-                                                text: "Nothing dated this month, so the balance ends where it started.";
-                                                color: FinTheme.ink-dim; font-size: 12px;
-                                                wrap: word-wrap;
-                                            }
-                                            // Stated here because a closing balance
-                                            // built on a salary that has not landed
-                                            // is a forecast, not a figure.
-                                            Text {
-                                                text: "Expected income is never projected forward — money that has not arrived is not money.";
-                                                color: FinTheme.ink-dim; font-size: 10.5px;
-                                                wrap: word-wrap;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            // One day, in full. A month-long agenda is the grid
-                            // beside it written out as a list; a list is better at
-                            // one day than the grid is, and worse at the month.
-                            Card {
-                                height: root.plan-half;
-                                VerticalLayout {
-                                    padding: 16px; spacing: 10px;
-                                    HorizontalLayout {
-                                        spacing: 8px;
-                                        Text {
-                                            text: root.plan-day == 0
-                                                ? "No day selected"
-                                                : "\{root.plan-day} " + root.cal-label;
-                                            color: FinTheme.ink; font-size: 14px;
-                                            font-weight: 700; vertical-alignment: center;
-                                            horizontal-stretch: 0;
-                                        }
-                                        if root.plan-today > 0: Pill {
-                                            label: root.plan-delta == 0 ? "today"
-                                                : (root.plan-delta > 0
-                                                   ? "in \{root.plan-delta} days"
-                                                   : "\{0 - root.plan-delta} days ago");
-                                            hue: root.plan-delta == 0 ? FinTheme.accent
-                                                : (root.plan-delta > 0 ? FinTheme.ink-dim
-                                                                       : FinTheme.warn);
-                                        }
-                                        Rectangle { horizontal-stretch: 1;
-                                            background: transparent; }
-                                        if root.plan-sel.income != "": Text {
-                                            text: "+" + root.plan-sel.income;
-                                            color: FinTheme.good; font-size: 12.5px;
-                                            font-weight: 700; vertical-alignment: center;
-                                        }
-                                        if root.plan-sel.amount != "": Text {
-                                            text: root.plan-sel.amount;
-                                            color: root.plan-sel.overdue
-                                                ? FinTheme.bad : FinTheme.ink;
-                                            font-size: 12.5px; font-weight: 700;
-                                            vertical-alignment: center;
-                                        }
-                                        if root.plan-today > 0 && root.plan-delta != 0: Btn {
-                                            label: "Today"; h: 26px;
-                                            clicked => { root.plan-reset(); }
-                                        }
-                                    }
-                                    ScrollView {
-                                        vertical-stretch: 1;
-                                        VerticalLayout {
-                                            alignment: start;
-                                            padding-right: 6px;
-                                            // No spacing: every other day's row is
-                                            // an empty wrapper, and the gap between
-                                            // them would still be laid out.
-                                            spacing: 0;
-                                            for a in root.cal-agenda: VerticalLayout {
-                                                if a.day == root.plan-day: HorizontalLayout {
-                                                    spacing: 10px;
-                                                    padding-top: 5px; padding-bottom: 5px;
-                                                    // Every row shares one date, so
-                                                    // the date says nothing and what
-                                                    // kind of thing it is says a lot.
-                                                    Text {
-                                                        text: a.kind == "subscription" ? "SUB"
-                                                            : (a.kind == "bill" ? "BILL" : "ONE-OFF");
-                                                        color: a.cat-hue;
-                                                        font-size: 9.5px; font-weight: 800;
-                                                        vertical-alignment: center;
-                                                        min-width: 54px; horizontal-stretch: 0;
-                                                    }
-                                                    Text { text: a.name; color: FinTheme.ink;
-                                                        font-size: 12.5px;
-                                                        vertical-alignment: center;
-                                                        horizontal-stretch: 1; overflow: elide; }
-                                                    Pill {
-                                                        label: a.status;
-                                                        hue: a.status == "overdue" ? FinTheme.bad
-                                                           : (a.status == "paid" ? FinTheme.good
-                                                                                 : FinTheme.ink-dim);
-                                                    }
-                                                    Text {
-                                                        text: a.actual == "" ? a.estimate : a.actual;
-                                                        color: FinTheme.ink; font-size: 12.5px;
-                                                        font-weight: 700; font-italic: a.is-estimate;
-                                                        vertical-alignment: center;
-                                                        min-width: 96px; horizontal-stretch: 0;
-                                                        horizontal-alignment: right;
-                                                    }
-                                                }
-                                            }
-                                            if root.plan-sel.count == 0: Text {
-                                                text: "Nothing lands on this day.";
-                                                color: FinTheme.ink-dim; font-size: 12.5px;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // ── this month's envelopes, and the six behind them ───────
-                    // Same two columns as the row above it, so the page reads as
-                    // one grid rather than two rows that happen to be stacked.
-                    HorizontalLayout {
-                        spacing: 14px;
-
-                        Card {
-                            width: root.plan-cal-w;
-                            height: root.plan-row2-h;
-                            VerticalLayout {
-                                padding: 16px; spacing: 12px;
-                                CardTitle {
-                                    title: "Envelopes";
-                                    hint: root.budget-allocated == ""
-                                        ? "nothing set this month"
-                                        : root.envelopes-spent + " of " + root.budget-allocated;
-                                }
-                                if root.budgets.length == 0: Blank {
-                                    title: "No envelopes yet";
-                                    body: "Set a monthly limit on the categories you actually decide about — groceries, eating out, shopping. Rent and insurance do not need one.";
-                                    icon: Icons.pie-chart;
-                                    tint: FinTheme.accent;
-                                }
-                                // Scrolls rather than growing: the row's height is
-                                // the two cards beside it, and however many
-                                // envelopes are set is not a layout decision.
-                                ScrollView {
-                                    vertical-stretch: 1;
-                                    VerticalLayout {
-                                        alignment: start;
-                                        padding-right: 6px; spacing: 12px;
-                                        for b in root.budgets: VerticalLayout {
-                                            spacing: 5px;
-                                            HorizontalLayout {
-                                                spacing: 8px;
-                                                Text { text: b.name; color: FinTheme.ink;
-                                                    font-size: 12.5px; font-weight: 600;
-                                                    vertical-alignment: center;
-                                                    horizontal-stretch: 1; overflow: elide; }
-                                                if b.unset: Pill { label: "no envelope";
-                                                    hue: FinTheme.warn; }
-                                                if b.over-by != "": Pill { label: b.over-by;
-                                                    hue: FinTheme.bad; }
-                                                Text {
-                                                    text: b.spent
-                                                        + (b.unset ? "" : " of " + b.budget);
-                                                    color: b.over ? FinTheme.bad : FinTheme.ink;
-                                                    font-size: 12px; font-weight: 700;
-                                                    vertical-alignment: center;
-                                                    horizontal-stretch: 0;
-                                                }
-                                                IconBtn {
-                                                    icon: b.unset ? Icons.plus : Icons.pencil;
-                                                    clicked => {
-                                                        root.open-sheet("budget", b.category-id);
-                                                    }
-                                                }
-                                            }
-                                            if !b.unset: Bar {
-                                                pct: b.used-pct;
-                                                hue: b.off-pace ? FinTheme.warn : FinTheme.accent;
-                                            }
-                                            if !b.unset: Text {
-                                                text: b.over
-                                                    ? b.remaining + " over"
-                                                    : (b.off-pace
-                                                       ? "On this pace the month ends at "
-                                                         + b.projected
-                                                       : b.remaining + " left");
-                                                color: b.over ? FinTheme.bad
-                                                     : (b.off-pace ? FinTheme.warn
-                                                                   : FinTheme.ink-dim);
-                                                font-size: 11px;
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        // Six months, twice: which envelope keeps not holding,
-                        // and whether the month as a whole did. The row above says
-                        // what this month is doing; these two say whether that is
-                        // this month or a habit.
-                        VerticalLayout {
-                            spacing: 14px;
-
-                            Card {
-                                height: root.plan-half2;
-                                VerticalLayout {
-                                    padding: 16px; spacing: 8px;
-                                    CardTitle {
-                                        title: "Six months, envelope by envelope";
-                                        hint: "An empty cell is a month with no envelope set, not a month with no spending.";
-                                        hue: FinTheme.accent-2;
-                                    }
-                                    if root.envelope-history.length == 0: Text {
-                                        text: "No envelope has been set for long enough to have a history yet.";
-                                        color: FinTheme.ink-dim; font-size: 12px; wrap: word-wrap;
-                                    }
-                                    // Scrolls inside whatever the envelopes leave, so
-                                    // the row's height comes from the card beside it
-                                    // rather than from however many envelopes have run
-                                    // for six months.
-                                    ScrollView {
-                                        vertical-stretch: 1;
-                                        VerticalLayout {
-                                            alignment: start;
-                                            padding-right: 6px; spacing: 8px;
-                                            HorizontalLayout {
-                                                spacing: 8px;
-                                                Text { text: ""; horizontal-stretch: 1;
-                                                    min-width: 110px; }
-                                                for m in root.discipline-months: Text {
-                                                    text: m; color: FinTheme.ink-dim;
-                                                    font-size: 10.5px; font-weight: 700;
-                                                    horizontal-alignment: right;
-                                                    min-width: 66px; horizontal-stretch: 0;
-                                                }
-                                                Text {
-                                                    text: "AVG VS BUDGET"; color: FinTheme.ink-dim;
-                                                    font-size: 10.5px; font-weight: 700;
-                                                    horizontal-alignment: right;
-                                                    min-width: 100px; horizontal-stretch: 0;
-                                                }
-                                            }
-                                            Rectangle { min-height: 1px; max-height: 1px;
-                                                background: FinTheme.hairline; }
-                                            for h in root.envelope-history: HorizontalLayout {
-                                                spacing: 8px;
-                                                Text { text: h.name; color: FinTheme.ink;
-                                                    font-size: 12px; font-weight: 600;
-                                                    vertical-alignment: center;
-                                                    horizontal-stretch: 1; min-width: 110px;
-                                                    overflow: elide; }
-                                                for c[i] in h.cells: Text {
-                                                    text: c;
-                                                    color: h.over[i] ? FinTheme.bad : FinTheme.ink-dim;
-                                                    font-size: 11.5px; vertical-alignment: center;
-                                                    horizontal-alignment: right;
-                                                    min-width: 66px; horizontal-stretch: 0;
-                                                }
-                                                Text {
-                                                    text: h.avg-delta;
-                                                    color: h.avg-over ? FinTheme.bad : FinTheme.good;
-                                                    font-size: 11.5px; font-weight: 700;
-                                                    vertical-alignment: center;
-                                                    horizontal-alignment: right;
-                                                    min-width: 100px; horizontal-stretch: 0;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                            Card {
-                                height: root.plan-half2;
-                                VerticalLayout {
-                                    padding: 16px; spacing: 10px;
-                                    CardTitle {
-                                        title: "Six months of discipline";
-                                        hint: "Only counts categories that had an envelope that month.";
-                                        hue: FinTheme.good;
-                                    }
-                                    if root.discipline.length == 0: Text {
-                                        text: "Nothing to compare yet — this needs a month that had an envelope set on it.";
-                                        color: FinTheme.ink-dim; font-size: 12px; wrap: word-wrap;
-                                    }
-                                    ScrollView {
-                                        vertical-stretch: 1;
-                                        VerticalLayout {
-                                            alignment: start;
-                                            padding-right: 6px; spacing: 10px;
-                                            for m in root.discipline: HorizontalLayout {
-                                                spacing: 10px;
-                                                Text { text: m.period; color: FinTheme.ink-dim;
-                                                    font-size: 11.5px; vertical-alignment: center;
-                                                    min-width: 66px; horizontal-stretch: 0; }
-                                                Bar {
-                                                    pct: m.pct;
-                                                    // Already decided: within budget or
-                                                    // not. The fill's own tone rule
-                                                    // would overrule that.
-                                                    hue: m.within ? FinTheme.good : FinTheme.bad;
-                                                    thickness: 10px; toned: false;
-                                                }
-                                                Text {
-                                                    text: m.spent + " / " + m.budget;
-                                                    color: FinTheme.ink-dim; font-size: 11px;
-                                                    vertical-alignment: center;
-                                                    min-width: 130px; horizontal-stretch: 0;
-                                                    horizontal-alignment: right;
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-
-                        }
-                    }
-                }
-            }
-
-            // ══ BUDGETS ═════════════════════════════════════════════════════
-            if root.tab == "budgets": ScrollView {
-                property <int> watch: root.budgets.length + root.discipline.length;
-                changed watch => { self.viewport-y = 0; }
-                init => { self.viewport-y = 0; }
-                VerticalLayout {
-                    padding-right: 6px; spacing: 14px;
-
+                    // ── what is coming ───────────────────────────────────────
+                    // The calendar written as one line of time. The grid behind
+                    // any of these cards answers "which day"; this answers "in
+                    // what order", which is the question you have when deciding
+                    // whether the 8th survives until the 15th.
                     Card {
                         VerticalLayout {
-                            alignment: start;
-                            padding: 16px; spacing: 12px;
-                            HorizontalLayout {
-                                spacing: 10px;
-                                IconBtn { icon: Icons.chevron-left;
-                                    clicked => { root.budget-step(-1); } }
-                                Text { text: root.budget-period; color: FinTheme.ink;
-                                    font-size: 15px; font-weight: 700;
-                                    vertical-alignment: center; }
-                                IconBtn { icon: Icons.chevron-right;
-                                    clicked => { root.budget-step(1); } }
-                                Rectangle { horizontal-stretch: 1; background: transparent; }
-                                Btn { label: "Copy last month"; h: 32px;
-                                    clicked => { root.budget-copy-forward(); } }
-                                Btn { label: "Set an envelope"; h: 32px; primary: true;
-                                    clicked => { root.open-sheet("budget", 0); } }
-                            }
-
-                            // income allocation
-                            VerticalLayout {
-                                alignment: start;
-                                spacing: 6px;
-                                HorizontalLayout {
-                                    spacing: 10px;
-                                    Text { text: "Allocated"; color: FinTheme.ink-dim;
-                                        font-size: 11.5px; vertical-alignment: center;
-                                        horizontal-stretch: 1; }
-                                    Text {
-                                        text: root.budget-allocated + " of " + root.budget-income;
-                                        color: FinTheme.ink; font-size: 12.5px; font-weight: 700;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                                // Allocating most of your income is the point of an envelope system, so
-                                // this one does not warn as it fills.
-                                Bar { pct: root.budget-allocated-pct; hue: FinTheme.accent-2;
-                                    toned: false; }
-                                Text {
-                                    text: root.budget-unallocated + " unallocated";
-                                    color: FinTheme.ink-dim; font-size: 11px;
-                                }
-                            }
-                        }
-                    }
-
-                    // Where the income goes before anything is decided. The
-                    // envelopes are only the part of a month that is discretionary,
-                    // and a budget tab that shows them alone implies the rest is too.
-                    HorizontalLayout {
-                        spacing: 14px;
-                        Card {
-                            horizontal-stretch: 1;
-                            VerticalLayout {
-                                alignment: start;
-                                padding: 16px; spacing: 10px;
-                                CardTitle {
-                                    title: "Where " + root.budget-income + " is committed";
-                                    hint: "before anything discretionary";
-                                }
-                                for c in root.commitments: VerticalLayout {
-                                    spacing: 3px;
-                                    HorizontalLayout {
-                                        spacing: 8px;
-                                        VerticalLayout {
-                                            alignment: center; horizontal-stretch: 0;
-                                            Rectangle { width: 10px; height: 10px;
-                                                border-radius: Surface.r(3px); background: c.hue; }
-                                        }
-                                        Text { text: c.name; color: FinTheme.ink;
-                                            font-size: 12px; vertical-alignment: center;
-                                            horizontal-stretch: 1; overflow: elide; }
-                                        Text { text: "\{c.pct}%"; color: FinTheme.ink-dim;
-                                            font-size: 11px; vertical-alignment: center;
-                                            min-width: 34px; horizontal-alignment: right; }
-                                        Text { text: c.amount; color: FinTheme.ink;
-                                            font-size: 12px; font-weight: 700;
-                                            vertical-alignment: center; min-width: 92px;
-                                            horizontal-alignment: right; }
-                                    }
-                                    Bar { pct: c.pct; thickness: 5px; hue: c.hue;
-                                        toned: false; }
-                                }
-                                if root.commitments.length == 0: Text {
-                                    text: "No income recorded this month, so there is nothing to divide up yet.";
-                                    color: FinTheme.ink-dim; font-size: 12px; wrap: word-wrap;
-                                }
-                            }
-                        }
-                        // What leaves whatever you decide, itemised. Shown so the
-                        // page adds up: envelopes are a quarter of a normal month,
-                        // and a Budgets tab that shows only them implies the rest
-                        // is yours to steer too.
-                        Card {
-                            horizontal-stretch: 0;
-                            min-width: 280px; max-width: 280px;
-                            VerticalLayout {
-                                padding: 16px; spacing: 4px;
-                                Text { text: "NOT BUDGETED"; color: FinTheme.ink-dim;
-                                    font-size: 11px; font-weight: 700; }
-                                Text {
-                                    text: root.fixed-total == "" ? "—" : root.fixed-total;
-                                    color: FinTheme.ink; font-size: 22px; font-weight: 800;
-                                }
-                                Text {
-                                    text: root.fixed-share;
-                                    color: FinTheme.ink-dim; font-size: 11px; wrap: word-wrap;
-                                }
-                                Text {
-                                    text: "You cannot overspend a bill — you can only fail to pay it.";
-                                    color: FinTheme.ink-dim; font-size: 10.5px;
-                                    wrap: word-wrap;
-                                }
-                                for f in root.fixed-items: KvRow { kv: f; }
-                                if root.fixed-items.length == 0: Text {
-                                    text: "Nothing fixed this month.";
-                                    color: FinTheme.ink-dim; font-size: 11.5px;
-                                }
-                                // Spending with no envelope on it. Not a failure —
-                                // most categories should not have one — but it is
-                                // the part no budget is watching.
-                                if root.budget-unbudgeted != "": KvRow {
-                                    kv: { label: "Spending with no envelope",
-                                          value: root.budget-unbudgeted,
-                                          tone: "warn", strong: false };
-                                    rule: false;
-                                }
-                                Rectangle { vertical-stretch: 1; background: transparent; }
-                                // The rule, stated where the rollover figures are
-                                // shown, because "why is my envelope bigger than I
-                                // set it" is otherwise unanswerable from the UI.
-                                Text {
-                                    text: "An envelope with rollover carries what it did not spend into next month. One without it starts fresh.";
-                                    color: FinTheme.ink-dim; font-size: 10.5px; wrap: word-wrap;
-                                }
-                            }
-                        }
-                    }
-
-                    Card {
-                        VerticalLayout {
-                            alignment: start;
-                            padding: 16px; spacing: 14px;
-                            CardTitle {
-                                title: "Envelopes";
-                                hint: "Transfers and card payments are excluded, so paying a card cannot eat a budget.";
-                            }
-                            if root.budgets.length == 0: Blank {
-                                title: "No envelopes yet";
-                                body: "Set a monthly limit on the categories you actually decide about — groceries, eating out, shopping. Rent and insurance do not need one.";
-                                icon: Icons.pie-chart;
-                                tint: FinTheme.accent;
-                            }
-                            for b in root.budgets: VerticalLayout {
-                                spacing: 6px;
-                                HorizontalLayout {
-                                    spacing: 10px;
-                                    Text { text: b.name; color: FinTheme.ink; font-size: 13px;
-                                        font-weight: 600; vertical-alignment: center;
-                                        horizontal-stretch: 0; }
-                                    if b.over-by != "": Pill {
-                                        label: b.over-by; hue: FinTheme.bad; }
-                                    Rectangle { horizontal-stretch: 1; background: transparent; }
-                                    if b.rollover && b.carried != "": Pill {
-                                        label: "+" + b.carried + " carried"; hue: FinTheme.good; }
-                                    if b.unset: Pill { label: "no envelope"; hue: FinTheme.warn; }
-                                    Text {
-                                        text: b.spent + (b.unset ? "" : " of " + b.budget);
-                                        color: b.over ? FinTheme.bad : FinTheme.ink;
-                                        font-size: 12.5px; font-weight: 700;
-                                        vertical-alignment: center; horizontal-stretch: 0;
-                                    }
-                                    if !b.unset: Btn { label: "Edit"; h: 26px;
-                                        clicked => { root.open-sheet("budget", b.category-id); } }
-                                    if b.unset: Btn { label: "Set"; h: 26px;
-                                        clicked => { root.open-sheet("budget", b.category-id); } }
-                                    if !b.unset: IconBtn { icon: Icons.x;
-                                        clicked => { root.budget-remove(b.category-id); } }
-                                }
-                                if !b.unset: Bar {
-                                    pct: b.used-pct;
-                                    hue: b.off-pace ? FinTheme.warn : FinTheme.accent;
-                                }
-                                if !b.unset: HorizontalLayout {
-                                    spacing: 8px;
-                                    Text {
-                                        text: b.over
-                                            ? b.remaining + " over"
-                                            : (b.off-pace
-                                               ? "On this pace the month ends at " + b.projected
-                                               : b.remaining + " left");
-                                        color: b.over ? FinTheme.bad
-                                             : (b.off-pace ? FinTheme.warn : FinTheme.ink-dim);
-                                        font-size: 11px; vertical-alignment: center;
-                                        horizontal-stretch: 0;
-                                    }
-                                    // What it is made of. An envelope broken by one
-                                    // purchase wants a different answer from one
-                                    // broken by forty, and only the count says which.
-                                    if b.detail != "": Text {
-                                        text: "· " + b.detail;
-                                        color: FinTheme.ink-dim; font-size: 11px;
-                                        vertical-alignment: center; horizontal-stretch: 1;
-                                        overflow: elide;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // The same six months, one row per envelope. The aggregate
-                    // above says whether a month held; this says which envelope
-                    // keeps not holding, which is the only one of the two anything
-                    // can be done about.
-                    if root.envelope-history.length > 0: Card {
-                        VerticalLayout {
-                            alignment: start;
-                            padding: 16px; spacing: 8px;
-                            CardTitle {
-                                title: "Six months, envelope by envelope";
-                                hint: "An empty cell is a month with no envelope set, not a month with no spending.";
-                            }
-                            HorizontalLayout {
-                                spacing: 8px;
-                                Text { text: ""; horizontal-stretch: 1; min-width: 110px; }
-                                for m in root.discipline-months: Text {
-                                    text: m; color: FinTheme.ink-dim;
-                                    font-size: 10.5px; font-weight: 700;
-                                    horizontal-alignment: right;
-                                    min-width: 74px; horizontal-stretch: 0;
-                                }
-                                Text {
-                                    text: "AVG VS BUDGET"; color: FinTheme.ink-dim;
-                                    font-size: 10.5px; font-weight: 700;
-                                    horizontal-alignment: right;
-                                    min-width: 110px; horizontal-stretch: 0;
-                                }
-                            }
-                            Rectangle { min-height: 1px; max-height: 1px;
-                                background: FinTheme.hairline; }
-                            for h in root.envelope-history: HorizontalLayout {
-                                spacing: 8px;
-                                Text { text: h.name; color: FinTheme.ink;
-                                    font-size: 12px; font-weight: 600;
-                                    vertical-alignment: center;
-                                    horizontal-stretch: 1; min-width: 110px; overflow: elide; }
-                                for c[i] in h.cells: Text {
-                                    text: c;
-                                    color: h.over[i] ? FinTheme.bad : FinTheme.ink-dim;
-                                    font-size: 11.5px; vertical-alignment: center;
-                                    horizontal-alignment: right;
-                                    min-width: 74px; horizontal-stretch: 0;
-                                }
-                                Text {
-                                    text: h.avg-delta;
-                                    color: h.avg-over ? FinTheme.bad : FinTheme.good;
-                                    font-size: 11.5px; font-weight: 700;
-                                    vertical-alignment: center;
-                                    horizontal-alignment: right;
-                                    min-width: 110px; horizontal-stretch: 0;
-                                }
-                            }
-                        }
-                    }
-
-                    if root.discipline.length > 0: Card {
-                        VerticalLayout {
-                            alignment: start;
                             padding: 16px; spacing: 10px;
-                            CardTitle {
-                                title: "Six months of discipline";
-                                hint: "Only counts categories that had an envelope that month.";
-                            }
-                            for m in root.discipline: HorizontalLayout {
-                                spacing: 10px;
-                                Text { text: m.period; color: FinTheme.ink-dim; font-size: 11.5px;
-                                    vertical-alignment: center; min-width: 66px; }
-                                Bar {
-                                    pct: m.pct;
-                                    // Already decided: within budget or not. The
-                                    // fill's own tone rule would overrule that.
-                                    hue: m.within ? FinTheme.good : FinTheme.bad;
-                                    thickness: 10px; toned: false;
-                                }
-                                Text {
-                                    text: m.spent + " / " + m.budget;
-                                    color: FinTheme.ink-dim; font-size: 11px;
-                                    vertical-alignment: center; min-width: 150px;
-                                    horizontal-alignment: right;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ══ CALENDAR ════════════════════════════════════════════════════
-            if root.tab == "calendar": ScrollView {
-                property <int> watch: root.cal-days.length + root.cal-agenda.length;
-                changed watch => { self.viewport-y = 0; }
-                init => { self.viewport-y = 0; }
-                VerticalLayout {
-                    padding-right: 6px; spacing: 14px;
-
-                    // The two things a calendar of obligations is for: whether the
-                    // money is there when they land, and which single day is worst.
-                    HorizontalLayout {
-                        spacing: 14px;
-                        Card {
-                            horizontal-stretch: 1;
-                            border-color: root.cal-warning == ""
-                                ? FinTheme.hairline : FinTheme.warn.with-alpha(0.4);
-                            VerticalLayout {
-                                alignment: start;
-                                padding: 14px; spacing: 6px;
-                                HorizontalLayout {
-                                    spacing: 8px;
+                            HorizontalLayout {
+                                spacing: 12px;
+                                Text { text: "When money moves"; color: FinTheme.ink;
+                                    font-size: 13.5px; font-weight: 700;
+                                    vertical-alignment: center; horizontal-stretch: 0; }
+                                for l in [
+                                    { t: "Income", c: #16a34a },
+                                    { t: "Bills & EMIs", c: #f472b6 },
+                                    { t: "Subscriptions", c: #a78bfa },
+                                    { t: "Other", c: #94a3b8 },
+                                ]: HorizontalLayout {
+                                    spacing: 6px; horizontal-stretch: 0;
                                     VerticalLayout {
                                         alignment: center; horizontal-stretch: 0;
-                                        AppIcon {
-                                            source: root.cal-warning == ""
-                                                ? Icons.check : Icons.triangle-alert;
-                                            tint: root.cal-warning == ""
-                                                ? FinTheme.good : FinTheme.warn;
-                                            width: 15px; height: 15px;
+                                        Rectangle {
+                                            width: 8px; height: 8px;
+                                            border-radius: 4px;
+                                            background: l.c;
                                         }
                                     }
-                                    Text {
-                                        text: root.cal-warning == ""
-                                            ? "Cash flow holds" : "Cash-flow warning";
-                                        color: root.cal-warning == ""
-                                            ? FinTheme.good : FinTheme.warn;
-                                        font-size: 11px; font-weight: 800;
-                                        vertical-alignment: center;
-                                    }
+                                    Text { text: l.t; color: FinTheme.ink-dim;
+                                        font-size: 11px; vertical-alignment: center; }
                                 }
-                                Text {
-                                    text: root.cal-warning == ""
-                                        ? "Everything dated in the next month is covered by what is in the bank."
-                                        : root.cal-warning;
-                                    color: FinTheme.ink-dim; font-size: 12px; wrap: word-wrap;
-                                }
-                            }
-                        }
-                        Card {
-                            horizontal-stretch: 1;
-                            VerticalLayout {
-                                alignment: start;
-                                padding: 14px; spacing: 4px;
-                                Text {
-                                    text: root.cal-heaviest-label == ""
-                                        ? "HEAVIEST DAY" : "HEAVIEST DAY — " + root.cal-heaviest-label;
-                                    color: FinTheme.ink-dim; font-size: 11px; font-weight: 700;
-                                }
-                                Text {
-                                    text: root.cal-heaviest == "" ? "—" : root.cal-heaviest;
-                                    color: FinTheme.ink; font-size: 22px; font-weight: 800;
-                                }
-                                Text {
-                                    text: root.cal-heaviest-sub;
-                                    color: FinTheme.ink-dim; font-size: 11px; wrap: word-wrap;
-                                }
-                                // What actually lands. A total on its own says the
-                                // day is bad; the list says whether anything on it
-                                // can be moved.
-                                for h in root.cal-heaviest-items: HorizontalLayout {
-                                    spacing: 8px;
-                                    Text { text: h.name; color: FinTheme.ink;
-                                        font-size: 11.5px; vertical-alignment: center;
-                                        horizontal-stretch: 1; overflow: elide; }
-                                    Text {
-                                        text: h.actual == "" ? h.estimate : h.actual;
-                                        color: FinTheme.ink; font-size: 11.5px;
-                                        font-weight: 700; font-italic: h.is-estimate;
-                                        vertical-alignment: center;
-                                    }
-                                }
-                            }
-                        }
-                    }
-
-                    // The walk from what is in the bank to where the month closes.
-                    // Every row is something recorded: expected income is never
-                    // projected forward, because a salary that has not landed is
-                    // not money and a closing balance built on one is a forecast.
-                    if root.cal-flow.length > 0: Card {
-                        VerticalLayout {
-                            alignment: start;
-                            padding: 16px; spacing: 4px;
-                            CardTitle {
-                                title: "Cash flow";
-                                hint: "Only what is already on the calendar.";
-                            }
-                            for f in root.cal-flow: KvRow { kv: f; }
-                        }
-                    }
-
-                    Card {
-                        VerticalLayout {
-                            padding: 16px; spacing: 12px;
-                            HorizontalLayout {
-                                spacing: 10px;
-                                IconBtn { icon: Icons.chevron-left;
-                                    clicked => { root.cal-step(-1); } }
-                                Text { text: root.cal-label; color: FinTheme.ink;
-                                    font-size: 15px; font-weight: 700; vertical-alignment: center; }
-                                IconBtn { icon: Icons.chevron-right;
-                                    clicked => { root.cal-step(1); } }
                                 Rectangle { horizontal-stretch: 1; background: transparent; }
-                                if root.cal-low-point != "": Pill {
-                                    label: root.cal-low-point; hue: FinTheme.warn; }
-                                FilterChip {
-                                    label: "Month"; min-width: 84px;
-                                    on: root.cal-view != "year";
-                                    clicked => { root.set-cal-view("month"); }
-                                }
-                                FilterChip {
-                                    label: "Year"; min-width: 78px;
-                                    on: root.cal-view == "year";
-                                    clicked => { root.set-cal-view("year"); }
+                                Text {
+                                    text: "Any day opens it on the calendar";
+                                    color: FinTheme.ink-dim; font-size: 11px;
+                                    vertical-alignment: center; horizontal-stretch: 0;
                                 }
                             }
-
-                            // ── year view ───────────────────────────────────
-                            if root.cal-view == "year": CalYear { months: root.cal-months; }
-
-                            // Weekday strip, day grid and pip legend, the same
-                            // component the Plan tab draws.
-                            if root.cal-view != "year": CalGrid { days: root.cal-days; }
-                        }
-                    }
-
-                    Card {
-                        VerticalLayout {
-                            alignment: start;
-                            padding: 16px; spacing: 10px;
-                            CardTitle { title: "Agenda"; hint: root.cal-label; }
-                            if root.cal-agenda.length == 0: Text {
-                                text: "Nothing dated this month.";
+                            if root.timeline.length == 0: Text {
+                                text: "Nothing is dated in this month — no bill, no subscription, no credit.";
                                 color: FinTheme.ink-dim; font-size: 12.5px;
                             }
-                            for a in root.cal-agenda: HorizontalLayout {
-                                spacing: 10px;
-                                Text { text: a.due; color: FinTheme.ink-dim; font-size: 11.5px;
-                                    vertical-alignment: center; min-width: 92px; }
-                                Text { text: a.name; color: FinTheme.ink; font-size: 12.5px;
-                                    vertical-alignment: center; horizontal-stretch: 1;
-                                    overflow: elide; }
-                                Pill {
-                                    label: a.status;
-                                    hue: a.status == "overdue" ? FinTheme.bad
-                                       : a.status == "paid"    ? FinTheme.good
-                                                               : FinTheme.ink-dim;
-                                }
-                                Text {
-                                    text: a.actual == "" ? a.estimate : a.actual;
-                                    color: FinTheme.ink; font-size: 12.5px; font-weight: 700;
-                                    font-italic: a.is-estimate;
-                                    vertical-alignment: center; min-width: 100px;
-                                    horizontal-alignment: right;
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-
-            // ══ INSIGHTS ════════════════════════════════════════════════════
-            if root.tab == "insights": ScrollView {
-                property <int> watch: root.flags.length;
-                changed watch => { self.viewport-y = 0; }
-                init => { self.viewport-y = 0; }
-                VerticalLayout {
-                    alignment: start;
-                    padding-right: 6px; spacing: 12px;
-
-                    StatStrip { stats: root.insight-stats; }
-
-                    // Six months of spending by category, as a small multiple. The
-                    // trend is the point: one month's donut cannot tell you that
-                    // food has been climbing since March.
-                    if root.trend.length > 0: Card {
-                        VerticalLayout {
-                            alignment: start;
-                            padding: 16px; spacing: 12px;
-                            CardTitle {
-                                title: "Spend by category";
-                                hint: "last six months, biggest first";
-                            }
-                            for t in root.trend: VerticalLayout {
-                                spacing: 4px;
+                            // Scrolls sideways rather than shrinking: a month
+                            // with fourteen dated days is not a month with
+                            // fourteen narrower days.
+                            if root.timeline.length > 0: ScrollView {
+                                height: 106px;
+                                viewport-width: root.timeline.length * 152px;
                                 HorizontalLayout {
-                                    spacing: 8px;
-                                    VerticalLayout {
-                                        alignment: center; horizontal-stretch: 0;
-                                        Rectangle { width: 10px; height: 10px;
-                                            border-radius: Surface.r(3px); background: t.hue; }
-                                    }
-                                    Text { text: t.name; color: FinTheme.ink;
-                                        font-size: 12px; vertical-alignment: center;
-                                        horizontal-stretch: 1; overflow: elide; }
-                                    if t.delta != "": Delta { label: t.delta; up: t.up; }
-                                    Text { text: t.total; color: FinTheme.ink;
-                                        font-size: 12px; font-weight: 700;
-                                        vertical-alignment: center; }
-                                }
-                                // One bar per month, oldest left. Heights are shares
-                                // of this category's own worst month, so a small
-                                // category still shows its own shape.
-                                HorizontalLayout {
-                                    spacing: 4px;
-                                    for m in t.months: Rectangle {
-                                        horizontal-stretch: 1;
-                                        min-height: 26px; max-height: 26px;
-                                        background: transparent;
-                                        Rectangle {
-                                            y: parent.height - self.height;
-                                            width: parent.width;
-                                            height: parent.height * Math.max(2, m.pct) / 100;
-                                            border-radius: Surface.r(3px);
-                                            background: m.current ? t.hue
-                                                                  : t.hue.with-alpha(0.35);
+                                    spacing: 12px; alignment: start;
+                                    for e in root.timeline: ev := Card {
+                                        width: 140px;
+                                        background: e.closing
+                                            ? e.hue.with-alpha(FinTheme.light ? 0.10 : 0.14)
+                                            : (eta.has-hover ? FinTheme.card-2 : FinTheme.card);
+                                        border-color: e.closing
+                                            ? e.hue.with-alpha(0.4)
+                                            : (eta.has-hover ? e.hue.with-alpha(0.5)
+                                                             : FinTheme.hairline);
+                                        animate background, border-color { duration: 110ms; }
+                                        eta := TouchArea {
+                                            enabled: !e.closing && e.idx >= 0;
+                                            mouse-cursor: MouseCursor.pointer;
+                                            clicked => {
+                                                root.plan-day = e.day;
+                                                root.plan-sel = root.cal-days[e.idx];
+                                                // Month view, whatever the year
+                                                // button last left it on: this
+                                                // click picked a day, and a day
+                                                // is not on the year grid.
+                                                root.set-cal-view("month");
+                                                root.plan-modal = "calendar";
+                                            }
+                                        }
+                                        VerticalLayout {
+                                            padding: 12px; spacing: 6px;
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                Rectangle {
+                                                    width: 26px; height: 26px;
+                                                    border-radius: 13px;
+                                                    background: e.hue;
+                                                    horizontal-stretch: 0;
+                                                    Text {
+                                                        text: e.day;
+                                                        color: #ffffff;
+                                                        font-size: 11.5px; font-weight: 800;
+                                                        x: (parent.width - self.width) / 2;
+                                                        y: (parent.height - self.height) / 2;
+                                                    }
+                                                }
+                                                Rectangle { horizontal-stretch: 1;
+                                                    background: transparent; }
+                                            }
+                                            Text {
+                                                text: e.name; color: FinTheme.ink;
+                                                font-size: 12px; font-weight: 600;
+                                                overflow: elide;
+                                            }
+                                            Text {
+                                                text: e.amount;
+                                                color: e.income ? FinTheme.good : FinTheme.ink;
+                                                font-size: 13px; font-weight: 800;
+                                                overflow: elide;
+                                            }
                                         }
                                     }
                                 }
@@ -5597,68 +5083,340 @@ export component FinancesPage inherits Rectangle {
                         }
                     }
 
-                    // Savings rate, month by month. The one figure on this page
-                    // that is about direction rather than about a single month.
-                    if root.savings.length > 0: Card {
+                    // ── what needs you ───────────────────────────────────────
+                    // Dated things that are late or nearly so, and the flags
+                    // that carry an alarm. One list: they are one question, and
+                    // two lists asking it would leave the merging to the reader.
+                    Card {
                         VerticalLayout {
-                            alignment: start;
                             padding: 16px; spacing: 10px;
-                            CardTitle {
-                                title: "Savings rate";
-                                hint: "Income minus spending, as a share of income.";
-                            }
                             HorizontalLayout {
-                                spacing: 8px;
-                                for m in root.savings: VerticalLayout {
-                                    spacing: 5px; horizontal-stretch: 1;
-                                    Rectangle {
-                                        min-height: 78px; max-height: 78px;
-                                        background: transparent;
-                                        // A month with no income is a gap, not a
-                                        // bar at the floor: the salary landing
-                                        // late is a calendar accident, and a
-                                        // zero-height bar would report it as the
-                                        // worst month on record.
-                                        if m.known: Rectangle {
-                                            y: parent.height - self.height;
-                                            width: parent.width;
-                                            height: parent.height * Math.max(3, m.pct) / 100;
-                                            border-radius: Surface.r(4px);
-                                            background: m.current
-                                                ? FinTheme.good
-                                                : FinTheme.good.with-alpha(0.4);
+                                spacing: 10px;
+                                Text { text: "What needs attention"; color: FinTheme.ink;
+                                    font-size: 13.5px; font-weight: 700;
+                                    vertical-alignment: center; horizontal-stretch: 1; }
+                                if root.attention.length > 0: Pill {
+                                    label: "\{root.attention.length}"; hue: FinTheme.warn; }
+                            }
+                            if root.attention.length == 0: Text {
+                                text: "Nothing is late and nothing is about to be. This month is quiet.";
+                                color: FinTheme.ink-dim; font-size: 12.5px;
+                            }
+                            if root.attention.length > 0: ScrollView {
+                                height: 134px;
+                                viewport-width: root.attention.length
+                                    * (dash.quarter + 12px);
+                                HorizontalLayout {
+                                    spacing: 12px; alignment: start;
+                                    for a in root.attention: ac := Card {
+                                        width: dash.quarter;
+                                        property <color> hue: a.severity == "bad"
+                                            ? FinTheme.bad : FinTheme.warn;
+                                        background: ac.hue.with-alpha(FinTheme.light ? 0.07 : 0.10);
+                                        border-color: ac.hue.with-alpha(0.3);
+                                        VerticalLayout {
+                                            padding: 14px; spacing: 6px;
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                VerticalLayout {
+                                                    alignment: start; horizontal-stretch: 0;
+                                                    Rectangle {
+                                                        width: 24px; height: 24px;
+                                                        border-radius: Surface.r(8px);
+                                                        background: ac.hue.with-alpha(0.18);
+                                                        AppIcon {
+                                                            source: a.severity == "bad"
+                                                                ? Icons.bell : Icons.clock;
+                                                            tint: ac.hue;
+                                                            width: 13px; height: 13px;
+                                                            x: (parent.width - self.width) / 2;
+                                                            y: (parent.height - self.height) / 2;
+                                                        }
+                                                    }
+                                                }
+                                                Text {
+                                                    text: a.title; color: ac.hue;
+                                                    font-size: 12.5px; font-weight: 700;
+                                                    wrap: word-wrap; horizontal-stretch: 1;
+                                                }
+                                            }
+                                            Text {
+                                                text: a.detail; color: FinTheme.ink-dim;
+                                                font-size: 11.5px; wrap: word-wrap;
+                                                vertical-stretch: 1;
+                                            }
+                                            if a.action-label != "": HorizontalLayout {
+                                                alignment: start;
+                                                Btn { label: a.action-label; h: 28px;
+                                                    clicked => { root.flag-action(a.action); } }
+                                            }
                                         }
-                                        if !m.known: Rectangle {
-                                            y: parent.height - self.height;
-                                            width: parent.width;
-                                            height: 3px;
-                                            border-radius: 1.5px;
-                                            background: FinTheme.hairline;
-                                        }
-                                    }
-                                    Text {
-                                        text: m.label; color: FinTheme.ink-dim;
-                                        font-size: 10px;
-                                        font-weight: m.current ? 800 : 500;
-                                        horizontal-alignment: center;
                                     }
                                 }
                             }
-                            for k in root.savings-summary: KvRow { kv: k; }
                         }
                     }
 
-                    // Where the last few months lead, and what the flags below are
-                    // worth if they are acted on.
+                    // ── am I inside my envelopes ─────────────────────────────
+                    Card {
+                        VerticalLayout {
+                            padding: 16px; spacing: 10px;
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Text { text: "Envelopes"; color: FinTheme.ink;
+                                    font-size: 13.5px; font-weight: 700;
+                                    vertical-alignment: center; horizontal-stretch: 0; }
+                                Text {
+                                    text: root.budget-allocated == ""
+                                        ? "nothing set this month"
+                                        : root.envelopes-spent + " of " + root.budget-allocated;
+                                    color: FinTheme.ink-dim; font-size: 11.5px;
+                                    vertical-alignment: center; horizontal-stretch: 1;
+                                }
+                                Btn { label: "Manage envelopes"; h: 28px;
+                                    clicked => { root.plan-modal = "budgets"; } }
+                            }
+                            // Seven a row, wrapping onto a second. Sideways
+                            // scrolling hid envelopes behind an edge — the eighth
+                            // one existed only if you thought to drag — and the
+                            // whole point of the block is that you can see all of
+                            // them at once and tell which is the one in trouble.
+                            envg := VerticalLayout {
+                                spacing: 10px;
+                                // The add tile is the last cell, so it wraps with
+                                // the rest instead of being pinned anywhere.
+                                property <int> cells: root.budgets.length + 1;
+                                property <int> rows: Math.ceil(self.cells / 7);
+                                property <length> cellw:
+                                    (dash.avail - 32px - 6 * 10px) / 7;
+                                for r in envg.rows: HorizontalLayout {
+                                    spacing: 10px; alignment: start;
+                                    for c in 7: cell := Rectangle {
+                                        property <int> idx: r * 7 + c;
+                                        width: envg.cellw;
+                                        height: 124px;
+                                        background: transparent;
+                                        // Tail cells on the last row: laid out so
+                                        // a short row still aligns with a full one,
+                                        // drawn as nothing.
+                                        if cell.idx < root.budgets.length: bc := Card {
+                                            property <FinBudgetRow> b:
+                                                root.budgets[cell.idx];
+                                            background: envta.has-hover
+                                                ? FinTheme.card : FinTheme.card-2;
+                                            border-color: envta.has-hover
+                                                ? FinTheme.accent.with-alpha(0.5)
+                                                : FinTheme.hairline;
+                                            animate background, border-color
+                                                { duration: 110ms; }
+                                            // The card is the way in. A "Set one"
+                                            // button on the empty ones and nothing
+                                            // on the rest meant the envelope you
+                                            // wanted to change was the one you
+                                            // could not click.
+                                            envta := TouchArea {
+                                                mouse-cursor: MouseCursor.pointer;
+                                                clicked => {
+                                                    root.open-sheet("budget",
+                                                        bc.b.category-id);
+                                                }
+                                            }
+                                            VerticalLayout {
+                                                padding: 12px; spacing: 5px;
+                                                Text { text: bc.b.name; color: FinTheme.ink;
+                                                    font-size: 12px; font-weight: 700;
+                                                    overflow: elide; }
+                                                Text {
+                                                    text: bc.b.unset
+                                                        ? bc.b.spent + " spent"
+                                                        : (bc.b.over
+                                                           ? bc.b.remaining + " over"
+                                                           : bc.b.remaining + " left");
+                                                    color: bc.b.over
+                                                        ? FinTheme.bad : FinTheme.ink;
+                                                    font-size: 13.5px; font-weight: 800;
+                                                    overflow: elide;
+                                                }
+                                                Text {
+                                                    text: bc.b.unset ? "no envelope set"
+                                                                     : "of " + bc.b.budget;
+                                                    color: FinTheme.ink-dim;
+                                                    font-size: 10.5px;
+                                                    overflow: elide;
+                                                    vertical-stretch: 1;
+                                                }
+                                                if !bc.b.unset: HorizontalLayout {
+                                                    spacing: 6px;
+                                                    Bar {
+                                                        pct: bc.b.used-pct;
+                                                        hue: bc.b.off-pace
+                                                            ? FinTheme.warn
+                                                            : FinTheme.accent;
+                                                    }
+                                                    Text { text: "\{bc.b.used-pct}%";
+                                                        color: FinTheme.ink-dim;
+                                                        font-size: 10.5px;
+                                                        horizontal-stretch: 0;
+                                                        vertical-alignment: center; }
+                                                }
+                                                if bc.b.unset: Text {
+                                                    text: "Click to set one";
+                                                    color: FinTheme.accent;
+                                                    font-size: 10.5px; font-weight: 700;
+                                                }
+                                            }
+                                        }
+                                        if cell.idx == root.budgets.length: add := Card {
+                                            background: transparent;
+                                            border-color: addta.has-hover
+                                                ? FinTheme.accent.with-alpha(0.55)
+                                                : FinTheme.hairline;
+                                            addta := TouchArea {
+                                                mouse-cursor: MouseCursor.pointer;
+                                                clicked => { root.open-sheet("budget", 0); }
+                                            }
+                                            VerticalLayout {
+                                                alignment: center; spacing: 8px;
+                                                padding: 12px;
+                                                Rectangle {
+                                                    width: 28px; height: 28px;
+                                                    border-radius: Surface.r(9px);
+                                                    background: FinTheme.accent.with-alpha(0.16);
+                                                    x: (parent.width - self.width) / 2;
+                                                    AppIcon {
+                                                        source: Icons.plus;
+                                                        tint: FinTheme.accent;
+                                                        width: 14px; height: 14px;
+                                                        x: (parent.width - self.width) / 2;
+                                                        y: (parent.height - self.height) / 2;
+                                                    }
+                                                }
+                                                Text {
+                                                    text: "Add envelope";
+                                                    color: FinTheme.ink-dim;
+                                                    font-size: 11.5px; font-weight: 700;
+                                                    horizontal-alignment: center;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── what will happen if this carries on ──────────────────
+                    // Each envelope's own pace, carried to the day it runs out.
+                    // Straight-line arithmetic, and said so: it is a warning
+                    // about the pace, not a claim about the future.
+                    Card {
+                        VerticalLayout {
+                            padding: 16px; spacing: 10px;
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Text { text: "Spending predictions"; color: FinTheme.ink;
+                                    font-size: 13.5px; font-weight: 700;
+                                    vertical-alignment: center; horizontal-stretch: 1; }
+                                Text {
+                                    text: "At the pace each envelope is going";
+                                    color: FinTheme.ink-dim; font-size: 11px;
+                                    vertical-alignment: center; horizontal-stretch: 0;
+                                }
+                            }
+                            if root.predictions.length == 0: Text {
+                                text: "Spend from an envelope for a few days and this will say when it runs out.";
+                                color: FinTheme.ink-dim; font-size: 12.5px;
+                            }
+                            if root.predictions.length > 0: ScrollView {
+                                height: 132px;
+                                viewport-width: root.predictions.length
+                                    * (dash.quarter + 12px);
+                                HorizontalLayout {
+                                    spacing: 12px; alignment: start;
+                                    for p in root.predictions: pc := Card {
+                                        width: dash.quarter;
+                                        background: p.soon
+                                            ? p.hue.with-alpha(FinTheme.light ? 0.07 : 0.10)
+                                            : FinTheme.card;
+                                        border-color: p.soon ? p.hue.with-alpha(0.3)
+                                                             : FinTheme.hairline;
+                                        VerticalLayout {
+                                            padding: 14px; spacing: 4px;
+                                            Text { text: p.name; color: FinTheme.ink;
+                                                font-size: 12.5px; font-weight: 700;
+                                                overflow: elide; }
+                                            Text {
+                                                text: p.soon ? "Runs out" : "Lasts past";
+                                                color: FinTheme.ink-dim; font-size: 11px;
+                                            }
+                                            Text {
+                                                text: p.finish;
+                                                color: p.soon ? p.hue : FinTheme.ink;
+                                                font-size: 13.5px; font-weight: 800;
+                                                overflow: elide;
+                                            }
+                                            // The days themselves, each a share
+                                            // of this envelope's own worst one.
+                                            HorizontalLayout {
+                                                spacing: 1px; vertical-stretch: 1;
+                                                for pt in p.points: Rectangle {
+                                                    horizontal-stretch: 1;
+                                                    background: transparent;
+                                                    Rectangle {
+                                                        y: parent.height - self.height;
+                                                        width: parent.width;
+                                                        height: Math.max(1px,
+                                                            parent.height * pt / 100);
+                                                        border-radius: 1px;
+                                                        background: p.hue.with-alpha(
+                                                            pt > 0 ? 0.85 : 0.18);
+                                                    }
+                                                }
+                                            }
+                                            Text {
+                                                text: p.note; color: FinTheme.ink-dim;
+                                                font-size: 10.5px; overflow: elide;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // ── where this month leads ───────────────────────────────
                     if root.projection.length > 0: Card {
                         VerticalLayout {
-                            alignment: start;
-                            padding: 16px; spacing: 4px;
-                            CardTitle {
-                                title: "If nothing changes";
-                                hint: "An average of what has happened, carried forward.";
+                            padding: 16px; spacing: 10px;
+                            HorizontalLayout {
+                                spacing: 10px;
+                                Text { text: "If nothing changes"; color: FinTheme.ink;
+                                    font-size: 13.5px; font-weight: 700;
+                                    vertical-alignment: center; horizontal-stretch: 1; }
+                                Text {
+                                    text: "An average of what has happened, carried forward.";
+                                    color: FinTheme.ink-dim; font-size: 11px;
+                                    vertical-alignment: center; horizontal-stretch: 0;
+                                }
                             }
-                            for p in root.projection: KvRow { kv: p; }
+                            HorizontalLayout {
+                                spacing: 12px;
+                                for p in root.projection: prc := Card {
+                                    width: dash.proj-w;
+                                    background: FinTheme.card-2;
+                                    property <color> tone: p.tone == "bad" ? FinTheme.bad
+                                        : p.tone == "warn" ? FinTheme.warn
+                                        : p.tone == "ok" ? FinTheme.good : FinTheme.ink;
+                                    VerticalLayout {
+                                        padding: 14px; spacing: 5px;
+                                        Text { text: p.label; color: FinTheme.ink-dim;
+                                            font-size: 11px; wrap: word-wrap; }
+                                        Text { text: p.value; color: prc.tone;
+                                            font-size: 17px; font-weight: 800;
+                                            overflow: elide; }
+                                    }
+                                }
+                            }
                             if root.projection-note != "": Text {
                                 text: root.projection-note;
                                 color: FinTheme.ink-dim; font-size: 11.5px;
@@ -5667,61 +5425,998 @@ export component FinancesPage inherits Rectangle {
                         }
                     }
 
-                    if root.flags.length > 0: Text {
-                        text: "Worth acting on";
-                        color: FinTheme.ink; font-size: 13px; font-weight: 700;
-                    }
+                    // ── am I getting better at this ──────────────────────────
+                    // Six months of one metric beside four habits. Both are
+                    // about direction rather than about this month, which is
+                    // why they sit together and below everything actionable.
+                    HorizontalLayout {
+                        spacing: 14px;
 
-                    if root.flags.length == 0: Blank {
-                        title: "Nothing to report";
-                        body: "Insights only says things it can put a number behind. When there is a price rise, an overspend or a subscription you are not using, it will be here.";
-                        icon: Icons.pie-chart;
-                        tint: FinTheme.accent;
-                    }
-
-                    for f in root.flags: flag := Card {
-                        // Named, because `root` inside here is the page and
-                        // `parent` is whichever layout encloses the icon.
-                        property <color> hue:
-                            f.severity == "bad"  ? FinTheme.bad :
-                            f.severity == "warn" ? FinTheme.warn :
-                            f.severity == "good" ? FinTheme.good : FinTheme.accent;
-                        HorizontalLayout {
-                            padding: 14px; spacing: 12px;
+                        Card {
+                            width: dash.halfw;
+                            height: 268px;
                             VerticalLayout {
-                                alignment: start; horizontal-stretch: 0;
-                                Rectangle {
-                                    width: 34px; height: 34px; border-radius: Surface.r(10px);
-                                    background: flag.hue.with-alpha(0.15);
-                                    AppIcon {
-                                        source: f.severity == "good" ? Icons.trending-up
-                                              : f.severity == "bad"  ? Icons.bell
-                                                                     : Icons.pie-chart;
-                                        tint: flag.hue;
-                                        width: 17px; height: 17px;
-                                        x: (parent.width - self.width) / 2;
-                                        y: (parent.height - self.height) / 2;
+                                padding: 16px; spacing: 10px;
+                                HorizontalLayout {
+                                    spacing: 10px;
+                                    Text { text: "Six month trends"; color: FinTheme.ink;
+                                        font-size: 13.5px; font-weight: 700;
+                                        vertical-alignment: center;
+                                        horizontal-stretch: 1; }
+                                    Btn { label: "All trends"; h: 26px;
+                                        clicked => { root.plan-modal = "trends"; } }
+                                }
+                                HorizontalLayout {
+                                    spacing: 6px; alignment: start;
+                                    for t[i] in root.trends: FilterChip {
+                                        label: t.name;
+                                        on: root.trend-metric == i;
+                                        clicked => { root.trend-metric = i; }
+                                    }
+                                }
+                                if root.trends.length == 0: Text {
+                                    text: "Nothing to compare yet — this needs a month of history behind it.";
+                                    color: FinTheme.ink-dim; font-size: 12px; wrap: word-wrap;
+                                }
+                                if root.trends.length > 0: HorizontalLayout {
+                                    spacing: 10px; vertical-stretch: 1;
+                                    for m in root.trends[root.trend-metric].months:
+                                    VerticalLayout {
+                                        spacing: 6px; horizontal-stretch: 1;
+                                        Text {
+                                            text: m.amount; color: FinTheme.ink-dim;
+                                            font-size: 10.5px;
+                                            font-weight: m.current ? 800 : 500;
+                                            horizontal-alignment: center;
+                                            overflow: elide;
+                                        }
+                                        Rectangle {
+                                            vertical-stretch: 1;
+                                            background: transparent;
+                                            // A month with no income is a gap
+                                            // rather than a bar at the floor:
+                                            // "nothing came in" and "nothing was
+                                            // kept" are different claims.
+                                            if m.known: Rectangle {
+                                                y: parent.height - self.height;
+                                                width: parent.width;
+                                                height: parent.height
+                                                    * Math.max(3, m.pct) / 100;
+                                                border-radius: Surface.r(5px);
+                                                background: m.current
+                                                    ? FinTheme.accent-grad
+                                                    : FinTheme.accent.with-alpha(0.3);
+                                            }
+                                            if !m.known: Rectangle {
+                                                y: parent.height - self.height;
+                                                width: parent.width;
+                                                height: 3px;
+                                                border-radius: 1.5px;
+                                                background: FinTheme.hairline;
+                                            }
+                                        }
+                                        Text {
+                                            text: m.label; color: FinTheme.ink-dim;
+                                            font-size: 10.5px;
+                                            font-weight: m.current ? 800 : 500;
+                                            horizontal-alignment: center;
+                                        }
                                     }
                                 }
                             }
+                        }
+
+                        Card {
+                            width: dash.halfw;
+                            height: 268px;
                             VerticalLayout {
-                                horizontal-stretch: 1; spacing: 4px; alignment: center;
-                                Text { text: f.title; color: FinTheme.ink; font-size: 13.5px;
-                                    font-weight: 700; wrap: word-wrap; }
-                                Text { text: f.detail; color: FinTheme.ink-dim; font-size: 12px;
-                                    wrap: word-wrap; }
+                                padding: 16px; spacing: 10px;
+                                Text { text: "Financial habits"; color: FinTheme.ink;
+                                    font-size: 13.5px; font-weight: 700;
+                                    min-height: 26px; vertical-alignment: center; }
+                                ScrollView {
+                                    vertical-stretch: 1;
+                                    VerticalLayout {
+                                        alignment: start;
+                                        padding-right: 6px; spacing: 10px;
+                                        for h in root.habits: HorizontalLayout {
+                                            spacing: 10px;
+                                            VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                Rectangle {
+                                                    width: 26px; height: 26px;
+                                                    border-radius: Surface.r(9px);
+                                                    background: h.hue.with-alpha(0.16);
+                                                    AppIcon {
+                                                        source: h.bar ? Icons.square-check
+                                                                      : Icons.sparkles;
+                                                        tint: h.hue;
+                                                        width: 13px; height: 13px;
+                                                        x: (parent.width - self.width) / 2;
+                                                        y: (parent.height - self.height) / 2;
+                                                    }
+                                                }
+                                            }
+                                            Text {
+                                                text: h.label; color: FinTheme.ink;
+                                                font-size: 12px; vertical-alignment: center;
+                                                horizontal-stretch: 1; overflow: elide;
+                                            }
+                                            if h.bar: VerticalLayout {
+                                                alignment: center; horizontal-stretch: 0;
+                                                width: 92px;
+                                                Bar { pct: h.pct; hue: h.hue; toned: false; }
+                                            }
+                                            // A habit's button opens the list it
+                                            // is counting, not another tab: the
+                                            // number is the summary and the list
+                                            // is the detail behind it.
+                                            if h.action-label != "": Btn {
+                                                label: h.action-label; h: 26px;
+                                                clicked => { root.plan-modal = h.action; }
+                                            }
+                                            Text {
+                                                text: h.value; color: FinTheme.ink;
+                                                font-size: 12.5px; font-weight: 800;
+                                                vertical-alignment: center;
+                                                horizontal-alignment: right;
+                                                min-width: 74px; horizontal-stretch: 0;
+                                                overflow: elide;
+                                            }
+                                        }
+                                    }
+                                }
                             }
-                            if f.action-label != "": VerticalLayout {
+                        }
+                    }
+
+                    // ── the month, read backwards ────────────────────────────
+                    VerticalLayout {
+                        spacing: 10px;
+                        HorizontalLayout {
+                            spacing: 10px;
+                            Text { text: "Monthly review"; color: FinTheme.ink;
+                                font-size: 13.5px; font-weight: 700;
+                                vertical-alignment: center; horizontal-stretch: 1; }
+                            Btn { label: "The full review"; h: 26px;
+                                clicked => { root.plan-modal = "review"; } }
+                        }
+                        StatStrip { stats: root.review; }
+                    }
+
+                    // ── what could be done better ────────────────────────────
+                    // The other half of the flags: nothing here is going wrong,
+                    // which is exactly why it is at the bottom.
+                    if root.recos.length > 0: Card {
+                        VerticalLayout {
+                            padding: 16px; spacing: 10px;
+                            Text { text: "Worth doing"; color: FinTheme.ink;
+                                font-size: 13.5px; font-weight: 700; }
+                            for r in root.recos: HorizontalLayout {
+                                spacing: 12px;
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    Rectangle {
+                                        width: 30px; height: 30px;
+                                        border-radius: Surface.r(10px);
+                                        background: (r.severity == "good"
+                                            ? FinTheme.good
+                                            : FinTheme.accent).with-alpha(0.15);
+                                        AppIcon {
+                                            source: r.severity == "good"
+                                                ? Icons.trending-up : Icons.sparkles;
+                                            tint: r.severity == "good"
+                                                ? FinTheme.good : FinTheme.accent;
+                                            width: 15px; height: 15px;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                    }
+                                }
+                                VerticalLayout {
+                                    spacing: 2px; horizontal-stretch: 1; alignment: center;
+                                    Text { text: r.title; color: FinTheme.ink;
+                                        font-size: 12.5px; font-weight: 700;
+                                        wrap: word-wrap; }
+                                    Text { text: r.detail; color: FinTheme.ink-dim;
+                                        font-size: 11.5px; wrap: word-wrap; }
+                                }
+                                if r.action-label != "": VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    Btn { label: r.action-label; h: 28px;
+                                        clicked => { root.flag-action(r.action); } }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+        }
+    }
+    }
+
+    // ══ PLANNING · DRILL-DOWNS ══════════════════════════════════════════════
+    // The six tables and grids Planning summarises. They were three tabs of
+    // their own until the page took their headlines; the tables themselves did
+    // not go anywhere, they moved behind the link on the section that quotes
+    // them. Nothing on Planning navigates — every way in from it is one of these.
+
+    // ── the month as a grid, and one day of it written out ──────────────────
+    // Opened by any card on the timeline and by the year button in the header.
+    // The timeline says what order things land in; this says which square of the
+    // month they land on, which is the question you have next and the only one
+    // the grid answers better than the line.
+    if root.plan-modal == "calendar": PlanModal {
+        title: "Calendar · " + root.cal-label;
+        hint: root.cal-view == "year"
+            ? "Twelve months of what is dated, at the same scale."
+            : "Pick a day to read it in full.";
+        // Back to months on the way out: the header behind this modal is the
+        // same selector, and it would otherwise be left naming a year.
+        closed => {
+            root.plan-modal = "";
+            root.set-cal-view("month");
+        }
+
+        Card {
+            VerticalLayout {
+                padding: 16px; spacing: 12px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    FilterChip {
+                        label: "Month"; min-width: 84px;
+                        on: root.cal-view != "year";
+                        clicked => { root.set-cal-view("month"); }
+                    }
+                    FilterChip {
+                        label: "Year"; min-width: 78px;
+                        on: root.cal-view == "year";
+                        clicked => { root.set-cal-view("year"); }
+                    }
+                    IconBtn { icon: Icons.chevron-left;
+                        clicked => { root.plan-step(-1); } }
+                    Text { text: root.cal-label; color: FinTheme.ink;
+                        font-size: 15px; font-weight: 700;
+                        vertical-alignment: center; }
+                    IconBtn { icon: Icons.chevron-right;
+                        clicked => { root.plan-step(1); } }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                }
+                if root.cal-view == "year": CalYear { months: root.cal-months; }
+                if root.cal-view != "year": CalGrid {
+                    days: root.cal-days;
+                    selected: root.plan-day;
+                    row-min: 56px;
+                    picked(d) => {
+                        root.plan-day = d.day;
+                        root.plan-sel = d;
+                    }
+                }
+            }
+        }
+
+        // One day, in full. Only under the month grid: a year has no day to be
+        // in full, and the list would be describing a square that is not shown.
+        if root.cal-view != "year": Card {
+            VerticalLayout {
+                padding: 16px; spacing: 10px;
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text {
+                        text: root.plan-day == 0
+                            ? "No day selected"
+                            : "\{root.plan-day} " + root.cal-label;
+                        color: FinTheme.ink; font-size: 14px;
+                        font-weight: 700; vertical-alignment: center;
+                        horizontal-stretch: 0;
+                    }
+                    if root.plan-today > 0: Pill {
+                        label: root.plan-delta == 0 ? "today"
+                            : (root.plan-delta > 0
+                               ? "in \{root.plan-delta} days"
+                               : "\{0 - root.plan-delta} days ago");
+                        hue: root.plan-delta == 0 ? FinTheme.accent
+                            : (root.plan-delta > 0 ? FinTheme.ink-dim
+                                                   : FinTheme.warn);
+                    }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    if root.plan-sel.income != "": Text {
+                        text: "+" + root.plan-sel.income;
+                        color: FinTheme.good; font-size: 12.5px;
+                        font-weight: 700; vertical-alignment: center;
+                    }
+                    if root.plan-sel.amount != "": Text {
+                        text: root.plan-sel.amount;
+                        color: root.plan-sel.overdue ? FinTheme.bad : FinTheme.ink;
+                        font-size: 12.5px; font-weight: 700;
+                        vertical-alignment: center;
+                    }
+                    if root.plan-today > 0 && root.plan-delta != 0: Btn {
+                        label: "Today"; h: 26px;
+                        clicked => { root.plan-reset(); }
+                    }
+                }
+                VerticalLayout {
+                    // No spacing: every other day's row is an empty wrapper, and
+                    // the gap between them would still be laid out.
+                    spacing: 0;
+                    for a in root.cal-agenda: VerticalLayout {
+                        if a.day == root.plan-day: HorizontalLayout {
+                            spacing: 10px;
+                            padding-top: 5px; padding-bottom: 5px;
+                            // Every row shares one date, so the date says nothing
+                            // and what kind of thing it is says a lot.
+                            Text {
+                                text: a.kind == "subscription" ? "SUB"
+                                    : (a.kind == "bill" ? "BILL" : "ONE-OFF");
+                                color: a.cat-hue;
+                                font-size: 9.5px; font-weight: 800;
+                                vertical-alignment: center;
+                                min-width: 54px; horizontal-stretch: 0;
+                            }
+                            Text { text: a.name; color: FinTheme.ink;
+                                font-size: 12.5px; vertical-alignment: center;
+                                horizontal-stretch: 1; overflow: elide; }
+                            Pill {
+                                label: a.status;
+                                hue: a.status == "overdue" ? FinTheme.bad
+                                   : (a.status == "paid" ? FinTheme.good
+                                                         : FinTheme.ink-dim);
+                            }
+                            Text {
+                                text: a.actual == "" ? a.estimate : a.actual;
+                                color: FinTheme.ink; font-size: 12.5px;
+                                font-weight: 700; font-italic: a.is-estimate;
+                                vertical-alignment: center;
+                                min-width: 96px; horizontal-stretch: 0;
+                                horizontal-alignment: right;
+                            }
+                        }
+                    }
+                    if root.plan-sel.count == 0: Text {
+                        text: root.plan-day == 0
+                            ? "Nothing picked yet — choose a day above."
+                            : "Nothing lands on this day.";
+                        color: FinTheme.ink-dim; font-size: 12.5px;
+                    }
+                }
+            }
+        }
+    }
+
+    // ── the whole cash-flow statement ───────────────────────────────────────
+    if root.plan-modal == "flow": PlanModal {
+        title: "Cash flow · " + root.cal-label;
+        hint: "The month on its own, then the bank balance it happens inside.";
+        closed => { root.plan-modal = ""; }
+
+        // First, because it is the one the section is about. What came in this
+        // month, and what each kind of commitment takes out of it.
+        if root.plan-statement.length > 0: Card {
+            VerticalLayout {
+                alignment: start;
+                padding: 16px; spacing: 4px;
+                CardTitle {
+                    title: "This month, from what came in";
+                    hint: "Income, less what is dated and what is set aside.";
+                }
+                for f in root.plan-statement: KvRow { kv: f; }
+            }
+        }
+
+        // Second, and named as a different thing. A balance is a running total of
+        // every month before this one, so it can be healthy in a bad month and
+        // thin in a good one — which is why it is not the statement above.
+        if root.cal-flow.length > 0: Card {
+            VerticalLayout {
+                alignment: start;
+                padding: 16px; spacing: 4px;
+                CardTitle {
+                    title: "The bank balance, separately";
+                    hint: "What is there now, what is still to leave it, where it ends.";
+                    hue: FinTheme.accent-2;
+                }
+                for f in root.cal-flow: KvRow { kv: f; }
+            }
+        }
+
+        Card {
+            VerticalLayout {
+                alignment: start;
+                padding: 16px; spacing: 10px;
+                CardTitle { title: "Everything dated"; hint: root.cal-label; }
+                if root.cal-agenda.length == 0: Text {
+                    text: "Nothing dated this month.";
+                    color: FinTheme.ink-dim; font-size: 12.5px;
+                }
+                for a in root.cal-agenda: HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: a.due; color: FinTheme.ink-dim; font-size: 11.5px;
+                        vertical-alignment: center; min-width: 92px; }
+                    Text { text: a.name; color: FinTheme.ink; font-size: 12.5px;
+                        vertical-alignment: center; horizontal-stretch: 1;
+                        overflow: elide; }
+                    Pill {
+                        label: a.status;
+                        hue: a.status == "overdue" ? FinTheme.bad
+                           : a.status == "paid"    ? FinTheme.good
+                                                   : FinTheme.ink-dim;
+                    }
+                    Text {
+                        text: a.actual == "" ? a.estimate : a.actual;
+                        color: FinTheme.ink; font-size: 12.5px; font-weight: 700;
+                        font-italic: a.is-estimate;
+                        vertical-alignment: center; min-width: 100px;
+                        horizontal-alignment: right;
+                    }
+                }
+            }
+        }
+    }
+
+    // ── every envelope, and what is not one ─────────────────────────────────
+    if root.plan-modal == "budgets": PlanModal {
+        title: "Envelopes · " + root.budget-period;
+        hint: root.budget-income == ""
+            ? "No income recorded this month."
+            : root.budget-income + " came in · " + root.budget-allocated
+              + " set aside · " + root.budget-unallocated + " unallocated";
+        closed => { root.plan-modal = ""; }
+
+        HorizontalLayout {
+            spacing: 8px; alignment: start;
+            Btn { label: "Copy last month"; h: 32px; icon: Icons.rotate-ccw;
+                clicked => { root.budget-copy-forward(); } }
+            Btn { label: "Set an envelope"; h: 32px; primary: true; icon: Icons.plus;
+                clicked => { root.open-sheet("budget", 0); } }
+        }
+
+        Card {
+            VerticalLayout {
+                alignment: start;
+                padding: 16px; spacing: 12px;
+                CardTitle {
+                    title: "Envelopes";
+                    hint: root.budget-allocated == ""
+                        ? "nothing set this month"
+                        : root.envelopes-spent + " of " + root.budget-allocated;
+                }
+                if root.budgets.length == 0: Blank {
+                    title: "No envelopes yet";
+                    body: "Set a monthly limit on the categories you actually decide about — groceries, eating out, shopping. Rent and insurance do not need one.";
+                    icon: Icons.pie-chart;
+                    tint: FinTheme.accent;
+                }
+                for b in root.budgets: VerticalLayout {
+                    spacing: 5px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Text { text: b.name; color: FinTheme.ink;
+                            font-size: 12.5px; font-weight: 600;
+                            vertical-alignment: center;
+                            horizontal-stretch: 1; overflow: elide; }
+                        if b.unset: Pill { label: "no envelope"; hue: FinTheme.warn; }
+                        if b.over-by != "": Pill { label: b.over-by; hue: FinTheme.bad; }
+                        Text {
+                            text: b.spent + (b.unset ? "" : " of " + b.budget);
+                            color: b.over ? FinTheme.bad : FinTheme.ink;
+                            font-size: 12px; font-weight: 700;
+                            vertical-alignment: center; horizontal-stretch: 0;
+                        }
+                        if !b.unset: Btn { label: "Edit"; h: 26px;
+                            clicked => { root.open-sheet("budget", b.category-id); } }
+                        if b.unset: Btn { label: "Set"; h: 26px;
+                            clicked => { root.open-sheet("budget", b.category-id); } }
+                        if !b.unset: IconBtn { icon: Icons.x;
+                            clicked => { root.budget-remove(b.category-id); } }
+                    }
+                    if !b.unset: Bar {
+                        pct: b.used-pct;
+                        hue: b.off-pace ? FinTheme.warn : FinTheme.accent;
+                    }
+                    if !b.unset: Text {
+                        text: b.over
+                            ? b.remaining + " over"
+                            : (b.off-pace
+                               ? "On this pace the month ends at " + b.projected
+                               : b.remaining + " left");
+                        color: b.over ? FinTheme.bad
+                             : (b.off-pace ? FinTheme.warn : FinTheme.ink-dim);
+                        font-size: 11px;
+                    }
+                    if b.detail != "": Text {
+                        text: b.detail; color: FinTheme.ink-dim; font-size: 10.5px;
+                    }
+                }
+            }
+        }
+
+        HorizontalLayout {
+            spacing: 14px;
+            Card {
+                horizontal-stretch: 1;
+                VerticalLayout {
+                    alignment: start;
+                    padding: 16px; spacing: 10px;
+                    CardTitle {
+                        title: "Where " + root.budget-income + " is committed";
+                        hint: "before anything discretionary";
+                    }
+                    for c in root.commitments: VerticalLayout {
+                        spacing: 3px;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            VerticalLayout {
                                 alignment: center; horizontal-stretch: 0;
-                                Btn { label: f.action-label; h: 30px;
-                                    clicked => { root.flag-action(f.action); } }
+                                Rectangle { width: 10px; height: 10px;
+                                    border-radius: Surface.r(3px); background: c.hue; }
+                            }
+                            Text { text: c.name; color: FinTheme.ink;
+                                font-size: 12px; vertical-alignment: center;
+                                horizontal-stretch: 1; overflow: elide; }
+                            Text { text: "\{c.pct}%"; color: FinTheme.ink-dim;
+                                font-size: 11px; vertical-alignment: center;
+                                min-width: 34px; horizontal-alignment: right; }
+                            Text { text: c.amount; color: FinTheme.ink;
+                                font-size: 12px; font-weight: 700;
+                                vertical-alignment: center; min-width: 92px;
+                                horizontal-alignment: right; }
+                        }
+                        Bar { pct: c.pct; thickness: 5px; hue: c.hue; toned: false; }
+                    }
+                    if root.commitments.length == 0: Text {
+                        text: "No income recorded this month, so there is nothing to divide up yet.";
+                        color: FinTheme.ink-dim; font-size: 12px; wrap: word-wrap;
+                    }
+                }
+            }
+            // What leaves whatever you decide, itemised. Shown so the page adds
+            // up: envelopes are a quarter of a normal month, and showing only
+            // them implies the rest is yours to steer too.
+            Card {
+                horizontal-stretch: 0;
+                min-width: 300px; max-width: 300px;
+                VerticalLayout {
+                    padding: 16px; spacing: 4px;
+                    Text { text: "NOT BUDGETED"; color: FinTheme.ink-dim;
+                        font-size: 11px; font-weight: 700; }
+                    Text {
+                        text: root.fixed-total == "" ? "—" : root.fixed-total;
+                        color: FinTheme.ink; font-size: 22px; font-weight: 800;
+                    }
+                    Text {
+                        text: root.fixed-share;
+                        color: FinTheme.ink-dim; font-size: 11px; wrap: word-wrap;
+                    }
+                    Text {
+                        text: "You cannot overspend a bill — you can only fail to pay it.";
+                        color: FinTheme.ink-dim; font-size: 10.5px; wrap: word-wrap;
+                    }
+                    for f in root.fixed-items: KvRow { kv: f; }
+                    if root.fixed-items.length == 0: Text {
+                        text: "Nothing fixed this month.";
+                        color: FinTheme.ink-dim; font-size: 11.5px;
+                    }
+                    if root.budget-unbudgeted != "": KvRow {
+                        kv: { label: "Spending with no envelope",
+                              value: root.budget-unbudgeted,
+                              tone: "warn", strong: false };
+                        rule: false;
+                    }
+                    // The rule, stated where the rollover figures are shown,
+                    // because "why is my envelope bigger than I set it" is
+                    // otherwise unanswerable from the UI.
+                    Text {
+                        text: "An envelope with rollover carries what it did not spend into next month. One without it starts fresh.";
+                        color: FinTheme.ink-dim; font-size: 10.5px; wrap: word-wrap;
+                    }
+                }
+            }
+        }
+
+        // Six months, twice: which envelope keeps not holding, and whether the
+        // month as a whole did. Everything above is this month; these two say
+        // whether this month is the exception or the pattern.
+        Card {
+            VerticalLayout {
+                alignment: start;
+                padding: 16px; spacing: 8px;
+                CardTitle {
+                    title: "Six months, envelope by envelope";
+                    hint: "An empty cell is a month with no envelope set, not a month with no spending.";
+                    hue: FinTheme.accent-2;
+                }
+                if root.envelope-history.length == 0: Text {
+                    text: "No envelope has been set for long enough to have a history yet.";
+                    color: FinTheme.ink-dim; font-size: 12px; wrap: word-wrap;
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: ""; horizontal-stretch: 1; min-width: 110px; }
+                    for m in root.discipline-months: Text {
+                        text: m; color: FinTheme.ink-dim;
+                        font-size: 10.5px; font-weight: 700;
+                        horizontal-alignment: right;
+                        min-width: 66px; horizontal-stretch: 0;
+                    }
+                    Text {
+                        text: "AVG VS BUDGET"; color: FinTheme.ink-dim;
+                        font-size: 10.5px; font-weight: 700;
+                        horizontal-alignment: right;
+                        min-width: 100px; horizontal-stretch: 0;
+                    }
+                }
+                Rectangle { min-height: 1px; max-height: 1px;
+                    background: FinTheme.hairline; }
+                for h in root.envelope-history: HorizontalLayout {
+                    spacing: 8px;
+                    Text { text: h.name; color: FinTheme.ink;
+                        font-size: 12px; font-weight: 600;
+                        vertical-alignment: center;
+                        horizontal-stretch: 1; min-width: 110px;
+                        overflow: elide; }
+                    for c[i] in h.cells: Text {
+                        text: c;
+                        color: h.over[i] ? FinTheme.bad : FinTheme.ink-dim;
+                        font-size: 11.5px; vertical-alignment: center;
+                        horizontal-alignment: right;
+                        min-width: 66px; horizontal-stretch: 0;
+                    }
+                    Text {
+                        text: h.avg-delta;
+                        color: h.avg-over ? FinTheme.bad : FinTheme.good;
+                        font-size: 11.5px; font-weight: 700;
+                        vertical-alignment: center;
+                        horizontal-alignment: right;
+                        min-width: 100px; horizontal-stretch: 0;
+                    }
+                }
+            }
+        }
+
+        Card {
+            VerticalLayout {
+                alignment: start;
+                padding: 16px; spacing: 10px;
+                CardTitle {
+                    title: "Six months of discipline";
+                    hint: "Only counts categories that had an envelope that month.";
+                    hue: FinTheme.good;
+                }
+                if root.discipline.length == 0: Text {
+                    text: "Nothing to compare yet — this needs a month that had an envelope set on it.";
+                    color: FinTheme.ink-dim; font-size: 12px; wrap: word-wrap;
+                }
+                for m in root.discipline: HorizontalLayout {
+                    spacing: 10px;
+                    Text { text: m.period; color: FinTheme.ink-dim;
+                        font-size: 11.5px; vertical-alignment: center;
+                        min-width: 66px; horizontal-stretch: 0; }
+                    Bar {
+                        pct: m.pct;
+                        // Already decided: within budget or not. The fill's own
+                        // tone rule would overrule that.
+                        hue: m.within ? FinTheme.good : FinTheme.bad;
+                        thickness: 10px; toned: false;
+                    }
+                    Text {
+                        text: m.spent + " / " + m.budget;
+                        color: FinTheme.ink-dim; font-size: 11px;
+                        vertical-alignment: center;
+                        min-width: 130px; horizontal-stretch: 0;
+                        horizontal-alignment: right;
+                    }
+                }
+            }
+        }
+    }
+
+    // ── six months, every way the section can cut them ──────────────────────
+    if root.plan-modal == "trends": PlanModal {
+        title: "Trends";
+        hint: "The last six months, by category and as a savings rate.";
+        closed => { root.plan-modal = ""; }
+
+        StatStrip { stats: root.insight-stats; }
+
+        // Six months of spending by category, as a small multiple. The trend is
+        // the point: one month's donut cannot tell you that food has been
+        // climbing since March — and neither could the six bars that used to be
+        // here, which drew the months as six separate facts rather than a line
+        // going somewhere. Every row is on the same month, and clicking any
+        // column moves all of them, so a month can be read across categories.
+        if root.trend.length > 0: Card {
+            VerticalLayout {
+                alignment: start;
+                padding: 16px; spacing: 12px;
+                CardTitle {
+                    title: "Spend by category";
+                    hint: "Last six months. Pick a month to read it across every row.";
+                }
+                HorizontalLayout {
+                    spacing: 6px; alignment: start;
+                    for m[i] in root.trend[0].months: FilterChip {
+                        label: m.label; w: 62px;
+                        on: root.tm == i;
+                        clicked => { root.trend-month = i; }
+                    }
+                }
+                for t in root.trend: VerticalLayout {
+                    spacing: 4px;
+                    HorizontalLayout {
+                        spacing: 8px;
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Rectangle { width: 10px; height: 10px;
+                                border-radius: Surface.r(3px); background: t.hue; }
+                        }
+                        Text { text: t.name; color: FinTheme.ink;
+                            font-size: 12px; vertical-alignment: center;
+                            horizontal-stretch: 1; overflow: elide; }
+                        if t.delta != "": Delta { label: t.delta; up: t.up; }
+                        // The picked month first, because it is what the row is
+                        // currently about; the six-month total after it, dimmer,
+                        // because it is the thing that does not move.
+                        Text {
+                            text: t.months[root.tm].amount;
+                            color: FinTheme.ink; font-size: 12.5px; font-weight: 800;
+                            vertical-alignment: center;
+                            min-width: 92px; horizontal-alignment: right;
+                        }
+                        Text { text: "of " + t.total; color: FinTheme.ink-dim;
+                            font-size: 11px; vertical-alignment: center;
+                            min-width: 92px; horizontal-alignment: right; }
+                    }
+                    Rectangle {
+                        min-height: 46px; max-height: 46px;
+                        background: transparent;
+                        Path {
+                            width: 100%; height: 100%;
+                            viewbox-width: 100; viewbox-height: 100;
+                            commands: t.area;
+                            fill: t.hue.with-alpha(FinTheme.light ? 0.16 : 0.22);
+                        }
+                        Path {
+                            width: 100%; height: 100%;
+                            viewbox-width: 100; viewbox-height: 100;
+                            commands: t.line;
+                            stroke: t.hue; stroke-width: 1.5px;
+                        }
+                        // One target per month, over the line rather than beside
+                        // it: the columns are where the points already are, so
+                        // the thing you click is the thing you are looking at.
+                        HorizontalLayout {
+                            spacing: 0;
+                            for m[i] in t.months: mcell := Rectangle {
+                                background: root.tm == i
+                                    ? t.hue.with-alpha(0.12)
+                                    : (mta.has-hover ? t.hue.with-alpha(0.06)
+                                                     : transparent);
+                                border-radius: Surface.r(4px);
+                                mta := TouchArea {
+                                    mouse-cursor: MouseCursor.pointer;
+                                    clicked => { root.trend-month = i; }
+                                }
+                                if root.tm == i: Rectangle {
+                                    width: 7px; height: 7px; border-radius: 3.5px;
+                                    background: t.hue;
+                                    x: (parent.width - self.width) / 2;
+                                    y: parent.height * (100 - Math.max(0, m.pct)) / 100
+                                        - self.height / 2;
+                                }
                             }
                         }
                     }
                 }
             }
         }
+
+        if root.savings.length > 0: Card {
+            VerticalLayout {
+                alignment: start;
+                padding: 16px; spacing: 10px;
+                HorizontalLayout {
+                    spacing: 10px;
+                    VerticalLayout {
+                        spacing: 2px; horizontal-stretch: 1;
+                        Text { text: "Savings rate"; color: FinTheme.ink;
+                            font-size: 13px; font-weight: 700; }
+                        Text {
+                            text: "Income minus spending, as a share of income. Pick a month.";
+                            color: FinTheme.ink-dim; font-size: 11px;
+                        }
+                    }
+                    // The picked month, said in full rather than left to be read
+                    // off a bar's height.
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        Text {
+                            text: root.savings[root.sm].label + " · "
+                                + root.savings[root.sm].amount;
+                            color: root.savings[root.sm].known
+                                ? FinTheme.ink : FinTheme.ink-dim;
+                            font-size: 13px; font-weight: 800;
+                            horizontal-alignment: right;
+                        }
+                    }
+                }
+                HorizontalLayout {
+                    spacing: 8px;
+                    for m[i] in root.savings: VerticalLayout {
+                        spacing: 5px; horizontal-stretch: 1;
+                        sbar := Rectangle {
+                            min-height: 78px; max-height: 78px;
+                            background: root.sm == i
+                                ? FinTheme.good.with-alpha(0.10)
+                                : (svta.has-hover ? FinTheme.good.with-alpha(0.06)
+                                                 : transparent);
+                            border-radius: Surface.r(5px);
+                            svta := TouchArea {
+                                mouse-cursor: MouseCursor.pointer;
+                                clicked => { root.sav-month = i; }
+                            }
+                            // A month with no income is a gap, not a bar at the
+                            // floor: the salary landing late is a calendar
+                            // accident, and a zero-height bar would report it as
+                            // the worst month on record.
+                            if m.known: Rectangle {
+                                y: parent.height - self.height;
+                                width: parent.width;
+                                height: parent.height * Math.max(3, m.pct) / 100;
+                                border-radius: Surface.r(4px);
+                                background: root.sm == i
+                                    ? FinTheme.good : FinTheme.good.with-alpha(0.4);
+                            }
+                            if !m.known: Rectangle {
+                                y: parent.height - self.height;
+                                width: parent.width;
+                                height: 3px;
+                                border-radius: 1.5px;
+                                background: FinTheme.hairline;
+                            }
+                        }
+                        Text {
+                            text: m.label; color: root.sm == i
+                                ? FinTheme.ink : FinTheme.ink-dim;
+                            font-size: 10px; font-weight: root.sm == i ? 800 : 500;
+                            horizontal-alignment: center;
+                        }
+                    }
+                }
+                for k in root.savings-summary: KvRow { kv: k; }
+            }
+        }
+
+        if root.projection.length > 0: Card {
+            VerticalLayout {
+                alignment: start;
+                padding: 16px; spacing: 4px;
+                CardTitle {
+                    title: "If nothing changes";
+                    hint: "An average of what has happened, carried forward.";
+                }
+                for p in root.projection: KvRow { kv: p; }
+                if root.projection-note != "": Text {
+                    text: root.projection-note;
+                    color: FinTheme.ink-dim; font-size: 11.5px; wrap: word-wrap;
+                }
+            }
+        }
     }
+
+    // ── every claim the section can put a number behind ─────────────────────
+    if root.plan-modal == "review": PlanModal {
+        title: "The month in full";
+        hint: "Everything Planning found, whether or not it needs doing something about.";
+        closed => { root.plan-modal = ""; }
+
+        StatStrip { stats: root.review; }
+
+        if root.flags.length == 0: Blank {
+            title: "Nothing to report";
+            body: "Planning only says things it can put a number behind. When there is a price rise, an overspend or a subscription you are not using, it will be here.";
+            icon: Icons.pie-chart;
+            tint: FinTheme.accent;
+        }
+
+        for f in root.flags: flag := Card {
+            // Named, because `root` inside here is the page and `parent` is
+            // whichever layout encloses the icon.
+            property <color> hue:
+                f.severity == "bad"  ? FinTheme.bad :
+                f.severity == "warn" ? FinTheme.warn :
+                f.severity == "good" ? FinTheme.good : FinTheme.accent;
+            HorizontalLayout {
+                padding: 14px; spacing: 12px;
+                VerticalLayout {
+                    alignment: start; horizontal-stretch: 0;
+                    Rectangle {
+                        width: 34px; height: 34px; border-radius: Surface.r(10px);
+                        background: flag.hue.with-alpha(0.15);
+                        AppIcon {
+                            source: f.severity == "good" ? Icons.trending-up
+                                  : f.severity == "bad"  ? Icons.bell
+                                                         : Icons.pie-chart;
+                            tint: flag.hue;
+                            width: 17px; height: 17px;
+                            x: (parent.width - self.width) / 2;
+                            y: (parent.height - self.height) / 2;
+                        }
+                    }
+                }
+                VerticalLayout {
+                    horizontal-stretch: 1; spacing: 4px; alignment: center;
+                    Text { text: f.title; color: FinTheme.ink; font-size: 13.5px;
+                        font-weight: 700; wrap: word-wrap; }
+                    Text { text: f.detail; color: FinTheme.ink-dim; font-size: 12px;
+                        wrap: word-wrap; }
+                }
+                if f.action-label != "": VerticalLayout {
+                    alignment: center; horizontal-stretch: 0;
+                    Btn { label: f.action-label; h: 30px;
+                        clicked => {
+                            root.plan-modal = "";
+                            root.flag-action(f.action);
+                        } }
+                }
+            }
+        }
+    }
+
+    // ── the subscriptions that are not the price they were ──────────────────
+    if root.plan-modal == "subs": PlanModal {
+        title: "Subscriptions that have risen";
+        hint: "Measured against the oldest price this app has a record of.";
+        closed => { root.plan-modal = ""; }
+
+        Card {
+            VerticalLayout {
+                alignment: start;
+                padding: 16px; spacing: 10px;
+                // Every row is one wrapper, so the ones that have not risen
+                // collapse to nothing rather than leaving a gap behind them.
+                for r in root.subs: VerticalLayout {
+                    spacing: 0;
+                    if r.hike-pct > 0: HorizontalLayout {
+                        spacing: 10px;
+                        padding-top: 5px; padding-bottom: 5px;
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            AccountBadge { glyph: r.badge; hue: r.hue; side: 30px; }
+                        }
+                        VerticalLayout {
+                            spacing: 2px; horizontal-stretch: 1; alignment: center;
+                            Text { text: r.name; color: FinTheme.ink;
+                                font-size: 12.5px; font-weight: 700; overflow: elide; }
+                            Text { text: r.hike-from + " → " + r.amount;
+                                color: FinTheme.ink-dim; font-size: 11.5px; }
+                        }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Delta { label: "\{r.hike-pct}%"; up: true; }
+                        }
+                        Text { text: r.yearly; color: FinTheme.ink;
+                            font-size: 12px; font-weight: 700;
+                            vertical-alignment: center;
+                            min-width: 110px; horizontal-alignment: right;
+                            horizontal-stretch: 0; }
+                        VerticalLayout {
+                            alignment: center; horizontal-stretch: 0;
+                            Btn { label: "Open"; h: 26px;
+                                clicked => {
+                                    root.plan-modal = "";
+                                    root.set-tab("subs");
+                                } }
+                        }
+                    }
+                }
+                if root.subs.length == 0: Text {
+                    text: "No subscriptions are being tracked yet.";
+                    color: FinTheme.ink-dim; font-size: 12.5px;
+                }
+            }
+        }
     }
 
     // ══ SHEET ═══════════════════════════════════════════════════════════════

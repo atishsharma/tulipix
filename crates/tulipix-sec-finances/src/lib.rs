@@ -474,10 +474,9 @@ pub fn wire(window: &MainWindow) {
         refresh(&w);
     });
 
-    // The Plan tab has one month selector over both halves of it, so it steps both
-    // periods together. Budgets and Calendar still step independently — they are
-    // separate tabs and each keeps its own place — and this resyncs them whenever
-    // it is used, which is the point of merging them in the first place.
+    // Planning has one month selector over everything on it, so it steps both
+    // periods together — the envelopes and the due dates are always the same
+    // month, which was the point of merging Budgets and Calendar into it.
     let w = window.as_weak();
     window.on_fin_plan_step(move |delta| {
         let Some(w) = w.upgrade() else { return };
@@ -485,6 +484,22 @@ pub fn wire(window: &MainWindow) {
             let mut st = state();
             let by = if st.cal_view == "year" { delta * 12 } else { delta };
             let next = step_period(&st.cal_period, by);
+            st.budget_period = next.clone();
+            st.cal_period = next;
+        }
+        refresh(&w);
+    });
+
+    // The three chips beside the month arrows. An offset from the month today is
+    // in rather than a period string: "next month" has to keep meaning next month
+    // after midnight on the 31st, and a string baked when the section opened
+    // would not.
+    let w = window.as_weak();
+    window.on_fin_plan_goto(move |offset| {
+        let Some(w) = w.upgrade() else { return };
+        {
+            let mut st = state();
+            let next = step_period(&date::ym(date::today()), offset);
             st.budget_period = next.clone();
             st.cal_period = next;
         }
@@ -569,8 +584,12 @@ pub fn wire(window: &MainWindow) {
                 w.set_fin_tab("subs".into());
                 refresh(&w);
             }
+            // There is no Budgets tab any more, and nothing routes to Plan: the
+            // full envelope list is the drill-down behind Planning's Envelopes
+            // block, so the flag opens that rather than a tab.
             "category" => {
-                w.set_fin_tab("budgets".into());
+                w.set_fin_tab("planning".into());
+                w.set_fin_plan_modal("budgets".into());
                 refresh(&w);
             }
             "account" => {
@@ -2292,8 +2311,26 @@ pub fn refresh(window: &MainWindow) {
         // row holds a nested model of its cells, a `ModelRc` is an `Rc`, and the
         // struct is therefore `!Send`. The raw rows travel; the models are built
         // on the UI thread below.
-        let (ui_fixed_items, fixed_total_minor) =
+        let (ui_fixed_items, fixed_total_minor, subs_month_minor) =
             view::fixed_items(&budget_fixed, &subs, &base);
+        // The month on its own terms: what came in, less what has a claim on it.
+        // Separate from the cash-flow walk below, which measures a bank balance
+        // and therefore carries every month before this one inside it.
+        let ui_plan_statement = view::month_statement(
+            allocation.income_minor,
+            fixed_total_minor - subs_month_minor,
+            subs_month_minor,
+            allocation.budgeted_minor,
+            &base,
+        );
+        // What the bar's third slice is actually worth. It used to be labelled
+        // with `unallocated` — income less envelopes — while the slice beside it
+        // was drawn as income less envelopes *and* commitments, so the figure and
+        // the width it sat under were two different claims.
+        let plan_free = money::format_minor(
+            allocation.income_minor - fixed_total_minor - allocation.budgeted_minor,
+            &base,
+        );
         let ui_cal = view::calendar(&cal_period, today, &cal_items, &cal_income, &base);
         let ui_cal_focus = view::calendar_focus(&ui_cal);
         let ui_cal_months = view::calendar_year(&cal_year, &cal_period, &base);
@@ -2341,6 +2378,41 @@ pub fn refresh(window: &MainWindow) {
         // Spending this month with no envelope watching it.
         let unbudgeted: i64 = budget_rows.iter().filter(|b| b.id.is_none()).map(|b| b.spent_minor).sum();
         let unbudgeted_n = budget_rows.iter().filter(|b| b.id.is_none() && b.spent_minor > 0).count();
+
+        // ── Planning ────────────────────────────────────────────────────────
+        // Everything the dashboard shows, built from figures already in hand.
+        // The one extra read is the day-by-day spend the burn-down lines are
+        // drawn from — a shape no other tab asks for.
+        let daily_cat = txn::daily_by_category(&pool, &budget_from, &budget_to)
+            .await
+            .unwrap_or_default();
+        // What the month closes at: what is in the bank now, less everything
+        // dated and still open. Expected income is not added — the same rule the
+        // cash-flow walk states, and the closing figure has to be the same one.
+        let cal_out: i64 = cal_items
+            .iter()
+            .filter(|o| o.status.is_open())
+            .filter_map(|o| o.shown_minor())
+            .sum();
+        let plan_closing_minor = account_totals.liquid_minor - cal_out;
+        let savings_pct = savings_rows.last().and_then(|m| m.rate_pct);
+        let ui_plan_health = view::plan_health(
+            account_totals.liquid_minor,
+            plan_closing_minor,
+            &cal_warning,
+            savings_pct,
+            &base,
+        );
+        let ui_timeline =
+            view::timeline(&ui_cal, &cal_items, &cal_income, plan_closing_minor, &base);
+        let ui_attention = view::attention(&needs, &flags, &base);
+        let ui_recos = view::recommendations(&flags);
+        let ui_habits =
+            view::habits(&cal_items, &disc, &subs, unbudgeted, unbudgeted_n, &base);
+        let ui_review = view::monthly_review(&budget_rows, &daily_cat, &cal_income, &base);
+        // The first of the month being viewed, so a prediction that spills past
+        // the month can say which day of the next one it lands on.
+        let budget_first = date::parse(&budget_from).unwrap_or(today);
         let ui_recent = view::txns(
             recent.rows.iter().take(OVERVIEW_TXNS).cloned().collect::<Vec<_>>().as_slice(),
             &base,
@@ -2395,9 +2467,9 @@ pub fn refresh(window: &MainWindow) {
         // Measured against the income of the month being *viewed*, not of today —
         // the tab steps, and a share of a different month's income is a ratio of
         // two unrelated numbers.
-        // The same share twice: once as a sentence for the Budgets tab, once as a
-        // number for the Plan tab's allocation bar. Both from one division, so the
-        // bar and the caption under it cannot disagree.
+        // The same share twice: once as a sentence for the envelopes drill-down,
+        // once as a number for Planning's cash-flow bar. Both from one division,
+        // so the bar and the caption under it cannot disagree.
         let fixed_pct = if allocation.income_minor > 0 {
             (fixed_total_minor as i128 * 100 / allocation.income_minor as i128).clamp(0, 100) as i32
         } else {
@@ -2469,6 +2541,7 @@ pub fn refresh(window: &MainWindow) {
             put!(get_fin_loans, set_fin_loans, ui_loans);
             put!(get_fin_budgets, set_fin_budgets, ui_budgets);
             put!(get_fin_fixed_items, set_fin_fixed_items, ui_fixed_items);
+            put!(get_fin_plan_statement, set_fin_plan_statement, ui_plan_statement);
             put!(get_fin_discipline, set_fin_discipline, ui_disc);
             put!(get_fin_discipline_months, set_fin_discipline_months, ui_disc_months);
             put!(
@@ -2496,6 +2569,20 @@ pub fn refresh(window: &MainWindow) {
             );
             put!(get_fin_insight_stats, set_fin_insight_stats, ui_insight_stats);
             put!(get_fin_commitments, set_fin_commitments, ui_commitments);
+            put!(get_fin_plan_health, set_fin_plan_health, ui_plan_health);
+            put!(get_fin_timeline, set_fin_timeline, ui_timeline);
+            put!(get_fin_attention, set_fin_attention, ui_attention);
+            put!(get_fin_recos, set_fin_recos, ui_recos);
+            put!(get_fin_habits, set_fin_habits, ui_habits);
+            put!(get_fin_review, set_fin_review, ui_review);
+            // Both hold a nested model, so — like the trend rows above — they are
+            // `!Send` and have to be built here rather than off the thread.
+            put!(
+                get_fin_predictions,
+                set_fin_predictions,
+                view::predictions(&budget_rows, &daily_cat, budget_first, elapsed, total_days, &base)
+            );
+            put!(get_fin_trends, set_fin_trends, view::trend_series(&savings_rows, &base));
             w.set_fin_cal_warning(cal_warning.into());
             w.set_fin_cal_heaviest(cal_heaviest.into());
             w.set_fin_cal_heaviest_label(cal_heaviest_label.into());
@@ -2547,6 +2634,7 @@ pub fn refresh(window: &MainWindow) {
             w.set_fin_budget_income(alloc_income.into());
             w.set_fin_budget_allocated(alloc_budgeted.into());
             w.set_fin_budget_unallocated(alloc_left.into());
+            w.set_fin_plan_free(plan_free.into());
             w.set_fin_budget_allocated_pct(alloc_pct);
             w.set_fin_cal_label(cal_label.into());
             w.set_fin_cal_low_point(low_label.into());

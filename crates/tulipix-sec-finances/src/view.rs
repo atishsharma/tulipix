@@ -540,7 +540,7 @@ pub fn obligations(rows: &[Obligation]) -> Vec<FinObligationRow> {
             name: s(&o.name),
             kind: s(o.kind.clone().unwrap_or_else(|| "one-off".into())),
             due: s(&o.due_on),
-            // Day of the month, so the Plan tab's agenda can pick out one day's
+            // Day of the month, so the calendar's agenda can pick out one day's
             // rows without a round trip to SQL every time a cell is clicked.
             // Zero when the date is unparseable, which matches no cell.
             day: o
@@ -627,15 +627,52 @@ pub fn filter_bills<'a>(rows: &'a [Obligation], filter: &str) -> Vec<Obligation>
         .collect::<Vec<_>>()
 }
 
+/// A series of 0–100 percentages as two SVG paths: the line, and the area below it.
+///
+/// Over a 100×100 viewbox, so the caller can draw it at any size. Points sit at
+/// the centre of the column each month owns, which is where the overlay puts the
+/// month's touch target and its marker — the dot and the line have to agree, and
+/// they only do if one rule places both.
+///
+/// The second float in this file, after the donut's arcs, and for the same
+/// reason: Slint cannot accumulate a path over a model.
+fn spark_path(pcts: &[i32]) -> (String, String) {
+    if pcts.is_empty() {
+        return (String::new(), String::new());
+    }
+    let n = pcts.len() as f32;
+    let x = |i: usize| (i as f32 + 0.5) * 100.0 / n;
+    let y = |p: i32| 100.0 - p.clamp(0, 100) as f32;
+
+    let mut line = String::new();
+    for (i, p) in pcts.iter().enumerate() {
+        line.push_str(&format!(
+            "{} {:.1} {:.1} ",
+            if i == 0 { "M" } else { "L" },
+            x(i),
+            y(*p)
+        ));
+    }
+    // Closed down to the baseline at both ends, so the fill reads as the ground
+    // under the line rather than as a shape floating in the middle of the row.
+    let area = format!(
+        "{}L {:.1} 100 L {:.1} 100 Z",
+        line,
+        x(pcts.len() - 1),
+        x(0)
+    );
+    (line.trim_end().to_string(), area)
+}
+
 /// Six months of spending per category, biggest first.
 ///
 /// One call per month rather than one grouped query: `spend_by_category` is the
 /// function the donut already uses, and six calls to a tested aggregate beat one new
 /// query that could disagree with it.
 ///
-/// Bars are shares of each category's *own* worst month. Shares of the whole ledger
-/// would draw every category except the largest as a flat line, which is exactly the
-/// trend the card exists to show.
+/// Heights are shares of each category's *own* worst month. Shares of the whole
+/// ledger would draw every category except the largest as a flat line, which is
+/// exactly the trend the card exists to show.
 pub fn trend(months: &[(String, Vec<CategorySpend>)], base: &str, limit: usize) -> Vec<FinCatTrend> {
     // Total per category across the window, to rank and to keep only the top few.
     let mut totals: Vec<(String, i64)> = Vec::new();
@@ -674,10 +711,16 @@ pub fn trend(months: &[(String, Vec<CategorySpend>)], base: &str, limit: usize) 
             // A tenth of the mean is noise; below that the card says nothing.
             let worth_saying = mean > 0 && diff.abs() * 10 > mean;
 
+            let pcts: Vec<i32> =
+                series.iter().map(|v| ((*v as i128 * 100) / peak as i128) as i32).collect();
+            let (line, area) = spark_path(&pcts);
+
             FinCatTrend {
                 name: s(&name),
                 hue: category_hue(i, &name, None),
                 total: s(money::format_minor(total, base)),
+                line: s(line),
+                area: s(area),
                 delta: s(if worth_saying {
                     format!("{} vs usual", money::format_minor(diff.abs(), base))
                 } else {
@@ -693,6 +736,7 @@ pub fn trend(months: &[(String, Vec<CategorySpend>)], base: &str, limit: usize) 
                             label: s(month_short(label)),
                             pct: ((*v as i128 * 100) / peak as i128) as i32,
                             current: mi + 1 == months.len(),
+                            amount: s(money::format_minor(*v, base)),
                         })
                         .collect(),
                 ),
@@ -1750,11 +1794,15 @@ fn envelope_detail(b: &BudgetRow, base: &str) -> String {
 /// The design's "not budgeted" card. Shown so the page adds up: envelopes cover
 /// a quarter of a normal month, and a Budgets tab that shows only them implies
 /// the rest is discretionary too.
+///
+/// Returns the rows, their total, and the subscription share of that total on
+/// its own — the month statement splits bills from subscriptions, and deriving
+/// the split a second time is how two screens end up disagreeing by one EMI.
 pub fn fixed_items(
     bills: &[Obligation],
     subs: &[RecurRow],
     base: &str,
-) -> (Vec<FinKv>, i64) {
+) -> (Vec<FinKv>, i64, i64) {
     let mut rows: Vec<(String, i64)> = bills
         .iter()
         .filter(|o| !matches!(o.status, ObStatus::Skipped))
@@ -1784,7 +1832,68 @@ pub fn fixed_items(
             })
             .collect(),
         total,
+        subs_monthly,
     )
+}
+
+/// The month as money in, money committed, money planned, money left.
+///
+/// The other statement in this section walks the *bank balance* — what is there
+/// now, what is still to leave it, where it ends. That answers a different
+/// question, and the two were being read as one: a balance carries every month
+/// that came before it, so a good month can close low and a bad one high.
+///
+/// This one starts at what came in and takes off what has a claim on it. Nothing
+/// here is a forecast: income is what has actually landed, commitments are what
+/// is dated, envelopes are what was set aside.
+pub fn month_statement(
+    income_minor: i64,
+    bills_minor: i64,
+    subs_minor: i64,
+    envelopes_minor: i64,
+    base: &str,
+) -> Vec<FinKv> {
+    let f = |m: i64| money::format_minor(m, base);
+    let left = income_minor - bills_minor - subs_minor - envelopes_minor;
+    let mut rows = vec![FinKv {
+        label: s("Money in this month"),
+        value: s(f(income_minor)),
+        tone: s(if income_minor > 0 { "ok" } else { "flat" }),
+        strong: true,
+    }];
+    // A line for nothing is a line that has to be read to be dismissed. Each of
+    // the three appears only when it is a claim on the month.
+    if bills_minor > 0 {
+        rows.push(FinKv {
+            label: s("Bills, loans and EMIs"),
+            value: s(f(-bills_minor)),
+            tone: s("flat"),
+            strong: false,
+        });
+    }
+    if subs_minor > 0 {
+        rows.push(FinKv {
+            label: s("Subscriptions"),
+            value: s(f(-subs_minor)),
+            tone: s("flat"),
+            strong: false,
+        });
+    }
+    if envelopes_minor > 0 {
+        rows.push(FinKv {
+            label: s("Set aside in envelopes"),
+            value: s(f(-envelopes_minor)),
+            tone: s("flat"),
+            strong: false,
+        });
+    }
+    rows.push(FinKv {
+        label: s(if left < 0 { "Over-committed by" } else { "Free to use" }),
+        value: s(f(left.abs())),
+        tone: s(if left < 0 { "bad" } else { "ok" }),
+        strong: true,
+    });
+    rows
 }
 
 /// The envelope-by-month grid.
@@ -1937,7 +2046,7 @@ pub fn calendar(
         .collect()
 }
 
-/// The day the Plan tab's agenda opens on.
+/// The day the calendar's agenda opens on.
 ///
 /// Today when the month on screen is the one today falls in, otherwise that
 /// month's first day — stepping to March and being shown the 4th of it because
@@ -2048,35 +2157,39 @@ pub fn cash_flow(
 // ── insights ────────────────────────────────────────────────────────────────
 
 pub fn flags(rows: &[Flag]) -> Vec<FinFlag> {
+    rows.iter().map(flag).collect()
+}
+
+/// One flag. Its own function because three lists are built from the same rows —
+/// Insights shows all of them, Planning splits them into what is going wrong and
+/// what could be done better — and three copies of this mapping would be three
+/// chances for the same flag to offer a different button on a different tab.
+fn flag(f: &Flag) -> FinFlag {
     use tulipix_finances::insights::Action;
-    rows.iter()
-        .map(|f| {
-            // The action is encoded as `kind:id`, which the callback splits. A
-            // string rather than a pair of properties because Slint structs carry
-            // no enums and two fields could disagree.
-            let (label, action) = match &f.action {
-                Action::None => ("", String::new()),
-                Action::Obligation(i) => ("Open bill", format!("obligation:{i}")),
-                Action::Recurrence(i) => ("Open", format!("recurrence:{i}")),
-                Action::Category(i) => ("Open budget", format!("category:{i}")),
-                Action::Account(i) => ("Open account", format!("account:{i}")),
-                Action::Due(i) => ("Open it in Lending", format!("due:{i}")),
-                Action::Rates => ("Set a rate", "rates:0".to_string()),
-            };
-            FinFlag {
-                severity: s(match f.severity {
-                    Severity::Bad => "bad",
-                    Severity::Warn => "warn",
-                    Severity::Info => "info",
-                    Severity::Good => "good",
-                }),
-                title: s(&f.title),
-                detail: s(&f.detail),
-                action_label: s(label),
-                action: s(action),
-            }
-        })
-        .collect()
+    // The action is encoded as `kind:id`, which the callback splits. A string
+    // rather than a pair of properties because Slint structs carry no enums and
+    // two fields could disagree.
+    let (label, action) = match &f.action {
+        Action::None => ("", String::new()),
+        Action::Obligation(i) => ("Open bill", format!("obligation:{i}")),
+        Action::Recurrence(i) => ("Open", format!("recurrence:{i}")),
+        Action::Category(i) => ("Open budget", format!("category:{i}")),
+        Action::Account(i) => ("Open account", format!("account:{i}")),
+        Action::Due(i) => ("Open it in Lending", format!("due:{i}")),
+        Action::Rates => ("Set a rate", "rates:0".to_string()),
+    };
+    FinFlag {
+        severity: s(match f.severity {
+            Severity::Bad => "bad",
+            Severity::Warn => "warn",
+            Severity::Info => "info",
+            Severity::Good => "good",
+        }),
+        title: s(&f.title),
+        detail: s(&f.detail),
+        action_label: s(label),
+        action: s(action),
+    }
 }
 
 /// The savings-rate bars, oldest left.
@@ -2399,6 +2512,556 @@ pub fn allocation(a: &budgets::Allocation, base: &str) -> (String, String, Strin
     )
 }
 
+// ── planning ────────────────────────────────────────────────────────────────
+//
+// Planning answers one question the other tabs do not: what should be done next.
+// Every figure below is therefore a decision, a prediction or an action — never
+// another way of stating a total that is already on Overview.
+
+/// The four cards Planning opens with.
+///
+/// Cash, then where the month closes, then what is being kept, then the verdict
+/// on all three. The status card reads the other cards, so it comes after them:
+/// "At risk" means more once the figure it was taken from is already on screen.
+pub fn plan_health(
+    liquid_minor: i64,
+    closing_minor: i64,
+    warning: &str,
+    savings_pct: Option<i64>,
+    base: &str,
+) -> Vec<FinStat> {
+    let f = |m: i64| money::format_minor(m, base);
+    // "Tight" is not a warning — nothing is going to bounce. It is the month
+    // taking most of what is in the bank, which is worth seeing before it
+    // becomes the warning.
+    let tight = warning.is_empty() && closing_minor >= 0 && closing_minor * 5 < liquid_minor;
+    let (status, status_sub, status_tone) = if !warning.is_empty() {
+        ("At risk", warning.to_string(), "bad")
+    } else if tight {
+        (
+            "Tight",
+            "What is dated this month takes most of what is in the bank.".to_string(),
+            "warn",
+        )
+    } else {
+        ("Covered", "Everything dated this month is covered.".to_string(), "ok")
+    };
+
+    vec![
+        FinStat {
+            label: s("CASH AVAILABLE"),
+            value: s(f(liquid_minor)),
+            sub: s("In bank now"),
+            tone: s("flat"),
+            delta: s(""),
+            delta_up: false,
+            action: s(""),
+        },
+        FinStat {
+            label: s("PROJECTED CLOSING"),
+            value: s(f(closing_minor)),
+            sub: s("If nothing changes"),
+            tone: s(if closing_minor < 0 { "bad" } else { "flat" }),
+            delta: s(""),
+            delta_up: false,
+            action: s(""),
+        },
+        FinStat {
+            label: s("SAVINGS RATE"),
+            value: s(match savings_pct {
+                Some(p) => format!("{p}%"),
+                None => "—".to_string(),
+            }),
+            sub: s(match savings_pct {
+                Some(_) => "of what came in last month",
+                None => "No income recorded to measure against",
+            }),
+            tone: s(match savings_pct {
+                Some(p) if p >= 20 => "ok",
+                Some(p) if p < 0 => "bad",
+                Some(_) => "warn",
+                None => "flat",
+            }),
+            delta: s(""),
+            delta_up: false,
+            action: s(""),
+        },
+        // Last, not second. The three before it are the figures the status is a
+        // reading of, and a verdict is easier to trust after the numbers it was
+        // taken from than before them.
+        FinStat {
+            label: s("MONTH STATUS"),
+            value: s(status),
+            sub: s(status_sub),
+            tone: s(status_tone),
+            delta: s(""),
+            delta_up: false,
+            action: s(""),
+        },
+    ]
+}
+
+/// Timeline hues, by what the day is made of. Income is the one colour on the
+/// row that means a different direction rather than a different category.
+const TIMELINE_INCOME: u32 = 0xFF16a34a;
+const TIMELINE_BILL: u32 = 0xFFf472b6;
+const TIMELINE_SUB: u32 = 0xFFa78bfa;
+const TIMELINE_OTHER: u32 = 0xFF94a3b8;
+
+/// When the month's money moves, one card per day that something happens on.
+///
+/// A day, not an obligation: three bills on the 8th are one thing that happens
+/// on the 8th, and three cards would make a busy day read as a busy week. The
+/// row ends on the closing balance, which is where the days lead.
+pub fn timeline(
+    days: &[FinCalDay],
+    items: &[Obligation],
+    income: &[(String, i64)],
+    closing_minor: i64,
+    base: &str,
+) -> Vec<FinTimelineEvent> {
+    use std::collections::BTreeMap;
+
+    // Keyed by ISO date, so the row comes out in date order without a sort and
+    // a salary landing on a bill's due date becomes one card rather than two.
+    #[derive(Default)]
+    struct Day {
+        owed: i64,
+        earned: i64,
+        names: Vec<String>,
+        kinds: Vec<String>,
+    }
+    let mut by_day: BTreeMap<String, Day> = BTreeMap::new();
+    for o in items.iter().filter(|o| !matches!(o.status, ObStatus::Skipped)) {
+        let Some(m) = o.shown_minor() else { continue };
+        let e = by_day.entry(o.due_on.clone()).or_default();
+        e.owed += m;
+        e.names.push(o.name.clone());
+        e.kinds.push(o.kind.clone().unwrap_or_default());
+    }
+    for (on, m) in income.iter().filter(|(_, m)| *m > 0) {
+        by_day.entry(on.clone()).or_default().earned += *m;
+    }
+
+    let day_of =
+        |iso: &str| iso.rsplit('-').next().and_then(|d| d.parse::<i32>().ok()).unwrap_or(0);
+    let idx_of = |day: i32| {
+        days.iter()
+            .position(|d| d.in_month && d.day == day)
+            .map(|i| i as i32)
+            .unwrap_or(-1)
+    };
+    let hue = |k: u32| slint::Color::from_argb_encoded(k);
+
+    let mut rows: Vec<FinTimelineEvent> = by_day
+        .iter()
+        .map(|(iso, d)| {
+            let day = day_of(iso);
+            // Income only when nothing is also owed that day. A day with both is
+            // still a day money leaves, and colouring it green would say the
+            // opposite of what it is.
+            let is_income = d.owed == 0 && d.earned > 0;
+            let subs = d.kinds.iter().filter(|k| *k == "subscription").count();
+            FinTimelineEvent {
+                day,
+                idx: idx_of(day),
+                name: s(if is_income {
+                    "Money in".to_string()
+                } else if d.names.len() == 1 {
+                    d.names[0].clone()
+                } else {
+                    format!("{} due", d.names.len())
+                }),
+                amount: s(if is_income {
+                    money::format_minor(d.earned, base)
+                } else {
+                    money::format_minor(-d.owed, base)
+                }),
+                sub: s(if d.earned > 0 && d.owed > 0 {
+                    format!("and {} in", money::format_minor(d.earned, base))
+                } else if d.names.len() > 1 {
+                    d.names.join(", ")
+                } else {
+                    String::new()
+                }),
+                hue: hue(if is_income {
+                    TIMELINE_INCOME
+                } else if subs * 2 > d.kinds.len() {
+                    TIMELINE_SUB
+                } else if d.kinds.iter().any(|k| k == "bill") {
+                    TIMELINE_BILL
+                } else {
+                    TIMELINE_OTHER
+                }),
+                income: is_income,
+                closing: false,
+                count: (d.names.len() + usize::from(d.earned > 0)) as i32,
+            }
+        })
+        .collect();
+
+    // The month has to end somewhere, and the row is the only place on the page
+    // that reads left to right in time.
+    let last = days.iter().filter(|d| d.in_month).map(|d| d.day).max().unwrap_or(0);
+    if last > 0 {
+        rows.push(FinTimelineEvent {
+            day: last,
+            idx: idx_of(last),
+            name: s("Closing balance"),
+            amount: s(money::format_minor(closing_minor, base)),
+            sub: s("if nothing else moves"),
+            hue: hue(if closing_minor < 0 { 0xFFef4444 } else { TIMELINE_INCOME }),
+            income: closing_minor >= 0,
+            closing: true,
+            count: 0,
+        });
+    }
+    rows
+}
+
+/// What is going wrong, from both places that know.
+///
+/// Dated things that are overdue or nearly so, then the insight flags that carry
+/// an alarm. One list because they are one question — what bites this week — and
+/// two lists side by side would leave the user to merge them by eye.
+///
+/// Auto-posting obligations are left out: they need no one's attention, which is
+/// the entire meaning of the flag.
+pub fn attention(needs: &[Obligation], flags: &[Flag], base: &str) -> Vec<FinFlag> {
+    let mut rows: Vec<FinFlag> = needs
+        .iter()
+        .filter(|o| !o.auto_post)
+        .filter(|o| o.status.is_open())
+        .filter(|o| o.days_until <= 7)
+        .map(|o| {
+            let overdue = o.status.as_str() == "overdue";
+            let amount =
+                o.shown_minor().map(|m| money::format_minor(m, base)).unwrap_or_default();
+            FinFlag {
+                severity: s(if overdue { "bad" } else { "warn" }),
+                title: s(if overdue {
+                    format!("{} overdue", o.name)
+                } else if o.days_until == 0 {
+                    format!("{} due today", o.name)
+                } else if o.days_until == 1 {
+                    format!("{} due tomorrow", o.name)
+                } else {
+                    format!("{} due in {} days", o.name, o.days_until)
+                }),
+                detail: s(if amount.is_empty() {
+                    format!("Due on {}", day_month(&o.due_on))
+                } else if overdue {
+                    format!("{amount} was due on {}", day_month(&o.due_on))
+                } else {
+                    format!("{amount} on {}", day_month(&o.due_on))
+                }),
+                action_label: s("Open bill"),
+                action: s(format!("obligation:{}", o.id)),
+            }
+        })
+        .collect();
+    rows.extend(
+        flags
+            .iter()
+            .filter(|f| matches!(f.severity, Severity::Bad | Severity::Warn))
+            .map(flag),
+    );
+    rows
+}
+
+/// The other half of the flags: the ones that are not going wrong, only worth
+/// doing something about.
+pub fn recommendations(rows: &[Flag]) -> Vec<FinFlag> {
+    rows.iter()
+        .filter(|f| matches!(f.severity, Severity::Info | Severity::Good))
+        .map(flag)
+        .collect()
+}
+
+/// When each envelope runs out, at the pace it is going.
+///
+/// Only envelopes that have been spent from and have a limit: a prediction off
+/// zero days of spending is a division, and one for a category with no envelope
+/// has nothing to run out of.
+///
+/// `first` is the first of the month being viewed, so an envelope that lasts
+/// past it can say so with a real date rather than "some time next month".
+pub fn predictions(
+    rows: &[BudgetRow],
+    daily: &[(i64, String, i64)],
+    first: NaiveDate,
+    elapsed: i64,
+    days_in: i64,
+    base: &str,
+) -> Vec<FinPrediction> {
+    if elapsed <= 0 || days_in <= 0 {
+        return Vec::new();
+    }
+    let mut out: Vec<(i64, FinPrediction)> = rows
+        .iter()
+        .filter(|b| b.id.is_some() && b.spent_minor > 0 && b.allowance_minor() > 0)
+        .enumerate()
+        .map(|(i, b)| {
+            // Whole days throughout: the answer is a date, and carrying a
+            // fraction of a rupee a day through it changes nothing about which
+            // day it lands on.
+            let rate = (b.spent_minor / elapsed).max(1);
+            let left = b.remaining_minor().max(0);
+            let finish_day = elapsed + left / rate;
+            let soon = finish_day <= days_in;
+            let on = first + chrono::Duration::days(finish_day - 1);
+
+            // Daily spend for this envelope's own category, laid on the month's
+            // axis and scaled to its own worst day.
+            let mut points: Vec<i64> = vec![0; days_in as usize];
+            for (_, iso, minor) in daily.iter().filter(|(id, _, _)| *id == b.category_id) {
+                let day = iso.rsplit('-').next().and_then(|d| d.parse::<usize>().ok());
+                if let Some(d) = day.filter(|d| *d >= 1 && *d <= days_in as usize) {
+                    points[d - 1] += *minor;
+                }
+            }
+            let peak = points.iter().copied().max().unwrap_or(0).max(1);
+            let points: Vec<i32> =
+                points.iter().map(|p| ((*p as i128 * 100) / peak as i128) as i32).collect();
+
+            (
+                finish_day,
+                FinPrediction {
+                    name: s(&b.category_name),
+                    finish: s(if b.over_budget() {
+                        "Already spent".to_string()
+                    } else {
+                        format!("{} {}", day_month(&date::iso(on)), on.year())
+                    }),
+                    note: s(if b.over_budget() {
+                        format!(
+                            "{} over the envelope",
+                            money::format_minor(b.spent_minor - b.allowance_minor(), base)
+                        )
+                    } else if soon {
+                        format!("{} left at {} a day", money::format_minor(left, base), money::format_minor(rate, base))
+                    } else {
+                        format!("{} left — lasts the month", money::format_minor(left, base))
+                    }),
+                    hue: category_hue(i, &b.category_name, b.color.as_deref()),
+                    soon: soon || b.over_budget(),
+                    points: model(points),
+                },
+            )
+        })
+        .collect();
+    // Soonest first: the card that matters is the envelope about to run out, and
+    // it must not be the fourth one along because its category sorts late.
+    out.sort_by_key(|(day, _)| *day);
+    out.into_iter().map(|(_, p)| p).collect()
+}
+
+/// The four habits.
+///
+/// Every one of them is a count of something the app already recorded. Nothing
+/// here is scored, ranked or given a grade: a number the user can check against
+/// their own ledger is worth more than a mark out of ten they cannot.
+pub fn habits(
+    items: &[Obligation],
+    disc: &[MonthDiscipline],
+    subs: &[RecurRow],
+    unbudgeted_minor: i64,
+    unbudgeted_n: usize,
+    base: &str,
+) -> Vec<FinHabit> {
+    let hue = |k: u32| slint::Color::from_argb_encoded(k);
+    let paid = items.iter().filter(|o| o.status.as_str() == "paid").count();
+    let missed = items.iter().filter(|o| o.status.as_str() == "overdue").count();
+    let settled = paid + missed;
+    let paid_pct = if settled > 0 { (paid * 100 / settled) as i32 } else { 0 };
+
+    let within = disc.iter().filter(|m| m.within()).count();
+    let measured = disc.iter().filter(|m| m.budget_minor > 0).count();
+    let within_pct = if measured > 0 { (within * 100 / measured) as i32 } else { 0 };
+
+    let risen = subs.iter().filter(|r| r.hike_from_minor.is_some()).count();
+
+    vec![
+        FinHabit {
+            label: s("Bills paid on time"),
+            value: s(if settled == 0 {
+                "—".to_string()
+            } else {
+                format!("{paid_pct}%")
+            }),
+            pct: paid_pct,
+            hue: hue(if paid_pct >= 90 { 0xFF16a34a } else { 0xFFf59e0b }),
+            bar: settled > 0,
+            action_label: s(""),
+            action: s(""),
+        },
+        FinHabit {
+            label: s("Stayed in budget"),
+            value: s(if measured == 0 {
+                "—".to_string()
+            } else {
+                format!("{within_pct}%")
+            }),
+            pct: within_pct,
+            hue: hue(if within_pct >= 70 { 0xFF16a34a } else { 0xFFf59e0b }),
+            bar: measured > 0,
+            action_label: s(""),
+            action: s(""),
+        },
+        FinHabit {
+            label: s("Subscriptions that have risen"),
+            value: s(risen.to_string()),
+            pct: 0,
+            hue: hue(TIMELINE_SUB),
+            bar: false,
+            // A habit's action names one of Planning's own drill-downs, not a
+            // tab: the count is the summary and the list behind it is the
+            // detail, and sending the reader to another tab to see four rows
+            // would cost them the page they were reading.
+            action_label: s(if risen > 0 { "View details" } else { "" }),
+            action: s(if risen > 0 { "subs" } else { "" }),
+        },
+        FinHabit {
+            label: s("Spending no envelope watches"),
+            value: s(if unbudgeted_minor > 0 {
+                money::format_minor(unbudgeted_minor, base)
+            } else {
+                "None".to_string()
+            }),
+            pct: 0,
+            hue: hue(if unbudgeted_minor > 0 { 0xFFf472b6 } else { 0xFF16a34a }),
+            bar: false,
+            action_label: s(if unbudgeted_n > 0 { "Set envelopes" } else { "" }),
+            action: s(if unbudgeted_n > 0 { "budgets" } else { "" }),
+        },
+    ]
+}
+
+/// The month read backwards: which envelope held, which did not, and the two
+/// days the money moved most.
+pub fn monthly_review(
+    rows: &[BudgetRow],
+    daily: &[(i64, String, i64)],
+    income: &[(String, i64)],
+    base: &str,
+) -> Vec<FinStat> {
+    let f = |m: i64| money::format_minor(m, base);
+    let card = |label: &str, value: String, sub: String, tone: &str| FinStat {
+        label: s(label),
+        value: s(value),
+        sub: s(sub),
+        tone: s(tone),
+        delta: s(""),
+        delta_up: false,
+        action: s(""),
+    };
+
+    // Only envelopes that were actually set. A category with no limit cannot be
+    // the best-kept one — nothing was kept.
+    let set: Vec<&BudgetRow> = rows.iter().filter(|b| b.id.is_some() && b.allowance_minor() > 0).collect();
+    let best = set.iter().filter(|b| !b.over_budget()).min_by_key(|b| b.used_pct());
+    let worst = set.iter().max_by_key(|b| b.used_pct());
+
+    // Days, summed across every category. `daily` is expense only, so this is
+    // spending rather than movement.
+    let mut by_day: std::collections::BTreeMap<&str, i64> = Default::default();
+    for (_, on, minor) in daily {
+        *by_day.entry(on.as_str()).or_default() += *minor;
+    }
+    let heaviest = by_day.into_iter().max_by_key(|(_, m)| *m);
+    let richest = income.iter().filter(|(_, m)| *m > 0).max_by_key(|(_, m)| *m);
+
+    vec![
+        card(
+            "BEST CATEGORY",
+            best.map(|b| b.category_name.clone()).unwrap_or_else(|| "—".into()),
+            match best {
+                Some(b) => format!("{}% of its envelope spent", b.used_pct()),
+                None => "No envelope came in under this month.".into(),
+            },
+            if best.is_some() { "ok" } else { "flat" },
+        ),
+        card(
+            "WORST CATEGORY",
+            worst.map(|b| b.category_name.clone()).unwrap_or_else(|| "—".into()),
+            match worst {
+                Some(b) if b.over_budget() => {
+                    format!("over by {}", f(b.spent_minor - b.allowance_minor()))
+                }
+                Some(b) => format!("{}% of its envelope spent", b.used_pct()),
+                None => "No envelope is set this month.".into(),
+            },
+            match worst {
+                Some(b) if b.over_budget() => "bad",
+                Some(_) => "warn",
+                None => "flat",
+            },
+        ),
+        card(
+            "HEAVIEST SPEND DAY",
+            heaviest.map(|(on, _)| day_month(on)).unwrap_or_else(|| "—".into()),
+            match heaviest {
+                Some((_, m)) => f(m),
+                None => "Nothing spent this month.".into(),
+            },
+            "flat",
+        ),
+        card(
+            "BIGGEST INCOME DAY",
+            richest.map(|(on, _)| day_month(on)).unwrap_or_else(|| "—".into()),
+            match richest {
+                Some((_, m)) => f(*m),
+                None => "Nothing came in this month.".into(),
+            },
+            "flat",
+        ),
+    ]
+}
+
+/// The six-month chart, one series per metric.
+///
+/// All four travel and the selector picks between them: they come off one query
+/// that has already run, and a round trip to the database to redraw six bars
+/// would be slower than the click that asked for it.
+pub fn trend_series(rows: &[MonthSavings], base: &str) -> Vec<FinTrendSeries> {
+    let last = rows.last().map(|m| m.period.clone()).unwrap_or_default();
+    // Every money series is a share of its own largest month. Sharing one scale
+    // across income and spending would flatten spending in any month that is not
+    // a disaster, which is most of them.
+    let series = |name: &str, pick: fn(&MonthSavings) -> Option<i64>, money: bool| {
+        let peak = rows.iter().filter_map(pick).map(|v| v.abs()).max().unwrap_or(0).max(1);
+        let months: Vec<FinSavingsMonth> = rows
+            .iter()
+            .map(|m| {
+                let v = pick(m);
+                FinSavingsMonth {
+                    label: s(month_short(&m.period)),
+                    pct: match v {
+                        Some(v) if money => ((v.abs() as i128 * 100) / peak as i128) as i32,
+                        Some(v) => v.clamp(0, 100) as i32,
+                        None => 0,
+                    },
+                    known: v.is_some(),
+                    current: m.period == last,
+                    amount: s(match v {
+                        Some(v) if money => money::format_minor(v, base),
+                        Some(v) => format!("{v}%"),
+                        None => String::new(),
+                    }),
+                }
+            })
+            .collect();
+        FinTrendSeries { name: s(name), months: model(months) }
+    };
+
+    vec![
+        series("Savings rate", |m| m.rate_pct, false),
+        series("Saved", |m| Some(m.saved_minor), true),
+        series("Spending", |m| Some(m.spent_minor), true),
+        series("Income", |m| Some(m.income_minor), true),
+    ]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2642,6 +3305,145 @@ mod tests {
     #[test]
     fn a_bad_period_produces_an_empty_grid_rather_than_a_panic() {
         assert!(calendar("nope", date::today(), &[], &[], "INR").is_empty());
+    }
+
+    /// One dated thing, with everything the Planning row reads set and the rest
+    /// left at its empty value.
+    fn due(id: i64, name: &str, on: &str, minor: i64, kind: &str) -> Obligation {
+        Obligation {
+            id,
+            recurrence_id: None,
+            name: name.into(),
+            due_on: on.into(),
+            estimate_minor: None,
+            actual_minor: Some(minor),
+            status: ObStatus::Upcoming,
+            transaction_id: None,
+            kind: Some(kind.into()),
+            currency: "INR".into(),
+            account_id: None,
+            days_until: 3,
+            category_name: None,
+            account_name: None,
+            auto_post: false,
+        }
+    }
+
+    #[test]
+    fn the_timeline_is_one_card_a_day_and_ends_on_the_closing_balance() {
+        let days = calendar("2026-08", date::parse("2026-08-04").unwrap(), &[], &[], "INR");
+        let items = vec![
+            due(1, "Rent", "2026-08-08", 3_800_000, "bill"),
+            due(2, "Broadband", "2026-08-08", 899_000, "bill"),
+            due(3, "Netflix", "2026-08-13", 64_900, "subscription"),
+        ];
+        let income = vec![("2026-08-01".to_string(), 18_497_218_i64)];
+        let row = timeline(&days, &items, &income, 10_412_424, "INR");
+
+        // Three days that do something, then the closing balance.
+        assert_eq!(row.len(), 4);
+        assert_eq!(row[0].day, 1);
+        assert!(row[0].income, "a day with only a credit on it is money in");
+        // Two bills on the 8th are one card, not two.
+        assert_eq!(row[1].day, 8);
+        assert_eq!(row[1].count, 2);
+        assert_eq!(row[1].name, "2 due");
+        assert!(!row[1].income);
+        // The grid index is the cell, so a click can hand over the day itself.
+        assert_eq!(days[row[1].idx as usize].day, 8);
+        assert!(row[3].closing);
+        assert_eq!(row[3].day, 31);
+    }
+
+    #[test]
+    fn an_envelope_runs_out_on_the_day_its_pace_says_it_will() {
+        let envelope = |id: i64, name: &str, amount: i64, spent: i64| BudgetRow {
+            id: Some(id),
+            category_id: id,
+            category_name: name.into(),
+            color: None,
+            amount_minor: amount,
+            rollover_minor: 0,
+            rollover: false,
+            spent_minor: spent,
+            txn_count: 4,
+            biggest_minor: 0,
+            biggest_name: String::new(),
+        };
+        let first = date::parse("2026-08-01").unwrap();
+        // Ten days in: ₹500 a day against a ₹6,000 envelope is ₹1,000 left, so it
+        // has two more days in it.
+        let rows = vec![
+            envelope(1, "Groceries", 600_000, 500_000),
+            envelope(2, "Fuel", 600_000, 100_000),
+        ];
+        let out = predictions(&rows, &[], first, 10, 31, "INR");
+        assert_eq!(out.len(), 2);
+        // Soonest first, whatever order the envelopes arrived in.
+        assert_eq!(out[0].name, "Groceries");
+        assert_eq!(out[0].finish, "12 Aug 2026");
+        assert!(out[0].soon);
+        // Fuel is spending a tenth of the pace and lasts well past the month.
+        assert!(!out[1].soon);
+
+        // No days elapsed is a division, not a prediction.
+        assert!(predictions(&rows, &[], first, 0, 31, "INR").is_empty());
+        // Neither is an envelope nothing has been spent from.
+        let untouched = vec![envelope(3, "Travel", 600_000, 0)];
+        assert!(predictions(&untouched, &[], first, 10, 31, "INR").is_empty());
+    }
+
+    #[test]
+    fn a_sparkline_puts_its_points_in_the_middle_of_each_month_and_closes_to_the_floor() {
+        let (line, area) = spark_path(&[0, 50, 100]);
+        // Thirds of the width, sampled at their centres: 16.7, 50, 83.3.
+        assert_eq!(line, "M 16.7 100.0 L 50.0 50.0 L 83.3 0.0");
+        // The area is the same line brought down to the baseline at both ends,
+        // so the fill sits under the line rather than floating behind it.
+        assert!(area.starts_with(&line), "the area follows the same points");
+        assert!(area.ends_with("L 83.3 100 L 16.7 100 Z"), "and closes on the floor");
+        // No months is a chart with nothing to draw, not a path with one point.
+        assert_eq!(spark_path(&[]), (String::new(), String::new()));
+    }
+
+    #[test]
+    fn the_month_statement_takes_every_claim_off_what_came_in() {
+        // 50,000 in; 20,000 of bills, 3,000 of subscriptions, 12,000 set aside.
+        let rows = month_statement(5_000_000, 2_000_000, 300_000, 1_200_000, "INR");
+        assert_eq!(rows.len(), 5);
+        assert_eq!(rows[0].label, "Money in this month");
+        assert_eq!(rows[4].label, "Free to use");
+        assert_eq!(rows[4].value, "₹15,000");
+        // A month whose claims come to more than its income says so, rather than
+        // reporting a negative as though it were money available.
+        let over = month_statement(1_000_000, 2_000_000, 0, 0, "INR");
+        assert_eq!(over[2].label, "Over-committed by");
+        assert_eq!(over[2].value, "₹10,000");
+        assert_eq!(over[2].tone, "bad");
+        // Lines for nothing are left out: no subscriptions, no subscription row.
+        assert!(over.iter().all(|r| r.label != "Subscriptions"));
+    }
+
+    #[test]
+    fn the_month_status_card_says_at_risk_only_when_something_is_at_risk() {
+        // The status is the last of the four, after the figures it reads.
+        let covered = plan_health(10_000_000, 8_000_000, "", Some(30), "INR");
+        assert_eq!(covered[3].value, "Covered");
+        assert_eq!(covered[3].tone, "ok");
+        assert_eq!(covered[2].value, "30%");
+        // Closing under a fifth of what is in the bank is tight, not a warning:
+        // nothing bounces, but most of the balance is spoken for.
+        let tight = plan_health(10_000_000, 1_000_000, "", Some(4), "INR");
+        assert_eq!(tight[3].value, "Tight");
+        assert_eq!(tight[3].tone, "warn");
+        // A warning from the cash-flow walk wins over both, and is quoted rather
+        // than re-worded.
+        let risk = plan_health(10_000_000, -500_000, "Short by ₹5,000 around 28 Aug", None, "INR");
+        assert_eq!(risk[3].value, "At risk");
+        assert_eq!(risk[3].sub, "Short by ₹5,000 around 28 Aug");
+        assert_eq!(risk[1].tone, "bad", "and a negative close is an alarm of its own");
+        // No income at all is a dash, never a zero rate.
+        assert_eq!(risk[2].value, "—");
     }
 
     #[test]

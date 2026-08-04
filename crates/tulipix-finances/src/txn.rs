@@ -619,6 +619,34 @@ pub async fn spend_by_category(pool: &SqlitePool, from: &str, to: &str) -> Resul
         .collect())
 }
 
+/// Spending per category per day, as `(category_id, ISO date, minor)`.
+///
+/// What the Planning tab's burn-down sparklines are drawn from. Days with no
+/// spending are absent rather than zero: the caller places the points on a
+/// month-long axis itself, and a row of zeroes here would be indistinguishable
+/// from a day that was genuinely quiet only after it had already been assumed.
+///
+/// Uncategorised spending is left out. It cannot exhaust an envelope, because
+/// there is no envelope for it to belong to.
+pub async fn daily_by_category(
+    pool: &SqlitePool,
+    from: &str,
+    to: &str,
+) -> Result<Vec<(i64, String, i64)>> {
+    Ok(sqlx::query_as(
+        "SELECT t.category_id, t.occurred_on, SUM(t.base_minor)
+           FROM transactions t
+          WHERE t.kind = 'expense' AND t.category_id IS NOT NULL
+            AND t.occurred_on BETWEEN ? AND ?
+          GROUP BY t.category_id, t.occurred_on
+          ORDER BY t.occurred_on",
+    )
+    .bind(from)
+    .bind(to)
+    .fetch_all(pool)
+    .await?)
+}
+
 #[derive(Clone, Debug)]
 pub struct MonthTotal {
     pub period: String,

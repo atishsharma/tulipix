@@ -41,7 +41,8 @@ import { FinancesPage, FinStat, FinAccountRow, FinTxnRow, FinRecurRow, FinObliga
           FinDueRow, FinBudgetRow, FinLoanRow, FinInstalment, FinCatSlice, FinMonthBar,
           FinCalDay, FinFlag, FinDiscipline, FinRate, FinPrice, FinProposal, FinImportRow,
           FinField, FinCatTrend, FinKv, FinCalMonth, FinEnvelopeHistory,
-          FinSavingsMonth, FinHealthPart } from "page_finances.slint";
+          FinSavingsMonth, FinHealthPart, FinTimelineEvent, FinPrediction,
+          FinHabit, FinTrendSeries } from "page_finances.slint";
 import { LiveTvPage, LiveChannel, LivePlaylist } from "page_livetv.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
@@ -1611,6 +1612,20 @@ callback cloud-go-home();
     in property <FinCalDay> fin-cal-focus;
     in property <int> fin-fixed-pct: 0;
     in property <string> fin-envelopes-spent: "";
+    // ── Planning ────────────────────────────────────────────────────────────
+    in property <[FinStat]> fin-plan-health: [];
+    in property <[FinTimelineEvent]> fin-timeline: [];
+    in property <[FinFlag]> fin-attention: [];
+    in property <[FinFlag]> fin-recos: [];
+    in property <[FinPrediction]> fin-predictions: [];
+    in property <[FinHabit]> fin-habits: [];
+    in property <[FinStat]> fin-review: [];
+    in property <[FinTrendSeries]> fin-trends: [];
+    // Which Planning drill-down is open, if any. Up here rather than private to
+    // the page because a flag opened from Overview has to be able to land in one.
+    in-out property <string> fin-plan-modal: "";
+    in property <[FinKv]> fin-plan-statement: [];
+    in property <string> fin-plan-free: "";
     in property <string> fin-cal-label: "";
     in property <[FinObligationRow]> fin-cal-agenda: [];
     in property <string> fin-cal-low-point: "";
@@ -1731,6 +1746,9 @@ callback cloud-go-home();
     callback fin-budget-step(int);
     // The Plan tab's one selector, which moves both months at once.
     callback fin-plan-step(int);
+    // Planning's Today / This month / Next month chips, as an offset from the
+    // month today is actually in.
+    callback fin-plan-goto(int);
     callback fin-accept-proposal(int);
     callback fin-import-pick();
     callback fin-scan-receipt();
@@ -3957,10 +3975,21 @@ callback cloud-go-home();
                 cal-focus: root.fin-cal-focus;
                 fixed-pct: root.fin-fixed-pct;
                 envelopes-spent: root.fin-envelopes-spent;
+                plan-health: root.fin-plan-health;
+                timeline: root.fin-timeline;
+                attention: root.fin-attention;
+                recos: root.fin-recos;
+                predictions: root.fin-predictions;
+                habits: root.fin-habits;
+                review: root.fin-review;
+                trends: root.fin-trends;
                 cal-label: root.fin-cal-label;
                 cal-agenda: root.fin-cal-agenda;
                 cal-low-point: root.fin-cal-low-point;
                 cal-view <=> root.fin-cal-view;
+                plan-modal <=> root.fin-plan-modal;
+                plan-statement: root.fin-plan-statement;
+                plan-free: root.fin-plan-free;
                 cal-months: root.fin-cal-months;
                 cal-flow: root.fin-cal-flow;
                 cal-heaviest-items: root.fin-cal-heaviest-items;
@@ -4067,6 +4096,7 @@ callback cloud-go-home();
                 cal-step(d) => { root.fin-cal-step(d); }
                 budget-step(d) => { root.fin-budget-step(d); }
                 plan-step(d) => { root.fin-plan-step(d); }
+                plan-goto(o) => { root.fin-plan-goto(o); }
                 accept-proposal(i) => { root.fin-accept-proposal(i); }
                 import-pick() => { root.fin-import-pick(); }
                 scan-receipt() => { root.fin-scan-receipt(); }
