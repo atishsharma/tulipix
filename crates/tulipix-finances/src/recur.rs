@@ -53,6 +53,10 @@ pub enum Status {
     Active,
     Paused,
     Cancelled,
+    /// Out of the way, but not gone. What the X on a subscription row does: the
+    /// row keeps its history and its price record and stops appearing anywhere
+    /// except its own tab, which is where deleting it for good is offered.
+    Removed,
 }
 
 impl Status {
@@ -61,6 +65,7 @@ impl Status {
             Status::Active => "active",
             Status::Paused => "paused",
             Status::Cancelled => "cancelled",
+            Status::Removed => "removed",
         }
     }
 
@@ -68,6 +73,7 @@ impl Status {
         match s {
             "paused" => Status::Paused,
             "cancelled" => Status::Cancelled,
+            "removed" => Status::Removed,
             _ => Status::Active,
         }
     }
@@ -192,7 +198,7 @@ pub async fn list(pool: &SqlitePool, kind: Option<RecurKind>, include_cancelled:
            LEFT JOIN accounts   a ON a.id = r.account_id
            LEFT JOIN categories c ON c.id = r.category_id
           WHERE (? IS NULL OR r.kind = ?)
-            AND (? = 1 OR r.status <> 'cancelled')
+            AND (? = 1 OR r.status NOT IN ('cancelled', 'removed'))
           ORDER BY r.next_due_on IS NULL, r.next_due_on, r.name COLLATE NOCASE",
     )
     .bind(kind.map(|k| k.as_str()))

@@ -1553,6 +1553,9 @@ callback cloud-go-home();
     in property <[FinMonthBar]> fin-months: [];
     in property <[FinObligationRow]> fin-needs-you: [];
     in property <string> fin-month-label: "";
+    // Which of the twelve month bars the overview's breakdown is showing. -1 is
+    // the latest; the section writes the real index back when a bar is clicked.
+    in-out property <int> fin-month-pick: -1;
     in property <[FinTxnRow]> fin-txns: [];
     // The overview's own short ledger. Separate from `fin-txns` so the
     // Transactions tab's filters cannot change what the dashboard shows.
@@ -1562,6 +1565,8 @@ callback cloud-go-home();
     in property <int> fin-txn-total: 0;
     in-out property <string> fin-txn-sort: "date";
     in-out property <bool> fin-txn-desc: true;
+    in-out property <string> fin-subs-sort: "name";
+    in-out property <bool> fin-subs-desc: false;
     in-out property <string> fin-txn-search: "";
     in property <[string]> fin-account-names: [];
     in-out property <string> fin-txn-account: "All accounts";
@@ -1580,14 +1585,13 @@ callback cloud-go-home();
     in property <[FinRecurRow]> fin-subs: [];
     in property <string> fin-subs-yearly: "";
     in property <[FinDueRow]> fin-dues: [];
+    // The same dues split by direction, for the Overview's two capped columns.
     in property <[FinDueRow]> fin-dues-settled: [];
-    in property <string> fin-owed-to-me: "";
-    in property <string> fin-i-owe: "";
     in property <[FinAccountRow]> fin-accounts: [];
     in property <string> fin-liquid-total: "";
     in property <string> fin-debt-total: "";
     in property <string> fin-loans-total: "";
-    in property <[FinKv]> fin-position: [];
+    in property <[FinStat]> fin-account-stats: [];
     in property <[FinLoanRow]> fin-loans: [];
     in property <[FinBudgetRow]> fin-budgets: [];
     in property <string> fin-budget-period: "";
@@ -1602,6 +1606,11 @@ callback cloud-go-home();
     in property <[string]> fin-discipline-months: [];
     in property <[FinEnvelopeHistory]> fin-envelope-history: [];
     in property <[FinCalDay]> fin-cal-days: [];
+    // The day the Plan tab's agenda opens on: today, or the 1st of whichever
+    // other month is on screen.
+    in property <FinCalDay> fin-cal-focus;
+    in property <int> fin-fixed-pct: 0;
+    in property <string> fin-envelopes-spent: "";
     in property <string> fin-cal-label: "";
     in property <[FinObligationRow]> fin-cal-agenda: [];
     in property <string> fin-cal-low-point: "";
@@ -1641,6 +1650,7 @@ callback cloud-go-home();
     in property <int> fin-subs-active: 0;
     in property <int> fin-subs-paused: 0;
     in property <int> fin-subs-cancelled: 0;
+    in property <int> fin-subs-removed: 0;
     in property <[string]> fin-subs-categories: [];
     in-out property <string> fin-subs-category: "Every category";
     in property <[string]> fin-subs-currencies: [];
@@ -1650,6 +1660,7 @@ callback cloud-go-home();
     // Dues tab.
     in property <[FinStat]> fin-due-stats: [];
     in-out property <string> fin-dues-filter: "all";
+    in-out property <string> fin-account-filter: "";
     in property <int> fin-dues-all: 0;
     in property <int> fin-dues-to-me: 0;
     in property <int> fin-dues-i-owe: 0;
@@ -1694,7 +1705,9 @@ callback cloud-go-home();
     callback fin-submit-sheet();
     callback fin-flag-action(string);
     callback fin-txn-sort-by(string);
+    callback fin-subs-sort-by(string);
     callback fin-txn-goto(int);
+    callback fin-pick-month(int);
     callback fin-txn-filter();
     callback fin-txn-open(int);
     callback fin-txn-delete(int);
@@ -1716,6 +1729,8 @@ callback cloud-go-home();
     callback fin-budget-copy-forward();
     callback fin-cal-step(int);
     callback fin-budget-step(int);
+    // The Plan tab's one selector, which moves both months at once.
+    callback fin-plan-step(int);
     callback fin-accept-proposal(int);
     callback fin-import-pick();
     callback fin-scan-receipt();
@@ -1725,6 +1740,7 @@ callback cloud-go-home();
     callback fin-set-bills-filter(string);
     callback fin-set-subs-filter(string);
     callback fin-set-dues-filter(string);
+    callback fin-set-account-filter(string);
     callback fin-subs-filter-changed();
     callback fin-bills-step(int);
     callback fin-set-cal-view(string);
@@ -3889,12 +3905,16 @@ callback cloud-go-home();
                 months: root.fin-months;
                 needs-you: root.fin-needs-you;
                 month-label: root.fin-month-label;
+                month-pick: root.fin-month-pick;
+                pick-month(i) => { root.fin-pick-month(i); }
                 txns: root.fin-txns;
                 recent: root.fin-recent;
                 txn-page: root.fin-txn-page;
                 txn-pages: root.fin-txn-pages;
                 txn-total: root.fin-txn-total;
                 txn-sort <=> root.fin-txn-sort;
+                subs-sort <=> root.fin-subs-sort;
+                subs-desc <=> root.fin-subs-desc;
                 txn-desc <=> root.fin-txn-desc;
                 txn-search <=> root.fin-txn-search;
                 account-names: root.fin-account-names;
@@ -3914,14 +3934,12 @@ callback cloud-go-home();
                 subs: root.fin-subs;
                 subs-yearly: root.fin-subs-yearly;
                 dues: root.fin-dues;
-                owed-to-me: root.fin-owed-to-me;
-                i-owe: root.fin-i-owe;
                 dues-settled: root.fin-dues-settled;
                 accounts: root.fin-accounts;
                 liquid-total: root.fin-liquid-total;
                 debt-total: root.fin-debt-total;
                 loans-total: root.fin-loans-total;
-                position: root.fin-position;
+                account-stats: root.fin-account-stats;
                 loans: root.fin-loans;
                 budgets: root.fin-budgets;
                 budget-period: root.fin-budget-period;
@@ -3936,6 +3954,9 @@ callback cloud-go-home();
                 discipline-months: root.fin-discipline-months;
                 envelope-history: root.fin-envelope-history;
                 cal-days: root.fin-cal-days;
+                cal-focus: root.fin-cal-focus;
+                fixed-pct: root.fin-fixed-pct;
+                envelopes-spent: root.fin-envelopes-spent;
                 cal-label: root.fin-cal-label;
                 cal-agenda: root.fin-cal-agenda;
                 cal-low-point: root.fin-cal-low-point;
@@ -3948,8 +3969,6 @@ callback cloud-go-home();
                 savings-summary: root.fin-savings-summary;
                 projection: root.fin-projection;
                 projection-note: root.fin-projection-note;
-                badge: root.fin-badge;
-                badge-overdue: root.fin-badge-overdue;
                 empty: root.fin-empty;
                 demo: root.fin-demo;
                 demo-busy: root.fin-demo-busy;
@@ -3968,6 +3987,7 @@ callback cloud-go-home();
                 subs-active: root.fin-subs-active;
                 subs-paused: root.fin-subs-paused;
                 subs-cancelled: root.fin-subs-cancelled;
+                subs-removed: root.fin-subs-removed;
                 subs-categories: root.fin-subs-categories;
                 subs-category <=> root.fin-subs-category;
                 subs-currencies: root.fin-subs-currencies;
@@ -3981,11 +4001,13 @@ callback cloud-go-home();
                 account-pay-card(i) => { root.fin-account-pay-card(i); }
                 due-stats: root.fin-due-stats;
                 dues-filter <=> root.fin-dues-filter;
+                account-filter <=> root.fin-account-filter;
                 dues-all: root.fin-dues-all;
                 dues-to-me: root.fin-dues-to-me;
                 dues-i-owe: root.fin-dues-i-owe;
                 dues-closed: root.fin-dues-closed;
                 set-dues-filter(f) => { root.fin-set-dues-filter(f); }
+                set-account-filter(f) => { root.fin-set-account-filter(f); }
                 insight-stats: root.fin-insight-stats;
                 trend: root.fin-trend;
                 cal-warning: root.fin-cal-warning;
@@ -4021,6 +4043,7 @@ callback cloud-go-home();
                 submit-sheet() => { root.fin-submit-sheet(); }
                 flag-action(a) => { root.fin-flag-action(a); }
                 txn-sort-by(c) => { root.fin-txn-sort-by(c); }
+                subs-sort-by(c) => { root.fin-subs-sort-by(c); }
                 txn-goto(p) => { root.fin-txn-goto(p); }
                 txn-filter() => { root.fin-txn-filter(); }
                 txn-open(i) => { root.fin-txn-open(i); }
@@ -4043,6 +4066,7 @@ callback cloud-go-home();
                 budget-copy-forward() => { root.fin-budget-copy-forward(); }
                 cal-step(d) => { root.fin-cal-step(d); }
                 budget-step(d) => { root.fin-budget-step(d); }
+                plan-step(d) => { root.fin-plan-step(d); }
                 accept-proposal(i) => { root.fin-accept-proposal(i); }
                 import-pick() => { root.fin-import-pick(); }
                 scan-receipt() => { root.fin-scan-receipt(); }

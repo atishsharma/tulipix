@@ -14,6 +14,8 @@
 //!   shown, because hiding it would make balances unexplainable, but it must not
 //!   look like spending.
 
+use std::cmp::Ordering;
+
 use chrono::{Datelike, NaiveDate};
 use slint::{ModelRc, SharedString, VecModel};
 use tulipix_finances::{
@@ -246,7 +248,7 @@ pub fn stats(snap: &Snapshot, health: &Health, base: &str) -> Vec<FinStat> {
         // reading of six of them, so it is the one card that opens: the total
         // alone would be a verdict with nothing behind it.
         FinStat {
-            label: s("HEALTH SCORE"),
+            label: s("FINANCIAL HEALTH SCORE"),
             value: s(match health.score {
                 Some(n) => format!("{n}"),
                 None => "—".to_string(),
@@ -310,6 +312,12 @@ fn saved_pct(snap: &Snapshot) -> Option<String> {
     Some(format!("{}.{}%", tenths / 10, (tenths % 10).abs()))
 }
 
+/// The most categories the ring will draw before it starts folding the tail into
+/// one bucket. Both a legibility limit — twenty arcs is a barcode, not a chart —
+/// and a layout one: the card is a fixed height so that stepping a month does not
+/// make it jump, which it can only be if the legend beside the ring is bounded.
+const RING_CATEGORIES: usize = 6;
+
 /// Category slices, each carrying its own ring segment.
 ///
 /// The cumulative angle is tracked here rather than in the layout because Slint
@@ -321,15 +329,55 @@ pub fn slices(rows: &[CategorySpend], base: &str) -> Vec<FinCatSlice> {
     if total <= 0 {
         return Vec::new();
     }
+    // The tail, summed rather than dropped. `rows` arrives biggest first, so this
+    // is the small change at the end of the list — but it is still money, and a
+    // ring whose slices do not add up to its own centre figure is the kind of
+    // quiet lie this section is not allowed to tell.
+    let folded: Vec<CategorySpend> = if rows.len() > RING_CATEGORIES + 1 {
+        let mut kept = rows[..RING_CATEGORIES].to_vec();
+        kept.push(CategorySpend {
+            category_id: None,
+            name: format!("Other ({})", rows.len() - RING_CATEGORIES),
+            color: None,
+            base_minor: rows[RING_CATEGORIES..].iter().map(|r| r.base_minor).sum(),
+        });
+        kept
+    } else {
+        rows.to_vec()
+    };
+    // Shares that add up to 100. Truncating each one independently leaves the ring
+    // short by up to a point per slice, which draws as a wedge of empty track at
+    // the top of the donut that belongs to nothing. The shortfall is handed back by
+    // largest remainder — the slices that lost the most to rounding get it first —
+    // so the ring closes without any slice being off by more than one point.
+    let scaled: Vec<i128> = folded.iter().map(|r| r.base_minor as i128 * 100).collect();
+    let mut pcts: Vec<i32> = scaled.iter().map(|v| (v / total as i128) as i32).collect();
+    let mut short = 100 - pcts.iter().sum::<i32>();
+    let mut order: Vec<usize> = (0..pcts.len()).collect();
+    order.sort_by_key(|&i| std::cmp::Reverse(scaled[i] % total as i128));
+    for &i in &order {
+        if short <= 0 {
+            break;
+        }
+        pcts[i] += 1;
+        short -= 1;
+    }
+
     let mut acc = 0i32;
-    rows.iter()
+    folded
+        .iter()
         .enumerate()
         .map(|(i, r)| {
-            let pct = ((r.base_minor as i128 * 100) / total as i128) as i32;
+            let pct = pcts[i];
             let out = FinCatSlice {
                 name: s(&r.name),
                 amount: s(money::format_minor(r.base_minor, base)),
                 pct,
+                // Where this segment starts, in the same percent-of-the-circle
+                // units as `pct`. The ring is drawn as paths, which cannot be
+                // hit-tested, so hovering it is done by turning the pointer into
+                // an angle and asking each slice whether it covers it.
+                start: acc,
                 path: s(arc_path(acc, pct)),
                 hue: category_hue(i, &r.name, r.color.as_deref()),
             };
@@ -344,7 +392,7 @@ pub fn slices(rows: &[CategorySpend], base: &str) -> Vec<FinCatSlice> {
 /// The ring is a *stroked arc*, not a filled wedge: one `A` command with a thick
 /// stroke gives a donut segment, where a wedge would need an inner arc, two
 /// radial lines and a fill rule to get the hole. Half the commands, same picture.
-const R: f64 = 38.0;
+const R: f64 = 40.0;
 const MID: f64 = 50.0;
 
 /// One ring segment as SVG path commands, starting at `start_pct` around the
@@ -384,22 +432,24 @@ fn point(pct: i32) -> (f64, f64) {
     (MID + R * theta.cos(), MID + R * theta.sin())
 }
 
-/// Twelve-month bars, scaled to the tallest month so the shape of the year reads.
+/// Twelve-month bars, scaled to the heaviest month so the shape of the year reads.
+///
+/// Scaled against spending alone. It used to be the larger of income and
+/// spending, which was right while an income bar stood beside each expense bar;
+/// with only spending drawn, that peak made every bar a fraction of its height
+/// for no reason the chart still showed.
 pub fn months(rows: &[MonthTotal], base: &str) -> Vec<FinMonthBar> {
-    let peak = rows
-        .iter()
-        .flat_map(|m| [m.income_minor, m.expense_minor])
-        .max()
-        .unwrap_or(0)
-        .max(1);
+    let peak = rows.iter().map(|m| m.expense_minor).max().unwrap_or(0).max(1);
     rows.iter()
         .map(|m| FinMonthBar {
             // "2026-07" → "Jul". The year is implicit in a twelve-month window
             // and would not fit under a 9px bar anyway.
             label: s(month_short(&m.period)),
-            income: s(money::format_minor(m.income_minor, base)),
+            // The same month with its year ("Jul 2026"), for the card heading when
+            // this bar is the one selected. A twelve-month window can straddle a
+            // new year, so the heading keeps the year the bar label drops.
+            long: s(month_long(&m.period)),
             expense: s(money::format_minor(m.expense_minor, base)),
-            income_pct: ((m.income_minor as i128 * 100) / peak as i128) as i32,
             expense_pct: ((m.expense_minor as i128 * 100) / peak as i128) as i32,
         })
         .collect()
@@ -490,6 +540,15 @@ pub fn obligations(rows: &[Obligation]) -> Vec<FinObligationRow> {
             name: s(&o.name),
             kind: s(o.kind.clone().unwrap_or_else(|| "one-off".into())),
             due: s(&o.due_on),
+            // Day of the month, so the Plan tab's agenda can pick out one day's
+            // rows without a round trip to SQL every time a cell is clicked.
+            // Zero when the date is unparseable, which matches no cell.
+            day: o
+                .due_on
+                .rsplit('-')
+                .next()
+                .and_then(|d| d.parse::<i32>().ok())
+                .unwrap_or(0),
             days: o.days_until as i32,
             // The estimate keeps its tilde. A figure that is a guess must never
             // be readable as a measurement.
@@ -810,7 +869,8 @@ pub fn commitments(
         amount: s(money::format_minor(m, base)),
         pct: ((m as i128 * 100) / income_minor as i128) as i32,
         // No ring here: this is a bar list, and an arc path for it would be geometry
-        // nothing draws.
+        // nothing draws — so there is no angle for `start` to be the start of.
+        start: 0,
         path: s(""),
         hue: slint::Color::from_argb_encoded(argb),
     })
@@ -1029,10 +1089,7 @@ pub fn bill_stats(
     ]
 }
 
-/// `unused` is the set of names Insights found no playback for, and how long
-/// ago; passed in rather than looked up so the two tabs cannot disagree about
-/// what "unused" means.
-pub fn recurrences(rows: &[RecurRow], base: &str, unused: &[(String, i64)]) -> Vec<FinRecurRow> {
+pub fn recurrences(rows: &[RecurRow], base: &str) -> Vec<FinRecurRow> {
     let today = date::today();
     rows.iter()
         .map(|r| FinRecurRow {
@@ -1092,11 +1149,6 @@ pub fn recurrences(rows: &[RecurRow], base: &str, unused: &[(String, i64)]) -> V
             auto_post: r.auto_post,
             last_paid: opt(r.last_paid_on.clone()),
             cat_hue: category_hue(0, r.category_name.as_deref().unwrap_or(""), None),
-            unused_days: unused
-                .iter()
-                .find(|(name, _)| *name == r.name)
-                .map(|(_, days)| *days as i32)
-                .unwrap_or(0),
             // Only when it differs from base. Printing "₹649 (₹649)" beside every
             // domestic row to make one foreign row consistent is noise.
             original: s(match r.amount_minor {
@@ -1127,21 +1179,26 @@ pub fn sub_currencies(rows: &[RecurRow]) -> Vec<String> {
 /// How many subscriptions are in each status.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct SubCounts {
+    /// Everything except the removed ones. "All" is the tab you work on, and a
+    /// row you pressed the X on is not on it.
     pub all: i32,
     pub active: i32,
     pub paused: i32,
     pub cancelled: i32,
+    pub removed: i32,
 }
 
 pub fn sub_counts(rows: &[RecurRow]) -> SubCounts {
-    let mut c = SubCounts { all: rows.len() as i32, ..Default::default() };
+    let mut c = SubCounts::default();
     for r in rows {
         match r.status {
             recur::Status::Active => c.active += 1,
             recur::Status::Paused => c.paused += 1,
             recur::Status::Cancelled => c.cancelled += 1,
+            recur::Status::Removed => c.removed += 1,
         }
     }
+    c.all = c.active + c.paused + c.cancelled;
     c
 }
 
@@ -1160,7 +1217,10 @@ pub fn filter_subs(
             "active" => matches!(r.status, recur::Status::Active),
             "paused" => matches!(r.status, recur::Status::Paused),
             "cancelled" => matches!(r.status, recur::Status::Cancelled),
-            _ => true,
+            "removed" => matches!(r.status, recur::Status::Removed),
+            // Removed is a holding pen, not a status you happen to be in: it is
+            // absent from every other view, including "All".
+            _ => !matches!(r.status, recur::Status::Removed),
         })
         .filter(|r| match category {
             Some(c) => r.category_name.as_deref() == Some(c),
@@ -1172,6 +1232,43 @@ pub fn filter_subs(
         })
         .cloned()
         .collect()
+}
+
+/// Sorts the subscription rows for the table.
+///
+/// Rows, not the formatted cells: "₹1,299" and "₹999" sort the wrong way round as
+/// text, and the next-charge column is a date whose displayed form is "12 Aug".
+/// A missing next charge sorts last in both directions — "no date" is not earlier
+/// than every date, it is absent.
+pub fn sort_subs(rows: &mut [RecurRow], key: &str, desc: bool) {
+    let ci = |a: &str, b: &str| a.to_lowercase().cmp(&b.to_lowercase());
+    rows.sort_by(|a, b| {
+        let o = match key {
+            "category" => ci(
+                a.category_name.as_deref().unwrap_or(""),
+                b.category_name.as_deref().unwrap_or(""),
+            ),
+            "cycle" => a.cycle.per_year().cmp(&b.cycle.per_year()),
+            "monthly" | "yearly" => a.yearly_minor.cmp(&b.yearly_minor),
+            "next" => match (a.next_due_on.as_deref(), b.next_due_on.as_deref()) {
+                (Some(x), Some(y)) => x.cmp(y),
+                // Absent sorts last whichever way the column is pointing, so the
+                // reversal below has to be undone for these two.
+                (None, Some(_)) => if desc { Ordering::Less } else { Ordering::Greater },
+                (Some(_), None) => if desc { Ordering::Greater } else { Ordering::Less },
+                (None, None) => Ordering::Equal,
+            },
+            "account" => ci(
+                a.account_name.as_deref().unwrap_or(""),
+                b.account_name.as_deref().unwrap_or(""),
+            ),
+            "status" => a.status.as_str().cmp(b.status.as_str()),
+            _ => ci(&a.name, &b.name),
+        };
+        let o = if desc { o.reverse() } else { o };
+        // Name breaks every tie, so a re-sort never shuffles equal rows about.
+        if o == Ordering::Equal { ci(&a.name, &b.name) } else { o }
+    });
 }
 
 /// The four figures above the Subscriptions table.
@@ -1413,59 +1510,94 @@ const MONTHS_SHORT: [&str; 12] = [
     "Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec",
 ];
 
-/// Bank, card and cash all in one walk, in the order the design states them.
+/// Bank, card, loans and lending as five cards, in the order the design states
+/// them.
 ///
-/// Deliberately stops at liquid and debt. There is no net-worth row here or
+/// Always five, and never folded: a strip that drops the "Card outstanding" card
+/// on a month with no card debt is a strip that changes width, and the tab reads
+/// as a different tab. Zero is a fact worth printing here.
+///
+/// Each card carries an `acct:` action, so the strip is also the tab's filter —
+/// the figure and the rows it was added up from are the same control.
+///
+/// Deliberately stops at liquid and debt. There is no net-worth card here or
 /// anywhere: it would need the market value of things the app can only ask the
-/// user to guess at, and a guess printed beside two real figures reads as a
-/// third real figure.
-pub fn position(
-    accounts: &[AccountRow],
-    dues_net_minor: i64,
-    base: &str,
-) -> Vec<FinKv> {
+/// user to guess at, and a guess printed beside four real figures reads as a
+/// fifth real figure.
+pub fn account_stats(accounts: &[AccountRow], dues_net_minor: i64, base: &str) -> Vec<FinStat> {
     let f = |m: i64| money::format_minor(m, base);
     let sum = |pred: fn(&AccountRow) -> bool| -> i64 {
         accounts.iter().filter(|a| !a.closed).filter(|a| pred(a)).map(|a| a.balance_minor).sum()
     };
+    let open = |pred: fn(&AccountRow) -> bool| -> usize {
+        accounts.iter().filter(|a| !a.closed).filter(|a| pred(a)).count()
+    };
     let cash = sum(|a| a.kind.is_liquid());
-    let cards: i64 = sum(|a| a.kind.as_str() == "card");
-    let loans: i64 = sum(|a| a.kind.as_str() == "loan");
+    let cards = sum(|a| a.kind.as_str() == "card");
+    let loans = sum(|a| a.kind.as_str() == "loan");
+    let n = |c: usize, one: &str, many: &str| {
+        if c == 1 { format!("1 {one}") } else { format!("{c} {many}") }
+    };
 
-    let mut out = vec![
-        FinKv { label: s("Bank, cash and wallets"), value: s(f(cash)), tone: s("flat"), strong: false },
-    ];
-    if cards != 0 {
-        out.push(FinKv {
-            label: s("Card outstanding"),
+    vec![
+        FinStat {
+            label: s("LIQUID"),
+            value: s(f(cash + cards)),
+            sub: s("everything on this tab"),
+            tone: s(if cash + cards > 0 { "ok" } else { "flat" }),
+            delta: s(""),
+            delta_up: false,
+            action: s("acct:all"),
+        },
+        FinStat {
+            label: s("BANK, CASH & WALLETS"),
+            value: s(f(cash)),
+            sub: s(n(open(|a| a.kind.is_liquid()), "account", "accounts")),
+            tone: s("flat"),
+            delta: s(""),
+            delta_up: false,
+            action: s("acct:cash"),
+        },
+        FinStat {
+            label: s("CARD OUTSTANDING"),
             value: s(f(cards)),
-            tone: s("bad"),
-            strong: false,
-        });
-    }
-    out.push(FinKv {
-        label: s("Liquid"),
-        value: s(f(cash + cards)),
-        tone: s("flat"),
-        strong: true,
-    });
-    if loans != 0 {
-        out.push(FinKv {
-            label: s("Loans outstanding"),
+            sub: s(n(open(|a| a.kind.as_str() == "card"), "card", "cards")),
+            tone: s(if cards != 0 { "bad" } else { "flat" }),
+            delta: s(""),
+            delta_up: false,
+            action: s("acct:cards"),
+        },
+        FinStat {
+            label: s("LOANS OUTSTANDING"),
             value: s(f(loans)),
-            tone: s("bad"),
-            strong: false,
-        });
-    }
-    if dues_net_minor != 0 {
-        out.push(FinKv {
-            label: s("Lending, net"),
+            sub: s(n(open(|a| a.kind.as_str() == "loan"), "loan", "loans")),
+            tone: s(if loans != 0 { "bad" } else { "flat" }),
+            delta: s(""),
+            delta_up: false,
+            action: s("acct:loans"),
+        },
+        FinStat {
+            label: s("LENDING, NET"),
             value: s(f(dues_net_minor)),
-            tone: s(if dues_net_minor < 0 { "bad" } else { "ok" }),
-            strong: false,
-        });
-    }
-    out
+            sub: s(if dues_net_minor > 0 {
+                "owed to you"
+            } else if dues_net_minor < 0 {
+                "you owe"
+            } else {
+                "nothing outstanding"
+            }),
+            tone: s(if dues_net_minor < 0 {
+                "bad"
+            } else if dues_net_minor > 0 {
+                "ok"
+            } else {
+                "flat"
+            }),
+            delta: s(""),
+            delta_up: false,
+            action: s("acct:lending"),
+        },
+    ]
 }
 
 fn kind_label(kind: &str) -> &'static str {
@@ -1730,8 +1862,10 @@ pub fn discipline(rows: &[MonthDiscipline], base: &str) -> Vec<FinDiscipline> {
 /// A six-by-seven month grid, Monday first, with each day's dated obligations
 /// folded in.
 ///
-/// Always 42 cells: a month starting on a Sunday would otherwise reflow the page
-/// to five rows and back again as the user steps through the year.
+/// Always 42 cells, whether or not the last seven are in the month: the grid is
+/// addressed by index, and a variable-length model would make every cell's row
+/// depend on how long February is. The UI draws the sixth row only when it holds
+/// something, which it can tell from cell 35 alone because days are contiguous.
 pub fn calendar(
     period: &str,
     today: NaiveDate,
@@ -1801,6 +1935,20 @@ pub fn calendar(
             }
         })
         .collect()
+}
+
+/// The day the Plan tab's agenda opens on.
+///
+/// Today when the month on screen is the one today falls in, otherwise that
+/// month's first day — stepping to March and being shown the 4th of it because
+/// today happens to be the 4th of August would be a coincidence dressed as a
+/// selection.
+pub fn calendar_focus(days: &[FinCalDay]) -> FinCalDay {
+    days.iter()
+        .find(|d| d.today)
+        .or_else(|| days.iter().find(|d| d.in_month))
+        .cloned()
+        .unwrap_or_default()
 }
 
 /// Twelve months at a glance, for the calendar's Year view.
@@ -2354,8 +2502,8 @@ mod tests {
         assert_eq!(out[2].pct, 20);
         // The first starts at twelve o'clock; the second starts where it ended,
         // half a turn on, which is six o'clock.
-        assert!(out[0].path.starts_with("M 50.00 12.00"), "got {}", out[0].path);
-        assert!(out[1].path.starts_with("M 50.00 88.00"), "got {}", out[1].path);
+        assert!(out[0].path.starts_with("M 50.00 10.00"), "got {}", out[0].path);
+        assert!(out[1].path.starts_with("M 50.00 90.00"), "got {}", out[1].path);
     }
 
     #[test]
@@ -2382,6 +2530,54 @@ mod tests {
     }
 
     #[test]
+    fn a_long_tail_of_categories_is_folded_rather_than_dropped() {
+        let rows: Vec<CategorySpend> = (0..12)
+            .map(|n| CategorySpend {
+                category_id: Some(n),
+                name: format!("C{n}"),
+                color: None,
+                base_minor: 1_000 - n * 10,
+            })
+            .collect();
+        let out = slices(&rows, "INR");
+        assert_eq!(out.len(), RING_CATEGORIES + 1);
+        assert_eq!(out[RING_CATEGORIES].name, "Other (6)");
+        // The tail is summed, not discarded: the six folded rows are 940..890.
+        let tail: i64 = rows[RING_CATEGORIES..].iter().map(|r| r.base_minor).sum();
+        assert_eq!(out[RING_CATEGORIES].amount, money::format_minor(tail, "INR"));
+        // Seven or fewer stay as they are — folding one row into "Other (1)"
+        // would be a rename, not a summary.
+        assert_eq!(slices(&rows[..7], "INR").len(), 7);
+    }
+
+    #[test]
+    fn the_ring_always_closes() {
+        // Three equal thirds truncate to 33 each and leave a degree of empty track
+        // at the top of the donut. Every set of shares has to add to 100, and each
+        // slice has to stay within a point of its true share.
+        for n in 1..=RING_CATEGORIES + 1 {
+            let rows: Vec<CategorySpend> = (0..n)
+                .map(|k| CategorySpend {
+                    category_id: Some(k as i64),
+                    name: format!("C{k}"),
+                    color: None,
+                    base_minor: 1_000 + k as i64,
+                })
+                .collect();
+            let out = slices(&rows, "INR");
+            let total: i64 = rows.iter().map(|r| r.base_minor).sum();
+            assert_eq!(out.iter().map(|s| s.pct).sum::<i32>(), 100, "n = {n}");
+            // And the last slice ends exactly where the ring began.
+            let last = out.last().unwrap();
+            assert_eq!(last.start + last.pct, 100, "n = {n}");
+            for (r, s) in rows.iter().zip(out.iter()) {
+                let exact = r.base_minor as i128 * 100 / total as i128;
+                assert!((s.pct as i128 - exact).abs() <= 1, "n = {n}, {} vs {exact}", s.pct);
+            }
+        }
+    }
+
+    #[test]
     fn nothing_spent_produces_no_slices_rather_than_a_division_by_zero() {
         assert!(slices(&[], "INR").is_empty());
         let zero =
@@ -2390,16 +2586,19 @@ mod tests {
     }
 
     #[test]
-    fn month_bars_scale_to_the_tallest_month() {
+    fn month_bars_scale_to_the_heaviest_month_of_spending() {
+        // Income is deliberately the larger figure in both rows: the bars are
+        // spending only, so a month that earned twice what it spent must still
+        // stand at full height when it is the heaviest spender.
         let rows = vec![
-            MonthTotal { period: "2026-06".into(), income_minor: 1_000, expense_minor: 500 },
-            MonthTotal { period: "2026-07".into(), income_minor: 500, expense_minor: 250 },
+            MonthTotal { period: "2026-06".into(), income_minor: 9_000, expense_minor: 500 },
+            MonthTotal { period: "2026-07".into(), income_minor: 9_000, expense_minor: 250 },
         ];
         let out = months(&rows, "INR");
-        assert_eq!(out[0].income_pct, 100);
-        assert_eq!(out[0].expense_pct, 50);
-        assert_eq!(out[1].income_pct, 50);
+        assert_eq!(out[0].expense_pct, 100);
+        assert_eq!(out[1].expense_pct, 50);
         assert_eq!(out[1].label, "Jul");
+        assert_eq!(out[1].long, "Jul 2026");
     }
 
     #[test]
@@ -2423,6 +2622,21 @@ mod tests {
         let grid = calendar("2028-02", date::parse("2028-02-29").unwrap(), &[], &[], "INR");
         assert_eq!(grid.len(), 42);
         assert_eq!(grid.iter().filter(|d| d.in_month).count(), 29);
+    }
+
+    #[test]
+    fn the_plan_tab_opens_on_today_or_on_the_first() {
+        // Today's month: today.
+        let now = calendar("2026-11", date::parse("2026-11-15").unwrap(), &[], &[], "INR");
+        assert_eq!(calendar_focus(&now).day, 15);
+        // Any other month: the 1st, never the same day number as today. November
+        // 2026 starts on a Sunday, so the first in-month cell is not cell zero.
+        let other = calendar("2026-11", date::parse("2026-08-04").unwrap(), &[], &[], "INR");
+        let focus = calendar_focus(&other);
+        assert_eq!(focus.day, 1);
+        assert!(focus.in_month && !focus.today);
+        // Nothing to focus is a blank day, not a panic.
+        assert_eq!(calendar_focus(&[]).day, 0);
     }
 
     #[test]

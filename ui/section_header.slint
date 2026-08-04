@@ -119,6 +119,9 @@ export component HdrSearch inherits Rectangle {
     // Force a visible border even on a light canvas (the default light search
     // box is borderless). Lets a caller outline the box for definition.
     in property <bool> outline: false;
+    // A section colour for that border. Transparent keeps the neutral hairline, so
+    // every existing caller is untouched.
+    in property <color> tint: #00000000;
     // Section id for voice search ("photos", "books", …). "" = no mic button.
     in property <string> mic-target: "";
     callback edited(string);
@@ -126,8 +129,9 @@ export component HdrSearch inherits Rectangle {
     width: 360px; height: 44px; border-radius: 22px;
     horizontal-stretch: 0; vertical-stretch: 0;
     background: dark ? #ffffff14 : #f1f3f4;
-    border-width: (dark || outline) ? 1px : 0px;
-    border-color: dark ? #ffffff22 : #0000002e;
+    border-width: root.tint != #00000000 ? 1.5px : (dark || outline) ? 1px : 0px;
+    border-color: root.tint != #00000000 ? root.tint
+                : dark ? #ffffff22 : #0000002e;
     HorizontalLayout {
         padding-left: 18px; padding-right: 10px; spacing: 8px;
         VerticalLayout { alignment: center; AppIcon { source: Icons.search; tint: dark ? #9a9aa2 : #5f6368; width: 16px; height: 16px; } }
