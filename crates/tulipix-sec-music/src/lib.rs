@@ -83,8 +83,20 @@ pub fn music_ids() -> &'static std::sync::Mutex<Vec<i64>> {
 }
 /// item_id of the track at the current now-playing position (None if unknown).
 pub fn current_music_id(w: &MainWindow) -> Option<i64> {
-    let idx = w.get_music_np_index();
+    music_id_at(w.get_music_np_index())
+}
+
+/// item_id at an arbitrary playback position.
+pub fn music_id_at(idx: i32) -> Option<i64> {
+    if idx < 0 { return None; }
     music_ids().lock().ok().and_then(|g| g.get(idx as usize).copied()).filter(|id| *id >= 0)
+}
+
+/// The inverse: playback position of an item_id, for "play THAT chapter".
+pub fn music_pos_of(item_id: i64) -> Option<i32> {
+    music_ids().lock().ok()
+        .and_then(|g| g.iter().position(|id| *id == item_id))
+        .map(|p| p as i32)
 }
 
 /// One track's metadata for the detailed, sortable Songs list.
@@ -370,7 +382,10 @@ pub fn rebuild_browse_tab(w: &MainWindow, tab: &str) {
         "albums"    => w.set_music_albums(slint::ModelRc::new(slint::VecModel::from(page_slice(w, tiles)))),
         "artists"   => w.set_music_artists(slint::ModelRc::new(slint::VecModel::from(page_slice(w, tiles)))),
         "genres"    => w.set_music_genres(slint::ModelRc::new(slint::VecModel::from(page_slice(w, tiles)))),
-        "folders"   => w.set_music_folders(slint::ModelRc::new(slint::VecModel::from(tiles))),
+        // Folders is paginated on the same 21/page rule as the three above. It
+        // used to render every folder in one pass, which on a deep library is
+        // thousands of tiles built and laid out for one visible screen.
+        "folders"   => w.set_music_folders(slint::ModelRc::new(slint::VecModel::from(page_slice(w, tiles)))),
         "playlists" => w.set_music_playlists(slint::ModelRc::new(slint::VecModel::from(tiles))),
         _ => {}
     }
@@ -1135,27 +1150,6 @@ static CUR_PODCAST_ID: std::sync::OnceLock<std::sync::Mutex<i64>> = std::sync::O
 pub fn cur_podcast_id() -> &'static std::sync::Mutex<i64> {
     CUR_PODCAST_ID.get_or_init(|| std::sync::Mutex::new(-1))
 }
-// Bookmark positions (seconds) for the playing audiobook, parallel to the chips.
-static BOOK_BOOKMARKS: std::sync::OnceLock<std::sync::Mutex<Vec<f64>>> = std::sync::OnceLock::new();
-pub fn book_bookmarks() -> &'static std::sync::Mutex<Vec<f64>> {
-    BOOK_BOOKMARKS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
-}
-
-/// Load the playing audiobook's bookmarks into the UI chips (np.p5.music.audiobook-chapters).
-pub fn load_book_bookmarks(w: &MainWindow, item_id: i64) {
-    let weak = w.as_weak();
-    tokio::runtime::Handle::current().spawn(async move {
-        let Ok(pool) = pool_for("music").await else { return; };
-        let marks = tulipix_music::audiobooks::bookmarks(&pool, item_id).await.unwrap_or_default();
-        let _ = weak.upgrade_in_event_loop(move |w| {
-            if let Ok(mut g) = book_bookmarks().lock() { *g = marks.iter().map(|(p, _)| *p).collect(); }
-            let labels: Vec<slint::SharedString> = marks.iter()
-                .map(|(p, l)| if l.is_empty() { fmt_clock(*p).into() } else { l.clone().into() }).collect();
-            w.set_music_book_bookmarks(slint::ModelRc::new(slint::VecModel::from(labels)));
-        });
-    });
-}
-
 /// Cache an http(s) artwork URL to a local file (keyed by `key`), returning the
 /// path. Re-uses an already-downloaded file. Used for podcast/episode thumbs.
 pub async fn cache_artwork(client: &reqwest::Client, key: &str, url: &str) -> Option<std::path::PathBuf> {
@@ -1591,11 +1585,12 @@ pub fn load_podcast_detail(w: &MainWindow, pid: i64) {
         let order = if sort == "old" { "ASC" } else { "DESC" };
         let q = format!(
             "SELECT id, COALESCE(title,''), audio_url, published, duration_s, COALESCE(image_url,''), downloaded_path, COALESCE(played,0)
+                    , COALESCE(position_s, 0)
              FROM podcast_episodes WHERE podcast_id = ?{extra}
              ORDER BY COALESCE(published,0) {order}, id {order} LIMIT ? OFFSET ?");
         let mut qb = sqlx::query_as(&q).bind(pid);
         if has_f { qb = qb.bind(like); }
-        let eps: Vec<(i64, String, String, Option<i64>, Option<f64>, String, Option<String>, i64)> =
+        let eps: Vec<(i64, String, String, Option<i64>, Option<f64>, String, Option<String>, i64, f64)> =
             qb.bind(PODCAST_PAGE).bind(page * PODCAST_PAGE)
                 .fetch_all(&pool).await.unwrap_or_default();
         let client = tulipix_core::net::http().clone();
@@ -1626,7 +1621,8 @@ pub fn load_podcast_detail(w: &MainWindow, pid: i64) {
             w.set_music_podcast_d_pages(pages as i32);
             w.set_music_podcast_d_page(page as i32);
             let queued = podcast_dl_queue().lock().map(|g| g.clone()).unwrap_or_default();
-            let rows: Vec<PodcastEpisodeRow> = eps.iter().enumerate().map(|(i, (id, title, _url, pub_, dur, _img, dl, played))| PodcastEpisodeRow {
+            let up_next = podcast_queue().lock().map(|g| g.clone()).unwrap_or_default();
+            let rows: Vec<PodcastEpisodeRow> = eps.iter().enumerate().map(|(i, (id, title, _url, pub_, dur, _img, dl, played, pos))| PodcastEpisodeRow {
                 id: *id as i32,
                 title: title.clone().into(),
                 show: slint::SharedString::new(),
@@ -1639,6 +1635,13 @@ pub fn load_podcast_detail(w: &MainWindow, pid: i64) {
                 queued: queued.contains(&(*id as i32)),
                 dlinfo: slint::SharedString::new(),
                 index: i as i32,
+                // Needs a duration to be a fraction of; an episode whose feed
+                // omitted one shows no bar rather than a wrong one.
+                progress: match dur {
+                    Some(d) if *d > 0.0 && *pos > 0.0 => (*pos / *d).clamp(0.0, 1.0) as f32,
+                    _ => 0.0,
+                },
+                up_next: up_next.contains(&(*id as i32)),
             }).collect();
             w.set_music_podcast_d_episodes(slint::ModelRc::new(slint::VecModel::from(rows)));
         });
@@ -1657,6 +1660,10 @@ pub struct EpRowData {
     pub played: bool,
     pub downloaded: bool,
     pub dlinfo: String,    // "12 Jun · 14:32" — when the offline copy was stored
+    /// 0..1 through the episode. Playback has always written `position_s`, and
+    /// resume has always read it — but `played` is a boolean, so a 90-minute
+    /// episode abandoned at minute 70 looked exactly like an untouched one.
+    pub progress: f32,
 }
 
 /// Build the Home (Latest) feed — newest 14, one episode per show. Episode art
@@ -1814,6 +1821,24 @@ type EpQueryRow = (i64, String, String, Option<i64>, Option<f64>, String, String
 /// Off-thread: cache artwork + flatten a cross-show episode query into Send data.
 pub async fn build_episode_data(eps: Vec<EpQueryRow>) -> Vec<EpRowData> {
     let client = tulipix_core::net::http().clone();
+    // One extra query for the whole batch rather than a column added to each
+    // of the several differently-shaped episode SELECTs that feed this.
+    let progress: std::collections::HashMap<i64, f32> = if eps.is_empty() {
+        Default::default()
+    } else {
+        let ids = eps.iter().map(|e| e.0.to_string()).collect::<Vec<_>>().join(",");
+        match pool_for("podcasts").await {
+            Ok(pool) => sqlx::query_as::<_, (i64, f64, Option<f64>)>(&format!(
+                "SELECT id, COALESCE(position_s, 0), duration_s FROM podcast_episodes WHERE id IN ({ids})"))
+                .fetch_all(&pool).await.unwrap_or_default()
+                .into_iter()
+                .filter_map(|(id, pos, dur)| match dur {
+                    Some(d) if d > 0.0 && pos > 0.0 => Some((id, (pos / d).clamp(0.0, 1.0) as f32)),
+                    _ => None,
+                }).collect(),
+            Err(_) => Default::default(),
+        }
+    };
     let mut out = Vec::with_capacity(eps.len());
     for (id, title, _url, pub_, dur, ep_img, show_img, pid, dl, played, show, dl_at) in eps {
         // Prefer the episode's own image; else the show artwork — keyed `pod-{id}`
@@ -1835,6 +1860,7 @@ pub async fn build_episode_data(eps: Vec<EpQueryRow>) -> Vec<EpRowData> {
             played: played != 0,
             downloaded: dl.is_some(),
             dlinfo: dl_at.map(fmt_dl_stamp).unwrap_or_default(),
+            progress: progress.get(&id).copied().unwrap_or(0.0),
         });
     }
     out
@@ -1853,6 +1879,9 @@ pub fn fmt_dl_stamp(epoch: i64) -> String {
 /// On the UI thread: turn Send data into UI rows (loads slint::Image).
 pub fn rows_from_data(data: &[EpRowData]) -> Vec<PodcastEpisodeRow> {
     let queued = podcast_dl_queue().lock().map(|g| g.clone()).unwrap_or_default();
+    // Two different queues share this row: `queued` is waiting to DOWNLOAD,
+    // `up_next` is waiting to PLAY.
+    let up_next = podcast_queue().lock().map(|g| g.clone()).unwrap_or_default();
     data.iter().enumerate().map(|(i, d)| PodcastEpisodeRow {
         id: d.id,
         title: d.title.clone().into(),
@@ -1865,6 +1894,8 @@ pub fn rows_from_data(data: &[EpRowData]) -> Vec<PodcastEpisodeRow> {
         queued: queued.contains(&d.id),
         dlinfo: d.dlinfo.clone().into(),
         index: i as i32,
+        progress: d.progress,
+        up_next: up_next.contains(&d.id),
     }).collect()
 }
 
@@ -2320,6 +2351,60 @@ pub fn fill_book_detail(
     // Resume = start of the CURRENT chapter (never a mid-chapter seek).
     w.set_music_ab_d_resume_index(if resume_pos >= 0 { resume_pos } else { first_pos });
     w.set_music_audiobook_detail_open(true);
+    load_book_detail_bookmarks(w, ids.to_vec());
+}
+
+/// The open book's chapter ids, so a bookmark action knows what it belongs to
+/// without re-deriving it from the folder.
+pub static AB_OPEN_IDS: std::sync::OnceLock<std::sync::Mutex<Vec<i64>>> = std::sync::OnceLock::new();
+pub fn ab_open_ids() -> &'static std::sync::Mutex<Vec<i64>> { AB_OPEN_IDS.get_or_init(Default::default) }
+/// Parallel to the label/time models: which `(item_id, position_s)` each row is.
+pub static AB_OPEN_MARKS: std::sync::OnceLock<std::sync::Mutex<Vec<(i64, f64)>>> = std::sync::OnceLock::new();
+pub fn ab_open_marks() -> &'static std::sync::Mutex<Vec<(i64, f64)>> { AB_OPEN_MARKS.get_or_init(Default::default) }
+
+/// Load every bookmark in the open book into the detail page's three parallel
+/// models, plus the finished flag the Mark-finished button reflects.
+pub fn load_book_detail_bookmarks(w: &MainWindow, ids: Vec<i64>) {
+    if let Ok(mut g) = ab_open_ids().lock() { *g = ids.clone(); }
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("music").await else { return; };
+        let marks = tulipix_music::audiobooks::book_bookmarks(&pool, &ids).await.unwrap_or_default();
+        // This book's remembered narration speed, so opening it restores the
+        // pace it was last listened at rather than the previous book's.
+        let speed = match ids.first() {
+            Some(first) => tulipix_music::audiobooks::book_speed(&pool, *first).await.unwrap_or(1.0),
+            None => 1.0,
+        };
+        // Finished when every chapter is. A part-finished book is in progress.
+        let finished = if ids.is_empty() { false } else {
+            let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+            let done: i64 = sqlx::query_scalar(&format!(
+                "SELECT COUNT(*) FROM audiobook_progress WHERE finished = 1 AND item_id IN ({list})"))
+                .fetch_one(&pool).await.unwrap_or(0);
+            done as usize == ids.len()
+        };
+        // Chapter number comes from the position in `ids`, which is book order.
+        let rank: std::collections::HashMap<i64, usize> =
+            ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            let labels: Vec<slint::SharedString> =
+                marks.iter().map(|(_, _, l)| l.clone().into()).collect();
+            let times: Vec<slint::SharedString> = marks.iter().map(|(id, p, _)| {
+                let ch = rank.get(id).map(|i| i + 1).unwrap_or(0);
+                let s = if ch > 0 { format!("Ch {ch} · {}", fmt_clock(*p)) } else { fmt_clock(*p) };
+                s.into()
+            }).collect();
+            if let Ok(mut g) = ab_open_marks().lock() {
+                *g = marks.iter().map(|(id, p, _)| (*id, *p)).collect();
+            }
+            w.set_music_ab_d_bm_labels(slint::ModelRc::new(slint::VecModel::from(labels)));
+            w.set_music_ab_d_bm_times(slint::ModelRc::new(slint::VecModel::from(times)));
+            w.set_music_ab_d_finished(finished);
+            w.set_music_ab_d_bm_edit(-1);
+            w.set_music_book_speed(speed as f32);
+        });
+    });
 }
 
 pub fn populate_audiobooks(w: &MainWindow) {
@@ -2502,6 +2587,79 @@ pub fn audiobook_pick_cover(weak: slint::Weak<MainWindow>, folder: String) {
 
 /// Stream an arbitrary audio URL via a fresh headless mpv (podcast episodes).
 /// Mirrors `play_music_at` minus the library-position bookkeeping.
+/// Episode ids queued to play next, across shows.
+///
+/// Podcasts previously played one episode at a time and inherited whichever
+/// list you started from; a queue you build yourself is the loop every podcast
+/// app is actually used through. Held in memory and mirrored to settings, not
+/// a new table — it is a short list of ids and losing it on a crash costs
+/// nothing.
+pub static PODCAST_QUEUE: std::sync::OnceLock<std::sync::Mutex<Vec<i32>>> = std::sync::OnceLock::new();
+pub fn podcast_queue() -> &'static std::sync::Mutex<Vec<i32>> { PODCAST_QUEUE.get_or_init(Default::default) }
+
+/// Push the queue into the UI (count + the id list the panel renders).
+pub fn podcast_queue_sync(w: &MainWindow) {
+    let ids = podcast_queue().lock().map(|g| g.clone()).unwrap_or_default();
+    w.set_music_podcast_queue_len(ids.len() as i32);
+    // Every other episode list draws the same toggle, so they have to be
+    // rebuilt or the button lies about what is queued.
+    refresh_podcast_views(w);
+    let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
+    s.advanced.insert("music.podcast_queue".into(),
+        ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(","));
+    let _ = s.save();
+    populate_podcast_queue(w);
+}
+
+/// Restore the queue saved last session.
+pub fn podcast_queue_load(w: &MainWindow) {
+    let s = tulipix_core::settings::Settings::load().unwrap_or_default();
+    let ids: Vec<i32> = s.advanced.get("music.podcast_queue").map(|v| v.split(',')
+        .filter_map(|t| t.trim().parse().ok()).collect()).unwrap_or_default();
+    if let Ok(mut g) = podcast_queue().lock() { *g = ids; }
+    podcast_queue_sync(w);
+}
+
+/// Pop the head of the queue and play it. No-op on an empty queue, which is
+/// what makes this safe to call from every EOF.
+pub fn podcast_queue_advance(w: &MainWindow) {
+    let next = podcast_queue().lock().ok().and_then(|mut g| if g.is_empty() { None } else { Some(g.remove(0)) });
+    let Some(id) = next else { return; };
+    podcast_queue_sync(w);
+    w.invoke_music_podcast_play(id);
+}
+
+/// Rows for the queue panel, in queue order. Reuses the episode-row builder so
+/// a queued episode looks exactly like it does in any other list.
+pub fn populate_podcast_queue(w: &MainWindow) {
+    let ids = podcast_queue().lock().map(|g| g.clone()).unwrap_or_default();
+    if ids.is_empty() {
+        w.set_music_podcast_queue_rows(slint::ModelRc::new(slint::VecModel::<PodcastEpisodeRow>::default()));
+        return;
+    }
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let Ok(pool) = pool_for("podcasts").await else { return; };
+        let list = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let eps: Vec<EpQueryRow> = sqlx::query_as(&format!(
+            "SELECT e.id, COALESCE(e.title,''), e.audio_url, e.published, e.duration_s,
+                    COALESCE(e.image_url,''), COALESCE(NULLIF(p.custom_image,''), p.image_url, ''),
+                    p.id, e.downloaded_path, COALESCE(e.played,0), COALESCE(p.title,''), e.downloaded_at
+             FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id
+             WHERE e.id IN ({list})")).fetch_all(&pool).await.unwrap_or_default();
+        let data = build_episode_data(eps).await;
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            // The SQL returns them in whatever order it likes; the queue's
+            // order is the whole point, so reorder to match.
+            let rank: std::collections::HashMap<i32, usize> =
+                ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+            let mut rows = rows_from_data(&data);
+            rows.sort_by_key(|r| rank.get(&r.id).copied().unwrap_or(usize::MAX));
+            w.set_music_podcast_queue_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+        });
+    });
+}
+
 pub fn play_music_url(w: &MainWindow, url: &str, title: &str) {
     play_music_file(w, url, title, "Podcast");
 }
@@ -2534,7 +2692,12 @@ pub fn play_music_file(w: &MainWindow, url: &str, title: &str, sub: &str) {
         });
     };
     let eof_weak = w.as_weak();
-    let on_eof = move || { let _ = eof_weak.upgrade_in_event_loop(|w| w.set_music_playing(false)); };
+    // Reaching the end hands off to the podcast queue if anything is waiting;
+    // otherwise playback simply stops, as before.
+    let on_eof = move || { let _ = eof_weak.upgrade_in_event_loop(|w| {
+        w.set_music_playing(false);
+        if w.get_music_player_mode().as_str() == "podcast" { podcast_queue_advance(&w); }
+    }); };
     if let Err(e) = player::spawn_audio(player::AudioLaunch {
         prefix: "tulipix-music",
         mpv_bin: tulipix_core::thumbs::tool_bin("mpv"),
@@ -2928,6 +3091,19 @@ pub fn play_radio(w: &MainWindow, st: &tulipix_music::radio::Station) {
                     // until the first ICY update — ignore those.
                     if !t.is_empty() && t != su && !t.starts_with("http") {
                         w.set_music_np_sub(t.into());
+                        // Also surface it inside the Radio tab itself, and keep
+                        // a short log of what the station has played. Without
+                        // this the answer to "what was that song" lives only on
+                        // the player bar and is gone the moment it changes.
+                        w.set_music_radio_np_track(t.into());
+                        let mut log: Vec<slint::SharedString> =
+                            w.get_music_radio_track_log().iter().collect();
+                        if log.first().map(|f| f.as_str()) != Some(t) {
+                            log.insert(0, t.into());
+                            log.truncate(12);
+                            w.set_music_radio_track_log(
+                                slint::ModelRc::new(slint::VecModel::from(log)));
+                        }
                     }
                 }
                 _ => {}
@@ -2938,6 +3114,11 @@ pub fn play_radio(w: &MainWindow, st: &tulipix_music::radio::Station) {
     let on_eof = move || { let _ = eof_weak.upgrade_in_event_loop(|w| {
         w.set_music_playing(false);
         w.set_music_radio_np_uuid("".into());
+        w.set_music_radio_np_track("".into());
+        // A recording belongs to the stream that was playing; the new one has
+        // to be started deliberately, not inherited.
+        w.set_music_radio_recording(false);
+        w.set_music_radio_rec_file("".into());
     }); };
     if let Err(e) = player::spawn_audio(player::AudioLaunch {
         prefix: "tulipix-music",
@@ -3101,6 +3282,43 @@ pub fn wire_radio(window: &MainWindow) {
                 }
             }
         });
+    });
+    // Record the live stream to disk while it keeps playing. mpv's
+    // `stream-record` is settable over IPC, so this toggles mid-listen instead
+    // of needing a relaunch — which for a live stream would mean losing the
+    // buffer and rejoining a few seconds later.
+    let w = window.as_weak();
+    window.on_music_radio_record(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        if w0.get_music_radio_np_uuid().is_empty() { return; }
+        if w0.get_music_radio_recording() {
+            // Empty string is mpv's "stop recording".
+            tulipix_common::music_ipc(&["set_property", "stream-record", ""]);
+            w0.set_music_radio_recording(false);
+            return;
+        }
+        let dir = tulipix_core::paths::data_dir()
+            .unwrap_or_else(std::env::temp_dir).join("Recordings");
+        if std::fs::create_dir_all(&dir).is_err() { return; }
+        let stamp = chrono::Local::now().format("%Y-%m-%d %H-%M").to_string();
+        let name = radio::record_filename(w0.get_music_np_title().as_str(), &stamp);
+        let out = dir.join(&name);
+        tulipix_common::music_ipc(&["set_property", "stream-record", &out.to_string_lossy()]);
+        w0.set_music_radio_recording(true);
+        w0.set_music_radio_rec_file(name.into());
+    });
+    // "Find track" on an ICY title. The library is the honest first answer —
+    // if you already own it, nothing needs downloading — so this drops the
+    // title into My Music's search rather than straight into YouTube.
+    let w = window.as_weak();
+    window.on_music_radio_track_search(move |t| {
+        let Some(w0) = w.upgrade() else { return; };
+        let q = t.trim().to_string();
+        if q.is_empty() { return; }
+        w0.set_music_view("mymusic".into());
+        w0.set_music_lib_tab("songs".into());
+        w0.set_music_query(q.clone().into());
+        w0.invoke_music_search(q.into());
     });
     let w = window.as_weak();
     window.on_music_radio_fav(move |i| {
@@ -4067,6 +4285,31 @@ pub fn populate_music_views(weak: slint::Weak<MainWindow>) {
         let most   = tulipix_music::dashboard::most_played(&pool, 20).await.unwrap_or_default();
         let loved  = tulipix_music::rating::loved(&pool, 20).await.unwrap_or_default();
         let fresh  = tulipix_music::dashboard::new_this_week(&pool, 20).await.unwrap_or_default();
+        // Home — Continue listening + the listening strip. Both are reads over
+        // tables playback already writes; nothing new is recorded for them.
+        let resume_rows = tulipix_music::dashboard::resume_pct(&pool, 14).await.unwrap_or_default();
+        let listen_stats = tulipix_music::dashboard::stats(&pool).await.unwrap_or_default();
+        // Per-folder sidecar covers (folder.jpg / cover.png / …). Reading one
+        // directory listing per folder beats borrowing a track's embedded art,
+        // which is what the folder tiles used to show.
+        let folder_covers: std::collections::HashMap<String, String> = {
+            let dirs: Vec<String> = sqlx::query_scalar(
+                "SELECT DISTINCT folder FROM track_meta \
+                 WHERE folder IS NOT NULL AND folder != '' AND is_audiobook = 0")
+                .fetch_all(&pool).await.unwrap_or_default();
+            dirs.into_iter().filter_map(|d| {
+                // Real filenames, not lowercased — `pick_cover` compares
+                // case-insensitively and the winner is joined back onto the
+                // path, so a folder holding `Cover.JPG` must stay spelled that
+                // way or the load fails on a case-sensitive filesystem.
+                let names: Vec<String> = std::fs::read_dir(&d).ok()?
+                    .flatten()
+                    .filter_map(|e| e.file_name().to_str().map(str::to_owned))
+                    .collect();
+                let pick = tulipix_music::folders::pick_cover(&names)?;
+                Some((d.clone(), std::path::Path::new(&d).join(pick).to_string_lossy().into_owned()))
+            }).collect()
+        };
         let albums = tulipix_music::browse::albums(&pool).await.unwrap_or_default();
         let artists = tulipix_music::browse::artists(&pool).await.unwrap_or_default();
         let genres = tulipix_music::browse::genres(&pool).await.unwrap_or_default();
@@ -4165,6 +4408,26 @@ pub fn populate_music_views(weak: slint::Weak<MainWindow>) {
             w.set_music_most(slint::ModelRc::new(slint::VecModel::from(rail(&most))));
             w.set_music_loved(slint::ModelRc::new(slint::VecModel::from(rail(&loved))));
             w.set_music_fresh(slint::ModelRc::new(slint::VecModel::from(rail(&fresh))));
+            // Continue listening — `count` carries percent-complete, which is
+            // the only spare integer on PhotoTile and what the card's progress
+            // hairline reads.
+            let cont: Vec<PhotoTile> = resume_rows.iter().filter_map(|(id, pct)| {
+                let pos = pos_of.get(id).copied()?;
+                tile_at(pos).map(|mut t| { t.index = pos; t.count = *pct; t })
+            }).collect();
+            w.set_music_continue_rows(slint::ModelRc::new(slint::VecModel::from(cont)));
+            // Listening strip. An empty total hides the whole strip rather
+            // than showing four em dashes on a library nobody has played yet.
+            use tulipix_music::dashboard::fmt_listen;
+            w.set_music_stats_total(if listen_stats.total_ms > 0 {
+                fmt_listen(listen_stats.total_ms).into() } else { slint::SharedString::new() });
+            w.set_music_stats_week(fmt_listen(listen_stats.week_ms).into());
+            w.set_music_stats_genre(listen_stats.top_genre.clone().unwrap_or_default().into());
+            w.set_music_stats_streak(match listen_stats.streak_days {
+                0 => "—".to_string(),
+                1 => "1 day".to_string(),
+                n => format!("{n} days"),
+            }.into());
 
             // Albums — cover from cover_path (else the first track's thumb).
             let album_tiles_src: Vec<(PhotoTile, i64)> = albums.iter().map(|a| {
@@ -4291,10 +4554,18 @@ pub fn populate_music_views(weak: slint::Weak<MainWindow>) {
                     .and_then(|s| s.to_str()).unwrap_or(folder.as_str());
                 let n = folder_counts.get(*folder).copied().unwrap_or(0);
                 let sec = sec_map.get(*folder).cloned().unwrap_or_else(|| "mymusic".to_string());
+                let pos = first_folder.get(*folder).copied().unwrap_or(-1);
+                // Sidecar cover first (that is the art the folder was given),
+                // then the first track's embedded art, then nothing.
+                let thumb = folder_covers.get(*folder)
+                    .and_then(|c| slint::Image::load_from_path(std::path::Path::new(c)).ok())
+                    .or_else(|| tile_at(pos).map(|t| t.thumb))
+                    .unwrap_or_default();
                 (PhotoTile {
+                    thumb,
                     label: format!("🗂 {base} · {n}").into(),
                     color_label: sec.into(),
-                    index: first_folder.get(*folder).copied().unwrap_or(-1), ..Default::default()
+                    index: pos, ..Default::default()
                 }, n)
             }).collect();
             set_browse_src("folders", folder_src);
@@ -5068,6 +5339,9 @@ pub fn clock_now() -> String {
 // ════════════════════════════════════════════════════════════════════════════
 
 const YT_CACHE_KEEP: i64 = 60;   // newest N auto-cached videos kept; rest evicted
+/// Hard disk bound on the same cache. 60 audio-only entries land well under
+/// this; 60 video ones would not, which is the case the count rule misses.
+const YT_CACHE_CAP_BYTES: i64 = 5 * 1024 * 1024 * 1024; // 5 GB
 pub const YT_PAGE: usize = 5;        // Home search results revealed per "Load more"
 
 /// Send-safe video row gathered off the UI thread (thumb is a file path).
@@ -5264,10 +5538,29 @@ pub fn yt_videos(rows: &[YtVidData]) -> Vec<YtRow> {
         .collect()
 }
 
+/// Watched-fraction per video id, mirrored from `yt_progress` so the (sync, UI
+/// thread) model builder can read it without a query. Refreshed by
+/// `refresh_yt_progress`; a stale entry only means a bar is a few seconds off.
+pub static YT_PROGRESS: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, f32>>>
+    = std::sync::OnceLock::new();
+pub fn yt_progress_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, f32>> {
+    YT_PROGRESS.get_or_init(Default::default)
+}
+
+/// Reload the watched-fraction cache from disk. Cheap (one small table) and
+/// safe to call whenever a YouTube surface is about to be rebuilt.
+pub async fn refresh_yt_progress() {
+    let Ok(pool) = pool_for("youtube").await else { return; };
+    let Ok(rows) = tulipix_music::youtube::store::progress_map(&pool).await else { return; };
+    if let Ok(mut g) = yt_progress_cache().lock() { *g = rows.into_iter().collect(); }
+}
+
 /// Wrap pre-decoded rows into a model — cheap, safe on the UI thread (no decode).
 pub fn yt_model(rows: Vec<YtRow>) -> slint::ModelRc<YtVideo> {
+    let prog = yt_progress_cache().lock().map(|g| g.clone()).unwrap_or_default();
     let v: Vec<YtVideo> = rows.into_iter().map(|r| {
         let d = r.d;
+        let progress = prog.get(&d.id).copied().unwrap_or(0.0);
         YtVideo {
             id: d.id.into(), channel_id: d.channel_id.into(),
             title: d.title.into(), channel: d.channel.into(),
@@ -5275,6 +5568,7 @@ pub fn yt_model(rows: Vec<YtRow>) -> slint::ModelRc<YtVideo> {
             thumb: r.pixels.map(slint::Image::from_rgba8).unwrap_or_default(), index: r.index,
             fmt: d.fmt.into(), quality: d.quality.into(),
             path: d.path.into(),
+            progress,
         }
     }).collect();
     slint::ModelRc::new(slint::VecModel::from(v))
@@ -6242,15 +6536,20 @@ pub fn yt_play_audio(weak: slint::Weak<MainWindow>, id: String) {
         let dir = yt_media_dir();
         let meta = yt_lookup(&id).unwrap_or_default();
         let (title, channel, thumb) = (meta.title.clone(), meta.channel.clone(), meta.thumb.clone());
+        // Pick up where this video was left, if it was left anywhere.
+        let resume = match pool_for("youtube").await {
+            Ok(pool) => tulipix_music::youtube::store::progress_of(&pool, &id).await.unwrap_or(0.0),
+            Err(_) => 0.0,
+        };
         let cached = dir.join(format!("{id}.opus"));
         if cached.exists() {
             let (p2, id2, t, c, th) = (cached.to_string_lossy().into_owned(), id.clone(), title.clone(), channel.clone(), thumb.clone());
-            let _ = weak.upgrade_in_event_loop(move |w| yt_play_inapp(&w, id2, p2, t, c, th, 0.0));
+            let _ = weak.upgrade_in_event_loop(move |w| yt_play_inapp(&w, id2, p2, t, c, th, resume));
             return;
         }
         if let Some(stream_url) = yt_dlp_stream_url(&id).await {
             let (u2, id2, t, c, th) = (stream_url, id.clone(), title.clone(), channel.clone(), thumb.clone());
-            let _ = weak.upgrade_in_event_loop(move |w| yt_play_inapp(&w, id2, u2, t, c, th, 0.0));
+            let _ = weak.upgrade_in_event_loop(move |w| yt_play_inapp(&w, id2, u2, t, c, th, resume));
         }
         let weak2 = weak.clone();
         tokio::runtime::Handle::current().spawn(async move {
@@ -6258,7 +6557,13 @@ pub fn yt_play_audio(weak: slint::Weak<MainWindow>, id: String) {
                 if let Ok(pool) = pool_for("youtube").await {
                     let _ = tulipix_music::youtube::store::record_cached(
                         &pool, &id, &meta.title, &meta.channel, &meta.thumb, &path, meta.dur_s).await;
+                    // Two caps, because one of them alone is not a bound: the
+                    // count keeps the list short, the byte cap keeps the disk
+                    // honest when the cached files are video rather than audio.
                     for (_v, p) in tulipix_music::youtube::store::evict_cached_over(&pool, YT_CACHE_KEEP).await.unwrap_or_default() {
+                        let _ = std::fs::remove_file(&p);
+                    }
+                    for (_v, p) in tulipix_music::youtube::store::evict_cached_over_bytes(&pool, YT_CACHE_CAP_BYTES).await.unwrap_or_default() {
                         let _ = std::fs::remove_file(&p);
                     }
                 }
@@ -6420,6 +6725,9 @@ pub fn yt_play_local_video(weak: slint::Weak<MainWindow>, path: String) {
 }
 
 pub fn yt_play_inapp(w: &MainWindow, id: String, path: String, title: String, sub: String, thumb: String, start: f64) {
+    // The cards need to know which video is current, and only this function
+    // knows — the id is moved into the global on the next line.
+    w.set_music_yt_np_id(id.clone().into());
     if let Ok(mut g) = yt_cur_audio().lock() { *g = id; }
     w.set_music_yt_now_video(true);
     // Reflect the YouTube queue in the shared Up-next panel + route row clicks.
@@ -6449,7 +6757,24 @@ pub fn yt_play_inapp(w: &MainWindow, id: String, path: String, title: String, su
         let _ = slint::invoke_from_event_loop(move || {
             let Some(w) = wk.upgrade() else { return; };
             match name.as_str() {
-                "time-pos" => if let Some(d) = data.as_f64() { w.set_music_pos(d as f32); w.set_music_pos_label(fmt_clock(d).into()); }
+                "time-pos" => if let Some(d) = data.as_f64() {
+                    w.set_music_pos(d as f32); w.set_music_pos_label(fmt_clock(d).into());
+                    // Persist the watch position roughly every 10s of playback
+                    // rather than on every tick — mpv reports time-pos about
+                    // once a second and this is a disk write.
+                    let dur = w.get_music_dur() as f64;
+                    if d as i64 % 10 == 0 && dur > 0.0 {
+                        let vid = w.get_music_yt_np_id().to_string();
+                        if !vid.is_empty() {
+                            tokio::runtime::Handle::current().spawn(async move {
+                                if let Ok(pool) = pool_for("youtube").await {
+                                    let _ = tulipix_music::youtube::store::save_progress(&pool, &vid, d, dur).await;
+                                }
+                                refresh_yt_progress().await;
+                            });
+                        }
+                    }
+                }
                 "duration" => if let Some(d) = data.as_f64() { w.set_music_dur(d as f32); w.set_music_dur_label(fmt_clock(d).into()); }
                 "pause"  => if let Some(p) = data.as_bool() { w.set_music_playing(!p); }
                 "volume" => if let Some(d) = data.as_f64() { w.set_music_volume(d as f32); }

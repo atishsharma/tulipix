@@ -113,6 +113,23 @@ pub fn record_options(out: &str) -> Vec<String> {
     vec![format!("--stream-record={out}")]
 }
 
+/// Filename for a recording of `station` started now: station name, then a
+/// sortable stamp. Anything a filesystem might object to becomes `_`, and the
+/// name is capped so a station with a 200-character title cannot produce a
+/// path the OS rejects.
+pub fn record_filename(station: &str, stamp: &str) -> String {
+    let mut safe: String = station.chars()
+        .map(|c| if c.is_alphanumeric() || c == ' ' || c == '-' || c == '_' { c } else { '_' })
+        .collect();
+    safe = safe.split_whitespace().collect::<Vec<_>>().join(" ");
+    if safe.chars().count() > 60 { safe = safe.chars().take(60).collect(); }
+    if safe.is_empty() { safe = "Radio".into(); }
+    // .mkv, not .mp3: a live stream can be AAC, MP3 or Opus and mpv's
+    // stream-record copies the bytes through without re-encoding, so the
+    // container has to be one that accepts all of them.
+    format!("{safe} — {stamp}.mkv")
+}
+
 /// Upsert a station row without touching its favourite flag (used by recents).
 async fn upsert(pool: &SqlitePool, s: &Station) -> Result<()> {
     sqlx::query(
@@ -260,6 +277,18 @@ pub fn custom_station(name: &str, url: &str) -> Station {
 mod tests {
     use super::*;
     use crate::schema::tests::open_pool;
+
+    #[test]
+    fn recording_filenames_are_safe() {
+        assert_eq!(record_filename("Radio Mirchi 98.3", "2026-08-04 19-30"),
+                   "Radio Mirchi 98_3 — 2026-08-04 19-30.mkv");
+        // Path separators cannot survive into a filename.
+        assert!(!record_filename("a/b\\c", "s").contains('/'));
+        assert!(!record_filename("a/b\\c", "s").contains('\\'));
+        assert!(record_filename("", "s").starts_with("Radio"));
+        let long = record_filename(&"x".repeat(200), "s");
+        assert!(long.chars().count() < 80, "{long}");
+    }
 
     #[test]
     fn url_builders() {

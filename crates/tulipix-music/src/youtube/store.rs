@@ -110,6 +110,16 @@ CREATE TABLE IF NOT EXISTS yt_playlist_items (
     PRIMARY KEY (playlist_id, video_id)
 );
 CREATE INDEX IF NOT EXISTS yt_playlist_items_pl_idx ON yt_playlist_items(playlist_id, position);
+
+-- Watch position per video, so a half-finished one resumes across restarts.
+-- Deliberately NOT keyed to yt_cached: you can leave a video part-watched
+-- without it ever being cached, and evicting the cache must not lose the mark.
+CREATE TABLE IF NOT EXISTS yt_progress (
+    video_id   TEXT PRIMARY KEY,
+    position_s REAL    NOT NULL,
+    duration_s REAL    NOT NULL DEFAULT 0,
+    updated    INTEGER NOT NULL
+);
 "#;
 
 /// Apply the youtube schema to a (youtube.db) pool. Idempotent.
@@ -429,6 +439,72 @@ pub async fn evict_cached_over(pool: &SqlitePool, keep: i64) -> Result<Vec<(Stri
     Ok(victims)
 }
 
+/// Remember how far into a video you got, so closing the app and coming back
+/// resumes instead of restarting. Positions within the first or last few
+/// seconds are not worth keeping — those are "started" and "finished", and
+/// resuming either one is worse than not.
+pub async fn save_progress(pool: &SqlitePool, id: &str, position_s: f64, duration_s: f64) -> Result<()> {
+    let done = duration_s > 0.0 && position_s >= duration_s - 15.0;
+    if position_s < 15.0 || done {
+        sqlx::query("DELETE FROM yt_progress WHERE video_id = ?").bind(id).execute(pool).await?;
+        return Ok(());
+    }
+    sqlx::query(
+        "INSERT INTO yt_progress (video_id, position_s, duration_s, updated) VALUES (?,?,?,?)
+         ON CONFLICT(video_id) DO UPDATE SET position_s = excluded.position_s,
+             duration_s = excluded.duration_s, updated = excluded.updated",
+    ).bind(id).bind(position_s).bind(duration_s).bind(now()).execute(pool).await?;
+    Ok(())
+}
+
+/// Stored position for one video, or 0.
+pub async fn progress_of(pool: &SqlitePool, id: &str) -> Result<f64> {
+    Ok(sqlx::query_scalar("SELECT position_s FROM yt_progress WHERE video_id = ?")
+        .bind(id).fetch_optional(pool).await?.unwrap_or(0.0))
+}
+
+/// Every stored position, as `video_id → fraction watched (0..1)`, for painting
+/// the bar on cards. Rows with no known duration are dropped: a bar needs a
+/// denominator.
+pub async fn progress_map(pool: &SqlitePool) -> Result<Vec<(String, f32)>> {
+    let rows: Vec<(String, f64, f64)> = sqlx::query_as(
+        "SELECT video_id, position_s, duration_s FROM yt_progress WHERE duration_s > 0")
+        .fetch_all(pool).await?;
+    Ok(rows.into_iter()
+        .map(|(id, pos, dur)| (id, (pos / dur).clamp(0.0, 1.0) as f32))
+        .collect())
+}
+
+/// Evict oldest cached rows until the cache is at or below `cap_bytes` on
+/// disk. Returns `(video_id, media_path)` removed.
+///
+/// The count rule above bounds how many files are kept, not how big they are —
+/// sixty audio-only cache entries are a few hundred megabytes, but the same
+/// sixty at 1080p are not. Sizes come from `stat`, not from a stored column:
+/// nothing records a byte count at cache time, and a file the user deleted
+/// underneath us must count as zero rather than as its remembered size.
+pub async fn evict_cached_over_bytes(pool: &SqlitePool, cap_bytes: i64) -> Result<Vec<(String, String)>> {
+    // Newest first — we walk forward spending the budget, and evict the tail.
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT video_id, media_path FROM yt_cached ORDER BY cached_at DESC, rowid DESC",
+    ).fetch_all(pool).await?;
+    let mut budget = cap_bytes;
+    let mut victims = Vec::new();
+    for (id, path) in rows {
+        if budget < 0 {
+            victims.push((id, path));
+            continue;
+        }
+        let bytes = std::fs::metadata(&path).map(|m| m.len() as i64).unwrap_or(0);
+        budget -= bytes;
+        if budget < 0 { victims.push((id, path)); }
+    }
+    for (id, _) in &victims {
+        sqlx::query("DELETE FROM yt_cached WHERE video_id = ?").bind(id).execute(pool).await?;
+    }
+    Ok(victims)
+}
+
 pub async fn clear_cached(pool: &SqlitePool) -> Result<Vec<String>> {
     let paths: Vec<String> = sqlx::query_scalar("SELECT media_path FROM yt_cached")
         .fetch_all(pool)
@@ -715,6 +791,44 @@ mod tests {
     use super::*;
     use crate::schema::tests::open_pool;
     use crate::youtube::subscriptions::ImportedSub;
+
+    #[tokio::test]
+    async fn progress_keeps_only_the_middle() {
+        let (_t, pool) = open_pool().await;
+        apply_schema(&pool).await.unwrap();
+        // Barely started — not worth a mark.
+        save_progress(&pool, "a", 4.0, 600.0).await.unwrap();
+        assert_eq!(progress_of(&pool, "a").await.unwrap(), 0.0);
+        // Genuinely mid-way.
+        save_progress(&pool, "b", 300.0, 600.0).await.unwrap();
+        assert_eq!(progress_of(&pool, "b").await.unwrap(), 300.0);
+        // Reaching the end clears it, so it does not resume at the credits.
+        save_progress(&pool, "b", 595.0, 600.0).await.unwrap();
+        assert_eq!(progress_of(&pool, "b").await.unwrap(), 0.0);
+        save_progress(&pool, "c", 150.0, 600.0).await.unwrap();
+        assert_eq!(progress_map(&pool).await.unwrap(), vec![("c".to_string(), 0.25)]);
+    }
+
+    #[tokio::test]
+    async fn byte_cap_evicts_when_files_are_large() {
+        let (_t, pool) = open_pool().await;
+        apply_schema(&pool).await.unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        // Three 1 KB files, newest last.
+        for (i, id) in ["a", "b", "c"].iter().enumerate() {
+            let f = dir.path().join(format!("{id}.opus"));
+            std::fs::write(&f, vec![0u8; 1024]).unwrap();
+            record_cached(&pool, id, "t", "c", "", f.to_str().unwrap(), 1).await.unwrap();
+            // cached_at has one-second resolution — order them explicitly.
+            sqlx::query("UPDATE yt_cached SET cached_at = ? WHERE video_id = ?")
+                .bind(1000 + i as i64).bind(id).execute(&pool).await.unwrap();
+        }
+        // Budget for two → the oldest goes.
+        let gone = evict_cached_over_bytes(&pool, 2048).await.unwrap();
+        let ids: Vec<String> = gone.into_iter().map(|(id, _)| id).collect();
+        assert_eq!(ids, vec!["a".to_string()]);
+        assert!(evict_cached_over_bytes(&pool, 1_000_000).await.unwrap().is_empty());
+    }
 
     #[tokio::test]
     async fn schema_applies_idempotently() {

@@ -2001,6 +2001,24 @@ callback cloud-go-home();
     in-out property <[PhotoTile]> music-top-artists: [];
     in-out property <[PhotoTile]> music-top-albums: [];
     in-out property <[PhotoTile]> music-folders: [];
+    // Home — Continue listening rail + the listening strip (np.p4.music.dashboard).
+    // Audiobook detail — book-wide bookmarks (the union across its chapters).
+    in-out property <[string]> music-ab-d-bm-labels: [];
+    in-out property <[string]> music-ab-d-bm-times: [];
+    // Row being renamed in place. Reset from Rust when a different book opens,
+    // otherwise a stale index leaves the editor open on the wrong row.
+    in-out property <int> music-ab-d-bm-edit: -1;
+    in-out property <bool> music-ab-d-finished: false;
+    callback music-ab-bm-add();
+    callback music-ab-bm-jump(int);
+    callback music-ab-bm-remove(int);
+    callback music-ab-bm-rename(int, string);
+    callback music-ab-set-finished(bool);
+    in-out property <[PhotoTile]> music-continue-rows: [];
+    in-out property <string> music-stats-week: "";
+    in-out property <string> music-stats-total: "";
+    in-out property <string> music-stats-genre: "";
+    in-out property <string> music-stats-streak: "";
     in-out property <[PhotoTile]> music-playlists: [];
     in-out property <[MusicSongRow]> music-recent-rows: [];
     in-out property <int> music-recent-page: 0;
@@ -2483,7 +2501,22 @@ callback cloud-go-home();
     in-out property <string> music-radio-cat-title: "";
     in-out property <bool> music-radio-busy: false;
     in-out property <string> music-radio-status: "";
+    in-out property <string> music-yt-np-id: "";      // playing YouTube video id
+    in-out property <int> music-podcast-np-id: -1;     // playing episode id
+    // Cross-show podcast queue.
+    in-out property <int> music-podcast-queue-len: 0;
+    in-out property <[PodcastEpisodeRow]> music-podcast-queue-rows: [];
+    callback music-podcast-queue-add(int);
+    callback music-podcast-queue-remove(int);
+    callback music-podcast-queue-clear();
     in-out property <string> music-radio-np-uuid: "";
+    // ICY now-playing off the live stream + a short log of what came before.
+    in-out property <string> music-radio-np-track: "";
+    in-out property <[string]> music-radio-track-log: [];
+    in-out property <bool> music-radio-recording: false;
+    in-out property <string> music-radio-rec-file: "";
+    callback music-radio-record();
+    callback music-radio-track-search(string);
     in-out property <string> music-radio-np-initial: "";  // letter tile on the playing vinyl
     in-out property <bool> music-radio-refresh-busy: false;
     in-out property <float> music-radio-refresh-frac: 0;
@@ -2564,7 +2597,6 @@ callback cloud-go-home();
     callback music-confirm-add-section(string);
     in-out property <float> music-book-speed: 1.0;
     in-out property <bool> music-book-skip-silence-on: false;
-    in-out property <[string]> music-book-bookmarks: [];
     // The PLAYING book's chapters (ordered) — BookMini chapter queue, set on
     // every audiobook play; the active row follows music-np-index.
     in property <[ChapterRow]> music-book-chapter-rows: [];
@@ -2573,7 +2605,6 @@ callback cloud-go-home();
     callback music-book-chapter(int);
     callback music-book-skip-silence();
     callback music-book-bookmark();
-    callback music-book-bookmark-jump(int);
     in-out property <string> music-artist-bio: "";
     callback music-fetch-art-bio();
     // AT Music Pro parity (Batch 33).
@@ -3332,6 +3363,9 @@ callback cloud-go-home();
                 dl-set-name-method(v) => { root.music-dl-set-name-method(v); }
                 recent: root.music-recent; most: root.music-most; loved-tiles: root.music-loved;
                 fresh: root.music-fresh; albums: root.music-albums; artists: root.music-artists; genres: root.music-genres;
+                continue-rows: root.music-continue-rows;
+                stats-week: root.music-stats-week; stats-total: root.music-stats-total;
+                stats-genre: root.music-stats-genre; stats-streak: root.music-stats-streak;
                 top-artists: root.music-top-artists; top-albums: root.music-top-albums;
                 folders: root.music-folders; playlists: root.music-playlists; recent-rows: root.music-recent-rows;
                 recent-page: root.music-recent-page; recent-pages: root.music-recent-pages;
@@ -3626,15 +3660,23 @@ callback cloud-go-home();
                 ab-d-title <=> root.music-ab-d-title; ab-d-author <=> root.music-ab-d-author;
                 ab-d-cover: root.music-ab-d-cover; ab-d-total <=> root.music-ab-d-total;
                 ab-d-chapters: root.music-ab-d-chapters; ab-d-resume-index <=> root.music-ab-d-resume-index;
+                ab-d-bm-labels: root.music-ab-d-bm-labels; ab-d-bm-times: root.music-ab-d-bm-times;
+                ab-d-bm-edit <=> root.music-ab-d-bm-edit;
+                ab-d-finished: root.music-ab-d-finished;
+                ab-bm-add => { root.music-ab-bm-add(); }
+                ab-bm-jump(i) => { root.music-ab-bm-jump(i); }
+                ab-bm-remove(i) => { root.music-ab-bm-remove(i); }
+                ab-bm-rename(i, l) => { root.music-ab-bm-rename(i, l); }
+                ab-set-finished(v) => { root.music-ab-set-finished(v); }
                 audiobook-open(f) => { root.music-audiobook-open(f); } audiobook-back => { root.music-audiobook-back(); }
                 ab-tab <=> root.music-ab-tab; ab-folders: root.music-ab-folders;
                 ab-set-tab(t) => { root.music-ab-set-tab(t); }
                 audiobook-set-cover => { root.music-audiobook-set-cover(); }
                 audiobook-set-cover-for(f) => { root.music-audiobook-set-cover-for(f); }
                 ab-folder-find(f) => { root.music-ab-folder-find(f); }
-                book-skip-silence-on <=> root.music-book-skip-silence-on; book-bookmarks: root.music-book-bookmarks;
+                book-skip-silence-on <=> root.music-book-skip-silence-on;
                 audiobook-play(i) => { root.music-audiobook-play(i); } set-book-speed(s) => { root.music-set-book-speed(s); } book-chapter(d) => { root.music-book-chapter(d); }
-                book-skip-silence => { root.music-book-skip-silence(); } book-bookmark => { root.music-book-bookmark(); } book-bookmark-jump(i) => { root.music-book-bookmark-jump(i); }
+                book-skip-silence => { root.music-book-skip-silence(); }
                 radio-tab <=> root.music-radio-tab; radio-stations: root.music-radio-stations;
                 radio-genres: root.music-radio-genres; radio-genre <=> root.music-radio-genre;
                 radio-genre-icons: root.music-radio-genre-icons;
@@ -3642,7 +3684,20 @@ callback cloud-go-home();
                 radio-total: root.music-radio-total;
                 radio-cat-open <=> root.music-radio-cat-open; radio-cat-title: root.music-radio-cat-title;
                 radio-busy: root.music-radio-busy; radio-status: root.music-radio-status;
+                yt-np-id: root.music-yt-np-id;
+                podcast-np-id: root.music-podcast-np-id;
+                podcast-queue-len: root.music-podcast-queue-len;
+                podcast-queue-rows: root.music-podcast-queue-rows;
+                podcast-queue-add(i) => { root.music-podcast-queue-add(i); }
+                podcast-queue-remove(i) => { root.music-podcast-queue-remove(i); }
+                podcast-queue-clear => { root.music-podcast-queue-clear(); }
                 radio-np-uuid: root.music-radio-np-uuid;
+                radio-np-track: root.music-radio-np-track;
+                radio-track-log: root.music-radio-track-log;
+                radio-recording: root.music-radio-recording;
+                radio-rec-file: root.music-radio-rec-file;
+                radio-record() => { root.music-radio-record(); }
+                radio-track-search(t) => { root.music-radio-track-search(t); }
                 radio-refresh-busy: root.music-radio-refresh-busy; radio-refresh-frac: root.music-radio-refresh-frac;
                 radio-sort <=> root.music-radio-sort;
                 radio-sort-dir: root.music-radio-sort-dir;
@@ -4602,7 +4657,7 @@ callback cloud-go-home();
             }
         }
         // Music mode — full music mini player (vinyl / queue / lyrics).
-        if root.music-player-mode != "podcast" && root.music-player-mode != "book": MusicMini {
+        if root.music-player-mode != "podcast" && root.music-player-mode != "book": MusicMini { np-index: root.music-np-index;
             width: 100%; height: 100%;
             bold-outline: root.music-mini-outline;
             uiscale: root.music-mini-scale;

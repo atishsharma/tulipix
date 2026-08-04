@@ -2,6 +2,101 @@
 // used across the 5 music sections (mymusic / podcasts / audiobooks / radio /
 // youtube). Split out of page_music.slint so each section is its own file.
 
+import { Theme } from "tokens.slint";
+import { Surface } from "surface.slint";
+
+// Every duration the music section animates on goes through here, so that
+// `Theme.reduce-motion` is one switch instead of 116 literals. Slint has no
+// arithmetic on `duration`, hence the explicit ladder rather than a scale
+// factor. `stagger` is per-item delay, capped by the call site so page 4 of a
+// big grid does not wait a second and a half to appear.
+export global MusicMotion {
+    out property <bool> off: Theme.reduce-motion;
+    // Hover tints, icon fades — the 116 existing literals were 120–160ms.
+    out property <duration> fast:    Theme.reduce-motion ?   0ms : 140ms;
+    // Card lift, panel ease, tab-chip width.
+    out property <duration> mid:     Theme.reduce-motion ?   0ms : 220ms;
+    // View crossfade, album-art crossfade, entrance.
+    out property <duration> slow:    Theme.reduce-motion ?   0ms : 320ms;
+    // Skeleton shimmer sweep + now-playing breathe: long, looping, ambient.
+    out property <duration> ambient: Theme.reduce-motion ?   0ms : 1400ms;
+    // Scrubber catch-up. mpv reports `time-pos` about once a second, so a short
+    // animation gives 70ms of motion and 930ms of stillness — visibly steppy.
+    // Matching the poll exactly would read as continuous but make a click-seek
+    // take a second to arrive; 400ms is the compromise. Linear, because easing
+    // a clock lies about where playback is.
+    out property <duration> tick:    Theme.reduce-motion ?   0ms : 400ms;
+    out property <duration> stagger: Theme.reduce-motion ?   0ms :  30ms;
+    // Entrance offset — the incoming view/card starts this far down.
+    out property <length> rise: Theme.reduce-motion ? 0px : 12px;
+}
+
+// Three bars that dance while a track plays. This is the only ambient motion
+// in the section that carries information rather than decoration: it marks the
+// row you are hearing. Slint cannot loop an animation, so each bar animates
+// between two heights on an `in-out` flag the page flips on a timer.
+export component EqBars inherits Rectangle {
+    in property <bool> on: true;
+    in property <brush> tint: #ec4899;
+    in property <bool> phase: false;   // driven by the page's shared Timer
+    in property <length> bar-h: 14px;
+    width: 14px;
+    height: bar-h;
+    HorizontalLayout {
+        alignment: center; spacing: 2px;
+        for f in [0.35, 1.0, 0.6]: Rectangle {
+            width: 3px; border-radius: 1.5px; background: tint;
+            // Paused → all three settle to the short height, so a paused row
+            // still reads as "this one" without implying sound.
+            height: !root.on ? root.bar-h * 0.3
+                : (root.phase ? root.bar-h * f : root.bar-h * (1.1 - f));
+            y: (parent.height - self.height) / 2;
+            animate height { duration: MusicMotion.off ? 0ms : 380ms; easing: ease-in-out; }
+        }
+    }
+}
+
+// Album art that crossfades instead of popping when the track changes.
+//
+// Slint gives no access to a property's previous value, so this keeps both
+// frames itself: on every change the NEW image is written into whichever slot
+// is currently hidden, then the flag flips and the two opacities animate past
+// each other. One `Image` would have to swap its source mid-fade, which is the
+// pop this exists to remove.
+export component ArtFade inherits Rectangle {
+    in property <image> source;
+    in property <duration> dur: MusicMotion.slow;
+    property <image> a;
+    property <image> b;
+    property <bool> show-a: true;
+    clip: true;
+    init => { self.a = self.source; }
+    changed source => {
+        if (self.show-a) { self.b = self.source; self.show-a = false; }
+        else            { self.a = self.source; self.show-a = true; }
+    }
+    Image { source: root.a; image-fit: cover; width: 100%; height: 100%;
+        opacity: root.show-a ? 1 : 0; animate opacity { duration: root.dur; easing: ease-in-out; } }
+    Image { source: root.b; image-fit: cover; width: 100%; height: 100%;
+        opacity: root.show-a ? 0 : 1; animate opacity { duration: root.dur; easing: ease-in-out; } }
+}
+
+// Skeleton block for a not-yet-loaded card. A soft band sweeps across it on
+// the same `phase` flag the EqBars use, so one timer drives both.
+export component Shimmer inherits Rectangle {
+    in property <bool> phase: false;
+    border-radius: Surface.r(10px);
+    background: #ffffff0c;
+    clip: true;
+    Rectangle {
+        width: parent.width * 0.45;
+        height: parent.height;
+        x: root.phase ? parent.width : -self.width;
+        background: @linear-gradient(90deg, #ffffff00, #ffffff18, #ffffff00);
+        animate x { duration: MusicMotion.ambient; easing: ease-in-out; }
+    }
+}
+
 // One row in the detailed Songs list (np.p4.music.browse — list view).
 export struct MusicSongRow {
     thumb: image,
@@ -85,6 +180,8 @@ export struct PodcastEpisodeRow {
     queued: bool,      // waiting in the sequential download queue
     dlinfo: string,    // short "when downloaded" stamp (Downloads list)
     index: int,        // position into the list's parallel episode-state vec
+    progress: float,   // 0..1 through the episode (0 = untouched or no duration)
+    up-next: bool,     // sitting in the cross-show play queue
 }
 
 // Rich Songs-list row — adds lyrics / fav / star columns.
@@ -173,6 +270,7 @@ export struct YtVideo {
     fmt: string,         // download container badge ("" = none)
     quality: string,     // download quality badge ("" = none)
     path: string,        // downloaded file path (unique per-resolution row id; "" = not a download)
+    progress: float,     // 0..1 watched (0 = untouched or finished)
 }
 
 // One subscribed channel — Home right rail + Subscriptions grid.

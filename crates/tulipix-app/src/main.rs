@@ -5753,6 +5753,9 @@ fn wire_youtube(window: &MainWindow) {
         // (download/sub/cache/remove), so plain sub-tab switches are instant — no
         // re-decoding thumbnails on every click. First open warms if not already.
         warm_youtube(&w0);
+        // Reload watched positions so the progress bars on the cards are right
+        // for whatever this tab is about to draw.
+        tokio::runtime::Handle::current().spawn(refresh_yt_progress());
     });
     let w = window.as_weak();
     window.on_music_yt_back(move || {
@@ -6782,7 +6785,6 @@ fn wire_youtube(window: &MainWindow) {
                 let speed = w0.get_music_book_speed();
                 music_ipc(&["set_property", "audio-pitch-correction", "yes"]);
                 music_ipc(&["set_property", "speed", &speed.to_string()]);
-                if let Some(id) = current_music_id(&w0) { load_book_bookmarks(&w0, id); }
             });
         });
     });
@@ -6794,8 +6796,14 @@ fn wire_youtube(window: &MainWindow) {
         music_ipc(&["set_property", "speed", &s.to_string()]);
         if let Some(id) = current_music_id(&w0) {
             let pos = w0.get_music_pos() as f64;
+            // Speed is a property of the BOOK, not of the chapter you happen to
+            // be on — a narrator you want at 1.4× stays at 1.4× at chapter 12.
+            let ids = ab_open_ids().lock().map(|g| g.clone()).unwrap_or_default();
+            let book = if ids.contains(&id) { ids } else { vec![id] };
             tokio::runtime::Handle::current().spawn(async move {
-                if let Ok(pool) = pool_for("music").await { let _ = tulipix_music::audiobooks::save_progress(&pool, id, pos, s).await; }
+                let Ok(pool) = pool_for("music").await else { return; };
+                let _ = tulipix_music::audiobooks::save_progress(&pool, id, pos, s).await;
+                let _ = tulipix_music::audiobooks::set_book_speed(&pool, &book, s).await;
             });
         }
     });
@@ -6817,26 +6825,114 @@ fn wire_youtube(window: &MainWindow) {
             music_ipc(&["set_property", "af", ""]);
         }
     });
-    // Add a bookmark at the current position (np.p5.music.audiobook-chapters).
+    // Bookmark the current position, from the mini players. Unnamed, like every
+    // other bookmark — the detail page is where they get named. It lands in the
+    // same list the detail panel shows, so the two agree.
     let w = window.as_weak();
     window.on_music_book_bookmark(move || {
         let Some(w0) = w.upgrade() else { return; };
         let Some(id) = current_music_id(&w0) else { return; };
         let pos = w0.get_music_pos() as f64;
-        let label = fmt_clock(pos);
+        let ids = ab_open_ids().lock().map(|g| g.clone()).unwrap_or_default();
         let weak = w.clone();
         tokio::runtime::Handle::current().spawn(async move {
             let Ok(pool) = pool_for("music").await else { return; };
-            let _ = tulipix_music::audiobooks::add_bookmark(&pool, id, pos, &label).await;
-            let _ = weak.upgrade_in_event_loop(move |w| load_book_bookmarks(&w, id));
+            let _ = tulipix_music::audiobooks::add_bookmark(&pool, id, pos, "").await;
+            // Only refresh the panel if the playing book is the open one.
+            if ids.contains(&id) {
+                let _ = weak.upgrade_in_event_loop(move |w| load_book_detail_bookmarks(&w, ids));
+            }
         });
     });
-    // Jump to the i-th bookmark of the playing audiobook.
+    // ── Book-level bookmarks (detail page) ──────────────────────────────────
+    // These act on the OPEN book, which may not be the playing one — the
+    // player-panel chips already cover "the chapter I am hearing".
     let w = window.as_weak();
-    window.on_music_book_bookmark_jump(move |i| {
+    window.on_music_ab_bm_add(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        // Bookmark where playback actually is, if this book is the one playing;
+        // otherwise the start of the chapter Resume would pick, so the button
+        // still does something sensible on a book you are only browsing.
+        let ids = ab_open_ids().lock().map(|g| g.clone()).unwrap_or_default();
+        let playing = current_music_id(&w0).filter(|id| ids.contains(id));
+        let (id, pos) = match playing {
+            Some(id) => (id, w0.get_music_pos() as f64),
+            None => {
+                let idx = w0.get_music_ab_d_resume_index();
+                let Some(id) = music_id_at(idx) else { return; };
+                (id, 0.0)
+            }
+        };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = tulipix_music::audiobooks::add_bookmark(&pool, id, pos, "").await;
+            let _ = weak.upgrade_in_event_loop(move |w| load_book_detail_bookmarks(&w, ids));
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_ab_bm_jump(move |i| {
+        let Some(w0) = w.upgrade() else { return; };
+        let Some((id, pos)) = ab_open_marks().lock().ok().and_then(|g| g.get(i as usize).copied()) else { return; };
+        // A bookmark can live in a chapter other than the playing one, so the
+        // jump is "play that chapter, then seek" rather than a bare seek.
+        match current_music_id(&w0) {
+            Some(cur) if cur == id => music_ipc(&["seek", &pos.to_string(), "absolute"]),
+            _ => {
+                let Some(idx) = music_pos_of(id) else { return; };
+                w0.invoke_music_audiobook_play(idx);
+                // The new mpv needs to exist before it can be seeked.
+                let weak = w.clone();
+                tokio::runtime::Handle::current().spawn(async move {
+                    tokio::time::sleep(std::time::Duration::from_millis(900)).await;
+                    let _ = weak.upgrade_in_event_loop(move |_| {
+                        music_ipc(&["seek", &pos.to_string(), "absolute"]);
+                    });
+                });
+            }
+        }
+    });
+    let w = window.as_weak();
+    window.on_music_ab_bm_remove(move |i| {
         let Some(_w0) = w.upgrade() else { return; };
-        let pos = book_bookmarks().lock().ok().and_then(|g| g.get(i as usize).copied());
-        if let Some(pos) = pos { music_ipc(&["seek", &pos.to_string(), "absolute"]); }
+        let Some((id, pos)) = ab_open_marks().lock().ok().and_then(|g| g.get(i as usize).copied()) else { return; };
+        let ids = ab_open_ids().lock().map(|g| g.clone()).unwrap_or_default();
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = tulipix_music::audiobooks::remove_bookmark(&pool, id, pos).await;
+            let _ = weak.upgrade_in_event_loop(move |w| load_book_detail_bookmarks(&w, ids));
+        });
+    });
+    let w = window.as_weak();
+    window.on_music_ab_bm_rename(move |i, label| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let Some((id, pos)) = ab_open_marks().lock().ok().and_then(|g| g.get(i as usize).copied()) else { return; };
+        let ids = ab_open_ids().lock().map(|g| g.clone()).unwrap_or_default();
+        let label = label.to_string();
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = tulipix_music::audiobooks::rename_bookmark(&pool, id, pos, &label).await;
+            let _ = weak.upgrade_in_event_loop(move |w| load_book_detail_bookmarks(&w, ids));
+        });
+    });
+    // Mark the whole book finished, or reset it for a re-listen.
+    let w = window.as_weak();
+    window.on_music_ab_set_finished(move |on| {
+        let Some(_w0) = w.upgrade() else { return; };
+        let ids = ab_open_ids().lock().map(|g| g.clone()).unwrap_or_default();
+        if ids.is_empty() { return; }
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = tulipix_music::audiobooks::set_finished(&pool, &ids, on).await;
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                w.set_music_ab_d_finished(on);
+                // The card grid's "Finished" filter reads the same flag.
+                populate_audiobooks(&w);
+            });
+        });
     });
     // Open a book (by folder) → build the detail hero + chapter list.
     let w = window.as_weak();
@@ -9136,6 +9232,8 @@ fn wire_music_playlist(window: &MainWindow) {
     {
         let s = tulipix_core::settings::Settings::load().unwrap_or_default();
         window.set_music_gapless(s.advanced.get("music.gapless").map(|v| v != "0").unwrap_or(true));
+        // Restore the podcast queue saved last session.
+        podcast_queue_load(window);
         window.set_music_home_connect(s.advanced.get("music.home_connect").map(|v| v == "1").unwrap_or(false));
         // YouTube Home gradient outline defaults ON when unset.
         window.set_music_yt_home_connect(s.advanced.get("music.yt_home_connect").map(|v| v == "1").unwrap_or(true));
@@ -9736,6 +9834,9 @@ fn wire_music_podcasts(window: &MainWindow) {
             let _ = weak.upgrade_in_event_loop(move |w| {
                 let src = dl.clone().filter(|p| std::path::Path::new(p).exists()).unwrap_or(url);
                 play_music_url(&w, &src, &title);
+                // Marks the row in every episode list — Home, Downloads and the
+                // show page all render the same component.
+                w.set_music_podcast_np_id(id);
                 w.set_music_player_mode("podcast".into());
                 w.set_music_yt_now_video(false);
                 w.set_music_np_title(title.into());
@@ -9763,6 +9864,34 @@ fn wire_music_podcasts(window: &MainWindow) {
                 }
             });
         });
+    });
+    // ── Cross-show episode queue ────────────────────────────────────────────
+    let w = window.as_weak();
+    window.on_music_podcast_queue_add(move |id| {
+        let Some(w0) = w.upgrade() else { return; };
+        if let Ok(mut g) = podcast_queue().lock() {
+            // Tapping the button on something already queued removes it, so
+            // the one control both adds and undoes.
+            match g.iter().position(|e| *e == id) {
+                Some(i) => { g.remove(i); }
+                None => g.push(id),
+            }
+        }
+        podcast_queue_sync(&w0);
+    });
+    let w = window.as_weak();
+    window.on_music_podcast_queue_remove(move |i| {
+        let Some(w0) = w.upgrade() else { return; };
+        if let Ok(mut g) = podcast_queue().lock() {
+            if (i as usize) < g.len() { g.remove(i as usize); }
+        }
+        podcast_queue_sync(&w0);
+    });
+    let w = window.as_weak();
+    window.on_music_podcast_queue_clear(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        if let Ok(mut g) = podcast_queue().lock() { g.clear(); }
+        podcast_queue_sync(&w0);
     });
     // Skip ±N seconds in the playing episode.
     window.on_music_podcast_skip(move |secs| {

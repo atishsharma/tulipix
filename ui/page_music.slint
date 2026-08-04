@@ -8,7 +8,7 @@ import { HdrChip, CountPill } from "section_header.slint";
 import { MusicTheme } from "theme.slint";
 import { Theme } from "tokens.slint";
 import { Surface, Rim, Skin } from "surface.slint";
-import { MusicSongRow, DownloaderRow, DlHistoryEntry, DlSearchEntry, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob } from "music_common.slint";
+import { MusicSongRow, DownloaderRow, DlHistoryEntry, DlSearchEntry, PodcastCard, PodcastTrendCard, PodcastEpisodeRow, SongRowEx, MusicLyricLine, LyricsResult, LyricsMgrRow, MetaMgrRow, BookCard, ChapterRow, RadioStation, YtVideo, YtSub, YtPlaylist, YtDlJob, MusicMotion, EqBars, Shimmer, ArtFade } from "music_common.slint";
 import { LineEdit } from "std-widgets.slint";
 import { PanelFrost, ModalFrost } from "frost.slint";
 
@@ -31,7 +31,7 @@ component DlBtn inherits Rectangle {
               : (touch.has-hover ? root.tint.brighter(0.15) : root.tint);
     border-width: touch.pressed ? 2.5px : 0px;   // pressed → progress outline
     border-color: #ffffffdd;
-    animate background, opacity { duration: 120ms; easing: ease-out; }
+    animate background, opacity { duration: MusicMotion.fast; easing: ease-out; }
     HorizontalLayout { alignment: center; spacing: root.label == "" ? 0px : 7px;
         padding-left: 11px; padding-right: 13px;
         if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: root.text-col; width: 15px; height: 15px; } }
@@ -57,7 +57,7 @@ component DlStepper inherits Rectangle {
             background: dec.pressed ? root.tint.darker(0.22) : (dec.has-hover ? root.tint.brighter(0.14) : root.tint);
             border-width: dec.pressed ? 2px : 0px; border-color: #ffffffdd;
             opacity: root.value > root.min ? 1.0 : 0.4;
-            animate background { duration: 110ms; }
+            animate background { duration: MusicMotion.fast; }
             Text { text: "−"; color: #ffffff; font-size: 18px; horizontal-alignment: center; vertical-alignment: center; }
             dec := TouchArea { mouse-cursor: pointer; clicked => { if (root.value > root.min) { root.changed(root.value - 1); } } } } }
         VerticalLayout { alignment: center; Text { text: root.value; color: #111827; font-size: 15px; font-weight: 800; min-width: 20px; horizontal-alignment: center; } }
@@ -65,7 +65,7 @@ component DlStepper inherits Rectangle {
             background: inc.pressed ? root.tint.darker(0.22) : (inc.has-hover ? root.tint.brighter(0.14) : root.tint);
             border-width: inc.pressed ? 2px : 0px; border-color: #ffffffdd;
             opacity: root.value < root.max ? 1.0 : 0.4;
-            animate background { duration: 110ms; }
+            animate background { duration: MusicMotion.fast; }
             Text { text: "+"; color: #ffffff; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; }
             inc := TouchArea { mouse-cursor: pointer; clicked => { if (root.value < root.max) { root.changed(root.value + 1); } } } } }
     }
@@ -115,11 +115,11 @@ component DlPill inherits Rectangle {
     border-color: root.active ? root.fill : (Theme.dark ? #ffffff1f : #e2e8f0);
     drop-shadow-blur: Surface.cast(16px);
     drop-shadow-color: Theme.dark ? #00000088 : #ffffffee;
-    animate border-color, border-width { duration: 160ms; }
+    animate border-color, border-width { duration: MusicMotion.fast; }
     Rectangle { x: 0; y: 0; height: 100%;
         width: parent.width * Math.clamp(root.frac, 0, 1);
         background: @linear-gradient(90deg, root.fill.darker(0.1), root.fill);
-        animate width { duration: 320ms; easing: ease-out; } }
+        animate width { duration: MusicMotion.slow; easing: ease-out; } }
     Text { text: root.label; font-size: 13px; font-weight: 800;
         color: Theme.oled ? #ffffff : (Theme.dark ? #eef2ff : #0f172a);
         horizontal-alignment: center; vertical-alignment: center; }
@@ -171,7 +171,7 @@ component AlbumCard inherits Skin {
             // Hover elevation — colored outline + glow shadow.
             border-width: ta.has-hover ? 2px : 0px; border-color: #ec4899;
             drop-shadow-blur: ta.has-hover ? 28px : 0px; drop-shadow-color: #ec4899aa;
-            animate drop-shadow-blur, border-width { duration: 140ms; easing: ease-out; }
+            animate drop-shadow-blur, border-width { duration: MusicMotion.fast; easing: ease-out; }
             Image { source: thumb; image-fit: cover; width: parent.width; height: parent.height; }
             if ta.has-hover: Rectangle {
                 width: parent.width; height: parent.height; background: #00000055;
@@ -197,7 +197,7 @@ component AlbumCard inherits Skin {
             // Fav heart — top-left (always when loved, else on hover).
             if root.fav-enabled: Rectangle { x: 8px; y: 8px; width: 30px; height: 30px; border-radius: Surface.r(15px);
                 background: #000000aa;
-                opacity: (ta.has-hover || root.loved) ? 1 : 0; animate opacity { duration: 140ms; }
+                opacity: (ta.has-hover || root.loved) ? 1 : 0; animate opacity { duration: MusicMotion.fast; }
                 AppIcon { source: root.loved ? Icons.heart-filled : Icons.heart; tint: root.loved ? #ec4899 : #ffffff; width: 16px; height: 16px; } }
             // Track-count badge — top-right gradient circle (always visible).
             if root.count > 0: Rectangle { x: parent.width - self.width - 8px; y: 8px;
@@ -207,7 +207,7 @@ component AlbumCard inherits Skin {
                     horizontal-alignment: center; vertical-alignment: center; } }
             // Rating — bottom strip (like songs), on hover or when already rated.
             if root.fav-enabled: Rectangle { x: 0; y: parent.height - 30px; width: parent.width; height: 28px; background: #000000aa;
-                opacity: (ta.has-hover || root.stars > 0) ? 1 : 0; animate opacity { duration: 140ms; }
+                opacity: (ta.has-hover || root.stars > 0) ? 1 : 0; animate opacity { duration: MusicMotion.fast; }
                 HorizontalLayout { spacing: 0px;
                     for n[i] in [1, 2, 3, 4, 5]: Rectangle { horizontal-stretch: 1; height: 28px;
                         AppIcon { source: root.stars >= n ? Icons.star-filled : Icons.star; tint: root.stars >= n ? #e5a00d : #ffffffcc; width: 13px; height: 13px; } } } }
@@ -293,14 +293,14 @@ component PlayerBtn inherits Rectangle {
     border-width: solid ? 1.5px : 1px;
     border-color: solid ? accent : (active ? accent.with-alpha(0.5) : MusicTheme.line);
     drop-shadow-blur: t.pressed ? 14px : 0px; drop-shadow-color: accent.with-alpha(0.6);
-    animate background, border-width, border-radius, drop-shadow-blur { duration: 150ms; easing: ease-in-out; }
+    animate background, border-width, border-radius, drop-shadow-blur { duration: MusicMotion.fast; easing: ease-in-out; }
     t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     AppIcon { source: icon;
         width: t.pressed ? isz * 0.84 : isz; height: t.pressed ? isz * 0.84 : isz;
         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
         tint: solid ? (active || t.has-hover || t.pressed ? #ffffff : #14141b)
             : (active ? accent : (t.has-hover || t.pressed ? MusicTheme.fg : MusicTheme.fg3));
-        animate colorize, width, height { duration: 140ms; easing: ease-out; } }
+        animate colorize, width, height { duration: MusicMotion.fast; easing: ease-out; } }
     // Hover tooltip — floats above the button; no clip so it overflows the bar.
     // Width hugs the label (a plain Rectangle would default to the button's own
     // width and let the text spill outside the pill), centered over the button.
@@ -324,7 +324,7 @@ component GlyphBtn inherits Rectangle {
     width: size; height: size; border-radius: size / 2;
     background: active ? accent.with-alpha(0.22) : (t.has-hover ? MusicTheme.hov2 : transparent);
     border-width: 1px; border-color: active ? accent.with-alpha(0.5) : MusicTheme.line;
-    animate background, border-width { duration: 160ms; easing: ease-out; }
+    animate background, border-width { duration: MusicMotion.fast; easing: ease-out; }
     t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     if root.icon.width > 0: AppIcon { source: root.icon; tint: active ? accent : (t.has-hover ? MusicTheme.fg : MusicTheme.fg3);
         width: size * 0.46; height: size * 0.46; }
@@ -353,10 +353,11 @@ component Scrubber inherits Rectangle {
         background: @linear-gradient(90deg, root.fill-color 0%, root.fill-color.brighter(0.3) 100%);
         // Glow trail so seeks read as fluid motion, not a snap.
         drop-shadow-blur: ta.has-hover || ta.pressed ? 10px : 5px; drop-shadow-color: root.fill-color.with-alpha(0.5);
-        // Track value continuously; while dragging follow 1:1, otherwise a tiny
-        // glide so seeks land instantly instead of crawling to the target.
-        animate width { duration: ta.pressed ? 0ms : 70ms; easing: ease-out; }
-        animate drop-shadow-blur { duration: 160ms; }
+        // Track value continuously; while dragging follow 1:1, otherwise glide
+        // across the gap between mpv's once-a-second position reports so the
+        // fill reads as moving rather than ticking.
+        animate width { duration: ta.pressed ? 0ms : MusicMotion.tick; easing: linear; }
+        animate drop-shadow-blur { duration: MusicMotion.fast; }
     }
     // Android-style squiggly progress (np.p5.atmusic.squiggle-seek) — shows only
     // while actively seeking; the played portion becomes a flowing sine wave, the
@@ -364,7 +365,7 @@ component Scrubber inherits Rectangle {
     if root.wiggle && ta.pressed: Rectangle {
         x: 0; y: (parent.height - 18px) / 2; height: 18px; clip: true;
         width: parent.width * root.frac;
-        animate width { duration: ta.pressed ? 0ms : 70ms; easing: ease-out; }
+        animate width { duration: ta.pressed ? 0ms : MusicMotion.tick; easing: linear; }
         Path {
             x: -1px * Math.mod(animation-tick() / 1ms / 18, 32); y: 0;
             width: root.width + 64px; height: 18px;
@@ -382,7 +383,7 @@ component Scrubber inherits Rectangle {
         opacity: ta.has-hover || ta.pressed ? 1.0 : 0.0;
         drop-shadow-blur: Surface.cast(8px); drop-shadow-color: root.fill-color;
         animate x { duration: ta.pressed ? 0ms : 70ms; easing: ease-out; }
-        animate opacity, width, height { duration: 140ms; easing: ease-out; }
+        animate opacity, width, height { duration: MusicMotion.fast; easing: ease-out; }
     }
     ta := TouchArea {
         mouse-cursor: pointer;
@@ -438,15 +439,15 @@ export component VizView inherits Rectangle {
             // 0 Bars — bottom-anchored bars.
             if root.style == 0: Rectangle { width: parent.width; height: 4px + h * (parent.height - 8px); border-radius: Surface.r(1.5px);
                 y: parent.height - self.height; background: #ec4899.mix(#8b5cf6, h);
-                animate height { duration: 90ms; easing: ease-out; } }
+                animate height { duration: MusicMotion.fast; easing: ease-out; } }
             // 1 Mirror — symmetric around the middle.
             if root.style == 1: Rectangle { width: parent.width; height: 4px + h * (parent.height - 8px); border-radius: Surface.r(1.5px);
                 y: (parent.height - self.height) / 2; background: #ec4899.mix(#8b5cf6, h);
-                animate height { duration: 90ms; easing: ease-out; } }
+                animate height { duration: MusicMotion.fast; easing: ease-out; } }
             // 2 Dots — a circle riding the band level.
             if root.style == 2: Rectangle { width: Math.min(parent.width, 8px); height: self.width; border-radius: self.width / 2;
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) * (1 - h); background: #ec4899.mix(#8b5cf6, h);
-                animate y { duration: 90ms; easing: ease-out; } }
+                animate y { duration: MusicMotion.fast; easing: ease-out; } }
             // 3 Levels — segmented LED column.
             if root.style == 3: VerticalLayout { spacing: 2px;
                 for seg[s] in [0.86, 0.72, 0.58, 0.44, 0.3, 0.16]: Rectangle { height: (parent.height - 10px) / 6;
@@ -454,7 +455,7 @@ export component VizView inherits Rectangle {
             // 4 Line — thin spikes (wave-like).
             if root.style == 4: Rectangle { width: 2px; height: 2px + h * (parent.height - 6px); border-radius: Surface.r(1px);
                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; background: #ec4899.mix(#8b5cf6, h);
-                animate height { duration: 90ms; easing: ease-out; } }
+                animate height { duration: MusicMotion.fast; easing: ease-out; } }
             // 5 music.png spectrum — real audio drawn as FINE center-mirrored
             // lines, colored by FREQUENCY BAND (position i/N), not level:
             // low=violet, mid=pink, high=magenta-red. NO smoothing animation —
@@ -535,7 +536,7 @@ component SortChip inherits Skin {
     border-width: filled ? (active ? 2px : 0px) : 1px;
     border-color: filled ? #ffffffcc : (active ? root.tint.with-alpha(0.4) : MusicTheme.line);
     property <color> fg: filled ? #ffffff : (active ? root.tint : MusicTheme.fg2);
-    animate background { duration: 120ms; }
+    animate background { duration: MusicMotion.fast; }
     s := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 6px;
         if root.icon.width > 0: VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: root.fg; width: 13px; height: 13px; } }
@@ -588,12 +589,20 @@ component TrackRow inherits Skin {
     // Rendered on the Home card's cream fill — fixed dark ink instead of the
     // theme-driven colors (which invert on dark themes and vanish).
     in property <bool> on-light: false;
+    in property <int> np-index: -1;
+    in property <bool> np-playing: false;
+    in property <bool> phase: false;
+    property <bool> is-np: track.index == np-index && np-index >= 0;
     callback clicked();
     // Right-click hands absolute screen coords up to a page-level context menu
     // (a nested PopupWindow inside the detail ScrollView rendered behind the page).
     callback context(length, length);
     height: 56px; border-radius: Surface.r(8px);
-    background: t.has-hover ? (on-light ? #00000012 : MusicTheme.hov) : transparent;
+    background: root.is-np ? #22c55e1f
+        : (t.has-hover ? (on-light ? #00000012 : MusicTheme.hov) : transparent);
+    border-width: root.is-np ? 1px : 0px;
+    border-color: #22c55e66;
+    animate background { duration: MusicMotion.fast; }
     t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); }
         pointer-event(e) => {
             if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down) {
@@ -604,11 +613,16 @@ component TrackRow inherits Skin {
         Rectangle { width: 40px; height: 40px; border-radius: Surface.r(5px); clip: true; background: MusicTheme.surf-thumb;
             horizontal-stretch: 0; vertical-stretch: 0; y: (parent.height - self.height)/2;
             Image { source: track.thumb; image-fit: cover; width: parent.width; height: parent.height; }
-            if t.has-hover: Rectangle { width: parent.width; height: parent.height; background: #00000088;
+            // Playing beats hover: the bars stay while you mouse over the row
+            // you are already hearing, so the marker never flickers away.
+            if root.is-np: Rectangle { width: parent.width; height: parent.height; background: #000000aa;
+                EqBars { on: root.np-playing; phase: root.phase; tint: #22c55e; bar-h: 15px;
+                    x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } }
+            if t.has-hover && !root.is-np: Rectangle { width: parent.width; height: parent.height; background: #00000088;
                 AppIcon { source: Icons.play; tint: on-light ? #ffffff : MusicTheme.fg; width: 14px; height: 14px; } }
         }
         VerticalLayout { alignment: center; spacing: 2px; horizontal-stretch: 1;
-            Text { text: track.title; color: on-light ? #1f1a14 : MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; }
+            Text { text: track.title; color: root.is-np ? #22c55e : (on-light ? #1f1a14 : MusicTheme.fg); font-size: 13px; font-weight: 600; overflow: elide; }
             // fg3 (not fg-dim): a stronger step so the artist reads as dark ink in
             // light theme and pops bright against dark surfaces (was near-invisible).
             Text { text: track.artist; color: on-light ? #5a4d3e : MusicTheme.fg3; font-size: 11px; overflow: elide; }
@@ -621,6 +635,12 @@ component TrackRow inherits Skin {
 component SongCard inherits Skin {
     in property <SongRowEx> track;
     in property <length> size: 160px;
+    // Now-playing: `index` is the library position, `np-index` the one being
+    // heard. Comparing them is cheaper than a per-row flag through the model.
+    in property <int> np-index: -1;
+    in property <bool> np-playing: false;
+    in property <bool> phase: false;
+    property <bool> is-np: track.index == np-index && np-index >= 0;
     callback clicked();
     callback fav();
     callback rate(int);
@@ -638,28 +658,47 @@ component SongCard inherits Skin {
     width: size; horizontal-stretch: 0; vertical-stretch: 0;
     VerticalLayout { spacing: 10px;
         Rectangle { width: size; height: size; border-radius: Surface.r(10px); clip: true; background: MusicTheme.surf-thumb;
-            border-width: ta.has-hover ? 2px : 0px; border-color: #ec4899;
-            drop-shadow-blur: ta.has-hover ? 28px : 0px; drop-shadow-color: #ec4899aa;
-            animate drop-shadow-blur, border-width { duration: 140ms; easing: ease-out; }
-            Image { source: track.thumb; image-fit: cover; width: 100%; height: 100%; }
+            // Playing wins over hover on the border colour — you can hover a
+            // different card while this one is the one you are hearing.
+            border-width: (ta.has-hover || root.is-np) ? 2px : 0px;
+            border-color: root.is-np ? #22c55e : #ec4899;
+            drop-shadow-blur: ta.has-hover ? 28px : (root.is-np ? 18px : 0px);
+            drop-shadow-color: root.is-np ? #22c55eaa : #ec4899aa;
+            animate drop-shadow-blur, border-width { duration: MusicMotion.fast; easing: ease-out; }
+            // Hover zoom. Slint has no `transform: scale`, so the image grows
+            // past its frame and re-centres; because it lives inside the
+            // clip and the frame itself never resizes, no layout — and no
+            // TouchArea — moves, which is what would otherwise oscillate at
+            // the hover boundary.
+            Image { source: track.thumb; image-fit: cover;
+                property <length> zoom: (ta.has-hover && !MusicMotion.off) ? 10px : 0px;
+                width: parent.width + self.zoom; height: parent.height + self.zoom;
+                x: -self.zoom / 2; y: -self.zoom / 2;
+                animate width, height, x, y { duration: MusicMotion.mid; easing: ease-out; } }
+            // Now-playing badge — bottom-left, out of the way of the heart
+            // (top-left), lyrics (top-right) and the star strip (bottom).
+            if root.is-np: Rectangle { x: 8px; y: parent.height - 68px; width: 30px; height: 30px;
+                border-radius: Surface.r(15px); background: #000000cc;
+                EqBars { on: root.np-playing; phase: root.phase; tint: #22c55e; bar-h: 13px;
+                    x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } }
             // Dim wash on hover.
-            Rectangle { width: 100%; height: 100%; background: #00000066; opacity: ta.has-hover ? 1 : 0; animate opacity { duration: 140ms; } }
+            Rectangle { width: 100%; height: 100%; background: #00000066; opacity: ta.has-hover ? 1 : 0; animate opacity { duration: MusicMotion.fast; } }
             // Play affordance (centre) on hover.
             Rectangle { x: (parent.width - 44px)/2; y: (parent.height - 44px)/2 - 8px; width: 44px; height: 44px; border-radius: 22px; background: #ec4899;
-                opacity: ta.has-hover ? 1 : 0; animate opacity { duration: 140ms; }
+                opacity: ta.has-hover ? 1 : 0; animate opacity { duration: MusicMotion.fast; }
                 AppIcon { source: Icons.play; tint: #ffffff; width: 16px; height: 16px; } }
             // Heart — top-left (always when loved, else on hover).
             Rectangle { x: 8px; y: 8px; width: 30px; height: 30px; border-radius: Surface.r(15px); background: #000000aa;
-                opacity: (ta.has-hover || track.loved) ? 1 : 0; animate opacity { duration: 140ms; }
+                opacity: (ta.has-hover || track.loved) ? 1 : 0; animate opacity { duration: MusicMotion.fast; }
                 AppIcon { source: track.loved ? Icons.heart-filled : Icons.heart; tint: track.loved ? #ec4899 : #ffffff; width: 16px; height: 16px; } }
             // Lyrics status — top-right (synced badge always; find on hover).
             Rectangle { x: parent.width - 38px; y: 8px; width: 30px; height: 30px; border-radius: Surface.r(15px);
                 background: track.synced ? #ec4899ee : #000000aa;
-                opacity: (ta.has-hover || track.synced) ? 1 : 0; animate opacity { duration: 140ms; }
+                opacity: (ta.has-hover || track.synced) ? 1 : 0; animate opacity { duration: MusicMotion.fast; }
                 AppIcon { source: track.synced ? Icons.music : Icons.plus; tint: #ffffff; width: 15px; height: 15px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } }
             // Star rating — bottom strip on hover.
             Rectangle { x: 0; y: parent.height - 32px; width: parent.width; height: 28px; background: #000000aa;
-                opacity: ta.has-hover ? 1 : 0; animate opacity { duration: 140ms; }
+                opacity: ta.has-hover ? 1 : 0; animate opacity { duration: MusicMotion.fast; }
                 HorizontalLayout { spacing: 0px;
                     for n[i] in [1, 2, 3, 4, 5]: Rectangle { horizontal-stretch: 1; height: 28px;
                         AppIcon { source: track.stars >= n ? Icons.star-filled : Icons.star; tint: track.stars >= n ? #e5a00d : #ffffffcc; width: 14px; height: 14px; } } } }
@@ -807,7 +846,7 @@ component SetToggle inherits Rectangle {
                 Rectangle { width: 16px; height: 16px; border-radius: Surface.r(8px); background: #ffffff;
                     y: (parent.height - self.height) / 2;
                     x: root.on ? parent.width - self.width - 3px : 3px;
-                    animate x { duration: 140ms; easing: ease-out; } } } } }
+                    animate x { duration: MusicMotion.fast; easing: ease-out; } } } } }
 }
 
 // Compact action/choice chip for card bodies (denser than BrowseChip).
@@ -906,7 +945,7 @@ component FancyCount inherits Rectangle {
     Rectangle { x: 0; y: 0; height: 100%;
         width: root.dl-frac >= 0 ? parent.width * Math.clamp(root.dl-frac, 0, 1) : parent.width;
         background: @linear-gradient(120deg, #ec4899, #8b5cf6);
-        animate width { duration: 200ms; easing: ease-out; }
+        animate width { duration: MusicMotion.mid; easing: ease-out; }
     }
     HorizontalLayout { padding-left: 20px; padding-right: 22px; spacing: 9px; alignment: center;
         VerticalLayout { alignment: center; Text { text: num; color: #ffffff; font-size: 23px; font-weight: 800; vertical-alignment: center; } }
@@ -924,7 +963,7 @@ component PageBtn inherits Rectangle {
     background: filled ? (pb.has-hover ? root.tint.brighter(0.14) : root.tint) : (pb.has-hover ? root.tint : MusicTheme.surf1);
     border-width: 1px; border-color: filled ? root.tint : (pb.has-hover ? root.tint : MusicTheme.line);
     drop-shadow-blur: pb.has-hover ? 14px : 0px; drop-shadow-color: root.tint.with-alpha(0.53);
-    animate background, drop-shadow-blur { duration: 140ms; }
+    animate background, drop-shadow-blur { duration: MusicMotion.fast; }
     property <color> fg: (filled || pb.has-hover) ? #ffffff : MusicTheme.fg2;
     pb := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     if root.icon.width > 0: AppIcon { source: root.icon; tint: root.fg; width: 14px; height: 14px; }
@@ -956,7 +995,7 @@ component DetailActionBtn inherits Rectangle {
     height: 38px; horizontal-stretch: 0; vertical-stretch: 0; border-radius: Surface.r(19px);
     background: da.has-hover ? MusicTheme.hov2 : MusicTheme.surf1;
     border-width: 1px; border-color: MusicTheme.line;
-    animate background { duration: 140ms; }
+    animate background { duration: MusicMotion.fast; }
     da := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout { padding-left: 15px; padding-right: 16px; spacing: 8px;
         VerticalLayout { alignment: center; AppIcon { source: root.icon; tint: da.has-hover ? #ec4899 : MusicTheme.fg2; width: 15px; height: 15px; } }
@@ -1007,14 +1046,14 @@ component PodcastCardView inherits Skin {
         Rectangle { width: size; height: size; border-radius: Surface.r(14px); clip: true; background: MusicTheme.surf-thumb;
             border-width: ta.has-hover ? 2px : 0px; border-color: #8b5cf6;
             drop-shadow-blur: ta.has-hover ? 26px : 0px; drop-shadow-color: #8b5cf6aa;
-            animate drop-shadow-blur, border-width { duration: 140ms; easing: ease-out; }
+            animate drop-shadow-blur, border-width { duration: MusicMotion.fast; easing: ease-out; }
             if card.image.width > 0: Image { source: card.image; image-fit: cover; width: 100%; height: 100%; }
             if card.image.width == 0: AppIcon { source: Icons.mic; width: 48px; height: 48px; }
             // Unplayed-episode badge — top-right.
             if card.unplayed > 0: Rectangle { x: parent.width - ubadge.preferred-width - 8px; y: 8px; width: ubadge.preferred-width; height: 26px; border-radius: Surface.r(13px); background: #8b5cf6;
                 ubadge := HorizontalLayout { padding-left: 8px; padding-right: 8px;
                     Text { text: card.unplayed > 999 ? "999+" : card.unplayed; color: #ffffff; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
-            Rectangle { width: 100%; height: 100%; background: #00000055; opacity: ta.has-hover ? 1 : 0; animate opacity { duration: 140ms; }
+            Rectangle { width: 100%; height: 100%; background: #00000055; opacity: ta.has-hover ? 1 : 0; animate opacity { duration: MusicMotion.fast; }
                 AppIcon { source: Icons.play; tint: #ffffff; width: 24px; height: 24px; } }
             ta := TouchArea { mouse-cursor: pointer; clicked => { root.open(); }
                 pointer-event(e) => {
@@ -1053,7 +1092,7 @@ component PodcastTrendCardView inherits Skin {
     border-radius: Surface.r(16px); background: MusicTheme.surf0; border-width: 1px;
     border-color: hov.has-hover ? #8b5cf6 : MusicTheme.line;
     drop-shadow-blur: hov.has-hover ? 26px : 0px; drop-shadow-color: #8b5cf655;
-    animate drop-shadow-blur, border-color { duration: 140ms; easing: ease-out; }
+    animate drop-shadow-blur, border-color { duration: MusicMotion.fast; easing: ease-out; }
     clip: true;
     hov := TouchArea { mouse-cursor: pointer; clicked => { root.info(); }
         pointer-event(e) => {
@@ -1122,16 +1161,24 @@ component PodcastEpisodeItem inherits Skin {
     in property <int> dl-id: -1;              // id currently downloading
     in property <float> dl-frac: 0;           // 0..1 progress of that download
     in property <bool> ctx-remove: false;     // right-click → Remove from download
+    in property <int> np-id: -1;              // the episode currently playing
+    in property <bool> np-playing: false;
+    in property <bool> phase: false;
+    property <bool> is-np: ep.id == np-id && np-id >= 0;
     property <bool> downloading: ep.id == dl-id && dl-id >= 0;
     property <length> menu-x: 0;
     property <length> menu-y: 0;
+    in property <bool> queued-next: false;   // already in the play queue
     callback play();
+    callback queue();
     callback download();
     callback transcript();
     callback remove-download();
     callback goto-podcast();                  // open the owning podcast's page
     height: show-podcast ? 72px : 64px; border-radius: Surface.r(10px);
-    background: ta.has-hover ? MusicTheme.hov : transparent;
+    background: root.is-np ? #8b5cf62a : (ta.has-hover ? MusicTheme.hov : transparent);
+    border-width: root.is-np ? 1px : 0px; border-color: #8b5cf677;
+    animate background { duration: MusicMotion.fast; }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.play(); }
         pointer-event(e) => {
             if (e.button == PointerEventButton.right && e.kind == PointerEventKind.down && root.ctx-remove) {
@@ -1148,16 +1195,34 @@ component PodcastEpisodeItem inherits Skin {
             y: (parent.height - 48px) / 2;
             if ep.image.width > 0: Image { source: ep.image; image-fit: cover; width: 100%; height: 100%; }
             if ep.image.width == 0: AppIcon { source: Icons.mic; width: 20px; height: 20px; }
+            // Playing marker beats the played dot — one state at a time.
+            if root.is-np: Rectangle { width: 100%; height: 100%; background: #000000aa;
+                EqBars { on: root.np-playing; phase: root.phase; tint: #a78bfa; bar-h: 16px;
+                    x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } }
             // Played dot.
-            if ep.played: Rectangle { x: parent.width - 14px; y: 2px; width: 12px; height: 12px; border-radius: Surface.r(6px); background: #22c55e; border-width: 2px; border-color: MusicTheme.surf-thumb; } }
+            if ep.played && !root.is-np: Rectangle { x: parent.width - 14px; y: 2px; width: 12px; height: 12px; border-radius: Surface.r(6px); background: #22c55e; border-width: 2px; border-color: MusicTheme.surf-thumb; } }
         VerticalLayout { alignment: center; spacing: 3px; horizontal-stretch: 1;
             if show-podcast && ep.show != "": Text { text: ep.show; color: MusicTheme.light ? #6d28d9 : #c4b5fd; font-size: 10px; font-weight: 700; overflow: elide; }
             Text { text: ep.title; color: ep.played ? MusicTheme.fg-mute : MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; }
             Text { text: ep.date + (ep.date != "" && ep.duration != "" ? "  ·  " : "") + ep.duration;
-                color: MusicTheme.fg-mute; font-size: 11px; overflow: elide; } }
+                color: MusicTheme.fg-mute; font-size: 11px; overflow: elide; }
+            // How far in you got. `played` is a boolean, so without this an
+            // episode abandoned at minute 70 of 90 looks untouched.
+            if ep.progress > 0.01 && ep.progress < 0.99: Rectangle {
+                height: 3px; border-radius: 1.5px; background: #ffffff1c;
+                Rectangle { x: 0; height: parent.height; border-radius: 1.5px;
+                    width: parent.width * ep.progress; background: #a78bfa;
+                    animate width { duration: MusicMotion.mid; easing: ease-out; } } } }
         // Download stamp — when the offline copy landed (Downloads list).
         if ep.dlinfo != "" && ep.downloaded: VerticalLayout { alignment: center;
             HorizontalLayout { spacing: 4px; VerticalLayout { alignment: center; AppIcon { source: Icons.download; tint: MusicTheme.fg-mute; width: 10px; height: 10px; } } Text { text: ep.dlinfo; color: MusicTheme.fg-mute; font-size: 10px; font-weight: 600; } } }
+        // Add to the cross-show queue.
+        VerticalLayout { alignment: center; Rectangle { width: 34px; height: 34px; border-radius: Surface.r(17px);
+            background: root.queued-next ? #8b5cf633 : (qq.has-hover ? MusicTheme.surf1 : transparent);
+            animate background { duration: MusicMotion.fast; }
+            qq := TouchArea { mouse-cursor: pointer; clicked => { root.queue(); } }
+            AppIcon { source: Icons.list-plus; tint: root.queued-next ? #a78bfa : MusicTheme.fg2;
+                width: 15px; height: 15px; } } }
         // Transcript / show-notes.
         VerticalLayout { alignment: center; Rectangle { width: 34px; height: 34px; border-radius: Surface.r(17px);
             background: tt.has-hover ? MusicTheme.surf1 : transparent;
@@ -1169,7 +1234,7 @@ component PodcastEpisodeItem inherits Skin {
             if root.downloading: Rectangle { width: 56px; height: 30px; border-radius: Surface.r(8px); clip: true;
                 background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
                 Rectangle { x: 0; y: 0; height: 100%; width: parent.width * Math.clamp(root.dl-frac, 0, 1);
-                    background: @linear-gradient(90deg, #8b5cf6, #6366f1); animate width { duration: 150ms; } }
+                    background: @linear-gradient(90deg, #8b5cf6, #6366f1); animate width { duration: MusicMotion.fast; } }
                 Text { text: Math.round(Math.clamp(root.dl-frac, 0, 1) * 100) + "%"; color: MusicTheme.fg; font-size: 10px; font-weight: 700;
                     horizontal-alignment: center; vertical-alignment: center; } }
             if !root.downloading && ep.queued && !ep.downloaded: Rectangle { width: 60px; height: 26px; border-radius: Surface.r(13px);
@@ -1207,7 +1272,7 @@ component BookCardView inherits Skin {
     border-radius: Surface.r(14px);
     background: ta.has-hover ? MusicTheme.hov2 : MusicTheme.surf00;
     border-width: 1px; border-color: MusicTheme.line;
-    animate background { duration: 120ms; }
+    animate background { duration: MusicMotion.fast; }
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
     VerticalLayout { padding: 10px; spacing: 8px;
         BookCover { cover: root.card.cover; height: self.width; }
@@ -1275,11 +1340,11 @@ component RadioCatGrid inherits Rectangle {
             background: MusicTheme.surf00;
             border-width: 1px; border-color: cta.has-hover ? #14b8a680 : MusicTheme.line;
             drop-shadow-blur: cta.has-hover ? 18px : 0px; drop-shadow-color: #14b8a633;
-            animate drop-shadow-blur, border-color { duration: 130ms; }
+            animate drop-shadow-blur, border-color { duration: MusicMotion.fast; }
             // Hover wash — the tile's own gradient at glass opacity.
             Rectangle { width: 100%; height: 100%; border-radius: Surface.r(16px);
                 background: root.grads[Math.mod(i, 6)];
-                opacity: cta.has-hover ? 0.16 : 0; animate opacity { duration: 130ms; } }
+                opacity: cta.has-hover ? 0.16 : 0; animate opacity { duration: MusicMotion.fast; } }
             cta := TouchArea { mouse-cursor: pointer; clicked => { root.open(i); } }
             VerticalLayout { padding: 14px; spacing: 10px; alignment: center;
                 HorizontalLayout { alignment: center; AppIcon { source: Icons.radio; tint: MusicTheme.fg; width: 48px; height: 48px; } }
@@ -1371,12 +1436,12 @@ component GlassCard inherits Skin {
     drop-shadow-blur: root.hot ? 24px : 0px;
     drop-shadow-color: #ef444455;
     clip: root.clip-content;
-    animate border-color, drop-shadow-blur { duration: 150ms; easing: ease-out; }
+    animate border-color, drop-shadow-blur { duration: MusicMotion.fast; easing: ease-out; }
     // accent colour wash — always a faint pop, stronger on hover. Insets keep it
     // off the button strip so action buttons stay visually untouched on hover.
     Rectangle { x: 0; y: 0; width: parent.width - root.wash-right-inset; height: parent.height - root.wash-bottom-inset;
         border-radius: parent.border-radius; background: #ef4444;
-        opacity: root.hot ? 0.10 : 0.04; animate opacity { duration: 150ms; easing: ease-out; } }
+        opacity: root.hot ? 0.10 : 0.04; animate opacity { duration: MusicMotion.fast; easing: ease-out; } }
     // frost sheen — 1px inner highlight (bright in light theme, faint in dark).
     Rectangle { x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
         border-radius: parent.border-radius - 1px; border-width: 1px;
@@ -1393,12 +1458,16 @@ component YtThumb inherits Skin {
     in property <string> quality: "";   // download quality badge (top-right)
     in property <string> count: "";     // gradient count pill (top-right, playlists)
     in property <bool> hot: false;
+    in property <float> progress: 0;    // 0..1 watched — resume bar along the bottom
+    in property <bool> playing: false;  // this video is the one playing
+    in property <bool> np-playing: false;
+    in property <bool> phase: false;
     clip: true;
     Image { source: root.src; image-fit: cover;
         width: parent.width * (root.hot ? 1.08 : 1.0);
         height: parent.height * (root.hot ? 1.08 : 1.0);
         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-        animate width, height { duration: 260ms; easing: ease-out; } }
+        animate width, height { duration: MusicMotion.mid; easing: ease-out; } }
     Rectangle { y: parent.height - self.height; height: 38px; width: parent.width;
         background: @linear-gradient(180deg, #00000000 0%, #000000aa 100%); }
     // hover play badge
@@ -1407,7 +1476,7 @@ component YtThumb inherits Skin {
         background: #ef2222; border-width: 2px; border-color: #ffffffdd;
         opacity: root.hot ? 1.0 : 0.0;
         drop-shadow-blur: Surface.cast(18px); drop-shadow-color: #ef4444;
-        animate opacity { duration: 170ms; easing: ease-out; }
+        animate opacity { duration: MusicMotion.mid; easing: ease-out; }
         AppIcon { source: Icons.play; tint: #ffffff; width: 20px; height: 20px;
             x: (parent.width - self.width) / 2 + 1px; y: (parent.height - self.height) / 2; } }
     if root.duration != "": Rectangle { x: parent.width - self.width - 6px; y: parent.height - self.height - 6px;
@@ -1423,6 +1492,20 @@ component YtThumb inherits Skin {
         background: #000000cc; drop-shadow-blur: Surface.cast(6px); drop-shadow-color: #000000aa;
         qlt := Text { text: root.quality; color: #f3f3f3; font-size: 9px; font-weight: 800;
             horizontal-alignment: center; vertical-alignment: center; } }
+    // Watched bar, YouTube's own convention: a red sliver along the bottom of
+    // the thumb showing how far in you got. Sits above the duration pill's
+    // baseline so the two never collide.
+    if root.progress > 0.01: Rectangle { x: 0; y: parent.height - 3px;
+        width: parent.width; height: 3px; background: #ffffff33;
+        Rectangle { x: 0; y: 0; height: parent.height; background: #ef4444;
+            width: parent.width * Math.clamp(root.progress, 0, 1);
+            animate width { duration: MusicMotion.mid; easing: ease-out; } } }
+    // Playing marker. Replaces the hover play badge for this one card — it is
+    // already playing, so offering "play" would be the wrong affordance.
+    if root.playing: Rectangle { x: 6px; y: parent.height - 30px;
+        width: 30px; height: 24px; border-radius: Surface.r(6px); background: #000000cc;
+        EqBars { on: root.np-playing; phase: root.phase; tint: #ef4444; bar-h: 12px;
+            x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } }
     // Count pill (Playlists) — gradient-outlined, top-right over the cover.
     if root.count != "": Rectangle { x: parent.width - self.width - 6px; y: 6px;
         width: cnt.preferred-width + 22px; height: 22px; border-radius: Surface.r(11px);
@@ -1469,13 +1552,13 @@ component YtBtn inherits Rectangle {
     drop-shadow-blur: root.prim ? (ta.has-hover ? 16px : 7px) : 0px;
     drop-shadow-color: #ef4444aa;
     opacity: ta.pressed ? 0.92 : 1.0;
-    animate background, border-color, drop-shadow-blur, opacity { duration: 120ms; easing: ease-out; }
+    animate background, border-color, drop-shadow-blur, opacity { duration: MusicMotion.fast; easing: ease-out; }
 
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     // Download progress fill (podcast-style) — green sweep along the bottom.
     if root.progress >= 0: Rectangle { x: 0; y: parent.height - 3px; height: 3px;
         width: parent.width * Math.clamp(root.progress, 0, 1); background: #22c55e;
-        animate width { duration: 150ms; } }
+        animate width { duration: MusicMotion.fast; } }
     if root.busy: Rectangle {
         property <float> t: Math.mod(animation-tick() / 1200ms, 1.0);
         x: (parent.width + 80px) * t - 80px; width: 80px; height: 100%;
@@ -1525,6 +1608,10 @@ component YtWatchBtn inherits Rectangle {
 // glass surface, hover lift + thumb zoom, coloured action column on the right.
 component YtVideoCard inherits Skin {
     in property <YtVideo> v;
+    in property <string> np-id: "";
+    in property <bool> np-playing: false;
+    in property <bool> phase: false;
+    property <bool> is-np: v.id == np-id && np-id != "";
     in property <int> idx: 0;       // for staggered entrance
     in property <float> dl-frac: -1; // live download progress for this id (<0 = none)
     callback play(bool);            // want-video
@@ -1536,11 +1623,12 @@ component YtVideoCard inherits Skin {
     property <bool> appeared: false;
     init => { root.appeared = true; }
     opacity: root.appeared ? 1.0 : 0.0;
-    animate opacity { duration: 320ms; easing: ease-out; delay: root.idx * 45ms; }
+    animate opacity { duration: MusicMotion.slow; easing: ease-out; delay: Math.min(root.idx, 12) * MusicMotion.stagger; }
     GlassCard { width: 100%; height: 100%; radius: 14px; hot: root.hovered; wash-right-inset: 132px;
         ca := TouchArea { mouse-cursor: pointer; clicked => { root.play(false); } }
         HorizontalLayout { padding: 11px; spacing: 13px;
-            YtThumb { width: 184px; height: 112px; border-radius: Surface.r(9px); src: v.thumb; duration: v.duration; hot: root.hovered; }
+            YtThumb { width: 184px; height: 112px; border-radius: Surface.r(9px); src: v.thumb; duration: v.duration; hot: root.hovered;
+                progress: v.progress; playing: root.is-np; np-playing: root.np-playing; phase: root.phase; }
             VerticalLayout { horizontal-stretch: 1; spacing: 5px; alignment: center;
                 Rectangle { height: 42px;
                     Text { width: 100%; text: v.title; color: MusicTheme.fg; font-size: 15px; font-weight: 700;
@@ -1565,6 +1653,10 @@ component YtVideoCard inherits Skin {
 // body (10 pad · 34 title (2 lines) · 14 meta · 30 buttons · 14 gaps · 10 pad).
 component YtVideoGridCard inherits Skin {
     in property <YtVideo> v;
+    in property <string> np-id: "";
+    in property <bool> np-playing: false;
+    in property <bool> phase: false;
+    property <bool> is-np: v.id == np-id && np-id != "";
     in property <string> remove-glyph: "";   // "" hides the remove action
     in property <bool> hide-download: false;  // downloaded items: Download lives in ⋯
     in property <bool> compact: false;        // downloads: no meta line, buttons hug the title
@@ -1579,11 +1671,12 @@ component YtVideoGridCard inherits Skin {
     property <bool> appeared: false;
     init => { root.appeared = true; }
     opacity: root.appeared ? 1.0 : 0.0;
-    animate opacity { duration: 300ms; easing: ease-out; delay: root.idx * 35ms; }
+    animate opacity { duration: MusicMotion.slow; easing: ease-out; delay: Math.min(root.idx, 12) * MusicMotion.stagger; }
     GlassCard { width: 100%; height: 100%; radius: 13px; clip-content: true; hot: root.hovered; wash-bottom-inset: 48px;
         gh := TouchArea { mouse-cursor: pointer; clicked => { root.play(false); } }
         VerticalLayout { spacing: 0;
-            YtThumb { height: root.width * 9 / 16; src: v.thumb; duration: v.duration; fmt: v.fmt; quality: v.quality; hot: root.hovered; }
+            YtThumb { height: root.width * 9 / 16; src: v.thumb; duration: v.duration; fmt: v.fmt; quality: v.quality; hot: root.hovered;
+                progress: v.progress; playing: root.is-np; np-playing: root.np-playing; phase: root.phase; }
             VerticalLayout { padding: 10px; spacing: 7px;
                 Rectangle { height: 34px;
                     Text { width: 100%; text: v.title; color: MusicTheme.fg; font-size: 13px; font-weight: 700;
@@ -1607,7 +1700,7 @@ component YtSubRow inherits Skin {
     background: sh.has-hover ? #ef4444.with-alpha(MusicTheme.light ? 0.22 : 0.18)
                             : #ef4444.with-alpha(MusicTheme.light ? 0.12 : 0.08);
     border-width: 1px; border-color: sh.has-hover ? #ef4444bf : #ef444452;
-    animate background, border-color { duration: 120ms; easing: ease-out; }
+    animate background, border-color { duration: MusicMotion.fast; easing: ease-out; }
     sh := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
     HorizontalLayout { padding: 8px; spacing: 11px;
         Rectangle { width: 40px; height: 40px; border-radius: Surface.r(20px); clip: true; background: MusicTheme.surf1;
@@ -1629,7 +1722,7 @@ component YtMiniRow inherits Skin {
     background: mh.has-hover ? root.tint.with-alpha(MusicTheme.light ? 0.22 : 0.18)
                              : root.tint.with-alpha(MusicTheme.light ? 0.12 : 0.08);
     border-width: 1px; border-color: mh.has-hover ? root.tint.with-alpha(0.75) : root.tint.with-alpha(0.32);
-    animate background, border-color { duration: 120ms; easing: ease-out; }
+    animate background, border-color { duration: MusicMotion.fast; easing: ease-out; }
     mh := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
     HorizontalLayout { padding: 6px; spacing: 8px;
         Rectangle { width: 52px; height: 30px; border-radius: Surface.r(5px); clip: true; background: MusicTheme.surf1;
@@ -1655,7 +1748,7 @@ component YtRailTitle inherits Rectangle {
     // Always-on red wash so the section header reads in every theme.
     background: rt.has-hover ? @linear-gradient(90deg, #ef444433, #ef444412)
                              : @linear-gradient(90deg, #ef444422, #ef44440a);
-    animate background, border-color { duration: 120ms; easing: ease-out; }
+    animate background, border-color { duration: MusicMotion.fast; easing: ease-out; }
     rt := TouchArea { mouse-cursor: pointer; enabled: root.linked; clicked => { root.clicked(); } }
     HorizontalLayout { padding-left: 11px; padding-right: 9px; spacing: 5px;
         Text { text: root.label; color: #ef4444; font-size: 12px; font-weight: 800; letter-spacing: 0.5px; vertical-alignment: center; horizontal-stretch: 1; }
@@ -1691,6 +1784,27 @@ export component MusicPage inherits Rectangle {
     // Half-window guard: below this the 5 section tabs collapse to icon-only
     // (expand on hover); at full width they keep their labels and stretch-fill.
     property <bool> tabs-compact: root.width < 1000px;
+    // One timer drives every looping animation on the page — the now-playing
+    // equaliser bars and the skeleton shimmer. Slint cannot loop an animation,
+    // so the idiom is to flip a flag and animate between the two states; doing
+    // that once here instead of per-card keeps every badge in step and costs
+    // one timer instead of one per visible row.
+    property <bool> phase: false;
+    pulse := Timer {
+        interval: 420ms;
+        // Only while something is actually looping. A paused player and a
+        // loaded page both stop it, so an idle window ticks nothing.
+        running: !MusicMotion.off && (root.playing || root.busy-any);
+        triggered => { root.phase = !root.phase; }
+    }
+    // True while any of the five tabs is waiting on IO — drives the skeletons.
+    property <bool> busy-any: root.radio-busy || root.yt-busy
+        || root.podcast-refresh-busy || root.podcast-subscribing;
+    // Bumped whenever the visible surface changes, so the incoming view can
+    // fade + rise from a known start instead of popping into place.
+    property <int> view-epoch: 0;
+    changed view => { root.view-epoch += 1; }
+    changed lib-tab => { root.view-epoch += 1; }
     in property <int> item-count: 0;
     in property <bool> home-connect: false;       // gradient-outline the Home blocks
     in property <bool> yt-home-connect: true;     // gradient-outline the YouTube Home rails (default on)
@@ -1778,6 +1892,14 @@ export component MusicPage inherits Rectangle {
     in property <[PhotoTile]> most: [];
     in property <[PhotoTile]> loved-tiles: [];
     in property <[PhotoTile]> fresh: [];
+    // Home — anything with a stored position that is neither at the start nor
+    // finished. `count` carries percent-complete (PhotoTile has no float free).
+    in property <[PhotoTile]> continue-rows: [];
+    // Home listening strip — pre-formatted in Rust; "" hides the whole strip.
+    in property <string> stats-week: "";
+    in property <string> stats-total: "";
+    in property <string> stats-genre: "";
+    in property <string> stats-streak: "";
     in property <[PhotoTile]> albums: [];
     in property <[PhotoTile]> artists: [];
     in property <[PhotoTile]> genres: [];
@@ -2144,6 +2266,14 @@ export component MusicPage inherits Rectangle {
     callback podcast-skip(int);            // ± seconds on the playing episode (header transport)
     callback podcast-set-thumb();          // pick a custom artwork for the open podcast
     callback podcast-refresh();      // re-fetch all subscribed feeds
+    in property <int> podcast-np-id: -1;    // playing episode id (-1 = none)
+    // Cross-show play queue — the loop a podcast app is actually used through.
+    in property <int> podcast-queue-len: 0;
+    in property <[PodcastEpisodeRow]> podcast-queue-rows: [];
+    in-out property <bool> podcast-queue-open: false;
+    callback podcast-queue-add(int);      // append an episode id
+    callback podcast-queue-remove(int);   // drop by position
+    callback podcast-queue-clear();
     in property <bool> podcast-refresh-busy: false;
     in property <float> podcast-refresh-frac: 0;     // 0..1 across feeds + episodes
     in property <string> podcast-refresh-status: "";
@@ -2194,11 +2324,23 @@ export component MusicPage inherits Rectangle {
     in-out property <string> ab-d-total;
     in property <[ChapterRow]> ab-d-chapters: [];
     in-out property <int> ab-d-resume-index: -1; // chapter to (re)start on Resume
+    // Bookmarks for the OPEN book — the union across its chapters. Three
+    // parallel models rather than a struct: the labels are editable in place
+    // and Slint cannot write one field of a struct inside a model.
+    in property <[string]> ab-d-bm-labels: [];
+    in property <[string]> ab-d-bm-times: [];      // "Ch 3 · 12:40", pre-formatted
+    in-out property <int> ab-d-bm-edit: -1;        // index being renamed (-1 = none)
+    in-out property <string> ab-d-bm-draft: "";
+    in property <bool> ab-d-finished: false;
+    callback ab-bm-add();                          // bookmark the current position
+    callback ab-bm-jump(int);
+    callback ab-bm-remove(int);
+    callback ab-bm-rename(int, string);
+    callback ab-set-finished(bool);
     callback audiobook-open(string);   // open a book by folder path
     callback audiobook-back();
     in-out property <float> book-speed: 1.0;
     in-out property <bool> book-skip-silence-on: false;
-    in property <[string]> book-bookmarks: [];
     // Audiobooks sub-tab (all | progress | finished | folders) + folder rows.
     in-out property <string> ab-tab: "all";
     in property <[string]> ab-folders: [];
@@ -2210,8 +2352,6 @@ export component MusicPage inherits Rectangle {
     callback set-book-speed(float);
     callback book-chapter(int);     // ±1
     callback book-skip-silence();   // toggle silence-skip filter
-    callback book-bookmark();       // add a bookmark at the current position
-    callback book-bookmark-jump(int);
     // Internet radio (np.p4.music.radio) — curated India-first presets,
     // radio-browser search, favourites + recents, LIVE now-playing.
     in-out property <string> radio-tab: "home";        // home | favourites | recent
@@ -2226,6 +2366,16 @@ export component MusicPage inherits Rectangle {
     in property <bool> radio-busy: false;              // network fetch in flight
     in property <string> radio-status: "";             // error / empty-state hint
     in property <string> radio-np-uuid: "";            // playing station uuid ("" = none)
+    // ICY now-playing. mpv reports the stream's `media-title`; the station name
+    // stays on the player bar's first line, so this is the only place the
+    // actual track is readable — plus a short log, because it changes and the
+    // question is usually asked one song late.
+    in property <string> radio-np-track: "";
+    in property <[string]> radio-track-log: [];
+    in property <bool> radio-recording: false;
+    in property <string> radio-rec-file: "";
+    callback radio-record();                           // toggle stream-record
+    callback radio-track-search(string);               // hunt an ICY title down
     in property <bool> radio-refresh-busy: false;      // refresh-all in flight
     in property <float> radio-refresh-frac: 0;         // 0..1 presets fetched
     in-out property <string> radio-sort: "default";    // default | name | bitrate
@@ -2256,6 +2406,7 @@ export component MusicPage inherits Rectangle {
     in property <[YtVideo]> yt-results: [];          // Home center search results (5 shown + Load more)
     in property <[YtVideo]> yt-recommended: [];      // Home center when not searching (from subs)
     in property <bool> yt-results-more: false;       // a nextpage token exists
+    in property <string> yt-np-id: "";   // playing video id ("" = none)
     in property <bool> yt-busy: false;
     in property <string> yt-status: "";              // empty-state / error hint
     in-out property <string> yt-query: "";
@@ -2544,15 +2695,15 @@ export component MusicPage inherits Rectangle {
                 // 5 sections fill the width up to the search bar, each with an icon.
                 VerticalLayout { alignment: center; horizontal-stretch: 1; HorizontalLayout { spacing: 8px;
                     LiveTabRing { live: root.playing && root.player-mode == "music" && !root.yt-now-video; tint: #ec4899; horizontal-stretch: root.tabs-compact ? 0 : 1;
-                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 116px : 44px) : 116px; animate min-width { duration: 200ms; easing: ease-out; } icon: Icons.music; label: "My Music";   has-grad: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.view == "mymusic";    clicked => { root.set-view("mymusic"); } } }
+                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 116px : 44px) : 116px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } icon: Icons.music; label: "My Music";   has-grad: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.view == "mymusic";    clicked => { root.set-view("mymusic"); } } }
                     LiveTabRing { live: root.playing && root.player-mode == "podcast"; tint: #8b5cf6; horizontal-stretch: root.tabs-compact ? 0 : 1;
-                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 112px : 44px) : 112px; animate min-width { duration: 200ms; easing: ease-out; } icon: Icons.mic; label: "Podcasts";   has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.view == "podcasts";   clicked => { root.set-view("podcasts"); } } }
+                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 112px : 44px) : 112px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } icon: Icons.mic; label: "Podcasts";   has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.view == "podcasts";   clicked => { root.set-view("podcasts"); } } }
                     LiveTabRing { live: root.playing && root.player-mode == "book"; tint: #3b82f6; horizontal-stretch: root.tabs-compact ? 0 : 1;
-                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 124px : 44px) : 124px; animate min-width { duration: 200ms; easing: ease-out; } icon: Icons.book-open; label: "Audiobooks"; has-grad: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.view == "audiobooks"; clicked => { root.set-view("audiobooks"); } } }
+                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 124px : 44px) : 124px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } icon: Icons.book-open; label: "Audiobooks"; has-grad: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.view == "audiobooks"; clicked => { root.set-view("audiobooks"); } } }
                     LiveTabRing { live: root.playing && root.player-mode == "radio"; tint: #14b8a6; horizontal-stretch: root.tabs-compact ? 0 : 1;
-                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 96px : 44px) : 96px; animate min-width { duration: 200ms; easing: ease-out; } icon: Icons.radio; label: "Radio";      has-grad: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.view == "radio";      clicked => { root.set-view("radio"); } } }
+                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 96px : 44px) : 96px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } icon: Icons.radio; label: "Radio";      has-grad: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.view == "radio";      clicked => { root.set-view("radio"); } } }
                     LiveTabRing { live: root.playing && root.yt-now-video; tint: #ef4444; horizontal-stretch: root.tabs-compact ? 0 : 1;
-                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 112px : 44px) : 112px; animate min-width { duration: 200ms; easing: ease-out; } icon: Icons.play; label: "YouTube";    has-grad: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b); active: root.view == "youtube";    clicked => { root.set-view("youtube"); } } }
+                        MusicTab { horizontal-stretch: root.tabs-compact ? 0 : 1; collapsible: root.tabs-compact; min-width: root.tabs-compact ? (self.revealed ? 112px : 44px) : 112px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } icon: Icons.play; label: "YouTube";    has-grad: true; tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b); active: root.view == "youtube";    clicked => { root.set-view("youtube"); } } }
                 } }
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
                     // Gradient-outlined search pill — 1.5px gradient ring over a
@@ -2564,7 +2715,7 @@ export component MusicPage inherits Rectangle {
                         property <bool> search-open: !root.tabs-compact || shover.has-hover || mq.has-focus || root.query != "";
                         width: search-open ? 340px : 44px; height: 44px; border-radius: 22px;
                         clip: true;
-                        animate width { duration: 200ms; easing: ease-out; }
+                        animate width { duration: MusicMotion.mid; easing: ease-out; }
                         background: @linear-gradient(120deg, #ec4899, #8b5cf6 50%, #06b6d4);
                         Rectangle { x: 1.5px; y: 1.5px; width: parent.width - 3px; height: parent.height - 3px;
                             border-radius: 20.5px; background: #ffffff; }
@@ -2680,16 +2831,16 @@ export component MusicPage inherits Rectangle {
                 // icon + title on hover/active (animated width). Keeps the row
                 // compact on scaled displays while still naming each tab on demand.
                 if root.view == "mymusic": VerticalLayout { alignment: center; HorizontalLayout { spacing: 8px;
-                    MusicTab { icon: Icons.home; label: "Home"; collapsible: true; min-width: self.revealed ? 92px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.lib-tab == "home";      clicked => { root.set-lib-tab("home"); } }
-                    MusicTab { icon: Icons.music; label: "Songs"; collapsible: true; min-width: self.revealed ? 96px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.lib-tab == "songs";     clicked => { root.set-lib-tab("songs"); } }
-                    MusicTab { icon: Icons.layout-grid; label: "Albums"; collapsible: true; min-width: self.revealed ? 100px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.lib-tab == "albums";    clicked => { root.set-lib-tab("albums"); } }
-                    MusicTab { icon: Icons.user; label: "Artists"; collapsible: true; min-width: self.revealed ? 100px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #06b6d4; grad: @linear-gradient(120deg, #06b6d4, #14b8a6); active: root.lib-tab == "artists";   clicked => { root.set-lib-tab("artists"); } }
-                    MusicTab { icon: Icons.music; label: "Genres"; collapsible: true; min-width: self.revealed ? 100px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.lib-tab == "genres";    clicked => { root.set-lib-tab("genres"); } }
-                    MusicTab { icon: Icons.list-music; label: "Playlists"; collapsible: true; min-width: self.revealed ? 116px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #22c55e; grad: @linear-gradient(120deg, #22c55e, #84cc16); active: root.lib-tab == "playlists"; clicked => { root.set-lib-tab("playlists"); } }
-                    MusicTab { icon: Icons.folder; label: "Folders"; collapsible: true; min-width: self.revealed ? 104px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #f59e0b; grad: @linear-gradient(120deg, #f59e0b, #f97316); active: root.lib-tab == "folders";   clicked => { root.set-lib-tab("folders"); } }
-                    MusicTab { icon: Icons.heart-filled; label: "Loved"; collapsible: true; min-width: self.revealed ? 96px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #f43f5e; grad: @linear-gradient(120deg, #f43f5e, #ec4899); active: root.lib-tab == "favorites"; clicked => { root.set-lib-tab("favorites"); } }
-                    MusicTab { icon: Icons.rotate-ccw; label: "History"; collapsible: true; min-width: self.revealed ? 104px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #a855f7; grad: @linear-gradient(120deg, #a855f7, #8b5cf6); active: root.lib-tab == "history";   clicked => { root.set-lib-tab("history"); } }
-                    MusicTab { icon: Icons.download; label: "Downloader"; collapsible: true; min-width: self.revealed ? 128px : 44px; animate min-width { duration: 200ms; easing: ease-out; } has-grad: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #8b5cf6); active: root.lib-tab == "downloader"; clicked => { root.set-lib-tab("downloader"); } }
+                    MusicTab { icon: Icons.home; label: "Home"; collapsible: true; min-width: self.revealed ? 92px : 44px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } has-grad: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #f43f5e); active: root.lib-tab == "home";      clicked => { root.set-lib-tab("home"); } }
+                    MusicTab { icon: Icons.music; label: "Songs"; collapsible: true; min-width: self.revealed ? 96px : 44px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } has-grad: true; tint: #8b5cf6; grad: @linear-gradient(120deg, #8b5cf6, #6366f1); active: root.lib-tab == "songs";     clicked => { root.set-lib-tab("songs"); } }
+                    MusicTab { icon: Icons.layout-grid; label: "Albums"; collapsible: true; min-width: self.revealed ? 100px : 44px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } has-grad: true; tint: #3b82f6; grad: @linear-gradient(120deg, #3b82f6, #06b6d4); active: root.lib-tab == "albums";    clicked => { root.set-lib-tab("albums"); } }
+                    MusicTab { icon: Icons.user; label: "Artists"; collapsible: true; min-width: self.revealed ? 100px : 44px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } has-grad: true; tint: #06b6d4; grad: @linear-gradient(120deg, #06b6d4, #14b8a6); active: root.lib-tab == "artists";   clicked => { root.set-lib-tab("artists"); } }
+                    MusicTab { icon: Icons.music; label: "Genres"; collapsible: true; min-width: self.revealed ? 100px : 44px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } has-grad: true; tint: #14b8a6; grad: @linear-gradient(120deg, #14b8a6, #22c55e); active: root.lib-tab == "genres";    clicked => { root.set-lib-tab("genres"); } }
+                    MusicTab { icon: Icons.list-music; label: "Playlists"; collapsible: true; min-width: self.revealed ? 116px : 44px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } has-grad: true; tint: #22c55e; grad: @linear-gradient(120deg, #22c55e, #84cc16); active: root.lib-tab == "playlists"; clicked => { root.set-lib-tab("playlists"); } }
+                    MusicTab { icon: Icons.folder; label: "Folders"; collapsible: true; min-width: self.revealed ? 104px : 44px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } has-grad: true; tint: #f59e0b; grad: @linear-gradient(120deg, #f59e0b, #f97316); active: root.lib-tab == "folders";   clicked => { root.set-lib-tab("folders"); } }
+                    MusicTab { icon: Icons.heart-filled; label: "Loved"; collapsible: true; min-width: self.revealed ? 96px : 44px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } has-grad: true; tint: #f43f5e; grad: @linear-gradient(120deg, #f43f5e, #ec4899); active: root.lib-tab == "favorites"; clicked => { root.set-lib-tab("favorites"); } }
+                    MusicTab { icon: Icons.rotate-ccw; label: "History"; collapsible: true; min-width: self.revealed ? 104px : 44px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } has-grad: true; tint: #a855f7; grad: @linear-gradient(120deg, #a855f7, #8b5cf6); active: root.lib-tab == "history";   clicked => { root.set-lib-tab("history"); } }
+                    MusicTab { icon: Icons.download; label: "Downloader"; collapsible: true; min-width: self.revealed ? 128px : 44px; animate min-width { duration: MusicMotion.mid; easing: ease-out; } has-grad: true; tint: #ec4899; grad: @linear-gradient(120deg, #ec4899, #8b5cf6); active: root.lib-tab == "downloader"; clicked => { root.set-lib-tab("downloader"); } }
                 } }
                 // Podcast sub-tabs — order: Home (Latest) · Subscribed · Downloads.
                 // Hidden while a single-podcast detail page is open.
@@ -2775,7 +2926,7 @@ export component MusicPage inherits Rectangle {
                         border-width: 1px; border-color: MusicTheme.light ? #5eead4 : #14b8a680;
                         Rectangle { x: 0; width: parent.width * Math.clamp(root.radio-refresh-frac, 0, 1); height: 100%;
                             background: @linear-gradient(90deg, #14b8a6, #22c55e); opacity: root.radio-refresh-busy ? 1 : 0;
-                            animate width { duration: 120ms; } }
+                            animate width { duration: MusicMotion.fast; } }
                         rfr := TouchArea { mouse-cursor: pointer; clicked => { if (!root.radio-refresh-busy) { root.radio-refresh-confirm-open = true; } } }
                         HorizontalLayout { padding-left: 14px; padding-right: 14px;
                             HorizontalLayout { alignment: center; spacing: 6px;
@@ -2799,7 +2950,7 @@ export component MusicPage inherits Rectangle {
                         // Fill bar (only while busy).
                         Rectangle { x: 0; width: parent.width * Math.clamp(root.podcast-refresh-frac, 0, 1); height: 100%;
                             background: @linear-gradient(90deg, #8b5cf6, #6366f1); opacity: root.podcast-refresh-busy ? 1 : 0;
-                            animate width { duration: 120ms; } }
+                            animate width { duration: MusicMotion.fast; } }
                         rfp := TouchArea { mouse-cursor: pointer; clicked => { if (!root.podcast-refresh-busy) { root.podcast-refresh(); } } }
                         HorizontalLayout { padding-left: 14px; padding-right: 14px;
                             HorizontalLayout { alignment: center; spacing: 6px;
@@ -2969,7 +3120,7 @@ export component MusicPage inherits Rectangle {
                         background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
                         property <float> fill: (Math.clamp(root.meta-fetch-progress, 0, 1) + Math.clamp(root.lyrics-sync-progress, 0, 1)) / 2;
                         Rectangle { x: 0; width: parent.width * mlpill.fill; height: 100%;
-                            background: @linear-gradient(90deg, #ec4899, #8b5cf6); animate width { duration: 200ms; } }
+                            background: @linear-gradient(90deg, #ec4899, #8b5cf6); animate width { duration: MusicMotion.mid; } }
                         mlt := TouchArea { mouse-cursor: pointer;
                             clicked => { root.mgr-tab = "tags"; root.open-meta-manager(); } }
                         HorizontalLayout { alignment: center; spacing: 6px;
@@ -3016,7 +3167,7 @@ export component MusicPage inherits Rectangle {
                         Rectangle { x: 0; y: 0; height: 100%; border-radius: Surface.r(15px);
                             width: Math.max(parent.width * Math.clamp(root.podcast-dl-frac, 0, 1), 30px);
                             background: @linear-gradient(90deg, #8b5cf6, #6366f1);
-                            animate width { duration: 160ms; easing: ease-out; } }
+                            animate width { duration: MusicMotion.fast; easing: ease-out; } }
                         HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 10px;
                             VerticalLayout { alignment: center; horizontal-stretch: 1;
                                 Text { text: root.podcast-dl-title == "" ? "Downloading episode…" : "Downloading  ·  " + root.podcast-dl-title;
@@ -3037,6 +3188,13 @@ export component MusicPage inherits Rectangle {
         // Favourites / Recent / Search opens a station LIST served from the
         // radio.db cache ("Refresh stations" is the only network re-fetch).
         if root.view == "radio": ScrollView {
+            // Entrance: this whole surface fades in when the view or sub-tab
+            // changes. The `if` above rebuilds the subtree, so `init` fires
+            // exactly once per arrival. Opacity only — these sit inside a
+            // layout, which owns `y`.
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: MusicMotion.slow; easing: ease-out; }
             vertical-stretch: 1; horizontal-stretch: 1;
             // Fresh lists open at the TOP — a ScrollView keeps its stale
             // viewport-y across content swaps (np.p5.atmusic ui-scroll-top).
@@ -3049,12 +3207,97 @@ export component MusicPage inherits Rectangle {
             // alignment: start pins content under the header row — without it
             // the layout can park short content at the page bottom.
             VerticalLayout { padding: 36px; padding-top: 16px; spacing: 14px; alignment: start;
+                // On air — what the playing station is actually playing right
+                // now, which the station list itself cannot show. Only exists
+                // while a station is up.
+                if root.radio-np-uuid != "": Rectangle {
+                    height: 84px; border-radius: Surface.r(14px);
+                    background: MusicTheme.surf1; border-width: 1px; border-color: #14b8a655;
+                    HorizontalLayout { padding: 16px; spacing: 14px;
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Rectangle { width: 40px; height: 40px; border-radius: Surface.r(20px);
+                                background: #14b8a622;
+                                EqBars { on: root.playing; phase: root.phase; tint: #14b8a6; bar-h: 16px;
+                                    x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
+                        VerticalLayout { alignment: center; spacing: 3px; horizontal-stretch: 1;
+                            Text { text: "ON AIR"; color: #14b8a6; font-size: 10px;
+                                font-weight: 800; letter-spacing: 1.2px; }
+                            Text { text: root.radio-np-track == ""
+                                    ? "This station is not sending track info."
+                                    : root.radio-np-track;
+                                color: root.radio-np-track == "" ? MusicTheme.fg-dim2 : MusicTheme.fg;
+                                font-size: 15px; font-weight: 700; overflow: elide; } }
+                        // Find it — the whole point of showing the title.
+                        if root.radio-np-track != "": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Rectangle { height: 34px; width: 108px; border-radius: Surface.r(17px);
+                                background: fnd.has-hover ? #14b8a6 : MusicTheme.hov2;
+                                border-width: 1px; border-color: MusicTheme.line;
+                                animate background { duration: MusicMotion.fast; }
+                                fnd := TouchArea { mouse-cursor: pointer;
+                                    clicked => { root.radio-track-search(root.radio-np-track); } }
+                                HorizontalLayout { alignment: center; spacing: 6px;
+                                    VerticalLayout { alignment: center; AppIcon { source: Icons.search;
+                                        tint: fnd.has-hover ? #ffffff : MusicTheme.fg2; width: 13px; height: 13px; } }
+                                    Text { text: "Find track"; color: fnd.has-hover ? #ffffff : MusicTheme.fg2;
+                                        font-size: 12px; font-weight: 700; vertical-alignment: center; } } } }
+                        // Record. Toggling this sets mpv's `stream-record` live,
+                        // so the stream never drops while it starts or stops.
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Rectangle { height: 34px; width: 118px; border-radius: Surface.r(17px);
+                                background: root.radio-recording ? #ef4444 : (rec.has-hover ? MusicTheme.hov2 : transparent);
+                                border-width: 1px; border-color: root.radio-recording ? #ef4444 : MusicTheme.line;
+                                animate background { duration: MusicMotion.fast; }
+                                rec := TouchArea { mouse-cursor: pointer; clicked => { root.radio-record(); } }
+                                HorizontalLayout { alignment: center; spacing: 6px;
+                                    VerticalLayout { alignment: center;
+                                        Rectangle { width: 10px; height: 10px; border-radius: 5px;
+                                            background: root.radio-recording ? #ffffff : #ef4444;
+                                            // Blink while armed, so a forgotten
+                                            // recording announces itself.
+                                            opacity: root.radio-recording && root.phase ? 0.35 : 1.0;
+                                            animate opacity { duration: MusicMotion.slow; } } }
+                                    Text { text: root.radio-recording ? "Recording" : "Record";
+                                        color: root.radio-recording ? #ffffff : MusicTheme.fg2;
+                                        font-size: 12px; font-weight: 700; vertical-alignment: center; } } } }
+                    } }
+                if root.radio-rec-file != "": Text {
+                    text: "Saving to " + root.radio-rec-file;
+                    color: MusicTheme.fg-mute; font-size: 11px; overflow: elide; }
+                // Heard on this station — the log, so "what was that song" can
+                // be answered one or two tracks late.
+                if root.radio-track-log.length > 1: VerticalLayout { spacing: 6px;
+                    Text { text: "Heard on this station"; color: MusicTheme.fg2;
+                        font-size: 12px; font-weight: 700; letter-spacing: 0.5px; }
+                    // Index 0 is the one already shown above as ON AIR, and a
+                    // `for` cannot be conditioned, so the row collapses to zero
+                    // height instead of being skipped.
+                    for t[i] in root.radio-track-log: Rectangle {
+                        height: (i > 0 && i < 7) ? 30px : 0px;
+                        visible: i > 0 && i < 7;
+                        border-radius: Surface.r(8px);
+                        background: lg.has-hover ? MusicTheme.hov : transparent;
+                        lg := TouchArea { mouse-cursor: pointer; clicked => { root.radio-track-search(t); } }
+                        HorizontalLayout { padding-left: 10px; padding-right: 10px; spacing: 8px;
+                            Text { text: t; color: MusicTheme.fg-dim; font-size: 12px;
+                                vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
+                            if lg.has-hover: VerticalLayout { alignment: center;
+                                AppIcon { source: Icons.search; tint: MusicTheme.fg2; width: 12px; height: 12px; } } } }
+                }
                 // Home — curated category tiles.
                 if root.radio-tab == "home" && !root.radio-cat-open: RadioCatGrid {
                     labels: root.radio-genres; icons: root.radio-genre-icons; counts: root.radio-genre-counts;
                     open(i) => { root.radio-set-genre(i); } }
                 if root.radio-busy: HorizontalLayout { spacing: 10px; alignment: start;
                     Text { text: "Tuning radio-browser…"; color: #14b8a6; font-size: 13px; font-weight: 700; } }
+                // Skeleton rows while the fetch is out, so the page has the
+                // shape of its answer instead of going blank and then jumping.
+                if root.radio-busy && root.radio-stations.length == 0: VerticalLayout { spacing: 8px;
+                    for n in [0, 1, 2, 3, 4, 5]: HorizontalLayout { spacing: 12px; height: 64px;
+                        Shimmer { width: 48px; height: 48px; phase: root.phase;
+                            y: 8px; horizontal-stretch: 0; }
+                        VerticalLayout { alignment: center; spacing: 6px; horizontal-stretch: 1;
+                            Shimmer { height: 12px; width: 240px; phase: root.phase; }
+                            Shimmer { height: 10px; width: 140px; phase: root.phase; } } } }
                 // List page title (category / saved tabs).
                 if (root.radio-cat-open || root.radio-tab != "home") && root.radio-stations.length > 0:
                     Text { text: root.radio-cat-open ? root.radio-cat-title
@@ -3085,6 +3328,13 @@ export component MusicPage inherits Rectangle {
 
         // YouTube — honest placeholder until surfaced (needs network).
         if root.view == "youtube": Rectangle {
+            // Entrance: this whole surface fades in when the view or sub-tab
+            // changes. The `if` above rebuilds the subtree, so `init` fires
+            // exactly once per arrival. Opacity only — these sit inside a
+            // layout, which owns `y`.
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: MusicMotion.slow; easing: ease-out; }
             vertical-stretch: 1; horizontal-stretch: 1;
 
             // ══ CHANNEL PAGE ══════════════════════════════════════════════
@@ -3114,13 +3364,13 @@ export component MusicPage inherits Rectangle {
                             Rectangle { width: 64px; height: 36px; border-radius: Surface.r(9px);
                                 background: csb.has-hover ? @linear-gradient(120deg, #fb7185, #ef4444) : @linear-gradient(120deg, #ef4444, #ec4899);
                                 drop-shadow-blur: csb.has-hover ? 14px : 6px; drop-shadow-color: #ef4444aa;
-                                animate drop-shadow-blur { duration: 140ms; easing: ease-out; }
+                                animate drop-shadow-blur { duration: MusicMotion.fast; easing: ease-out; }
                                 csb := TouchArea { mouse-cursor: pointer; clicked => { root.yt-channel-search(root.yt-channel-query); } }
                                 Text { text: "Search"; color: #ffffff; font-size: 11px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
                         VerticalLayout { alignment: center;
                             Rectangle { width: 54px; height: 36px; border-radius: Surface.r(9px); background: ccb.has-hover ? #ef44441e : MusicTheme.surf1;
                                 border-width: 1px; border-color: ccb.has-hover ? #ef444466 : MusicTheme.line;
-                                animate background, border-color { duration: 140ms; easing: ease-out; }
+                                animate background, border-color { duration: MusicMotion.fast; easing: ease-out; }
                                 ccb := TouchArea { mouse-cursor: pointer; clicked => { root.yt-channel-query = ""; root.yt-channel-search(""); } }
                                 Text { text: "Clear"; color: ccb.has-hover ? #ef4444 : MusicTheme.fg2; font-size: 11px; font-weight: 600; horizontal-alignment: center; vertical-alignment: center; } } }
                         // Latest — re-fetch + show this channel's newest uploads (blue toggle).
@@ -3131,7 +3381,7 @@ export component MusicPage inherits Rectangle {
                                 border-width: 1px;
                                 border-color: root.yt-channel-mode == "latest" ? transparent : (rfb.has-hover ? #3b82f6aa : MusicTheme.line);
                                 drop-shadow-blur: root.yt-channel-mode == "latest" ? 13px : 0px; drop-shadow-color: #3b82f6aa;
-                                animate background, border-color, drop-shadow-blur { duration: 140ms; easing: ease-out; }
+                                animate background, border-color, drop-shadow-blur { duration: MusicMotion.fast; easing: ease-out; }
                                 rfb := TouchArea { mouse-cursor: pointer; clicked => { root.yt-channel-refresh(); } }
                                 HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.refresh-cw; tint: root.yt-channel-mode == "latest" ? #ffffff : MusicTheme.fg2; width: 11px; height: 11px; } } Text { text: "Latest"; color: root.yt-channel-mode == "latest" ? #ffffff : MusicTheme.fg2; font-size: 11px; font-weight: 700; vertical-alignment: center; } } } }
                         // Popular — fetch + store this channel's top-10 most-watched (flame toggle).
@@ -3142,13 +3392,13 @@ export component MusicPage inherits Rectangle {
                                 border-width: 1px;
                                 border-color: root.yt-channel-mode == "popular" ? transparent : (pob.has-hover ? #ef4444aa : MusicTheme.line);
                                 drop-shadow-blur: root.yt-channel-mode == "popular" ? 13px : 0px; drop-shadow-color: #ef4444aa;
-                                animate background, border-color, drop-shadow-blur { duration: 140ms; easing: ease-out; }
+                                animate background, border-color, drop-shadow-blur { duration: MusicMotion.fast; easing: ease-out; }
                                 pob := TouchArea { mouse-cursor: pointer; clicked => { root.yt-channel-popular(); } }
                                 HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.flame; tint: root.yt-channel-mode == "popular" ? #ffffff : MusicTheme.fg2; width: 12px; height: 12px; } } Text { text: "Popular"; color: root.yt-channel-mode == "popular" ? #ffffff : MusicTheme.fg2; font-size: 11px; font-weight: 700; vertical-alignment: center; } } } }
                         VerticalLayout { alignment: center;
                             Rectangle { width: 70px; height: 36px; border-radius: Surface.r(9px); background: cbb.has-hover ? MusicTheme.hov2 : MusicTheme.surf1;
                                 border-width: 1px; border-color: cbb.has-hover ? #a855f7aa : MusicTheme.line;
-                                animate border-color { duration: 140ms; easing: ease-out; }
+                                animate border-color { duration: MusicMotion.fast; easing: ease-out; }
                                 cbb := TouchArea { mouse-cursor: pointer; clicked => { root.yt-back(); } }
                                 HorizontalLayout { alignment: center; spacing: 5px; VerticalLayout { alignment: center; AppIcon { source: Icons.chevron-left; tint: cbb.has-hover ? #a855f7 : MusicTheme.fg2; width: 11px; height: 11px; } } Text { text: "Back"; color: cbb.has-hover ? #a855f7 : MusicTheme.fg2; font-size: 11px; font-weight: 600; vertical-alignment: center; } } } }
                         VerticalLayout { alignment: center;
@@ -3158,7 +3408,7 @@ export component MusicPage inherits Rectangle {
                                           : (tsb.has-hover ? @linear-gradient(120deg, #a855f7, #7c3aed) : @linear-gradient(120deg, #8b5cf6, #7c3aed));
                                 border-width: 0px; border-color: transparent;
                                 drop-shadow-blur: tsb.has-hover ? 14px : 7px; drop-shadow-color: #ef4444aa;
-                                animate background, border-color, drop-shadow-blur { duration: 140ms; easing: ease-out; }
+                                animate background, border-color, drop-shadow-blur { duration: MusicMotion.fast; easing: ease-out; }
                                 tsb := TouchArea { mouse-cursor: pointer; clicked => {
                                     root.yt-sub-confirm-title = root.yt-channel-title;
                                     root.yt-sub-confirm-add = !root.yt-channel-subscribed;
@@ -3176,7 +3426,7 @@ export component MusicPage inherits Rectangle {
                         property <length> cw: self.width / cols;
                         property <length> ch: cw * 9 / 16 + 112px;
                         height: Math.max(1, Math.ceil(root.yt-channel-videos.length / cols)) * ch;
-                        for v[idx] in root.yt-channel-videos: YtVideoGridCard {
+                        for v[idx] in root.yt-channel-videos: YtVideoGridCard { np-id: root.yt-np-id; np-playing: root.playing; phase: root.phase;
                             x: Math.mod(idx, cols) * cw + 6px; y: Math.floor(idx / cols) * ch;
                             width: cw - 12px; v: v; idx: idx; dl-frac: v.id == root.yt-dl-active-id ? root.yt-dl-active-frac : -1;
                             play(wv) => { root.yt-play(v.id, wv); }
@@ -3188,7 +3438,7 @@ export component MusicPage inherits Rectangle {
                         property <length> cw: self.width / cols;
                         property <length> ch: cw * 9 / 16 + 112px;
                         height: Math.max(1, Math.ceil(root.yt-channel-results.length / cols)) * ch;
-                        for v[idx] in root.yt-channel-results: YtVideoGridCard {
+                        for v[idx] in root.yt-channel-results: YtVideoGridCard { np-id: root.yt-np-id; np-playing: root.playing; phase: root.phase;
                             x: Math.mod(idx, cols) * cw + 6px; y: Math.floor(idx / cols) * ch;
                             width: cw - 12px; v: v; idx: idx; dl-frac: v.id == root.yt-dl-active-id ? root.yt-dl-active-frac : -1;
                             play(wv) => { root.yt-play(v.id, wv); }
@@ -3272,7 +3522,7 @@ export component MusicPage inherits Rectangle {
                         property <length> cw: self.width / cols;
                         property <length> ch: cw * 9 / 16 + 112px;
                         height: Math.max(1, Math.ceil(root.yt-playlist-videos.length / cols)) * ch;
-                        for v[idx] in root.yt-playlist-videos: YtVideoGridCard {
+                        for v[idx] in root.yt-playlist-videos: YtVideoGridCard { np-id: root.yt-np-id; np-playing: root.playing; phase: root.phase;
                             x: Math.mod(idx, cols) * cw + 6px; y: Math.floor(idx / cols) * ch;
                             width: cw - 12px; v: v; idx: idx; dl-frac: v.id == root.yt-dl-active-id ? root.yt-dl-active-frac : -1;
                             play(wv) => { root.yt-play(v.id, wv); }
@@ -3288,7 +3538,7 @@ export component MusicPage inherits Rectangle {
                 property <bool> appeared: false;
                 init => { appeared = true; }
                 opacity: appeared ? 1.0 : 0.0;
-                animate opacity { duration: 360ms; easing: ease-out; }
+                animate opacity { duration: MusicMotion.slow; easing: ease-out; }
                 // Search bar — center-column width, above the grid.
                 HorizontalLayout { spacing: 12px;
                     Rectangle { horizontal-stretch: 1; }
@@ -3328,7 +3578,7 @@ export component MusicPage inherits Rectangle {
                                         Rectangle { width: 30px; height: 30px; border-radius: Surface.r(8px);
                                             background: rcl.has-hover ? #ef444422 : MusicTheme.surf0;
                                             border-width: 1px; border-color: rcl.has-hover ? #ef4444aa : MusicTheme.line;
-                                            animate background, border-color { duration: 120ms; easing: ease-out; }
+                                            animate background, border-color { duration: MusicMotion.fast; easing: ease-out; }
                                             rcl := TouchArea { mouse-cursor: pointer; clicked => { root.yt-clear-recent(); } }
                                             AppIcon { source: Icons.trash; tint: rcl.has-hover ? #ef4444 : MusicTheme.fg2; width: 14px; height: 14px;
                                                 x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } } }
@@ -3336,7 +3586,7 @@ export component MusicPage inherits Rectangle {
                                     for q in root.yt-recent: Rectangle { height: 26px; border-radius: Surface.r(13px);
                                         background: rch.has-hover ? #3b82f6.with-alpha(MusicTheme.light ? 0.22 : 0.18) : #3b82f6.with-alpha(MusicTheme.light ? 0.12 : 0.08);
                                         border-width: 1px; border-color: rch.has-hover ? #3b82f6bf : #3b82f652;
-                                        animate background, border-color { duration: 120ms; easing: ease-out; }
+                                        animate background, border-color { duration: MusicMotion.fast; easing: ease-out; }
                                         rch := TouchArea { mouse-cursor: pointer; clicked => { root.yt-recent-click(q); } }
                                         Text { text: q; color: rch.has-hover ? #3b82f6 : MusicTheme.fg2; font-size: 10px; font-weight: rch.has-hover ? 800 : 500; vertical-alignment: center;
                                             horizontal-alignment: center; overflow: elide; } } } }
@@ -3365,6 +3615,12 @@ export component MusicPage inherits Rectangle {
                         changed reco-watch => { recoscroll.viewport-y = 0; }
                         VerticalLayout { spacing: 10px; padding: 14px;
                             if root.yt-busy: Text { text: "Searching…"; color: MusicTheme.fg-mute; font-size: 12px; }
+                            if root.yt-busy: VerticalLayout { spacing: 12px;
+                                for n in [0, 1, 2, 3]: HorizontalLayout { spacing: 12px; height: 112px;
+                                    Shimmer { width: 184px; height: 104px; phase: root.phase; horizontal-stretch: 0; }
+                                    VerticalLayout { alignment: center; spacing: 8px; horizontal-stretch: 1;
+                                        Shimmer { height: 14px; phase: root.phase; }
+                                        Shimmer { height: 11px; width: 180px; phase: root.phase; } } } }
                             // No search → recommended from your subscriptions.
                             if root.yt-query == "" && root.yt-results.length == 0: VerticalLayout { spacing: 10px;
                                 Rectangle { height: 32px; border-radius: Surface.r(8px); horizontal-stretch: 1;
@@ -3372,7 +3628,7 @@ export component MusicPage inherits Rectangle {
                                     HorizontalLayout { padding-left: 12px; padding-right: 12px;
                                         Text { text: "Recommended for you"; color: #ef4444; font-size: 13px; font-weight: 800; letter-spacing: 0.5px; vertical-alignment: center; } } }
                                 if root.yt-recommended.length == 0 && !root.yt-busy: Text { text: "Import subscriptions to see picks here."; color: MusicTheme.fg-dim2; font-size: 13px; }
-                                for v[i] in root.yt-recommended: YtVideoCard { v: v; idx: i; dl-frac: v.id == root.yt-dl-active-id ? root.yt-dl-active-frac : -1;
+                                for v[i] in root.yt-recommended: YtVideoCard { np-id: root.yt-np-id; np-playing: root.playing; phase: root.phase; v: v; idx: i; dl-frac: v.id == root.yt-dl-active-id ? root.yt-dl-active-frac : -1;
                                     play(wv) => { root.yt-play(v.id, wv); }
                                     download => { root.yt-download(v.id); }
                                     open-channel(c) => { root.yt-open-channel(c); }
@@ -3380,7 +3636,7 @@ export component MusicPage inherits Rectangle {
                             // Searching → results.
                             if root.yt-query != "" && !root.yt-busy && root.yt-results.length == 0: VerticalLayout { alignment: center; spacing: 10px; padding: 30px;
                                 Text { text: root.yt-status != "" ? root.yt-status : "No results."; color: MusicTheme.fg-dim2; font-size: 13px; horizontal-alignment: center; } }
-                            for v[i] in root.yt-results: YtVideoCard { v: v; idx: i; dl-frac: v.id == root.yt-dl-active-id ? root.yt-dl-active-frac : -1;
+                            for v[i] in root.yt-results: YtVideoCard { np-id: root.yt-np-id; np-playing: root.playing; phase: root.phase; v: v; idx: i; dl-frac: v.id == root.yt-dl-active-id ? root.yt-dl-active-frac : -1;
                                 play(wv) => { root.yt-play(v.id, wv); }
                                 download => { root.yt-download(v.id); }
                                 open-channel(c) => { root.yt-open-channel(c); }
@@ -3429,7 +3685,7 @@ export component MusicPage inherits Rectangle {
                         if root.yt-subs.length > 0: Rectangle { width: 100px; height: 32px; border-radius: Surface.r(8px);
                             background: root.yt-fetch-busy ? MusicTheme.surf1 : (rfs.has-hover ? MusicTheme.hov2 : MusicTheme.surf1);
                             border-width: 1px; border-color: rfs.has-hover ? #ef4444aa : MusicTheme.line;
-                            animate border-color { duration: 140ms; easing: ease-out; }
+                            animate border-color { duration: MusicMotion.fast; easing: ease-out; }
                             rfs := TouchArea { mouse-cursor: root.yt-fetch-busy ? default : pointer; enabled: !root.yt-fetch-busy; clicked => { root.yt-refresh-subs(); } }
                             HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.refresh-cw; tint: rfs.has-hover ? #ef4444 : MusicTheme.fg2; width: 11px; height: 11px; } } Text { text: "Refresh"; color: rfs.has-hover ? #ef4444 : MusicTheme.fg2; font-size: 10px; font-weight: 700; vertical-alignment: center; } } }
                         if root.yt-subs.length > 0: Rectangle { width: 150px; height: 32px; border-radius: Surface.r(8px);
@@ -3465,10 +3721,10 @@ export component MusicPage inherits Rectangle {
                                 border-radius: Surface.r(16px); clip: true; background: MusicTheme.surf00;
                                 border-width: 1px; border-color: ytsc.has-hover ? subgrid.tints[Math.mod(idx, 6)] : MusicTheme.line;
                                 drop-shadow-blur: ytsc.has-hover ? 18px : 0px; drop-shadow-color: subgrid.tints[Math.mod(idx, 6)].with-alpha(0.25);
-                                animate drop-shadow-blur, border-color { duration: 130ms; }
+                                animate drop-shadow-blur, border-color { duration: MusicMotion.fast; }
                                 Rectangle { width: 100%; height: 100%; border-radius: Surface.r(16px);
                                     background: subgrid.grads[Math.mod(idx, 6)]; opacity: ytsc.has-hover ? 0.16 : 0;
-                                    animate opacity { duration: 130ms; } }
+                                    animate opacity { duration: MusicMotion.fast; } }
                                 ytsc := TouchArea { mouse-cursor: pointer; clicked => { root.yt-open-channel(s.channel-id); } }
                                 VerticalLayout { padding: 14px; spacing: 8px; alignment: start;
                                     HorizontalLayout { alignment: center;
@@ -3508,7 +3764,7 @@ export component MusicPage inherits Rectangle {
                                             ? (ahmb.pressed ? #ef4444 : (ahmb.has-hover ? #ef444433 : MusicTheme.surf0))
                                             : (ahmb.pressed ? #ec4899 : (ahmb.has-hover ? #ec489926 : MusicTheme.surf0));
                                         border-width: 1px; border-color: s.in-home ? #ef444577 : #ec489955;
-                                        animate background { duration: 90ms; }
+                                        animate background { duration: MusicMotion.fast; }
                                         ahmb := TouchArea { mouse-cursor: pointer; clicked => {
                                             if (s.in-home) {
                                                 root.yt-home-confirm-id = s.channel-id;
@@ -3563,7 +3819,7 @@ export component MusicPage inherits Rectangle {
                         property <length> cw: self.width / cols;
                         property <length> ch: cw * 9 / 16 + 112px;
                         height: Math.max(1, Math.ceil(root.yt-cached.length / cols)) * ch;
-                        for v[idx] in root.yt-cached: YtVideoGridCard {
+                        for v[idx] in root.yt-cached: YtVideoGridCard { np-id: root.yt-np-id; np-playing: root.playing; phase: root.phase;
                             x: Math.mod(idx, cols) * cw + 6px; y: Math.floor(idx / cols) * ch;
                             width: cw - 12px; v: v; idx: idx; dl-frac: v.id == root.yt-dl-active-id ? root.yt-dl-active-frac : -1; remove-glyph: "x";
                             play(wv) => { root.yt-play(v.id, wv); }
@@ -3612,7 +3868,7 @@ export component MusicPage inherits Rectangle {
                         property <length> cw: self.width / cols;
                         property <length> ch: cw * 9 / 16 + 92px;
                         height: root.yt-downloads.length == 0 ? 0px : Math.ceil(root.yt-downloads.length / cols) * ch;
-                        for v[idx] in root.yt-downloads: YtVideoGridCard {
+                        for v[idx] in root.yt-downloads: YtVideoGridCard { np-id: root.yt-np-id; np-playing: root.playing; phase: root.phase;
                             x: Math.mod(idx, cols) * cw + 6px; y: Math.floor(idx / cols) * ch;
                             width: cw - 12px; v: v; idx: idx; dl-frac: v.id == root.yt-dl-active-id ? root.yt-dl-active-frac : -1; remove-glyph: "x"; hide-download: true; compact: true;
                             play(wv) => { root.yt-play-download(v.path); }
@@ -3861,8 +4117,65 @@ export component MusicPage inherits Rectangle {
 
         // Podcasts (np.p5.music.podcast-feeds) — Home / Subscribed / Downloads.
         if root.view == "podcasts" && !root.podcast-detail-open: ScrollView {
+            // Entrance: this whole surface fades in when the view or sub-tab
+            // changes. The `if` above rebuilds the subtree, so `init` fires
+            // exactly once per arrival. Opacity only — these sit inside a
+            // layout, which owns `y`.
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: MusicMotion.slow; easing: ease-out; }
             vertical-stretch: 1; horizontal-stretch: 1;
             VerticalLayout { padding: 36px; padding-top: 12px; spacing: 14px;
+
+                // ── UP NEXT ────────────────────────────────────────────────
+                // The cross-show queue. Collapsed to a one-line summary until
+                // opened, so it costs nothing on a page you are only browsing.
+                if root.podcast-queue-len > 0: VerticalLayout { spacing: 8px;
+                    Rectangle { height: 46px; border-radius: Surface.r(12px);
+                        background: MusicTheme.surf1; border-width: 1px; border-color: #8b5cf655;
+                        HorizontalLayout { padding-left: 14px; padding-right: 10px; spacing: 10px;
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                AppIcon { source: Icons.list-music; tint: #a78bfa; width: 15px; height: 15px; } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                Text { text: "Up next  ·  " + root.podcast-queue-len
+                                        + (root.podcast-queue-len == 1 ? " episode" : " episodes");
+                                    color: MusicTheme.fg; font-size: 13px; font-weight: 700;
+                                    vertical-alignment: center; } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                Rectangle { height: 30px; width: 84px; border-radius: Surface.r(15px);
+                                    background: pqt.has-hover ? MusicTheme.hov2 : transparent;
+                                    border-width: 1px; border-color: MusicTheme.line;
+                                    animate background { duration: MusicMotion.fast; }
+                                    pqt := TouchArea { mouse-cursor: pointer;
+                                        clicked => { root.podcast-queue-open = !root.podcast-queue-open; } }
+                                    Text { text: root.podcast-queue-open ? "Hide" : "Show";
+                                        color: MusicTheme.fg2; font-size: 12px; font-weight: 700;
+                                        horizontal-alignment: center; vertical-alignment: center; } } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                Rectangle { height: 30px; width: 74px; border-radius: Surface.r(15px);
+                                    background: pqc.has-hover ? #ef444433 : transparent;
+                                    border-width: 1px; border-color: MusicTheme.line;
+                                    animate background { duration: MusicMotion.fast; }
+                                    pqc := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-queue-clear(); } }
+                                    Text { text: "Clear"; color: pqc.has-hover ? #ef4444 : MusicTheme.fg2;
+                                        font-size: 12px; font-weight: 700;
+                                        horizontal-alignment: center; vertical-alignment: center; } } } } }
+                    if root.podcast-queue-open: VerticalLayout { spacing: 2px;
+                        for e[i] in root.podcast-queue-rows: HorizontalLayout { spacing: 2px;
+                            VerticalLayout { horizontal-stretch: 1;
+                                PodcastEpisodeItem { ep: e; show-podcast: true; queued-next: true;
+                                    np-id: root.podcast-np-id; np-playing: root.playing; phase: root.phase;
+                                    play => { root.podcast-play(e.id); }
+                                    queue => { root.podcast-queue-remove(i); }
+                                    download => { root.podcast-download(e.id); }
+                                    transcript => { root.podcast-transcript(e.id); }
+                                    goto-podcast => { root.podcast-goto-show(e.id); } } }
+                            VerticalLayout { alignment: center;
+                                Rectangle { width: 30px; height: 30px; border-radius: Surface.r(15px);
+                                    background: pqr.has-hover ? #ef444433 : transparent;
+                                    pqr := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-queue-remove(i); } }
+                                    AppIcon { source: Icons.x; tint: pqr.has-hover ? #ef4444 : MusicTheme.fg-mute;
+                                        width: 12px; height: 12px; } } } } } }
 
                 // ── HOME (Latest) ──────────────────────────────────────────
                 if root.podcast-tab == "home": VerticalLayout { spacing: 18px;
@@ -3890,7 +4203,7 @@ export component MusicPage inherits Rectangle {
                         Text { text: "No subscriptions yet"; color: MusicTheme.fg; font-size: 18px; font-weight: 700; horizontal-alignment: center; }
                         Text { text: "Use + Add (top-right) and paste a podcast RSS feed URL — needs network to fetch."; color: MusicTheme.fg-dim2; font-size: 13px; horizontal-alignment: center; } }
                     if root.podcast-latest.length == 0 && root.podcast-home-cards.length > 0: Text { text: "Hit Refresh to pull the newest episodes."; color: MusicTheme.fg-dim2; font-size: 13px; }
-                    for e[i] in root.podcast-latest: PodcastEpisodeItem {
+                    for e[i] in root.podcast-latest: PodcastEpisodeItem { queued-next: e.up-next; queue => { root.podcast-queue-add(e.id); } np-id: root.podcast-np-id; np-playing: root.playing; phase: root.phase;
                         ep: e; show-podcast: true; dl-id: root.podcast-dl-id; dl-frac: root.podcast-dl-frac;
                         play => { root.podcast-play(e.id); }
                         download => { root.podcast-download(e.id); }
@@ -3914,8 +4227,13 @@ export component MusicPage inherits Rectangle {
                             border-radius: Surface.r(15px); background: @linear-gradient(90deg, #8b5cf6, #6366f1); }
                         Text { text: root.podcast-subscribe-status == "" ? "Subscribing… " + Math.round(root.podcast-subscribe-frac * 100) + "%" : root.podcast-subscribe-status;
                             color: MusicTheme.fg; font-size: 12px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
-                    if root.podcast-trends-loading && root.podcast-trends.length == 0: HorizontalLayout { alignment: center; padding: 40px;
-                        Text { text: "Loading trends…"; color: MusicTheme.fg-mute; font-size: 14px; } }
+                    if root.podcast-trends-loading && root.podcast-trends.length == 0: VerticalLayout { spacing: 10px; padding: 20px;
+                        HorizontalLayout { alignment: center;
+                            Text { text: "Loading trends…"; color: MusicTheme.fg-mute; font-size: 14px; } }
+                        HorizontalLayout { spacing: 14px;
+                            for n in [0, 1, 2, 3, 4, 5, 6]: VerticalLayout { spacing: 8px; horizontal-stretch: 1;
+                                Shimmer { height: 140px; phase: root.phase; }
+                                Shimmer { height: 11px; phase: root.phase; } } } }
                     if !root.podcast-trends-loading && root.podcast-trends.length == 0: HorizontalLayout { alignment: center; padding: 40px;
                         Text { text: "No trend feeds configured."; color: MusicTheme.fg-mute; font-size: 14px; } }
                     Rectangle { horizontal-stretch: 1;
@@ -3970,7 +4288,7 @@ export component MusicPage inherits Rectangle {
                         if root.podcast-dl-pages > 1: VerticalLayout { alignment: center;
                             PageNav { page: root.podcast-dl-page; pages: root.podcast-dl-pages; go(d) => { root.podcast-dl-set-page(d); } } } }
                     if root.podcast-downloads.length == 0: Text { text: "No downloads yet — tap the download button on any episode to save it for offline listening."; color: MusicTheme.fg-dim2; font-size: 13px; }
-                    for e[i] in root.podcast-downloads: PodcastEpisodeItem {
+                    for e[i] in root.podcast-downloads: PodcastEpisodeItem { queued-next: e.up-next; queue => { root.podcast-queue-add(e.id); } np-id: root.podcast-np-id; np-playing: root.playing; phase: root.phase;
                         ep: e; show-podcast: true; ctx-remove: true; dl-id: root.podcast-dl-id; dl-frac: root.podcast-dl-frac;
                         play => { root.podcast-play(e.id); }
                         download => { root.podcast-download(e.id); }
@@ -3986,6 +4304,13 @@ export component MusicPage inherits Rectangle {
         // [ cover · outlined info card (sort + pagination) · BIG round Back ],
         // then the episode list. The Back button lives OUTSIDE the info box.
         if root.view == "podcasts" && root.podcast-detail-open: ScrollView {
+            // Entrance: this whole surface fades in when the view or sub-tab
+            // changes. The `if` above rebuilds the subtree, so `init` fires
+            // exactly once per arrival. Opacity only — these sit inside a
+            // layout, which owns `y`.
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: MusicMotion.slow; easing: ease-out; }
             vertical-stretch: 1; horizontal-stretch: 1;
             VerticalLayout { padding: 0px; spacing: 18px; alignment: start;
                 // Hero header — accent wash behind cover + info card + Back.
@@ -4001,7 +4326,7 @@ export component MusicPage inherits Rectangle {
                             if root.podcast-d-image.width > 0: Image { source: root.podcast-d-image; image-fit: cover; width: 100%; height: 100%; }
                             cha := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-set-thumb(); } }
                             Rectangle { width: 100%; height: 34px; y: parent.height - self.height;
-                                background: #000000bb; opacity: cha.has-hover ? 1 : 0; animate opacity { duration: 120ms; }
+                                background: #000000bb; opacity: cha.has-hover ? 1 : 0; animate opacity { duration: MusicMotion.fast; }
                                 HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.pencil; tint: #ffffff; width: 11px; height: 11px; } } Text { text: "Change art"; color: #ffffff; font-size: 11px; font-weight: 700; vertical-alignment: center; } } } }
                         // Outlined info card — sized to content (not full width);
                         // +25% wide so long show names fit (user request 2026-06-13).
@@ -4053,13 +4378,13 @@ export component MusicPage inherits Rectangle {
                                     background: dbkp.has-hover ? #8b5cf6 : MusicTheme.surf1;
                                     border-width: 2px; border-color: dbkp.has-hover ? #8b5cf6 : MusicTheme.line;
                                     drop-shadow-blur: dbkp.has-hover ? 34px : 0px; drop-shadow-color: #8b5cf6aa;
-                                    animate background, drop-shadow-blur, border-color { duration: 180ms; easing: ease-out; }
+                                    animate background, drop-shadow-blur, border-color { duration: MusicMotion.mid; easing: ease-out; }
                                     dbkp := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-back(); } }
                                     VerticalLayout { alignment: center; spacing: 4px;
                                         HorizontalLayout { alignment: center;
                                             AppIcon { source: Icons.chevron-left; tint: dbkp.has-hover ? #ffffff : MusicTheme.fg2;
                                                 width: dbkp.has-hover ? 52px : 44px; height: dbkp.has-hover ? 52px : 44px;
-                                                animate width, height { duration: 160ms; easing: ease-out; } } }
+                                                animate width, height { duration: MusicMotion.fast; easing: ease-out; } } }
                                         Text { text: "Back"; color: dbkp.has-hover ? #ffffff : MusicTheme.fg2; font-size: 16px; font-weight: 700; horizontal-alignment: center; } } }
                                 // Sort + pagination — their own outlined box under Back.
                                 Rectangle { height: 60px; border-radius: Surface.r(16px);
@@ -4082,7 +4407,7 @@ export component MusicPage inherits Rectangle {
                 // Episode list.
                 VerticalLayout { padding-left: 36px; padding-right: 36px; padding-bottom: 24px; spacing: 2px;
                     if root.podcast-d-episodes.length == 0: Text { text: "No episodes."; color: MusicTheme.fg-dim2; font-size: 13px; }
-                    for e[i] in root.podcast-d-episodes: PodcastEpisodeItem {
+                    for e[i] in root.podcast-d-episodes: PodcastEpisodeItem { queued-next: e.up-next; queue => { root.podcast-queue-add(e.id); } np-id: root.podcast-np-id; np-playing: root.playing; phase: root.phase;
                         ep: e; dl-id: root.podcast-dl-id; dl-frac: root.podcast-dl-frac;
                         play => { root.podcast-play(e.id); }
                         download => { root.podcast-download(e.id); }
@@ -4097,6 +4422,13 @@ export component MusicPage inherits Rectangle {
         // Each audiobook folder = one book: cover thumb, left-click opens,
         // right-click menu with Open / Find in system / Change art.
         if root.view == "audiobooks" && !root.audiobook-detail-open && root.ab-tab == "folders": ScrollView {
+            // Entrance: this whole surface fades in when the view or sub-tab
+            // changes. The `if` above rebuilds the subtree, so `init` fires
+            // exactly once per arrival. Opacity only — these sit inside a
+            // layout, which owns `y`.
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: MusicMotion.slow; easing: ease-out; }
             vertical-stretch: 1; horizontal-stretch: 1;
             property <int> watch-n: root.audiobook-cards.length;
             changed watch-n => { self.viewport-y = 0; }
@@ -4119,7 +4451,7 @@ export component MusicPage inherits Rectangle {
                             background: @linear-gradient(135deg, #3b82f655 0%, #06b6d455 100%);
                             border-width: abfcard.has-hover ? 2px : 0px; border-color: #3b82f6;
                             drop-shadow-blur: abfcard.has-hover ? 24px : 0px; drop-shadow-color: #3b82f6aa;
-                            animate drop-shadow-blur, border-width { duration: 130ms; }
+                            animate drop-shadow-blur, border-width { duration: MusicMotion.fast; }
                             if c.cover.width == 0: AppIcon { source: Icons.book-open; width: 44px; height: 44px; }
                             if c.cover.width > 0: Image { source: c.cover; image-fit: cover; width: 100%; height: 100%; }
                             abfcard := TouchArea { mouse-cursor: pointer;
@@ -4145,6 +4477,13 @@ export component MusicPage inherits Rectangle {
 
         // ── Audiobooks: folder-grouped card grid ────────────────────────────
         if root.view == "audiobooks" && !root.audiobook-detail-open && root.ab-tab != "folders": ScrollView {
+            // Entrance: this whole surface fades in when the view or sub-tab
+            // changes. The `if` above rebuilds the subtree, so `init` fires
+            // exactly once per arrival. Opacity only — these sit inside a
+            // layout, which owns `y`.
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: MusicMotion.slow; easing: ease-out; }
             vertical-stretch: 1; horizontal-stretch: 1;
             // New cards land with the viewport at the TOP — a ScrollView keeps
             // its old viewport-y across content swaps, which left fresh lists
@@ -4199,7 +4538,7 @@ export component MusicPage inherits Rectangle {
                                 drop-shadow-blur: Surface.cast(24px); drop-shadow-color: #000000aa; }
                             abca := TouchArea { mouse-cursor: pointer; clicked => { root.audiobook-set-cover(); } }
                             Rectangle { width: 100%; height: 34px; y: parent.height - self.height; border-radius: Surface.r(8px);
-                                background: #000000bb; opacity: abca.has-hover ? 1 : 0; animate opacity { duration: 120ms; }
+                                background: #000000bb; opacity: abca.has-hover ? 1 : 0; animate opacity { duration: MusicMotion.fast; }
                                 HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.pencil; tint: #ffffff; width: 11px; height: 11px; } } Text { text: "Change art"; color: #ffffff; font-size: 11px; font-weight: 700; vertical-alignment: center; } } } }
                         // Outlined info + control card (podcast-detail style).
                         Rectangle { horizontal-stretch: 0; min-width: 575px; max-width: 775px; height: 280px; y: (parent.height - self.height)/2; border-radius: Surface.r(14px);
@@ -4226,7 +4565,7 @@ export component MusicPage inherits Rectangle {
                                     BrowseChip { icon: Icons.skip-back; label: "Chapter"; clicked => { root.book-chapter(-1); } }
                                     BrowseChip { icon: Icons.skip-forward; label: "Chapter"; clicked => { root.book-chapter(1); } }
                                     BrowseChip { on: root.book-skip-silence-on; label: "Skip silence"; clicked => { root.book-skip-silence(); } }
-                                    BrowseChip { label: "+ Bookmark"; clicked => { root.book-bookmark(); } }
+                                    BrowseChip { label: "+ Bookmark"; clicked => { root.ab-bm-add(); } }
                                 }
                                 Rectangle { vertical-stretch: 1; }
                             } }
@@ -4238,27 +4577,98 @@ export component MusicPage inherits Rectangle {
                                     background: abkp.has-hover ? #3b82f6 : MusicTheme.surf1;
                                     border-width: 2px; border-color: abkp.has-hover ? #3b82f6 : MusicTheme.line;
                                     drop-shadow-blur: abkp.has-hover ? 34px : 0px; drop-shadow-color: #3b82f6aa;
-                                    animate background, drop-shadow-blur, border-color { duration: 180ms; easing: ease-out; }
+                                    animate background, drop-shadow-blur, border-color { duration: MusicMotion.mid; easing: ease-out; }
                                     abkp := TouchArea { mouse-cursor: pointer; clicked => { root.audiobook-back(); } }
                                     VerticalLayout { alignment: center; spacing: 4px;
                                         HorizontalLayout { alignment: center;
                                             AppIcon { source: Icons.chevron-left; tint: abkp.has-hover ? #ffffff : MusicTheme.fg2;
                                                 width: abkp.has-hover ? 52px : 44px; height: abkp.has-hover ? 52px : 44px;
-                                                animate width, height { duration: 160ms; easing: ease-out; } } }
+                                                animate width, height { duration: MusicMotion.fast; easing: ease-out; } } }
                                         Text { text: "Back"; color: abkp.has-hover ? #ffffff : MusicTheme.fg2; font-size: 16px; font-weight: 700; horizontal-alignment: center; } } }
                                 // Large Resume — picks up where the book left off.
                                 Rectangle { height: 60px; border-radius: Surface.r(16px);
                                     background: rb.has-hover ? #2563eb : #3b82f6;
                                     drop-shadow-blur: rb.has-hover ? 24px : 0px; drop-shadow-color: #3b82f6aa;
-                                    animate background, drop-shadow-blur { duration: 160ms; }
+                                    animate background, drop-shadow-blur { duration: MusicMotion.fast; }
                                     rb := TouchArea { mouse-cursor: pointer; clicked => { root.audiobook-play(root.ab-d-resume-index); } }
                                     HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.play; tint: #ffffff; width: 17px; height: 17px; } } Text { text: " Resume"; color: #ffffff; font-size: 17px; font-weight: 800; vertical-alignment: center; } } } } }
                         Rectangle { horizontal-stretch: 1; } } }
+                // Bookmarks for the whole book — every chapter's marks, named,
+                // jumpable and removable. The player-panel chips only ever saw
+                // the PLAYING chapter, so this is the only complete view.
+                VerticalLayout { padding-left: 36px; padding-right: 36px; padding-bottom: 8px; spacing: 8px;
+                    HorizontalLayout { spacing: 10px; alignment: start;
+                        VerticalLayout { alignment: center;
+                            Text { text: "Bookmarks"; color: MusicTheme.fg; font-size: 17px; font-weight: 700; } }
+                        Rectangle { horizontal-stretch: 1; }
+                        VerticalLayout { alignment: center;
+                            Rectangle { height: 32px; width: 132px; border-radius: Surface.r(16px);
+                                background: bma.has-hover ? #3b82f6 : MusicTheme.surf1;
+                                border-width: 1px; border-color: MusicTheme.line;
+                                animate background { duration: MusicMotion.fast; }
+                                bma := TouchArea { mouse-cursor: pointer; clicked => { root.ab-bm-add(); } }
+                                HorizontalLayout { alignment: center; spacing: 6px;
+                                    VerticalLayout { alignment: center; AppIcon { source: Icons.plus;
+                                        tint: bma.has-hover ? #ffffff : MusicTheme.fg2; width: 12px; height: 12px; } }
+                                    Text { text: "Bookmark here"; color: bma.has-hover ? #ffffff : MusicTheme.fg2;
+                                        font-size: 12px; font-weight: 700; vertical-alignment: center; } } } }
+                        // Finished / re-listen. A book you gave up on should be
+                        // markable without playing to the last second.
+                        VerticalLayout { alignment: center;
+                            Rectangle { height: 32px; width: 128px; border-radius: Surface.r(16px);
+                                background: root.ab-d-finished ? #22c55e : (fnb.has-hover ? MusicTheme.hov2 : MusicTheme.surf1);
+                                border-width: 1px; border-color: root.ab-d-finished ? #22c55e : MusicTheme.line;
+                                animate background { duration: MusicMotion.fast; }
+                                fnb := TouchArea { mouse-cursor: pointer;
+                                    clicked => { root.ab-set-finished(!root.ab-d-finished); } }
+                                HorizontalLayout { alignment: center; spacing: 6px;
+                                    VerticalLayout { alignment: center; AppIcon {
+                                        source: root.ab-d-finished ? Icons.rotate-ccw : Icons.square-check;
+                                        tint: root.ab-d-finished ? #ffffff : MusicTheme.fg2; width: 13px; height: 13px; } }
+                                    Text { text: root.ab-d-finished ? "Listen again" : "Mark finished";
+                                        color: root.ab-d-finished ? #ffffff : MusicTheme.fg2;
+                                        font-size: 12px; font-weight: 700; vertical-alignment: center; } } } } }
+                    if root.ab-d-bm-labels.length == 0: Text {
+                        text: "No bookmarks yet — hit “Bookmark here” while listening to drop one.";
+                        color: MusicTheme.fg-dim2; font-size: 12px; }
+                    for lb[i] in root.ab-d-bm-labels: Rectangle {
+                        height: 42px; border-radius: Surface.r(9px);
+                        background: bmr.has-hover ? MusicTheme.hov : transparent;
+                        bmr := TouchArea { mouse-cursor: pointer;
+                            clicked => { if (root.ab-d-bm-edit != i) { root.ab-bm-jump(i); } } }
+                        HorizontalLayout { padding-left: 12px; padding-right: 10px; spacing: 10px;
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                AppIcon { source: Icons.bookmark; tint: #3b82f6; width: 14px; height: 14px; } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0; width: 132px;
+                                Text { text: root.ab-d-bm-times[i]; color: MusicTheme.fg-mute;
+                                    font-size: 11px; font-weight: 700; vertical-alignment: center; } }
+                            // Name it, in place. Unnamed marks read as their stamp.
+                            if root.ab-d-bm-edit != i: VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                Text { text: lb == "" ? "Unnamed" : lb;
+                                    color: lb == "" ? MusicTheme.fg-dim2 : MusicTheme.fg;
+                                    font-size: 13px; vertical-alignment: center; overflow: elide; } }
+                            if root.ab-d-bm-edit == i: VerticalLayout { alignment: center; horizontal-stretch: 1;
+                                LineEdit { text: root.ab-d-bm-draft; font-size: 13px;
+                                    placeholder-text: "Name this bookmark";
+                                    edited(t) => { root.ab-d-bm-draft = t; }
+                                    accepted(t) => { root.ab-bm-rename(i, t); root.ab-d-bm-edit = -1; } } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                Rectangle { width: 30px; height: 30px; border-radius: Surface.r(15px);
+                                    background: bme.has-hover ? MusicTheme.surf1 : transparent;
+                                    bme := TouchArea { mouse-cursor: pointer; clicked => {
+                                        if (root.ab-d-bm-edit == i) { root.ab-bm-rename(i, root.ab-d-bm-draft); root.ab-d-bm-edit = -1; }
+                                        else { root.ab-d-bm-draft = lb; root.ab-d-bm-edit = i; } } }
+                                    AppIcon { source: root.ab-d-bm-edit == i ? Icons.check : Icons.pencil;
+                                        tint: MusicTheme.fg2; width: 13px; height: 13px; } } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                                Rectangle { width: 30px; height: 30px; border-radius: Surface.r(15px);
+                                    background: bmd.has-hover ? #ef444433 : transparent;
+                                    bmd := TouchArea { mouse-cursor: pointer; clicked => { root.ab-bm-remove(i); } }
+                                    AppIcon { source: Icons.trash; tint: bmd.has-hover ? #ef4444 : MusicTheme.fg-mute;
+                                        width: 13px; height: 13px; } } } } }
+                }
                 // Chapter list.
                 VerticalLayout { padding-left: 36px; padding-right: 36px; padding-bottom: 24px; spacing: 2px;
-                    if root.book-bookmarks.length > 0: HorizontalLayout { spacing: 8px; alignment: start;
-                        VerticalLayout { alignment: center; Text { text: "Bookmarks"; color: MusicTheme.fg-mute; font-size: 12px; } }
-                        for b[i] in root.book-bookmarks: BrowseChip { label: b; clicked => { root.book-bookmark-jump(i); } } }
                     if root.ab-d-chapters.length == 0: Text { text: "No chapters."; color: MusicTheme.fg-dim2; font-size: 13px; }
                     for cr[i] in root.ab-d-chapters: ChapterItem {
                         chapter: cr; n: i + 1; play => { root.audiobook-play(cr.index); } }
@@ -4270,6 +4680,13 @@ export component MusicPage inherits Rectangle {
         // Downloader tab (mdl) — card interface. Rectangle wrapper so the
         // history/search popups overlay the scroll content (z-order stacking).
         if root.view == "mymusic" && root.lib-tab == "downloader": dlpane := Rectangle {
+            // Entrance: this whole surface fades in when the view or sub-tab
+            // changes. The `if` above rebuilds the subtree, so `init` fires
+            // exactly once per arrival. Opacity only — these sit inside a
+            // layout, which owns `y`.
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: MusicMotion.slow; easing: ease-out; }
           // Field-title color, distinct per theme so labels read well everywhere.
           property <color> ftitle: Theme.oled ? #f472b6 : (Theme.dark ? #a5b4fc : #6d28d9);
           ScrollView {
@@ -4307,7 +4724,7 @@ export component MusicPage inherits Rectangle {
                         Rectangle { width: 84px; height: 34px; border-radius: Surface.r(10px);
                             background: root.dl-mode == "search" ? #06b6d4 : (mdsr.has-hover ? #06b6d422 : transparent);
                             border-width: 1.5px; border-color: #06b6d4;
-                            animate background { duration: 120ms; }
+                            animate background { duration: MusicMotion.fast; }
                             mdsr := TouchArea { mouse-cursor: pointer; clicked => { root.dl-mode = "search"; } }
                             HorizontalLayout { alignment: center; spacing: 6px;
                                 VerticalLayout { alignment: center; AppIcon { source: Icons.search; tint: root.dl-mode == "search" ? #ffffff : #06b6d4; width: 14px; height: 14px; } }
@@ -4315,7 +4732,7 @@ export component MusicPage inherits Rectangle {
                         Rectangle { width: 70px; height: 34px; border-radius: Surface.r(10px);
                             background: root.dl-mode == "url" ? #8b5cf6 : (mdur.has-hover ? #8b5cf622 : transparent);
                             border-width: 1.5px; border-color: #8b5cf6;
-                            animate background { duration: 120ms; }
+                            animate background { duration: MusicMotion.fast; }
                             mdur := TouchArea { mouse-cursor: pointer; clicked => { root.dl-mode = "url"; } }
                             HorizontalLayout { alignment: center; spacing: 6px;
                                 VerticalLayout { alignment: center; AppIcon { source: Icons.clipboard; tint: root.dl-mode == "url" ? #ffffff : #8b5cf6; width: 14px; height: 14px; } }
@@ -4337,7 +4754,7 @@ export component MusicPage inherits Rectangle {
                                     // Paste button — pull the clipboard straight into the field.
                                     VerticalLayout { alignment: center; Rectangle { width: 32px; height: 32px; border-radius: Surface.r(8px);
                                         background: pst.pressed ? #7c3aed : (pst.has-hover ? #8b5cf6 : #ede9fe);
-                                        animate background { duration: 110ms; }
+                                        animate background { duration: MusicMotion.fast; }
                                         AppIcon { source: Icons.clipboard; tint: (pst.has-hover || pst.pressed) ? #ffffff : #7c3aed; width: 15px; height: 15px; }
                                         pst := TouchArea { mouse-cursor: pointer; clicked => { urlbox.focus(); urlbox.select-all(); urlbox.paste(); root.dl-url-changed(urlbox.text); } } } }
                                     // TextInput lives as a direct child of a clip wrapper (NOT in the
@@ -4402,7 +4819,7 @@ export component MusicPage inherits Rectangle {
                                 background: MusicTheme.surf0;
                                 border-width: root.dl-status == "downloading" ? 2px : 1px;
                                 border-color: root.dl-status == "downloading" ? #22c55e : MusicTheme.line;
-                                animate border-color, border-width { duration: 160ms; }
+                                animate border-color, border-width { duration: MusicMotion.fast; }
                                 // Progress fill — same fraction as the queue pill, so the
                                 // always-visible top counter doubles as a live progress bar
                                 // (stays put while the queue scrolls or the sub-tab changes).
@@ -4411,7 +4828,7 @@ export component MusicPage inherits Rectangle {
                                 Rectangle { x: 0; y: 0; height: 100%;
                                     width: parent.denom > 0 ? parent.width * Math.clamp(1.0 * (root.dl-done + root.dl-skipped) / parent.denom, 0, 1) : 0;
                                     background: (parent.denom > 0 && (root.dl-done + root.dl-skipped) >= parent.denom) ? #22c55e2e : #8b5cf62e;
-                                    animate width { duration: 200ms; easing: ease-out; }
+                                    animate width { duration: MusicMotion.mid; easing: ease-out; }
                                 }
                                 // Icon counters (check / skipped / failed) — real
                                 // AppIcons, not unicode glyphs, so they always render
@@ -4565,7 +4982,7 @@ export component MusicPage inherits Rectangle {
                             Rectangle { x: 0; y: 0; height: 100%;
                                 width: parent.width * (row.percent / 100);
                                 background: card.sc; opacity: 0.16;
-                                animate width { duration: 300ms; easing: ease-out; } }
+                                animate width { duration: MusicMotion.slow; easing: ease-out; } }
                             HorizontalLayout { padding-left: 10px; padding-right: 14px; spacing: 10px;
                                 VerticalLayout { alignment: center; CheckBox { checked: row.selected; toggled => { root.dl-toggle-row(row.abs-index); } } }
                                 VerticalLayout { alignment: center; Rectangle { width: 40px; height: 40px; border-radius: Surface.r(8px); background: MusicTheme.surf-thumb; clip: true;
@@ -4763,6 +5180,13 @@ export component MusicPage inherits Rectangle {
         }
 
         if root.view == "mymusic" && root.lib-tab != "downloader" && tiles.length > 0: libscroll := ScrollView {
+            // Entrance: this whole surface fades in when the view or sub-tab
+            // changes. The `if` above rebuilds the subtree, so `init` fires
+            // exactly once per arrival. Opacity only — these sit inside a
+            // layout, which owns `y`.
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: MusicMotion.slow; easing: ease-out; }
             vertical-stretch: 1; horizontal-stretch: 1;
             // Reset scroll to the top when the tab/page/section changes (so a short
             // page never inherits the previous page's offset and looks bottom-stuck).
@@ -4806,7 +5230,7 @@ export component MusicPage inherits Rectangle {
                             }
                             if root.recent-rows.length == 0: Text { text: "Play something — your recent tracks land here."; color: MusicTheme.fg-dim2; font-size: 13px; }
                             VerticalLayout { spacing: 2px;
-                                for s[i] in root.recent-rows: TrackRow { track: s; clicked => { root.tile-clicked(s.index); }
+                                for s[i] in root.recent-rows: TrackRow { track: s; np-index: root.np-index; np-playing: root.playing; phase: root.phase; clicked => { root.tile-clicked(s.index); }
                                     context(ax, ay) => { root.trk-ctx-idx = s.index; root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y; root.trk-ctx-open = true; } } }
                         } }
                         // Top artists — fixed 3×2 grid.
@@ -4835,6 +5259,78 @@ export component MusicPage inherits Rectangle {
                                 thumb: a.thumb; label: a.label; clicked => { root.album-open(a.index); } }
                         } } }
                 }
+                // Home — the listening strip. `play_history` already records
+                // every play with its duration, so these are a read, not new
+                // bookkeeping.
+                if root.lib-tab == "home" && root.stats-total != "": strip := HorizontalLayout {
+                    padding-left: 36px; padding-right: 36px; spacing: 14px;
+                    property <[string]> vals: [root.stats-week, root.stats-total, root.stats-genre, root.stats-streak];
+                    for k[i] in ["THIS WEEK", "ALL TIME", "TOP GENRE", "DAY STREAK"]: Rectangle {
+                        horizontal-stretch: 1; height: 76px; border-radius: Surface.r(14px);
+                        background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
+                        VerticalLayout { padding: 14px; spacing: 4px; alignment: center;
+                            Text { text: k; color: MusicTheme.fg-mute; font-size: 11px;
+                                font-weight: 700; letter-spacing: 0.6px; }
+                            Text { text: strip.vals[i] == "" ? "—" : strip.vals[i];
+                                color: MusicTheme.fg; font-size: 20px; font-weight: 800; overflow: elide; } } }
+                }
+                // Home — Continue listening: anything with a stored position
+                // that is neither at the start nor finished. Same card as Top
+                // albums, plus a progress hairline along the bottom.
+                if root.lib-tab == "home" && root.continue-rows.length > 0: HorizontalLayout {
+                    padding-left: 36px; padding-right: 36px;
+                    GradOutline { on: root.home-connect; horizontal-stretch: 1;
+                    VerticalLayout { padding: root.home-connect ? 14px : 0px; spacing: 12px;
+                        Text { text: "Continue listening"; color: MusicTheme.fg; font-size: 20px; font-weight: 700; }
+                        Rectangle { horizontal-stretch: 1;
+                            property <int> gcols: Math.max(1, Math.min(7, root.continue-rows.length));
+                            property <length> cell: self.width / gcols;
+                            height: cell + 30px;
+                            for a[idx] in root.continue-rows: Rectangle {
+                                width: parent.cell; x: idx * parent.cell; y: 0; height: parent.height;
+                                AlbumCard { size: parent.width - 16px; x: 8px; y: 0;
+                                    thumb: a.thumb; label: a.label; clicked => { root.tile-clicked(a.index); } }
+                                // `count` carries percent-complete 0..100 — the
+                                // tile struct has no float field to spare.
+                                Rectangle { x: 8px; y: parent.width - 20px; height: 3px;
+                                    width: parent.width - 16px; border-radius: 1.5px; background: #ffffff22;
+                                    Rectangle { x: 0; height: parent.height; border-radius: 1.5px;
+                                        width: parent.width * Math.clamp(a.count, 0, 100) / 100;
+                                        background: #ec4899; } } }
+                        } } }
+                }
+                // Home — Most played, edge-to-edge (mirrors Top albums).
+                if root.lib-tab == "home" && root.most.length > 0: HorizontalLayout {
+                    padding-left: 36px; padding-right: 36px;
+                    GradOutline { on: root.home-connect; horizontal-stretch: 1;
+                    VerticalLayout { padding: root.home-connect ? 14px : 0px; spacing: 12px;
+                        Text { text: "Most played"; color: MusicTheme.fg; font-size: 20px; font-weight: 700; }
+                        Rectangle { horizontal-stretch: 1;
+                            property <int> gcols: Math.max(1, Math.min(7, root.most.length));
+                            property <length> cell: self.width / gcols;
+                            height: cell + 30px;
+                            for a[idx] in root.most: AlbumCard {
+                                size: cell - 16px;
+                                x: idx * cell + 8px; y: 0;
+                                thumb: a.thumb; label: a.label; clicked => { root.tile-clicked(a.index); } }
+                        } } }
+                }
+                // Home — Recently added.
+                if root.lib-tab == "home" && root.fresh.length > 0: HorizontalLayout {
+                    padding-left: 36px; padding-right: 36px;
+                    GradOutline { on: root.home-connect; horizontal-stretch: 1;
+                    VerticalLayout { padding: root.home-connect ? 14px : 0px; spacing: 12px;
+                        Text { text: "Recently added"; color: MusicTheme.fg; font-size: 20px; font-weight: 700; }
+                        Rectangle { horizontal-stretch: 1;
+                            property <int> gcols: Math.max(1, Math.min(7, root.fresh.length));
+                            property <length> cell: self.width / gcols;
+                            height: cell + 30px;
+                            for a[idx] in root.fresh: AlbumCard {
+                                size: cell - 16px;
+                                x: idx * cell + 8px; y: 0;
+                                thumb: a.thumb; label: a.label; clicked => { root.tile-clicked(a.index); } }
+                        } } }
+                }
                 // Search results header — songs come first (paginated 10/page),
                 // then artists + albms appear below (np.p5.atmusic.lib-grouped-search).
                 if root.lib-tab == "songs" && root.query != "": VerticalLayout { padding-left: 36px; padding-right: 36px;
@@ -4856,6 +5352,19 @@ export component MusicPage inherits Rectangle {
                             x: Math.mod(idx, gcols) * cell + 8px;
                             y: Math.floor(idx / gcols) * rowh;
                             track: s;
+                            np-index: root.np-index; np-playing: root.playing; phase: root.phase;
+                            // Staggered entrance, capped at 12 slots: a full
+                            // page of 60 cards must not take two seconds to
+                            // finish arriving, and past the first row or two
+                            // nobody can tell the difference anyway. `init`
+                            // re-fires whenever the model or the tab changes,
+                            // which is exactly when the entrance should replay.
+                            opacity: 0;
+                            init => { self.opacity = 1; }
+                            animate opacity {
+                                duration: MusicMotion.slow; easing: ease-out;
+                                delay: Math.min(idx, 12) * MusicMotion.stagger;
+                            }
                             clicked => { root.tile-clicked(s.index); }
                             fav => { root.row-fav(s.index); }
                             rate(n) => { root.row-rate(s.index, n); }
@@ -4980,14 +5489,14 @@ export component MusicPage inherits Rectangle {
                         DetailActionBtn { icon: Icons.play; label: "Play all"; clicked => { root.play-all(); } }
                         DetailActionBtn { icon: Icons.shuffle; label: "Shuffle"; clicked => { root.shuffle-all(); } } }
                     VerticalLayout { spacing: 2px;
-                        for s[i] in root.fav-rows: TrackRow { track: s; clicked => { root.tile-clicked(s.index); }
+                        for s[i] in root.fav-rows: TrackRow { track: s; np-index: root.np-index; np-playing: root.playing; phase: root.phase; clicked => { root.tile-clicked(s.index); }
                             context(ax, ay) => { root.trk-ctx-idx = s.index; root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y; root.trk-ctx-open = true; } } }
                 }
                 // Playback History (np.p5.atmusic.history-page) — timeline of plays.
                 if root.lib-tab == "history": VerticalLayout { padding-left: 36px; padding-right: 36px; spacing: 12px; padding-top: 6px;
                     if root.history-rows.length == 0: Text { text: "Nothing played yet."; color: MusicTheme.fg-dim2; font-size: 13px; }
                     VerticalLayout { spacing: 2px;
-                        for s[i] in root.history-rows: TrackRow { track: s; clicked => { root.tile-clicked(s.index); }
+                        for s[i] in root.history-rows: TrackRow { track: s; np-index: root.np-index; np-playing: root.playing; phase: root.phase; clicked => { root.tile-clicked(s.index); }
                             context(ax, ay) => { root.trk-ctx-idx = s.index; root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y; root.trk-ctx-open = true; } } }
                 }
                 // Genres — thumb grid (7 per row, 21 per page) with row-2 pagination;
@@ -5037,7 +5546,7 @@ export component MusicPage inherits Rectangle {
                                 background: @linear-gradient(135deg, #ec4899 0%, #7c3aed 100%);
                                 border-width: pcard.has-hover ? 2px : 0px; border-color: MusicTheme.fg;
                                 drop-shadow-blur: pcard.has-hover ? 26px : 0px; drop-shadow-color: #ec4899aa;
-                                animate drop-shadow-blur, border-width { duration: 140ms; }
+                                animate drop-shadow-blur, border-width { duration: MusicMotion.fast; }
                                 if p.thumb.width > 0: Image { source: p.thumb; image-fit: cover; width: 100%; height: 100%; }
                                 if p.thumb.width == 0: HorizontalLayout { alignment: center; VerticalLayout { alignment: center; AppIcon { source: Icons.list-music; tint: #ffffffdd; width: 40px; height: 40px; } } }
                                 pcard := TouchArea { mouse-cursor: pointer;
@@ -5095,7 +5604,7 @@ export component MusicPage inherits Rectangle {
                     if root.playlist-tracks.length == 0: Text { text: "This playlist is empty — add tracks from the player's + button."; color: MusicTheme.fg-dim2; font-size: 13px; }
                     VerticalLayout { spacing: 2px;
                         for s[i] in root.playlist-tracks: HorizontalLayout { spacing: 6px;
-                            VerticalLayout { horizontal-stretch: 1; TrackRow { track: s; clicked => { root.playlist-play-track(s.index); }
+                            VerticalLayout { horizontal-stretch: 1; TrackRow { track: s; np-index: root.np-index; np-playing: root.playing; phase: root.phase; clicked => { root.playlist-play-track(s.index); }
                                 context(ax, ay) => { root.trk-ctx-idx = s.index; root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y; root.trk-ctx-open = true; } } }
                             // Reorder arrows only in Custom mode (they save the custom order).
                             if root.playlist-sort == "custom": VerticalLayout { alignment: center; GlyphBtn { icon: Icons.chevron-up; size: 30px; clicked => { root.playlist-move(i, i - 1); } } }
@@ -5128,7 +5637,7 @@ export component MusicPage inherits Rectangle {
                                 background: @linear-gradient(135deg, #ec489955 0%, #7c3aed55 100%);
                                 border-width: fcard.has-hover ? 2px : 0px; border-color: #ec4899;
                                 drop-shadow-blur: fcard.has-hover ? 24px : 0px; drop-shadow-color: #ec4899aa;
-                                animate drop-shadow-blur, border-width { duration: 130ms; }
+                                animate drop-shadow-blur, border-width { duration: MusicMotion.fast; }
                                 AppIcon { source: Icons.folder; width: 44px; height: 44px; }
                                 fcard := TouchArea { mouse-cursor: pointer;
                                     pointer-event(e) => {
@@ -5170,6 +5679,13 @@ export component MusicPage inherits Rectangle {
         }
 
         if root.view == "mymusic" && root.lib-tab != "downloader" && tiles.length == 0: Rectangle {
+            // Entrance: this whole surface fades in when the view or sub-tab
+            // changes. The `if` above rebuilds the subtree, so `init` fires
+            // exactly once per arrival. Opacity only — these sit inside a
+            // layout, which owns `y`.
+            opacity: 0;
+            init => { self.opacity = 1; }
+            animate opacity { duration: MusicMotion.slow; easing: ease-out; }
             vertical-stretch: 1; horizontal-stretch: 1;
             VerticalLayout {
                 alignment: center; spacing: 14px;
@@ -5274,7 +5790,7 @@ export component MusicPage inherits Rectangle {
                     Rectangle { width: 56px; height: 56px; border-radius: Surface.r(10px); clip: true; horizontal-stretch: 0; vertical-stretch: 0;
                         y: (parent.height - self.height)/2; background: MusicTheme.surf-thumb;
                         border-width: 1px; border-color: MusicTheme.line; drop-shadow-blur: Surface.cast(14px); drop-shadow-color: #ec489955;
-                        Image { source: root.np-art; image-fit: cover; width: parent.width; height: parent.height; }
+                        ArtFade { source: root.np-art; width: parent.width; height: parent.height; }
                         if root.np-title == "": AppIcon { source: Icons.music; tint: #ec4899; width: 22px; height: 22px; }
                         artta := TouchArea { mouse-cursor: pointer; clicked => { root.open-fullscreen(); } }
                         if artta.has-hover && root.np-title != "": Rectangle { width: parent.width; height: parent.height; background: #000000aa;
@@ -5320,7 +5836,7 @@ export component MusicPage inherits Rectangle {
                     VerticalLayout { alignment: center;
                         Rectangle { width: 52px; height: 52px; border-radius: 26px; horizontal-stretch: 0; vertical-stretch: 0;
                             background: pb.has-hover ? #ec4899 : #f0f0f3;
-                            animate background { duration: 150ms; }
+                            animate background { duration: MusicMotion.fast; }
                             drop-shadow-blur: Surface.cast(18px); drop-shadow-color: #ec489988;
                             pb := TouchArea { mouse-cursor: pointer; clicked => { root.np-playpause(); } }
                             AppIcon { source: root.playing ? Icons.pause : Icons.play; tint: #14141b;
@@ -5483,7 +5999,7 @@ export component MusicPage inherits Rectangle {
                 if root.lyrics-mgr-mode == "list": HorizontalLayout { spacing: 10px;
                     Rectangle { horizontal-stretch: 1; height: 34px; border-radius: Surface.r(17px); clip: true; background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
                         Rectangle { x: 0; width: parent.width * Math.clamp(root.lyrics-sync-progress, 0, 1); height: 100%;
-                            background: @linear-gradient(90deg, #ec4899, #8b5cf6); animate width { duration: 200ms; } }
+                            background: @linear-gradient(90deg, #ec4899, #8b5cf6); animate width { duration: MusicMotion.mid; } }
                         Text { text: root.lyrics-sync-status != "" ? root.lyrics-sync-status : "Lyrics coverage"; color: root.lyrics-sync-progress > 0.5 ? #ffffff : MusicTheme.fg2; font-size: 12px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
                     Rectangle { width: 150px; height: 34px; border-radius: Surface.r(17px); background: #ec4899;
                         sba := TouchArea { mouse-cursor: pointer; clicked => { root.sync-all-lyrics(); } }
@@ -5664,13 +6180,13 @@ export component MusicPage inherits Rectangle {
                             background: dbk.has-hover ? #ec4899 : MusicTheme.surf1;
                             border-width: 2px; border-color: dbk.has-hover ? #ec4899 : MusicTheme.line;
                             drop-shadow-blur: dbk.has-hover ? 34px : 0px; drop-shadow-color: #ec4899aa;
-                            animate background, drop-shadow-blur, border-color { duration: 180ms; easing: ease-out; }
+                            animate background, drop-shadow-blur, border-color { duration: MusicMotion.mid; easing: ease-out; }
                             dbk := TouchArea { mouse-cursor: pointer; clicked => { root.detail-close(); } }
                             VerticalLayout { alignment: center; spacing: 4px;
                                 HorizontalLayout { alignment: center;
                                     AppIcon { source: Icons.chevron-left; tint: dbk.has-hover ? #ffffff : MusicTheme.fg2;
                                         width: dbk.has-hover ? 56px : 48px; height: dbk.has-hover ? 56px : 48px;
-                                        animate width, height { duration: 160ms; easing: ease-out; } } }
+                                        animate width, height { duration: MusicMotion.fast; easing: ease-out; } } }
                                 Text { text: "Back"; color: dbk.has-hover ? #ffffff : MusicTheme.fg2; font-size: 16px; font-weight: 700; horizontal-alignment: center; } }
                         }
                         // Fill the remaining width so the info card sizes to content.
@@ -5688,7 +6204,7 @@ export component MusicPage inherits Rectangle {
                         Text { text: "Songs"; color: MusicTheme.fg; font-size: 16px; font-weight: 700; }
                         if root.detail-tracks.length == 0: Text { text: "No tracks."; color: MusicTheme.fg-dim2; font-size: 13px; }
                         VerticalLayout { spacing: 2px;
-                            for s[i] in root.detail-tracks: TrackRow { track: s; clicked => { root.detail-play-track(s.index); }
+                            for s[i] in root.detail-tracks: TrackRow { track: s; np-index: root.np-index; np-playing: root.playing; phase: root.phase; clicked => { root.detail-play-track(s.index); }
                                 context(ax, ay) => { root.trk-ctx-idx = s.index;
                                     root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y;
                                     root.trk-ctx-open = true; } } } }
@@ -5711,7 +6227,7 @@ export component MusicPage inherits Rectangle {
                 if root.detail-kind != "artist": VerticalLayout { padding-left: 36px; padding-right: 36px; padding-bottom: 24px; spacing: 8px;
                     if root.detail-tracks.length == 0: Text { text: "No tracks."; color: MusicTheme.fg-dim2; font-size: 13px; }
                     VerticalLayout { spacing: 2px;
-                        for s[i] in root.detail-tracks: TrackRow { track: s; clicked => { root.detail-play-track(s.index); }
+                        for s[i] in root.detail-tracks: TrackRow { track: s; np-index: root.np-index; np-playing: root.playing; phase: root.phase; clicked => { root.detail-play-track(s.index); }
                             context(ax, ay) => { root.trk-ctx-idx = s.index;
                                 root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y;
                                 root.trk-ctx-open = true; } } }
@@ -5731,7 +6247,14 @@ export component MusicPage inherits Rectangle {
         // Sit below the 126px two-row header and above the 124px bottom player
         // so it joins the player seamlessly (np.p5.music.side-panel).
         width: 432px; height: parent.height - 126px - 124px;
-        x: parent.width - self.width; y: 126px;
+        // Slide in from the edge it is docked to. `x` is free here (no layout
+        // owns it), so the panel can travel rather than appear.
+        property <length> home-x: parent.width - self.width;
+        x: self.home-x + MusicMotion.rise * 4;
+        opacity: 0;
+        init => { self.x = self.home-x; self.opacity = 1; }
+        animate x, opacity { duration: MusicMotion.mid; easing: ease-out; }
+        y: 126px;
         background: MusicTheme.surf-pop; border-width: 1px; border-color: MusicTheme.line;
         // No drop shadow — it bled onto the bottom player (np.p5.music.side-panel).
         // Absorb pointer events so the page underneath doesn't react to hover/click.
@@ -5747,7 +6270,7 @@ export component MusicPage inherits Rectangle {
                 VerticalLayout { spacing: 2px;
                     if root.queue-rows.length == 0: Text { text: "Queue is empty."; color: MusicTheme.fg-dim; font-size: 13px; }
                     for s[i] in root.queue-rows: HorizontalLayout { spacing: 2px;
-                        VerticalLayout { horizontal-stretch: 1; TrackRow { track: s; clicked => { root.play-queue(s.index); }
+                        VerticalLayout { horizontal-stretch: 1; TrackRow { track: s; np-index: root.np-index; np-playing: root.playing; phase: root.phase; clicked => { root.play-queue(s.index); }
                             context(ax, ay) => { root.trk-ctx-idx = s.index; root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y; root.trk-ctx-open = true; } } }
                         VerticalLayout { alignment: center; GlyphBtn { icon: Icons.chevron-up; size: 26px; clicked => { root.queue-move(i, i - 1); } } }
                         VerticalLayout { alignment: center; GlyphBtn { icon: Icons.chevron-down; size: 26px; clicked => { root.queue-move(i, i + 1); } } } } } }
@@ -5808,7 +6331,7 @@ export component MusicPage inherits Rectangle {
                             opacity: Math.abs(off) <= 1 ? 1.0
                                 : (Math.abs(off) == 2 ? 0.58 : (Math.abs(off) == 3 ? 0.4 : 0.26));
                             wrap: word-wrap; horizontal-alignment: center; width: 100%;
-                            animate font-size, opacity, color { duration: 220ms; easing: ease-out; } } }
+                            animate font-size, opacity, color { duration: MusicMotion.mid; easing: ease-out; } } }
                 }
             }
         }
@@ -5874,7 +6397,7 @@ export component MusicPage inherits Rectangle {
                                             Rectangle { width: 116px; height: 32px; border-radius: Surface.r(16px); clip: true;
                                                 background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
                                                 Rectangle { x: 0; width: parent.width * Math.clamp(root.rg-scan-progress, 0, 1); height: 100%;
-                                                    background: @linear-gradient(90deg, #ec4899, #8b5cf6); animate width { duration: 200ms; } }
+                                                    background: @linear-gradient(90deg, #ec4899, #8b5cf6); animate width { duration: MusicMotion.mid; } }
                                                 TouchArea { mouse-cursor: pointer; clicked => { root.rg-scan(); } }
                                                 Text { text: root.rg-scan-status != "" ? root.rg-scan-status : "Scan gains";
                                                     color: root.rg-scan-progress > 0.5 ? #ffffff : MusicTheme.fg; font-size: 11px; font-weight: 600;
@@ -6008,7 +6531,7 @@ export component MusicPage inherits Rectangle {
                 HorizontalLayout { spacing: 10px;
                     Rectangle { horizontal-stretch: 1; height: 34px; border-radius: Surface.r(17px); clip: true; background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
                         Rectangle { x: 0; width: parent.width * Math.clamp(root.meta-fetch-progress, 0, 1); height: 100%;
-                            background: @linear-gradient(90deg, #ec4899, #8b5cf6); animate width { duration: 200ms; } }
+                            background: @linear-gradient(90deg, #ec4899, #8b5cf6); animate width { duration: MusicMotion.mid; } }
                         Text { text: root.meta-fetch-status != "" ? root.meta-fetch-status : (root.meta-mgr-total + " songs"); color: root.meta-fetch-progress > 0.5 ? #ffffff : MusicTheme.fg2; font-size: 12px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
                     Rectangle { width: 150px; height: 34px; border-radius: Surface.r(17px); background: #ec4899;
                         mfa := TouchArea { mouse-cursor: pointer; clicked => { root.meta-fetch-all(); } }
@@ -6368,7 +6891,7 @@ export component MusicPage inherits Rectangle {
                 if root.podcast-add-busy: VerticalLayout { spacing: 6px;
                     Rectangle { height: 8px; border-radius: Surface.r(4px); background: MusicTheme.surf1; clip: true;
                         Rectangle { x: 0; height: 100%; width: parent.width * Math.clamp(root.podcast-add-frac, 0, 1);
-                            border-radius: Surface.r(4px); background: @linear-gradient(90deg, #8b5cf6, #6366f1); animate width { duration: 120ms; } } }
+                            border-radius: Surface.r(4px); background: @linear-gradient(90deg, #8b5cf6, #6366f1); animate width { duration: MusicMotion.fast; } } }
                     Text { text: root.podcast-add-status == "" ? "Fetching episodes…" : root.podcast-add-status; color: MusicTheme.fg-mute; font-size: 11px; } }
                 HorizontalLayout { spacing: 10px; alignment: end;
                     // OPML import/export — bring subscriptions from other apps / take them out.
@@ -6749,7 +7272,7 @@ export component MusicPage inherits Rectangle {
                             if root.podcast-info-image.width == 0: AppIcon { source: Icons.mic; width: 44px; height: 44px; }
                             if root.podcast-info-image.width > 0: Image { source: root.podcast-info-image; image-fit: cover; width: 100%; height: 100%; }
                             ich := TouchArea { mouse-cursor: pointer; clicked => { root.podcast-info-set-thumb(); } }
-                            Rectangle { width: 100%; height: 30px; y: parent.height - self.height; background: #000000bb; opacity: ich.has-hover ? 1 : 0; animate opacity { duration: 120ms; }
+                            Rectangle { width: 100%; height: 30px; y: parent.height - self.height; background: #000000bb; opacity: ich.has-hover ? 1 : 0; animate opacity { duration: MusicMotion.fast; }
                                 HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.pencil; tint: #ffffff; width: 10px; height: 10px; } } Text { text: "Update thumb"; color: #ffffff; font-size: 10px; font-weight: 700; vertical-alignment: center; } } } }
                         VerticalLayout { alignment: start; spacing: 6px; horizontal-stretch: 1;
                             Text { text: root.podcast-info-title; color: MusicTheme.fg; font-size: 20px; font-weight: 800; wrap: word-wrap; }
@@ -6799,6 +7322,14 @@ export component MusicPage inherits Rectangle {
 // Left: large art + metadata + all transport/seek/volume controls.
 // Right: tabbed Lyrics + Queue.
 export component MusicFullscreen inherits Rectangle {
+    // Own pulse: this component is instantiated outside MusicPage, so it cannot
+    // borrow the page's timer.
+    property <bool> phase: false;
+    Timer {
+        interval: 420ms;
+        running: !MusicMotion.off && root.playing;
+        triggered => { root.phase = !root.phase; }
+    }
     in property <image> art;
     in property <color> accent: #ec4899;   // art-derived accent (vinyl fill, all themes)
     in property <string> title;
@@ -6819,7 +7350,6 @@ export component MusicFullscreen inherits Rectangle {
     in property <[MusicLyricLine]> lyrics-rows: [];
     in property <int> lyrics-active: -1;
     in-out property <string> tab: "lyrics";   // lyrics | queue
-    in-out property <bool> flipped: false;     // art ↔ lyrics flip (np.p5.atmusic.art-flip-lyrics)
     in property <[float]> vis-bars: [];        // zen visualizer spectrum
     in-out property <int> vis-style: 0;        // shared visualizer style
     callback vis-style-changed(int);           // persist the chosen visualizer style
@@ -6852,7 +7382,7 @@ export component MusicFullscreen inherits Rectangle {
     background: MusicTheme.surf-zen;
     // Ambient blurred art wash behind everything — stronger in light mode so it
     // still reads through the pale gradient (user request 2026-06-13).
-    Image { source: art; image-fit: cover; width: 100%; height: 100%; opacity: MusicTheme.light ? 0.89 : 0.59; }
+    ArtFade { source: art; width: 100%; height: 100%; opacity: MusicTheme.light ? 0.89 : 0.59; }
     Rectangle { width: 100%; height: 100%; background: @linear-gradient(180deg, MusicTheme.surf-zen-w1, MusicTheme.surf-zen-w2); }
     // Solid-overlay guard: the zen player fills the screen but is only a floating
     // layer — without a base TouchArea, stray clicks in empty regions fall
@@ -6921,7 +7451,7 @@ export component MusicFullscreen inherits Rectangle {
                     if root.art.width > 0: VerticalLayout { alignment: center;
                         Rectangle { width: 46px; height: 46px; border-radius: Surface.r(10px); clip: true;
                             horizontal-stretch: 0; vertical-stretch: 0;
-                            Image { source: root.art; image-fit: cover; width: 100%; height: 100%; } } }
+                            ArtFade { source: root.art; width: 100%; height: 100%; } } }
                     VerticalLayout { alignment: center;
                         Text { text: title == "" ? "Nothing playing" : title; color: tta.has-hover ? #ec4899 : MusicTheme.fg; font-size: 40px; font-weight: 800; horizontal-alignment: center; vertical-alignment: center; overflow: elide; } } } }
             Rectangle { height: 22px;
@@ -6939,7 +7469,7 @@ export component MusicFullscreen inherits Rectangle {
                 color: MusicTheme.fg-faint; font-size: 18px; horizontal-alignment: center; overflow: elide; }
             Text { text: (root.lyrics-active >= 0 && root.lyrics-rows.length > 0) ? root.lyrics-rows[root.lyrics-active].text : (root.lyrics-rows.length == 0 ? "No synced lyrics — use the lyrics button in the bottom player" : "");
                 color: #ec4899; font-size: 28px; font-weight: 700; horizontal-alignment: center; overflow: elide;
-                animate color { duration: 200ms; } }
+                animate color { duration: MusicMotion.mid; } }
             Text { text: (root.lyrics-active >= 0 && root.lyrics-active + 1 < root.lyrics-rows.length) ? root.lyrics-rows[root.lyrics-active + 1].text : "";
                 color: MusicTheme.fg-faint; font-size: 18px; horizontal-alignment: center; overflow: elide; } }
         Rectangle { height: 24px; }
@@ -6975,7 +7505,7 @@ export component MusicFullscreen inherits Rectangle {
                     border-radius: pbf.pressed ? 22px : 35px;
                     background: pbf.has-hover || pbf.pressed ? #ec4899 : #f0f0f3;
                     drop-shadow-blur: pbf.pressed ? 36px : 24px; drop-shadow-color: #ec489988;
-                    animate background, border-radius, drop-shadow-blur { duration: 150ms; easing: ease-in-out; }
+                    animate background, border-radius, drop-shadow-blur { duration: MusicMotion.fast; easing: ease-in-out; }
                     pbf := TouchArea { mouse-cursor: pointer; clicked => { root.playpause(); } }
                     AppIcon { source: playing ? Icons.pause : Icons.play; tint: #14141b; width: 28px; height: 28px; } } }
             VerticalLayout { alignment: center; PlayerBtn { icon: Icons.skip-forward; isz: 26px; size: 50px; clicked => { root.next(); } } }
@@ -7018,11 +7548,11 @@ export component MusicFullscreen inherits Rectangle {
                         color: i == root.lyrics-active ? #ec4899 : MusicTheme.fg-dim;
                         font-size: i == root.lyrics-active ? 20px : 15px;
                         font-weight: i == root.lyrics-active ? 700 : 400; wrap: word-wrap;
-                        animate color, font-size { duration: 180ms; } } } }
+                        animate color, font-size { duration: MusicMotion.mid; } } } }
             if root.zen-panel == "queue": ScrollView { vertical-stretch: 1;
                 VerticalLayout { spacing: 2px;
                     if root.queue-rows.length == 0: Text { text: "Queue is empty."; color: MusicTheme.fg-dim; font-size: 14px; }
-                    for s[i] in root.queue-rows: TrackRow { track: s; clicked => { root.play-queue(s.index); } } } }
+                    for s[i] in root.queue-rows: TrackRow { track: s; np-index: root.np-index; np-playing: root.playing; phase: root.phase; clicked => { root.play-queue(s.index); } } } }
         }
     }
 }
@@ -7031,6 +7561,16 @@ export component MusicFullscreen inherits Rectangle {
 // Seekbar + volume + transport + expandable queue. Bound to the same music
 // state so it works on every section, not just the music page.
 export component MusicMini inherits Rectangle {
+    // The queue rows mark the track being heard, same as everywhere else.
+    in property <int> np-index: -1;
+    // Own pulse: this component is instantiated outside MusicPage, so it cannot
+    // borrow the page's timer.
+    property <bool> phase: false;
+    Timer {
+        interval: 420ms;
+        running: !MusicMotion.off && root.playing;
+        triggered => { root.phase = !root.phase; }
+    }
     in property <image> art;
     in property <color> accent: #ec4899;   // art-derived accent (vinyl fill, all themes)
     in property <string> title;
@@ -7219,15 +7759,15 @@ export component MusicMini inherits Rectangle {
                     background: #ec4899; drop-shadow-blur: Surface.cast(6px); drop-shadow-color: #ec489988;
                     x: vinyl.offx + vinyl.nx * root.uiscale * 1px - self.width / 2;
                     y: vinyl.offy + vinyl.ny * root.uiscale * 1px - self.height / 2;
-                    animate x, y { duration: 400ms; easing: ease-out; } }
-                animate opacity { duration: 160ms; } }
+                    animate x, y { duration: MusicMotion.slow; easing: ease-out; } }
+                animate opacity { duration: MusicMotion.fast; } }
             // back — queue (rows show their own thumb under the ▶ overlay;
             // audiobook chapters get the book cover filled in by the queue
             // builder on the Rust side).
             if root.face == "queue": ScrollView { width: 100%; height: 100%;
                 VerticalLayout { spacing: 2px; padding: 6px;
                     if queue-rows.length == 0: Text { text: "Queue empty."; color: root.cream ? #7a6a56 : MusicTheme.fg-dim; font-size: 12px; }
-                    for s[i] in queue-rows: TrackRow { track: s; on-light: root.cream; clicked => { root.play-queue(s.index); } } } }
+                    for s[i] in queue-rows: TrackRow { track: s; on-light: root.cream; np-index: root.np-index; np-playing: root.playing; phase: root.phase; clicked => { root.play-queue(s.index); } } } }
             // back — 3-line synced lyrics (prev / current / next).
             if root.face == "lyrics": VerticalLayout { spacing: 14px; padding: 18px; alignment: center;
                 // Embedded (cream fill): warm mid-brown for the inactive lines —
@@ -7296,7 +7836,7 @@ export component MusicMini inherits Rectangle {
             PlayerBtn { icon: Icons.shuffle; size: 32px * root.uiscale; isz: 16px * root.uiscale; active: root.shuffle; solid: root.embedded; clicked => { root.toggle-shuffle(); } }
             PlayerBtn { icon: Icons.skip-back; size: 38px * root.uiscale; isz: 19px * root.uiscale; solid: root.embedded; clicked => { root.prev(); } }
             Rectangle { width: 48px * root.uiscale; height: self.width; border-radius: self.width / 2; horizontal-stretch: 0; vertical-stretch: 0;
-                background: mpb.has-hover ? #ec4899 : (root.embedded ? #ffffff : #f0f0f3); animate background { duration: 150ms; }
+                background: mpb.has-hover ? #ec4899 : (root.embedded ? #ffffff : #f0f0f3); animate background { duration: MusicMotion.fast; }
                 border-width: root.embedded ? 1.5px : 0px; border-color: #ec4899;
                 mpb := TouchArea { mouse-cursor: pointer; clicked => { root.playpause(); } }
                 AppIcon { source: playing ? Icons.pause : Icons.play; tint: mpb.has-hover ? #ffffff : #14141b; width: 20px * root.uiscale; height: 20px * root.uiscale; } }
@@ -7308,7 +7848,7 @@ export component MusicMini inherits Rectangle {
         HorizontalLayout { alignment: center; spacing: 8px * root.uiscale;
             if root.radio-mode: VerticalLayout { alignment: center;
                 Rectangle { width: 48px * root.uiscale; height: self.width; border-radius: self.width / 2; horizontal-stretch: 0; vertical-stretch: 0;
-                    background: (playing || rpb.has-hover) ? #ef4444 : (root.embedded ? #ffffff : #f0f0f3); animate background { duration: 150ms; }
+                    background: (playing || rpb.has-hover) ? #ef4444 : (root.embedded ? #ffffff : #f0f0f3); animate background { duration: MusicMotion.fast; }
                     border-width: root.embedded ? 1.5px : 0px; border-color: #ef4444;
                     rpb := TouchArea { mouse-cursor: pointer; clicked => { root.playpause(); } }
                     AppIcon { source: playing ? Icons.pause : Icons.play; tint: (playing || rpb.has-hover) ? #ffffff : #14141b; width: 20px * root.uiscale; height: 20px * root.uiscale; } } }
@@ -7498,7 +8038,7 @@ export component PodcastMini inherits Rectangle {
                     HorizontalLayout { alignment: center; spacing: 1px; VerticalLayout { alignment: center; AppIcon { source: Icons.rotate-ccw; tint: b15r.ink; width: 13px * root.uiscale; height: 13px * root.uiscale; } } Text { text: "15"; color: b15r.ink; font-size: 13px * root.uiscale; font-weight: 700; vertical-alignment: center; } } } }
             VerticalLayout { alignment: center;
                 Rectangle { width: 56px * root.uiscale; height: 48px * root.uiscale; border-radius: self.height / 2; horizontal-stretch: 0;
-                    background: ppb.has-hover ? root.accent : (root.embedded ? #ffffff : #f0f0f3); animate background { duration: 150ms; }
+                    background: ppb.has-hover ? root.accent : (root.embedded ? #ffffff : #f0f0f3); animate background { duration: MusicMotion.fast; }
                     border-width: root.embedded ? 1.5px : 1px; border-color: root.embedded ? root.accent : MusicTheme.line;
                     ppb := TouchArea { mouse-cursor: pointer; clicked => { root.playpause(); } }
                     AppIcon { source: playing ? Icons.pause : Icons.play; tint: ppb.has-hover ? #ffffff : #14141b; width: 22px * root.uiscale; height: 22px * root.uiscale; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
@@ -7662,7 +8202,7 @@ export component BookMini inherits Rectangle {
                 // Theme-inverse play chip: fg pill + bg-coloured glyph reads on
                 // every theme (the fixed light-grey chip clashed on dark).
                 Rectangle { width: 54px * root.uiscale; height: 46px * root.uiscale; border-radius: self.height / 2; horizontal-stretch: 0;
-                    background: kpp.has-hover ? root.accent : MusicTheme.fg; animate background { duration: 150ms; }
+                    background: kpp.has-hover ? root.accent : MusicTheme.fg; animate background { duration: MusicMotion.fast; }
                     kpp := TouchArea { mouse-cursor: pointer; clicked => { root.playpause(); } }
                     AppIcon { source: playing ? Icons.pause : Icons.play;
                         tint: kpp.has-hover || MusicTheme.light ? #ffffff : #14141b;

@@ -78,6 +78,78 @@ pub async fn bookmarks(pool: &SqlitePool, item_id: i64) -> Result<Vec<(f64, Stri
     Ok(rows.into_iter().map(|(p, l)| (p, l.unwrap_or_default())).collect())
 }
 
+/// Every bookmark across a whole book (its chapters are separate items), as
+/// `(item_id, position_s, label)` in chapter-then-position order.
+///
+/// The player panel's chips only ever show the PLAYING chapter's marks; a book
+/// is a list of chapters, so the detail page needs the union or half the
+/// bookmarks are invisible from the place you would look for them.
+pub async fn book_bookmarks(pool: &SqlitePool, item_ids: &[i64]) -> Result<Vec<(i64, f64, String)>> {
+    if item_ids.is_empty() { return Ok(vec![]); }
+    let list = item_ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    let rows: Vec<(i64, f64, Option<String>)> = sqlx::query_as(&format!(
+        "SELECT item_id, position_s, label FROM audiobook_bookmarks
+         WHERE item_id IN ({list}) ORDER BY item_id, position_s")).fetch_all(pool).await?;
+    // Preserve the caller's chapter order rather than the id order — chapter 10
+    // can have a lower rowid than chapter 2.
+    let rank: std::collections::HashMap<i64, usize> =
+        item_ids.iter().enumerate().map(|(i, id)| (*id, i)).collect();
+    let mut out: Vec<(i64, f64, String)> = rows.into_iter()
+        .map(|(id, p, l)| (id, p, l.unwrap_or_default())).collect();
+    out.sort_by(|a, b| rank.get(&a.0).cmp(&rank.get(&b.0))
+        .then(a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal)));
+    Ok(out)
+}
+
+/// Drop one bookmark, identified by the pair that made it.
+pub async fn remove_bookmark(pool: &SqlitePool, item_id: i64, position_s: f64) -> Result<()> {
+    // A float equality would be fragile across a round-trip; a one-second
+    // window is far tighter than any two bookmarks a person would set.
+    sqlx::query("DELETE FROM audiobook_bookmarks WHERE item_id = ? AND ABS(position_s - ?) < 1.0")
+        .bind(item_id).bind(position_s).execute(pool).await?;
+    Ok(())
+}
+
+/// Give a bookmark a name. An empty label clears back to the time stamp.
+pub async fn rename_bookmark(pool: &SqlitePool, item_id: i64, position_s: f64, label: &str) -> Result<()> {
+    sqlx::query("UPDATE audiobook_bookmarks SET label = ? WHERE item_id = ? AND ABS(position_s - ?) < 1.0")
+        .bind(if label.trim().is_empty() { None } else { Some(label.trim()) })
+        .bind(item_id).bind(position_s).execute(pool).await?;
+    Ok(())
+}
+
+/// Mark a book finished (or un-finish it for a re-listen). Applies to every
+/// chapter, because "finished" is a property of the book, not of one file.
+pub async fn set_finished(pool: &SqlitePool, item_ids: &[i64], finished: bool) -> Result<()> {
+    for id in item_ids {
+        sqlx::query(
+            "INSERT INTO audiobook_progress (item_id, position_s, finished, updated) VALUES (?, 0, ?, ?)
+             ON CONFLICT(item_id) DO UPDATE SET finished = excluded.finished, updated = excluded.updated,
+                 position_s = CASE WHEN excluded.finished = 0 THEN 0 ELSE audiobook_progress.position_s END")
+            .bind(id).bind(if finished { 1 } else { 0 }).bind(now()).execute(pool).await?;
+    }
+    Ok(())
+}
+
+/// Per-book playback speed, remembered so a fast narrator stays fast and the
+/// next book starts at its own pace. Stored on the book's first chapter.
+pub async fn book_speed(pool: &SqlitePool, first_chapter: i64) -> Result<f64> {
+    let s: Option<f64> = sqlx::query_scalar("SELECT speed FROM audiobook_progress WHERE item_id = ?")
+        .bind(first_chapter).fetch_optional(pool).await?;
+    Ok(clamp_speed(s.unwrap_or(1.0)))
+}
+
+pub async fn set_book_speed(pool: &SqlitePool, item_ids: &[i64], speed: f64) -> Result<()> {
+    let s = clamp_speed(speed);
+    for id in item_ids {
+        sqlx::query(
+            "INSERT INTO audiobook_progress (item_id, position_s, speed, updated) VALUES (?, 0, ?, ?)
+             ON CONFLICT(item_id) DO UPDATE SET speed = excluded.speed, updated = excluded.updated")
+            .bind(id).bind(s).bind(now()).execute(pool).await?;
+    }
+    Ok(())
+}
+
 // SQL predicate: track_meta.folder is `?1` itself OR anything under it. The
 // user points the Audiobooks section at a PARENT directory ("my audiobooks")
 // whose sub-folders are the individual books; per-file `folder` is the book's
@@ -153,6 +225,49 @@ pub async fn book_chapters(pool: &SqlitePool, folder: &str) -> Result<Vec<i64>> 
 mod tests {
     use super::*;
     use crate::schema::tests::{open_pool, add_track};
+
+    #[tokio::test]
+    async fn book_bookmarks_span_chapters_in_chapter_order() {
+        let (_t, pool) = open_pool().await;
+        let c1 = add_track(&pool, "/books/dune/ch01.mp3").await;
+        let c2 = add_track(&pool, "/books/dune/ch02.mp3").await;
+        add_bookmark(&pool, c2, 30.0, "second file").await.unwrap();
+        add_bookmark(&pool, c1, 90.0, "later in ch1").await.unwrap();
+        add_bookmark(&pool, c1, 10.0, "").await.unwrap();
+        // Chapter order comes from the caller's list, not from the ids.
+        let got = book_bookmarks(&pool, &[c1, c2]).await.unwrap();
+        assert_eq!(got.iter().map(|(id, p, _)| (*id, *p)).collect::<Vec<_>>(),
+                   vec![(c1, 10.0), (c1, 90.0), (c2, 30.0)]);
+        assert_eq!(got[0].2, "", "an unnamed bookmark keeps an empty label");
+
+        rename_bookmark(&pool, c1, 10.0, "  opening  ").await.unwrap();
+        assert_eq!(book_bookmarks(&pool, &[c1, c2]).await.unwrap()[0].2, "opening");
+        // Clearing the name returns it to unnamed rather than to whitespace.
+        rename_bookmark(&pool, c1, 10.0, "   ").await.unwrap();
+        assert_eq!(book_bookmarks(&pool, &[c1, c2]).await.unwrap()[0].2, "");
+
+        remove_bookmark(&pool, c1, 10.4).await.unwrap();   // within the 1s window
+        assert_eq!(book_bookmarks(&pool, &[c1, c2]).await.unwrap().len(), 2);
+    }
+
+    #[tokio::test]
+    async fn finished_and_speed_apply_to_the_whole_book() {
+        let (_t, pool) = open_pool().await;
+        let c1 = add_track(&pool, "/books/dune/ch01.mp3").await;
+        let c2 = add_track(&pool, "/books/dune/ch02.mp3").await;
+        save_progress(&pool, c1, 120.0, 1.0).await.unwrap();
+        set_finished(&pool, &[c1, c2], true).await.unwrap();
+        let fin: Vec<i64> = sqlx::query_scalar("SELECT finished FROM audiobook_progress ORDER BY item_id")
+            .fetch_all(&pool).await.unwrap();
+        assert_eq!(fin, vec![1, 1]);
+        // Un-finishing is a re-listen: position goes back to the start.
+        set_finished(&pool, &[c1, c2], false).await.unwrap();
+        let (pos, _) = resume(&pool, c1).await.unwrap();
+        assert_eq!(pos, 0.0);
+
+        set_book_speed(&pool, &[c1, c2], 9.0).await.unwrap();   // clamped
+        assert_eq!(book_speed(&pool, c1).await.unwrap(), MAX_SPEED);
+    }
 
     #[tokio::test]
     async fn folder_flag_scopes_to_one_folder() {
