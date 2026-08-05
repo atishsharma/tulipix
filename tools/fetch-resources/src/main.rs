@@ -25,6 +25,12 @@ struct Source {
     os: String,    // linux | windows | macos
     arch: String,  // x86_64 | aarch64
     url: String,
+    /// Second source for the same artifact, tried only after `url` has failed
+    /// every retry. For `latest = true` sources, where there is no sha to
+    /// disagree with; a pinned source would fail its hash check on a mirror
+    /// that ships a different build, which is the correct outcome.
+    #[serde(default)]
+    fallback_url: Option<String>,
     sha256: String,
     #[serde(default)]
     archive: Option<String>, // tar.xz | zip | tar.gz | none
@@ -97,7 +103,7 @@ fn main() -> Result<()> {
             .user_agent("Mozilla/5.0 (X11; Linux x86_64) tulipix-fetch/1.0")
             .timeout(std::time::Duration::from_secs(600))
             .build()?;
-        let bytes = client.get(&src.url).send()?.error_for_status()?.bytes()?;
+        let bytes = fetch(&client, &src.url, src.fallback_url.as_deref())?;
         if !src.latest {
             let mut h = Sha256::new();
             h.update(&bytes);
@@ -144,6 +150,56 @@ fn main() -> Result<()> {
     }
 
     Ok(())
+}
+
+/// Download `url`, retrying transient failures, then `fallback` the same way.
+///
+/// Every host in the manifest has failed a release build at least once by
+/// answering a CI runner and nobody else: SourceForge 403s, johnvansickle 415s,
+/// and gyan.dev returned 503 during v0.8.0. A single unretried GET turns any of
+/// those minutes-long blips into a dead hour-long build, so transient statuses
+/// (5xx, 408, 429) and connection errors are retried before the source is
+/// called broken. A 404 is not transient and fails immediately.
+fn fetch(
+    client: &reqwest::blocking::Client,
+    url: &str,
+    fallback: Option<&str>,
+) -> Result<Vec<u8>> {
+    const TRIES: u32 = 3;
+    let mut last: Option<anyhow::Error> = None;
+
+    for u in std::iter::once(url).chain(fallback) {
+        for attempt in 1..=TRIES {
+            let got = client
+                .get(u)
+                .send()
+                .and_then(|r| r.error_for_status())
+                .and_then(|r| r.bytes())
+                .map(|b| b.to_vec());
+            match got {
+                Ok(b) => {
+                    if u != url {
+                        tracing::warn!(primary = %url, used = %u, "primary source failed — fell back");
+                    }
+                    return Ok(b);
+                }
+                Err(e) => {
+                    let transient = e.is_timeout()
+                        || e.is_connect()
+                        || e.status().is_none_or(|s| {
+                            s.is_server_error() || s == 408 || s == 429
+                        });
+                    tracing::warn!(url = %u, attempt, transient, error = %e, "fetch failed");
+                    last = Some(e.into());
+                    if !transient { break; }
+                    if attempt < TRIES {
+                        std::thread::sleep(std::time::Duration::from_secs(3 * attempt as u64));
+                    }
+                }
+            }
+        }
+    }
+    Err(last.unwrap_or_else(|| anyhow::anyhow!("fetch {url}: no attempt was made")))
 }
 
 /// Drop the leading path component (e.g. the `Image-ExifTool-13.58/` wrapper).

@@ -177,6 +177,13 @@ latest = true
 os = "windows"
 arch = "x86_64"
 url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+# gyan.dev answered the v0.8.0 Windows job with 503 and killed the release
+# before a single crate compiled. It stays the primary because its build is
+# roughly 100 MB smaller than BtbN's full-static one, which the Windows package
+# pays for twice (ffmpeg.exe + ffprobe.exe) — but a one-man host is not
+# something an hour-long build should hinge on. BtbN is the same GitHub-hosted
+# source the Linux job already uses, and its zip has the same `bin/` layout.
+fallback_url = "https://github.com/BtbN/FFmpeg-Builds/releases/latest/download/ffmpeg-master-latest-win64-gpl.zip"
 sha256 = "latest"
 archive = "zip"
 extract = ["bin/ffmpeg.exe", "bin/ffprobe.exe"]
