@@ -10,17 +10,71 @@ pub struct Item {
     pub name: String,
     pub bytes: u64,
     pub path: PathBuf,
+    /// The device token this file is for, or `None` for "any paired device".
+    ///
+    /// Stamped when the file is added, from whatever the tray was pointed at
+    /// then — not looked up at download time. Change the target, add more
+    /// files, and each keeps the audience it was chosen for; re-pointing the
+    /// tray must not silently re-address what is already in it.
+    pub to: Option<String>,
+}
+
+impl Item {
+    /// May `token` see this file? A file for everyone is visible to every paired
+    /// device; a file addressed to one device is visible to that device only.
+    pub fn visible_to(&self, token: &str) -> bool {
+        match &self.to {
+            None => true,
+            Some(t) => t == token,
+        }
+    }
 }
 
 #[derive(Default)]
 pub struct Tray {
     items: Vec<Item>,
     next_id: u64,
+    /// Who the next file added is for. `None` is everyone, which is where the
+    /// tray starts and where forgetting the targeted device puts it back.
+    target: Option<String>,
 }
 
 impl Tray {
     pub fn items(&self) -> &[Item] {
         &self.items
+    }
+
+    /// Only what this device is allowed to see.
+    ///
+    /// Both lifetimes named rather than elided: the filter closure holds `token`,
+    /// so the returned iterator borrows it as well as `self`, and an elided
+    /// return type would not admit that.
+    pub fn items_for<'a>(&'a self, token: &'a str) -> impl Iterator<Item = &'a Item> + 'a {
+        self.items.iter().filter(move |i| i.visible_to(token))
+    }
+
+    pub fn target(&self) -> Option<&str> {
+        self.target.as_deref()
+    }
+
+    /// Point the tray at one device, or at everyone with `None`.
+    pub fn set_target(&mut self, token: Option<String>) {
+        self.target = token.filter(|t| !t.is_empty());
+    }
+
+    /// A device was forgotten (or expired). Anything addressed only to it is now
+    /// addressed to nobody — it would sit in the tray visible to no one at all,
+    /// which reads as a file that failed to send. Widen it back to everyone and
+    /// drop the target if that is where it was pointed.
+    pub fn release(&mut self, token: &str) {
+        for item in &mut self.items {
+            if item.to.as_deref() == Some(token) {
+                item.to = None;
+            }
+        }
+        if self.target.as_deref() == Some(token) {
+            self.target = None;
+        }
     }
 
     /// A file is added directly; a folder contributes the files inside it, one
@@ -49,7 +103,13 @@ impl Tray {
             .map(|n| n.to_string_lossy().to_string())
             .unwrap_or_else(|| "file".into());
         self.next_id += 1;
-        self.items.push(Item { id: self.next_id, name, bytes: meta.len(), path: path.to_path_buf() });
+        self.items.push(Item {
+            id: self.next_id,
+            name,
+            bytes: meta.len(),
+            path: path.to_path_buf(),
+            to: self.target.clone(),
+        });
     }
 
     pub fn remove(&mut self, id: u64) {
@@ -73,6 +133,74 @@ impl Tray {
     pub fn readable(&self, id: u64) -> Option<PathBuf> {
         let item = self.by_id(id)?;
         item.path.is_file().then(|| item.path.clone())
+    }
+}
+
+#[cfg(test)]
+mod target_tests {
+    use super::*;
+
+    fn tray_with(target: Option<&str>, dir: &std::path::Path, name: &str) -> Tray {
+        let p = dir.join(name);
+        std::fs::write(&p, b"x").unwrap();
+        let mut t = Tray::default();
+        t.set_target(target.map(str::to_string));
+        t.add(&p);
+        t
+    }
+
+    #[test]
+    fn an_untargeted_file_is_for_everyone() {
+        let dir = tempfile::tempdir().unwrap();
+        let tray = tray_with(None, dir.path(), "all.bin");
+        assert!(tray.items()[0].visible_to("phone-a"));
+        assert!(tray.items()[0].visible_to("phone-b"));
+    }
+
+    #[test]
+    fn a_targeted_file_is_for_one_device_only() {
+        let dir = tempfile::tempdir().unwrap();
+        let tray = tray_with(Some("phone-a"), dir.path(), "just-a.bin");
+        assert!(tray.items()[0].visible_to("phone-a"));
+        assert!(!tray.items()[0].visible_to("phone-b"));
+        assert_eq!(tray.items_for("phone-b").count(), 0);
+        assert_eq!(tray.items_for("phone-a").count(), 1);
+    }
+
+    /// Re-pointing the tray must not re-address what is already in it.
+    #[test]
+    fn the_target_is_stamped_at_add_time() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tray = Tray::default();
+        for (target, name) in [(None, "everyone.bin"), (Some("phone-a"), "mine.bin")] {
+            let p = dir.path().join(name);
+            std::fs::write(&p, b"x").unwrap();
+            tray.set_target(target.map(str::to_string));
+            tray.add(&p);
+        }
+        tray.set_target(Some("phone-b".into()));
+        assert_eq!(tray.items_for("phone-b").count(), 1, "only the everyone file");
+        assert_eq!(tray.items_for("phone-a").count(), 2, "everyone plus its own");
+    }
+
+    /// A file addressed to a device that no longer exists is visible to nobody,
+    /// which reads as a send that failed rather than one that was cancelled.
+    #[test]
+    fn forgetting_a_device_widens_its_files_back_out() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut tray = tray_with(Some("phone-a"), dir.path(), "orphan.bin");
+        tray.release("phone-a");
+        assert!(tray.items()[0].visible_to("phone-b"));
+        assert_eq!(tray.target(), None, "and the tray stops pointing at it");
+    }
+
+    /// An empty string arrives from the UI when the "Everyone" chip is picked;
+    /// it must mean everyone, not a device whose token is "".
+    #[test]
+    fn an_empty_target_is_everyone() {
+        let mut tray = Tray::default();
+        tray.set_target(Some(String::new()));
+        assert_eq!(tray.target(), None);
     }
 }
 

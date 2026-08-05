@@ -241,6 +241,217 @@ component DockBtn inherits Rectangle {
     }
 }
 
+// Status — the wide key above the dock grid.
+//
+// The only control in the sidebar that does not open a Slint page: it starts
+// the loopback status server and hands the URL to the default browser (see the
+// `tulipix-status` crate). The whole key tints with health rather than only the
+// lamp — a 9px dot is not something you notice out of the corner of your eye,
+// and noticing without looking is the entire job of this row.
+component StatusBtn inherits Rectangle {
+    // "ok" · "busy" · "problem" · "unknown". Pushed from Rust on every refresh.
+    in property <string> level: "unknown";
+    in property <string> note: "Starting…";
+    in property <bool> collapsed: false;
+    callback clicked();
+
+    // Deliberately NOT a section accent. This is the one place in the app that
+    // reports health, and health has its own three colours everywhere else in
+    // the product (good / attention / wrong). Borrowing an accent here would
+    // make "everything is fine" look like a section identity.
+    //
+    // Busy is green, not amber. "Working" is not a warning — a scan running is
+    // the app doing its job, and painting it the same colour as trouble taught
+    // the eye to ignore amber. Its own green keeps it a distinct state without
+    // claiming anything is wrong.
+    property <color> lamp:
+        root.level == "ok"      ? #22c55e :
+        root.level == "busy"    ? #10b981 :
+        root.level == "problem" ? #ef4444 :
+                                  Theme.sec-settings;
+
+    // The lamp breathes, in both states. A still dot in the corner of a rail
+    // that never moves stops being looked at within a day; the one control in
+    // the app that reports health is the one that has to keep being seen. The
+    // fill is what fades — the collapsed badge's shell-coloured cut-out ring
+    // stays solid, so the badge does not dissolve into the icon under it.
+    property <bool> pulse: true;
+    Timer {
+        interval: 900ms;
+        triggered => { root.pulse = !root.pulse; }
+    }
+
+    min-height: root.collapsed ? 38px : 44px;
+    max-height: root.collapsed ? 38px : 44px;
+    // Square on the rail so it lines up with the icon buttons under it; full
+    // width when expanded, where it spans both dock columns.
+    min-width: root.collapsed ? 38px : 0px;
+    max-width: root.collapsed ? 38px : 100000px;
+    horizontal-stretch: root.collapsed ? 0 : 1;
+    border-radius: Surface.btn-radius;
+    background: root.lamp.with-alpha(touch.has-hover ? 0.16 : 0.09);
+    border-width: Surface.panel-border-w;
+    border-color: root.lamp.with-alpha(touch.has-hover ? 0.62 : 0.38);
+    animate background { duration: 140ms; easing: ease-out; }
+    animate border-color { duration: 140ms; easing: ease-out; }
+
+    // Double-click, not single. This is the only control in the sidebar that
+    // leaves the app, and the rail is a place people click while scanning —
+    // a single click here kept throwing a browser window over whatever was on
+    // screen. Two is a decision.
+    touch := TouchArea {
+        mouse-cursor: pointer;
+        double-clicked => { root.clicked(); }
+    }
+
+    Ripple {
+        width: 100%; height: 100%;
+        border-radius: parent.border-radius;
+        accent: root.lamp;
+        triggered: touch.pressed;
+    }
+    if Surface.rim: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Math.max(2px, parent.border-radius - 1px);
+        pressed: touch.pressed;
+    }
+
+    // Expanded: the two rows of text hold the middle, and both marks stack down
+    // the right edge — lamp top-right beside the title, link directly beneath it
+    // under the note. Both were in the flow before, which cost the text two
+    // columns of width on a 190px rail; cornered, they cost one.
+    if !root.collapsed: Rectangle {
+        // Absolutely placed, so neither mark takes width from the note. The lamp
+        // aligns with the "Status" line and the link with the note beneath it.
+        Rectangle {
+            x: parent.width - self.width - 10px;
+            y: 10px;
+            width: 9px; height: 9px;
+            border-radius: 4.5px;
+            background: root.lamp.with-alpha(root.pulse ? 1.0 : 0.25);
+            animate background { duration: 850ms; easing: ease-in-out; }
+            // Glow ring — held at a fixed alpha while the fill breathes, so the
+            // dot reads as a lamp turning up and down rather than as something
+            // appearing and disappearing.
+            Rectangle {
+                x: -3px; y: -3px;
+                width: parent.width + 6px; height: parent.height + 6px;
+                border-radius: self.width / 2;
+                background: transparent;
+                border-width: 1px;
+                border-color: root.lamp.with-alpha(0.3);
+            }
+        }
+        // Directly under the lamp: 11px wide against the lamp's 9px, inset 9px
+        // against its 10px, which puts the two centres on the same x.
+        AppIcon {
+            source: Icons.link;
+            tint: touch.has-hover ? Theme.text : Theme.text-dim;
+            width: 11px; height: 11px;
+            x: parent.width - self.width - 9px;
+            y: parent.height - self.height - 9px;
+        }
+        VerticalLayout {
+            // Nothing to clear on the left any more; the right reserve covers
+            // the lamp and the link both, and the marquee stops short of them.
+            x: 12px; width: parent.width - 12px - 26px;
+            y: 0px; height: parent.height;
+            alignment: center; spacing: 0px;
+            Text {
+                text: "Status";
+                color: Theme.text;
+                font-size: 12.5px;
+                font-weight: 700;
+            }
+            // The health note, and the one line in the rail that can be
+            // genuinely long: it now names the problem ("Finances: Unpaid
+            // bills: Housekeeping (1 day late)") rather than saying there is
+            // one. Elided, that sentence becomes "Finances: Unpaid…" — the half
+            // without the news in it. So when it does not fit, it scrolls.
+            marquee := Rectangle {
+                height: 14px;
+                clip: true;
+                // A Rectangle inherits its children's preferred width, and this
+                // one's child is a full-length line of text. Left alone it asks
+                // the row for the whole sentence, the layout hands out more
+                // width than the rail has, and the column starts left of the
+                // lamp — which is what put the "0" of "0 jobs running"
+                // underneath it. The scrolling box wants no width of its own:
+                // it takes what the rail has left and moves the text through it.
+                preferred-width: 0px;
+                min-width: 0px;
+                // Blank run between the tail of one pass and the head of the
+                // next, so the loop reads as a gap and not as a word break.
+                property <length> gap: 34px;
+                property <bool> roll: head.preferred-width > self.width;
+                property <length> shift: 0px;
+
+                head := Text {
+                    x: -marquee.shift;
+                    width: marquee.roll ? self.preferred-width : marquee.width;
+                    text: root.note;
+                    color: Theme.text-dim;
+                    font-size: 10.5px;
+                    // Always clip, never elide: `overflow` feeds preferred-width,
+                    // and preferred-width is what decides whether to scroll — so
+                    // switching it on that decision is a binding loop. Clip costs
+                    // nothing when the text fits, and text that does not fit is
+                    // about to move anyway.
+                    overflow: clip;
+                }
+                // The second copy is what makes the wrap seamless: by the time
+                // the first has slid one width-plus-gap out of frame, this one
+                // sits exactly where the first started, so resetting the offset
+                // to zero is invisible. Without it the text would visibly snap.
+                Text {
+                    x: head.x + head.width + marquee.gap;
+                    width: head.preferred-width;
+                    visible: marquee.roll;
+                    text: root.note;
+                    color: Theme.text-dim;
+                    font-size: 10.5px;
+                }
+                // Stepped rather than animated: an `animate` would have to run
+                // backwards to get home, and a marquee that rewinds is worse
+                // than one that does not scroll. Idle whenever the text fits,
+                // which is every state except a problem.
+                Timer {
+                    interval: 40ms;
+                    running: marquee.roll;
+                    triggered => {
+                        marquee.shift += 1.2px;
+                        if (marquee.shift >= head.preferred-width + marquee.gap) {
+                            marquee.shift = 0px;
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Collapsed: the glyph alone, with the lamp as a corner badge — the same
+    // placement (and the same shell-coloured cut-out ring) the nav rows use for
+    // their alert dot, so one badge language holds across the whole rail.
+    if root.collapsed: AppIcon {
+        source: Icons.waveform;
+        tint: touch.has-hover ? Theme.text : Theme.text-dim;
+        width: 17px; height: 17px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+    if root.collapsed: Rectangle {
+        x: parent.width - self.width - 4px;
+        y: 4px;
+        width: 9px; height: 9px;
+        border-radius: 4.5px;
+        background: root.lamp.with-alpha(root.pulse ? 1.0 : 0.25);
+        animate background { duration: 850ms; easing: ease-in-out; }
+        border-width: 1.5px;
+        border-color: Theme.dark ? #161827 : #ffffff;
+    }
+}
+
 // Sidebar section header used to label nav groups.
 component GroupHeader inherits Rectangle {
     in property <string> label;
@@ -322,6 +533,12 @@ export component Sidebar inherits Rectangle {
     // tulipix-sec-finances on every tick.
     in property <int> finances-badge: 0;
     in property <bool> finances-badge-overdue: false;
+    // App health, worst-of across every section. Set by tulipix-status on the
+    // same tick that refreshes the dashboard, so the lamp and the page can
+    // never disagree about what is wrong.
+    in property <string> status-level: "unknown";
+    in property <string> status-note: "Starting…";
+    callback status-clicked();
     callback section-changed(string);
     callback user-action(string);
     callback theme-cycled();   // fired after the theme toggle cycles light/dark/OLED (persist)
@@ -415,6 +632,13 @@ export component Sidebar inherits Rectangle {
             badge-alarm: root.finances-badge-overdue;
             clicked => { root.active-section = "finances"; root.section-changed("finances"); }
         }
+        // The native dashboard, alongside the StatusBtn below that opens the
+        // browser one. Both exist so the two renderings of the same snapshot
+        // can be compared side by side.
+        NavRow { icon-img: Icons.waveform; label: "Status"; accent: Theme.sec-status; collapsed: root.collapsed;
+            active: root.active-section == "status";
+            clicked => { root.active-section = "status"; root.section-changed("status"); }
+        }
 
         // Bottom spacer pushes user card + footer dock to the bottom.
         Rectangle { vertical-stretch: 1; horizontal-stretch: 1; background: transparent; }
@@ -425,6 +649,16 @@ export component Sidebar inherits Rectangle {
         Rectangle {
             height: 1px; horizontal-stretch: 1;
             background: Surface.hairline;
+        }
+        Rectangle { height: 8px; horizontal-stretch: 1; background: transparent; }
+
+        // Status sits on top of the dock at both widths — first thing in the
+        // bottom block, full width where the dock is a 2x2 grid.
+        StatusBtn {
+            collapsed: root.collapsed;
+            level: root.status-level;
+            note: root.status-note;
+            clicked => { root.status-clicked(); }
         }
         Rectangle { height: 8px; horizontal-stretch: 1; background: transparent; }
 

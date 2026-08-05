@@ -29,6 +29,11 @@ static YOUTUBE_POOL:  PoolCell = PoolCell::const_new();
 static TOOLS_POOL:    PoolCell = PoolCell::const_new();
 // Books library (books.db) — standalone, no items FK.
 static BOOKS_POOL:    PoolCell = PoolCell::const_new();
+// Transfer ledger (transfers.db). Read-only from here: the schema belongs to
+// `tulipix-transfer`, which creates it when sharing first starts. Before that
+// every query against it errors and the callers fall back to zero — which is
+// the true answer for a machine that has never shared a file.
+static TRANSFERS_POOL: PoolCell = PoolCell::const_new();
 
 /// Open (or return the cached) SQLite pool for a section, applying its schema
 /// on first open. Both the GUI and CLI go through here so every front-end sees
@@ -44,6 +49,7 @@ pub async fn pool_for(section: &str) -> Result<sqlx::SqlitePool> {
         "youtube"  => &YOUTUBE_POOL,
         "tools"    => &TOOLS_POOL,
         "books"    => &BOOKS_POOL,
+        "transfers" => &TRANSFERS_POOL,
         _ => anyhow::bail!("unknown section"),
     };
     // Exactly one initialiser runs, however many tasks arrive at once; the
@@ -307,6 +313,7 @@ pub fn add_watched_folder(dir: &std::path::Path) -> bool {
         // Attach the new folder to the running FS watcher so deletes/renames
         // there update the library live, without waiting for a restart.
         tulipix_core::watcher::watch_path(dir);
+        log_activity("emerald", "Folder added to library", &dir.display().to_string());
     }
     !had
 }
@@ -316,6 +323,70 @@ pub fn now_secs() -> i64 {
         .duration_since(std::time::UNIX_EPOCH)
         .map(|d| d.as_secs() as i64)
         .unwrap_or(0)
+}
+
+// ---- Activity log ---------------------------------------------------------
+/// The things a person does to the app that no database writes down: watching
+/// a folder, unwatching one, starting a rescan, resetting.
+///
+/// The status page's Activity Timeline was fed by the Tools job table alone,
+/// so adding a folder — the most consequential thing you can do to a library —
+/// left no mark on the page that reports on that library. Sections that keep
+/// their own tables (transfers, finances, playback) are still read from those;
+/// this file is only for the events that had nowhere else to live.
+///
+/// A JSON array, rewritten whole and capped. It is appended a handful of times
+/// a day at the very most, so rewriting beats keeping a second on-disk format.
+pub const ACTIVITY_MAX: usize = 40;
+
+pub fn activity_path() -> Option<PathBuf> {
+    tulipix_core::paths::config_dir().map(|d| d.join("activity.json"))
+}
+
+/// `(unix seconds, accent key, title, detail)`, newest first.
+pub fn load_activity() -> Vec<(i64, String, String, String)> {
+    let Some(p) = activity_path() else { return Vec::new() };
+    let Ok(body) = std::fs::read_to_string(&p) else { return Vec::new() };
+    let Ok(v) = serde_json::from_str::<serde_json::Value>(&body) else { return Vec::new() };
+    let s = |o: &serde_json::Value, k: &str| {
+        o.get(k).and_then(|x| x.as_str()).unwrap_or("").to_string()
+    };
+    v.as_array()
+        .map(|rows| {
+            rows.iter()
+                .map(|o| {
+                    (
+                        o.get("at").and_then(|x| x.as_i64()).unwrap_or(0),
+                        s(o, "accent"),
+                        s(o, "title"),
+                        s(o, "desc"),
+                    )
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// Record one event. `accent` is the section key the status page tints it with
+/// ("system", "photos", "tools", …). Best-effort: a status page that misses an
+/// entry is not worth failing a folder add over.
+pub fn log_activity(accent: &str, title: &str, desc: &str) {
+    let Some(p) = activity_path() else { return };
+    let mut rows = load_activity();
+    rows.insert(0, (now_secs(), accent.into(), title.into(), desc.into()));
+    rows.truncate(ACTIVITY_MAX);
+    let out: Vec<serde_json::Value> = rows
+        .into_iter()
+        .map(|(at, accent, title, desc)| {
+            serde_json::json!({ "at": at, "accent": accent, "title": title, "desc": desc })
+        })
+        .collect();
+    if let Some(parent) = p.parent() {
+        let _ = std::fs::create_dir_all(parent);
+    }
+    if let Ok(body) = serde_json::to_string_pretty(&out) {
+        let _ = std::fs::write(&p, body);
+    }
 }
 
 // ---- Out-of-process mpv playback core (shared by music/video/cloud) -------

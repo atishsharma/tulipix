@@ -32,6 +32,8 @@ pub struct FileRow {
     pub id: u64,
     pub name: String,
     pub bytes: u64,
+    /// The device token this file is offered to, empty for every paired device.
+    pub to: String,
 }
 
 /// One paired phone, as the Connection card's round buttons want it.
@@ -51,6 +53,23 @@ pub struct DeviceRow {
     pub remaining: u64,
     /// Bytes are moving to or from this device right now.
     pub busy: bool,
+}
+
+/// What the Status dashboard reads about the transfer service — see
+/// [`TransferService::status_snapshot`]. Separate from [`Snapshot`], which is
+/// the much larger thing the Transfer *page* draws: the dashboard wants a
+/// handful of numbers and no allocations per file.
+#[derive(Default, Clone, Debug)]
+pub struct StatusSnapshot {
+    pub running: bool,
+    pub port: u16,
+    /// The interface the phone URL is built from. Empty when not sharing.
+    pub address: String,
+    pub devices: i64,
+    pub inflight: i64,
+    /// Cumulative bytes on the wire this run, out and in.
+    pub sent_bytes: u64,
+    pub recv_bytes: u64,
 }
 
 /// One upload in flight (or just finished).
@@ -91,6 +110,8 @@ pub struct Snapshot {
     /// Which of them the URL is built from.
     pub iface: String,
     pub files: Vec<FileRow>,
+    /// Which device the next file added will be for. Empty is everyone.
+    pub share_target: String,
     pub devices: Vec<DeviceRow>,
     /// `(address, wrong guesses)`, worst first. Empty when nobody has missed.
     pub attempts: Vec<(String, u32)>,
@@ -144,6 +165,45 @@ impl TransferService {
 
     pub fn is_running(&self) -> bool {
         self.running.is_some()
+    }
+
+    /// Everything the Status dashboard reports about this service, read at one
+    /// instant.
+    ///
+    /// One method rather than a getter per field: every caller wants the whole
+    /// set together, and taking the auth lock once keeps the answer internally
+    /// consistent — a device count from before a pairing and an in-flight count
+    /// from after it would describe a state that never existed.
+    ///
+    /// The byte counters are cumulative for this run. Handing over a rate would
+    /// mean owning a clock and a sample interval down here, when the only thing
+    /// that knows how often it looks is the caller.
+    pub fn status_snapshot(&self, now: u64) -> StatusSnapshot {
+        let Some(run) = &self.running else {
+            return StatusSnapshot::default();
+        };
+        let devices = run
+            .state
+            .auth
+            .lock()
+            .map(|a| a.device_count(now) as i64)
+            .unwrap_or(0);
+        let inflight = run
+            .state
+            .uploads
+            .lock()
+            .map(|u| u.iter().filter(|x| x.state == "active").count() as i64)
+            .unwrap_or(0);
+        use std::sync::atomic::Ordering::Relaxed;
+        StatusSnapshot {
+            running: true,
+            port: run.port,
+            address: self.address(),
+            devices,
+            inflight,
+            sent_bytes: run.state.sent_bytes.load(Relaxed),
+            recv_bytes: run.state.recv_bytes.load(Relaxed),
+        }
     }
 
     pub fn inbox(&self) -> &Path {
@@ -358,7 +418,7 @@ impl TransferService {
             .unwrap_or_else(|| Ipv4Addr::LOCALHOST.to_string())
     }
 
-    /// Name a paired device. The name is clamped to ten characters by
+    /// Name a paired device. The name is clamped to fifteen characters by
     /// [`auth::clamp_name`] and persisted, so it survives a restart — it is the
     /// only thing on that list the user wrote.
     pub async fn rename_device(&self, token: &str, name: &str) {
@@ -372,9 +432,20 @@ impl TransferService {
     pub async fn forget_device(&self, token: &str) {
         let Some(st) = self.state() else { return };
         lock(&st.auth).forget(token);
+        // Anything in the tray addressed only to this device is now addressed to
+        // nobody. Widen it rather than leave it sitting there visible to no one,
+        // which looks like a send that quietly failed.
+        lock(&st.tray).release(token);
         if let Some(pool) = &st.pool {
             let _ = ledger::forget_device(pool, token).await;
         }
+    }
+
+    /// Point the share tray at one paired device, or at everyone with `None`.
+    /// Files already in the tray keep whoever they were added for.
+    pub fn set_share_target(&self, token: Option<String>) {
+        let Some(st) = self.state() else { return };
+        lock(&st.tray).set_target(token);
     }
 
     /// The pool behind `transfers.db`, for the Recent Transfers list. `None`
@@ -400,14 +471,20 @@ impl TransferService {
         };
 
         let now = server::now_secs();
-        let (files, total_bytes) = {
+        let (files, total_bytes, share_target) = {
             let tray = lock(&run.state.tray);
             (
                 tray.items()
                     .iter()
-                    .map(|i| FileRow { id: i.id, name: i.name.clone(), bytes: i.bytes })
+                    .map(|i| FileRow {
+                        id: i.id,
+                        name: i.name.clone(),
+                        bytes: i.bytes,
+                        to: i.to.clone().unwrap_or_default(),
+                    })
                     .collect(),
                 tray.total_bytes(),
+                tray.target().unwrap_or_default().to_string(),
             )
         };
         let (devices, attempts) = {
@@ -456,6 +533,7 @@ impl TransferService {
             iface: self.address(),
             interfaces,
             files,
+            share_target,
             devices,
             attempts,
             uploads,

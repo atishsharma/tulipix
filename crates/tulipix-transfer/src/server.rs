@@ -89,6 +89,12 @@ pub struct AppState {
     /// Bumped on every ledger write. The UI refetches Recent Transfers when it
     /// changes rather than polling the database on a timer.
     pub rev: AtomicU64,
+    /// Bytes actually put on the wire this run, counted where they are read and
+    /// written rather than where a transfer is announced. A cumulative pair, so
+    /// a reader that samples twice gets a rate without this side owning a clock
+    /// — and a resumed or abandoned download contributes only what it moved.
+    pub sent_bytes: AtomicU64,
+    pub recv_bytes: AtomicU64,
     /// `(PEM, DER)` of the root, for the phones that opt into installing it.
     /// `None` when the server fell back to plain HTTP, in which case there is
     /// nothing to trust and the download routes 404.
@@ -191,6 +197,8 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
         uploads: Mutex::new(Vec::new()),
         next_upload: AtomicU64::new(0),
         rev: AtomicU64::new(0),
+        sent_bytes: AtomicU64::new(0),
+        recv_bytes: AtomicU64::new(0),
         ca: Mutex::new(None),
         fingerprint: Mutex::new(String::new()),
     });
@@ -350,10 +358,6 @@ fn token_in(headers: &HeaderMap) -> Option<String> {
         .map(|(_, v)| v.to_string())
 }
 
-fn authorised(st: &AppState, headers: &HeaderMap) -> bool {
-    caller(st, headers).is_some()
-}
-
 /// The token value behind the request, if it is one we issued and still good.
 ///
 /// The transfer handlers need the value itself, not just a yes: it is how the
@@ -397,6 +401,16 @@ async fn page(
 ) -> Response {
     let body = asset(include_str!("web/app.html"), "text/html; charset=utf-8");
     let Some(key) = q.get("k") else { return body };
+
+    // A device that is already paired, scanning the code again, is the same
+    // device. Spending the key here issued it a second token, filed a second
+    // entry in the Connection card under the same phone, and burned a pairing
+    // key another phone was queued up to use. The cookie it is already carrying
+    // answers the question the key was going to — so it goes straight in, and
+    // the key stays on the desktop for whoever actually needs it.
+    if caller(&st, &headers).is_some() {
+        return body;
+    }
 
     let now = now_secs();
     let label = user_agent(&headers);
@@ -618,12 +632,13 @@ async fn auth_post(
 }
 
 async fn files(State(st): State<Shared>, headers: HeaderMap) -> Response {
-    if !authorised(&st, &headers) {
+    // `caller`, not `authorised`: the list is now per device, so the identity
+    // behind the cookie is the answer and not just the fact that there is one.
+    let Some(token) = caller(&st, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
+    };
     let rows: Vec<serde_json::Value> = lock(&st.tray)
-        .items()
-        .iter()
+        .items_for(&token)
         .map(|i| {
             serde_json::json!({
                 "id": i.id,
@@ -639,10 +654,13 @@ async fn files(State(st): State<Shared>, headers: HeaderMap) -> Response {
 /// Polled by the page so a file added on the desktop shows up on the phone
 /// without a reload, and so an upload's progress survives a screen lock.
 async fn status(State(st): State<Shared>, headers: HeaderMap) -> Response {
-    if !authorised(&st, &headers) {
+    let Some(token) = caller(&st, &headers) else {
         return StatusCode::UNAUTHORIZED.into_response();
-    }
-    let files = lock(&st.tray).items().len();
+    };
+    // The count the page polls for "a file appeared" has to be the same count
+    // `/api/files` would return, or a file addressed to another phone makes
+    // this one refetch a list that did not change.
+    let files = lock(&st.tray).items_for(&token).count();
     let uploads: Vec<serde_json::Value> = lock(&st.uploads)
         .iter()
         .filter(|u| u.visible())
@@ -671,7 +689,10 @@ async fn download(
     };
     let (name, path) = {
         let tray = lock(&st.tray);
-        let Some(item) = tray.by_id(id) else {
+        // 404, not 403: a file addressed to another device is not a file this
+        // one is being refused, it is a file this one was never offered — and
+        // the id is guessable, so the two answers must not be distinguishable.
+        let Some(item) = tray.by_id(id).filter(|i| i.visible_to(&token)) else {
             return StatusCode::NOT_FOUND.into_response();
         };
         let Some(path) = tray.readable(id) else {
@@ -762,6 +783,7 @@ fn file_stream(
                 Ok(n) => {
                     buf.truncate(n);
                     lock(&st.auth).mark_active(&token, now_secs());
+                    st.sent_bytes.fetch_add(n as u64, Ordering::Relaxed);
                     Some((Ok(buf), (file, left - n as u64)))
                 }
                 Err(e) => Some((Err(e), (file, 0))),
@@ -823,6 +845,7 @@ async fn upload(
             st.record(ledger::Row::received(&name, "", written as i64, &peer_ip).failed()).await;
             return StatusCode::INSUFFICIENT_STORAGE.into_response();
         }
+        st.recv_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
         progress(&st, id, sink.written);
         lock(&st.auth).mark_active(&token, now_secs());
     }
@@ -956,6 +979,64 @@ mod tests {
 
         let files = c.get(format!("{base}/api/files")).send().await.unwrap();
         assert_eq!(files.status(), 200);
+        run.stop().await;
+    }
+
+    /// Scanning the QR again from a phone that is already paired used to spend a
+    /// pairing key, issue a second token and file the same phone twice in the
+    /// Connection card. It is the same device: it goes straight in.
+    #[tokio::test]
+    async fn rescanning_the_code_from_a_paired_device_does_not_pair_it_twice() {
+        let (run, base, _dir) = started().await;
+        let c = client();
+        c.post(format!("{base}/auth")).body(run.pin.clone()).send().await.unwrap();
+        assert_eq!(lock(&run.state.auth).device_count(now_secs()), 1);
+
+        let key = lock(&run.state.auth).new_pairing_key(now_secs());
+        let res = c.get(format!("{base}/?k={key}")).send().await.unwrap();
+        assert_eq!(res.status(), 200, "it still lands on the page");
+        assert_eq!(
+            lock(&run.state.auth).device_count(now_secs()),
+            1,
+            "and it is still one device, not two"
+        );
+        // The key it did not need is still there for a phone that does.
+        assert!(
+            lock(&run.state.auth).try_pairing_key(&key, now_secs()).is_some(),
+            "the key was not spent"
+        );
+        run.stop().await;
+    }
+
+    /// A file added while the tray points at one device belongs to that device.
+    /// Another paired phone must not see it in the list, and must not be able to
+    /// reach it by guessing the id either.
+    #[tokio::test]
+    async fn a_targeted_file_is_invisible_to_every_other_device() {
+        let (run, base, dir) = started().await;
+        let p = dir.path().join("private.bin");
+        std::fs::write(&p, b"secret").unwrap();
+
+        // Pair one device, then address the tray to somebody else entirely.
+        let c = client();
+        c.post(format!("{base}/auth")).body(run.pin.clone()).send().await.unwrap();
+        {
+            let mut tray = lock(&run.state.tray);
+            tray.set_target(Some("some-other-device".into()));
+            tray.add(&p);
+        }
+        let id = lock(&run.state.tray).items()[0].id;
+
+        let listed = c.get(format!("{base}/api/files")).send().await.unwrap();
+        assert_eq!(listed.text().await.unwrap(), "[]", "not in this device's list");
+
+        let reached = c.get(format!("{base}/dl/{id}")).send().await.unwrap();
+        assert_eq!(reached.status(), 404, "and not reachable by id");
+
+        // Point it at everyone and the same device can now see the same file.
+        lock(&run.state.tray).release("some-other-device");
+        let reached = c.get(format!("{base}/dl/{id}")).send().await.unwrap();
+        assert_eq!(reached.status(), 200);
         run.stop().await;
     }
 

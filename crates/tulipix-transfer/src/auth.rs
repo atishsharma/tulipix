@@ -23,7 +23,7 @@ pub const TOKEN_TTL: u64 = 48 * 3600;
 pub const MAX_DEVICES: usize = 10;
 /// A device name has to fit inside a 56px circle's caption, so it is short by
 /// construction rather than elided at draw time.
-pub const NAME_MAX: usize = 10;
+pub const NAME_MAX: usize = 15;
 /// Unspent pairing keys held at once. Four redraws' worth, which at one every
 /// five minutes is more than the ten a key lives — the cap exists so a desktop
 /// left sharing overnight cannot grow the list without bound.
@@ -327,7 +327,7 @@ pub fn kind_for(user_agent: &str) -> &'static str {
 }
 
 /// A device name as it will be stored: trimmed, and cut to [`NAME_MAX`]
-/// characters rather than bytes — ten emoji is ten characters.
+/// characters rather than bytes — fifteen emoji is fifteen characters.
 pub fn clamp_name(raw: &str) -> String {
     raw.trim().chars().take(NAME_MAX).collect::<String>().trim_end().to_string()
 }
@@ -571,16 +571,16 @@ mod tests {
     }
 
     #[test]
-    fn a_device_name_is_trimmed_and_cut_to_ten_characters() {
+    fn a_device_name_is_trimmed_and_cut_to_fifteen_characters() {
         let mut a = Auth::new(at(0));
         let tok = pair(&mut a, "1.2.3.4", at(0));
-        assert_eq!(a.rename(&tok.value, "  Kitchen tablet  ").as_deref(), Some("Kitchen ta"));
-        assert_eq!(a.devices(at(1))[0].display_name(), "Kitchen ta");
+        assert_eq!(a.rename(&tok.value, "  Living room tablet  ").as_deref(), Some("Living room tab"));
+        assert_eq!(a.devices(at(1))[0].display_name(), "Living room tab");
         // Cleared back to empty: the caption falls back to the device type.
         a.rename(&tok.value, "   ");
         assert_eq!(a.devices(at(1))[0].display_name(), "Android");
         // Characters, not bytes.
-        assert_eq!(clamp_name("अआइईउऊऋएऐओऔ").chars().count(), NAME_MAX);
+        assert_eq!(clamp_name("अआइईउऊऋएऐओऔकखगघचछजझञट").chars().count(), NAME_MAX);
         assert!(a.rename("not-a-token", "Nope").is_none());
     }
 

@@ -1326,6 +1326,13 @@ fn main() -> Result<()> {
             // Warm YouTube in the background too, so its first open is instant.
             warm_youtube(&w0);
         }
+        if s.as_str() == "status" {
+            // The refresh tick runs every thirty seconds while nothing is
+            // watching, so landing here would otherwise show an empty dashboard
+            // for up to half a minute. One pass now; the tick has already
+            // switched to its two-second period by the next one.
+            kick_status_snapshot(&w0);
+        }
     });
     let w = window.as_weak();
     window.on_music_set_lib_tab(move |t| {
@@ -1962,6 +1969,9 @@ fn main() -> Result<()> {
 
     // ── Phase 6 callbacks ──────────────────────────────────────────────────── — see wire_music_p6()
     wire_music_p6(&window);
+
+    // ── Status: sidebar lamp + the browser dashboard ──────── — see wire_status()
+    wire_status(&window);
 
     // ── Settings panels: load persisted settings, seed the UI models ───────
     {
@@ -3170,6 +3180,11 @@ fn main() -> Result<()> {
         // The section scans run async; the scan overlay shows the live count,
         // so clear the maintenance bar once the kicks are dispatched.
         clear_lib_busy(&w.as_weak());
+        tulipix_common::log_activity(
+            "emerald",
+            "Library rescan started",
+            &format!("{} watched folders", load_watched_folders().len()),
+        );
         tracing::info!("rescan-all requested");
     });
     let w = window.as_weak();
@@ -3570,6 +3585,10 @@ fn persist_watched_folder(path: &std::path::Path) {
         Ok(body) => { let _ = std::fs::write(&file, body); }
         Err(e) => tracing::warn!(error = %e, "serialize watched folders"),
     }
+    // Both the in-app picker and the status page's Add Folder land here, so one
+    // call covers both — the Activity Timeline sees the add either way.
+    tulipix_common::log_activity(
+        "emerald", "Folder added to library", &path.display().to_string());
 }
 
 // ── Music folder → section tag (np.p5.atmusic.folder-sections) ──────────────
@@ -3782,6 +3801,7 @@ fn forget_watched_folder(w: &MainWindow, path: &str) {
         .filter(|p| p != path)
         .collect();
     if let Ok(body) = serde_json::to_string_pretty(&kept) { let _ = std::fs::write(&file, body); }
+    tulipix_common::log_activity("orange", "Folder removed from library", path);
 }
 
 /// Static keyboard-shortcut groups for the help overlay (? / F1).
@@ -4097,6 +4117,210 @@ fn set_home_greeting_now(w: &MainWindow) {
 /// Seed the Home command-center stats (np.p6.home). Cheap COUNTs per section
 /// DB; called at startup and on every landing on the Home section. Every
 /// count is best-effort — a failed query leaves 0/"", never errors.
+// ── Status dashboard ────────────────────────────────────────────────────────
+// The sidebar lamp, and two renderings of the same snapshot: the loopback page
+// the Status button opens in the browser (`tulipix-status`, which also carries
+// the loopback + token reasoning), and the native Status section
+// (`tulipix-sec-status` + `page_status.slint`). One `collect()` feeds both —
+// they are kept side by side deliberately, so the two approaches can be
+// compared on the same data rather than argued about.
+
+/// The one status server for this process. Bound on the first Status click and
+/// never rebound: a dashboard nobody has opened has no business holding a port.
+static STATUS_SRV: tokio::sync::OnceCell<tulipix_status::Running> =
+    tokio::sync::OnceCell::const_new();
+
+/// Whether the native Status section is the one on screen. Written by the
+/// refresh tick, which is the only place that can read the active section, and
+/// read by that same tick to decide how often to run — the loop cannot ask the
+/// UI thread a question and use the answer in the same pass, so it uses the
+/// previous one. Being one tick late to speed up costs nothing.
+static STATUS_PAGE_OPEN: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Count and measure the installed AI model files. Walks the models directory
+/// rather than trusting the manifest: what matters on a status page is what is
+/// actually on disk, which is exactly where the manifest can be wrong.
+fn status_models() -> (i64, i64) {
+    let Some(root) = tulipix_photos::ai::models::models_root() else { return (0, 0) };
+    let (mut count, mut total) = (0i64, 0i64);
+    let mut stack = vec![root];
+    while let Some(dir) = stack.pop() {
+        let Ok(entries) = std::fs::read_dir(&dir) else { continue };
+        for e in entries.flatten() {
+            let Ok(ft) = e.file_type() else { continue };
+            if ft.is_dir() {
+                stack.push(e.path());
+                continue;
+            }
+            let name = e.file_name().to_string_lossy().to_lowercase();
+            if name.ends_with(".onnx") || name.ends_with(".bin") || name.ends_with(".gguf") {
+                count += 1;
+                total += e.metadata().map(|m| m.len() as i64).unwrap_or(0);
+            }
+        }
+    }
+    (count, total)
+}
+
+/// Everything the status pass cannot read from a database: in-process services
+/// and build facts. Rebuilt each tick — all of it is cheap, and a cached copy
+/// would be the one thing on the page that is stale.
+fn status_live() -> tulipix_status::Live {
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    let x = tulipix_sec_transfer::status_snapshot(now);
+    let (models, model_bytes) = status_models();
+    tulipix_status::Live {
+        transfer_running: x.running,
+        transfer_port: x.port,
+        transfer_ip: x.address,
+        transfer_devices: x.devices,
+        transfer_inflight: x.inflight,
+        transfer_sent: x.sent_bytes,
+        transfer_recv: x.recv_bytes,
+        ai_models: models,
+        ai_models_bytes: model_bytes,
+        app_version: env!("CARGO_PKG_VERSION").to_string(),
+        renderer: if cfg!(feature = "renderer-skia") { "skia".into() } else { "femtovg".into() },
+        uptime_s: tulipix_status::uptime_secs(),
+        scan: scan_rows_for_status(),
+    }
+}
+
+/// The live scan counters, in the shape the status page draws a progress bar
+/// from. Read straight off the same `SCAN_STATE` the in-app scan overlay reads,
+/// so the browser and the window can never show different progress for the same
+/// rescan.
+fn scan_rows_for_status() -> Vec<tulipix_status::collect::ScanRow> {
+    use std::sync::atomic::Ordering::Relaxed;
+    let Ok(g) = scan_state().lock() else { return Vec::new() };
+    g.iter()
+        .map(|(name, c)| tulipix_status::collect::ScanRow {
+            section: (*name).to_string(),
+            total: c.total.load(Relaxed) as i64,
+            added: c.added.load(Relaxed) as i64,
+            failed: c.failed.load(Relaxed) as i64,
+            active: c.active.load(Relaxed),
+        })
+        .collect()
+}
+
+/// One immediate snapshot into the native Status page, for the moment someone
+/// lands on it. The tick owns the steady state; this owns the first frame.
+fn kick_status_snapshot(window: &MainWindow) {
+    let weak = window.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        let snap = tulipix_status::collect::collect(&status_live()).await;
+        STATUS_PAGE_OPEN.store(true, std::sync::atomic::Ordering::Relaxed);
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            w.set_status_level(snap.level.as_str().into());
+            w.set_status_note(snap.note.as_str().into());
+            tulipix_sec_status::apply(&w, &snap.json);
+        });
+    });
+}
+
+fn wire_status(window: &MainWindow) {
+    // Start the session clock now rather than on first read, so "Session" means
+    // how long the app has been up and not how long the page has been open.
+    tulipix_status::uptime_secs();
+
+    let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<tulipix_status::Action>();
+
+    // Actions arriving from the page. Every one of them ends in a Slint call,
+    // so each hops to the UI thread instead of running on the tokio worker that
+    // received the request.
+    let weak = window.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        while let Some(action) = rx.recv().await {
+            let posted = weak.upgrade_in_event_loop(move |w| match action {
+                tulipix_status::Action::OpenSection(s) => {
+                    w.set_active_section(s.clone().into());
+                    w.invoke_section_changed(s.into());
+                }
+                tulipix_status::Action::Rescan => w.invoke_lib_rescan_all(),
+                // Both of these run the app's own handlers rather than a
+                // parallel implementation: the picker has to persist and scan
+                // through one path, and the reset has to be the same wipe the
+                // Settings button performs — a second one would drift.
+                tulipix_status::Action::AddFolder => {
+                    // The picker is modal and belongs to the window, so bring
+                    // the window up first; a dialog behind the browser is a
+                    // click that appeared to do nothing.
+                    let _ = w.window().show();
+                    w.invoke_lib_add();
+                }
+                tulipix_status::Action::ResetApp => w.invoke_lib_reset_app(),
+            });
+            // The window is gone: the app is closing and so is this loop.
+            if posted.is_err() {
+                break;
+            }
+        }
+    });
+
+    // The refresh tick. It runs whether or not the page is open, because the
+    // sidebar lamp needs it either way — but slowly when nobody is watching.
+    // Re-querying ten databases every two seconds for a page that is not on
+    // screen is the kind of thing that shows up in someone's battery graph.
+    let weak = window.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        loop {
+            let snap = tulipix_status::collect::collect(&status_live()).await;
+            if let Some(srv) = STATUS_SRV.get() {
+                srv.publish(&snap);
+            }
+            let (level, note) = (snap.level.clone(), snap.note.clone());
+            let json = snap.json.clone();
+            if weak
+                .upgrade_in_event_loop(move |w| {
+                    w.set_status_level(level.into());
+                    w.set_status_note(note.into());
+                    // The native Status page draws the same snapshot. Filled
+                    // only while it is the section on screen: building ten
+                    // nested models for a page nobody is looking at is the work
+                    // the slow tick below exists to avoid, and this is the one
+                    // place that can tell whether anyone is looking.
+                    let on = w.get_active_section().as_str() == "status";
+                    if on {
+                        tulipix_sec_status::apply(&w, &json);
+                    }
+                    STATUS_PAGE_OPEN.store(on, std::sync::atomic::Ordering::Relaxed);
+                })
+                .is_err()
+            {
+                break;
+            }
+            // Either dashboard being open earns the fast tick: they are two
+            // renderings of one snapshot, so whichever is in front decides.
+            let watched = STATUS_SRV.get().is_some_and(|s| s.watched())
+                || STATUS_PAGE_OPEN.load(std::sync::atomic::Ordering::Relaxed);
+            let period = if watched { 2 } else { 30 };
+            tokio::time::sleep(std::time::Duration::from_secs(period)).await;
+        }
+    });
+
+    window.on_status_clicked(move || {
+        let tx = tx.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            match STATUS_SRV.get_or_try_init(|| tulipix_status::start(tx)).await {
+                // A page that is still polling is a page that is still open.
+                // Handing the URL to the browser again would stack up identical
+                // tabs; asking the open one to come forward does not.
+                Ok(srv) if srv.watched() => {
+                    tracing::info!("status: dashboard already open — asking it to come forward");
+                    srv.request_focus();
+                }
+                Ok(srv) => tulipix_status::open_in_browser(&srv.url),
+                Err(e) => tracing::warn!(error = %e, "status: could not start the server"),
+            }
+        });
+    });
+}
+
 fn kick_home_stats(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {

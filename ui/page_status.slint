@@ -1,0 +1,1347 @@
+// Status — the same dashboard the loopback HTML page draws, as a native Slint
+// section.
+//
+// Both exist on purpose. `crates/tulipix-status` serves a self-contained HTML
+// page over loopback; this file draws the identical snapshot inside the window.
+// They read the *same* `collect()` JSON — there is no second set of queries and
+// no second set of numbers — so the only thing that differs between them is the
+// rendering, which is the whole point of keeping both around.
+//
+// What the comparison is actually between:
+//
+//   HTML   — reflows to any width for free, has real tables, text selection,
+//            CSS `color-mix`, and a diffing repaint that keeps scroll position.
+//            Costs a port, a token, and a browser window that is not the app.
+//   Slint  — no port, no token, no second window, one theme system, and the
+//            popups can call the app's own handlers directly instead of posting
+//            to an API. Costs explicit geometry: no grid that wraps by itself,
+//            no `<table>`, and every list needs a struct.
+//
+// Identity: brand violet (Theme.sec-status). This is a dashboard *about* the
+// other sections, so it does not claim one of the media hues.
+import { Theme } from "tokens.slint";
+import { Surface, Rim } from "surface.slint";
+import { ScrollView } from "std-widgets.slint";
+import { AppIcon, Icons } from "icons.slint";
+
+// One `key: value` line, on a card face or inside a popup group. `cls` is the
+// value's tint, carried verbatim from the JSON: "g" good, "o" attention,
+// "rd" bad, "mut" muted, "" plain.
+export struct StRow { k: string, v: string, cls: string }
+
+// One of the three big figures across the top of a card's popup.
+export struct StKpi { v: string, k: string }
+
+// One cell of a popup table. `tag` turns it into a pill; `cls` tints it.
+export struct StCell { text: string, cls: string, tag: bool }
+export struct StTableRow { cells: [StCell] }
+
+// A block inside a popup. Either a list of rows *or* a table — never both, and
+// which one is decided by `cols` being empty. Two shapes in one struct because
+// Slint models are homogeneous: a group list that could hold either kind would
+// otherwise have to be two models the page interleaves by index.
+export struct StGroup {
+    h: string,
+    rows: [StRow],
+    cols: [string],
+    table: [StTableRow],
+}
+
+// One section's card. `nav` is whether the section exists in the app: AI and
+// System are pages of this dashboard, not places to go.
+export struct StCard {
+    key: string,
+    name: string,
+    accent: color,
+    level: string,
+    status: string,
+    why: string,
+    more: string,
+    nav: bool,
+    rows: [StRow],
+    kpis: [StKpi],
+    groups: [StGroup],
+}
+
+// One tile of the strip under the header. Every one carries its own
+// explanation, because a number nobody can explain is a number nobody trusts.
+export struct StMetric {
+    label: string,
+    value: string,
+    note: string,
+    accent: color,
+    help-is: string,
+    help-for: string,
+    rows: [StRow],
+}
+
+export struct StEvent { at: string, accent: color, title: string, desc: string }
+export struct StToday { label: string, value: string, accent: color }
+
+// A watched root, and which sections found something under it.
+export struct StRoot { path: string, state: string, bad: bool, sections: [string] }
+
+// One row of the library popup's "What is indexed" table.
+export struct StLibSection {
+    name: string,
+    accent: color,
+    count: string,
+    size: string,
+    status: string,
+    level: string,
+}
+
+// Live indexing progress for one section. `waiting` is a scan that has not
+// finished counting its files yet, which draws as an indeterminate bar rather
+// than as one sitting at zero while the disk is clearly busy.
+export struct StScan {
+    section: string,
+    done: string,
+    total: string,
+    failed: string,
+    pct: int,
+    active: bool,
+    waiting: bool,
+}
+
+// ── shared bits ─────────────────────────────────────────────────────────────
+
+// The health dot. Three colours and only three, the same ones the sidebar lamp
+// uses — this is the one place in the app that reports health, and health does
+// not borrow a section accent.
+component Lamp inherits Rectangle {
+    in property <string> level;
+    in property <length> size: 8px;
+    width: root.size; height: root.size;
+    border-radius: root.size / 2;
+    background:
+        root.level == "ok"      ? #22c55e :
+        root.level == "busy"    ? #10b981 :
+        root.level == "problem" ? #ef4444 :
+                                  Theme.sec-settings;
+}
+
+// A tinted round glyph. Every card, popup header, timeline entry and Today row
+// wears one, so the eye can skip the chrome and read the text.
+component Glyph inherits Rectangle {
+    in property <image> icon;
+    in property <color> tint;
+    in property <length> size: 38px;
+    in property <length> inner: 18px;
+    width: root.size; height: root.size;
+    border-radius: Surface.r(root.size * 0.3);
+    background: Surface.wash(root.tint, 0.14);
+    AppIcon {
+        source: root.icon; colorize: root.tint;
+        width: root.inner; height: root.inner;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+    }
+}
+
+// The value half of a row, tinted by the class the server sent. Written once
+// here rather than as a ternary at each of the five places rows are drawn.
+component RowValue inherits Text {
+    in property <string> cls;
+    color: root.cls == "g"   ? Theme.ok :
+           root.cls == "o"   ? Theme.warn :
+           root.cls == "rd"  ? Theme.error :
+           root.cls == "mut" ? Theme.text-dim :
+                               Theme.text;
+    font-size: 12px;
+    font-weight: root.cls == "mut" ? 500 : 600;
+    horizontal-alignment: right;
+    overflow: elide;
+}
+
+component KvRow inherits HorizontalLayout {
+    // Not `row`: a layout already has one (the GridLayout cell index), and
+    // Slint refuses to override it.
+    in property <StRow> kv;
+    spacing: 8px;
+    Text {
+        text: root.kv.k; color: Theme.text-dim; font-size: 12px;
+        vertical-alignment: center; horizontal-stretch: 0; overflow: elide;
+    }
+    Rectangle { horizontal-stretch: 1; background: transparent; }
+    RowValue {
+        text: root.kv.v; cls: root.kv.cls;
+        vertical-alignment: center; horizontal-stretch: 0;
+    }
+}
+
+// A small pill. The status column of every popup table is one of these.
+component Pill inherits Rectangle {
+    in property <string> label;
+    in property <string> cls;
+    property <color> tint:
+        root.cls == "b" ? Theme.error :
+        root.cls == "w" ? Theme.warn :
+        root.cls == "i" ? Theme.text-dim :
+                          Theme.ok;
+    horizontal-stretch: 0;
+    height: 20px;
+    border-radius: 10px;
+    background: Surface.wash(root.tint, 0.14);
+    HorizontalLayout {
+        padding-left: 9px; padding-right: 9px;
+        Text {
+            text: root.label; color: root.tint;
+            font-size: 10.5px; font-weight: 700; vertical-alignment: center;
+        }
+    }
+}
+
+component Btn inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <color> tint: Theme.brand;
+    in property <bool> filled: true;
+    in property <bool> enabled: true;
+    callback clicked();
+    horizontal-stretch: 0;
+    height: 36px; min-width: 96px;
+    border-radius: Surface.btn-radius;
+    opacity: root.enabled ? 1.0 : 0.5;
+    background: !root.filled
+        ? (t.has-hover ? Surface.wash(root.tint, 0.12) : transparent)
+        : (t.pressed ? root.tint.darker(32%)
+           : (t.has-hover ? root.tint.darker(16%) : Surface.tile(root.tint)));
+    border-width: root.filled ? 0px : 1px;
+    border-color: t.has-hover ? root.tint : Theme.outline;
+    animate background { duration: 110ms; }
+    t := TouchArea {
+        mouse-cursor: root.enabled ? pointer : default;
+        clicked => { if (root.enabled) { root.clicked(); } }
+    }
+    if Surface.rim && root.filled: Rim {
+        x: 1px; y: 1px;
+        width: parent.width - 2px; height: parent.height - 2px;
+        radius: Math.max(2px, parent.border-radius - 1px);
+        pressed: t.pressed;
+    }
+    HorizontalLayout {
+        alignment: center; spacing: 7px;
+        padding-left: 14px; padding-right: 14px;
+        if root.icon.width > 0: VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            AppIcon {
+                source: root.icon; width: 14px; height: 14px;
+                colorize: root.filled ? #ffffff : root.tint;
+            }
+        }
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Text {
+                text: root.label;
+                color: root.filled ? #ffffff : Theme.text;
+                font-size: 12.5px; font-weight: 700; vertical-alignment: center;
+            }
+        }
+    }
+}
+
+// The card shell: a panel with a coloured top edge. The stripe is what makes a
+// grid of ten identical boxes readable at a glance.
+component Panel inherits Rectangle {
+    in property <color> tint: Theme.brand;
+    in property <bool> stripe: true;
+    background: Surface.body(Theme.panel);
+    border-radius: Surface.r(14px);
+    border-width: Surface.panel-border-w;
+    border-color: Theme.outline;
+    clip: true;
+    if root.stripe: Rectangle {
+        y: 0px; height: 3px; width: parent.width;
+        background: root.tint;
+    }
+    @children
+}
+
+// key → glyph. The one place this file knows anything section-specific, and it
+// is a picture, not a fact. A global because the card grid and the card popup —
+// two components now — both need the same answer.
+global StIcon {
+    pure public function for-key(key: string) -> image {
+        return key == "photos"   ? Icons.image     :
+               key == "videos"   ? Icons.film      :
+               key == "music"    ? Icons.music     :
+               key == "books"    ? Icons.book-open :
+               key == "cloud"    ? Icons.cloud     :
+               key == "tools"    ? Icons.wrench    :
+               key == "transfer" ? Icons.share     :
+               key == "finances" ? Icons.wallet    :
+               key == "ai"       ? Icons.sparkles  :
+                                   Icons.command;
+    }
+}
+
+// One section card's popup body. A component rather than an inline `if` inside
+// the `for`: Slint has no `for … : if …`, so the branch has to live inside an
+// element, and the only element that costs nothing when its condition is false
+// is a layout with no children.
+component CardModal inherits VerticalLayout {
+    in property <StCard> card;
+    callback close();
+    /// Jump to this section in the app. Straight through to the window's own
+    /// handler — the browser page has to post to an HTTP action to do this.
+    callback jump(string);
+    spacing: 0px;
+    // Header.
+    Rectangle {
+        vertical-stretch: 0;
+        background: transparent;
+        Rectangle {
+            y: 0px; height: 3px; width: parent.width; background: root.card.accent;
+        }
+        HorizontalLayout {
+            padding: 16px; padding-top: 19px; spacing: 12px;
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                Glyph { icon: StIcon.for-key(root.card.key); tint: root.card.accent; }
+            }
+            VerticalLayout {
+                alignment: center; spacing: 3px; horizontal-stretch: 1;
+                Text { text: root.card.name; color: Theme.text;
+                    font-size: 16px; font-weight: 800; overflow: elide; }
+                HorizontalLayout {
+                    spacing: 6px; alignment: start;
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        Lamp { level: root.card.level; }
+                    }
+                    Text { text: root.card.status; color: Theme.text-dim;
+                        font-size: 11.5px; vertical-alignment: center; }
+                }
+            }
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                Rectangle {
+                    width: 30px; height: 30px; border-radius: 15px;
+                    background: xt.has-hover
+                        ? Surface.wash(Theme.text, 0.10) : transparent;
+                    xt := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.close(); }
+                    }
+                    AppIcon {
+                        source: Icons.x; colorize: Theme.text-dim;
+                        width: 14px; height: 14px;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                    }
+                }
+            }
+        }
+    }
+    Rectangle { height: 1px; background: Theme.outline; }
+
+    // Body.
+    ScrollView {
+        vertical-stretch: 1;
+        preferred-height: cbody.preferred-height;
+        cbody := VerticalLayout {
+            padding: 16px; spacing: 14px; alignment: start;
+
+            if root.card.why != "": Rectangle {
+                border-radius: Surface.r(9px);
+                background: Surface.wash(Theme.error, 0.09);
+                VerticalLayout {
+                    padding: 10px;
+                    Text { text: root.card.why; color: Theme.error;
+                        font-size: 12px; wrap: word-wrap; }
+                }
+            }
+
+            if root.card.kpis.length > 0: HorizontalLayout {
+                spacing: 10px;
+                for k in root.card.kpis: Rectangle {
+                    horizontal-stretch: 1;
+                    border-radius: Surface.r(10px);
+                    background: Surface.body(Theme.panel-2);
+                    border-width: 1px; border-color: Theme.outline;
+                    VerticalLayout {
+                        padding: 11px; spacing: 2px;
+                        Text { text: k.v; color: Theme.text;
+                            font-size: 17px; font-weight: 800;
+                            overflow: elide; }
+                        Text { text: k.k; color: Theme.text-dim;
+                            font-size: 10.5px; font-weight: 600;
+                            overflow: elide; }
+                    }
+                }
+            }
+
+            for g in root.card.groups: VerticalLayout {
+                spacing: 6px;
+                Text {
+                    text: g.h; color: Theme.text-dim;
+                    font-size: 10.5px; font-weight: 700;
+                    letter-spacing: 0.6px;
+                }
+                // A row group.
+                for r in g.rows: KvRow { kv: r; }
+                // Or a table. `cols` being non-empty is
+                // what says which one this group is.
+                if g.cols.length > 0: VerticalLayout {
+                    spacing: 0px;
+                    HorizontalLayout {
+                        spacing: 8px; padding-bottom: 6px;
+                        for h in g.cols: Text {
+                            text: h; color: Theme.text-dim;
+                            font-size: 10px; font-weight: 700;
+                            letter-spacing: 0.5px;
+                            horizontal-stretch: 1; overflow: elide;
+                        }
+                    }
+                    Rectangle { height: 1px; background: Theme.outline; }
+                    if g.table.length == 0: Text {
+                        text: "Nothing right now.";
+                        color: Theme.text-dim; font-size: 12px;
+                    }
+                    for tr in g.table: HorizontalLayout {
+                        spacing: 8px;
+                        padding-top: 7px; padding-bottom: 7px;
+                        for cell in tr.cells: HorizontalLayout {
+                            horizontal-stretch: 1; alignment: start;
+                            if cell.tag: VerticalLayout {
+                                alignment: center;
+                                Pill { label: cell.text; cls: cell.cls; }
+                            }
+                            if !cell.tag: RowValue {
+                                text: cell.text; cls: cell.cls;
+                                horizontal-alignment: left;
+                                vertical-alignment: center;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Foot.
+    Rectangle { height: 1px; background: Theme.outline; }
+    HorizontalLayout {
+        padding: 13px; spacing: 9px; vertical-stretch: 0;
+        alignment: end;
+        Btn {
+            label: "Close"; tint: Theme.sec-settings;
+            clicked => { root.close(); }
+        }
+        // Only sections that exist in the app get this.
+        // Straight to the section — no HTTP round trip,
+        // which the browser version cannot avoid.
+        if root.card.nav: Btn {
+            label: "Open " + root.card.name; tint: root.card.accent;
+            clicked => { root.jump(root.card.key); }
+        }
+    }
+}
+
+// ── the page ────────────────────────────────────────────────────────────────
+
+export component StatusPage inherits Rectangle {
+    // Header.
+    in property <string> level: "unknown";
+    in property <string> headline: "Starting…";
+    in property <string> note: "";
+    in property <string> updated: "";
+    in property <string> sections-online: "0";
+    in property <string> jobs-running: "0";
+    in property <string> jobs-failed: "0";
+    in property <string> library-bytes: "0 B";
+    in property <string> library-items: "0";
+    in property <string> library-week: "0";
+    /// The seven-day sparkline, as SVG commands over a 100×100 viewbox. Built in
+    /// Rust for the reason every path in this app is: Slint cannot accumulate a
+    /// path over a model.
+    in property <string> spark-line: "";
+    in property <string> spark-area: "";
+
+    in property <[StMetric]> metrics: [];
+    in property <[StCard]> cards: [];
+    in property <[StEvent]> timeline: [];
+    in property <[StToday]> today: [];
+
+    // Library popup.
+    in property <[StRoot]> roots: [];
+    in property <[StLibSection]> lib-sections: [];
+    in property <[StScan]> scan: [];
+    in property <string> lib-items: "0";
+    in property <string> lib-bytes: "0 B";
+    in property <string> lib-databases: "0";
+    in property <bool> scan-running: false;
+    /// Where the System and Tools cards sit in `cards`. The three header
+    /// figures open the card that produced them, and an index is the only way
+    /// to reach one without a repeater — see `open-card` below for why that
+    /// matters. Resolved in Rust, which is what builds the list.
+    in property <int> system-idx: -1;
+    in property <int> tools-idx: -1;
+
+    /// Jump to another section of the app. The popup's own button, not a route
+    /// through an HTTP handler — which is the single largest difference between
+    /// this page and the HTML one.
+    callback open-section(string);
+    callback rescan();
+    callback add-folder();
+    callback reset-app();
+
+    property <color> accent: Theme.sec-status;
+
+    // Which popup is open. Three kinds, one at a time, so two ints and a bool
+    // carry the whole state.
+    //
+    // The card is held as an *index*, not as its key. Keyed, the popup had to
+    // find its card with `for c in root.cards: if c.key == root.open-card:
+    // CardModal { card: c; … }` — a sub-component inside a conditional inside a
+    // repeater, which is the exact parent chain slint#6426 breaks on: opening
+    // it panicked with "accessing deleted parent" every time. An index needs no
+    // repeater to resolve, so the popup's parent is this component directly.
+    property <int> open-card: -1;
+    property <int> open-metric: -1;
+    property <bool> lib-open: false;
+    // Guarded against a refresh that shrinks the list while a popup is open.
+    property <bool> card-open: root.open-card >= 0 && root.open-card < root.cards.length;
+    property <bool> metric-open: root.open-metric >= 0 && root.open-metric < root.metrics.length;
+    property <bool> modal-open: root.card-open || root.metric-open || root.lib-open;
+    // Reset is two deliberate acts: arm it, then type the word. Held here so a
+    // refresh underneath cannot disarm a half-typed confirmation.
+    property <bool> reset-armed: false;
+    property <string> reset-typed: "";
+
+    function close-modal() {
+        root.open-card = -1;
+        root.open-metric = -1;
+        root.lib-open = false;
+        root.reset-armed = false;
+        root.reset-typed = "";
+    }
+
+    background: Theme.bg;
+
+    ScrollView {
+        width: 100%; height: 100%;
+        // Every page in this app opens at the top. A ScrollView keeps the
+        // viewport it had, so landing on Status after scrolling it once would
+        // otherwise resume halfway down.
+        viewport-y: 0px;
+
+        VerticalLayout {
+            padding: 20px; spacing: 16px; alignment: start;
+
+            // ── header ──────────────────────────────────────────────────────
+            Panel {
+                tint: root.accent;
+                vertical-stretch: 0;
+                HorizontalLayout {
+                    padding: 18px; padding-top: 21px; spacing: 18px;
+
+                    // Left: the verdict, then the three figures under it.
+                    VerticalLayout {
+                        horizontal-stretch: 1; spacing: 16px;
+                        HorizontalLayout {
+                            spacing: 14px; alignment: start;
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Rectangle {
+                                    width: 54px; height: 54px; border-radius: 27px;
+                                    background: Surface.wash(
+                                        root.level == "problem" ? Theme.error
+                                        : root.level == "busy" ? #10b981 : Theme.ok, 0.16);
+                                    AppIcon {
+                                        source: root.level == "problem"
+                                            ? Icons.triangle-alert : Icons.check;
+                                        colorize: root.level == "problem" ? Theme.error
+                                            : root.level == "busy" ? #10b981 : Theme.ok;
+                                        width: 26px; height: 26px;
+                                        x: (parent.width - self.width) / 2;
+                                        y: (parent.height - self.height) / 2;
+                                    }
+                                }
+                            }
+                            VerticalLayout {
+                                alignment: center; spacing: 4px; horizontal-stretch: 1;
+                                Text {
+                                    text: root.headline; color: Theme.text;
+                                    font-size: 21px; font-weight: 800; overflow: elide;
+                                }
+                                Text {
+                                    text: root.note; color: Theme.text-dim;
+                                    font-size: 12.5px; wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        // Three buttons filling the rest of the column. Each
+                        // figure opens the card that produced it — "3 failed
+                        // jobs" is the beginning of a question, and the answer
+                        // is one click away.
+                        HorizontalLayout {
+                            spacing: 10px; vertical-stretch: 1;
+                            tri1 := Rectangle {
+                                horizontal-stretch: 1; min-height: 76px;
+                                border-radius: Surface.r(11px);
+                                background: Surface.wash(#22c55e, ta1.has-hover ? 0.16 : 0.08);
+                                border-width: 1px;
+                                border-color: Surface.edge(#22c55e, ta1.has-hover ? 0.5 : 0.22);
+                                animate background { duration: 120ms; }
+                                ta1 := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.open-card = root.system-idx; }
+                                }
+                                HorizontalLayout {
+                                    padding: 13px; spacing: 11px; alignment: start;
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        Glyph { icon: Icons.check; tint: #22c55e; size: 36px; inner: 17px; }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center; spacing: 1px; horizontal-stretch: 1;
+                                        Text { text: root.sections-online; color: Theme.text;
+                                            font-size: 21px; font-weight: 800; }
+                                        Text { text: "Sections Online"; color: Theme.text-dim;
+                                            font-size: 11px; font-weight: 600; overflow: elide; }
+                                    }
+                                }
+                            }
+                            tri2 := Rectangle {
+                                horizontal-stretch: 1; min-height: 76px;
+                                border-radius: Surface.r(11px);
+                                background: Surface.wash(#6366f1, ta2.has-hover ? 0.16 : 0.08);
+                                border-width: 1px;
+                                border-color: Surface.edge(#6366f1, ta2.has-hover ? 0.5 : 0.22);
+                                animate background { duration: 120ms; }
+                                ta2 := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.open-card = root.tools-idx; }
+                                }
+                                HorizontalLayout {
+                                    padding: 13px; spacing: 11px; alignment: start;
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        Glyph { icon: Icons.clock; tint: #6366f1; size: 36px; inner: 17px; }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center; spacing: 1px; horizontal-stretch: 1;
+                                        Text { text: root.jobs-running; color: Theme.text;
+                                            font-size: 21px; font-weight: 800; }
+                                        Text { text: "Jobs Running"; color: Theme.text-dim;
+                                            font-size: 11px; font-weight: 600; overflow: elide; }
+                                    }
+                                }
+                            }
+                            tri3 := Rectangle {
+                                horizontal-stretch: 1; min-height: 76px;
+                                border-radius: Surface.r(11px);
+                                background: Surface.wash(#ef4444, ta3.has-hover ? 0.16 : 0.08);
+                                border-width: 1px;
+                                border-color: Surface.edge(#ef4444, ta3.has-hover ? 0.5 : 0.22);
+                                animate background { duration: 120ms; }
+                                ta3 := TouchArea {
+                                    mouse-cursor: pointer;
+                                    clicked => { root.open-card = root.tools-idx; }
+                                }
+                                HorizontalLayout {
+                                    padding: 13px; spacing: 11px; alignment: start;
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        Glyph { icon: Icons.triangle-alert; tint: #ef4444;
+                                            size: 36px; inner: 17px; }
+                                    }
+                                    VerticalLayout {
+                                        alignment: center; spacing: 1px; horizontal-stretch: 1;
+                                        Text { text: root.jobs-failed; color: Theme.text;
+                                            font-size: 21px; font-weight: 800; }
+                                        Text { text: "Failed Jobs"; color: Theme.text-dim;
+                                            font-size: 11px; font-weight: 600; overflow: elide; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // Right: how big the library is, how it moved this week, and
+                    // the one button that acts on all of it.
+                    Rectangle {
+                        width: 292px; horizontal-stretch: 0;
+                        border-radius: Surface.r(12px);
+                        background: Surface.body(Theme.panel-2);
+                        border-width: 1px; border-color: Theme.outline;
+                        VerticalLayout {
+                            padding: 16px; spacing: 4px; alignment: start;
+                            Text { text: root.library-bytes; color: Theme.text;
+                                font-size: 27px; font-weight: 800; }
+                            Text { text: root.library-items + " items indexed";
+                                color: Theme.text-dim; font-size: 12px; }
+                            HorizontalLayout {
+                                alignment: start; padding-top: 6px;
+                                Rectangle {
+                                    horizontal-stretch: 0; height: 22px; border-radius: 11px;
+                                    background: Surface.wash(root.accent, 0.14);
+                                    HorizontalLayout {
+                                        padding-left: 10px; padding-right: 10px;
+                                        Text {
+                                            text: "+" + root.library-week + " this week";
+                                            color: root.accent; font-size: 11px; font-weight: 700;
+                                            vertical-alignment: center;
+                                        }
+                                    }
+                                }
+                            }
+                            // Seven days of library growth. Empty commands draw
+                            // nothing, which is the right answer for a library
+                            // that has not moved.
+                            Rectangle {
+                                height: 54px; background: transparent;
+                                Path {
+                                    width: 100%; height: 100%;
+                                    viewbox-width: 100; viewbox-height: 100;
+                                    commands: root.spark-area;
+                                    fill: root.accent.with-alpha(0.22);
+                                }
+                                Path {
+                                    width: 100%; height: 100%;
+                                    viewbox-width: 100; viewbox-height: 100;
+                                    commands: root.spark-line;
+                                    stroke: root.accent; stroke-width: 2px;
+                                }
+                            }
+                            Rectangle { vertical-stretch: 1; background: transparent; }
+                            Btn {
+                                label: "Rescan Libraries"; icon: Icons.refresh-cw;
+                                tint: root.accent;
+                                clicked => { root.lib-open = true; }
+                            }
+                        }
+                    }
+                }
+            }
+
+            // ── metric strip ────────────────────────────────────────────────
+            HorizontalLayout {
+                spacing: 12px; vertical-stretch: 0;
+                for m[i] in root.metrics: Panel {
+                    tint: m.accent;
+                    horizontal-stretch: 1;
+                    min-height: 104px; max-height: 104px;
+                    mt := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.open-metric = i; }
+                    }
+                    // The "?" badge. It is the affordance: without it a tile
+                    // that opens an explanation looks like a tile that does not.
+                    Rectangle {
+                        x: parent.width - self.width - 10px; y: 13px;
+                        width: 17px; height: 17px; border-radius: 8.5px;
+                        background: Surface.wash(m.accent, mt.has-hover ? 0.3 : 0.14);
+                        Text {
+                            text: "?"; color: m.accent;
+                            font-size: 10.5px; font-weight: 800;
+                            width: parent.width; height: parent.height;
+                            horizontal-alignment: center; vertical-alignment: center;
+                        }
+                    }
+                    VerticalLayout {
+                        padding: 13px; padding-top: 16px; spacing: 0px; alignment: start;
+                        Text {
+                            text: m.label; color: Theme.text-dim;
+                            font-size: 10.5px; font-weight: 700; letter-spacing: 0.4px;
+                            overflow: elide;
+                        }
+                        Rectangle { height: 7px; background: transparent; }
+                        Text {
+                            text: m.value; color: Theme.text;
+                            font-size: 18px; font-weight: 700; overflow: elide;
+                        }
+                        Text {
+                            text: m.note; color: Theme.text-dim;
+                            font-size: 11px; overflow: elide;
+                        }
+                    }
+                }
+            }
+
+            // ── the section cards ───────────────────────────────────────────
+            // Five to a row, placed by arithmetic. Slint has no wrapping grid,
+            // and a `for` inside a HorizontalLayout draws one row of ten — so
+            // the row a card belongs to has to be decidable from its own index.
+            grid := Rectangle {
+                property <length> gap: 12px;
+                property <length> cell: (self.width - 4 * self.gap) / 5;
+                property <length> ch: 268px;
+                // Rows needed. `Math.floor` rather than plain division: Slint
+                // divides as floats, so ten cards would ask for 2.8 rows' worth
+                // of height and leave a band of nothing under the last one.
+                property <int> rows: Math.floor((root.cards.length + 4) / 5);
+                vertical-stretch: 0;
+                background: transparent;
+                height: root.cards.length == 0 ? 0px
+                    : self.rows * (self.ch + self.gap) - self.gap;
+
+                for c[i] in root.cards: Panel {
+                    tint: c.accent;
+                    x: Math.mod(i, 5) * (grid.cell + grid.gap);
+                    y: Math.floor(i / 5) * (grid.ch + grid.gap);
+                    width: grid.cell; height: grid.ch;
+
+                    VerticalLayout {
+                        padding: 14px; padding-top: 17px; spacing: 10px;
+
+                        HorizontalLayout {
+                            spacing: 10px; vertical-stretch: 0;
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Glyph { icon: StIcon.for-key(c.key); tint: c.accent; }
+                            }
+                            VerticalLayout {
+                                alignment: center; spacing: 3px; horizontal-stretch: 1;
+                                Text { text: c.name; color: Theme.text;
+                                    font-size: 13.5px; font-weight: 700; overflow: elide; }
+                                HorizontalLayout {
+                                    spacing: 6px; alignment: start;
+                                    VerticalLayout {
+                                        alignment: center; horizontal-stretch: 0;
+                                        Lamp { level: c.level; }
+                                    }
+                                    Text { text: c.status; color: Theme.text-dim;
+                                        font-size: 11px; overflow: elide;
+                                        vertical-alignment: center; }
+                                }
+                            }
+                        }
+
+                        // The rows take the slack, which is what lands every
+                        // card's button on the same line across the row.
+                        VerticalLayout {
+                            vertical-stretch: 1; spacing: 4px; alignment: start;
+                            for r in c.rows: KvRow { kv: r; }
+                        }
+
+                        // The one line that says what is wrong, rather than
+                        // that something is. Only drawn when there is one.
+                        if c.why != "": Rectangle {
+                            border-radius: Surface.r(8px);
+                            background: Surface.wash(Theme.error, 0.09);
+                            vertical-stretch: 0;
+                            VerticalLayout {
+                                padding: 8px;
+                                Text {
+                                    text: c.why; color: Theme.error;
+                                    font-size: 11px; wrap: word-wrap;
+                                }
+                            }
+                        }
+
+                        Btn {
+                            label: c.more != "" ? c.more : "View Details";
+                            tint: c.accent; filled: false;
+                            clicked => { root.open-card = i; }
+                        }
+                    }
+                }
+            }
+
+            // ── the two bottom lists ────────────────────────────────────────
+            HorizontalLayout {
+                spacing: 12px; vertical-stretch: 0;
+
+                Panel {
+                    tint: root.accent; horizontal-stretch: 1;
+                    VerticalLayout {
+                        padding: 14px; padding-top: 17px; spacing: 10px; alignment: start;
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: "Activity Timeline"; color: Theme.text;
+                                font-size: 13.5px; font-weight: 700;
+                                horizontal-stretch: 1; vertical-alignment: center; }
+                            Rectangle {
+                                horizontal-stretch: 0; height: 20px; border-radius: 10px;
+                                background: Surface.wash(root.accent, 0.14);
+                                HorizontalLayout {
+                                    padding-left: 9px; padding-right: 9px;
+                                    Text { text: "Recent"; color: root.accent;
+                                        font-size: 10.5px; font-weight: 700;
+                                        vertical-alignment: center; }
+                                }
+                            }
+                        }
+                        if root.timeline.length == 0: Text {
+                            text: "Nothing yet."; color: Theme.text-dim; font-size: 12px;
+                        }
+                        for e in root.timeline: HorizontalLayout {
+                            spacing: 10px; padding-top: 5px; padding-bottom: 5px;
+                            Text {
+                                text: e.at; color: Theme.text-dim;
+                                font-size: 11px; font-weight: 600;
+                                min-width: 52px; horizontal-stretch: 0;
+                                vertical-alignment: center;
+                            }
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Glyph { icon: Icons.check; tint: e.accent;
+                                    size: 22px; inner: 11px; }
+                            }
+                            VerticalLayout {
+                                spacing: 1px; horizontal-stretch: 1; alignment: center;
+                                Text { text: e.title; color: Theme.text;
+                                    font-size: 12px; font-weight: 600; overflow: elide; }
+                                Text { text: e.desc; color: Theme.text-dim;
+                                    font-size: 11px; overflow: elide; }
+                            }
+                        }
+                    }
+                }
+
+                Panel {
+                    tint: root.accent; horizontal-stretch: 1;
+                    VerticalLayout {
+                        padding: 14px; padding-top: 17px; spacing: 10px; alignment: start;
+                        Text { text: "Today"; color: Theme.text;
+                            font-size: 13.5px; font-weight: 700; }
+                        if root.today.length == 0: Text {
+                            text: "Nothing yet."; color: Theme.text-dim; font-size: 12px;
+                        }
+                        for t in root.today: HorizontalLayout {
+                            spacing: 10px; padding-top: 5px; padding-bottom: 5px;
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Glyph { icon: Icons.check; tint: t.accent;
+                                    size: 22px; inner: 11px; }
+                            }
+                            Text { text: t.label; color: Theme.text; font-size: 12px;
+                                horizontal-stretch: 1; vertical-alignment: center;
+                                overflow: elide; }
+                            Text { text: t.value; color: Theme.text; font-size: 13px;
+                                font-weight: 700; horizontal-stretch: 0;
+                                vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+
+            // ── footer ──────────────────────────────────────────────────────
+            HorizontalLayout {
+                padding-top: 6px; spacing: 10px; vertical-stretch: 0;
+                Text {
+                    text: "Tulipix — local-first media, on your machine.";
+                    color: Theme.text-dim; font-size: 11px;
+                    horizontal-stretch: 1; vertical-alignment: center;
+                }
+                Text {
+                    text: root.updated != "" ? "Updated " + root.updated : "";
+                    color: Theme.text-dim; font-size: 11px;
+                    horizontal-stretch: 0; vertical-alignment: center;
+                }
+            }
+        }
+    }
+
+    // ── popups ──────────────────────────────────────────────────────────────
+    // One scrim, one frame, three bodies. Same arrangement as the HTML page's
+    // `shell()` — a new popup cannot forget the Escape key or the close button.
+    if root.modal-open: Rectangle {
+        width: 100%; height: 100%;
+        background: #00000080;
+        TouchArea { clicked => { root.close-modal(); } }
+
+        FocusScope {
+            width: 100%; height: 100%;
+            init => { self.focus(); }
+            key-pressed(e) => {
+                if (e.text == Key.Escape) { root.close-modal(); return accept; }
+                reject
+            }
+
+            Rectangle {
+                width: Math.min(parent.width - 64px, 760px);
+                height: Math.min(parent.height - 72px, Math.max(240px, mbody.preferred-height));
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+                border-radius: Surface.r(18px);
+                background: Theme.modal;
+                border-width: 1px; border-color: Theme.outline;
+                drop-shadow-blur: Surface.cast(40px);
+                drop-shadow-color: #00000070;
+                clip: true;
+                // Swallows clicks inside the panel so they never reach the scrim.
+                TouchArea { }
+
+                mbody := VerticalLayout {
+                    spacing: 0px;
+
+                    // ── card popup ──────────────────────────────────────────
+                    // Indexed straight off the model. This used to search for
+                    // the card with a `for` and pick it with an inner `if`,
+                    // which put `CardModal` under a conditional under a
+                    // repeater — the parent chain slint#6426 cannot walk, and
+                    // opening any card popup panicked on it. One `if` under
+                    // this component is the whole fix.
+                    if root.card-open: CardModal {
+                        card: root.cards[root.open-card];
+                        close => { root.close-modal(); }
+                        jump(s) => { root.open-section(s); root.close-modal(); }
+                    }
+
+
+                    // ── metric help ─────────────────────────────────────────
+                    // Indexed straight off the model rather than bound to a
+                    // local copy: `open-metric` is only ever a valid index while
+                    // this branch exists, and a `property <StMetric>` here would
+                    // have to be reached through three `parent`s from the header.
+                    if root.metric-open: VerticalLayout {
+                        spacing: 0px;
+                        Rectangle {
+                            vertical-stretch: 0; background: transparent;
+                            Rectangle {
+                                y: 0px; height: 3px; width: parent.width;
+                                background: root.metrics[root.open-metric].accent;
+                            }
+                            HorizontalLayout {
+                                padding: 16px; padding-top: 19px; spacing: 12px;
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    Glyph {
+                                        icon: Icons.info;
+                                        tint: root.metrics[root.open-metric].accent;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; spacing: 3px; horizontal-stretch: 1;
+                                    Text { text: root.metrics[root.open-metric].label;
+                                        color: Theme.text;
+                                        font-size: 16px; font-weight: 800; overflow: elide; }
+                                    Text {
+                                        text: root.metrics[root.open-metric].value + " · "
+                                            + root.metrics[root.open-metric].note;
+                                        color: Theme.text-dim; font-size: 11.5px; overflow: elide;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    Rectangle {
+                                        width: 30px; height: 30px; border-radius: 15px;
+                                        background: mx.has-hover
+                                            ? Surface.wash(Theme.text, 0.10) : transparent;
+                                        mx := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.close-modal(); }
+                                        }
+                                        AppIcon {
+                                            source: Icons.x; colorize: Theme.text-dim;
+                                            width: 14px; height: 14px;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: Theme.outline; }
+                        ScrollView {
+                            vertical-stretch: 1;
+                            preferred-height: hbody.preferred-height;
+                            hbody := VerticalLayout {
+                                padding: 16px; spacing: 14px; alignment: start;
+                                VerticalLayout {
+                                    spacing: 5px;
+                                    Text { text: "WHAT IT IS"; color: Theme.text-dim;
+                                        font-size: 10.5px; font-weight: 700; letter-spacing: 0.6px; }
+                                    Text { text: root.metrics[root.open-metric].help-is;
+                                        color: Theme.text; font-size: 12.5px; wrap: word-wrap; }
+                                }
+                                VerticalLayout {
+                                    spacing: 5px;
+                                    Text { text: "WHY IT IS HERE"; color: Theme.text-dim;
+                                        font-size: 10.5px; font-weight: 700; letter-spacing: 0.6px; }
+                                    Text { text: root.metrics[root.open-metric].help-for;
+                                        color: Theme.text; font-size: 12.5px; wrap: word-wrap; }
+                                }
+                                if root.metrics[root.open-metric].rows.length > 0: VerticalLayout {
+                                    spacing: 5px;
+                                    Text { text: "RIGHT NOW"; color: Theme.text-dim;
+                                        font-size: 10.5px; font-weight: 700; letter-spacing: 0.6px; }
+                                    for r in root.metrics[root.open-metric].rows: KvRow { kv: r; }
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: Theme.outline; }
+                        HorizontalLayout {
+                            padding: 13px; vertical-stretch: 0; alignment: end;
+                            Btn {
+                                label: "Close"; tint: Theme.sec-settings;
+                                clicked => { root.close-modal(); }
+                            }
+                        }
+                    }
+
+                    // ── library ─────────────────────────────────────────────
+                    if root.lib-open: VerticalLayout {
+                        spacing: 0px;
+                        Rectangle {
+                            vertical-stretch: 0; background: transparent;
+                            Rectangle {
+                                y: 0px; height: 3px; width: parent.width;
+                                background: Theme.sec-books;
+                            }
+                            HorizontalLayout {
+                                padding: 16px; padding-top: 19px; spacing: 12px;
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    Glyph { icon: Icons.folder; tint: Theme.sec-books; }
+                                }
+                                VerticalLayout {
+                                    alignment: center; spacing: 3px; horizontal-stretch: 1;
+                                    Text { text: "Library"; color: Theme.text;
+                                        font-size: 16px; font-weight: 800; }
+                                    Text {
+                                        text: root.lib-items + " items · " + root.lib-bytes
+                                            + " on disk · " + root.lib-databases + " databases";
+                                        color: Theme.text-dim; font-size: 11.5px; overflow: elide;
+                                    }
+                                }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    Rectangle {
+                                        width: 30px; height: 30px; border-radius: 15px;
+                                        background: lx.has-hover
+                                            ? Surface.wash(Theme.text, 0.10) : transparent;
+                                        lx := TouchArea {
+                                            mouse-cursor: pointer;
+                                            clicked => { root.close-modal(); }
+                                        }
+                                        AppIcon {
+                                            source: Icons.x; colorize: Theme.text-dim;
+                                            width: 14px; height: 14px;
+                                            x: (parent.width - self.width) / 2;
+                                            y: (parent.height - self.height) / 2;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: Theme.outline; }
+                        ScrollView {
+                            vertical-stretch: 1;
+                            preferred-height: lbody.preferred-height;
+                            lbody := VerticalLayout {
+                                padding: 16px; spacing: 16px; alignment: start;
+
+                                VerticalLayout {
+                                    spacing: 6px;
+                                    Text { text: "WHAT IS INDEXED"; color: Theme.text-dim;
+                                        font-size: 10.5px; font-weight: 700; letter-spacing: 0.6px; }
+                                    HorizontalLayout {
+                                        spacing: 8px; padding-bottom: 5px;
+                                        Text { text: "Section"; color: Theme.text-dim;
+                                            font-size: 10px; font-weight: 700;
+                                            horizontal-stretch: 1; }
+                                        Text { text: "Items"; color: Theme.text-dim;
+                                            font-size: 10px; font-weight: 700;
+                                            min-width: 80px; horizontal-stretch: 0;
+                                            horizontal-alignment: right; }
+                                        Text { text: "Size"; color: Theme.text-dim;
+                                            font-size: 10px; font-weight: 700;
+                                            min-width: 90px; horizontal-stretch: 0;
+                                            horizontal-alignment: right; }
+                                        Text { text: "State"; color: Theme.text-dim;
+                                            font-size: 10px; font-weight: 700;
+                                            min-width: 110px; horizontal-stretch: 0;
+                                            horizontal-alignment: right; }
+                                    }
+                                    Rectangle { height: 1px; background: Theme.outline; }
+                                    for s in root.lib-sections: HorizontalLayout {
+                                        spacing: 8px; padding-top: 7px; padding-bottom: 7px;
+                                        Text { text: s.name; color: Theme.text;
+                                            font-size: 12px; font-weight: 600;
+                                            horizontal-stretch: 1; vertical-alignment: center; }
+                                        Text { text: s.count; color: Theme.text;
+                                            font-size: 12px; min-width: 80px;
+                                            horizontal-stretch: 0; horizontal-alignment: right;
+                                            vertical-alignment: center; }
+                                        Text { text: s.size; color: Theme.text;
+                                            font-size: 12px; min-width: 90px;
+                                            horizontal-stretch: 0; horizontal-alignment: right;
+                                            vertical-alignment: center; }
+                                        HorizontalLayout {
+                                            min-width: 110px; horizontal-stretch: 0;
+                                            alignment: end;
+                                            VerticalLayout {
+                                                alignment: center;
+                                                Pill {
+                                                    label: s.status;
+                                                    cls: s.level == "problem" ? "b"
+                                                        : s.level == "busy" ? "w" : "";
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                VerticalLayout {
+                                    spacing: 6px;
+                                    Text { text: "WATCHED FOLDERS"; color: Theme.text-dim;
+                                        font-size: 10.5px; font-weight: 700; letter-spacing: 0.6px; }
+                                    if root.roots.length == 0: Text {
+                                        text: "No folders are being watched yet. Add one below.";
+                                        color: Theme.text-dim; font-size: 12px;
+                                    }
+                                    for r in root.roots: HorizontalLayout {
+                                        spacing: 8px; padding-top: 6px; padding-bottom: 6px;
+                                        Text {
+                                            text: r.path; color: Theme.text-dim;
+                                            font-size: 11.5px; horizontal-stretch: 1;
+                                            vertical-alignment: center; overflow: elide;
+                                        }
+                                        // Which sections found something under
+                                        // this root, left of its on-disk state.
+                                        for sec in r.sections: VerticalLayout {
+                                            alignment: center; horizontal-stretch: 0;
+                                            Pill { label: sec; cls: "i"; }
+                                        }
+                                        if r.sections.length == 0: VerticalLayout {
+                                            alignment: center; horizontal-stretch: 0;
+                                            Pill { label: "Not indexed"; cls: "i"; }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center; horizontal-stretch: 0;
+                                            Pill { label: r.state; cls: r.bad ? "b" : ""; }
+                                        }
+                                    }
+                                    Text {
+                                        text: "These are the only paths Tulipix reads. Nothing "
+                                            + "outside them is scanned, and nothing inside them "
+                                            + "is ever moved or rewritten.";
+                                        color: Theme.text-dim; font-size: 11.5px; wrap: word-wrap;
+                                    }
+                                }
+
+                                // Progress only while something is actually
+                                // indexing. A bar left at 100% after the fact is
+                                // indistinguishable from a job that stopped.
+                                if root.scan-running: VerticalLayout {
+                                    spacing: 8px;
+                                    Text { text: "REINDEXING NOW"; color: Theme.text-dim;
+                                        font-size: 10.5px; font-weight: 700; letter-spacing: 0.6px; }
+                                    for s in root.scan: VerticalLayout {
+                                        spacing: 4px;
+                                        HorizontalLayout {
+                                            spacing: 8px;
+                                            Text { text: s.section; color: Theme.text;
+                                                font-size: 11.5px; horizontal-stretch: 1; }
+                                            Text {
+                                                text: s.waiting ? "counting files…"
+                                                    : s.done + " / " + s.total
+                                                      + (s.failed != "0"
+                                                         ? " · " + s.failed + " failed" : "");
+                                                color: Theme.text-dim; font-size: 11.5px;
+                                                horizontal-stretch: 0;
+                                            }
+                                        }
+                                        Rectangle {
+                                            height: 7px; border-radius: 3.5px;
+                                            background: Surface.wash(Theme.text, 0.08);
+                                            clip: true;
+                                            Rectangle {
+                                                x: 0px;
+                                                width: parent.width
+                                                    * Math.max(0, Math.min(100, s.pct)) / 100;
+                                                height: parent.height;
+                                                border-radius: 3.5px;
+                                                background: s.active
+                                                    ? Theme.brand : Theme.sec-settings;
+                                                animate width { duration: 400ms; easing: ease-out; }
+                                            }
+                                        }
+                                    }
+                                }
+
+                                // The destructive block, kept visually apart —
+                                // the same separation the HTML page draws.
+                                Rectangle {
+                                    border-radius: Surface.r(11px);
+                                    background: Surface.wash(Theme.error, 0.06);
+                                    border-width: 1px;
+                                    border-color: Surface.edge(Theme.error, 0.28);
+                                    VerticalLayout {
+                                        padding: 13px; spacing: 7px;
+                                        Text { text: "Reset Tulipix"; color: Theme.error;
+                                            font-size: 12.5px; font-weight: 700; }
+                                        Text {
+                                            text: "Erases every index, setting, thumbnail and "
+                                                + "watched-folder entry, then restarts the app as "
+                                                + "if it had just been installed. Your media files "
+                                                + "are never touched.";
+                                            color: Theme.text-dim; font-size: 11.5px;
+                                            wrap: word-wrap;
+                                        }
+                                        // Two deliberate acts: arm it, then type
+                                        // the word. Same gate as the HTML page,
+                                        // except the check is local rather than
+                                        // a phrase the server re-validates.
+                                        if root.reset-armed: Rectangle {
+                                            height: 36px; border-radius: Surface.r(9px);
+                                            background: Surface.body(Theme.panel-2);
+                                            border-width: 1px;
+                                            border-color: rin.has-focus
+                                                ? Theme.error : Theme.outline;
+                                            HorizontalLayout {
+                                                padding-left: 11px; padding-right: 11px;
+                                                VerticalLayout {
+                                                    alignment: center;
+                                                    rin := TextInput {
+                                                        text: root.reset-typed;
+                                                        single-line: true;
+                                                        color: Theme.text; font-size: 12.5px;
+                                                        vertical-alignment: center;
+                                                        edited => { root.reset-typed = self.text; }
+                                                    }
+                                                }
+                                            }
+                                        }
+                                        if root.reset-armed && root.reset-typed != "RESET": Text {
+                                            text: "Type RESET to confirm.";
+                                            color: Theme.text-dim; font-size: 11px;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        Rectangle { height: 1px; background: Theme.outline; }
+                        HorizontalLayout {
+                            padding: 13px; spacing: 9px; vertical-stretch: 0;
+                            Btn {
+                                label: "Close"; tint: Theme.sec-settings;
+                                clicked => { root.close-modal(); }
+                            }
+                            Btn {
+                                label: "Add Folder…"; icon: Icons.plus; tint: Theme.sec-books;
+                                clicked => { root.add-folder(); root.close-modal(); }
+                            }
+                            Rectangle { horizontal-stretch: 1; background: transparent; }
+                            Btn {
+                                label: root.scan-running ? "Reindexing…" : "Reindex Library";
+                                tint: root.accent;
+                                enabled: !root.scan-running;
+                                clicked => { root.rescan(); root.close-modal(); }
+                            }
+                            Btn {
+                                label: root.reset-armed ? "Confirm Reset" : "Reset App";
+                                tint: Theme.error;
+                                enabled: !root.reset-armed || root.reset-typed == "RESET";
+                                clicked => {
+                                    if (!root.reset-armed) {
+                                        root.reset-armed = true;
+                                    } else if (root.reset-typed == "RESET") {
+                                        root.reset-app();
+                                        root.close-modal();
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}

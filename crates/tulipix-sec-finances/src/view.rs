@@ -627,119 +627,26 @@ pub fn filter_bills<'a>(rows: &'a [Obligation], filter: &str) -> Vec<Obligation>
         .collect::<Vec<_>>()
 }
 
-/// A series of 0–100 percentages as two SVG paths: the line, and the area below it.
+/// The same six months as one donut each, for the Trends popup.
 ///
-/// Over a 100×100 viewbox, so the caller can draw it at any size. Points sit at
-/// the centre of the column each month owns, which is where the overlay puts the
-/// month's touch target and its marker — the dot and the line have to agree, and
-/// they only do if one rule places both.
-///
-/// The second float in this file, after the donut's arcs, and for the same
-/// reason: Slint cannot accumulate a path over a model.
-fn spark_path(pcts: &[i32]) -> (String, String) {
-    if pcts.is_empty() {
-        return (String::new(), String::new());
-    }
-    let n = pcts.len() as f32;
-    let x = |i: usize| (i as f32 + 0.5) * 100.0 / n;
-    let y = |p: i32| 100.0 - p.clamp(0, 100) as f32;
-
-    let mut line = String::new();
-    for (i, p) in pcts.iter().enumerate() {
-        line.push_str(&format!(
-            "{} {:.1} {:.1} ",
-            if i == 0 { "M" } else { "L" },
-            x(i),
-            y(*p)
-        ));
-    }
-    // Closed down to the baseline at both ends, so the fill reads as the ground
-    // under the line rather than as a shape floating in the middle of the row.
-    let area = format!(
-        "{}L {:.1} 100 L {:.1} 100 Z",
-        line,
-        x(pcts.len() - 1),
-        x(0)
-    );
-    (line.trim_end().to_string(), area)
-}
-
-/// Six months of spending per category, biggest first.
-///
-/// One call per month rather than one grouped query: `spend_by_category` is the
-/// function the donut already uses, and six calls to a tested aggregate beat one new
-/// query that could disagree with it.
-///
-/// Heights are shares of each category's *own* worst month. Shares of the whole
-/// ledger would draw every category except the largest as a flat line, which is
-/// exactly the trend the card exists to show.
-pub fn trend(months: &[(String, Vec<CategorySpend>)], base: &str, limit: usize) -> Vec<FinCatTrend> {
-    // Total per category across the window, to rank and to keep only the top few.
-    let mut totals: Vec<(String, i64)> = Vec::new();
-    for (_, rows) in months {
-        for r in rows {
-            match totals.iter_mut().find(|(n, _)| *n == r.name) {
-                Some((_, t)) => *t += r.base_minor,
-                None => totals.push((r.name.clone(), r.base_minor)),
-            }
-        }
-    }
-    totals.sort_by(|a, b| b.1.cmp(&a.1));
-    totals.truncate(limit);
-
-    totals
-        .into_iter()
-        .enumerate()
-        .map(|(i, (name, total))| {
-            let series: Vec<i64> = months
-                .iter()
-                .map(|(_, rows)| {
-                    rows.iter().find(|r| r.name == name).map(|r| r.base_minor).unwrap_or(0)
-                })
-                .collect();
-            let peak = series.iter().copied().max().unwrap_or(0).max(1);
-            let last = series.last().copied().unwrap_or(0);
-            // Against the mean of the earlier months, not against last month alone:
-            // one quiet month would otherwise report every category as rising.
-            let earlier = &series[..series.len().saturating_sub(1)];
-            let mean: i64 = if earlier.is_empty() {
-                0
-            } else {
-                earlier.iter().sum::<i64>() / earlier.len() as i64
-            };
-            let diff = last - mean;
-            // A tenth of the mean is noise; below that the card says nothing.
-            let worth_saying = mean > 0 && diff.abs() * 10 > mean;
-
-            let pcts: Vec<i32> =
-                series.iter().map(|v| ((*v as i128 * 100) / peak as i128) as i32).collect();
-            let (line, area) = spark_path(&pcts);
-
-            FinCatTrend {
-                name: s(&name),
-                hue: category_hue(i, &name, None),
+/// The small multiples that used to be there normalised every category to its
+/// own peak, so a category with one busy month drew the same shape as one with
+/// six steady ones, and a category with nothing at all drew a flat line along
+/// the bottom of a box the same size — which is what made the card read as half
+/// empty. A ring per month answers the question the card is actually asked:
+/// where the money went that month. `slices` already folds the tail into
+/// "Other" and closes the ring to a hundred, so the six agree with each other
+/// and with the Overview's ring, which is built by the same function.
+pub fn trend_pies(months: &[(String, Vec<CategorySpend>)], base: &str) -> Vec<FinTrendPie> {
+    months
+        .iter()
+        .map(|(period, rows)| {
+            let total: i64 = rows.iter().map(|r| r.base_minor).sum();
+            FinTrendPie {
+                label: s(month_short(period)),
+                long: s(month_long(period)),
                 total: s(money::format_minor(total, base)),
-                line: s(line),
-                area: s(area),
-                delta: s(if worth_saying {
-                    format!("{} vs usual", money::format_minor(diff.abs(), base))
-                } else {
-                    String::new()
-                }),
-                up: diff > 0,
-                months: model(
-                    months
-                        .iter()
-                        .zip(series.iter())
-                        .enumerate()
-                        .map(|(mi, ((label, _), v))| FinTrendMonth {
-                            label: s(month_short(label)),
-                            pct: ((*v as i128 * 100) / peak as i128) as i32,
-                            current: mi + 1 == months.len(),
-                            amount: s(money::format_minor(*v, base)),
-                        })
-                        .collect(),
-                ),
+                slices: model(slices(rows, base)),
             }
         })
         .collect()
@@ -3391,19 +3298,6 @@ mod tests {
         // Neither is an envelope nothing has been spent from.
         let untouched = vec![envelope(3, "Travel", 600_000, 0)];
         assert!(predictions(&untouched, &[], first, 10, 31, "INR").is_empty());
-    }
-
-    #[test]
-    fn a_sparkline_puts_its_points_in_the_middle_of_each_month_and_closes_to_the_floor() {
-        let (line, area) = spark_path(&[0, 50, 100]);
-        // Thirds of the width, sampled at their centres: 16.7, 50, 83.3.
-        assert_eq!(line, "M 16.7 100.0 L 50.0 50.0 L 83.3 0.0");
-        // The area is the same line brought down to the baseline at both ends,
-        // so the fill sits under the line rather than floating behind it.
-        assert!(area.starts_with(&line), "the area follows the same points");
-        assert!(area.ends_with("L 83.3 100 L 16.7 100 Z"), "and closes on the floor");
-        // No months is a chart with nothing to draw, not a path with one point.
-        assert_eq!(spark_path(&[]), (String::new(), String::new()));
     }
 
     #[test]

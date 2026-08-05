@@ -33,6 +33,8 @@ members = [
     "crates/tulipix-sec-genesis",
     "crates/tulipix-finances",
     "crates/tulipix-sec-finances",
+    "crates/tulipix-status",
+    "crates/tulipix-sec-status",
     "crates/tulipix-hot",
     "crates/tulipix-cli",
     "tools/fetch-resources",

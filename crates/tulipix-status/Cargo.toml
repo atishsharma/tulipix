@@ -1,0 +1,36 @@
+[package]
+name = "tulipix-status"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+description = "Loopback status dashboard: one JSON snapshot of every section, served to the browser."
+
+[dependencies]
+anyhow.workspace = true
+tracing.workspace = true
+# `net` for the listener: the workspace default trims tokio for the media crates
+# and does not carry it. Named here rather than left to axum's `tokio` feature
+# to unify in — same as tulipix-transfer, and it keeps the reason visible.
+tokio = { workspace = true, features = ["net", "sync", "time", "rt", "macros"] }
+sqlx.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+# Same pinned axum as tulipix-transfer: no default features, and notably no
+# `json`. The handlers serialize with serde_json directly rather than widen the
+# shared feature set for one extractor.
+axum.workspace = true
+getrandom.workspace = true
+
+# pool_for — the same per-section pools the GUI reads, so the page never opens
+# a second connection to a database the app already holds.
+tulipix-common = { path = "../tulipix-common" }
+tulipix-core = { path = "../tulipix-core" }
+# finances.db is not in pool_for (it predates it and seeds demo rows on open),
+# and `badge_count` encodes the alert-lead rule the Finances badge uses. Both
+# are worth the dependency: re-deriving either here would let the page and the
+# sidebar disagree about what "due soon" means.
+tulipix-finances = { path = "../tulipix-finances" }
+# `dashboard::stats` — week/total listening and the streak. The streak rule
+# (counts back from today OR yesterday) is not obvious enough to reimplement.
+tulipix-music = { path = "../tulipix-music" }

@@ -509,130 +509,76 @@ jobs:
           body: |
             ## Highlights
 
-            Two whole new sections, a book search inside Books, live TV in
-            Videos, and a Transfer that now speaks HTTPS and installs on a
-            phone like an app.
+            A section that tells you what the app is doing, an embedded video player
+            that is gone rather than half-working, and five Music tabs that finally
+            show the state they were already keeping.
 
-            ### Transfer — new section
-            The desktop becomes a small web server on your own network. A phone
-            opens a URL, enters a PIN or scans the QR, and moves files both
-            ways. No internet, no account, nothing installed on the phone.
+            ### Breaking — the embedded video player is deleted
 
-            - **Send and receive** — a share tray the phone downloads from and
-              an inbox it uploads into, with ranged downloads so a 4 GB file
-              survives the screen locking.
-            - **HTTPS with a certificate the app signs itself**, reachable at
-              `tulipix.local` over mDNS. The point is not secrecy on a LAN
-              behind a PIN — it is that browsers hand out the camera only on a
-              secure origin, which is what the in-page QR scanner needs. A
-              trust page walks through installing the app's root once.
-            - **Installable phone page** — a real PWA (manifest, service
-              worker, icons), tick-to-select lists with select-all, one action
-              button per list, frosted segmented tabs, and its own theme
-              toggle that overrides the phone's.
-            - **Live QR** — the pairing key is single-use and expires in 60
-              seconds, so the code on screen is re-minted as it ages instead of
-              going dead a minute after the page loads.
-            - **Paired devices** live in Connection as round device-type
-              buttons, five to a row, each opening what is known about it.
-            - **Local-only by construction** — only private address ranges are
-              offered and the listener binds the one address on screen, never
-              `0.0.0.0`. Filename safety is its own module with its own tests.
-            - **Ledger** with sorting on all six columns in SQL over the whole
-              history, reveal-in-file-manager for sent rows as well as
-              received, and a clear-history dialog that spells out that it
-              erases the log, not the files.
-            - **Firewall help** for every platform, with the real port and link
-              name substituted in — the desktop cannot detect a default-deny
-              rule, because the bind succeeds and the packets simply die.
+            Video playback shells out to mpv now, on every platform, always. The
+            in-window player was a second playback path with its own bugs, its own
+            libmpv link and its own build problems, and it was never as good as the
+            thing it was reimplementing. Removing it takes libmpv off the build
+            entirely — the Windows job no longer rebuilds an import library from a
+            DLL's export table — and the Playback settings panel is wired to the
+            player that actually runs, which it had quietly stopped being.
 
-            ### Finances — new section
-            Household money, offline. A subscription, a bill and an expense are
-            one thing at three points in its life, which is what makes this one
-            section rather than nine tools sharing a sidebar entry:
-            recurrence → obligation → transaction.
+            ### Status — new section
 
-            - **Nine tabs** — accounts, transactions, obligations, recurrences,
-              budgets, loans, insights, statements and settings — with a
-              sidebar badge for what is due.
-            - **Statement import** from CSV and OFX, recurring-charge detection
-              over your own history, loan amortisation, and receipt OCR.
-            - **Exports** as PDF and spreadsheet.
-            - **Live FX** for accounts held in another currency.
-            - **The numbers are honest by construction** — all money is integer
-              minor units, transfers are not spending, lending is not spending,
-              an estimate is never posted as a fact, and the SQL and Rust forms
-              of the balance rule are pinned together by a test.
-            - **Net worth is deliberately not computed**: liquid and debt are
-              both real and shown separately, and their difference would need a
-              market valuation the app would have to ask you to guess.
-            - No bank sync, no OAuth, no account — same as everything else here.
+            One page that reads every section's own database and says what is true
+            right now: what is indexed, what is running, what is stale, what failed.
+            Six live metrics, a card per section that opens into detail, a merged
+            activity timeline, and the watched-folder list with add, rescan and
+            forget in place.
 
-            ### Books — Genesis search and download
-            A sub-page of Books that searches Library Genesis mirrors,
-            downloads a chosen record, and rescans so the book appears in My
-            Library without a restart.
+            It ships as **two renderings of one snapshot** — a native Slint page in
+            the sidebar, and an HTML dashboard served over loopback behind a
+            per-run token, for a browser or a second screen. There is a single
+            `collect()` behind both; no second set of queries exists anywhere.
 
-            - **Mirror selection health-checks by running a real search** —
-              mirrors routinely serve a healthy front page while their search
-              endpoint fails, so a homepage ping would route you to a broken
-              one.
-            - **Downloads land in `<Downloads>/Genesis`**, registered as a
-              library root rather than mixed into a shelf you arranged.
-            - Resumable: cancelling leaves the partial file for the next try.
-            - Built on a port of Tomesole (MIT); its 109 tests came with it and
-              still pass.
+            Adding, removing or rescanning a library folder is now recorded, so the
+            timeline shows it whether it happened in the app or on the dashboard.
 
-            ### Videos — Live TV and a new host
-            - **Live TV** — free-to-air channels from iptv-org, by country,
-              region, language or category, parsed from plain playlists with a
-              day-long cache. No API, no key, nothing to sign. Your selected
-              playlists persist with the rest of your settings.
-            - **4KHDHub** joins the Stream host list.
-            - Trending no longer empties the vertical-drama slider.
-            - Season grouping is rebuilt for shows opened outside of search.
+            ### Music — the five tabs stop hiding what they already know
 
-            ### Cloud — connect without editing config files
-            - **Provider catalogue** read from `rclone config providers`, so the
-              Connect dialog asks for "Region" with a list of regions instead of
-              a `key=value` textarea — and stays correct across rclone upgrades,
-              because the schema comes from the binary that will run.
-            - **Guided connect flow**, including OAuth-style authorise for the
-              backends that use it.
+            Every tab was sitting on state it never drew.
 
-            ### Desktop notifications
-            The notification sink has always been a stub, so no section has ever
-            raised a banner. It now goes through what each OS already ships —
-            `notify-send`, `osascript`, a WinRT toast — and falls back to the
-            stub on a headless machine. Available to every section, not only
-            Finances.
+            - **My Music** grows from three rails to six — Continue listening with
+              real resume percentages, Most played, Recently added — over a
+              listening strip of week / all-time / top genre / streak.
+            - **Podcasts** get a cross-show queue that persists and hands off on
+              EOF, and the episode progress hairline the data already supported.
+            - **Audiobooks** get a real bookmark panel: rename in place, jump across
+              chapter boundaries, delete, per-book speed, mark finished.
+            - **Radio** gets an ON AIR card — the live ICY track, find-track into
+              library search, a rolling heard-log, and recording.
+            - **YouTube** resumes where you stopped (saved every ~10s, drawn as a
+              sliver on the thumbnail) and caps its cache by bytes rather than by
+              file count, which said nothing about the disk.
 
-            ### Interface
-            - A shared surface component behind cards and panels, with theme and
-              page restyling across the app.
-            - Fixed-height Transfer cards, so nothing moves when a file is
-              chosen or a phone pairs.
-            - Home's Quick Actions became Quick Launch, with a Transfer tile.
+            Motion runs through one global instead of 112 literal durations, so
+            `reduce-motion` reaches Music at last, and one timer per window drives
+            every looping animation.
 
-            ### Fixes
-            - **ReplayGain scanning was broken outright** — it queried a column
-              that does not hold the path.
-            - A NaN in a music sort could abort the process; sorting is total now.
-            - Paths and URLs handed to OS shells are escaped.
-            - The Advanced settings panel reports only what it actually measures.
-            - A bundled binary that cannot start is no longer handed to callers
-              as if it could.
-            - Photos' dedupe list updates in place instead of swapping the model.
-            - A sentence's start is reported where its text actually starts.
+            ### Finances
 
-            ### Under the hood
-            - The Linux tray is served by ksni over D-Bus; the whole GTK stack
-              is gone from the Linux build.
-            - Two HTTP clients are shared instead of 62 untimed ones being built.
-            - Ten dependencies dropped; Transfer, Finances and Genesis each
-              ship as a core crate plus a Slint glue crate, and Genesis and
-              Finances are behind their own cargo features.
-            - CI runs the test suite, scoped lints and the per-OS code, and
-              smoke-tests the Linux tarball before it can be published.
+            - **Planning** is the only place the section answers "what should I do
+              next" — the Plan tab is absorbed into it, calendar and year view as a
+              modal, envelope history inside the Envelopes drill-down.
+            - **The numbers stop contradicting themselves**: the section-level
+              figures are computed the same way as the pages they summarise.
+            - The Trends breakdown is the same donut the Overview draws, instead of
+              a sparkline that could not carry a category split.
+
+            ### Books, Videos, Cloud, Transfer
+
+            - **Genesis** mirrors unwedge themselves, Live TV paginates and keeps
+              playback state, and Stream lands on a provider-aware page with
+              seekable streams.
+            - **Transfer** trusts its certificate on first use, so a phone no longer
+              has to install a root CA to reach the secure origin the QR scanner
+              needs. Device names take 15 characters, and the ledger is numbered and
+              centred.
+            - **Cloud** carries the OAuth token through to Connect.
 
             ---

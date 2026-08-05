@@ -128,6 +128,36 @@ pub fn wire(window: &MainWindow) {
     });
 
     let w = window.as_weak();
+    window.on_transfer_set_share_target(move |token| {
+        let Some(w) = w.upgrade() else { return };
+        // Empty means everyone; the tray normalises it, so the UI can send the
+        // chip's own value without a special case for the first chip.
+        let _ = with(|svc| svc.set_share_target(Some(token.to_string())));
+        refresh(&w);
+    });
+
+    // Open the phone page in this machine's own browser, already paired.
+    //
+    // It goes through the same single-use pairing key the QR carries rather
+    // than any desktop-only bypass: one way in, one thing to reason about. The
+    // desktop then shows up in the Connection card as a paired device, which is
+    // what it is — and scanning or clicking again re-uses that pairing instead
+    // of stacking up a second one.
+    let w = window.as_weak();
+    window.on_transfer_open_url(move || {
+        let Some(w) = w.upgrade() else { return };
+        let url = with(|svc| svc.pairing_url()).unwrap_or_default();
+        if url.is_empty() {
+            return;
+        }
+        open_url(&url);
+        // The device shows up once the browser actually loads the URL, which is
+        // after this returns — the periodic tick is what catches it. This
+        // refresh is only so the card is current the instant the click lands.
+        refresh(&w);
+    });
+
+    let w = window.as_weak();
     window.on_transfer_forget(move |token| {
         let w = w.clone();
         let token = token.to_string();
@@ -284,6 +314,14 @@ pub fn section_changed(window: &MainWindow, section: &str) {
     }
 }
 
+/// What the Status dashboard reads about this service.
+///
+/// Returns the "not sharing" default when the service is parked mid-start/stop,
+/// which is what it is at that moment.
+pub fn status_snapshot(now: u64) -> tulipix_transfer::StatusSnapshot {
+    with(|s| s.status_snapshot(now)).unwrap_or_default()
+}
+
 /// Stop serving on the way out of the app. Called from the shutdown path so a
 /// closed window does not leave a listener behind.
 ///
@@ -416,6 +454,32 @@ fn refresh(w: &MainWindow) {
     });
     w.set_transfer_attempts(attempts_line(&snap).into());
 
+    w.set_transfer_share_target(snap.share_target.clone().into());
+
+    // A file carries a device *token*; the row has to show a name. Resolved here
+    // against the same device list the dropdown is drawn from, so a rename shows
+    // up on the tray row and on the closed dropdown as well as in its list.
+    let device_name = |token: &str| -> String {
+        snap.devices
+            .iter()
+            .find(|d| d.token == token)
+            .map(|d| {
+                if !d.name.is_empty() {
+                    d.name.clone()
+                } else if !d.kind.is_empty() {
+                    d.kind.clone()
+                } else {
+                    d.label.clone()
+                }
+            })
+            // A token with no device behind it is one that has just been
+            // forgotten; the tray widens those out on the next snapshot, so this
+            // is a one-tick gap rather than a state to name.
+            .unwrap_or_default()
+    };
+
+    w.set_transfer_share_target_name(device_name(&snap.share_target).into());
+
     let files: Vec<TransferFile> = snap
         .files
         .iter()
@@ -424,6 +488,7 @@ fn refresh(w: &MainWindow) {
             name: f.name.clone().into(),
             size: human_size(f.bytes).into(),
             kind: kind_of(&f.name).into(),
+            to: if f.to.is_empty() { String::new() } else { device_name(&f.to) }.into(),
         })
         .collect();
     set_rows(&w.get_transfer_files(), files, |rows| w.set_transfer_files(rows));
@@ -697,6 +762,22 @@ fn load_history(w: &MainWindow, page: usize) {
             w.set_transfer_pages(pages as i32);
         });
     });
+}
+
+/// Hand a URL to the OS default browser. Best-effort: a machine with no browser
+/// registered is a machine where the address beside the button is still there to
+/// be copied.
+fn open_url(url: &str) {
+    let prog = if cfg!(target_os = "macos") {
+        "open"
+    } else if cfg!(target_os = "windows") {
+        "explorer"
+    } else {
+        "xdg-open"
+    };
+    if let Err(e) = std::process::Command::new(prog).arg(url).spawn() {
+        tracing::warn!(error = %e, "transfer: could not open the browser");
+    }
 }
 
 // ── small formatters ────────────────────────────────────────────────────────

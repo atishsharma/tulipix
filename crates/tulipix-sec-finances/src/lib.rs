@@ -49,10 +49,6 @@ const DISCIPLINE_MONTHS: u32 = 6;
 /// halves of "how has this been going" cover the same window.
 const TREND_MONTHS: u32 = 6;
 
-/// How many categories the trend card draws. Beyond about five it stops being a
-/// comparison and becomes a list.
-const TREND_CATEGORIES: usize = 5;
-
 /// Rows in the overview's recent-transactions card. Enough to recognise the last
 /// day or two; the Transactions tab is where the ledger is read properly.
 const OVERVIEW_TXNS: usize = 6;
@@ -2347,10 +2343,10 @@ pub fn refresh(window: &MainWindow) {
         let ui_savings = view::savings(&savings_rows, &base);
         let ui_savings_summary = view::savings_summary(&savings_rows, &base);
         let (ui_projection, projection_note) = view::projection(&projection, &base);
-        // No `ui_trend` here: a `FinCatTrend` holds a nested model of its months, and
-        // a `ModelRc` is an `Rc`, so the struct is `!Send` and cannot cross into the
-        // event loop. The raw months are plain data and travel fine; the rows are
-        // built on the UI thread below.
+        // No `ui_trend` here: a `FinTrendPie` holds a nested model of its slices,
+        // and a `ModelRc` is an `Rc`, so the struct is `!Send` and cannot cross
+        // into the event loop. The raw months are plain data and travel fine; the
+        // rings are built on the UI thread below.
         let ui_insight_stats = view::insight_stats(&snap, &flags, subs_yearly, &base);
 
         // The calendar's two cards. `cal_items` is this month; the low point looks 30
@@ -2563,9 +2559,9 @@ pub fn refresh(window: &MainWindow) {
             put!(get_fin_savings_summary, set_fin_savings_summary, ui_savings_summary);
             put!(get_fin_projection, set_fin_projection, ui_projection);
             put!(
-                get_fin_trend,
-                set_fin_trend,
-                view::trend(&trend_months, &base, TREND_CATEGORIES)
+                get_fin_trend_pies,
+                set_fin_trend_pies,
+                view::trend_pies(&trend_months, &base)
             );
             put!(get_fin_insight_stats, set_fin_insight_stats, ui_insight_stats);
             put!(get_fin_commitments, set_fin_commitments, ui_commitments);

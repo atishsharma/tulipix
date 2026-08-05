@@ -14,6 +14,10 @@ import { MusicSongRow, DownloaderRow, DlHistoryEntry, DlSearchEntry, SongRowEx, 
 import { CloudPage, CloudRemote, CloudEntry, CloudJob, CloudUsage, CloudXfer, CloudBackend, CloudOpt } from "page_cloud.slint";
 import { ToolsPage, ToolOpRow, ToolField, QueueJob, ToolStatus, DownloadItem, ToolInfoRow, ToolDiffRow, TrimSeg } from "page_tools.slint";
 import { TransferPage, TransferFile, TransferDevice, TransferUp, TransferRow, TransferIface } from "page_transfer.slint";
+// The native twin of the loopback HTML dashboard. Both are kept: they render
+// the same `collect()` snapshot, so the section is a live A/B between the two.
+import { StatusPage, StRow, StKpi, StCell, StTableRow, StGroup, StCard, StMetric,
+         StEvent, StToday, StRoot, StLibSection, StScan } from "page_status.slint";
 import { ThemePicker, ThemeChoice } from "theme_picker.slint";
 import { Surface, Skin, DesignLangPicker } from "surface.slint";
 import { UserState } from "user_card.slint";
@@ -40,7 +44,7 @@ import { GenesisPage, GenesisRow, GenesisTopic, GenesisSearch, GenesisDetails } 
 import { FinancesPage, FinStat, FinAccountRow, FinTxnRow, FinRecurRow, FinObligationRow,
           FinDueRow, FinBudgetRow, FinLoanRow, FinInstalment, FinCatSlice, FinMonthBar,
           FinCalDay, FinFlag, FinDiscipline, FinRate, FinPrice, FinProposal, FinImportRow,
-          FinField, FinCatTrend, FinKv, FinCalMonth, FinEnvelopeHistory,
+          FinField, FinTrendPie, FinKv, FinCalMonth, FinEnvelopeHistory,
           FinSavingsMonth, FinHealthPart, FinTimelineEvent, FinPrediction,
           FinHabit, FinTrendSeries } from "page_finances.slint";
 import { LiveTvPage, LiveChannel, LivePlaylist } from "page_livetv.slint";
@@ -824,6 +828,41 @@ export component MainWindow inherits Window {
     callback home-open-remote(string);    // Home Cloud card → open that remote
     callback home-random-radio();         // Quick Actions → random Hindi station in the home player
     callback section-changed(string);   // sidebar section click → preload that section
+    // Status — app health for the sidebar lamp, and the click that starts the
+    // loopback server and opens the dashboard in the default browser.
+    in-out property <string> status-level: "unknown";
+    in-out property <string> status-note: "Starting…";
+    callback status-clicked();
+
+    // The native Status section. Same snapshot as the browser page, pushed as
+    // typed models instead of JSON — Rust builds these on the UI thread because
+    // the nested `[StRow]` inside each card makes the structs `!Send`.
+    in property <string> st-headline: "Starting…";
+    in property <string> st-note: "";
+    in property <string> st-updated: "";
+    in property <string> st-sections-online: "0";
+    in property <string> st-jobs-running: "0";
+    in property <string> st-jobs-failed: "0";
+    in property <string> st-library-bytes: "0 B";
+    in property <string> st-library-items: "0";
+    in property <string> st-library-week: "0";
+    in property <string> st-spark-line: "";
+    in property <string> st-spark-area: "";
+    in property <[StMetric]> st-metrics: [];
+    in property <[StCard]> st-cards: [];
+    in property <[StEvent]> st-timeline: [];
+    in property <[StToday]> st-today: [];
+    in property <[StRoot]> st-roots: [];
+    in property <[StLibSection]> st-lib-sections: [];
+    in property <[StScan]> st-scan: [];
+    in property <string> st-lib-items: "0";
+    in property <string> st-lib-bytes: "0 B";
+    in property <string> st-lib-databases: "0";
+    in property <bool> st-scan-running: false;
+    // Where the System and Tools cards sit in `st-cards`. The header's three
+    // figures open the card behind them, and the page reaches a card by index.
+    in property <int> st-system-idx: -1;
+    in property <int> st-tools-idx: -1;
     in-out property <string> active-settings-tab: "appearance";
     in-out property <UserState> user: { display-name: "Local user", secondary: "0 items · 0 B", mode: Mode.local };
     // Sidebar logo pick (np.p1.profile.logo) — 0 default · 1 color · 2 dark · 3 white.
@@ -1508,6 +1547,10 @@ callback cloud-go-home();
     in property <[TransferRow]> transfer-rows: [];
     in property <[TransferIface]> transfer-ifaces: [];
     in property <string> transfer-iface: "";
+    /// The device token the share tray is pointed at, "" for everyone.
+    in property <string> transfer-share-target: "";
+    /// That device's display name, resolved in Rust — Slint cannot search a model.
+    in property <string> transfer-share-target-name: "";
     in property <string> transfer-inbox: "";
     in property <bool> transfer-inbox-ok: true;
     in-out property <int> transfer-page: 0;
@@ -1535,6 +1578,13 @@ callback cloud-go-home();
     callback transfer-set-sort(int, bool);
     callback transfer-dismiss-upload(int);
     callback transfer-rename-device(string, string);
+    // Who the next file added is for: a device token, or "" for every paired
+    // device. Scoping the tray rather than each pick keeps it one decision.
+    callback transfer-set-share-target(string);
+    // Open the phone page in this machine's browser, already paired. It carries
+    // a fresh single-use key so the desktop is not asked for the PIN it is
+    // itself displaying.
+    callback transfer-open-url();
 
     // ── Finances ────────────────────────────────────────────────────────────
     // One `tab` string drives all nine views, the same way `genesis-phase` drives
@@ -1682,7 +1732,7 @@ callback cloud-go-home();
     in property <int> fin-dues-closed: 0;
     // Insights: the strip and the six-month category trend.
     in property <[FinStat]> fin-insight-stats: [];
-    in property <[FinCatTrend]> fin-trend: [];
+    in property <[FinTrendPie]> fin-trend-pies: [];
     // Calendar: the cash-flow sentence and the worst single day.
     in property <string> fin-cal-warning: "";
     in property <string> fin-cal-heaviest: "";
@@ -3004,6 +3054,9 @@ callback cloud-go-home();
             festival: root.festival-logo;
             finances-badge: root.fin-badge;
             finances-badge-overdue: root.fin-badge-overdue;
+            status-level: root.status-level;
+            status-note: root.status-note;
+            status-clicked => { root.status-clicked(); }
             user-action(a) => { root.user-action(a); }
             section-changed(s) => { root.section-changed(s); }
             theme-cycled => { root.music-theme-changed(); }
@@ -3941,6 +3994,8 @@ callback cloud-go-home();
                 rows: root.transfer-rows;
                 ifaces: root.transfer-ifaces;
                 iface: root.transfer-iface;
+                share-target: root.transfer-share-target;
+                share-target-name: root.transfer-share-target-name;
                 inbox: root.transfer-inbox;
                 inbox-ok: root.transfer-inbox-ok;
                 page: root.transfer-page;
@@ -3965,6 +4020,8 @@ callback cloud-go-home();
                 set-sort(c, d) => { root.transfer-set-sort(c, d); }
                 dismiss-upload(id) => { root.transfer-dismiss-upload(id); }
                 rename-device(t, n) => { root.transfer-rename-device(t, n); }
+                set-share-target(t) => { root.transfer-set-share-target(t); }
+                open-url() => { root.transfer-open-url(); }
             }
             if active-section == "finances": FinancesPage {
                 width: parent.width; height: parent.height;
@@ -4093,7 +4150,7 @@ callback cloud-go-home();
                 set-dues-filter(f) => { root.fin-set-dues-filter(f); }
                 set-account-filter(f) => { root.fin-set-account-filter(f); }
                 insight-stats: root.fin-insight-stats;
-                trend: root.fin-trend;
+                trend-pies: root.fin-trend-pies;
                 cal-warning: root.fin-cal-warning;
                 cal-heaviest: root.fin-cal-heaviest;
                 cal-heaviest-label: root.fin-cal-heaviest-label;
@@ -4409,6 +4466,44 @@ callback cloud-go-home();
                 smart-apply(sid) => { root.books-smart-apply(sid); }
                 set-search-contents(on) => { root.books-set-search-contents(on); }
                 open-stats => { root.books-open-stats(); }
+            }
+            // The in-window twin of the loopback dashboard. Its Rescan / Add
+            // Folder / Reset buttons call the app's own handlers directly —
+            // the same ones the browser page reaches through an HTTP action.
+            if active-section == "status": StatusPage {
+                width: parent.width; height: parent.height;
+                level: root.status-level;
+                headline: root.st-headline;
+                note: root.st-note;
+                updated: root.st-updated;
+                sections-online: root.st-sections-online;
+                jobs-running: root.st-jobs-running;
+                jobs-failed: root.st-jobs-failed;
+                library-bytes: root.st-library-bytes;
+                library-items: root.st-library-items;
+                library-week: root.st-library-week;
+                spark-line: root.st-spark-line;
+                spark-area: root.st-spark-area;
+                metrics: root.st-metrics;
+                cards: root.st-cards;
+                timeline: root.st-timeline;
+                today: root.st-today;
+                roots: root.st-roots;
+                lib-sections: root.st-lib-sections;
+                scan: root.st-scan;
+                lib-items: root.st-lib-items;
+                lib-bytes: root.st-lib-bytes;
+                lib-databases: root.st-lib-databases;
+                scan-running: root.st-scan-running;
+                system-idx: root.st-system-idx;
+                tools-idx: root.st-tools-idx;
+                open-section(s) => {
+                    root.active-section = s;
+                    root.section-changed(s);
+                }
+                rescan() => { root.lib-rescan-all(); }
+                add-folder() => { root.lib-add(); }
+                reset-app() => { root.lib-reset-app(); }
             }
             if active-section == "settings": SettingsPage {
                 width: parent.width; height: parent.height;

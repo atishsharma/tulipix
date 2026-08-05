@@ -17,7 +17,10 @@ import { AppIcon, Icons } from "icons.slint";
 
 // One file the desktop is offering. `id` is the tray id, never a path — the
 // phone cannot name a file on disk at all.
-export struct TransferFile { id: int, name: string, size: string, kind: string }
+// `to` is the device this file is offered to, already resolved to a display
+// name in Rust — empty means every paired device. The row shows it because a
+// tray that mixes audiences is unreadable without it.
+export struct TransferFile { id: int, name: string, size: string, kind: string, to: string }
 
 // One phone that has authenticated, until its 48 hours are up.
 //
@@ -467,6 +470,10 @@ component ValueField inherits Rectangle {
     /// The hue of the box this field sits in, so ADDRESS and PIN are outlined in
     /// their card's colour like everything else rather than in the shared grey.
     in property <color> tint: Theme.transfer-accent;
+    /// A trailing button inside the well. Empty label draws nothing, which is
+    /// what PIN wants — there is nothing to open a PIN with.
+    in property <string> action;
+    callback action-clicked();
     height: 46px; border-radius: Surface.r(10px);
     // Hover lifts both the fill and the border: these are the two values people
     // reach for with the mouse to select and copy, so they have to answer it.
@@ -496,6 +503,31 @@ component ValueField inherits Rectangle {
                 vertical-alignment: center;
             }
         }
+        // Inside the well rather than beside it: the address and the thing you
+        // do with the address are one control. Drawn over the TouchArea above,
+        // so it takes its own clicks while the value stays selectable.
+        if root.action != "": Rectangle {
+            y: (parent.height - self.height) / 2;
+            height: 30px;
+            width: openlbl.preferred-width + 22px;
+            horizontal-stretch: 0;
+            border-radius: Surface.r(8px);
+            background: root.tint.with-alpha(opent.has-hover ? 0.34 : 0.2);
+            border-width: 1px;
+            border-color: root.tint.with-alpha(opent.has-hover ? 0.8 : 0.45);
+            animate background, border-color { duration: 120ms; }
+            opent := TouchArea {
+                mouse-cursor: pointer;
+                clicked => { root.action-clicked(); }
+            }
+            openlbl := Text {
+                text: root.action;
+                color: Theme.text;
+                font-size: 11.5px; font-weight: 700;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
+        }
     }
 }
 
@@ -521,6 +553,114 @@ component IfaceChip inherits Rectangle {
         Text {
             text: root.iface.name; color: Theme.text-dim; font-size: 10.5px;
             vertical-alignment: center;
+        }
+    }
+}
+
+// ── who the next file is for ────────────────────────────────────────────────
+// A dropdown, not a row of chips. Ten devices may be paired and the title row is
+// one line of a three-column card — chips would have run into the count and the
+// Clear-all button long before the tenth. One fixed-width control instead, which
+// costs the same space whether one phone is paired or all ten.
+//
+// Files are stamped with whoever is picked when they are added, so changing this
+// aims the next pick without re-addressing what is already in the tray.
+component TargetSelect inherits Rectangle {
+    in property <[TransferDevice]> devices: [];
+    /// The selected device token, "" for everyone.
+    in property <string> target: "";
+    /// That device's display name. Resolved in Rust rather than looked up here:
+    /// Slint cannot search a model, and the one place that already turns a token
+    /// into a name is the code that builds the model.
+    in property <string> target-name: "";
+    in property <color> tint;
+    callback selected(string);
+
+    width: 132px; height: 26px; horizontal-stretch: 0;
+    border-radius: Surface.r(8px);
+    background: Surface.wash(root.tint, hov.has-hover ? 0.2 : 0.1);
+    border-width: Surface.edge-w(1px);
+    border-color: Surface.edge(root.tint, hov.has-hover ? 0.8 : 0.42);
+    animate background, border-color { duration: 120ms; }
+
+    hov := TouchArea {
+        mouse-cursor: pointer;
+        clicked => { pop.show(); }
+    }
+    HorizontalLayout {
+        padding-left: 9px; padding-right: 8px; spacing: 5px;
+        Text {
+            text: "→";
+            color: root.tint; font-size: 11px; font-weight: 700;
+            vertical-alignment: center; horizontal-stretch: 0;
+        }
+        Text {
+            text: root.target == "" ? "Everyone" : root.target-name;
+            color: Theme.text; font-size: 10.5px; font-weight: 700;
+            vertical-alignment: center; horizontal-stretch: 1; overflow: elide;
+        }
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            AppIcon {
+                source: Icons.chevron-down; tint: root.tint;
+                width: 10px; height: 10px;
+            }
+        }
+    }
+    pop := PopupWindow {
+        x: 0; y: 30px; width: root.width;
+        Rectangle {
+            background: Theme.panel;
+            border-radius: Surface.r(10px);
+            border-width: 1px; border-color: Surface.edge(root.tint, 0.55);
+            drop-shadow-blur: Surface.cast(22px);
+            drop-shadow-color: #00000055;
+            drop-shadow-offset-y: 6px;
+            VerticalLayout {
+                padding: 5px; spacing: 1px;
+                // Always first, and always present: it is the default and the way
+                // back from having picked one phone.
+                Rectangle {
+                    height: 28px; border-radius: Surface.r(7px);
+                    background: root.target == "" ? Surface.wash(root.tint, 0.2)
+                              : (evh.has-hover ? Surface.wash(root.tint, 0.12) : transparent);
+                    evh := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.selected(""); }
+                    }
+                    HorizontalLayout {
+                        padding-left: 9px; padding-right: 9px;
+                        Text {
+                            text: "Everyone";
+                            color: root.target == "" ? root.tint : Theme.text;
+                            font-size: 11px; font-weight: root.target == "" ? 700 : 500;
+                            vertical-alignment: center;
+                        }
+                    }
+                }
+                for d in root.devices: Rectangle {
+                    height: 28px; border-radius: Surface.r(7px);
+                    background: root.target == d.token ? Surface.wash(root.tint, 0.2)
+                              : (dh.has-hover ? Surface.wash(root.tint, 0.12) : transparent);
+                    dh := TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => { root.selected(d.token); }
+                    }
+                    HorizontalLayout {
+                        padding-left: 9px; padding-right: 9px; spacing: 6px;
+                        Text {
+                            text: d.name;
+                            color: root.target == d.token ? root.tint : Theme.text;
+                            font-size: 11px; font-weight: root.target == d.token ? 700 : 500;
+                            vertical-alignment: center; horizontal-stretch: 1; overflow: elide;
+                        }
+                        Text {
+                            text: d.kind; color: Theme.text-dim; font-size: 10px;
+                            vertical-alignment: center; horizontal-stretch: 0;
+                        }
+                    }
+                }
+            }
         }
     }
 }
@@ -633,7 +773,21 @@ component TrayRow inherits Rectangle {
         VerticalLayout {
             alignment: center; horizontal-stretch: 1; spacing: 2px;
             Text { text: root.file.name; color: Theme.text; font-size: 12.5px; overflow: elide; }
-            Text { text: root.file.size; color: Theme.text-dim; font-size: 10.5px; }
+            HorizontalLayout {
+                spacing: 6px;
+                Text {
+                    text: root.file.size; color: Theme.text-dim; font-size: 10.5px;
+                    horizontal-stretch: 0;
+                }
+                // Only when it is for one device. "For everyone" on every row of
+                // the common case would be noise on every row.
+                if root.file.to != "": Text {
+                    text: "→ " + root.file.to; color: root.accent;
+                    font-size: 10.5px; font-weight: 700;
+                    horizontal-stretch: 0; overflow: elide;
+                }
+                Rectangle { horizontal-stretch: 1; }
+            }
         }
         VerticalLayout {
             alignment: center; horizontal-stretch: 0;
@@ -644,7 +798,8 @@ component TrayRow inherits Rectangle {
 
 // ── one paired device, as a round button ────────────────────────────────────
 // The caption is the name typed on the desktop, or the device type when there is
-// none — ten characters either way, so it fits under the circle without eliding.
+// none. Fifteen characters at most, which is longer than a cell of the five-wide
+// grid holds, so the caption elides and the popup carries the whole name.
 component DeviceChip inherits Rectangle {
     in property <TransferDevice> device;
     in property <color> tint;
@@ -723,6 +878,18 @@ component Outline inherits Rectangle {
     /// — which is every use but Send's "Clear all".
     in property <string> action;
     callback action-clicked();
+    /// Send only: who the next file added is for. Empty list draws nothing, so
+    /// the picker appears the moment a device pairs and goes again when the last
+    /// one is forgotten — there is nothing to aim at before that.
+    in property <[TransferDevice]> targets: [];
+    in property <string> target: "";
+    in property <string> target-name: "";
+    callback pick-target(string);
+    // The box is exactly title-plus-`rows` tall and takes none of the card's
+    // slack. Stretching it did not show more rows — the list inside is fixed and
+    // top-aligned — it only opened a band of empty box under the last row that
+    // read as stray bottom padding. The slack belongs to the panel above.
+    vertical-stretch: 0;
     border-radius: Surface.r(12px);
     background: Surface.wash(root.tint, 0.05);
     border-width: Surface.edge-w(1px); border-color: Surface.edge(root.tint, 0.38);
@@ -740,8 +907,18 @@ component Outline inherits Rectangle {
             Text {
                 text: root.label; color: Theme.text-dim;
                 font-size: 10px; letter-spacing: 1.2px; font-weight: 700;
-                horizontal-stretch: 1; vertical-alignment: center;
+                horizontal-stretch: 0; vertical-alignment: center;
             }
+            // Right of the title, which is where the question "for whom?" belongs
+            // — beside the answer to "what?" rather than buried under the list.
+            if root.targets.length > 0: TargetSelect {
+                devices: root.targets;
+                target: root.target;
+                target-name: root.target-name;
+                tint: root.tint;
+                selected(t) => { root.pick-target(t); }
+            }
+            Rectangle { horizontal-stretch: 1; }
             if root.note != "": Text {
                 text: root.note; color: root.tint;
                 font-size: 10.5px; font-weight: 700;
@@ -810,6 +987,10 @@ export component TransferPage inherits Rectangle {
     in property <[TransferRow]> rows: [];
     in property <[TransferIface]> ifaces: [];
     in property <string> iface: "";
+    /// Which paired device the tray is pointed at, "" for everyone.
+    in property <string> share-target: "";
+    /// That device's display name, resolved in Rust.
+    in property <string> share-target-name: "";
     in property <string> inbox: "";
     in property <bool> inbox-ok: true;
     in property <int> page: 0;
@@ -837,6 +1018,8 @@ export component TransferPage inherits Rectangle {
     callback set-sort(int, bool);
     callback dismiss-upload(int);
     callback rename-device(string, string);
+    callback set-share-target(string);
+    callback open-url();
 
     // How many phones may be paired at once. Mirrors `auth::MAX_DEVICES`, which
     // is what actually refuses the eleventh — this is only the caption.
@@ -884,6 +1067,10 @@ export component TransferPage inherits Rectangle {
     property <color> pair-tint: #f59e0b;    // amber  — who is let in
     property <color> hist-tint: #06b6d4;    // cyan   — what already happened
     property <color> help-tint: #64748b;    // slate  — neither, so neutral
+
+    // The device popup's three footer buttons, sized as a set.
+    property <length> btn-w: 118px;
+    property <length> btn-h: 38px;
 
     // The ledger's six column pills. One family — cyan through violet, all at
     // roughly the same saturation and lightness — so six different fills read as
@@ -1243,6 +1430,14 @@ export component TransferPage inherits Rectangle {
                                         ValueField {
                                             value: root.running ? root.url : "—";
                                             size: 13px; tone: root.accent; weight: 700;
+                                            // Opens this machine's browser on the
+                                            // phone page, already paired — the URL
+                                            // carries a fresh single-use key, the
+                                            // same mechanism the QR uses. Without
+                                            // it the desktop was asked for the PIN
+                                            // it is itself displaying, every time.
+                                            action: root.running ? "Open" : "";
+                                            action-clicked => { root.open-url(); }
                                         }
                                     }
                                     VerticalLayout {
@@ -1439,13 +1634,19 @@ export component TransferPage inherits Rectangle {
                             note: root.files.length > 0 ? root.total : "";
                             empty: "Nothing chosen yet. Until you pick something, a paired phone sees an empty list.";
                             is-empty: root.files.length == 0;
-                            // Same 58px row as ARRIVING, so the two boxes are the
-                            // same size across the gutter rather than off by the
-                            // six pixels a tray row used to be shorter.
-                            row-h: 58px;
+                            // 64px, which is what TrayRow actually is. At 58 the
+                            // box was six pixels short per row, so two files —
+                            // the number it is sized for — already scrolled, and
+                            // the second row was clipped by the amount the box
+                            // was under-measured.
+                            row-h: 64px;
                             tint: root.send-tint;
                             action: root.files.length > 0 ? "Clear all" : "";
                             action-clicked => { root.clear(); }
+                            targets: root.devices;
+                            target: root.share-target;
+                            target-name: root.share-target-name;
+                            pick-target(t) => { root.set-share-target(t); }
                             for f in root.files: TrayRow {
                                 file: f; accent: root.send-tint;
                                 remove => { root.remove(f.id); }
@@ -1565,7 +1766,11 @@ export component TransferPage inherits Rectangle {
                                 : "";
                             empty: "Nothing arriving. What the phone sends lands in the folder above.";
                             is-empty: root.uploads.length == 0;
-                            row-h: 58px;
+                            // Matches UploadRow, the same six pixels a row that
+                            // FILES TO SEND was short by. A failed row is taller
+                            // still and does scroll — that one is meant to be
+                            // read, not glanced at.
+                            row-h: 64px;
                             tint: root.recv-tint;
                             for u in root.uploads: UploadRow {
                                 up: u;
@@ -1603,6 +1808,9 @@ export component TransferPage inherits Rectangle {
                         background: Surface.body(Theme.panel-2);
                         HorizontalLayout {
                             padding-left: 12px; padding-right: 12px; spacing: 12px;
+                            // Blank head over the row numbers: the column is
+                            // position, and position is not something to sort by.
+                            Rectangle { width: 30px; horizontal-stretch: 0; background: transparent; }
                             SortHead {
                                 label: "Name"; index: 0; horizontal-stretch: 1;
                                 active: root.sort; desc: root.sort-desc; tint: root.col-name;
@@ -1660,11 +1868,20 @@ export component TransferPage inherits Rectangle {
                         HorizontalLayout {
                             padding-left: 12px; padding-right: 12px; spacing: 12px;
 
+                            // Row number, counted through the whole ledger and
+                            // not restarted per page — page two opens at 11, so
+                            // the number says which transfer this is rather than
+                            // where it happens to sit on screen. PAGE_SIZE is 10.
+                            VerticalLayout {
+                                alignment: center; horizontal-stretch: 0;
+                                Text {
+                                    text: root.page * 10 + i + 1;
+                                    color: Theme.text-dim; font-size: 11.5px; font-weight: 700;
+                                    width: 30px; horizontal-alignment: center;
+                                }
+                            }
+
                             // Name — icon tile, filename, what kind of file.
-                            // The one column left-aligned: filenames are ragged
-                            // and long, and centring them meant no two rows
-                            // started at the same x. The header pill above it
-                            // stays centred with the other five.
                             HorizontalLayout {
                                 horizontal-stretch: 1; spacing: 11px; alignment: start;
                                 VerticalLayout {
@@ -1687,11 +1904,11 @@ export component TransferPage inherits Rectangle {
                                     Text {
                                         text: r.name; color: Theme.text; font-size: 12.5px;
                                         font-weight: 600; overflow: elide;
-                                        horizontal-alignment: left;
+                                        horizontal-alignment: center;
                                     }
                                     Text {
                                         text: r.kindlabel; color: Theme.text-dim; font-size: 10.5px;
-                                        overflow: elide; horizontal-alignment: left;
+                                        overflow: elide; horizontal-alignment: center;
                                     }
                                 }
                             }
@@ -2196,7 +2413,7 @@ export component TransferPage inherits Rectangle {
 
                 Rectangle { height: 1px; background: Theme.outline; }
 
-                // Name: typed here, applied on Enter or on Save. Ten characters,
+                // Name: typed here, applied on Enter or on Save. Fifteen characters,
                 // enforced on the way in rather than complained about afterwards —
                 // and again in Rust, which is what actually stores it.
                 VerticalLayout {
@@ -2209,7 +2426,7 @@ export component TransferPage inherits Rectangle {
                             horizontal-stretch: 1; vertical-alignment: center;
                         }
                         Text {
-                            text: root.device-name.character-count + " / 10";
+                            text: root.device-name.character-count + " / 15";
                             color: Theme.text-dim; font-size: 10px; font-weight: 700;
                             horizontal-stretch: 0; vertical-alignment: center;
                         }
@@ -2230,10 +2447,10 @@ export component TransferPage inherits Rectangle {
                                     selection-background-color: root.accent.with-alpha(0.3);
                                     vertical-alignment: center;
                                     // The limit is applied as it is typed: the
-                                    // eleventh character never appears, so nobody
+                                    // sixteenth character never appears, so nobody
                                     // types a name and then loses the end of it.
                                     edited => {
-                                        if (self.text.character-count > 10) {
+                                        if (self.text.character-count > 15) {
                                             self.text = root.device-name;
                                         } else {
                                             root.device-name = self.text;
@@ -2295,9 +2512,15 @@ export component TransferPage inherits Rectangle {
 
                 HorizontalLayout {
                     spacing: 10px;
+                    // One size for all three: each button's natural width comes
+                    // from its own label, so left alone they step 124 / 84 / 118
+                    // and the row reads as three unrelated controls. Fixed here
+                    // rather than in the components — this is the only place the
+                    // three of them stand side by side.
                     // Forget is the destructive one, so it keeps its distance from
                     // Save rather than sitting beside it.
                     DangerBtn {
+                        width: root.btn-w; height: root.btn-h;
                         label: "Forget";
                         icon: Icons.trash;
                         clicked => {
@@ -2306,23 +2529,13 @@ export component TransferPage inherits Rectangle {
                         }
                     }
                     Rectangle { horizontal-stretch: 1; background: transparent; }
-                    Rectangle {
-                        height: 36px; min-width: 84px; border-radius: Surface.btn-radius;
-                        background: close-t.pressed ? root.help-tint.darker(32%)
-                            : (close-t.has-hover ? root.help-tint.darker(16%) : root.help-tint);
-                        animate background { duration: 110ms; }
-                        close-t := TouchArea {
-                            mouse-cursor: pointer;
-                            clicked => { root.device-open = ""; }
-                        }
-                        Text {
-                            text: "Close"; color: #ffffff;
-                            font-size: 12.5px; font-weight: 700;
-                            horizontal-alignment: center; vertical-alignment: center;
-                            width: parent.width; height: parent.height;
-                        }
+                    ActionButton {
+                        width: root.btn-w; height: root.btn-h;
+                        label: "Close"; tint: root.help-tint;
+                        clicked => { root.device-open = ""; }
                     }
                     ActionButton {
+                        width: root.btn-w; height: root.btn-h;
                         label: "Save name"; tint: root.pair-tint;
                         clicked => {
                             root.rename-device(root.device.token, root.device-name);

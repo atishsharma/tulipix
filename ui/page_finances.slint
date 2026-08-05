@@ -387,7 +387,6 @@ export struct FinDiscipline { period: string, budget: string, spent: string, wit
 // One month of one category's six-month trend. `pct` is a share of that category's
 // own worst month, not of the whole ledger — otherwise every category but the
 // largest is a flat line at the bottom.
-export struct FinTrendMonth { label: string, pct: int, current: bool, amount: string }
 
 /// One month of the savings-rate chart. `known` is false for a month with no
 /// income at all — drawn as a gap rather than as a zero, because "the salary
@@ -400,22 +399,17 @@ export struct FinSavingsMonth {
     amount: string,
 }
 
-export struct FinCatTrend {
-    name: string,
-    hue: color,
+/// One month of the Trends popup, as a ring. Built by the same `slices` that
+/// draws the Overview's donut, so the two cannot disagree about a month.
+export struct FinTrendPie {
+    /// "Mar", for the month picker.
+    label: string,
+    /// "March 2026", for the heading over the ring.
+    long: string,
     total: string,
-    // Change against the mean of the earlier months, with a direction. Empty when
-    // there is not enough history for the comparison to mean anything.
-    delta: string,
-    up: bool,
-    months: [FinTrendMonth],
-    // The same six months as a shape: SVG commands over a 100×100 viewbox, one
-    // stroked line and one closed area under it. Built in Rust for the same
-    // reason the donut's arcs are — Slint has no way to accumulate a path over a
-    // model, and a bar per month said nothing about the direction between them.
-    line: string,
-    area: string,
+    slices: [FinCatSlice],
 }
+
 
 // ── Planning ────────────────────────────────────────────────────────────────
 
@@ -2622,8 +2616,7 @@ export component FinancesPage inherits Rectangle {
     // month that was picked is no longer in the series.
     property <int> trend-month: -1;
     property <int> sav-month: -1;
-    property <int> trend-n:
-        root.trend.length > 0 ? root.trend[0].months.length : 0;
+    property <int> trend-n: root.trend-pies.length;
     property <int> tm: root.trend-month < 0 || root.trend-month >= root.trend-n
         ? Math.max(0, root.trend-n - 1) : root.trend-month;
     property <int> sm: root.sav-month < 0 || root.sav-month >= root.savings.length
@@ -2655,7 +2648,7 @@ export component FinancesPage inherits Rectangle {
     in property <string> cal-heaviest-sub: "";
     in property <[FinFlag]> flags;
     in property <[FinStat]> insight-stats;
-    in property <[FinCatTrend]> trend;
+    in property <[FinTrendPie]> trend-pies;
     // Savings rate month by month, and the three figures under it.
     in property <[FinSavingsMonth]> savings;
     in property <[FinKv]> savings-summary;
@@ -6120,94 +6113,42 @@ export component FinancesPage inherits Rectangle {
 
         StatStrip { stats: root.insight-stats; }
 
-        // Six months of spending by category, as a small multiple. The trend is
-        // the point: one month's donut cannot tell you that food has been
-        // climbing since March — and neither could the six bars that used to be
-        // here, which drew the months as six separate facts rather than a line
-        // going somewhere. Every row is on the same month, and clicking any
-        // column moves all of them, so a month can be read across categories.
-        if root.trend.length > 0: Card {
+        // Six months of spending by category, one ring per month. The small
+        // multiples that were here normalised every category against its own
+        // worst month, so a category with one busy month and a category with
+        // six steady ones drew the same shape, and a category with nothing drew
+        // a flat line across a box the same size as the rest — which is what
+        // left the card looking half empty and saying nothing.
+        //
+        // The ring is the Overview's `SpendBreakdown`, fed by the same `slices`
+        // builder, so a month read here and the same month read on the Overview
+        // cannot disagree. The chips pick the month; the ring is the answer.
+        if root.trend-pies.length > 0: Card {
             VerticalLayout {
                 alignment: start;
                 padding: 16px; spacing: 12px;
                 CardTitle {
                     title: "Spend by category";
-                    hint: "Last six months. Pick a month to read it across every row.";
+                    hint: root.trend-pies[root.tm].long + " — pick a month to redraw the ring.";
                 }
                 HorizontalLayout {
                     spacing: 6px; alignment: start;
-                    for m[i] in root.trend[0].months: FilterChip {
+                    for m[i] in root.trend-pies: FilterChip {
                         label: m.label; w: 62px;
                         on: root.tm == i;
                         clicked => { root.trend-month = i; }
                     }
                 }
-                for t in root.trend: VerticalLayout {
-                    spacing: 4px;
-                    HorizontalLayout {
-                        spacing: 8px;
-                        VerticalLayout {
-                            alignment: center; horizontal-stretch: 0;
-                            Rectangle { width: 10px; height: 10px;
-                                border-radius: Surface.r(3px); background: t.hue; }
-                        }
-                        Text { text: t.name; color: FinTheme.ink;
-                            font-size: 12px; vertical-alignment: center;
-                            horizontal-stretch: 1; overflow: elide; }
-                        if t.delta != "": Delta { label: t.delta; up: t.up; }
-                        // The picked month first, because it is what the row is
-                        // currently about; the six-month total after it, dimmer,
-                        // because it is the thing that does not move.
-                        Text {
-                            text: t.months[root.tm].amount;
-                            color: FinTheme.ink; font-size: 12.5px; font-weight: 800;
-                            vertical-alignment: center;
-                            min-width: 92px; horizontal-alignment: right;
-                        }
-                        Text { text: "of " + t.total; color: FinTheme.ink-dim;
-                            font-size: 11px; vertical-alignment: center;
-                            min-width: 92px; horizontal-alignment: right; }
-                    }
-                    Rectangle {
-                        min-height: 46px; max-height: 46px;
-                        background: transparent;
-                        Path {
-                            width: 100%; height: 100%;
-                            viewbox-width: 100; viewbox-height: 100;
-                            commands: t.area;
-                            fill: t.hue.with-alpha(FinTheme.light ? 0.16 : 0.22);
-                        }
-                        Path {
-                            width: 100%; height: 100%;
-                            viewbox-width: 100; viewbox-height: 100;
-                            commands: t.line;
-                            stroke: t.hue; stroke-width: 1.5px;
-                        }
-                        // One target per month, over the line rather than beside
-                        // it: the columns are where the points already are, so
-                        // the thing you click is the thing you are looking at.
-                        HorizontalLayout {
-                            spacing: 0;
-                            for m[i] in t.months: mcell := Rectangle {
-                                background: root.tm == i
-                                    ? t.hue.with-alpha(0.12)
-                                    : (mta.has-hover ? t.hue.with-alpha(0.06)
-                                                     : transparent);
-                                border-radius: Surface.r(4px);
-                                mta := TouchArea {
-                                    mouse-cursor: MouseCursor.pointer;
-                                    clicked => { root.trend-month = i; }
-                                }
-                                if root.tm == i: Rectangle {
-                                    width: 7px; height: 7px; border-radius: 3.5px;
-                                    background: t.hue;
-                                    x: (parent.width - self.width) / 2;
-                                    y: parent.height * (100 - Math.max(0, m.pct)) / 100
-                                        - self.height / 2;
-                                }
-                            }
-                        }
-                    }
+                SpendBreakdown {
+                    slices: root.trend-pies[root.tm].slices;
+                    total: root.trend-pies[root.tm].total;
+                    caption: "spent";
+                    empty-label: root.trend-pies[root.tm].long;
+                    // The panel is min(page - 64, 980); off that come the modal's
+                    // own 20px padding each side, the scroll gutter and the
+                    // card's 16px each side. Computed downwards, never read back
+                    // off the layout — see `SpendBreakdown.avail`.
+                    avail: Math.min(root.width - 64px, 980px) - 78px;
                 }
             }
         }
