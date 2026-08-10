@@ -137,6 +137,11 @@ fn gps_dms(exif: &exif::Exif, val_tag: Tag, ref_tag: Tag) -> Option<f64> {
 }
 
 /// Read EXIF for one item id, write into `photo_meta`. Idempotent.
+///
+/// Callers that already hold the path (the scan loop does) should use
+/// [`write_facts`] with [`read`] instead — this one costs an extra `SELECT`,
+/// and it can only write on its own connection, so it cannot join a caller's
+/// transaction.
 pub async fn ingest(pool: &SqlitePool, item_id: i64) -> Result<()> {
     let path: Option<String> = sqlx::query_scalar(
         "SELECT abs_path FROM items WHERE id = ?",
@@ -146,6 +151,18 @@ pub async fn ingest(pool: &SqlitePool, item_id: i64) -> Result<()> {
     .await?;
     let Some(path) = path else { return Ok(()) };
     let facts = read(Path::new(&path)).unwrap_or_default();
+    write_facts(pool, item_id, &facts).await
+}
+
+/// Write already-read facts into `photo_meta`. Split out of [`ingest`] so the
+/// scan loop can do the (slow, file-touching) EXIF read *outside* any
+/// transaction and then commit this together with the `items` row — SQLite has
+/// exactly one writer, so the shape that matters is how briefly the write lock
+/// is held and how few times it is taken.
+pub async fn write_facts<'e, E>(exec: E, item_id: i64, facts: &ExifFacts) -> Result<()>
+where
+    E: sqlx::Executor<'e, Database = sqlx::Sqlite>,
+{
     sqlx::query(
         "INSERT INTO photo_meta (item_id, taken_at, camera_make, camera_model, lens, iso, f_number, exposure_s, focal_mm, gps_lat, gps_lon, orientation, width, height)
          VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -166,9 +183,9 @@ pub async fn ingest(pool: &SqlitePool, item_id: i64) -> Result<()> {
     )
     .bind(item_id)
     .bind(facts.taken_at)
-    .bind(facts.camera_make)
-    .bind(facts.camera_model)
-    .bind(facts.lens)
+    .bind(facts.camera_make.clone())
+    .bind(facts.camera_model.clone())
+    .bind(facts.lens.clone())
     .bind(facts.iso)
     .bind(facts.f_number)
     .bind(facts.exposure_s)
@@ -178,7 +195,7 @@ pub async fn ingest(pool: &SqlitePool, item_id: i64) -> Result<()> {
     .bind(facts.orientation)
     .bind(facts.width)
     .bind(facts.height)
-    .execute(pool).await?;
+    .execute(exec).await?;
     Ok(())
 }
 

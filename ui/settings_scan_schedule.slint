@@ -15,7 +15,7 @@ component CadenceSegment inherits Skin {
     in property <string> label;
     callback clicked();
     property <bool> active: value == selected;
-    width: 80px; height: 30px; border-radius: Surface.r(8px);
+    width: 80px; height: 30px; border-radius: Surface.rr(8px, self.width, self.height);
     background: active ? Theme.brand : Theme.panel-2;
     border-color: active ? Theme.brand : Theme.outline;
     border-width: 1px;

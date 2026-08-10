@@ -151,7 +151,7 @@ export component HdrSearch inherits Rectangle {
             }
         }
         if root.query != "": Rectangle {
-            width: 28px; height: 28px; border-radius: Surface.r(14px);
+            width: 28px; height: 28px; border-radius: Surface.rr(14px, self.width, self.height);
             horizontal-stretch: 0; vertical-stretch: 0;
             y: (parent.height - self.height) / 2;
             background: dark ? (clearx.has-hover ? #ffffff33 : #ffffff22)

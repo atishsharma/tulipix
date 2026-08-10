@@ -54,7 +54,7 @@ export component CmdPalette inherits Rectangle {
 
             Rectangle {
                 height: 44px;
-                border-radius: Surface.r(12px);
+                border-radius: Surface.rr(12px, self.width, self.height);
                 background: Surface.body(Theme.panel);
                 border-width: 1px;
                 border-color: Surface.hairline;
@@ -88,7 +88,7 @@ export component CmdPalette inherits Rectangle {
                 for r[i] in root.rows: Rectangle {
                     height: 44px;
                     background: i == root.selected ? rgba(124, 58, 237, 0.18) : transparent;
-                    border-radius: Surface.r(8px);
+                    border-radius: Surface.rr(8px, self.width, self.height);
                     TouchArea { clicked => { root.row-activated(r.id); } }
                     HorizontalLayout {
                         padding: 8px;

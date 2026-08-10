@@ -130,13 +130,13 @@ export component AmbientScreensaver inherits Rectangle {
     if active && root.music-title != "": Rectangle {
         x: 40px; y: 40px;
         width: 320px; height: 76px;
-        border-radius: Surface.r(14px);
+        border-radius: Surface.rr(14px, self.width, self.height);
         background: #0b0b16cc;
         border-width: 1px; border-color: #ffffff22;
         HorizontalLayout {
             padding: 10px; spacing: 12px;
             Rectangle {
-                width: 56px; height: 56px; border-radius: Surface.r(8px); clip: true;
+                width: 56px; height: 56px; border-radius: Surface.rr(8px, self.width, self.height); clip: true;
                 background: #ffffff10;
                 Image { source: root.music-art; image-fit: cover; width: 100%; height: 100%; }
             }
@@ -177,7 +177,7 @@ export component AmbientScreensaver inherits Rectangle {
             HorizontalLayout {
                 alignment: center; spacing: 16px;
                 for i in 6: Rectangle {
-                    width: 14px; height: 14px; border-radius: Surface.r(7px);
+                    width: 14px; height: 14px; border-radius: Surface.rr(7px, self.width, self.height);
                     background: i < root.pin-len
                         ? (root.pin-error ? #ff5c5c : #f8faff)
                         : #ffffff2a;

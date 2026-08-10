@@ -7,6 +7,7 @@
 use anyhow::Result;
 pub mod mpv_ipc;
 pub mod player;
+pub mod quotes;
 use tulipix_core::proc::NoWindow;
 use std::path::PathBuf;
 

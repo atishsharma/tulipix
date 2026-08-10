@@ -129,7 +129,7 @@ component Glyph inherits Rectangle {
     in property <length> size: 38px;
     in property <length> inner: 18px;
     width: root.size; height: root.size;
-    border-radius: Surface.r(root.size * 0.3);
+    border-radius: Surface.rr(root.size * 0.3, self.width, self.height);
     background: Surface.wash(root.tint, 0.14);
     AppIcon {
         source: root.icon; colorize: root.tint;
@@ -247,7 +247,7 @@ component Panel inherits Rectangle {
     in property <color> tint: Theme.brand;
     in property <bool> stripe: true;
     background: Surface.body(Theme.panel);
-    border-radius: Surface.r(14px);
+    border-radius: Surface.rr(14px, self.width, self.height);
     border-width: Surface.panel-border-w;
     border-color: Theme.outline;
     clip: true;
@@ -344,7 +344,7 @@ component CardModal inherits VerticalLayout {
             padding: 16px; spacing: 14px; alignment: start;
 
             if root.card.why != "": Rectangle {
-                border-radius: Surface.r(9px);
+                border-radius: Surface.rr(9px, self.width, self.height);
                 background: Surface.wash(Theme.error, 0.09);
                 VerticalLayout {
                     padding: 10px;
@@ -357,7 +357,7 @@ component CardModal inherits VerticalLayout {
                 spacing: 10px;
                 for k in root.card.kpis: Rectangle {
                     horizontal-stretch: 1;
-                    border-radius: Surface.r(10px);
+                    border-radius: Surface.rr(10px, self.width, self.height);
                     background: Surface.body(Theme.panel-2);
                     border-width: 1px; border-color: Theme.outline;
                     VerticalLayout {
@@ -581,7 +581,7 @@ export component StatusPage inherits Rectangle {
                             spacing: 10px; vertical-stretch: 1;
                             tri1 := Rectangle {
                                 horizontal-stretch: 1; min-height: 76px;
-                                border-radius: Surface.r(11px);
+                                border-radius: Surface.rr(11px, self.width, self.height);
                                 background: Surface.wash(#22c55e, ta1.has-hover ? 0.16 : 0.08);
                                 border-width: 1px;
                                 border-color: Surface.edge(#22c55e, ta1.has-hover ? 0.5 : 0.22);
@@ -607,7 +607,7 @@ export component StatusPage inherits Rectangle {
                             }
                             tri2 := Rectangle {
                                 horizontal-stretch: 1; min-height: 76px;
-                                border-radius: Surface.r(11px);
+                                border-radius: Surface.rr(11px, self.width, self.height);
                                 background: Surface.wash(#6366f1, ta2.has-hover ? 0.16 : 0.08);
                                 border-width: 1px;
                                 border-color: Surface.edge(#6366f1, ta2.has-hover ? 0.5 : 0.22);
@@ -633,7 +633,7 @@ export component StatusPage inherits Rectangle {
                             }
                             tri3 := Rectangle {
                                 horizontal-stretch: 1; min-height: 76px;
-                                border-radius: Surface.r(11px);
+                                border-radius: Surface.rr(11px, self.width, self.height);
                                 background: Surface.wash(#ef4444, ta3.has-hover ? 0.16 : 0.08);
                                 border-width: 1px;
                                 border-color: Surface.edge(#ef4444, ta3.has-hover ? 0.5 : 0.22);
@@ -665,7 +665,7 @@ export component StatusPage inherits Rectangle {
                     // the one button that acts on all of it.
                     Rectangle {
                         width: 292px; horizontal-stretch: 0;
-                        border-radius: Surface.r(12px);
+                        border-radius: Surface.rr(12px, self.width, self.height);
                         background: Surface.body(Theme.panel-2);
                         border-width: 1px; border-color: Theme.outline;
                         VerticalLayout {
@@ -821,7 +821,7 @@ export component StatusPage inherits Rectangle {
                         // The one line that says what is wrong, rather than
                         // that something is. Only drawn when there is one.
                         if c.why != "": Rectangle {
-                            border-radius: Surface.r(8px);
+                            border-radius: Surface.rr(8px, self.width, self.height);
                             background: Surface.wash(Theme.error, 0.09);
                             vertical-stretch: 0;
                             VerticalLayout {
@@ -958,7 +958,7 @@ export component StatusPage inherits Rectangle {
                 height: Math.min(parent.height - 72px, Math.max(240px, mbody.preferred-height));
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
-                border-radius: Surface.r(18px);
+                border-radius: Surface.rr(18px, self.width, self.height);
                 background: Theme.modal;
                 border-width: 1px; border-color: Theme.outline;
                 drop-shadow-blur: Surface.cast(40px);
@@ -1259,7 +1259,7 @@ export component StatusPage inherits Rectangle {
                                 // The destructive block, kept visually apart —
                                 // the same separation the HTML page draws.
                                 Rectangle {
-                                    border-radius: Surface.r(11px);
+                                    border-radius: Surface.rr(11px, self.width, self.height);
                                     background: Surface.wash(Theme.error, 0.06);
                                     border-width: 1px;
                                     border-color: Surface.edge(Theme.error, 0.28);
@@ -1280,7 +1280,7 @@ export component StatusPage inherits Rectangle {
                                         // except the check is local rather than
                                         // a phrase the server re-validates.
                                         if root.reset-armed: Rectangle {
-                                            height: 36px; border-radius: Surface.r(9px);
+                                            height: 36px; border-radius: Surface.rr(9px, self.width, self.height);
                                             background: Surface.body(Theme.panel-2);
                                             border-width: 1px;
                                             border-color: rin.has-focus

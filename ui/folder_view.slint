@@ -7,7 +7,7 @@ export component ViewModeSwitcher inherits Rectangle {
     in-out property <FolderViewMode> mode: FolderViewMode.library;
     callback changed(FolderViewMode);
     height: 28px;
-    border-radius: Surface.r(8px);
+    border-radius: Surface.rr(8px, self.width, self.height);
     background: Surface.body(Theme.panel-2);
     border-color: Surface.hairline; border-width: 1px;
     HorizontalLayout {
@@ -18,7 +18,7 @@ export component ViewModeSwitcher inherits Rectangle {
             { label: "Timeline", v: FolderViewMode.timeline },
         ]: Rectangle {
             horizontal-stretch: 1;
-            border-radius: Surface.r(6px);
+            border-radius: Surface.rr(6px, self.width, self.height);
             background: mode == entry.v ? Theme.brand : transparent;
             TouchArea {
                 clicked => { root.mode = entry.v; root.changed(entry.v); }

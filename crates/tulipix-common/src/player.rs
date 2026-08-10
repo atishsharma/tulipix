@@ -50,6 +50,14 @@ where
     P: Fn(&str, &serde_json::Value) + Send + 'static,
     E: FnOnce() + Send + 'static,
 {
+    // Stop whatever is on the audio singleton FIRST. Every caller is supposed
+    // to do this, and a second call is a cheap no-op — but forgetting it does
+    // not merely double up the sound: `music_proc()` is overwritten below, and
+    // dropping a `std::process::Child` does not kill the process. The old mpv
+    // then plays on with no handle left to stop it, under the new track's
+    // artwork and seek bar, for the rest of the session. One guard here beats
+    // one at each of the four call sites.
+    crate::stop_music_child();
     let sock = mpv_ipc::endpoint(launch.prefix);
     mpv_ipc::cleanup(&sock);
 
@@ -134,6 +142,15 @@ fn persist_handlers() -> &'static std::sync::Mutex<Option<(PropHandler, EofHandl
     PERSIST_HANDLERS.get_or_init(|| std::sync::Mutex::new(None))
 }
 
+/// Which persistent session is current. Bumped on every respawn, captured by
+/// that spawn's reader thread, and checked by it on the way out: a dying
+/// reader must only clear the session state if it is still the one that owns
+/// it. Without this, killing the old process and spawning a new one in the
+/// same breath lets the old reader wake up *after* the new handlers are
+/// installed and wipe them — a track that plays with a dead now-playing bar
+/// and never auto-advances.
+static PERSIST_SESSION: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// A library-track play request against the persistent backend.
 pub struct PersistentLaunch<'a> {
     pub prefix: &'a str,
@@ -145,9 +162,10 @@ pub struct PersistentLaunch<'a> {
     /// Per-track `(property, value)` pairs — applied over IPC before each
     /// `loadfile`, or as `--property=value` on a fresh spawn.
     pub load_props: Vec<(String, String)>,
-    /// Cold-start resume offset. Only honoured on spawn (`--start`); when a
-    /// process is already live the request forces a respawn instead of a
-    /// mid-stream seek race.
+    /// Resume offset. On a fresh spawn it becomes `--start`; a request for one
+    /// against a live process forces a respawn rather than a mid-stream seek
+    /// race. Either way `ipc_loadfile` re-states it (as `"none"` when there
+    /// isn't one) on every load — see the leak it exists to stop.
     pub start_s: Option<f64>,
     pub observe: &'a [(u64, &'a str)],
     pub generation: u64,
@@ -155,12 +173,68 @@ pub struct PersistentLaunch<'a> {
 
 /// `loadfile` over the live socket — built with serde_json rather than
 /// `music_ipc`, whose naive quoting would corrupt `\` in Windows paths.
-fn ipc_loadfile(src: &Path) {
-    let Some(sock) = music_sock().lock().ok().and_then(|g| g.clone()) else { return; };
-    let cmd = serde_json::json!({ "command": ["loadfile", src.display().to_string(), "replace"] });
-    if let Ok(mut s) = mpv_ipc::connect(&sock) {
-        let _ = s.write_all(format!("{cmd}\n").as_bytes());
+/// Load `src` into the live mpv, pinning the start position for THIS file.
+///
+/// `--start` is a session-level option, not a per-file one: a process spawned
+/// with `--start=35` to resume a podcast keeps `start=35` for every later
+/// `loadfile` on that same process, so the next track begins 35 seconds in —
+/// and the one after that, until something forces a respawn. Setting the
+/// property explicitly on every load is what stops one track's resume point
+/// leaking into the rest of the session. `"none"` is mpv's own default.
+///
+/// Both commands go down one connection: `music_ipc` opens a fresh one per
+/// call, and each abandoned client is a `[ipc_N] Write error (Broken pipe)`.
+///
+/// Returns whether mpv **acknowledged** the load. Every step here can fail
+/// quietly — no socket recorded, a stale endpoint nothing listens on, a write
+/// into a half-closed pipe — and a silent failure is the worst outcome on this
+/// path: the UI has already swapped to the new track, so the previous one plays
+/// on underneath a seek bar counting a song it is not playing. The caller
+/// respawns on `false`, which is loud and correct.
+fn ipc_loadfile(src: &Path, start_s: Option<f64>) -> bool {
+    let Some(sock) = music_sock().lock().ok().and_then(|g| g.clone()) else { return false; };
+    let start = match start_s {
+        Some(v) if v > 1.0 => format!("{v:.0}"),
+        _ => "none".to_string(),
+    };
+    let set = serde_json::json!({
+        "command": ["set_property", "start", start], "request_id": 1 });
+    let cmd = serde_json::json!({
+        "command": ["loadfile", src.display().to_string(), "replace"], "request_id": 2 });
+    let Ok(mut s) = mpv_ipc::connect(&sock) else { return false; };
+    if s.write_all(format!("{set}\n{cmd}\n").as_bytes()).is_err() {
+        return false;
     }
+    load_ack(s)
+}
+
+/// Read mpv's reply to `request_id: 2` (the `loadfile`) off the same
+/// connection. mpv broadcasts its own events to every client, so the reply is
+/// not necessarily the first line back — hence the scan for the request id.
+///
+/// The timeout is what keeps this safe on the UI thread: a wedged mpv costs a
+/// quarter second and a respawn, not a frozen window.
+#[cfg(not(windows))]
+fn load_ack(s: mpv_ipc::IpcConn) -> bool {
+    if s.set_read_timeout(Some(std::time::Duration::from_millis(250))).is_err() {
+        return true; // cannot bound the read — do not risk blocking the UI
+    }
+    let rd = BufReader::new(s);
+    for line in rd.lines().map_while(Result::ok).take(64) {
+        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
+        if v["request_id"] == 2 {
+            return v["error"] == "success";
+        }
+    }
+    false
+}
+
+/// Windows named pipes carry no per-handle read timeout, and a blocking read on
+/// the UI thread is worse than the bug this check exists to catch. The writes
+/// having succeeded is the acknowledgement here.
+#[cfg(windows)]
+fn load_ack(_s: mpv_ipc::IpcConn) -> bool {
+    true
 }
 
 /// Play `src` on the persistent audio mpv: reuse the live process via
@@ -184,18 +258,38 @@ where
             .map(|g| g.as_deref() == Some(&launch.session_args[..]))
             .unwrap_or(false);
 
+    // Boxed once and moved at most once: the fast path can now fall through to
+    // the respawn, and both want to install the same pair of closures.
+    let mut handlers: Option<(PropHandler, EofHandler)> =
+        Some((Box::new(on_prop), Box::new(on_eof)));
+
     if compatible {
         // Swap the callbacks first so the volume/mute property echoes from the
-        // IPC sets below already route to the new track's handler.
+        // IPC sets below already route to the new track's handler. `take()`
+        // only inside the successful lock — taking first and then failing to
+        // store would drop the handlers on the floor.
         if let Ok(mut h) = persist_handlers().lock() {
-            *h = Some((Box::new(on_prop), Box::new(on_eof), launch.generation));
+            if let Some((p, e)) = handlers.take() {
+                *h = Some((p, e, launch.generation));
+            }
         }
         for (k, v) in &launch.load_props {
             crate::music_ipc(&["set_property", k, v]);
         }
         crate::music_ipc(&["set_property", "pause", "no"]);
-        ipc_loadfile(launch.src);
-        return Ok(());
+        if ipc_loadfile(launch.src, launch.start_s) {
+            return Ok(());
+        }
+        // The live process did not take the load. Do NOT return — falling
+        // through respawns, which stops the old track. Returning here is what
+        // leaves the previous song playing under the new song's now-playing bar.
+        tracing::warn!("persistent mpv did not acknowledge loadfile; respawning");
+        // Reclaim what was just installed so the respawn can hand it to the new
+        // reader. If this fails, the entry written above is still in place and
+        // is the same pair — the respawn leaves it alone.
+        handlers = persist_handlers().lock().ok()
+            .and_then(|mut h| h.take())
+            .map(|(p, e, _)| (p, e));
     }
 
     // (Re)spawn — mirrors spawn_audio, plus idle mode and the event-driven
@@ -223,6 +317,7 @@ where
     mpv_die_with_parent(&mut cmd);
 
     let child = cmd.arg(launch.src).spawn()?;
+    let session = PERSIST_SESSION.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
     if let Ok(mut g) = music_proc().lock() {
         *g = Some(child);
     }
@@ -232,8 +327,12 @@ where
     if let Ok(mut g) = persist_args().lock() {
         *g = Some(launch.session_args.clone());
     }
-    if let Ok(mut h) = persist_handlers().lock() {
-        *h = Some((Box::new(on_prop), Box::new(on_eof), launch.generation));
+    // After the session bump, so the dying reader of the process we just
+    // stopped cannot come along and clear what we install here.
+    if let Some((p, e)) = handlers {
+        if let Ok(mut h) = persist_handlers().lock() {
+            *h = Some((p, e, launch.generation));
+        }
     }
 
     let observe: Vec<(u64, String)> =
@@ -273,7 +372,12 @@ where
         }
         // Socket gone = the process died (user stop, or another section took
         // over the audio singleton). Clear the session so the next library
-        // play respawns cleanly.
+        // play respawns cleanly — but only if a newer session has not already
+        // taken over, or this thread's death throes wipe the live track's
+        // handlers.
+        if PERSIST_SESSION.load(std::sync::atomic::Ordering::SeqCst) != session {
+            return;
+        }
         if let Ok(mut g) = persist_args().lock() {
             *g = None;
         }

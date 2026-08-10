@@ -34,7 +34,7 @@ export component ContextMenu inherits Rectangle {
             padding: 6px;
             for it in root.items: Rectangle {
                 height: 30px;
-                border-radius: Surface.r(6px);
+                border-radius: Surface.rr(6px, self.width, self.height);
                 touch := TouchArea {
                     clicked => { root.chosen(it.id); root.open = false; }
                 }

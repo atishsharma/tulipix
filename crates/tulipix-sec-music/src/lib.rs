@@ -92,6 +92,80 @@ pub fn music_id_at(idx: i32) -> Option<i64> {
     music_ids().lock().ok().and_then(|g| g.get(idx as usize).copied()).filter(|id| *id >= 0)
 }
 
+// ── Context queue (np.p6.music.context-queue) ───────────────────────────────
+// Playing a track from a list means playing THAT list: the persisted play_queue
+// is replaced with the rest of the list, in the order the page showed it, and
+// every advance — auto or Next — pops from it. Set while a context play is in
+// flight so `play_music_at` does not seed its sonic-similar mix over the top of
+// a queue that is about to be written.
+static CTX_QUEUE_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Arm the flag for callers that start the track themselves and hand the list
+/// to `set_context_queue` separately.
+pub fn set_ctx_pending() { CTX_QUEUE_PENDING.store(true, std::sync::atomic::Ordering::SeqCst); }
+
+/// Replace the queue with `order` (item ids) starting after `from_id`, wrapping
+/// round to the top of the list. `from_id` missing from the list = the whole
+/// list, minus nothing.
+pub fn set_context_queue(w: &MainWindow, order: Vec<i64>, from_id: Option<i64>, source: &'static str) {
+    let start = from_id.and_then(|id| order.iter().position(|x| *x == id));
+    let rest: Vec<i64> = match start {
+        Some(s) => (1..order.len()).map(|off| order[(s + off) % order.len()]).collect(),
+        None => order,
+    };
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = pool_for("music").await {
+            let _ = tulipix_music::queue::replace(&pool, &rest, source).await;
+        }
+        CTX_QUEUE_PENDING.store(false, std::sync::atomic::Ordering::SeqCst);
+        let _ = weak.upgrade_in_event_loop(|w| build_music_queue(&w));
+    });
+}
+
+/// Drop the queue entirely: "Play all" / "Shuffle all" walk the whole library,
+/// and a queue left over from an album would hijack the very first advance.
+/// Arms the same flag as a context play, so the track started right after this
+/// does not seed a sonic-similar mix into the queue being emptied.
+pub fn clear_context_queue(w: &MainWindow) {
+    set_ctx_pending();
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = pool_for("music").await {
+            let _ = tulipix_music::queue::clear(&pool).await;
+        }
+        CTX_QUEUE_PENDING.store(false, std::sync::atomic::Ordering::SeqCst);
+        let _ = weak.upgrade_in_event_loop(|w| build_music_queue(&w));
+    });
+}
+
+/// Play library position `pos` as part of `order` (library positions, in the
+/// order the page lists them) and make the queue that list's tail.
+pub fn play_in_context(w: &MainWindow, order: &[i32], pos: i32, source: &'static str) {
+    let ids: Vec<i64> = {
+        let Ok(g) = music_ids().lock() else { return play_music_at(w, pos) };
+        order.iter().filter_map(|p| g.get(*p as usize).copied()).filter(|id| *id >= 0).collect()
+    };
+    let from = music_id_at(pos);
+    if ids.is_empty() || from.is_none() { return play_music_at(w, pos); }
+    CTX_QUEUE_PENDING.store(true, std::sync::atomic::Ordering::SeqCst);
+    play_music_at(w, pos);
+    set_context_queue(w, ids, from, source);
+}
+
+/// The Songs page as it currently reads — same audiobook/search filter and the
+/// live sort — as library positions. This is the list a click in the Songs page
+/// plays from, so the queue has to be built from exactly it.
+pub fn songs_view_order() -> Vec<i32> {
+    let q = music_query_filter().lock().map(|s| s.to_lowercase()).unwrap_or_default();
+    let Ok(g) = music_songs().lock() else { return Vec::new(); };
+    g.iter().filter(|s| {
+        !s.is_audiobook
+            && (q.is_empty() || s.title.to_lowercase().contains(&q)
+                || s.artist.to_lowercase().contains(&q) || s.album.to_lowercase().contains(&q))
+    }).map(|s| s.pos).collect()
+}
+
 /// The inverse: playback position of an item_id, for "play THAT chapter".
 pub fn music_pos_of(item_id: i64) -> Option<i32> {
     music_ids().lock().ok()
@@ -1026,18 +1100,14 @@ pub fn detail_play(w: &MainWindow, shuffle: bool) {
         positions.swap(0, n);
         positions[0]
     } else { positions[0] };
-    // Build a persisted play_queue from the rest so advance follows the album.
-    let rest_ids: Vec<i64> = positions.iter().skip(1).filter_map(|p| {
+    // The queue IS the detail, in the order it was just laid out (shuffle moved
+    // the pick to the front, so the tail follows from position 1).
+    let order: Vec<i64> = positions.iter().filter_map(|p| {
         music_ids().lock().ok().and_then(|g| g.get(*p as usize).copied())
     }).collect();
+    set_ctx_pending();
     play_music_at(w, first);
-    let weak = w.as_weak();
-    tokio::runtime::Handle::current().spawn(async move {
-        let Ok(pool) = pool_for("music").await else { return; };
-        let _ = tulipix_music::queue::clear(&pool).await;
-        for id in &rest_ids { let _ = tulipix_music::queue::enqueue(&pool, *id, "detail").await; }
-        let _ = weak.upgrade_in_event_loop(|w| build_music_queue(&w));
-    });
+    set_context_queue(w, order, music_id_at(first), "detail");
 }
 
 /// Extract a vivid dominant colour from an album-art file for the now-playing
@@ -4523,6 +4593,27 @@ pub fn populate_music_views(weak: slint::Weak<MainWindow>) {
             w.set_music_recent_page(0);
             rebuild_recent_page(&w);
 
+            // Newest 4 by `added` → the Welcome home layout's Recently Added
+            // card, Music tab (one row of four). Recently PLAYED (the pool
+            // above) is a different question and already has its own pager.
+            // Audiobook chapters are dropped for the same reason the Songs grid
+            // drops them: a book lands as 40 "new songs" and would be the whole
+            // tab.
+            {
+                let tiles = w.get_music_tiles();
+                let mut newest: Vec<&SongMeta> = metas.iter().filter(|m| !m.is_audiobook).collect();
+                newest.sort_by(|a, b| b.added.cmp(&a.added));
+                let rows: Vec<MusicSongRow> = newest.iter().take(4).map(|s| MusicSongRow {
+                    thumb: if s.pos >= 0 && (s.pos as usize) < tiles.row_count() {
+                        tiles.row_data(s.pos as usize).map(|t| t.thumb).unwrap_or_default()
+                    } else { slint::Image::default() },
+                    title: s.title.clone().into(), artist: s.artist.clone().into(),
+                    duration: if s.duration_s > 0.0 { fmt_clock(s.duration_s).into() } else { "".into() },
+                    index: s.pos,
+                }).collect();
+                w.set_home_recent_songs(slint::ModelRc::new(slint::VecModel::from(rows)));
+            }
+
             // Top artists / albums (most tracks first, capped) for the Home grids.
             let mut top_artist_src = artists.clone();
             top_artist_src.sort_by(|a, b| b.2.cmp(&a.2));
@@ -4946,24 +5037,50 @@ pub fn advance_music(w: &MainWindow) {
     }
     // "Repeat one" always re-plays the current track, ignoring the queue.
     if w.get_music_repeat() == "one" { advance_sequential(w); return; }
-    // Shuffle overrides the sequential auto-queue — pick a random next track.
-    if w.get_music_shuffle() { advance_sequential(w); return; }
+    queue_advance(w, false);
+}
+
+/// The library walk behind an empty queue. `wrap` is the difference between a
+/// track ending (repeat "off" means stop at the end of the list) and Next being
+/// pressed (which always has to produce a track).
+fn advance_or_wrap(w: &MainWindow, wrap: bool) {
+    if wrap && !w.get_music_shuffle() && w.get_music_repeat() == "off" {
+        let total = w.get_music_np_total();
+        if total > 0 { play_music_at(w, (w.get_music_np_index() + 1).rem_euclid(total)); }
+        return;
+    }
+    advance_sequential(w);
+}
+
+/// Pop the queue and play what comes out; an empty queue falls back to the
+/// library walk. Shuffle pops a RANDOM entry instead of the front, so it
+/// shuffles the list you started — the album, playlist or Songs page the queue
+/// was built from — rather than escaping into the whole library. Shuffle used
+/// to skip the queue entirely, which is why a 40-track mix was built on the
+/// first play and then never followed (user report 2026-08-10).
+pub fn queue_advance(w: &MainWindow, wrap: bool) {
+    let shuffle = w.get_music_shuffle();
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("music").await else {
-            let _ = weak.upgrade_in_event_loop(|w| advance_sequential(&w)); return; };
-        match tulipix_music::queue::pop_first(&pool).await {
+            let _ = weak.upgrade_in_event_loop(move |w| advance_or_wrap(&w, wrap)); return; };
+        let popped = if shuffle {
+            tulipix_music::queue::pop_random(&pool).await
+        } else {
+            tulipix_music::queue::pop_first(&pool).await
+        };
+        match popped {
             Ok(Some(next_id)) => {
                 let _ = weak.upgrade_in_event_loop(move |w| {
                     let pos = music_ids().lock().ok()
                         .and_then(|g| g.iter().position(|id| *id == next_id)).map(|p| p as i32);
                     match pos {
                         Some(p) => { play_music_at(&w, p); build_music_queue(&w); }
-                        None => advance_sequential(&w),
+                        None => advance_or_wrap(&w, wrap),
                     }
                 });
             }
-            _ => { let _ = weak.upgrade_in_event_loop(|w| advance_sequential(&w)); }
+            _ => { let _ = weak.upgrade_in_event_loop(move |w| advance_or_wrap(&w, wrap)); }
         }
     });
 }
@@ -5308,7 +5425,13 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
     // the embedding index is ready, else a plain up-next list. Once per session:
     // subsequent next/prev keep the now-populated queue. My Music only — audiobook
     // (book mode) builds its own chapter queue.
-    if w.get_music_player_mode().as_str() == "music" && w.get_music_queue_rows().row_count() == 0 {
+    // A context play (a track picked out of a list) writes the real queue a
+    // moment later on the pool thread — seeding a mix here would be overwritten
+    // anyway, and for the instant in between it is the wrong queue on screen.
+    if w.get_music_player_mode().as_str() == "music"
+        && w.get_music_queue_rows().row_count() == 0
+        && !CTX_QUEUE_PENDING.load(std::sync::atomic::Ordering::SeqCst)
+    {
         build_default_music_queue(w, idx);
     }
 }

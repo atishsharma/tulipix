@@ -1,5 +1,9 @@
-// Settings › PERSONAL › Home Layout — pick one of seven Home compositions and
+// Settings › PERSONAL › Home Layout — pick one of four Home compositions and
 // switch its cards on and off. Spec: docs/home-layouts/README.md.
+//
+// Names shown here are display names: Poweruser (`classic`), Cinema (`cinema`),
+// Timeline (`stream`), Focused (`welcome`, the default). The ids are what
+// `home.layout` and `home.hidden.<layout>` hold on disk and never change.
 //
 // The previews are vector schematics (nested rectangles in the layout's real
 // proportions, tinted with the section accents) rather than screenshots: they
@@ -41,6 +45,7 @@ export component LayoutThumb inherits Rectangle {
     in property <bool> hc-library: true;
     in property <bool> hc-next: true;
     in property <bool> hc-ticker: true;
+    in property <bool> hc-hub: true;
 
     property <length> pad: 7px;
     property <length> gap: 4px;
@@ -59,7 +64,7 @@ export component LayoutThumb inherits Rectangle {
         + (root.hc-transfer ? 1 : 0) + (root.hc-library ? 1 : 0) + (root.hc-next ? 1 : 0);
 
     background: Theme.dark ? #06070f : #f4f2fb;
-    border-radius: Surface.r(9px);
+    border-radius: Surface.rr(9px, self.width, self.height);
     border-width: 1px;
     border-color: Surface.hairline;
     clip: true;
@@ -116,230 +121,73 @@ export component LayoutThumb inherits Rectangle {
         }
     }
 
-    // ── cinema — hero at full bleed, shelf at the bottom, glass stack right ──
+    // ── cinema — hero at full bleed, shelf at the bottom, player panel right ──
+    // ── cinema — hero at full bleed, Continue at the bottom, player right ────
     if root.kind == "cinema": cin := Rectangle {
         x: 0; y: 0; width: root.width; height: root.height;
-        property <length> shelf-h: root.hc-continue
-            ? root.height * 0.36
-            : (root.keys > 0 ? root.height * 0.17 : 0px);
+        // The shelf is the Continue strip and nothing else — My Hub came back as
+        // one card in the right column, not a row down here.
+        property <length> shelf-h: root.hc-continue ? root.height * 0.32 : 0px;
         // backdrop
         if root.hc-hero: Rectangle {
             width: parent.width; height: parent.height;
             background: @linear-gradient(150deg, Theme.sec-videos.with-alpha(0.5),
                 Theme.brand.with-alpha(0.22), #00000000);
         }
-        // hero title bars
+        // header: wordmark, greeting pill, launcher pills right
+        Rectangle {
+            x: root.pad; y: root.pad; width: parent.width * 0.16; height: 5px;
+            border-radius: 2px; background: Theme.text.with-alpha(0.7);
+        }
+        if root.hc-quick: Rectangle {
+            x: parent.width - root.pad - parent.width * 0.34;
+            y: root.pad - 1px; width: parent.width * 0.34; height: 7px;
+            border-radius: 3px; background: Theme.text.with-alpha(0.22);
+        }
+        // hero title bars — two lines now
         if root.hc-hero: Rectangle {
-            x: root.pad; y: parent.height * 0.3;
-            width: parent.width * 0.34; height: 8px; border-radius: 4px;
+            x: root.pad; y: parent.height * 0.28;
+            width: parent.width * 0.40; height: 8px; border-radius: 4px;
             background: Theme.text.with-alpha(0.85);
         }
         if root.hc-hero: Rectangle {
-            x: root.pad; y: parent.height * 0.3 + 12px;
-            width: parent.width * 0.2; height: 4px; border-radius: 2px;
-            background: Theme.text.with-alpha(0.4);
+            x: root.pad; y: parent.height * 0.28 + 11px;
+            width: parent.width * 0.28; height: 8px; border-radius: 4px;
+            background: Theme.text.with-alpha(0.85);
         }
-        // right glass stack
-        if root.hc-finances || root.hc-transfer: Rectangle {
+        if root.hc-hero: Rectangle {
+            x: root.pad; y: parent.height * 0.28 + 24px;
+            width: parent.width * 0.14; height: 5px; border-radius: 3px;
+            background: Theme.sec-videos;
+        }
+        // right stack — the player panel
+        if root.hc-player: Rectangle {
             x: parent.width - root.pad - parent.width * 0.24;
-            y: root.pad + 6px; width: parent.width * 0.24;
-            height: parent.height * 0.42;
-            VerticalLayout {
-                spacing: root.gap;
-                if root.hc-finances: Rectangle { border-radius: 3px;
-                    background: Theme.sec-finances.with-alpha(0.5); }
-                if root.hc-transfer: Rectangle { border-radius: 3px;
-                    background: Theme.sec-transfer.with-alpha(0.5); }
-            }
+            y: root.pad + 8px; width: parent.width * 0.24;
+            height: parent.height * 0.56;
+            border-radius: 3px;
+            background: Theme.sec-music.with-alpha(0.5);
         }
-        // shelf
+        // hub carousel — one card, in the gap under the player
+        if root.hc-hub: Rectangle {
+            x: parent.width - root.pad - parent.width * 0.24;
+            y: root.height - cin.shelf-h - 4px - parent.height * 0.14;
+            width: parent.width * 0.24; height: parent.height * 0.14;
+            border-radius: 3px;
+            background: Theme.sec-photos.with-alpha(0.45);
+        }
+        // shelf — the Continue tab strip, 70% wide
         if cin.shelf-h > 0px: Rectangle {
             y: root.height - cin.shelf-h; width: parent.width; height: cin.shelf-h;
             background: Theme.dark ? #000000c0 : #ffffffcc;
-            VerticalLayout {
-                padding: root.pad; spacing: root.gap;
-                if root.hc-continue: Rectangle {
-                    HorizontalLayout {
-                        spacing: root.gap;
-                        Rectangle { border-radius: 2px; background: Theme.sec-videos.with-alpha(0.5); }
-                        Rectangle { width: parent.height * 0.6; border-radius: 2px;
-                            background: Theme.sec-books.with-alpha(0.5); }
-                        Rectangle { width: parent.height * 0.9; border-radius: 2px;
-                            background: Theme.sec-music.with-alpha(0.5); }
-                        Rectangle { border-radius: 2px; background: Theme.sec-photos.with-alpha(0.5); }
-                    }
-                }
-                if root.keys > 0: Rectangle {
-                    height: 7px;
-                    HorizontalLayout {
-                        spacing: 3px;
-                        if root.hc-photos: Rectangle { border-radius: 2px; background: Theme.sec-photos; }
-                        if root.hc-videos: Rectangle { border-radius: 2px; background: Theme.sec-videos; }
-                        if root.hc-music: Rectangle { border-radius: 2px; background: Theme.sec-music; }
-                        if root.hc-books: Rectangle { border-radius: 2px; background: Theme.sec-books; }
-                        if root.hc-cloud: Rectangle { border-radius: 2px; background: Theme.sec-cloud; }
-                        if root.hc-tools: Rectangle { border-radius: 2px; background: Theme.sec-tools; }
-                    }
-                }
-            }
-        }
-    }
-
-    // ── columns — vertical panes, one open ──────────────────────────────────
-    if root.kind == "columns": Rectangle {
-        x: root.pad; y: root.pad; width: root.iw; height: root.ih;
-        Rectangle { width: parent.width * 0.4; height: 5px; border-radius: 3px;
-            background: Theme.text.with-alpha(0.3); }
-        Rectangle {
-            y: 8px; width: parent.width; height: parent.height - 8px;
             HorizontalLayout {
-                spacing: 3px;
-                if root.hc-photos: Rectangle { border-radius: 3px; background: Theme.sec-photos.with-alpha(0.5); }
-                // The open pane. Videos is the default selection.
-                if root.hc-videos: Rectangle { horizontal-stretch: 4; border-radius: 3px;
-                    background: Theme.sec-videos.with-alpha(0.62);
-                    VerticalLayout {
-                        padding: 4px; spacing: 3px;
-                        Rectangle { height: 4px; border-radius: 2px; background: Theme.text.with-alpha(0.5); }
-                        HorizontalLayout {
-                            spacing: 3px;
-                            Rectangle { border-radius: 2px; background: Theme.text.with-alpha(0.22); }
-                            Rectangle { border-radius: 2px; background: Theme.text.with-alpha(0.22); }
-                            Rectangle { border-radius: 2px; background: Theme.text.with-alpha(0.22); }
-                        }
-                    }
-                }
-                if root.hc-music: Rectangle { border-radius: 3px; background: Theme.sec-music.with-alpha(0.5); }
-                if root.hc-books: Rectangle { border-radius: 3px; background: Theme.sec-books.with-alpha(0.5); }
-                if root.hc-cloud: Rectangle { border-radius: 3px; background: Theme.sec-cloud.with-alpha(0.5); }
-                if root.hc-tools: Rectangle { border-radius: 3px; background: Theme.sec-tools.with-alpha(0.5); }
-                if root.hc-transfer: Rectangle { border-radius: 3px; background: Theme.sec-transfer.with-alpha(0.5); }
-                if root.hc-finances: Rectangle { border-radius: 3px; background: Theme.sec-finances.with-alpha(0.5); }
-            }
-        }
-    }
-
-    // ── editorial — hairline rows, one per section ──────────────────────────
-    if root.kind == "editorial": Rectangle {
-        x: root.pad; y: root.pad; width: root.iw; height: root.ih;
-        VerticalLayout {
-            spacing: 0;
-            Rectangle { height: root.ih * 0.2;
-                Rectangle { y: 2px; width: parent.width * 0.46; height: 8px; border-radius: 4px;
-                    background: Theme.text.with-alpha(0.7); }
-                Rectangle { x: parent.width - 26px; y: 3px; width: 26px; height: 5px; border-radius: 3px;
-                    background: Theme.text.with-alpha(0.3); }
-            }
-            // Eight rows, each: accent tick · name bar · strip · value.
-            for c in [
-                { on: root.hc-photos,   tint: Theme.sec-photos },
-                { on: root.hc-videos,   tint: Theme.sec-videos },
-                { on: root.hc-music,    tint: Theme.sec-music },
-                { on: root.hc-books,    tint: Theme.sec-books },
-                { on: root.hc-cloud,    tint: Theme.sec-cloud },
-                { on: root.hc-tools,    tint: Theme.sec-tools },
-                { on: root.hc-transfer, tint: Theme.sec-transfer },
-                { on: root.hc-finances, tint: Theme.sec-finances },
-            ]: Rectangle {
-                // `if` on a repeated component is the shape slint#6426 breaks on,
-                // so the row is always instantiated and collapses to zero height.
-                height: c.on ? (root.ih * 0.8 - 2px) / Math.max(1, root.rows) : 0px;
-                Rectangle { width: 2px; height: parent.height - 2px; background: c.tint; }
-                Rectangle { x: 5px; y: (parent.height - 4px) / 2; width: parent.width * 0.2;
-                    height: 4px; border-radius: 2px; background: Theme.text.with-alpha(0.55); }
-                Rectangle { x: parent.width * 0.26; y: (parent.height - 6px) / 2;
-                    width: parent.width * 0.4; height: 6px; border-radius: 2px;
-                    background: c.tint.with-alpha(0.4); }
-                Rectangle { x: parent.width - 20px; y: (parent.height - 4px) / 2;
-                    width: 20px; height: 4px; border-radius: 2px;
-                    background: Theme.text.with-alpha(0.4); }
-                Rectangle { y: parent.height - 1px; width: parent.width; height: 1px;
-                    background: Surface.hairline; }
-            }
-            if root.hc-ticker: Rectangle {
-                height: root.ih * 0.11; border-radius: 3px;
-                background: Theme.sec-music.with-alpha(0.4);
-            }
-        }
-    }
-
-    // ── deck — key strip, two strips, hub panels, standing rail ─────────────
-    if root.kind == "deck": dck := Rectangle {
-        x: root.pad; y: root.pad; width: root.iw; height: root.ih;
-        property <length> rail-w: (root.hc-player || root.hc-quick || root.hc-finances)
-            ? root.iw * 0.26 : 0px;
-        property <length> left-w: root.iw - (dck.rail-w > 0px ? dck.rail-w + root.gap : 0px);
-        // header
-        Rectangle { width: parent.width * 0.3; height: 5px; border-radius: 3px;
-            background: Theme.text.with-alpha(0.32); }
-        Rectangle { x: parent.width * 0.38; width: parent.width * 0.24; height: 5px;
-            border-radius: 3px; background: Theme.text.with-alpha(0.16); }
-        Rectangle {
-            y: 9px; width: dck.left-w; height: parent.height - 9px;
-            VerticalLayout {
+                x: root.pad; y: root.pad;
+                width: parent.width * 0.7; height: parent.height - 2 * root.pad;
                 spacing: root.gap;
-                // section keys — `panes` counts all eight, transfer and finances too
-                if root.panes > 0: Rectangle {
-                    height: 7px;
-                    HorizontalLayout {
-                        spacing: 2px;
-                        if root.hc-photos: Rectangle { border-radius: 2px; background: Theme.sec-photos; }
-                        if root.hc-videos: Rectangle { border-radius: 2px; background: Theme.sec-videos; }
-                        if root.hc-music: Rectangle { border-radius: 2px; background: Theme.sec-music; }
-                        if root.hc-books: Rectangle { border-radius: 2px; background: Theme.sec-books; }
-                        if root.hc-cloud: Rectangle { border-radius: 2px; background: Theme.sec-cloud; }
-                        if root.hc-tools: Rectangle { border-radius: 2px; background: Theme.sec-tools; }
-                        if root.hc-transfer: Rectangle { border-radius: 2px; background: Theme.sec-transfer; }
-                        if root.hc-finances: Rectangle { border-radius: 2px; background: Theme.sec-finances; }
-                    }
-                }
-                // continue strip
-                if root.hc-continue: Rectangle {
-                    HorizontalLayout {
-                        spacing: 3px;
-                        Rectangle { border-radius: 3px; background: Theme.sec-videos.with-alpha(0.5); }
-                        Rectangle { border-radius: 3px; background: Theme.sec-books.with-alpha(0.5); }
-                        Rectangle { border-radius: 3px; background: Theme.sec-music.with-alpha(0.5); }
-                        Rectangle { border-radius: 3px; background: Theme.sec-photos.with-alpha(0.5); }
-                    }
-                }
-                // recently added
-                if root.hc-library: Rectangle {
-                    height: root.ih * 0.16;
-                    HorizontalLayout {
-                        spacing: 3px;
-                        Rectangle { border-radius: 2px; background: Theme.sec-photos.with-alpha(0.38); }
-                        Rectangle { border-radius: 2px; background: Theme.sec-photos.with-alpha(0.38); }
-                        Rectangle { border-radius: 2px; background: Theme.sec-videos.with-alpha(0.38); }
-                        Rectangle { border-radius: 2px; background: Theme.sec-books.with-alpha(0.38); }
-                        Rectangle { border-radius: 2px; background: Theme.brand.with-alpha(0.28); }
-                    }
-                }
-                // hub panels — the status panel is always there, so the row never empties
-                Rectangle {
-                    height: root.ih * 0.28;
-                    HorizontalLayout {
-                        spacing: 3px;
-                        if root.hc-cloud: Rectangle { border-radius: 2px; background: Theme.sec-cloud.with-alpha(0.45); }
-                        if root.hc-transfer: Rectangle { border-radius: 2px; background: Theme.sec-transfer.with-alpha(0.45); }
-                        if root.hc-finances: Rectangle { border-radius: 2px; background: Theme.sec-finances.with-alpha(0.45); }
-                        if root.hc-tools: Rectangle { border-radius: 2px; background: Theme.sec-tools.with-alpha(0.45); }
-                        Rectangle { border-radius: 2px; background: Theme.brand.with-alpha(0.3); }
-                    }
-                }
-            }
-        }
-        if dck.rail-w > 0px: Rectangle {
-            x: parent.width - dck.rail-w; y: 9px;
-            width: dck.rail-w; height: parent.height - 9px;
-            VerticalLayout {
-                spacing: root.gap;
-                if root.hc-player: Rectangle { border-radius: 3px;
-                    background: Theme.sec-music.with-alpha(0.55); }
-                if root.hc-quick: Rectangle { height: root.ih * 0.2; border-radius: 3px;
-                    background: Theme.brand.with-alpha(0.4); }
-                if root.hc-finances: Rectangle { height: root.ih * 0.26; border-radius: 3px;
-                    background: Theme.sec-finances.with-alpha(0.45); }
+                Rectangle { border-radius: 2px; background: Theme.sec-videos.with-alpha(0.5); }
+                Rectangle { border-radius: 2px; background: Theme.sec-books.with-alpha(0.5); }
+                Rectangle { border-radius: 2px; background: Theme.sec-music.with-alpha(0.5); }
+                Rectangle { border-radius: 2px; background: Theme.sec-photos.with-alpha(0.5); }
             }
         }
     }
@@ -470,7 +318,7 @@ component Btn inherits Skin {
     in property <bool> primary: false;
     callback clicked();
     height: 29px;
-    border-radius: Surface.r(8px);
+    border-radius: Surface.rr(8px, self.width, self.height);
     background: touch.has-hover
         ? (primary ? #6d28d9 : Theme.panel-2)
         : (primary ? Theme.brand : Theme.panel);
@@ -511,9 +359,6 @@ component OptionTile inherits Rectangle {
     in property <string> name;
     in property <string> blurb;
     in property <bool> active: false;
-    /// Designed and spec'd, not built yet: picking it is remembered, but Home
-    /// keeps drawing Classic until the layout lands. Saying so beats a blank page.
-    in property <bool> soon: false;
     callback use();
     callback customize();
 
@@ -532,10 +377,12 @@ component OptionTile inherits Rectangle {
     hov := TouchArea { mouse-cursor: pointer; clicked => { root.use(); } }
 
     VerticalLayout {
-        padding: 12px; spacing: 9px;
+        padding: 14px; spacing: 10px;
+        // The tile is square, so the schematic takes whatever the copy and the
+        // buttons leave rather than standing at a fixed 118px.
         LayoutThumb {
             kind: root.id;
-            height: 118px; vertical-stretch: 0;
+            vertical-stretch: 1;
         }
         HorizontalLayout {
             spacing: 6px;
@@ -543,9 +390,8 @@ component OptionTile inherits Rectangle {
                 spacing: 2px; horizontal-stretch: 1;
                 Text { text: root.name; color: Theme.text; font-size: 13px; font-weight: 700; }
                 Text {
-                    text: root.soon ? root.blurb + " Not built yet — Home stays on Classic."
-                                    : root.blurb;
-                    color: root.soon ? Theme.warn : Theme.text-dim;
+                    text: root.blurb;
+                    color: Theme.text-dim;
                     font-size: 10.5px; wrap: word-wrap;
                 }
             }
@@ -561,8 +407,8 @@ component OptionTile inherits Rectangle {
         }
         HorizontalLayout {
             spacing: 6px;
-            Btn { label: root.active ? "In use" : (root.soon ? "Choose anyway" : "Use this layout");
-                primary: !root.active && !root.soon;
+            Btn { label: root.active ? "In use" : "Use this layout";
+                primary: !root.active;
                 clicked => { root.use(); } }
             Btn { label: "Customize"; clicked => { root.customize(); } }
             Rectangle { horizontal-stretch: 1; }
@@ -592,18 +438,26 @@ export component SettingsHomeLayout inherits Rectangle {
     in property <bool> hc-library: true;
     in property <bool> hc-next: true;
     in property <bool> hc-ticker: true;
+    in property <bool> hc-hub: true;
 
     callback use-layout(string);
     callback card-set(string /*card id*/, bool);
     callback cards-reset();
 
+    // Display names only. The stored ids stay `classic` / `stream` / `welcome`:
+    // they are what `home.layout` and every `home.hidden.<layout>` key hold on
+    // disk, and renaming them would silently reset everyone's card switches for
+    // no gain the user can see.
     property <string> title:
         root.layout == "cinema" ? "Cinema" :
-        root.layout == "columns" ? "Columns" :
-        root.layout == "editorial" ? "Editorial" :
-        root.layout == "stream" ? "Stream" :
-        root.layout == "deck" ? "Command deck" :
-        root.layout == "welcome" ? "Welcome" : "Classic bento";
+        root.layout == "stream" ? "Timeline" :
+        root.layout == "welcome" ? "Focused" : "Poweruser";
+
+    // Switching Home out from under someone is not a click to make by accident,
+    // so `Use this layout` asks first. Empty means no dialog; otherwise this is
+    // the layout id waiting on an answer.
+    property <string> ask-id: "";
+    property <string> ask-name: "";
 
     background: transparent;
 
@@ -613,55 +467,143 @@ export component SettingsHomeLayout inherits Rectangle {
         viewport-y: 0px;
         VerticalLayout {
             width: sv.visible-width;
-            padding-bottom: 20px; spacing: 14px;
+            padding-bottom: 28px; spacing: 18px;
 
-            VerticalLayout {
-                spacing: 4px;
-                Text { text: "Home Layout"; color: Theme.text; font-size: 19px; font-weight: 700; }
-                Text {
-                    text: "Seven ways to arrange Home. Pick one, then switch off the cards you "
-                        + "don't want — the rest of the layout takes the space back.";
-                    color: Theme.text-dim; font-size: 11.5px; wrap: word-wrap;
+            // ── Page header ────────────────────────────────────────────────
+            Rectangle {
+                height: 86px; vertical-stretch: 0;
+                border-radius: Surface.card-radius;
+                background: Surface.body(Theme.panel-2);
+                border-width: 1px; border-color: Surface.hairline;
+                if Surface.rim: Rim {
+                    x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+                    radius: Surface.card-radius - 1px;
+                }
+                HorizontalLayout {
+                    padding-left: 18px; padding-right: 18px; spacing: 14px;
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        Rectangle {
+                            width: 46px; height: 46px; border-radius: Surface.rr(14px, self.width, self.height);
+                            background: Theme.brand.with-alpha(0.16);
+                            AppIcon { source: Icons.layout-grid; tint: Theme.brand;
+                                width: 21px; height: 21px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2; }
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center; spacing: 4px; horizontal-stretch: 1;
+                        Text { text: "Home Layout"; color: Theme.text;
+                            font-size: 20px; font-weight: 700; }
+                        Text {
+                            text: "Four ways to arrange Home. Pick one, then switch off the cards "
+                                + "you don't want — the rest of the layout takes the space back.";
+                            color: Theme.text-dim; font-size: 11.5px; wrap: word-wrap;
+                        }
+                    }
+                    VerticalLayout {
+                        alignment: center; horizontal-stretch: 0;
+                        Rectangle {
+                            width: inuse.preferred-width + 22px; height: 24px;
+                            border-radius: 12px; background: Theme.brand.with-alpha(0.18);
+                            inuse := Text { text: "IN USE · " + root.title; color: Theme.brand;
+                                font-size: 10px; font-weight: 700; letter-spacing: 0.6px;
+                                x: 11px; height: 100%; vertical-alignment: center; }
+                        }
+                    }
                 }
             }
 
-            GridLayout {
-                spacing: 12px;
-                Row {
-                    OptionTile { id: "classic"; name: "Classic bento"; active: root.layout == "classic";
-                        blurb: "Today's Home. Cards in rows with the music rail.";
-                        use => { root.use-layout("classic"); }
-                        customize => { root.use-layout("classic"); root.popup-open = true; } }
-                    OptionTile { id: "cinema"; name: "Cinema"; active: root.layout == "cinema";
-                        blurb: "A full-bleed hero of what you were watching, rails on a shelf.";
-                        use => { root.use-layout("cinema"); }
-                        customize => { root.use-layout("cinema"); root.popup-open = true; } }
-                    OptionTile { id: "columns"; name: "Columns"; active: root.layout == "columns";
-                        blurb: "Eight full-height panes. One opens, the rest stay spines.";
-                        use => { root.use-layout("columns"); }
-                        customize => { root.use-layout("columns"); root.popup-open = true; } }
-                }
-                Row {
-                    OptionTile { id: "editorial"; name: "Editorial"; active: root.layout == "editorial";
-                        blurb: "Hairline rows: name, thumbnails, the number that matters.";
-                        use => { root.use-layout("editorial"); }
-                        customize => { root.use-layout("editorial"); root.popup-open = true; } }
-                    OptionTile { id: "stream"; name: "Stream"; active: root.layout == "stream";
-                        blurb: "A feed of what happened, plus a standing rail.";
-                        use => { root.use-layout("stream"); }
-                        customize => { root.use-layout("stream"); root.popup-open = true; } }
-                    OptionTile { id: "deck"; name: "Command deck"; active: root.layout == "deck";
-                        blurb: "Section keys, resume, arrivals, hub panels, and a player rail.";
-                        use => { root.use-layout("deck"); }
-                        customize => { root.use-layout("deck"); root.popup-open = true; } }
-                }
-                Row {
-                    OptionTile { id: "welcome"; name: "Welcome"; active: root.layout == "welcome";
-                        blurb: "A big hello, the six things you launch by name, player at the foot.";
-                        use => { root.use-layout("welcome"); }
-                        customize => { root.use-layout("welcome"); root.popup-open = true; } }
-                    Rectangle { }
-                    Rectangle { }
+            // ── The four layouts, 2 × 2, square, centred ───────────────────
+            // The cage is capped and the leftover width becomes equal padding,
+            // so the grid stays a block in the middle of the page instead of
+            // stretching to whatever the window is.
+            // Squares, and provably so: the cage measures ITSELF, not
+            // `sv.visible-width`. The two differ by whatever padding the
+            // settings stage puts around this page, which is why cells sized
+            // off the ScrollView came out ~19px narrower than they were tall.
+            // Placed by hand, no GridLayout: a grid sizes its columns and rows
+            // from what the tiles ask for, so the tile with the longest blurb
+            // widened its column and two of the four came out rectangles. Each
+            // tile is now handed `cell` as BOTH its width and its height, and an
+            // absolutely positioned child of a plain Rectangle has nothing that
+            // can re-stretch it.
+            cage := Rectangle {
+                property <length> box: Math.min(self.width, 760px);
+                property <length> cell: (self.box - 16px) / 2;
+                property <length> left: (self.width - self.box) / 2;
+                property <length> step: self.cell + 16px;
+                height: self.cell * 2 + 16px;
+                vertical-stretch: 0;
+                // Reading order is the order they matter in: the default first.
+                OptionTile {
+                    x: cage.left; y: 0px; width: cage.cell; height: cage.cell;
+                    id: "welcome"; name: "Focused"; active: root.layout == "welcome";
+                    blurb: "The default. A big hello, the six things you launch by name, "
+                         + "player at the foot.";
+                    use => { root.ask-id = "welcome"; root.ask-name = "Focused"; }
+                    customize => { root.use-layout("welcome"); root.popup-open = true; } }
+                OptionTile {
+                    x: cage.left + cage.step; y: 0px; width: cage.cell; height: cage.cell;
+                    id: "classic"; name: "Poweruser"; active: root.layout == "classic";
+                    blurb: "Everything at once — cards in rows with the music rail.";
+                    use => { root.ask-id = "classic"; root.ask-name = "Poweruser"; }
+                    customize => { root.use-layout("classic"); root.popup-open = true; } }
+                OptionTile {
+                    x: cage.left; y: cage.step; width: cage.cell; height: cage.cell;
+                    id: "stream"; name: "Timeline"; active: root.layout == "stream";
+                    blurb: "A feed of what happened, plus a standing rail.";
+                    use => { root.ask-id = "stream"; root.ask-name = "Timeline"; }
+                    customize => { root.use-layout("stream"); root.popup-open = true; } }
+                OptionTile {
+                    x: cage.left + cage.step; y: cage.step; width: cage.cell; height: cage.cell;
+                    id: "cinema"; name: "Cinema"; active: root.layout == "cinema";
+                    blurb: "A full-bleed hero of what you were watching, rails on a shelf.";
+                    use => { root.ask-id = "cinema"; root.ask-name = "Cinema"; }
+                    customize => { root.use-layout("cinema"); root.popup-open = true; } }
+            }
+        }
+    }
+
+    // ── Switch confirmation ────────────────────────────────────────────────
+    if root.ask-id != "": Rectangle {
+        width: 100%; height: 100%; background: #00000099;
+        TouchArea { clicked => { root.ask-id = ""; } }
+        FocusScope {
+            width: 100%; height: 100%;
+            init => { self.focus(); }
+            key-pressed(e) => {
+                if (e.text == Key.Escape) { root.ask-id = ""; return accept; }
+                reject
+            }
+            Rectangle {
+                width: Math.min(400px, root.width - 60px);
+                height: 172px;
+                x: (root.width - self.width) / 2;
+                y: (root.height - self.height) / 2;
+                border-radius: Surface.rr(16px, self.width, self.height);
+                background: Surface.body(Theme.modal);
+                border-width: 1px; border-color: Surface.hairline;
+                drop-shadow-blur: 40px; drop-shadow-color: #00000088;
+                TouchArea { }
+                VerticalLayout {
+                    padding: 18px; spacing: 10px;
+                    Text { text: "Switch Home to " + root.ask-name + "?"; color: Theme.text;
+                        font-size: 15px; font-weight: 700; wrap: word-wrap; }
+                    Text { text: "Home is redrawn in the new arrangement. Your card switches for "
+                             + "each layout are remembered separately, so switching back restores them.";
+                        color: Theme.text-dim; font-size: 11px; wrap: word-wrap;
+                        vertical-stretch: 1; }
+                    HorizontalLayout {
+                        spacing: 8px;
+                        Rectangle { horizontal-stretch: 1; }
+                        Btn { label: "Cancel"; clicked => { root.ask-id = ""; } }
+                        // ask-id is read by the callback above it, so it is
+                        // cleared LAST — this component is gated on it.
+                        Btn { label: "Switch"; primary: true;
+                            clicked => { root.use-layout(root.ask-id); root.ask-id = ""; } }
+                    }
                 }
             }
         }
@@ -683,7 +625,7 @@ export component SettingsHomeLayout inherits Rectangle {
                 height: Math.min(520px, root.height - 60px);
                 x: (root.width - self.width) / 2;
                 y: (root.height - self.height) / 2;
-                border-radius: Surface.r(18px);
+                border-radius: Surface.rr(18px, self.width, self.height);
                 background: Surface.body(Theme.modal);
                 border-width: 1px; border-color: Surface.hairline;
                 drop-shadow-blur: 40px; drop-shadow-color: #00000088;
@@ -696,12 +638,9 @@ export component SettingsHomeLayout inherits Rectangle {
                     HorizontalLayout {
                         spacing: 10px;
                         VerticalLayout {
-                            spacing: 3px; horizontal-stretch: 1;
+                            alignment: center; horizontal-stretch: 1;
                             Text { text: root.title + " — cards"; color: Theme.text;
                                 font-size: 15px; font-weight: 700; }
-                            Text { text: "Switch a card off and the rest of the layout takes its space. "
-                                     + "Nothing is deleted — the sidebar still reaches every section.";
-                                color: Theme.text-dim; font-size: 10.5px; wrap: word-wrap; }
                         }
                         Btn { label: "Done"; primary: true; clicked => { root.popup-open = false; } }
                     }
@@ -711,6 +650,9 @@ export component SettingsHomeLayout inherits Rectangle {
 
                         VerticalLayout {
                             width: 300px; horizontal-stretch: 0; spacing: 8px;
+                            // The schematic rides the middle of the column, not
+                            // its top — the card list beside it is taller.
+                            Rectangle { vertical-stretch: 1; }
                             LayoutThumb {
                                 kind: root.layout; height: 190px; vertical-stretch: 0;
                                 hc-hero: root.hc-hero;
@@ -728,6 +670,7 @@ export component SettingsHomeLayout inherits Rectangle {
                                 hc-library: root.hc-library;
                                 hc-next: root.hc-next;
                                 hc-ticker: root.hc-ticker;
+                                hc-hub: root.hc-hub;
                             }
                             Text { text: "Live preview"; color: Theme.text-dim; font-size: 10px;
                                 letter-spacing: 1.2px; }
@@ -743,7 +686,7 @@ export component SettingsHomeLayout inherits Rectangle {
                                 spacing: 6px;
                                 for c in root.cards: Rectangle {
                                     height: 46px;
-                                    border-radius: Surface.r(11px);
+                                    border-radius: Surface.rr(11px, self.width, self.height);
                                     background: Theme.glass;
                                     border-width: 1px; border-color: Surface.hairline;
                                     HorizontalLayout {

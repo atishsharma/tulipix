@@ -29,7 +29,7 @@ component EditChip inherits Skin {
     in property <bool> active: false;
     in property <bool> dim: false;
     callback clicked();
-    height: 34px; min-width: 0px; border-radius: Surface.r(10px);
+    height: 34px; min-width: 0px; border-radius: Surface.rr(10px, self.width, self.height);
     horizontal-stretch: 1;
     opacity: dim ? 0.45 : 1.0;
     background: active ? #1a73e8 : (t.has-hover ? #3c4043 : #2a2b2e);
@@ -52,7 +52,7 @@ component ModeBtn inherits Skin {
     in property <string> label;
     in property <bool> active: false;
     callback clicked();
-    height: 56px; border-radius: Surface.r(10px);
+    height: 56px; border-radius: Surface.rr(10px, self.width, self.height);
     background: root.active ? #1a73e8 : (mt.has-hover ? #2a2b2e : transparent);
     mt := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     VerticalLayout {
@@ -70,7 +70,7 @@ component HoldBtn inherits Skin {
     in property <bool> active: false;
     callback pressed();
     callback released();
-    height: 56px; border-radius: Surface.r(10px);
+    height: 56px; border-radius: Surface.rr(10px, self.width, self.height);
     background: root.active ? #1a73e8 : (ht.has-hover ? #2a2b2e : transparent);
     ht := TouchArea {
         mouse-cursor: pointer;
@@ -296,7 +296,7 @@ export component PhotoEditor inherits Rectangle {
                         x: stage.width * root.split-pos - 1px; y: 0; width: 2px; height: stage.height;
                         background: #ffffff;
                         Rectangle {
-                            width: 30px; height: 30px; border-radius: Surface.r(15px);
+                            width: 30px; height: 30px; border-radius: Surface.rr(15px, self.width, self.height);
                             x: (parent.width - self.width) / 2; y: (stage.height - self.height) / 2;
                             background: #1a73e8; border-width: 2px; border-color: #ffffff;
                             AppIcon { source: Icons.flip-horizontal; tint: #ffffff; width: 14px; height: 14px;
@@ -304,13 +304,13 @@ export component PhotoEditor inherits Rectangle {
                         }
                     }
                     if root.split-compare: Rectangle {
-                        x: 8px; y: 8px; width: lbl-b.preferred-width + 16px; height: 22px; border-radius: Surface.r(11px);
+                        x: 8px; y: 8px; width: lbl-b.preferred-width + 16px; height: 22px; border-radius: Surface.rr(11px, self.width, self.height);
                         background: #000000aa;
                         lbl-b := Text { text: "Before"; color: #ffffff; font-size: 11px; font-weight: 600;
                             horizontal-alignment: center; vertical-alignment: center; }
                     }
                     if root.split-compare: Rectangle {
-                        x: stage.width - self.width - 8px; y: 8px; width: lbl-a.preferred-width + 16px; height: 22px; border-radius: Surface.r(11px);
+                        x: stage.width - self.width - 8px; y: 8px; width: lbl-a.preferred-width + 16px; height: 22px; border-radius: Surface.rr(11px, self.width, self.height);
                         background: #000000aa;
                         lbl-a := Text { text: "After"; color: #ffffff; font-size: 11px; font-weight: 600;
                             horizontal-alignment: center; vertical-alignment: center; }
@@ -381,7 +381,7 @@ export component PhotoEditor inherits Rectangle {
                                 }
                             }
                             Rectangle {
-                                width: 22px; height: 22px; border-radius: Surface.r(11px);
+                                width: 22px; height: 22px; border-radius: Surface.rr(11px, self.width, self.height);
                                 x: parent.width - self.width / 2; y: parent.height - self.height / 2;
                                 background: #1a73e8; border-width: 2px; border-color: #ffffff;
                                 br-ta := TouchArea {
@@ -405,7 +405,7 @@ export component PhotoEditor inherits Rectangle {
                         x: (parent.width - self.width) / 2;
                         y: parent.height - self.height - 16px;
                         width: ctlbar.preferred-width + 24px; height: 48px;
-                        border-radius: Surface.r(12px); background: #202124ee;
+                        border-radius: Surface.rr(12px, self.width, self.height); background: #202124ee;
                         border-width: 1px; border-color: #3c4043;
                         ctlbar := HorizontalLayout {
                             padding-left: 10px; padding-right: 10px; spacing: 6px;
@@ -462,7 +462,7 @@ export component PhotoEditor inherits Rectangle {
                         }
                         x: 16px; y: stage.height - self.height - 16px;
                         width: self.gsize * 1px + 32px; height: self.gsize * 1px + 88px;
-                        border-radius: Surface.r(12px); background: #202124f2;
+                        border-radius: Surface.rr(12px, self.width, self.height); background: #202124f2;
                         border-width: 1px; border-color: #3c4043;
                         TouchArea { } // block stage interactions under the panel
                         VerticalLayout {
@@ -483,7 +483,7 @@ export component PhotoEditor inherits Rectangle {
                             // Grid + histogram backdrop + curve + draggable nodes.
                             grid := Rectangle {
                                 width: cpanel.gsize * 1px; height: cpanel.gsize * 1px;
-                                border-radius: Surface.r(6px); background: #0e0f10; clip: true;
+                                border-radius: Surface.rr(6px, self.width, self.height); background: #0e0f10; clip: true;
                                 Image { source: root.histogram; image-fit: fill;
                                     width: parent.width; height: parent.height; opacity: 0.55; }
                                 // Thirds grid.
@@ -511,11 +511,11 @@ export component PhotoEditor inherits Rectangle {
                                     LineTo { x: 1.0;  y: 1 - root.cy4; }
                                 }
                                 // Node handles (visual; drag handled by the area below).
-                                Rectangle { x: 0.0 * parent.width - 5px;  y: (1 - root.cy0) * parent.height - 5px; width: 10px; height: 10px; border-radius: Surface.r(5px); background: #ffffff; }
-                                Rectangle { x: 0.25 * parent.width - 5px; y: (1 - root.cy1) * parent.height - 5px; width: 10px; height: 10px; border-radius: Surface.r(5px); background: #ffffff; }
-                                Rectangle { x: 0.5 * parent.width - 5px;  y: (1 - root.cy2) * parent.height - 5px; width: 10px; height: 10px; border-radius: Surface.r(5px); background: #ffffff; }
-                                Rectangle { x: 0.75 * parent.width - 5px; y: (1 - root.cy3) * parent.height - 5px; width: 10px; height: 10px; border-radius: Surface.r(5px); background: #ffffff; }
-                                Rectangle { x: 1.0 * parent.width - 5px;  y: (1 - root.cy4) * parent.height - 5px; width: 10px; height: 10px; border-radius: Surface.r(5px); background: #ffffff; }
+                                Rectangle { x: 0.0 * parent.width - 5px;  y: (1 - root.cy0) * parent.height - 5px; width: 10px; height: 10px; border-radius: Surface.rr(5px, self.width, self.height); background: #ffffff; }
+                                Rectangle { x: 0.25 * parent.width - 5px; y: (1 - root.cy1) * parent.height - 5px; width: 10px; height: 10px; border-radius: Surface.rr(5px, self.width, self.height); background: #ffffff; }
+                                Rectangle { x: 0.5 * parent.width - 5px;  y: (1 - root.cy2) * parent.height - 5px; width: 10px; height: 10px; border-radius: Surface.rr(5px, self.width, self.height); background: #ffffff; }
+                                Rectangle { x: 0.75 * parent.width - 5px; y: (1 - root.cy3) * parent.height - 5px; width: 10px; height: 10px; border-radius: Surface.rr(5px, self.width, self.height); background: #ffffff; }
+                                Rectangle { x: 1.0 * parent.width - 5px;  y: (1 - root.cy4) * parent.height - 5px; width: 10px; height: 10px; border-radius: Surface.rr(5px, self.width, self.height); background: #ffffff; }
                                 TouchArea {
                                     width: 100%; height: 100%; mouse-cursor: crosshair;
                                     pointer-event(e) => { if (e.kind == PointerEventKind.down) { cpanel.set-node(self.mouse-x, self.mouse-y); } }
@@ -535,7 +535,7 @@ export component PhotoEditor inherits Rectangle {
                     if root.exif-view-open: Rectangle {
                         x: stage.width - self.width - 16px; y: 16px;
                         width: 330px; height: stage.height - 32px;
-                        border-radius: Surface.r(12px); background: #202124f2;
+                        border-radius: Surface.rr(12px, self.width, self.height); background: #202124f2;
                         border-width: 1px; border-color: #3c4043;
                         TouchArea { }
                         VerticalLayout {
@@ -562,7 +562,7 @@ export component PhotoEditor inherits Rectangle {
                     if root.exif-edit-open: Rectangle {
                         x: stage.width - self.width - 16px; y: 16px;
                         width: 330px; height: stage.height - 32px;
-                        border-radius: Surface.r(12px); background: #202124f2;
+                        border-radius: Surface.rr(12px, self.width, self.height); background: #202124f2;
                         border-width: 1px; border-color: #3c4043;
                         TouchArea { }
                         ScrollView {
@@ -602,7 +602,7 @@ export component PhotoEditor inherits Rectangle {
                     }
                     if root.status != "": Rectangle {
                         x: (parent.width - self.width) / 2; y: 16px;
-                        width: stxt.preferred-width + 28px; height: 36px; border-radius: Surface.r(18px);
+                        width: stxt.preferred-width + 28px; height: 36px; border-radius: Surface.rr(18px, self.width, self.height);
                         background: #202124; border-width: 1px; border-color: #5f6368;
                         stxt := Text { text: root.status; color: #ffffff; font-size: 12px;
                             horizontal-alignment: center; vertical-alignment: center; }
@@ -675,7 +675,7 @@ export component PhotoEditor inherits Rectangle {
         TouchArea { } // swallow clicks
         Rectangle {
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-            width: 440px; height: 220px; border-radius: Surface.r(14px);
+            width: 440px; height: 220px; border-radius: Surface.rr(14px, self.width, self.height);
             background: #26282b; border-width: 1px; border-color: #3c4043;
             VerticalLayout {
                 padding: 22px; spacing: 14px;

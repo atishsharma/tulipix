@@ -533,7 +533,7 @@ component Blank inherits Skin {
             min-height: 48px; max-height: 48px;
             background: transparent;
             Rectangle {
-                width: 48px; height: 48px; border-radius: Surface.r(15px);
+                width: 48px; height: 48px; border-radius: Surface.rr(15px, self.width, self.height);
                 x: (parent.width - self.width) / 2;
                 background: root.tint.with-alpha(0.14);
                 AppIcon {
@@ -840,7 +840,7 @@ component IconBtn inherits Skin {
     horizontal-stretch: 0;
     min-width: 30px; max-width: 30px;
     min-height: 30px; max-height: 30px;
-    border-radius: Surface.r(9px);
+    border-radius: Surface.rr(9px, self.width, self.height);
     opacity: root.enabled ? 1.0 : 0.35;
     background: root.enabled && ta.has-hover ? FinTheme.pill-bg : transparent;
     ta := TouchArea {
@@ -857,7 +857,7 @@ component IconBtn inherits Skin {
 }
 
 component Card inherits Skin {
-    border-radius: Surface.r(16px);
+    border-radius: Surface.rr(16px, self.width, self.height);
     background: FinTheme.card;
     border-width: 1px;
     border-color: FinTheme.hairline;
@@ -927,7 +927,7 @@ component AccountBadge inherits Rectangle {
     in property <color> hue;
     in property <length> side: 30px;
     width: root.side; height: root.side;
-    border-radius: Surface.r(root.side / 3.3);
+    border-radius: Surface.rr(root.side / 3.3, self.width, self.height);
     background: root.hue;
     Text {
         text: root.glyph;
@@ -970,7 +970,7 @@ component DetailModal inherits Rectangle {
             height: Math.min(root.height - 64px, Math.max(220px, dbody.preferred-height));
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            border-radius: Surface.r(20px);
+            border-radius: Surface.rr(20px, self.width, self.height);
             background: Theme.modal;
             border-width: 1px;
             border-color: FinTheme.hairline;
@@ -1049,7 +1049,7 @@ component PlanModal inherits Rectangle {
             height: Math.min(root.height - 72px, Math.max(220px, body.preferred-height));
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            border-radius: Surface.r(20px);
+            border-radius: Surface.rr(20px, self.width, self.height);
             background: Theme.modal;
             border-width: 1px;
             border-color: FinTheme.hairline;
@@ -1293,7 +1293,7 @@ component CardTitle inherits Rectangle {
         clicked => { root.clicked(); }
     }
     pill := Rectangle {
-        border-radius: Surface.r(9px);
+        border-radius: Surface.rr(9px, self.width, self.height);
         background: root.hue.with-alpha(root.link && lta.has-hover ? 0.26
             : (FinTheme.light ? 0.14 : 0.13));
         border-width: 1px;
@@ -1371,7 +1371,7 @@ component Delta inherits Skin {
     // set `l.width` from this width and this width from `l.width`, which is the
     // binding loop this file is one wrong line away from at all times.
     min-width: l.width + 33px; max-width: l.width + 33px;
-    border-radius: Surface.r(11px);
+    border-radius: Surface.rr(11px, self.width, self.height);
     property <color> hue: root.up ? FinTheme.bad : FinTheme.good;
     background: root.hue.with-alpha(0.16);
     AppIcon {
@@ -1491,7 +1491,7 @@ component PlanCard inherits Card {
             alignment: start; horizontal-stretch: 0;
             Rectangle {
                 width: 34px; height: 34px;
-                border-radius: Surface.r(11px);
+                border-radius: Surface.rr(11px, self.width, self.height);
                 background: root.hue.with-alpha(0.18);
                 AppIcon {
                     source: root.icon; tint: root.hue;
@@ -1712,7 +1712,7 @@ component SpendBreakdown inherits VerticalLayout {
                         y: (parent.height - self.height) / 2;
                         width: hole.preferred-width;
                         height: hole.preferred-height;
-                        border-radius: Surface.r(12px);
+                        border-radius: Surface.rr(12px, self.width, self.height);
                         background: root.hole-hue.with-alpha(FinTheme.light ? 0.15 : 0.16);
                         border-width: 1px;
                         border-color: root.hole-hue.with-alpha(0.26);
@@ -1769,7 +1769,7 @@ component SpendBreakdown inherits VerticalLayout {
                     }
                     // The highlight is the full width of the legend column, so that
                     // hovering a thin slice still lands on something the eye catches.
-                    border-radius: Surface.r(7px);
+                    border-radius: Surface.rr(7px, self.width, self.height);
                     background: root.lit(si, s.start, s.pct) ? FinTheme.pill-bg : transparent;
                     animate background { duration: 110ms; }
                     // Lights the arc from this end. The leave is guarded against
@@ -1786,7 +1786,7 @@ component SpendBreakdown inherits VerticalLayout {
                         padding-left: 6px; padding-right: 6px; spacing: 8px;
                         VerticalLayout {
                             alignment: center; horizontal-stretch: 0;
-                            Rectangle { width: 10px; height: 10px; border-radius: Surface.r(3px); background: s.hue; }
+                            Rectangle { width: 10px; height: 10px; border-radius: Surface.rr(3px, self.width, self.height); background: s.hue; }
                         }
                         Text {
                             text: s.name; color: FinTheme.ink; font-size: 12.5px;
@@ -1869,7 +1869,7 @@ component MonthBars inherits VerticalLayout {
                         // target.
                         height: Math.max(6px, parent.height * Math.max(1, m.expense-pct) / 100);
                         y: parent.height - self.height;
-                        border-radius: Surface.r(5px);
+                        border-radius: Surface.rr(5px, self.width, self.height);
                         // Every month carries the section's ramp, the unpicked
                         // ones softened. They used to be `pill-bg`, which on the
                         // light theme is a hairline tint of the card — eleven
@@ -1887,14 +1887,14 @@ component MonthBars inherits VerticalLayout {
                         if i == root.selected && bar.height > 22px: Rectangle {
                             x: 3px; y: 3px;
                             width: parent.width - 6px; height: parent.height - 6px;
-                            border-radius: Surface.r(4px);
+                            border-radius: Surface.rr(4px, self.width, self.height);
                             border-width: 1px;
                             border-color: FinTheme.on-accent.with-alpha(0.55);
                         }
                         if i == root.selected && bar.height > 22px: Rectangle {
                             x: 6px; y: 6px;
                             width: parent.width - 12px; height: parent.height - 12px;
-                            border-radius: Surface.r(3px);
+                            border-radius: Surface.rr(3px, self.width, self.height);
                             border-width: 1px;
                             border-color: FinTheme.on-accent;
                             opacity: root.pulse ? 0.9 : 0.15;
@@ -1924,7 +1924,7 @@ component NeedsRow inherits Skin {
     callback opened();
     min-height: 56px; max-height: 56px;
     horizontal-stretch: 1;
-    border-radius: Surface.r(12px);
+    border-radius: Surface.rr(12px, self.width, self.height);
     background: ta.has-hover ? FinTheme.card-2 : transparent;
     // The row opens the same thing its button does. The button stays because it
     // is one click instead of two for the common case; the row is the target for
@@ -2128,7 +2128,7 @@ component CalGrid inherits VerticalLayout {
                 root.selected > 0 && cell.d.in-month && cell.d.day == root.selected;
             horizontal-stretch: 1;
             min-height: root.row-min;
-            border-radius: Surface.r(10px);
+            border-radius: Surface.rr(10px, self.width, self.height);
             // A padding day is dimmer than a real one but still drawn: an
             // invisible cell leaves a hole in the table where the eye expects a
             // square, and the row above it stops reading as a week.
@@ -2811,7 +2811,7 @@ export component FinancesPage inherits Rectangle {
                 // icon is dark-on-accent rather than accent-on-wash: it is the one
                 // place the section states its colour at full strength.
                 Rectangle {
-                    width: 44px; height: 44px; border-radius: Surface.r(13px);
+                    width: 44px; height: 44px; border-radius: Surface.rr(13px, self.width, self.height);
                     background: FinTheme.accent-grad;
                     // Also the way back to the sample-data explainer: see `demo-peek`.
                     TouchArea {
@@ -2939,7 +2939,7 @@ export component FinancesPage inherits Rectangle {
                         spacing: 14px; max-width: 460px;
                         Rectangle {
                             width: 58px; height: 58px;
-                            border-radius: Surface.r(18px);
+                            border-radius: Surface.rr(18px, self.width, self.height);
                             background: FinTheme.accent-grad;
                             x: (parent.width - self.width) / 2;
                             AppIcon {
@@ -4477,7 +4477,7 @@ export component FinancesPage inherits Rectangle {
                             x: Math.mod(ai, agrid.cols) * (agrid.cardw + agrid.gap);
                             y: Math.floor(ai / agrid.cols) * (agrid.cardh + agrid.gap);
                             width: agrid.cardw; height: agrid.cardh;
-                            border-radius: Surface.r(14px);
+                            border-radius: Surface.rr(14px, self.width, self.height);
                             background: FinTheme.card;
                             border-width: 1px;
                             border-color: acta.has-hover ? FinTheme.accent.with-alpha(0.55)
@@ -4663,7 +4663,7 @@ export component FinancesPage inherits Rectangle {
                             x: Math.mod(li, lgrid.cols) * (lgrid.cardw + lgrid.gap);
                             y: Math.floor(li / lgrid.cols) * (lgrid.cardh + lgrid.gap);
                             width: lgrid.cardw; height: lgrid.cardh;
-                            border-radius: Surface.r(14px);
+                            border-radius: Surface.rr(14px, self.width, self.height);
                             background: FinTheme.card;
                             border-width: 1px;
                             border-color: lcta.has-hover ? FinTheme.accent.with-alpha(0.55)
@@ -4801,7 +4801,7 @@ export component FinancesPage inherits Rectangle {
                                 alignment: center; horizontal-stretch: 0;
                                 Rectangle {
                                     width: 40px; height: 40px;
-                                    border-radius: Surface.r(13px);
+                                    border-radius: Surface.rr(13px, self.width, self.height);
                                     background: FinTheme.accent-grad;
                                     AppIcon {
                                         source: Icons.calendar-clock;
@@ -4894,7 +4894,7 @@ export component FinancesPage inherits Rectangle {
                             }
                             Rectangle {
                                 height: 18px;
-                                border-radius: Surface.r(9px);
+                                border-radius: Surface.rr(9px, self.width, self.height);
                                 background: FinTheme.pill-bg;
                                 clip: true;
                                 fixed := Rectangle {
@@ -4937,7 +4937,7 @@ export component FinancesPage inherits Rectangle {
                                         padding-top: 4px;
                                         Rectangle {
                                             width: 10px; height: 10px;
-                                            border-radius: Surface.r(3px);
+                                            border-radius: Surface.rr(3px, self.width, self.height);
                                             background: k.c;
                                         }
                                     }
@@ -5115,7 +5115,7 @@ export component FinancesPage inherits Rectangle {
                                                     alignment: start; horizontal-stretch: 0;
                                                     Rectangle {
                                                         width: 24px; height: 24px;
-                                                        border-radius: Surface.r(8px);
+                                                        border-radius: Surface.rr(8px, self.width, self.height);
                                                         background: ac.hue.with-alpha(0.18);
                                                         AppIcon {
                                                             source: a.severity == "bad"
@@ -5273,7 +5273,7 @@ export component FinancesPage inherits Rectangle {
                                                 padding: 12px;
                                                 Rectangle {
                                                     width: 28px; height: 28px;
-                                                    border-radius: Surface.r(9px);
+                                                    border-radius: Surface.rr(9px, self.width, self.height);
                                                     background: FinTheme.accent.with-alpha(0.16);
                                                     x: (parent.width - self.width) / 2;
                                                     AppIcon {
@@ -5475,7 +5475,7 @@ export component FinancesPage inherits Rectangle {
                                                 width: parent.width;
                                                 height: parent.height
                                                     * Math.max(3, m.pct) / 100;
-                                                border-radius: Surface.r(5px);
+                                                border-radius: Surface.rr(5px, self.width, self.height);
                                                 background: m.current
                                                     ? FinTheme.accent-grad
                                                     : FinTheme.accent.with-alpha(0.3);
@@ -5518,7 +5518,7 @@ export component FinancesPage inherits Rectangle {
                                                 alignment: center; horizontal-stretch: 0;
                                                 Rectangle {
                                                     width: 26px; height: 26px;
-                                                    border-radius: Surface.r(9px);
+                                                    border-radius: Surface.rr(9px, self.width, self.height);
                                                     background: h.hue.with-alpha(0.16);
                                                     AppIcon {
                                                         source: h.bar ? Icons.square-check
@@ -5591,7 +5591,7 @@ export component FinancesPage inherits Rectangle {
                                     alignment: center; horizontal-stretch: 0;
                                     Rectangle {
                                         width: 30px; height: 30px;
-                                        border-radius: Surface.r(10px);
+                                        border-radius: Surface.rr(10px, self.width, self.height);
                                         background: (r.severity == "good"
                                             ? FinTheme.good
                                             : FinTheme.accent).with-alpha(0.15);
@@ -5943,7 +5943,7 @@ export component FinancesPage inherits Rectangle {
                             VerticalLayout {
                                 alignment: center; horizontal-stretch: 0;
                                 Rectangle { width: 10px; height: 10px;
-                                    border-radius: Surface.r(3px); background: c.hue; }
+                                    border-radius: Surface.rr(3px, self.width, self.height); background: c.hue; }
                             }
                             Text { text: c.name; color: FinTheme.ink;
                                 font-size: 12px; vertical-alignment: center;
@@ -6192,7 +6192,7 @@ export component FinancesPage inherits Rectangle {
                                 ? FinTheme.good.with-alpha(0.10)
                                 : (svta.has-hover ? FinTheme.good.with-alpha(0.06)
                                                  : transparent);
-                            border-radius: Surface.r(5px);
+                            border-radius: Surface.rr(5px, self.width, self.height);
                             svta := TouchArea {
                                 mouse-cursor: MouseCursor.pointer;
                                 clicked => { root.sav-month = i; }
@@ -6205,7 +6205,7 @@ export component FinancesPage inherits Rectangle {
                                 y: parent.height - self.height;
                                 width: parent.width;
                                 height: parent.height * Math.max(3, m.pct) / 100;
-                                border-radius: Surface.r(4px);
+                                border-radius: Surface.rr(4px, self.width, self.height);
                                 background: root.sm == i
                                     ? FinTheme.good : FinTheme.good.with-alpha(0.4);
                             }
@@ -6273,7 +6273,7 @@ export component FinancesPage inherits Rectangle {
                 VerticalLayout {
                     alignment: start; horizontal-stretch: 0;
                     Rectangle {
-                        width: 34px; height: 34px; border-radius: Surface.r(10px);
+                        width: 34px; height: 34px; border-radius: Surface.rr(10px, self.width, self.height);
                         background: flag.hue.with-alpha(0.15);
                         AppIcon {
                             source: f.severity == "good" ? Icons.trending-up
@@ -6375,7 +6375,7 @@ export component FinancesPage inherits Rectangle {
             height: dl.preferred-height;
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            border-radius: Surface.r(20px);
+            border-radius: Surface.rr(20px, self.width, self.height);
             background: Theme.modal;
             border-width: 1px;
             // Warn-edged only while there is invented money on screen. Opened from the
@@ -6393,7 +6393,7 @@ export component FinancesPage inherits Rectangle {
                     VerticalLayout {
                         alignment: center; horizontal-stretch: 0;
                         Rectangle {
-                            width: 34px; height: 34px; border-radius: Surface.r(11px);
+                            width: 34px; height: 34px; border-radius: Surface.rr(11px, self.width, self.height);
                             background: root.demo
                                 ? FinTheme.warn.with-alpha(0.16)
                                 : FinTheme.accent.with-alpha(0.14);
@@ -6826,7 +6826,7 @@ export component FinancesPage inherits Rectangle {
             height: Math.min(root.height - 64px, Math.max(240px, body.preferred-height));
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            border-radius: Surface.r(20px);
+            border-radius: Surface.rr(20px, self.width, self.height);
             background: Theme.modal;
             border-width: 1px;
             border-color: FinTheme.hairline;
@@ -6901,7 +6901,7 @@ export component FinancesPage inherits Rectangle {
                         if root.sheet == "reconcile": VerticalLayout {
                             spacing: 8px;
                             Rectangle {
-                                border-radius: Surface.r(12px);
+                                border-radius: Surface.rr(12px, self.width, self.height);
                                 background: FinTheme.warn.with-alpha(0.10);
                                 border-width: 1px;
                                 border-color: FinTheme.warn.with-alpha(0.30);
@@ -7101,7 +7101,7 @@ export component FinancesPage inherits Rectangle {
                         if root.sheet == "import": VerticalLayout {
                             spacing: 10px;
                             if root.import-needs-format: Rectangle {
-                                border-radius: Surface.r(12px);
+                                border-radius: Surface.rr(12px, self.width, self.height);
                                 background: FinTheme.warn.with-alpha(0.14);
                                 VerticalLayout {
                                     padding: 12px; spacing: 4px;
@@ -7150,7 +7150,7 @@ export component FinancesPage inherits Rectangle {
                             }
                             for p in root.proposals: Rectangle {
                                 min-height: 58px; max-height: 58px;
-                                border-radius: Surface.r(12px);
+                                border-radius: Surface.rr(12px, self.width, self.height);
                                 background: FinTheme.card-2;
                                 HorizontalLayout {
                                     padding-left: 12px; padding-right: 12px; spacing: 10px;
@@ -7191,7 +7191,7 @@ export component FinancesPage inherits Rectangle {
                 // An answer, not a complaint: what the chosen category's envelope
                 // has left, or which fields came off a photographed receipt.
                 if root.sheet-note != "": Rectangle {
-                    border-radius: Surface.r(10px);
+                    border-radius: Surface.rr(10px, self.width, self.height);
                     background: FinTheme.accent.with-alpha(0.10);
                     VerticalLayout {
                         padding: 10px;

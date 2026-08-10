@@ -85,7 +85,7 @@ export component ArtFade inherits Rectangle {
 // the same `phase` flag the EqBars use, so one timer drives both.
 export component Shimmer inherits Rectangle {
     in property <bool> phase: false;
-    border-radius: Surface.r(10px);
+    border-radius: Surface.rr(10px, self.width, self.height);
     background: #ffffff0c;
     clip: true;
     Rectangle {

@@ -37,13 +37,10 @@ import { PropertiesWindow, AssetProperties } from "properties.slint";
 import { SettingsList, SettingItem } from "settings_panels.slint";
 import { ChatOverlay, ChatTurn } from "chat_overlay.slint";
 import { Gated, GateMode } from "gated.slint";
-import { HomePage, HomeStats, HomeRemote, HomeContinue } from "page_home.slint";
+import { HomePage, HomeStats, HomeRemote, HomeContinue, HomeBook, HomeQuote } from "page_home.slint";
 import { SettingsHomeLayout, HomeCardRow } from "settings_home_layout.slint";
 import { HomeCinema, HomeDue } from "page_home_cinema.slint";
-import { HomeEditorial } from "page_home_editorial.slint";
-import { HomeColumns } from "page_home_columns.slint";
 import { HomeStream, HomeEvent } from "page_home_stream.slint";
-import { HomeDeck } from "page_home_deck.slint";
 import { HomeWelcome } from "page_home_welcome.slint";
 import { BooksPage, BookTile, BooksHero, BookStat, BookChip, CollChip, CollRow, StatBookRow } from "page_books.slint";
 import { BookReader, TocRow, BookmarkRow, SearchRow, AnnotRow, HlRect, ThumbRow } from "book_reader.slint";
@@ -54,7 +51,7 @@ import { FinancesPage, FinStat, FinAccountRow, FinTxnRow, FinRecurRow, FinObliga
           FinField, FinTrendPie, FinKv, FinCalMonth, FinEnvelopeHistory,
           FinSavingsMonth, FinHealthPart, FinTimelineEvent, FinPrediction,
           FinHabit, FinTrendSeries } from "page_finances.slint";
-import { LiveTvPage, LiveChannel, LivePlaylist } from "page_livetv.slint";
+import { LiveTvPage, LiveChannel, LiveGroup, LivePlaylist } from "page_livetv.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
 import { AppIcon, Icons } from "icons.slint";
@@ -85,7 +82,7 @@ component SettingsTab inherits Skin {
     callback clicked();
     min-height: 36px; max-height: 36px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: Surface.r(12px);
+    border-radius: Surface.rr(12px, self.width, self.height);
     background: active ? Theme.panel-2 : (touch.has-hover ? Theme.panel : transparent);
     border-color: active ? Theme.outline-strong : transparent;
     border-width: 1px;
@@ -110,7 +107,7 @@ component ViewerButton inherits Skin {
     callback clicked();
     height: 38px; min-width: 96px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: Surface.r(19px);
+    border-radius: Surface.rr(19px, self.width, self.height);
     background: primary
         ? Accent.color.with-alpha(touch.has-hover ? 0.40 : 0.28)
         : white.with-alpha(touch.has-hover ? 0.26 : 0.16);
@@ -136,7 +133,7 @@ component ViewerMini inherits Skin {
     callback clicked();
     height: 38px; min-width: 46px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: Surface.r(19px);
+    border-radius: Surface.rr(19px, self.width, self.height);
     background: active
         ? Accent.color.with-alpha(touch.has-hover ? 0.45 : 0.32)
         : white.with-alpha(touch.has-hover ? 0.26 : 0.14);
@@ -174,7 +171,7 @@ component SettingsNavItem inherits Skin {
     in property <bool> active;
     callback clicked();
     height: 38px;
-    border-radius: Surface.r(10px);
+    border-radius: Surface.rr(10px, self.width, self.height);
     background: active ? Accent.color.with-alpha(0.16) : (touch.has-hover ? Theme.panel : transparent);
     animate background { duration: 120ms; easing: ease-out; }
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
@@ -204,15 +201,22 @@ component CreditTile inherits Skin {
     in property <CreditEntry> entry;
     callback open();
     background: Surface.body(Theme.panel-2);
-    border-width: 1px; border-color: Surface.hairline;
-    border-radius: Surface.r(10px);
+    border-radius: Surface.rr(10px, self.width, self.height);
+    // Height comes from the grid now (square cells), not from the tile.
     height: 74px;
+    border-width: t.has-hover ? 2px : 1px;
+    border-color: t.has-hover ? Accent.color : Surface.hairline;
+    animate border-color, border-width { duration: 120ms; easing: ease-out; }
     t := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
     VerticalLayout {
-        padding: 10px; spacing: 6px; alignment: center;
+        padding: 10px; spacing: 8px; alignment: center;
         HorizontalLayout { alignment: center;
-            Image { source: entry.icon; width: 22px; height: 22px; } }
-        Text { text: entry.label; color: Theme.text; font-size: 10px;
+            // Scales with the cell: 22px was sized for a 74px-tall strip, and the
+            // grid squares are nearly twice that.
+            Image { source: entry.icon;
+                width: Math.clamp(root.height * 0.30, 22px, 40px); height: self.width; } }
+        Text { text: entry.label; color: Theme.text;
+            font-size: root.height > 100px ? 11px : 10px;
             horizontal-alignment: center; overflow: elide; }
     }
 }
@@ -222,7 +226,7 @@ component LogoChip inherits Skin {
     in property <image> logo;
     in property <bool> selected: false;
     callback clicked();
-    width: 46px; height: 46px; border-radius: Surface.r(12px);
+    width: 46px; height: 46px; border-radius: Surface.rr(12px, self.width, self.height);
     clip: true;
     background: Surface.body(Theme.panel);
     border-width: selected ? 2px : 1px;
@@ -321,7 +325,7 @@ component SettingsPage inherits Rectangle {
     callback status-refresh();
 
     // Home Layout tab (docs/home-layouts/README.md).
-    in property <string> home-layout: "classic";
+    in property <string> home-layout: "welcome";
     in property <[HomeCardRow]> home-cards: [];
     callback use-home-layout(string);
     callback home-card-set(string, bool);
@@ -341,6 +345,7 @@ component SettingsPage inherits Rectangle {
     in property <bool> hc-library: true;
     in property <bool> hc-next: true;
     in property <bool> hc-ticker: true;
+    in property <bool> hc-hub: true;
 
     background: transparent;
 
@@ -352,7 +357,7 @@ component SettingsPage inherits Rectangle {
             width: 218px; spacing: 3px;
             HorizontalLayout {
                 spacing: 10px; alignment: start; height: 52px;
-                Rectangle { width: 36px; height: 36px; border-radius: Surface.r(11px);
+                Rectangle { width: 36px; height: 36px; border-radius: Surface.rr(11px, self.width, self.height);
                     y: 2px;
                     background: Accent.color.with-alpha(0.16);
                     AppIcon { source: Icons.settings; tint: Accent.color; width: 19px; height: 19px;
@@ -540,6 +545,7 @@ component SettingsPage inherits Rectangle {
                     hc-library: root.hc-library;
                     hc-next: root.hc-next;
                     hc-ticker: root.hc-ticker;
+                    hc-hub: root.hc-hub;
                     use-layout(l) => { root.use-home-layout(l); }
                     card-set(c, on) => { root.home-card-set(c, on); }
                     cards-reset => { root.home-cards-reset(); }
@@ -602,7 +608,7 @@ component SettingsPage inherits Rectangle {
                             border-radius: 65px; background: #00000022;
                         }
                         Rectangle {
-                            width: 110px; height: 28px; border-radius: Surface.r(8px);
+                            width: 110px; height: 28px; border-radius: Surface.rr(8px, self.width, self.height);
                             x: parent.width - self.width - 12px; y: parent.height - self.height - 12px;
                             background: cov-t.has-hover ? #000000aa : #00000077;
                             border-width: 1px; border-color: #ffffff55;
@@ -617,7 +623,7 @@ component SettingsPage inherits Rectangle {
                       alignment: center;
                       Rectangle {
                         width: min(540px, root.width - 40px);
-                        border-radius: Surface.r(20px);
+                        border-radius: Surface.rr(20px, self.width, self.height);
                         background: Surface.body(Theme.panel-2); border-color: Surface.hairline; border-width: 1px;
                         drop-shadow-blur: Surface.cast(28px); drop-shadow-color: #00000038;
 
@@ -628,6 +634,15 @@ component SettingsPage inherits Rectangle {
                             padding-bottom: 20px;
 
                             // Name — borderless centred field, accent underline on focus.
+                            // Capped at 12 characters: the Welcome home layout
+                            // sizes its greeting off a width factor, and past 12
+                            // the headline wraps to a second line. Slint has no
+                            // max-length and no substring, so the cap is a revert
+                            // — the last accepted value is kept and restored on
+                            // overflow. (The restore re-enters `edited`, which
+                            // then takes the accepted branch, so it terminates.)
+                            // Rust clamps again on save and on load.
+                            property <string> name-ok: user.display-name;
                             VerticalLayout {
                                 spacing: 4px;
                                 name-ti := TextInput {
@@ -635,13 +650,21 @@ component SettingsPage inherits Rectangle {
                                     color: Theme.text; font-size: 21px; font-weight: 700;
                                     horizontal-alignment: center; single-line: true;
                                     height: 30px;
+                                    edited => {
+                                        if (self.text.character-count > 12) { self.text = name-ok; }
+                                        else { name-ok = self.text; }
+                                    }
                                 }
                                 if name-ti.text == "" && !name-ti.has-focus: Text {
                                     text: "Click to set your name"; color: Theme.text-dim; font-size: 12px;
                                     horizontal-alignment: center;
                                 }
+                                Text {
+                                    text: "Up to 12 characters"; color: Theme.text-dim; font-size: 11px;
+                                    horizontal-alignment: center;
+                                }
                                 Rectangle {
-                                    height: 2px; width: 180px; border-radius: Surface.r(1px);
+                                    height: 2px; width: 180px; border-radius: Surface.rr(1px, self.width, self.height);
                                     x: (parent.width - self.width) / 2;
                                     background: name-ti.has-focus ? Accent.color : Theme.outline;
                                     animate background { duration: 140ms; easing: ease-out; }
@@ -651,38 +674,41 @@ component SettingsPage inherits Rectangle {
                             // Version chip + project links.
                             HorizontalLayout {
                                 spacing: 8px; alignment: center;
+                                // Three solid chips, each its own colour: the
+                                // version is the loud one, GitHub is the light
+                                // one, Releases is the go one. Solid fills, not
+                                // washes — they are the page's only buttons here.
                                 Rectangle {
-                                    height: 28px; border-radius: Surface.r(14px);
+                                    height: 28px; border-radius: Surface.rr(14px, self.width, self.height);
                                     horizontal-stretch: 0; vertical-stretch: 0;
-                                    background: Accent.color.with-alpha(0.16);
-                                    border-width: 1px; border-color: Accent.color.with-alpha(0.5);
+                                    background: #f97316;
                                     HorizontalLayout { padding-left: 12px; padding-right: 12px;
-                                        Text { text: "Tulipix v" + root.app-version; color: Accent.color;
+                                        Text { text: "Tulipix v" + root.app-version; color: #ffffff;
                                             font-size: 11px; font-weight: 700; vertical-alignment: center; } }
                                 }
                                 Rectangle {
-                                    height: 28px; border-radius: Surface.r(14px);
+                                    height: 28px; border-radius: Surface.rr(14px, self.width, self.height);
                                     horizontal-stretch: 0; vertical-stretch: 0;
-                                    background: gh-t.has-hover ? Theme.panel : transparent;
-                                    border-width: 1px; border-color: Surface.hairline;
+                                    background: gh-t.has-hover ? #e8eefc : #ffffff;
+                                    animate background { duration: 120ms; easing: ease-out; }
                                     gh-t := TouchArea { mouse-cursor: pointer;
                                         clicked => { root.open-url("https://github.com/atishsharma/tulipix"); } }
                                     HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 6px;
                                         VerticalLayout { alignment: center;
-                                            AppIcon { source: Icons.command; tint: Theme.text-dim; width: 12px; height: 12px; } }
-                                        Text { text: "GitHub"; color: Theme.text; font-size: 11px; font-weight: 600; vertical-alignment: center; } }
+                                            AppIcon { source: Icons.command; tint: #1d4ed8; width: 12px; height: 12px; } }
+                                        Text { text: "GitHub"; color: #1d4ed8; font-size: 11px; font-weight: 700; vertical-alignment: center; } }
                                 }
                                 Rectangle {
-                                    height: 28px; border-radius: Surface.r(14px);
+                                    height: 28px; border-radius: Surface.rr(14px, self.width, self.height);
                                     horizontal-stretch: 0; vertical-stretch: 0;
-                                    background: rel-t.has-hover ? Theme.panel : transparent;
-                                    border-width: 1px; border-color: Surface.hairline;
+                                    background: rel-t.has-hover ? #15803d : #16a34a;
+                                    animate background { duration: 120ms; easing: ease-out; }
                                     rel-t := TouchArea { mouse-cursor: pointer;
                                         clicked => { root.open-url("https://github.com/atishsharma/tulipix/releases"); } }
                                     HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 6px;
                                         VerticalLayout { alignment: center;
-                                            AppIcon { source: Icons.download; tint: Theme.text-dim; width: 12px; height: 12px; } }
-                                        Text { text: "Releases"; color: Theme.text; font-size: 11px; font-weight: 600; vertical-alignment: center; } }
+                                            AppIcon { source: Icons.download; tint: #ffffff; width: 12px; height: 12px; } }
+                                        Text { text: "Releases"; color: #ffffff; font-size: 11px; font-weight: 700; vertical-alignment: center; } }
                                 }
                             }
 
@@ -723,12 +749,12 @@ component SettingsPage inherits Rectangle {
                                     width: 52px; height: 28px;
                                     horizontal-stretch: 0; vertical-stretch: 0;
                                     y: (parent.height - self.height) / 2;
-                                    border-radius: Surface.r(14px);
+                                    border-radius: Surface.rr(14px, self.width, self.height);
                                     background: root.reduce-motion ? Accent.color : Theme.outline;
                                     animate background { duration: 140ms; easing: ease-out; }
                                     TouchArea { mouse-cursor: pointer; clicked => { root.reduce-motion-changed(!root.reduce-motion); } }
                                     Rectangle {
-                                        width: 22px; height: 22px; border-radius: Surface.r(11px);
+                                        width: 22px; height: 22px; border-radius: Surface.rr(11px, self.width, self.height);
                                         background: #ffffff;
                                         x: root.reduce-motion ? parent.width - self.width - 3px : 3px;
                                         y: (parent.height - self.height) / 2;
@@ -744,11 +770,11 @@ component SettingsPage inherits Rectangle {
                             // pages away was the wrong place to look for it. The
                             // flag and the header button are untouched.
 
-                            // Sidebar logo — pick one of the four bundled marks.
+                            // Sidebar logo — pick one of the five bundled marks.
                             VerticalLayout {
                                 spacing: 2px;
                                 Text { text: "Sidebar logo"; color: Theme.text; font-size: 13px; font-weight: 600; }
-                                Text { text: "Shown at the top of the sidebar"; color: Theme.text-dim; font-size: 11px; }
+                                Text { text: "Shown at the top of the sidebar — five marks, India included"; color: Theme.text-dim; font-size: 11px; }
                             }
                             HorizontalLayout {
                                 spacing: 10px; alignment: center;
@@ -762,6 +788,11 @@ component SettingsPage inherits Rectangle {
                                     selected: sel-logo == 2; clicked => { sel-logo = 2; } }
                                 LogoChip { logo: @image-url("../resources/appicons/sidebar-white.png");
                                     selected: sel-logo == 3; clicked => { sel-logo = 3; } }
+                                // The India mark, pickable all year. The seasonal
+                                // swap only touches the DEFAULT chip; choosing it
+                                // here is a standing choice, not a date.
+                                LogoChip { logo: @image-url("../resources/appicons/logo_india.png");
+                                    selected: sel-logo == 4; clicked => { sel-logo = 4; } }
                             }
 
                             // Save — below the appearance block so one click
@@ -770,7 +801,7 @@ component SettingsPage inherits Rectangle {
                             HorizontalLayout {
                                 alignment: center;
                                 Rectangle {
-                                    width: 180px; height: 36px; border-radius: Surface.r(18px);
+                                    width: 180px; height: 36px; border-radius: Surface.rr(18px, self.width, self.height);
                                     horizontal-stretch: 0; vertical-stretch: 0;
                                     background: just-saved ? #22c55e : (save-t.has-hover ? Accent.color.with-alpha(0.85) : Accent.color);
                                     animate background { duration: 120ms; easing: ease-out; }
@@ -824,36 +855,99 @@ component SettingsPage inherits Rectangle {
                     Rectangle { height: 10px; }
                     Text { text: "BUILT WITH"; color: Theme.text-dim; font-size: 10px; font-weight: 700; letter-spacing: 1px; horizontal-alignment: center; }
                     Rectangle { height: 4px; }
-                    HorizontalLayout {
-                        alignment: center;
-                        VerticalLayout {
-                            width: min(540px, root.width - 40px);
-                            spacing: 10px;
-                            HorizontalLayout { spacing: 10px;
-                                CreditTile { entry: credits[0];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                                CreditTile { entry: credits[1];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                                CreditTile { entry: credits[2];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                                CreditTile { entry: credits[3];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                            }
-                            HorizontalLayout { spacing: 10px;
-                                CreditTile { entry: credits[4];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                                CreditTile { entry: credits[5];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                                CreditTile { entry: credits[6];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                                CreditTile { entry: credits[7];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                            }
-                            HorizontalLayout { spacing: 10px;
-                                CreditTile { entry: credits[8];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                                CreditTile { entry: credits[9];  horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                                CreditTile { entry: credits[10]; horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                                CreditTile { entry: credits[11]; horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                            }
-                            HorizontalLayout { spacing: 10px;
-                                CreditTile { entry: credits[12]; horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                                CreditTile { entry: credits[13]; horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                                CreditTile { entry: credits[14]; horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                                CreditTile { entry: credits[15]; horizontal-stretch: 1; open => { root.open-url(self.entry.link); } }
-                            }
-                        }
+                    // Sixteen credits as an 8 x 2 grid of equal SQUARES, spanning
+                    // the whole page rather than the 540px identity card — it is a
+                    // wall of logos, and the card is for the things you edit.
+                    // Placed by hand inside a box that measures itself: a
+                    // GridLayout sizes its columns from what the tiles ask for, so
+                    // the widest label would take a wider column and the squares
+                    // would stop being square.
+                    cgrid := Rectangle {
+                        property <length> cell: Math.min((self.width - 40px - 7 * 10px) / 8, 128px);
+                        property <length> step: self.cell + 10px;
+                        property <length> left: (self.width - (8 * self.cell + 7 * 10px)) / 2;
+                        height: self.cell * 2 + 10px;
+                        vertical-stretch: 0;
+                        CreditTile {
+                            entry: credits[0];
+                            x: cgrid.left + 0 * cgrid.step; y: 0 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[1];
+                            x: cgrid.left + 1 * cgrid.step; y: 0 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[2];
+                            x: cgrid.left + 2 * cgrid.step; y: 0 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[3];
+                            x: cgrid.left + 3 * cgrid.step; y: 0 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[4];
+                            x: cgrid.left + 4 * cgrid.step; y: 0 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[5];
+                            x: cgrid.left + 5 * cgrid.step; y: 0 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[6];
+                            x: cgrid.left + 6 * cgrid.step; y: 0 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[7];
+                            x: cgrid.left + 7 * cgrid.step; y: 0 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[8];
+                            x: cgrid.left + 0 * cgrid.step; y: 1 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[9];
+                            x: cgrid.left + 1 * cgrid.step; y: 1 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[10];
+                            x: cgrid.left + 2 * cgrid.step; y: 1 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[11];
+                            x: cgrid.left + 3 * cgrid.step; y: 1 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[12];
+                            x: cgrid.left + 4 * cgrid.step; y: 1 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[13];
+                            x: cgrid.left + 5 * cgrid.step; y: 1 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[14];
+                            x: cgrid.left + 6 * cgrid.step; y: 1 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
+                        CreditTile {
+                            entry: credits[15];
+                            x: cgrid.left + 7 * cgrid.step; y: 1 * cgrid.step;
+                            width: cgrid.cell; height: cgrid.cell;
+                            open => { root.open-url(self.entry.link); } }
                     }
                   }
                 }
@@ -885,6 +979,17 @@ export component MainWindow inherits Window {
     in-out property <[image]> home-recent-photos: [];   // Home Photos slideshow feed
     in-out property <[image]> home-recent-videos: [];   // Home Videos slideshow feed
     in-out property <[image]> home-book-covers: [];      // Home Books row feed (recent covers)
+    // 8 newest tracks by `added` — the Welcome layout's Recently Added → Music
+    // tab. Distinct from music-recent-rows, which is recently PLAYED.
+    in-out property <[MusicSongRow]> home-recent-songs: [];
+    // 4 newest books WITH their baked 3D covers — the Welcome layout's Books
+    // shelf. home-book-covers stays as it is: six other layouts draw flat art.
+    in-out property <[HomeBook]> home-recent-books: [];
+    // Welcome hero: the quote shelf, pre-shuffled in Rust. (The greeting emoji
+    // rotates on a UI clock and lives in the Welcome page itself.)
+    in-out property <[HomeQuote]> home-quotes: [];
+    /// Total ops in the Tools catalog — the Welcome hub tile's count.
+    in-out property <int> tools-op-total: 0;
     in-out property <[HomeRemote]> home-cloud-remotes: []; // Home Cloud row feed
     in-out property <[HomeContinue]> home-continue-rows: []; // Home CONTINUE strip feed (pre-filtered)
     callback home-continue-filter(string);   // chip click → backend re-filters the model
@@ -895,9 +1000,11 @@ export component MainWindow inherits Window {
     in-out property <bool> home-music-left: false;   // music block side (Settings)
 
     // ── Home layout (Settings › PERSONAL › Home Layout) ─────────────────────
-    // Seven compositions over one data set; see docs/home-layouts/README.md.
-    // "classic" is the default and the fallback for an unknown stored value.
-    in-out property <string> home-layout: "classic";
+    // Four compositions over one data set; see docs/home-layouts/README.md.
+    // `welcome` (shown as "Focused") is the default and the fallback for an
+    // unknown stored value. The ids are the on-disk names — the display names
+    // Poweruser / Cinema / Timeline / Focused live in the settings picker.
+    in-out property <string> home-layout: "welcome";
     callback use-home-layout(string);
     /// Cards of the active layout, for the customize popup. Built in Rust so a
     /// layout only ever lists the cards it has a place for.
@@ -922,6 +1029,7 @@ export component MainWindow inherits Window {
     in property <bool> hc-library: true;
     in property <bool> hc-next: true;
     in property <bool> hc-ticker: true;
+    in property <bool> hc-hub: true;
     // Cinema's hero — the top in-progress item, resolved in Rust from the same
     // rows that feed the Continue strip (no extra query).
     in property <string> home-hero-kind: "";
@@ -942,8 +1050,6 @@ export component MainWindow inherits Window {
     in property <string> home-transfer-note: "";
     // Columns' selected pane, persisted under `home.columns.open`. Resolved in
     // Rust so it can never name a pane whose card is switched off.
-    in property <string> home-open-pane: "photos";
-    callback home-pane-open(string);
     // Stream's feed. Merged in Rust from the section databases plus the activity
     // log (there is no events table — docs/home-layouts/04-stream.md §Data), then
     // filtered by the section cards and the chip below.
@@ -1197,7 +1303,7 @@ export component MainWindow inherits Window {
     in-out property <bool> video-stream-fourk-saved: false;
     // ── Live TV (Videos → Live TV, left of Stream) ──
     in-out property <[LiveChannel]> livetv-channels: [];
-    in-out property <[string]> livetv-groups: [];
+    in-out property <[LiveGroup]> livetv-groups: [];
     in-out property <string> livetv-group: "";
     in-out property <string> livetv-query: "";
     in-out property <bool> livetv-busy: false;
@@ -2213,6 +2319,9 @@ callback cloud-go-home();
     in-out property <int> music-browse-pages: 1;
     in-out property <bool> music-shuffle: false;
     in-out property <int> music-vis-style: 4;   // 0 Bars · 1 Mirror · 2 Dots · 3 Levels · 4 Line (default)
+    // Zen player: visualizer on/off. Lives here rather than in MusicFullscreen
+    // so the choice survives closing and reopening zen, and it is persisted.
+    in-out property <bool> music-zen-viz: true;
     in-out property <bool> music-np-loved: false;
     in-out property <int> music-np-stars: 0;
     in-out property <float> music-pos: 0;
@@ -2239,6 +2348,9 @@ callback cloud-go-home();
     callback music-toggle-panel(string);
     callback music-set-eq(string);
     callback music-play-queue(int);
+    // Rebuild the Up-next model without touching any panel state — the Home
+    // players show the queue but have no panel of their own to open.
+    callback music-build-queue();
     callback music-add-to-playlist();
     callback music-set-eq-band(int, float);
     in-out property <[MusicSongRow]> music-songs: [];
@@ -2437,6 +2549,7 @@ callback cloud-go-home();
     in-out property <string> music-tag-fetch-status: "";
     in property <[string]> music-genre-options: [];
     callback music-set-vis-style(int);
+    callback music-set-zen-viz(bool);
     callback music-tag-edit();
     callback music-tag-save();
     callback music-tag-change-art();
@@ -2879,16 +2992,26 @@ callback cloud-go-home();
     // Podcast mini has one fewer control row than the music mini (the full-width
     // speed slider became an inline pill), so it gets a shorter shell — no blank gap.
     property <length> music-mini-h: (root.music-player-mode == "podcast" ? 456px : 470px) * root.music-mini-scale;
-    // Open the mini-player centered in the page (used when a podcast starts).
+    // A long-form track starting (podcast / audiobook / radio) PINS the mini
+    // rather than opening it: the full player used to ambush whatever page you
+    // were on the moment playback began, and every section already carries a
+    // button that opens it. The centre x/y are still primed here so the first
+    // expand lands in the middle of the page.
     callback music-center-mini();
     music-center-mini => {
-        root.music-mini-bubble = false;
+        root.music-mini-bubble = true;
         root.music-mini-open = true;
         root.music-mini-x = (root.width - root.music-mini-w) / 2;
         root.music-mini-y = (root.height - root.music-mini-h) / 2;
     }
     in-out property <length> music-bubble-y: -1px;   // <0 = uninitialised (centre on show)
     in-out property <bool> music-mini-show-queue: false;
+    // Home never pops the full mini by itself — starting a podcast / audiobook /
+    // radio station calls music-center-mini(), and on Home that would ambush the
+    // page on every entry. The mini only appears there once the user asks for it
+    // (artwork click, or tapping the pinned bubble). The bubble itself is always
+    // welcome — that IS the pinned state.
+    in-out property <bool> home-mini-allowed: false;
     callback music-open-fullscreen();
     callback music-open-mini();
 
@@ -3148,7 +3271,8 @@ callback cloud-go-home();
             // Music playback shortcuts — arrows seek/volume, space play/pause
             // (np.p4.music.player-keys). Active in Music OR whenever the
             // app-wide mini-player is open on any other section.
-            if (root.active-section == "music" || root.music-mini-open) && !root.viewer-open {
+            if (root.active-section == "music" || root.music-mini-open
+                    || (root.active-section == "home" && root.hc-player)) && !root.viewer-open {
                 if e.text == Key.LeftArrow  { root.music-seek(Math.max(0, root.music-pos - 5)); return accept; }
                 if e.text == Key.RightArrow { root.music-seek(Math.min(root.music-dur, root.music-pos + 5)); return accept; }
                 if e.text == Key.UpArrow    { root.music-set-volume(Math.min(130, root.music-volume + 5)); return accept; }
@@ -3941,10 +4065,6 @@ callback cloud-go-home();
                 np-album: root.music-np-album; set-sleep(m) => { root.music-set-sleep(m); }
                 open-now-album => { root.music-open-now-album(); } open-now-artist => { root.music-open-now-artist(); }
                 mini-active: root.music-mini-open;
-                open-mini => {
-                    if (root.music-mini-x == 0px && root.music-mini-y == 0px) { root.music-mini-x = (root.width - root.music-mini-w)/2; root.music-mini-y = (root.height - root.music-mini-h)/2; }
-                    root.music-open-mini();
-                }
                 open-fullscreen => { root.music-open-fullscreen(); }
                 np-next => { root.music-next(); } np-prev => { root.music-prev(); } np-playpause => { root.music-toggle-pause(); } }
             if active-section == "cloud":    CloudPage  {
@@ -4360,8 +4480,8 @@ callback cloud-go-home();
                 width: parent.width; height: parent.height;
                 greeting: root.home-greeting;
                 date-line: root.home-date-line;
-                library-line: root.home-stats.photos + root.home-stats.videos + root.home-stats.books
-                    + " items";
+                logo-choice: root.app-logo-choice;
+                festival: root.festival-logo;
                 hero-kind: root.home-hero-kind;
                 hero-title: root.home-hero-title;
                 hero-kicker: root.home-hero-kicker;
@@ -4369,124 +4489,82 @@ callback cloud-go-home();
                 hero-frac: root.home-hero-frac;
                 hero-art: root.home-hero-art;
                 continue-rows: root.home-continue-rows;
-                stats: root.home-stats;
-                fin-spent: root.fin-spent-total;
-                fin-month: root.fin-month-label;
-                fin-liquid: root.fin-liquid-total;
-                fin-months: root.home-fin-months;
-                fin-dues: root.home-fin-dues;
-                transfer-inbox: root.home-transfer-inbox;
-                transfer-note: root.home-transfer-note;
-                hc-hero: root.hc-hero;
-                hc-continue: root.hc-continue;
-                hc-photos: root.hc-photos;
-                hc-videos: root.hc-videos;
-                hc-music: root.hc-music;
-                hc-books: root.hc-books;
-                hc-cloud: root.hc-cloud;
-                hc-tools: root.hc-tools;
-                hc-transfer: root.hc-transfer;
-                hc-finances: root.hc-finances;
-                open-section(s) => { root.active-section = s; root.section-changed(s); }
-                open-search => { root.palette-open = true; }
-                resume-hero => { root.home-hero-resume(); }
-                hero-details => { root.home-hero-details(); }
-                continue-open(r) => {
-                    if (r.kind == "video") { root.home-continue-video(r.id, r.path); }
-                    else if (r.kind == "podcast") { root.music-podcast-play(r.id); }
-                    else if (r.kind == "book") { root.books-open-details(r.id); }
-                    else { root.music-view = "audiobooks"; root.active-section = "music"; root.section-changed("music"); }
-                }
-                start-sharing => { root.active-section = "transfer"; root.section-changed("transfer"); root.transfer-start(); }
-            }
-            // Home layout 3 — Editorial (docs/home-layouts/03-editorial.md).
-            if active-section == "home" && root.home-layout == "editorial": HomeEditorial {
-                width: parent.width; height: parent.height;
-                greeting: root.home-greeting;
-                date-line: root.home-date-line;
-                // Already thousands-separated and byte-summed by kick_home_stats.
-                library-line: root.user.secondary;
-                stats: root.home-stats;
-                recent-photos: root.home-recent-photos;
-                recent-videos: root.home-recent-videos;
-                book-covers: root.home-book-covers;
-                cloud-remotes: root.home-cloud-remotes;
-                fin-spent: root.fin-spent-total;
-                fin-month: root.fin-month-label;
-                fin-liquid: root.fin-liquid-total;
-                fin-months: root.home-fin-months;
-                fin-dues: root.home-fin-dues;
-                transfer-inbox: root.home-transfer-inbox;
                 np-title: root.music-np-title;
                 np-sub: root.music-np-sub;
                 np-art: root.music-np-art;
                 np-accent: root.music-np-accent;
+                lyrics-rows: root.music-lyrics-rows;
+                lyrics-active: root.music-lyrics-active;
+                player-mode: root.music-player-mode;
+                yt-now-video: root.music-yt-now-video;
                 playing: root.music-playing;
+                pos: root.music-pos;
+                dur: root.music-dur;
                 pos-label: root.music-pos-label;
                 dur-label: root.music-dur-label;
-                vis-bars: root.music-vis-bars;
-                hc-photos: root.hc-photos;
-                hc-videos: root.hc-videos;
-                hc-music: root.hc-music;
-                hc-books: root.hc-books;
-                hc-cloud: root.hc-cloud;
-                hc-tools: root.hc-tools;
-                hc-transfer: root.hc-transfer;
-                hc-finances: root.hc-finances;
-                hc-ticker: root.hc-ticker;
-                open-section(s) => { root.active-section = s; root.section-changed(s); }
-                open-search => { root.palette-open = true; }
-                // tools-set-category (not home-open-tool) so the backend also runs
-                // tools_refresh — a bare category set leaves the op list empty.
-                open-tool(c) => { root.tools-set-category(c); root.active-section = "tools"; root.section-changed("tools"); }
-                open-remote(n) => { root.home-open-remote(n); root.active-section = "cloud"; root.section-changed("cloud"); }
-                start-sharing => { root.active-section = "transfer"; root.section-changed("transfer"); root.transfer-start(); }
-                playpause => { if (root.music-np-title == "") { root.music-shuffle-all(); } else { root.music-toggle-pause(); } }
-                next => { root.music-next(); }
-                prev => { root.music-prev(); }
-            }
-            // Home layout 2 — Columns (docs/home-layouts/02-columns.md).
-            if active-section == "home" && root.home-layout == "columns": HomeColumns {
-                width: parent.width; height: parent.height;
-                greeting: root.home-greeting;
-                date-line: root.home-date-line;
-                library-line: root.user.secondary;
+                shuffle: root.music-shuffle;
+                repeat: root.music-repeat;
+                volume: root.music-volume;
+                muted: root.music-muted;
+                queue-rows: root.music-queue-rows;
+                np-index: root.music-np-index;
+                hc-hero: root.hc-hero;
+                hc-continue: root.hc-continue;
+                hc-quick: root.hc-quick;
+                hc-player: root.hc-player;
+                hc-hub: root.hc-hub;
+                // My Hub feed — the same four sources Focused's tiles read.
                 stats: root.home-stats;
-                recent-photos: root.home-recent-photos;
-                recent-videos: root.home-recent-videos;
-                book-covers: root.home-book-covers;
-                cloud-remotes: root.home-cloud-remotes;
-                continue-rows: root.home-continue-rows;
-                fin-spent: root.fin-spent-total;
+                tool-count: root.tools-op-total;
+                transfer-line: root.transfer-iface == "" ? ""
+                    : root.transfer-iface + ":" + root.transfer-port;
                 fin-month: root.fin-month-label;
-                fin-liquid: root.fin-liquid-total;
-                fin-months: root.home-fin-months;
-                fin-dues: root.home-fin-dues;
-                transfer-inbox: root.home-transfer-inbox;
-                np-art: root.music-np-art;
-                np-title: root.music-np-title;
-                np-sub: root.music-np-sub;
-                open-pane: root.home-open-pane;
-                hc-photos: root.hc-photos;
-                hc-videos: root.hc-videos;
-                hc-music: root.hc-music;
-                hc-books: root.hc-books;
-                hc-cloud: root.hc-cloud;
-                hc-tools: root.hc-tools;
-                hc-transfer: root.hc-transfer;
-                hc-finances: root.hc-finances;
-                pane-open(p) => { root.home-pane-open(p); }
                 open-section(s) => { root.active-section = s; root.section-changed(s); }
-                open-search => { root.palette-open = true; }
-                open-tool(c) => { root.tools-set-category(c); root.active-section = "tools"; root.section-changed("tools"); }
-                open-remote(n) => { root.home-open-remote(n); root.active-section = "cloud"; root.section-changed("cloud"); }
+                // Header launcher pills — the same six doors Focused's launch bar
+                // opens, with the same warm-the-tab setters.
+                open-stream => { root.set-video-kind("stream"); root.video-kind = "stream"; root.active-section = "videos"; root.section-changed("videos"); }
+                open-livetv => { root.set-video-kind("livetv"); root.video-kind = "livetv"; root.active-section = "videos"; root.section-changed("videos"); }
+                open-youtube => { root.music-view = "youtube"; root.active-section = "music"; root.section-changed("music"); }
+                open-download => { root.music-view = "mymusic"; root.music-set-lib-tab("downloader"); root.active-section = "music"; root.section-changed("music"); }
+                open-genesis => { root.genesis-enter(); root.active-section = "books"; root.section-changed("books"); }
+                random-radio => { root.home-random-radio(); }
+                open-zen => { root.music-fullscreen = true; }
+                resume-hero => { root.home-hero-resume(); }
+                hero-details => { root.home-hero-details(); }
+                continue-filter(f) => { root.home-continue-filter(f); }
+                // The book DETAIL panel, which lives inside BooksPage — so the
+                // section comes along with it.
+                open-book-detail(id) => {
+                    root.books-show-detail(id); root.section-changed("books");
+                    root.active-section = "books";
+                }
                 continue-open(r) => {
                     if (r.kind == "video") { root.home-continue-video(r.id, r.path); }
                     else if (r.kind == "podcast") { root.music-podcast-play(r.id); }
                     else if (r.kind == "book") { root.books-open-details(r.id); }
                     else { root.music-view = "audiobooks"; root.active-section = "music"; root.section-changed("music"); }
                 }
-                start-sharing => { root.active-section = "transfer"; root.section-changed("transfer"); root.transfer-start(); }
+                playpause => { root.music-toggle-pause(); }
+                next => { root.music-next(); }
+                prev => { root.music-prev(); }
+                seek(s) => { root.music-seek(s); }
+                shuffle-all => { root.music-shuffle-all(); }
+                toggle-shuffle => { root.music-toggle-shuffle(); }
+                cycle-repeat => { root.music-cycle-repeat(); }
+                toggle-mute => { root.music-toggle-mute(); }
+                set-volume(v) => { root.music-set-volume(v); }
+                play-queue(i) => { root.music-play-queue(i); }
+                refresh-queue => { root.music-build-queue(); }
+                // The player's header row names the tab the sound comes from —
+                // clicking it goes there.
+                open-playing-tab => {
+                    root.music-view = root.music-player-mode == "podcast" ? "podcasts"
+                        : (root.music-player-mode == "radio" ? "radio"
+                        : (root.music-player-mode == "book" ? "audiobooks"
+                        : (root.music-yt-now-video ? "youtube" : "mymusic")));
+                    root.section-changed("music");
+                    root.active-section = "music";
+                }
             }
             // Home layout 4 — Stream (docs/home-layouts/04-stream.md).
             if active-section == "home" && root.home-layout == "stream": HomeStream {
@@ -4532,80 +4610,6 @@ callback cloud-go-home();
                 next => { root.music-next(); }
                 prev => { root.music-prev(); }
             }
-            // Home layout 6 — Deck (docs/home-layouts/06-deck.md).
-            if active-section == "home" && root.home-layout == "deck": HomeDeck {
-                width: parent.width; height: parent.height;
-                greeting: root.home-greeting;
-                date-line: root.home-date-line;
-                library-line: root.user.secondary;
-                avatar-image: root.user.avatar-image;
-                stats: root.home-stats;
-                continue-rows: root.home-continue-rows;
-                recent-photos: root.home-recent-photos;
-                recent-videos: root.home-recent-videos;
-                book-covers: root.home-book-covers;
-                cloud-remotes: root.home-cloud-remotes;
-                transfer-inbox: root.home-transfer-inbox;
-                transfer-note: root.home-transfer-note;
-                fin-spent: root.fin-spent-total;
-                fin-month: root.fin-month-label;
-                fin-income: root.fin-txn-income;
-                fin-liquid: root.fin-liquid-total;
-                fin-months: root.home-fin-months;
-                fin-dues: root.home-fin-dues;
-                np-title: root.music-np-title;
-                np-sub: root.music-np-sub;
-                np-art: root.music-np-art;
-                np-accent: root.music-np-accent;
-                playing: root.music-playing;
-                pos: root.music-pos; dur: root.music-dur;
-                pos-label: root.music-pos-label; dur-label: root.music-dur-label;
-                shuffle: root.music-shuffle; repeat: root.music-repeat;
-                volume: root.music-volume; muted: root.music-muted;
-                hc-continue: root.hc-continue;
-                hc-library: root.hc-library;
-                hc-player: root.hc-player;
-                hc-quick: root.hc-quick;
-                hc-photos: root.hc-photos;
-                hc-videos: root.hc-videos;
-                hc-music: root.hc-music;
-                hc-books: root.hc-books;
-                hc-cloud: root.hc-cloud;
-                hc-tools: root.hc-tools;
-                hc-transfer: root.hc-transfer;
-                hc-finances: root.hc-finances;
-                open-section(s) => { root.active-section = s; root.section-changed(s); }
-                open-search => { root.palette-open = true; }
-                open-profile => { root.active-settings-tab = "profile"; root.active-section = "settings"; root.section-changed("settings"); }
-                // The status dashboard is a Settings tab, not a section.
-                open-status => { root.active-settings-tab = "status"; root.active-section = "settings"; root.section-changed("settings"); root.status-refresh(); }
-                open-photo-item(i) => { root.home-open-photo-item(i); }
-                open-video-item(i) => { root.home-open-video-item(i); }
-                open-book-item(i) => { root.home-open-book-item(i); }
-                // tools-set-category (not home-open-tool) so the backend also runs
-                // tools_refresh — a bare category set leaves the op list empty.
-                open-tool(c) => { root.tools-set-category(c); root.active-section = "tools"; root.section-changed("tools"); }
-                open-remote(n) => { root.home-open-remote(n); root.active-section = "cloud"; root.section-changed("cloud"); }
-                continue-open(r) => {
-                    if (r.kind == "video") { root.home-continue-video(r.id, r.path); }
-                    else if (r.kind == "podcast") { root.music-podcast-play(r.id); }
-                    else if (r.kind == "book") { root.books-open-details(r.id); }
-                    else { root.music-view = "audiobooks"; root.active-section = "music"; root.section-changed("music"); }
-                }
-                start-sharing => { root.active-section = "transfer"; root.section-changed("transfer"); root.transfer-start(); }
-                open-stream => { root.set-video-kind("stream"); root.video-kind = "stream"; root.active-section = "videos"; root.section-changed("videos"); }
-                open-livetv => { root.set-video-kind("livetv"); root.video-kind = "livetv"; root.active-section = "videos"; root.section-changed("videos"); }
-                open-download => { root.music-view = "mymusic"; root.music-set-lib-tab("downloader"); root.active-section = "music"; root.section-changed("music"); }
-                random-radio => { root.home-random-radio(); }
-                playpause => { if (root.music-np-title == "") { root.music-shuffle-all(); } else { root.music-toggle-pause(); } }
-                next => { root.music-next(); } prev => { root.music-prev(); }
-                seek(s) => { root.music-seek(s); }
-                set-volume(v) => { root.music-set-volume(v); }
-                toggle-mute => { root.music-toggle-mute(); }
-                toggle-shuffle => { root.music-toggle-shuffle(); }
-                cycle-repeat => { root.music-cycle-repeat(); }
-                open-zen => { root.music-fullscreen = true; }
-            }
             // Home layout 7 — Welcome (docs/home-layouts/07-welcome.md).
             if active-section == "home" && root.home-layout == "welcome": HomeWelcome {
                 width: parent.width; height: parent.height;
@@ -4613,13 +4617,16 @@ callback cloud-go-home();
                 date-line: root.home-date-line;
                 library-line: root.user.secondary;
                 avatar-image: root.user.avatar-image;
-                logo-choice: root.app-logo-choice;
-                festival: root.festival-logo;
                 stats: root.home-stats;
                 continue-rows: root.home-continue-rows;
                 recent-photos: root.home-recent-photos;
                 recent-videos: root.home-recent-videos;
-                book-covers: root.home-book-covers;
+                recent-songs: root.home-recent-songs;
+                recent-books: root.home-recent-books;
+                quotes: root.home-quotes;
+                tool-count: root.tools-op-total;
+                transfer-line: root.transfer-iface == "" ? ""
+                    : root.transfer-iface + ":" + root.transfer-port;
                 fin-month: root.fin-month-label;
                 np-title: root.music-np-title;
                 np-sub: root.music-np-sub;
@@ -4629,8 +4636,12 @@ callback cloud-go-home();
                 pos: root.music-pos; dur: root.music-dur;
                 pos-label: root.music-pos-label; dur-label: root.music-dur-label;
                 shuffle: root.music-shuffle; repeat: root.music-repeat;
-                muted: root.music-muted;
-                vis-bars: root.music-vis-bars;
+                muted: root.music-muted; volume: root.music-volume;
+                vis-bars: root.music-vis-bars; vis-style: root.music-vis-style;
+                // Header spectrum + synced lyrics (the search box used to live there).
+                lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
+                player-mode: root.music-player-mode; yt-now-video: root.music-yt-now-video;
+                queue-rows: root.music-queue-rows; np-index: root.music-np-index;
                 hc-hero: root.hc-hero;
                 hc-quick: root.hc-quick;
                 hc-continue: root.hc-continue;
@@ -4644,36 +4655,80 @@ callback cloud-go-home();
                 hc-tools: root.hc-tools;
                 hc-transfer: root.hc-transfer;
                 hc-finances: root.hc-finances;
-                open-section(s) => { root.active-section = s; root.section-changed(s); }
-                open-search => { root.palette-open = true; }
-                open-profile => { root.active-settings-tab = "profile"; root.active-section = "settings"; root.section-changed("settings"); }
+                // Every handler here sets `active-section` LAST, and nothing
+                // follows it. `active-section` is this component's own `if`
+                // condition, so assigning it deletes HomeWelcome — and any
+                // statement after that runs on a tree Slint has already torn
+                // down, which surfaces as "Recursion detected" out of
+                // properties.rs. Same rule the viz-menu rows follow with
+                // close() (slint#6426). `section-changed(s)` takes the section
+                // as an argument and never reads the property, so moving it in
+                // front changes nothing about what it does.
+                open-section(s) => { root.section-changed(s); root.active-section = s; }
+                open-profile => { root.active-settings-tab = "profile"; root.section-changed("settings"); root.active-section = "settings"; }
+                // The hero's Status key lands on the in-window Status page, not
+                // the loopback dashboard — the same tab the settings rail opens,
+                // refreshed on the way in. active-section LAST, as above.
+                status-level: root.status-level;
+                status-note: root.status-note;
+                open-status => {
+                    root.active-settings-tab = "status"; root.status-refresh();
+                    root.section-changed("settings"); root.active-section = "settings";
+                }
                 open-photo-item(i) => { root.home-open-photo-item(i); }
                 open-video-item(i) => { root.home-open-video-item(i); }
-                open-book-item(i) => { root.home-open-book-item(i); }
+                // Books open their DETAIL panel here, not the reader — from both
+                // the shelf and Continue. The panel lives inside BooksPage, so
+                // the section has to come along with it.
+                open-book-detail(id) => {
+                    root.books-show-detail(id); root.section-changed("books");
+                    root.active-section = "books";
+                }
+                continue-filter(f) => { root.home-continue-filter(f); }
                 continue-open(r) => {
                     if (r.kind == "video") { root.home-continue-video(r.id, r.path); }
                     else if (r.kind == "podcast") { root.music-podcast-play(r.id); }
-                    else if (r.kind == "book") { root.books-open-details(r.id); }
-                    else { root.music-view = "audiobooks"; root.active-section = "music"; root.section-changed("music"); }
+                    else if (r.kind == "book") {
+                        root.books-show-detail(r.id); root.section-changed("books");
+                        root.active-section = "books";
+                    }
+                    else { root.music-view = "audiobooks"; root.section-changed("music"); root.active-section = "music"; }
                 }
-                open-stream => { root.set-video-kind("stream"); root.video-kind = "stream"; root.active-section = "videos"; root.section-changed("videos"); }
-                open-livetv => { root.set-video-kind("livetv"); root.video-kind = "livetv"; root.active-section = "videos"; root.section-changed("videos"); }
-                open-download => { root.music-view = "mymusic"; root.music-set-lib-tab("downloader"); root.active-section = "music"; root.section-changed("music"); }
+                open-youtube => { root.music-view = "youtube"; root.section-changed("music"); root.active-section = "music"; }
+                open-stream => { root.set-video-kind("stream"); root.video-kind = "stream"; root.section-changed("videos"); root.active-section = "videos"; }
+                open-livetv => { root.set-video-kind("livetv"); root.video-kind = "livetv"; root.section-changed("videos"); root.active-section = "videos"; }
+                open-download => { root.music-view = "mymusic"; root.music-set-lib-tab("downloader"); root.section-changed("music"); root.active-section = "music"; }
                 // Genesis is a sub-page of Books, like the reader.
-                open-genesis => { root.active-section = "books"; root.section-changed("books"); root.genesis-enter(); }
+                open-genesis => { root.genesis-enter(); root.section-changed("books"); root.active-section = "books"; }
                 random-radio => { root.home-random-radio(); }
                 playpause => { if (root.music-np-title == "") { root.music-shuffle-all(); } else { root.music-toggle-pause(); } }
                 next => { root.music-next(); } prev => { root.music-prev(); }
                 seek(s) => { root.music-seek(s); }
+                set-volume(v) => { root.music-set-volume(v); }
                 toggle-mute => { root.music-toggle-mute(); }
                 toggle-shuffle => { root.music-toggle-shuffle(); }
                 cycle-repeat => { root.music-cycle-repeat(); }
-                open-queue => { root.music-view = "mymusic"; root.active-section = "music"; root.section-changed("music"); }
+                play-queue(i) => { root.music-play-queue(i); }
+                refresh-queue => { root.music-build-queue(); }
+                // Recently Added → Music card. `index` is the playback position,
+                // the same thing the queue panel hands to music-play-queue.
+                play-song(i) => { root.music-play-queue(i); }
+                set-vis-style(s) => { root.music-vis-style = s; root.music-set-vis-style(s); }
+                // Artwork click → the app-wide floating mini, same door the
+                // Music section's now-playing bar uses. `home-mini-allowed` is
+                // the gate that keeps the mini from ambushing Home on every
+                // entry; this click is exactly the consent it wants, so it has
+                // to be raised here or the mini stays invisible on Home.
+                open-mini => {
+                    if (root.music-mini-x == 0px && root.music-mini-y == 0px) { root.music-mini-x = (root.width - root.music-mini-w)/2; root.music-mini-y = (root.height - root.music-mini-h)/2; }
+                    root.home-mini-allowed = true;
+                    root.music-mini-bubble = false;
+                    root.music-open-mini();
+                }
                 open-zen => { root.music-fullscreen = true; }
             }
             if active-section == "home" && root.home-layout != "cinema"
-                    && root.home-layout != "editorial" && root.home-layout != "columns"
-                    && root.home-layout != "stream" && root.home-layout != "deck"
+                    && root.home-layout != "stream"
                     && root.home-layout != "welcome": HomePage {
                 width: parent.width; height: parent.height;
                 stats: root.home-stats;
@@ -5080,6 +5135,8 @@ callback cloud-go-home();
         volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat; shuffle: root.music-shuffle;
         np-loved: root.music-np-loved; np-stars: root.music-np-stars; np-index: root.music-np-index;
         album: root.music-np-album; vis-bars: root.music-vis-bars; vis-style <=> root.music-vis-style; vis-style-changed(s) => { root.music-set-vis-style(s); }
+        zen-viz <=> root.music-zen-viz;
+        changed zen-viz => { root.music-set-zen-viz(self.zen-viz); }
         queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
         podcast-mode: root.music-player-mode == "podcast"; speed: root.music-podcast-speed; set-speed(v) => { root.music-podcast-set-speed(v); }
         yt-now-video: root.music-yt-now-video; watch-video() => { root.music-yt-watch-current(); }
@@ -5218,9 +5275,13 @@ callback cloud-go-home();
         next-chapter => { root.books-reader-next-chapter(); }
     }
 
-    // App-wide draggable mini-player (over every section except Home, which has
-    // its own embedded player in the bento layout).
-    if root.music-mini-open && !root.music-mini-bubble && root.active-section != "home": Rectangle {
+    // App-wide draggable mini-player. Suppressed on Home's CLASSIC bento and on
+    // CINEMA, both of which carry a full player of their own — everywhere else
+    // it waits for consent (`home-mini-allowed`) before floating over Home.
+    if root.music-mini-open && !root.music-mini-bubble
+            && !(root.active-section == "home"
+                 && (root.home-layout == "classic" || root.home-layout == "cinema"
+                     || !root.home-mini-allowed)): Rectangle {
         x: root.music-mini-x; y: root.music-mini-y;
         width: root.music-mini-w; height: root.music-mini-h;
         dragmini := TouchArea {
@@ -5246,7 +5307,7 @@ callback cloud-go-home();
             yt-now-video: root.music-yt-now-video; watch-video => { root.music-yt-watch-current(); }
             open-zen => { root.music-mini-open = false; root.music-fullscreen = true; }
             cycle-repeat => { root.music-cycle-repeat(); }
-            close => { root.music-mini-open = false; }
+            close => { root.music-mini-open = false; root.home-mini-allowed = false; }
             minimise => { root.music-mini-bubble = true; }
             playpause => { root.music-toggle-pause(); }
             next => { root.music-next(); } prev => { root.music-prev(); }
@@ -5305,7 +5366,7 @@ callback cloud-go-home();
         // aspect ratio (100%–300%). A curved arc shows on hover.
         // Bottom-right.
         Rectangle { width: 24px; height: 24px; x: parent.width - self.width; y: parent.height - self.height;
-            Rectangle { width: 16px; height: 16px; border-radius: Surface.r(8px); x: 2px; y: 2px;
+            Rectangle { width: 16px; height: 16px; border-radius: Surface.rr(8px, self.width, self.height); x: 2px; y: 2px;
                 background: transparent; border-width: 2px;
                 border-color: brh.has-hover || brh.pressed ? root.music-np-accent : #ffffff55; }
             brh := TouchArea { mouse-cursor: nwse-resize;
@@ -5315,7 +5376,9 @@ callback cloud-go-home();
     }
     // Minimised bubble — pinned to the right edge (Android-style). Drag up/down
     // to reposition; tap to restore the full mini-player.
-    if root.music-mini-open && root.music-mini-bubble && root.active-section != "home": Rectangle {
+    if root.music-mini-open && root.music-mini-bubble
+            && !(root.active-section == "home"
+                 && (root.home-layout == "classic" || root.home-layout == "cinema")): Rectangle {
         x: root.width - 78px;
         y: root.music-bubble-y < 0px ? root.height / 2 - 30px : root.music-bubble-y;
         width: 60px; height: 60px;
@@ -5335,7 +5398,7 @@ callback cloud-go-home();
                 transform-rotation: root.music-playing ? Math.mod(animation-tick() / 1ms / 14, 360) * 1deg : 0deg; }
             if root.music-np-title == "": AppIcon { source: Icons.music; tint: #ec4899; width: 24px; height: 24px; } }
         // Center spindle dot — the record-player hub.
-        Rectangle { width: 8px; height: 8px; border-radius: Surface.r(4px); background: #14141b; border-width: 1.5px; border-color: #ffffffcc;
+        Rectangle { width: 8px; height: 8px; border-radius: Surface.rr(4px, self.width, self.height); background: #14141b; border-width: 1.5px; border-color: #ffffffcc;
             x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
         bta := TouchArea {
             mouse-cursor: pointer;
@@ -5348,7 +5411,7 @@ callback cloud-go-home();
                 }
             }
             pointer-event(e) => { if (e.kind == PointerEventKind.down) { self.dragged = false; } }
-            clicked => { if (!self.dragged) { root.music-mini-bubble = false; } }
+            clicked => { if (!self.dragged) { root.music-mini-bubble = false; root.home-mini-allowed = true; } }
         }
     }
 
@@ -5606,7 +5669,7 @@ callback cloud-go-home();
                 HorizontalLayout {
                     Text { text: "Photo info"; color: white; font-size: 15px; font-weight: 700; vertical-alignment: center; horizontal-stretch: 1; }
                     Rectangle {
-                        width: 26px; height: 26px; border-radius: Surface.r(13px);
+                        width: 26px; height: 26px; border-radius: Surface.rr(13px, self.width, self.height);
                         horizontal-stretch: 0; vertical-stretch: 0;
                         background: closex.has-hover ? white.with-alpha(0.18) : white.with-alpha(0.08);
                         closex := TouchArea { mouse-cursor: pointer; clicked => { root.viewer-info-open = false; } }
@@ -5674,7 +5737,7 @@ callback cloud-go-home();
         // corner. Declared after the edge tappers so it always wins clicks.
         if !root.viewer-slideshow: Rectangle {
             x: parent.width - self.width - 24px; y: 28px;
-            width: 40px; height: 40px; border-radius: Surface.r(20px);
+            width: 40px; height: 40px; border-radius: Surface.rr(20px, self.width, self.height);
             background: info-toggle.has-hover || root.viewer-info-open ? white.with-alpha(0.22) : white.with-alpha(0.10);
             info-toggle := TouchArea { mouse-cursor: pointer;
                 clicked => { root.viewer-info-open = !root.viewer-info-open; } }
@@ -5683,7 +5746,7 @@ callback cloud-go-home();
         // Close — sits just left of the ⓘ button (top-right corner).
         if !root.viewer-slideshow: Rectangle {
             x: parent.width - self.width - 24px - 48px; y: 28px;
-            width: 40px; height: 40px; border-radius: Surface.r(20px);
+            width: 40px; height: 40px; border-radius: Surface.rr(20px, self.width, self.height);
             background: closebtn.has-hover ? white.with-alpha(0.22) : white.with-alpha(0.10);
             closebtn := TouchArea { mouse-cursor: pointer; clicked => { root.close-viewer(); } }
             AppIcon { source: Icons.x; tint: white; width: 16px; height: 16px; }
@@ -5842,7 +5905,7 @@ callback cloud-go-home();
                     { key: "radio",      icon: Icons.radio, label: "Radio",      sub: "Stream stations" },
                     { key: "youtube",    icon: Icons.play, label: "YouTube",     sub: "Downloads" },
                 ]: Rectangle {
-                    height: 44px; border-radius: Surface.r(10px);
+                    height: 44px; border-radius: Surface.rr(10px, self.width, self.height);
                     background: oa.has-hover ? Accent.color.with-alpha(0.16) : Theme.panel;
                     border-width: 1px; border-color: oa.has-hover ? Accent.color.with-alpha(0.5) : Theme.outline;
                     animate background { duration: 100ms; }
@@ -5856,7 +5919,7 @@ callback cloud-go-home();
                 }
                 Rectangle { vertical-stretch: 1; }
                 HorizontalLayout { alignment: end;
-                    Rectangle { width: 90px; height: 32px; border-radius: Surface.r(8px);
+                    Rectangle { width: 90px; height: 32px; border-radius: Surface.rr(8px, self.width, self.height);
                         background: ca.has-hover ? Theme.panel-2 : Theme.panel;
                         border-width: 1px; border-color: Surface.hairline;
                         ca := TouchArea { mouse-cursor: pointer; clicked => { root.music-add-section-open = false; } }
@@ -5957,7 +6020,7 @@ callback cloud-go-home();
             alignment: center; spacing: 10px;
             VerticalLayout { alignment: center;
                 Rectangle {
-                    width: 20px; height: 20px; border-radius: Surface.r(6px); clip: true;
+                    width: 20px; height: 20px; border-radius: Surface.rr(6px, self.width, self.height); clip: true;
                     Image { source: @image-url("../resources/appicons/sidebar-default.png");
                         image-fit: cover; width: 100%; height: 100%; }
                 } }
@@ -5969,7 +6032,7 @@ callback cloud-go-home();
             }
             VerticalLayout { alignment: center;
                 Rectangle {
-                    width: 30px; height: 30px; border-radius: Surface.r(8px);
+                    width: 30px; height: 30px; border-radius: Surface.rr(8px, self.width, self.height);
                     background: fsr-ta.has-hover ? Theme.panel : transparent;
                     AppIcon { source: Icons.maximize; tint: Theme.text;
                         width: 14px; height: 14px; }
@@ -5982,7 +6045,7 @@ callback cloud-go-home();
                 } }
             VerticalLayout { alignment: center;
                 Rectangle {
-                    width: 30px; height: 30px; border-radius: Surface.r(8px);
+                    width: 30px; height: 30px; border-radius: Surface.rr(8px, self.width, self.height);
                     background: fsx-ta.has-hover ? #e0518f33 : transparent;
                     AppIcon { source: Icons.x; tint: fsx-ta.has-hover ? #e0518f : Theme.text;
                         width: 14px; height: 14px; }

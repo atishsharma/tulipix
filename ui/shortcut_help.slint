@@ -54,7 +54,7 @@ export component ShortcutHelp inherits Rectangle {
                     spacing: 8px;
                     Rectangle {
                         height: 32px; width: 80px;
-                        border-radius: Surface.r(8px);
+                        border-radius: Surface.rr(8px, self.width, self.height);
                         border-width: 1px;
                         border-color: Surface.hairline;
                         TouchArea { clicked => { root.print-clicked(); } }
@@ -62,7 +62,7 @@ export component ShortcutHelp inherits Rectangle {
                     }
                     Rectangle {
                         height: 32px; width: 80px;
-                        border-radius: Surface.r(8px);
+                        border-radius: Surface.rr(8px, self.width, self.height);
                         background: Theme.brand;
                         TouchArea { clicked => { root.dismissed(); } }
                         Text { text: "Close"; color: white; horizontal-alignment: center; vertical-alignment: center; }
@@ -89,7 +89,7 @@ export component ShortcutHelp inherits Rectangle {
                             Rectangle {
                                 width: 140px;
                                 height: 26px;
-                                border-radius: Surface.r(6px);
+                                border-radius: Surface.rr(6px, self.width, self.height);
                                 background: Surface.body(Theme.panel);
                                 border-width: 1px;
                                 border-color: Surface.hairline;

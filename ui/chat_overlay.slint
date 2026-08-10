@@ -33,13 +33,13 @@ export component ChatOverlay inherits Rectangle {
             }
             Rectangle {
                 horizontal-stretch: 1; vertical-stretch: 1;
-                border-radius: Surface.r(10px);
+                border-radius: Surface.rr(10px, self.width, self.height);
                 background: Surface.body(Theme.panel);
                 border-color: Surface.hairline; border-width: 1px;
                 VerticalLayout {
                     padding: 10px; spacing: 8px;
                     for t in turns: Rectangle {
-                        border-radius: Surface.r(8px);
+                        border-radius: Surface.rr(8px, self.width, self.height);
                         background: t.role == "user" ? Theme.panel-2 : transparent;
                         VerticalLayout {
                             padding: 8px; spacing: 2px;
@@ -50,7 +50,7 @@ export component ChatOverlay inherits Rectangle {
                 }
             }
             Rectangle {
-                height: 38px; border-radius: Surface.r(8px);
+                height: 38px; border-radius: Surface.rr(8px, self.width, self.height);
                 background: Surface.body(Theme.panel-2);
                 border-color: Surface.hairline; border-width: 1px;
                 HorizontalLayout {
@@ -63,7 +63,7 @@ export component ChatOverlay inherits Rectangle {
                         accepted => { root.submit(root.draft); root.draft = ""; }
                     }
                     Rectangle {
-                        width: 70px; border-radius: Surface.r(6px);
+                        width: 70px; border-radius: Surface.rr(6px, self.width, self.height);
                         background: Theme.brand;
                         TouchArea { clicked => { root.submit(root.draft); root.draft = ""; } }
                         Text { text: "Send"; color: #ffffff; font-size: 12px; font-weight: 600;

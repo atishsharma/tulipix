@@ -48,7 +48,7 @@ component ProgressRow inherits Skin {
         Rectangle {
             height: 6px;
             horizontal-stretch: 1;
-            border-radius: Surface.r(3px);
+            border-radius: Surface.rr(3px, self.width, self.height);
             background: Surface.body(Theme.panel-2);
             Rectangle {
                 x: 0;
@@ -56,7 +56,7 @@ component ProgressRow inherits Skin {
                     ? (parent.width * ((data.added + data.failed) / data.total))
                     : 0px;
                 height: parent.height;
-                border-radius: Surface.r(3px);
+                border-radius: Surface.rr(3px, self.width, self.height);
                 background: data.active
                     ? @linear-gradient(90deg, Accent.color 0%, Accent.color.with-alpha(0.6) 100%)
                     : (data.failed > 0 ? #f97316 : #16a34a);
@@ -114,7 +114,7 @@ export component ScanProgressCard inherits Rectangle {
                 Rectangle {
                     width: 24px; height: 24px;
                     horizontal-stretch: 0; vertical-stretch: 0;
-                    border-radius: Surface.r(12px);
+                    border-radius: Surface.rr(12px, self.width, self.height);
                     background: dismiss-ta.has-hover ? Theme.panel-2 : transparent;
                     border-width: 1px;
                     border-color: Surface.hairline;

@@ -29,6 +29,14 @@ const TOOLS_CATALOG: &[(&str, &str, &str, &[ToolOp])] = &[
         ("Transcribe", "transcribe"), ("Burn-in subtitles", "burn_subs")]),
 ];
 
+/// How many operations the catalog offers, across every category. The Welcome
+/// home layout's Tools tile shows this the way the other tiles show their own
+/// counts; reading it off the catalog means the tile cannot drift from the
+/// section.
+pub fn op_total() -> usize {
+    TOOLS_CATALOG.iter().map(|(_, _, _, ops)| ops.len()).sum()
+}
+
 /// Rebuild the Tools body from the window's category + query. Empty query shows
 /// the selected category's ops; a query matches op names across every category.
 fn tools_refresh(w: &MainWindow) {

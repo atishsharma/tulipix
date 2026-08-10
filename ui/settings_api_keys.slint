@@ -17,7 +17,7 @@ component QuotaMeter inherits Skin {
     in property <int> used;
     in property <int> limit;
     height: 4px;
-    border-radius: Surface.r(2px);
+    border-radius: Surface.rr(2px, self.width, self.height);
     background: Theme.outline;
     Rectangle {
         x: 0; y: 0;
@@ -41,7 +41,7 @@ component Btn inherits Skin {
     callback clicked();
     min-width: 90px; height: 30px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: Surface.r(8px);
+    border-radius: Surface.rr(8px, self.width, self.height);
     background: touch.has-hover
         ? (danger ? #b91c1c : (primary ? #6d28d9 : Theme.panel-2))
         : (danger ? #7f1d1d : (primary ? Theme.brand : Theme.panel));
@@ -129,7 +129,7 @@ component KeyRow inherits Skin {
         if data.editing: HorizontalLayout {
             spacing: 8px;
             Rectangle {
-                height: 34px; border-radius: Surface.r(9px); horizontal-stretch: 1;
+                height: 34px; border-radius: Surface.rr(9px, self.width, self.height); horizontal-stretch: 1;
                 background: Surface.body(Theme.panel);
                 border-color: key-ti.has-focus ? Accent.color : Theme.outline; border-width: 1px;
                 key-ti := TextInput {

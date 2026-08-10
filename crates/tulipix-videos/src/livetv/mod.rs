@@ -95,12 +95,23 @@ fn url_for(kind: Kind, code: &str) -> String {
 
 // ---- selection ----
 
+/// The playlist a library that has never picked one starts on. Live TV opened
+/// on an empty page until you found the picker; India is the default channel
+/// list instead.
+pub fn default_selection() -> String {
+    url_for(Kind::Country, "in")
+}
+
 /// The playlists the user picked, in the order they were picked.
+///
+/// An ABSENT key is a first run and lands on [`default_selection`]; a key that
+/// is present but empty is a deliberate "none" and stays empty.
 pub fn selection() -> Vec<String> {
-    Settings::load()
-        .unwrap_or_default()
-        .text(SELECTION_KEY)
-        .lines()
+    let s = Settings::load().unwrap_or_default();
+    let Some(raw) = s.advanced.get(SELECTION_KEY).cloned() else {
+        return vec![default_selection()];
+    };
+    raw.lines()
         .map(str::trim)
         .filter(|l| is_ours(l))
         .map(str::to_string)
@@ -360,6 +371,10 @@ file:///etc/passwd
         assert_eq!(url, "https://iptv-org.github.io/iptv/countries/in.m3u");
         let (_, _, cat) = all.iter().find(|(k, n, _)| *k == Kind::Category && n == "News").unwrap();
         assert_eq!(cat, "https://iptv-org.github.io/iptv/categories/news.m3u");
+        // A first run opens on India, and that URL has to be one the downloader
+        // will accept.
+        assert_eq!(default_selection(), *url);
+        assert!(is_ours(&default_selection()));
     }
 
     #[test]

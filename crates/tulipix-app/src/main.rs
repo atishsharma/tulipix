@@ -866,7 +866,14 @@ fn main() -> Result<()> {
     // Music playback — single headless mpv instance; now-playing bar reflects it.
     let w = window.as_weak();
     window.on_play_music(move |idx| {
-        if let Some(w) = w.upgrade() { play_music_at(&w, idx); }
+        let Some(w) = w.upgrade() else { return; };
+        // A track picked out of the Songs page plays THAT page: the queue
+        // becomes the rest of the list as it is sorted and filtered right now.
+        // A tile from anywhere else (no such row) is a one-off and leaves the
+        // queue it jumped in front of alone (np.p6.music.context-queue).
+        let order = songs_view_order();
+        if order.contains(&idx) { play_in_context(&w, &order, idx, "songs"); }
+        else { play_music_at(&w, idx); }
     });
     let w = window.as_weak();
     window.on_music_next(move || {
@@ -876,16 +883,12 @@ fn main() -> Result<()> {
             yt_queue_jump(w.as_weak(), true, w.get_music_shuffle());
             return;
         }
-        let total = w.get_music_np_total();
-        if total <= 0 { return; }
-        // Shuffle → next from the shuffled bag (no repeats per cycle); else
-        // sequential wrap.
-        let next = if w.get_music_shuffle() && total > 1 {
-            shuffle_next(total, w.get_music_np_index())
-        } else {
-            (w.get_music_np_index() + 1).rem_euclid(total)
-        };
-        play_music_at(&w, next);
+        if w.get_music_np_total() <= 0 { return; }
+        // Next follows the QUEUE — the album, playlist or page you started from
+        // — and only walks the library when the queue has run dry. It used to
+        // go straight to the library index, which is why a built queue was
+        // ignored and Next landed on unrelated tracks.
+        queue_advance(&w, true);
     });
     let w = window.as_weak();
     window.on_music_prev(move || {
@@ -970,6 +973,14 @@ fn main() -> Result<()> {
         let _ = s.save();
         apply_music_eq(&w);
     });
+    // Rebuild the Up-next model on demand. The Music section rebuilds it when
+    // one of its panels opens; the Home players have no panel of their own, so
+    // without this their queue was whatever the last panel open had left behind
+    // — empty on a fresh session, and stale once the track advanced.
+    let w = window.as_weak();
+    window.on_music_build_queue(move || {
+        if let Some(w) = w.upgrade() { build_music_queue(&w); }
+    });
     // Play a track from the queue panel (index = playback position).
     let w = window.as_weak();
     window.on_music_play_queue(move |i| {
@@ -985,6 +996,17 @@ fn main() -> Result<()> {
             return;
         }
         play_music_at(&w0, i);
+        // Jumping down the queue consumes everything above the row you picked,
+        // itself included — otherwise it is still queued and plays again the
+        // moment it ends. Rows from the favourites / history rails share this
+        // callback and simply are not in the queue, so nothing is dropped.
+        let Some(id) = music_id_at(i) else { return; };
+        let weak = w.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("music").await else { return; };
+            let _ = tulipix_music::queue::drop_through(&pool, id).await;
+            let _ = weak.upgrade_in_event_loop(|w| build_music_queue(&w));
+        });
     });
     // Add current track to a playlist — open a picker listing manual playlists
     // (np.p5.music.playlists-builder).
@@ -1987,7 +2009,7 @@ fn main() -> Result<()> {
         // Restore the saved profile identity into the sidebar user card.
         {
             let mut u = window.get_user();
-            u.display_name = s.text("profile.name").into();
+            u.display_name = clamp_profile_name(&s.text("profile.name")).into();
             u.avatar_emoji = s.text("profile.emoji").into();
             // Custom cover/avatar images persist as fixed-name PNGs.
             let dir = tulipix_core::paths::data_dir().map(|d| d.join("profile"));
@@ -4114,6 +4136,15 @@ fn txt(s: &tulipix_core::settings::Settings, key: &str, label: &str, desc: &str)
 fn stat(label: &str, value: &str, state: &str) -> SettingItem { si("", "status", label, "", value, false, state) }
 fn act(key: &str, label: &str, desc: &str, btn: &str) -> SettingItem { si(key, "action", label, desc, btn, false, "") }
 
+/// Profile display name, trimmed and capped at 12 **characters** (not bytes —
+/// an emoji name must not be cut mid-codepoint). The cap exists for the Welcome
+/// home layout: its greeting is sized off a width factor, and past 12 the
+/// headline wraps to a second line. Applied on save and again on load, so a
+/// name persisted before the cap existed is clamped too.
+fn clamp_profile_name(name: &str) -> String {
+    name.trim().chars().take(12).collect()
+}
+
 /// Time-of-day greeting for the Home header; recomputed on each Home landing
 /// so a long-running app stays fresh across day boundaries.
 fn set_home_greeting_now(w: &MainWindow) {
@@ -4121,12 +4152,22 @@ fn set_home_greeting_now(w: &MainWindow) {
     let name = w.get_user().display_name.to_string();
     let who = if name.trim().is_empty() { "there".to_string() } else { name };
     let g = match chrono::Local::now().hour() {
-        5..=11  => format!("Good morning, {who}"),
-        12..=16 => format!("Good afternoon, {who}"),
-        _       => format!("Good evening, {who}"),
+        5..=11  => format!("Good Morning, {who}"),
+        12..=16 => format!("Good Afternoon, {who}"),
+        _       => format!("Good Evening, {who}"),
     };
     w.set_home_greeting(g.into());
     w.set_home_date_line(chrono::Local::now().format("%A, %B %-d").to_string().into());
+    // The quote shelf: shuffled ONCE per run, not per landing, so walking back
+    // to Home does not restart the rotation. The Tools tile's count comes off
+    // the same catalog the Tools section builds its ops list from.
+    if w.get_home_quotes().row_count() == 0 {
+        let rows: Vec<HomeQuote> = tulipix_common::quotes::shuffled().into_iter()
+            .map(|(text, author)| HomeQuote { text: text.into(), author: author.into() })
+            .collect();
+        w.set_home_quotes(slint::ModelRc::new(slint::VecModel::from(rows)));
+        w.set_tools_op_total(tulipix_sec_tools::op_total() as i32);
+    }
 }
 
 /// Seed the Home command-center stats (np.p6.home). Cheap COUNTs per section
@@ -4575,18 +4616,38 @@ fn kick_home_books(w: &MainWindow) {
         let Ok(pool) = pool_for("books").await else { return; };
         // Newest first, only books with a real cover on disk — an empty cover
         // slot would break the id ↔ row-index alignment the click relies on.
-        let rows = sqlx::query_as::<_, (i64, String)>(
-            "SELECT id, cover_path FROM books \
+        let rows = sqlx::query_as::<_, (i64, String, String, String)>(
+            "SELECT id, cover_path, title, author FROM books \
              WHERE missing = 0 AND cover_path != '' ORDER BY added_at DESC LIMIT 10")
             .fetch_all(&pool).await.unwrap_or_default();
         if let Ok(mut g) = recent_home_books().lock() {
-            *g = rows.iter().map(|(id, _)| *id).collect();
+            *g = rows.iter().map(|(id, _, _, _)| *id).collect();
         }
         let _ = weak.upgrade_in_event_loop(move |w| {
             let imgs: Vec<slint::Image> = rows.iter()
-                .filter_map(|(_, p)| slint::Image::load_from_path(std::path::Path::new(p)).ok())
+                .filter_map(|(_, p, _, _)| slint::Image::load_from_path(std::path::Path::new(p)).ok())
                 .collect();
             w.set_home_book_covers(slint::ModelRc::new(slint::VecModel::from(imgs)));
+            // The Welcome layout's Books shelf wants the BAKED `_book5`
+            // hardcover, the same rendition the Books grid draws, plus the
+            // per-title hue its outlines use. Load-only: the bake is produced at
+            // scan time and by the prebake sweep, never here, so a book whose
+            // bake has not landed yet simply falls back to its flat art.
+            let books: Vec<HomeBook> = rows.iter().take(4).map(|(id, p, title, author)| {
+                let flat = std::path::Path::new(p);
+                let baked = tulipix_books::covers::baked_path(
+                    flat, tulipix_books::covers::BOOK_SUFFIX);
+                let [r, g, b] = tulipix_books::cover_hue_rgb(title);
+                HomeBook {
+                    book: slint::Image::load_from_path(&baked).unwrap_or_default(),
+                    cover: slint::Image::load_from_path(flat).unwrap_or_default(),
+                    title: title.clone().into(),
+                    author: author.clone().into(),
+                    hue: slint::Color::from_rgb_u8(r, g, b),
+                    id: *id as i32,
+                }
+            }).collect();
+            w.set_home_recent_books(slint::ModelRc::new(slint::VecModel::from(books)));
         });
     });
 }
@@ -4685,28 +4746,31 @@ fn save_home_cont_dismissed() {
 }
 
 // ── Home layout (Settings › PERSONAL › Home Layout) ─────────────────────────
-// Seven compositions over one data set. Spec: docs/home-layouts/README.md.
+// Four compositions over one data set. Spec: docs/home-layouts/README.md.
+// Ids are the on-disk names (`classic` / `cinema` / `stream` / `welcome`) and do
+// not change; the picker shows them as Poweruser / Cinema / Timeline / Focused.
 // Stored in Settings.advanced, so there is no schema change: `home.layout` holds
 // the choice and `home.hidden.<layout>` a comma-separated list of switched-off
 // card ids, per layout, so switching away and back restores what you had.
 
 /// Every card id any layout can own, in one place. `apply_home_cards` walks this
 /// to set the window booleans, so adding a card is one line here plus one there.
-const HOME_CARD_IDS: [&str; 15] = [
+const HOME_CARD_IDS: [&str; 16] = [
     "hero", "continue", "player", "quick", "photos", "videos", "music", "books",
-    "cloud", "tools", "transfer", "finances", "library", "next", "ticker",
+    "cloud", "tools", "transfer", "finances", "library", "next", "ticker", "hub",
 ];
 
 fn home_layout_valid(v: &str) -> &'static str {
     match v {
         "cinema" => "cinema",
-        "columns" => "columns",
-        "editorial" => "editorial",
         "stream" => "stream",
-        "deck" => "deck",
-        "welcome" => "welcome",
-        // Unknown or unset falls back to today's Home rather than a blank page.
-        _ => "classic",
+        "classic" => "classic",
+        // Unknown or unset lands on Focused (`welcome`), the default Home.
+        // Unknown covers the three layouts that were deleted, so a settings
+        // file naming one of those opens on the default rather than a blank
+        // page. Ids are the on-disk names and stay as they are — the display
+        // names (Poweruser / Cinema / Timeline / Focused) live in the picker.
+        _ => "welcome",
     }
 }
 
@@ -4716,38 +4780,14 @@ fn home_layout_valid(v: &str) -> &'static str {
 /// are absent until `docs/home-layouts/05-classic.md` is done.
 fn home_layout_cards(layout: &str) -> &'static [(&'static str, &'static str, &'static str)] {
     match layout {
+        // My Hub left Cinema on 2026-08-10: eight launchers on the shelf said
+        // what the sidebar already says, and they cost Continue its height.
         "cinema" => &[
             ("hero", "Hero", "The full-bleed backdrop and Resume for what you were watching"),
-            ("continue", "Continue rail", "In-progress films, books and episodes along the shelf"),
-            ("photos", "Photos key", "Section key in the shelf strip"),
-            ("videos", "Videos key", "Section key in the shelf strip"),
-            ("music", "Music key", "Section key in the shelf strip"),
-            ("books", "Books key", "Section key in the shelf strip"),
-            ("cloud", "Cloud key", "Section key in the shelf strip"),
-            ("tools", "Tools key", "Section key in the shelf strip"),
-            ("finances", "Finances panel", "Month spend, the year in bars, what needs paying"),
-            ("transfer", "Transfer panel", "Start sharing, and where received files land"),
-        ],
-        "columns" => &[
-            ("photos", "Photos pane", "One full-height pane"),
-            ("videos", "Videos pane", "One full-height pane"),
-            ("music", "Music pane", "One full-height pane"),
-            ("books", "Books pane", "One full-height pane"),
-            ("cloud", "Cloud pane", "One full-height pane"),
-            ("tools", "Tools pane", "One full-height pane"),
-            ("transfer", "Transfer pane", "One full-height pane"),
-            ("finances", "Finances pane", "One full-height pane"),
-        ],
-        "editorial" => &[
-            ("photos", "Photos row", "Name, thumbnail strip, item count"),
-            ("videos", "Videos row", "Name, poster strip, item count"),
-            ("music", "Music row", "Name, cover strip, track count"),
-            ("books", "Books row", "Name, spine strip, book count"),
-            ("cloud", "Cloud row", "Remote chips and total size"),
-            ("tools", "Tools row", "Tool chips and queue state"),
-            ("transfer", "Transfer row", "Device chips and today's bytes"),
-            ("finances", "Finances row", "Obligation chips and the year in bars"),
-            ("ticker", "Now-playing ticker", "The strip pinned along the bottom"),
+            ("continue", "Continue rail", "In-progress films, books and episodes — and the hero's slideshow"),
+            ("quick", "Quick actions", "Stream, YouTube, Music D/L, Genesis, Radio and Live TV in the header"),
+            ("player", "Player panel", "What is playing, on the right — and a shuffled library when nothing is"),
+            ("hub", "My Hub card", "One section card at a time under the player, on a 10-second turn"),
         ],
         "stream" => &[
             ("photos", "Photo events", "Imports and album changes in the feed"),
@@ -4761,20 +4801,6 @@ fn home_layout_cards(layout: &str) -> &'static [(&'static str, &'static str, &'s
             ("player", "Player block", "Now playing at the top of the rail"),
             ("library", "Library block", "The counter table in the rail"),
             ("next", "What's next", "Tomorrow's dues, scheduled rescans, nearly-finished books"),
-        ],
-        "deck" => &[
-            ("continue", "Continue strip", "The four things you were part-way through"),
-            ("library", "Recently Added", "The newest photos, videos and covers, with a filter"),
-            ("photos", "Photos key", "Section key in the top strip"),
-            ("videos", "Videos key", "Section key in the top strip"),
-            ("music", "Music key", "Section key in the top strip"),
-            ("books", "Books key", "Section key in the top strip"),
-            ("cloud", "Cloud", "Section key, plus the remotes panel in Your Hub"),
-            ("tools", "Tools", "Section key, plus the utilities panel in Your Hub"),
-            ("transfer", "Transfer", "Section key, plus Start sharing in Your Hub"),
-            ("finances", "Finances", "Section key, the money panel, and At a Glance in the rail"),
-            ("player", "Now Playing", "The full player at the top of the rail"),
-            ("quick", "Quick Access", "Stream, Live TV, the downloader and random radio"),
         ],
         "welcome" => &[
             ("hero", "Hero greeting", "The big hello and the collage from your own library"),
@@ -4803,34 +4829,13 @@ fn home_layout_cards(layout: &str) -> &'static [(&'static str, &'static str, &'s
     }
 }
 
-/// Columns' panes, left to right. The order is the layout's reading order, and
-/// it is also the order "open" hands over in when a pane's card is switched off.
-const HOME_PANE_IDS: [&str; 8] = [
-    "photos", "videos", "music", "books", "cloud", "tools", "transfer", "finances",
-];
-
-/// The pane Columns should open: the wanted one if it is still visible, otherwise
-/// the next visible pane to its right, wrapping (spec §Fluid rules).
-fn home_pane_resolve(hidden: &std::collections::HashSet<String>, want: &str) -> &'static str {
-    if let Some(id) = HOME_PANE_IDS.iter().find(|p| **p == want) {
-        if !hidden.contains(*id) { return id; }
-    }
-    let start = HOME_PANE_IDS.iter().position(|p| *p == want).map_or(0, |i| i + 1);
-    for k in 0..HOME_PANE_IDS.len() {
-        let id = HOME_PANE_IDS[(start + k) % HOME_PANE_IDS.len()];
-        if !hidden.contains(id) { return id; }
-    }
-    // Every pane hidden cannot happen — the last card standing is locked — but a
-    // name is still needed, and the first pane is the honest default.
-    "photos"
-}
-
 /// Layouts that put the Finances numbers on Home, and therefore need one
 /// Finances pass when Home opens — the section itself may never have run.
 fn home_layout_wants_money(layout: &str) -> bool {
-    // Every new layout puts the money somewhere: a glass panel, a row, a pane, a
-    // rail block, a hub panel, a tile subtitle. Only Classic leaves it to the section.
-    matches!(layout, "cinema" | "editorial" | "columns" | "stream" | "deck" | "welcome")
+    // Timeline and Focused put the money somewhere: a rail block, a hub tile
+    // subtitle. Cinema is back on the list — its hub carousel carries the same
+    // Finances tile. Classic leaves it to the section.
+    matches!(layout, "stream" | "welcome" | "cinema")
 }
 
 fn home_hidden_key(layout: &str) -> String { format!("home.hidden.{layout}") }
@@ -4882,15 +4887,7 @@ fn apply_home_cards(w: &MainWindow) {
     w.set_hc_library(on("library"));
     w.set_hc_next(on("next"));
     w.set_hc_ticker(on("ticker"));
-
-    // Columns' open pane is part of the card state: switching its card off has to
-    // hand "open" to a pane that is still there.
-    let want = {
-        let s = tulipix_core::settings::Settings::load().unwrap_or_default();
-        let stored = s.text("home.columns.open");
-        if stored.is_empty() { w.get_home_open_pane().to_string() } else { stored }
-    };
-    w.set_home_open_pane(home_pane_resolve(&hidden, &want).into());
+    w.set_hc_hub(on("hub"));
 
     let cards = home_layout_cards(&layout);
     let live = cards.iter().filter(|(id, _, _)| on(*id)).count();
@@ -4955,18 +4952,6 @@ fn wire_home_layout(window: &MainWindow) {
         }
         home_hidden_save(&layout, &hidden);
         apply_home_cards(&w);
-    });
-
-    // Columns: clicking a spine opens it, and the choice survives a restart.
-    let w = window.as_weak();
-    window.on_home_pane_open(move |pane| {
-        let Some(w) = w.upgrade() else { return; };
-        let hidden = home_hidden("columns");
-        let pane = home_pane_resolve(&hidden, pane.as_str());
-        let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
-        s.advanced.insert("home.columns.open".into(), pane.to_string());
-        if let Err(e) = s.save() { tracing::warn!(error = %e, "save home pane"); }
-        w.set_home_open_pane(pane.into());
     });
 
     let w = window.as_weak();
@@ -5508,8 +5493,11 @@ fn set_home_hero(w: &MainWindow, row: Option<&HomeContRow>) {
 }
 
 /// Push the cached CONTINUE rows through the active kind filter (≤4 cards —
-/// the strip has four fixed pill slots). "All" shows ONE card per kind (the
-/// newest of each — video/book/podcast/audiobook), kind tabs show up to 4.
+/// the strip has four fixed pill slots). "All" leads with the newest of each
+/// kind (video/book/podcast/audiobook) for variety, then BACKFILLS the empty
+/// slots with the next-newest rows whatever their kind — a library with only
+/// books in progress used to show one card and three empty wells. Kind tabs
+/// show up to 4 of that kind.
 fn push_home_continue(weak: &slint::Weak<MainWindow>) {
     let filter = home_cont_filter().lock().map(|g| g.clone()).unwrap_or_else(|_| "all".into());
     let rows = home_cont_rows().lock().map(|g| g.clone()).unwrap_or_default();
@@ -5519,10 +5507,25 @@ fn push_home_continue(weak: &slint::Weak<MainWindow>) {
         // has no business changing because someone clicked "Podcasts".
         set_home_hero(&w, rows.first());
         // Rows are already newest-first, so "first of each kind" = newest.
-        let mut seen_kinds = std::collections::HashSet::new();
-        let items: Vec<HomeContinue> = rows.into_iter()
-            .filter(|r| if filter == "all" { seen_kinds.insert(r.kind) } else { r.kind == filter })
-            .take(4)
+        let picked: Vec<_> = if filter == "all" {
+            let mut seen_kinds = std::collections::HashSet::new();
+            let mut out: Vec<_> = Vec::with_capacity(4);
+            for r in rows.iter() {
+                if out.len() == 4 { break; }
+                if seen_kinds.insert(r.kind) { out.push(r.clone()); }
+            }
+            // Slots still free go to the next-newest rows, kind be damned.
+            if out.len() < 4 {
+                for r in rows.iter() {
+                    if out.len() == 4 { break; }
+                    if !out.iter().any(|p| p.id == r.id && p.kind == r.kind) { out.push(r.clone()); }
+                }
+            }
+            out
+        } else {
+            rows.iter().filter(|r| r.kind == filter).take(4).cloned().collect()
+        };
+        let items: Vec<HomeContinue> = picked.into_iter()
             .map(|r| HomeContinue {
                 kind: r.kind.into(),
                 title: clip_title(&r.title).into(),
@@ -6475,8 +6478,16 @@ fn inode_of(_meta: &std::fs::Metadata) -> i64 { 0 }
 
 /// Insert (or update) a single file row in the section DB. Returns the
 /// item id. Caller is responsible for any per-section side effects.
+///
+/// Takes a connection rather than the pool so the scan loop can hand it a
+/// transaction and commit the item row together with that section's
+/// side-effect row. SQLite takes exactly one writer at a time, so every extra
+/// autocommit statement is another acquisition of the same global write lock —
+/// with several library scans running at once the loser busy-waits on
+/// `busy_timeout` (5s), which is what the multi-second "slow statement"
+/// warnings were.
 async fn upsert_one(
-    pool: &sqlx::SqlitePool,
+    conn: &mut sqlx::SqliteConnection,
     section: &str,
     path: &std::path::Path,
 ) -> Result<i64> {
@@ -6496,7 +6507,7 @@ async fn upsert_one(
         "SELECT id FROM items WHERE abs_path = ?",
     )
     .bind(&abs)
-    .fetch_optional(pool)
+    .fetch_optional(&mut *conn)
     .await
     .context("query existing row")?;
     if let Some(id) = existing {
@@ -6504,7 +6515,7 @@ async fn upsert_one(
             "UPDATE items SET inode = ?, size = ?, mtime = ?, missing_since = NULL, updated = ? WHERE id = ?",
         )
         .bind(inode).bind(size).bind(mtime).bind(now).bind(id)
-        .execute(pool).await.context("update row")?;
+        .execute(&mut *conn).await.context("update row")?;
         Ok(id)
     } else {
         let res = sqlx::query(
@@ -6512,9 +6523,52 @@ async fn upsert_one(
         )
         .bind(&abs).bind(inode).bind(size).bind(mtime)
         .bind(section).bind(now).bind(now)
-        .execute(pool).await.context("insert row")?;
+        .execute(&mut *conn).await.context("insert row")?;
         Ok(res.last_insert_rowid())
     }
+}
+
+/// One file's whole DB footprint for a scan, committed together: the `items`
+/// row plus the section's side-effect row (`photo_meta` from already-read EXIF,
+/// or the empty `video_meta` seed). Nothing in here touches the filesystem, so
+/// the write lock is held for two statements and no I/O.
+///
+/// The write lock is global to the database — several library scans share one
+/// pool per section — so the number of times it is taken is what decides
+/// whether the losers busy-wait. This halves that count.
+async fn scan_write_one(
+    pool: &sqlx::SqlitePool,
+    section: &str,
+    path: &std::path::Path,
+    facts: Option<&tulipix_photos::exif::ExifFacts>,
+) -> Result<i64> {
+    let _w = scan_write_lock(section).lock().await;
+    let mut tx = pool.begin().await.context("begin scan tx")?;
+    let id = upsert_one(&mut tx, section, path).await?;   // Transaction derefs to the connection
+    if let Some(f) = facts {
+        tulipix_photos::exif::write_facts(&mut *tx, id, f).await.context("photo_meta")?;
+    } else if section == "videos" {
+        sqlx::query("INSERT OR IGNORE INTO video_meta (item_id) VALUES (?)")
+            .bind(id).execute(&mut *tx).await.context("video_meta")?;
+    }
+    tx.commit().await.context("commit scan tx")?;
+    Ok(id)
+}
+
+/// One write mutex per section, held only across `scan_write_one`'s two
+/// statements. Several library scans share a section's pool, and SQLite admits
+/// exactly one writer; without this they discover that by busy-waiting on
+/// `busy_timeout` (5s) and logging multi-second "slow statement" warnings. The
+/// lock turns that spin into a fair queue. It is NEVER held across file I/O —
+/// the EXIF read happens before the call.
+fn scan_write_lock(section: &str) -> &'static tokio::sync::Mutex<()> {
+    static LOCKS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashMap<String, &'static tokio::sync::Mutex<()>>>,
+    > = std::sync::OnceLock::new();
+    let map = LOCKS.get_or_init(Default::default);
+    let mut g = map.lock().unwrap_or_else(|e| e.into_inner());
+    *g.entry(section.to_string())
+        .or_insert_with(|| Box::leak(Box::new(tokio::sync::Mutex::new(()))))
 }
 
 /// Scroll-position hint for the scan thumb queue (np.p1.thumbs.lazy):
@@ -6631,8 +6685,17 @@ fn kick_section_scan(
             let slot_idx = key;
             let p = &pending.remove(&key).unwrap();
         {
-            // 2a) DB insert. Bubble specific reason into the progress card.
-            let id = match upsert_one(&pool, section, p).await {
+            // 2a) The file's EXIF, read BEFORE any transaction opens. It touches
+            // the file on disk, and holding SQLite's single write lock across a
+            // file read is exactly how one slow photo stalls every other scan.
+            let facts = if section == "photos" {
+                Some(tulipix_photos::exif::read(p).unwrap_or_default())
+            } else { None };
+
+            // 2b) The item row and its section's side-effect row, in ONE
+            // transaction — one acquisition of the write lock per file instead
+            // of two. Bubble a specific reason into the progress card.
+            let id = match scan_write_one(&pool, section, p, facts.as_ref()).await {
                 Ok(id) => id,
                 Err(e) => {
                     let msg = friendly_err("DB insert", p, &e);
@@ -6643,17 +6706,13 @@ fn kick_section_scan(
                 }
             };
 
-            // 2b) Per-section side effects (EXIF for photos, video_meta seed).
             let book_cover: Option<PathBuf> = None;
             let book_label: Option<String> = None;
-            if section == "photos" {
-                let _ = tulipix_photos::exif::ingest(&pool, id).await;
-            } else if section == "videos" {
-                let _ = sqlx::query("INSERT OR IGNORE INTO video_meta (item_id) VALUES (?)")
-                    .bind(id).execute(&pool).await;
+            if section == "videos" {
                 // TV detection (np.p3.episodes): an SxxEyy filename ⇒ episode of
                 // the show named by its parent folder. Populates shows+episodes
-                // so the Videos "TV" tab can group it.
+                // so the Videos "TV" tab can group it. Left outside the
+                // transaction above: it does its own multi-table work.
                 classify_tv_episode(&pool, id, p).await;
                 // TMDB/TVDB poster scrape runs in background so it doesn't
                 // block the scan loop (np.p3.tmdb).
@@ -8502,6 +8561,7 @@ fn wire_music_metadata(window: &MainWindow) {
         if let Some(w) = w.upgrade() {
             w.set_music_shuffle(false);
             if w.get_music_np_total() > 0 || music_paths().lock().map(|g| !g.is_empty()).unwrap_or(false) {
+                clear_context_queue(&w);   // the library IS the list now
                 play_music_at(&w, 0);
             }
         }
@@ -8514,6 +8574,7 @@ fn wire_music_metadata(window: &MainWindow) {
         w.set_music_shuffle(true);
         let start = (std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)
             .map(|d| d.subsec_nanos()).unwrap_or(0) as usize) % total;
+        clear_context_queue(&w);           // the library IS the list now
         play_music_at(&w, start as i32);
     });
     // AT parity — jump to a 1-based page in the Songs list (np.p5.atmusic.lib-jump-page).
@@ -8956,7 +9017,21 @@ fn wire_music_metadata(window: &MainWindow) {
     let w = window.as_weak();
     window.on_music_detail_shuffle(move || { if let Some(w) = w.upgrade() { detail_play(&w, true); } });
     let w = window.as_weak();
-    window.on_music_detail_play_track(move |pos| { if let Some(w) = w.upgrade() { play_music_at(&w, pos); } });
+    window.on_music_detail_play_track(move |pos| {
+        let Some(w) = w.upgrade() else { return; };
+        // A track inside an album / artist / genre / folder detail plays that
+        // detail and nothing else: the queue becomes its remaining tracks, in
+        // the order the list shows them.
+        let ids = music_detail().lock().map(|g| g.2.clone()).unwrap_or_default();
+        match music_id_at(pos) {
+            Some(id) if ids.contains(&id) => {
+                set_ctx_pending();
+                play_music_at(&w, pos);
+                set_context_queue(&w, ids, Some(id), "detail");
+            }
+            _ => play_music_at(&w, pos),
+        }
+    });
     // Fetch the album cover from Cover Art Archive for the open album detail.
     let w = window.as_weak();
     window.on_music_detail_fetch_meta(move || {
@@ -9176,6 +9251,10 @@ fn wire_music_p5a(window: &MainWindow) {
     // Visualizer style — persist the last-chosen style so it sticks across launches.
     window.on_music_set_vis_style(move |s| {
         save_music_pref("music.vis_style", &s.to_string());
+    });
+    // Zen visualizer on/off — with it off the lyrics take the whole middle.
+    window.on_music_set_zen_viz(move |on| {
+        save_music_pref("music.zen_viz", if on { "1" } else { "0" });
     });
     // ReplayGain loudness scan (np.p5.music.replaygain) — compute gains for
     // untagged files: ffmpeg ebur128 per track → RG2 gain → track_meta, then
@@ -9916,12 +9995,13 @@ fn wire_music_p6(window: &MainWindow) {
     let w = window.as_weak();
     window.on_profile_save(move |name, emoji, logo| {
         let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
-        let name = name.trim().to_string();
+        let name = clamp_profile_name(&name);
         if name.is_empty() { s.advanced.remove("profile.name"); }
         else { s.advanced.insert("profile.name".into(), name.clone()); }
         if emoji.is_empty() { s.advanced.remove("profile.emoji"); }
         else { s.advanced.insert("profile.emoji".into(), emoji.to_string()); }
-        // Sidebar logo choice (np.p1.profile.logo): 0 default · 1 color · 2 dark · 3 white.
+        // Sidebar logo choice (np.p1.profile.logo): 0 default · 1 color · 2 dark ·
+        // 3 white · 4 India (the seasonal mark, picked on purpose so it holds all year).
         if logo == 0 { s.advanced.remove("profile.logo"); }
         else { s.advanced.insert("profile.logo".into(), logo.to_string()); }
         if let Err(e) = s.save() { tracing::warn!(error = %e, "save settings (profile)"); }
@@ -10082,22 +10162,11 @@ fn wire_music_playlist(window: &MainWindow) {
     let w = window.as_weak();
     window.on_music_playlist_play_track(move |pos| {
         let Some(w0) = w.upgrade() else { return; };
-        play_music_at(&w0, pos);
         // Queue the rest of the playlist in its displayed order (np.p5.music.playlist-order).
         let (_pid, ids) = current_playlist().lock().map(|g| g.clone()).unwrap_or((-1, Vec::new()));
-        let clicked_id = music_ids().lock().ok().and_then(|g| g.get(pos as usize).copied());
-        let weak = w.clone();
-        tokio::runtime::Handle::current().spawn(async move {
-            let Ok(pool) = pool_for("music").await else { return; };
-            let _ = tulipix_music::queue::clear(&pool).await;
-            if let Some(start) = clicked_id.and_then(|cid| ids.iter().position(|x| *x == cid)) {
-                for off in 1..ids.len() {
-                    let id = ids[(start + off) % ids.len()];
-                    let _ = tulipix_music::queue::enqueue(&pool, id, "playlist").await;
-                }
-            }
-            let _ = weak.upgrade_in_event_loop(|w| build_music_queue(&w));
-        });
+        set_ctx_pending();
+        play_music_at(&w0, pos);
+        set_context_queue(&w0, ids, music_id_at(pos), "playlist");
     });
     // Remove the i-th track from the open playlist.
     let w = window.as_weak();
@@ -10330,6 +10399,7 @@ fn wire_music_playlist(window: &MainWindow) {
         window.set_music_thumb_size(tsz);
         // Last-used visualizer style (0..4), default Line (4).
         window.set_music_vis_style(s.advanced.get("music.vis_style").and_then(|v| v.parse::<i32>().ok()).unwrap_or(4).clamp(0, 4));
+        window.set_music_zen_viz(s.advanced.get("music.zen_viz").map(|v| v != "0").unwrap_or(true));
         populate_eq_customs(&window);
         let weak = window.as_weak();
         std::thread::spawn(move || {

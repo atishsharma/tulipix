@@ -476,7 +476,7 @@ component GroupHeader inherits Rectangle {
 // (np.p1.profile.logo); persisted by Rust, restored on boot.
 component BrandHeader inherits Rectangle {
     in property <bool> collapsed: false;
-    in property <int> logo-choice: 0; // 0 default · 1 color · 2 dark · 3 white
+    in property <int> logo-choice: 0; // 0 default · 1 color · 2 dark · 3 white · 4 India
     // Seasonal India branding — swaps the DEFAULT mark only (explicit picks win).
     in property <bool> festival: false;
     // Clicking the mark toggles logo-fullscreen mode (main.slint).
@@ -497,6 +497,9 @@ component BrandHeader inherits Rectangle {
                 source: root.logo-choice == 1 ? @image-url("../resources/appicons/sidebar-color.png")
                       : root.logo-choice == 2 ? @image-url("../resources/appicons/sidebar-dark.png")
                       : root.logo-choice == 3 ? @image-url("../resources/appicons/sidebar-white.png")
+                      // 4 is the India mark picked ON PURPOSE — the same asset the
+                      // season swaps in, but chosen, so it holds all year.
+                      : root.logo-choice == 4 ? @image-url("../resources/appicons/logo_india.png")
                       : root.festival        ? @image-url("../resources/appicons/logo_india.png")
                       :                         @image-url("../resources/appicons/sidebar-default.png");
                 image-fit: cover;

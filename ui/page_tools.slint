@@ -51,7 +51,7 @@ component RunButton inherits Skin {
     in property <bool> primary: true;
     in property <bool> enabled: true;
     callback clicked();
-    height: 40px; min-width: 120px; border-radius: Surface.r(10px);
+    height: 40px; min-width: 120px; border-radius: Surface.rr(10px, self.width, self.height);
     background: primary
         ? (enabled ? @linear-gradient(135deg, Theme.tools-accent, Theme.tools-accent-2) : Theme.panel-2)
         : (b.has-hover ? Theme.panel-2 : transparent);
@@ -70,7 +70,7 @@ component ActBtn inherits Skin {
     in property <bool> filled: false;
     in property <brush> grad;
     callback clicked();
-    horizontal-stretch: 0; height: 28px; min-width: 60px; border-radius: Surface.r(8px);
+    horizontal-stretch: 0; height: 28px; min-width: 60px; border-radius: Surface.rr(8px, self.width, self.height);
     background: filled
         ? (t.has-hover ? grad : grad)
         : (t.has-hover ? Theme.panel-2 : transparent);
@@ -88,7 +88,7 @@ component ToolTab inherits Skin {
     in property <bool> show-cat: false;
     in property <color> tint: #cfe3ff;   // per-tool base hue (light pastel)
     callback clicked();
-    horizontal-stretch: 1; height: 44px; border-radius: Surface.r(11px);
+    horizontal-stretch: 1; height: 44px; border-radius: Surface.rr(11px, self.width, self.height);
     // Inactive tabs each carry their own light pastel gradient so every tool
     // reads as distinct; the active tab is the amber→orange identity gradient.
     // Pastel fills + dark bold text pop on both light and dark backgrounds.
@@ -120,7 +120,7 @@ component FieldRow inherits VerticalLayout {
     if field.kind == "file" || field.kind == "files" || field.kind == "folder": HorizontalLayout {
         spacing: 8px;
         Rectangle {
-            horizontal-stretch: 1; height: 38px; border-radius: Surface.r(9px);
+            horizontal-stretch: 1; height: 38px; border-radius: Surface.rr(9px, self.width, self.height);
             background: Surface.body(Theme.panel-2); border-width: 1px; border-color: Surface.hairline;
             HorizontalLayout { padding-left: 12px; padding-right: 12px;
                 Text {
@@ -183,7 +183,7 @@ component QueueRow inherits Skin {
             // State pill — fixed height + vertically centred so the box and its
             // label line up with the job name (was stretched full row-height).
             VerticalLayout { alignment: center; horizontal-stretch: 0;
-                Rectangle { height: 20px; horizontal-stretch: 0; border-radius: Surface.r(7px); background: chip.with-alpha(0.16);
+                Rectangle { height: 20px; horizontal-stretch: 0; border-radius: Surface.rr(7px, self.width, self.height); background: chip.with-alpha(0.16);
                     HorizontalLayout { alignment: center; padding-left: 9px; padding-right: 9px;
                         Text { text: job.state; color: chip; font-size: 10px; font-weight: 800;
                             vertical-alignment: center; } } } }
@@ -203,9 +203,9 @@ component QueueRow inherits Skin {
             if job.state != "running": ActBtn { label: "Remove"; tint: Theme.error; clicked => { root.confirm(job.id, "remove"); } }
         }
         Rectangle {
-            height: 7px; border-radius: Surface.r(4px); background: Surface.body(Theme.panel-2);
+            height: 7px; border-radius: Surface.rr(4px, self.width, self.height); background: Surface.body(Theme.panel-2);
             border-width: 1px; border-color: Surface.hairline;
-            Rectangle { x: 0; height: parent.height; border-radius: Surface.r(4px);
+            Rectangle { x: 0; height: parent.height; border-radius: Surface.rr(4px, self.width, self.height);
                 width: parent.width * max(0.0, min(1.0, job.progress));
                 background: @linear-gradient(90deg, Theme.tools-accent, Theme.tools-accent-2);
                 animate width { duration: 200ms; easing: ease-out; } }
@@ -229,13 +229,13 @@ component StatusRow inherits Skin {
         Rectangle { width: 92px; horizontal-stretch: 0;
             if tool.updatable: VerticalLayout { alignment: center;
                 ActBtn { label: "Update"; tint: Theme.tools-accent; clicked => { root.update(tool.name); } } } }
-        Rectangle { width: 10px; height: 10px; border-radius: Surface.r(5px); background: badge;
+        Rectangle { width: 10px; height: 10px; border-radius: Surface.rr(5px, self.width, self.height); background: badge;
             horizontal-stretch: 0; y: (parent.height - self.height) / 2; }
         VerticalLayout { alignment: center; horizontal-stretch: 1;
             Text { text: tool.name; color: Theme.text; font-size: 14px; font-weight: 700; }
             Text { text: tool.detail; color: Theme.text-dim; font-size: 11px; overflow: elide; } }
         VerticalLayout { alignment: center; horizontal-stretch: 0;
-            Rectangle { horizontal-stretch: 0; border-radius: Surface.r(7px); background: badge.with-alpha(0.16);
+            Rectangle { horizontal-stretch: 0; border-radius: Surface.rr(7px, self.width, self.height); background: badge.with-alpha(0.16);
                 HorizontalLayout { padding-left: 10px; padding-right: 10px; padding-top: 4px; padding-bottom: 4px;
                     Text { text: tool.source; color: badge; font-size: 11px; font-weight: 800; vertical-alignment: center; } } } }
     }
@@ -352,7 +352,7 @@ export component ToolsPage inherits Rectangle {
             HorizontalLayout {
                 padding-left: 28px; padding-right: 28px; spacing: 14px;
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Rectangle { width: 34px; height: 34px; border-radius: Surface.r(10px);
+                    Rectangle { width: 34px; height: 34px; border-radius: Surface.rr(10px, self.width, self.height);
                         background: root.accent.with-alpha(0.16);
                         AppIcon { source: Icons.wrench; tint: root.accent; width: 18px; height: 18px;
                             x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
@@ -361,7 +361,7 @@ export component ToolsPage inherits Rectangle {
                 Rectangle { horizontal-stretch: 1; }
                 // Universal parallel-worker cap (applies to every tool's queue).
                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Rectangle { height: 40px; min-width: 300px; border-radius: Surface.r(20px);
+                    Rectangle { height: 40px; min-width: 300px; border-radius: Surface.rr(20px, self.width, self.height);
                         background: Surface.body(Theme.panel-2); border-width: 1px; border-color: Surface.hairline;
                         HorizontalLayout { padding-left: 16px; padding-right: 16px; spacing: 10px;
                             VerticalLayout { alignment: center; horizontal-stretch: 0;
@@ -440,7 +440,7 @@ export component ToolsPage inherits Rectangle {
                 if root.active-op == "": VerticalLayout {
                     alignment: center;
                     HorizontalLayout { alignment: center;
-                        Rectangle { width: 64px; height: 64px; border-radius: Surface.r(16px);
+                        Rectangle { width: 64px; height: 64px; border-radius: Surface.rr(16px, self.width, self.height);
                             background: root.accent.with-alpha(0.14);
                             AppIcon { source: Icons.settings; tint: root.accent; width: 30px; height: 30px; } } }
                     Text { text: "Pick a tool above"; color: Theme.text; font-size: 16px; font-weight: 700; horizontal-alignment: center; }
@@ -458,7 +458,7 @@ export component ToolsPage inherits Rectangle {
                                 padding: 28px; spacing: 18px; alignment: start;
                                 HorizontalLayout {
                                     spacing: 12px;
-                                    Rectangle { width: 44px; height: 44px; border-radius: Surface.r(12px); horizontal-stretch: 0;
+                                    Rectangle { width: 44px; height: 44px; border-radius: Surface.rr(12px, self.width, self.height); horizontal-stretch: 0;
                                         background: @linear-gradient(135deg, Theme.tools-accent.with-alpha(0.22), Theme.tools-accent-2.with-alpha(0.22));
                                         AppIcon { source: Icons.settings; tint: root.accent; width: 22px; height: 22px; } }
                                     VerticalLayout { alignment: center; horizontal-stretch: 1;
@@ -474,7 +474,7 @@ export component ToolsPage inherits Rectangle {
                                 // Info box: what the tool does + how to use it, shown
                                 // above the form so the controls have context.
                                 if root.active-info != "": Rectangle {
-                                    border-radius: Surface.r(12px);
+                                    border-radius: Surface.rr(12px, self.width, self.height);
                                     background: @linear-gradient(135deg, root.accent.with-alpha(0.13), root.accent.with-alpha(0.06));
                                     border-width: 1px; border-color: root.accent.with-alpha(0.32);
                                     VerticalLayout {
@@ -550,7 +550,7 @@ export component ToolsPage inherits Rectangle {
                                         ActBtn { label: "Clear"; tint: Theme.text-dim; min-width: 60px;
                                             clicked => { root.clear-console(); root.console-open = false; } } } }
                                 if root.log != "" && root.console-open: Rectangle {
-                                    height: 180px; border-radius: Surface.r(10px); clip: true;
+                                    height: 180px; border-radius: Surface.rr(10px, self.width, self.height); clip: true;
                                     background: Theme.dark ? #0b0f14 : #11161d;
                                     border-width: 1px; border-color: Surface.hairline;
                                     ScrollView { width: 100%; height: 100%;
@@ -637,7 +637,7 @@ export component ToolsPage inherits Rectangle {
                         // DIFF — thumb + path + kind badge (Folder diff)
                         if root.result-kind == "diff": VerticalLayout { spacing: 8px;
                           for r in root.result-diff: Rectangle {
-                            height: 56px; border-radius: Surface.r(8px); background: Surface.body(Theme.panel);
+                            height: 56px; border-radius: Surface.rr(8px, self.width, self.height); background: Surface.body(Theme.panel);
                             border-width: 1px; border-color: Surface.hairline;
                             HorizontalLayout { padding: 8px; spacing: 10px;
                                 Image { source: r.thumb; width: 40px; height: 40px; image-fit: contain; }
@@ -645,7 +645,7 @@ export component ToolsPage inherits Rectangle {
                                     Text { text: r.path; color: Theme.text; font-size: 12px; font-weight: 600; overflow: elide; }
                                     Text { text: r.detail; color: Theme.text-dim; font-size: 10px; overflow: elide; } }
                                 VerticalLayout { alignment: center; horizontal-stretch: 0;
-                                    Rectangle { border-radius: Surface.r(7px);
+                                    Rectangle { border-radius: Surface.rr(7px, self.width, self.height);
                                         background: (r.kind == "only-a" ? Theme.error : r.kind == "only-b" ? Theme.ok : Theme.warn).with-alpha(0.16);
                                         HorizontalLayout { padding-left: 9px; padding-right: 9px; padding-top: 3px; padding-bottom: 3px;
                                             Text { text: r.kind == "only-a" ? "removed" : r.kind == "only-b" ? "added" : "modified";
@@ -683,7 +683,7 @@ export component ToolsPage inherits Rectangle {
                 }
                 // ── timeline: filmstrip over waveform, with segment bands + playhead ──
                 Rectangle {
-                    height: 200px; border-radius: Surface.r(10px); clip: true;
+                    height: 200px; border-radius: Surface.rr(10px, self.width, self.height); clip: true;
                     background: Theme.dark ? #0b0f14 : #11161d; border-width: 1px; border-color: Surface.hairline;
                     VerticalLayout {
                         Image { source: root.trim-filmstrip; height: 104px; width: 100%; image-fit: fill; }
@@ -736,7 +736,7 @@ export component ToolsPage inherits Rectangle {
                     ScrollView {
                         VerticalLayout { spacing: 6px;
                             for seg[i] in root.trim-segments: Rectangle {
-                                height: 34px; border-radius: Surface.r(7px); background: Surface.body(Theme.panel);
+                                height: 34px; border-radius: Surface.rr(7px, self.width, self.height); background: Surface.body(Theme.panel);
                                 border-width: 1px; border-color: Surface.hairline;
                                 HorizontalLayout { padding-left: 10px; padding-right: 8px; spacing: 10px;
                                     VerticalLayout { alignment: center; horizontal-stretch: 0;
@@ -794,13 +794,13 @@ export component ToolsPage inherits Rectangle {
                                 && idx < (root.dl-page + 1) * root.dl-per-page;
                             height: shown ? 62px : 0px;
                             if shown: Rectangle {
-                                y: 0; height: 54px; border-radius: Surface.r(10px); background: Surface.body(Theme.panel);
+                                y: 0; height: 54px; border-radius: Surface.rr(10px, self.width, self.height); background: Surface.body(Theme.panel);
                                 border-width: 1px; border-color: Surface.hairline;
                                 row := TouchArea { mouse-cursor: pointer; clicked => { root.open-download(d.path); } }
                                 HorizontalLayout {
                                     padding-left: 14px; padding-right: 14px; spacing: 12px;
                                     VerticalLayout { alignment: center; horizontal-stretch: 0;
-                                        Rectangle { width: 30px; height: 30px; border-radius: Surface.r(8px);
+                                        Rectangle { width: 30px; height: 30px; border-radius: Surface.rr(8px, self.width, self.height);
                                             background: root.accent.with-alpha(row.has-hover ? 0.26 : 0.14);
                                             AppIcon { source: Icons.play; tint: root.accent; width: 15px; height: 15px; } } }
                                     VerticalLayout { alignment: center; horizontal-stretch: 1;

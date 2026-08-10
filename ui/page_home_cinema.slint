@@ -10,10 +10,25 @@ import { Theme } from "tokens.slint";
 import { Surface, Rim } from "surface.slint";
 import { Icons, AppIcon } from "icons.slint";
 import { ScrollView } from "std-widgets.slint";
-import { HomeStats, HomeContinue } from "page_home.slint";
+import { HomeContinue, HomeChip, HomeStats } from "page_home.slint";
+import { HubTile } from "page_home_welcome.slint";
+import { MusicLyricLine } from "music_common.slint";
+import { MusicSongRow } from "music_common.slint";
 
-/// One obligation in the Finances panel. Kept local so this page does not have
-/// to import page_finances.slint (388 KB) for one struct.
+/// One obligation in a Home money block. Cinema no longer draws one — the shape
+/// stays here because main and Timeline both use it, and it is kept out of
+/// page_finances.slint (388 KB) so nobody imports that for one struct.
+/// One My Hub card in the right column's carousel. A struct + an array beats
+/// eight-deep ternaries: the tile is drawn once and reads whichever row the
+/// slideshow is on.
+struct CineHub {
+    name: string,
+    count: string,
+    icon: image,
+    accent: color,
+    section: string,
+}
+
 export struct HomeDue {
     name: string,
     amount: string,
@@ -25,13 +40,19 @@ export struct HomeDue {
 component TopPill inherits Rectangle {
     in property <string> label;
     in property <image> icon;
+    in property <color> accent: Theme.text-dim;
     in property <bool> icon-only: false;
+    // Solid = filled with the accent, white ink. The glass version disappeared
+    // into a bright backdrop.
+    in property <bool> solid: false;
     callback clicked();
     height: 31px;
     width: root.icon-only ? 34px : (lab.preferred-width + 40px);
     border-radius: 16px;
-    background: t.has-hover ? Theme.glass-strong : Theme.glass;
-    border-width: 1px;
+    background: root.solid
+        ? (t.has-hover ? root.accent.with-alpha(0.85) : root.accent)
+        : (t.has-hover ? Theme.glass-strong : Theme.glass);
+    border-width: root.solid ? 0px : 1px;
     border-color: Theme.glass-border;
     animate background { duration: 120ms; easing: ease-out; }
     t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
@@ -39,12 +60,14 @@ component TopPill inherits Rectangle {
         padding-left: root.icon-only ? 0px : 12px;
         padding-right: root.icon-only ? 0px : 12px;
         spacing: 7px; alignment: center;
-        AppIcon { source: root.icon; tint: Theme.text-dim; width: 14px; height: 14px;
+        AppIcon { source: root.icon; tint: root.solid ? #ffffff : root.accent;
+            width: 14px; height: 14px;
             y: (parent.height - self.height) / 2; }
         // Unconditional so its width can drive the pill; empty when icon-only.
         lab := Text {
             text: root.icon-only ? "" : root.label;
-            color: Theme.text-dim; font-size: 11.5px;
+            color: root.solid ? #ffffff : (t.has-hover ? Theme.text : Theme.text-dim);
+            font-size: 11.5px; font-weight: root.solid ? 600 : 400;
             vertical-alignment: center;
         }
     }
@@ -55,12 +78,15 @@ component HeroBtn inherits Rectangle {
     in property <string> label;
     in property <image> icon;
     in property <bool> primary: false;
+    // The primary button wears the item's category colour, not white — a white
+    // pill on a bright backdrop was the one control you could lose.
+    in property <color> fill: Theme.sec-videos;
     callback clicked();
     height: 42px;
     width: lab.preferred-width + 54px;
     border-radius: 21px;
     background: root.primary
-        ? (t.has-hover ? #ffffff : #f2f2f7)
+        ? (t.has-hover ? root.fill.with-alpha(0.88) : root.fill)
         : (t.has-hover ? Theme.glass-strong : Theme.glass);
     border-width: root.primary ? 0px : 1px;
     border-color: Theme.glass-border;
@@ -71,107 +97,166 @@ component HeroBtn inherits Rectangle {
         padding-left: 18px; padding-right: 18px;
         AppIcon {
             source: root.icon; width: 16px; height: 16px;
-            tint: root.primary ? #0a0a12 : Theme.text;
+            tint: root.primary ? #ffffff : Theme.text;
             y: (parent.height - self.height) / 2;
         }
         lab := Text {
             text: root.label; font-size: 13px;
             font-weight: root.primary ? 700 : 600;
-            color: root.primary ? #0a0a12 : Theme.text;
+            color: root.primary ? #ffffff : Theme.text;
             vertical-alignment: center;
         }
     }
 }
 
-// ── One resume tile in the shelf rail ───────────────────────────────────────
-// Width follows the artwork's real aspect so a rail of mixed media keeps its
-// bottoms aligned: a book is a spine, a podcast is a square, a film is a frame.
-component RailTile inherits Rectangle {
-    in property <HomeContinue> data;
-    in property <color> accent;
-    callback open();
-    property <length> art-h: 95px;
-    width: root.data.kind == "book" || root.data.kind == "audiobook" ? 66px
-        : (root.data.kind == "podcast" ? 95px : 168px);
-    height: root.art-h + 40px;
-    background: transparent;
-    t := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
-    VerticalLayout {
-        spacing: 0;
-        Rectangle {
-            height: root.art-h; border-radius: Surface.r(9px); clip: true;
-            background: Theme.panel-2;
-            border-width: t.has-hover ? 1px : 0px;
-            border-color: root.accent;
-            if root.data.cover.width > 0: Image {
-                source: root.data.cover; image-fit: cover;
-                width: 100%; height: 100%;
-            }
-            if root.data.cover.width == 0: AppIcon {
-                source: root.data.kind == "video" ? Icons.film
-                    : (root.data.kind == "podcast" ? Icons.mic : Icons.book-open);
-                tint: root.accent; width: 20px; height: 20px;
-                x: (parent.width - self.width) / 2;
-                y: (parent.height - self.height) / 2;
-            }
-        }
-        // Progress hairline sits under the art, not over it — an overlay bar on a
-        // 95 px thumbnail eats the part of the frame you are trying to recognise.
-        Rectangle { height: 6px; }
-        Rectangle {
-            height: 2px;
-            background: Theme.text.with-alpha(0.18); border-radius: 1px;
-            opacity: root.data.frac >= 0 ? 1.0 : 0.0;
-            Rectangle {
-                width: parent.width * Math.max(0.0, Math.min(1.0, root.data.frac));
-                height: 100%; border-radius: 1px; background: root.accent;
-            }
-        }
-        Rectangle { height: 6px; }
-        Text {
-            text: root.data.title; color: Theme.text; font-size: 11.5px; font-weight: 600;
-            overflow: elide;
-        }
-        Text {
-            text: root.data.sub == "" ? root.data.author : root.data.sub;
-            color: Theme.text-dim; font-size: 10px; overflow: elide;
-        }
+// ── Step key for the My Hub carousel ────────────────────────────────────────
+// Same round key as the transport, sized for a chevron and tinted by whichever
+// card is on — so the arrows belong to the tile they are moving.
+component HubArrow inherits Rectangle {
+    in property <image> icon;
+    in property <color> accent: Theme.text-dim;
+    callback clicked();
+    width: 24px; height: 24px;
+    border-radius: 12px;
+    background: t.has-hover ? root.accent : root.accent.with-alpha(0.16);
+    animate background { duration: 120ms; easing: ease-out; }
+    t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    AppIcon {
+        source: root.icon; tint: t.has-hover ? #ffffff : root.accent;
+        width: 13px; height: 13px;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
     }
 }
 
-// ── One section key in the shelf strip ──────────────────────────────────────
-component SectionKey inherits Rectangle {
-    in property <string> label;
-    in property <string> stat;
+// ── Round transport key for the player panel ────────────────────────────────
+component CineBtn inherits Rectangle {
     in property <image> icon;
+    in property <bool> primary: false;    // play/pause — filled at rest
+    in property <bool> lit: false;        // shuffle on / repeat on
     in property <color> accent;
     callback clicked();
-    height: 62px;
-    border-radius: Surface.r(11px);
-    background: t.has-hover ? Theme.glass-strong : Theme.glass;
+    property <bool> on: root.primary || root.lit || t.has-hover;
+    width: root.primary ? 53px : 32px;   // play/pause 20% up on the rest
+    height: self.width;
+    horizontal-stretch: 0;
+    border-radius: self.width / 2;
+    background: root.on ? root.accent : Theme.glass;
     border-width: 1px;
-    border-color: t.has-hover ? root.accent.with-alpha(0.5) : Theme.glass-border;
-    clip: true;
+    border-color: root.on ? root.accent : Theme.glass-border;
     animate background, border-color { duration: 120ms; easing: ease-out; }
     t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    // Accent edge — the only colour on a resting key, so the strip reads as
-    // eight sections rather than eight buttons.
-    Rectangle { width: 2px; height: 100%; background: root.accent; }
-    HorizontalLayout {
-        padding-left: 13px; padding-right: 11px; spacing: 11px; alignment: start;
-        VerticalLayout {
-            alignment: center; horizontal-stretch: 0;
-            Rectangle {
-                width: 30px; height: 30px; border-radius: Surface.r(9px);
-                background: root.accent.with-alpha(0.2);
-                AppIcon { source: root.icon; tint: root.accent; width: 16px; height: 16px;
-                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
-            }
+    AppIcon {
+        source: root.icon;
+        tint: root.on ? #ffffff : Theme.text;
+        width: root.primary ? 22px : 14px; height: self.width;
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+    }
+}
+
+// ── One Continue tab ────────────────────────────────────────────────────────
+// A tab, not a launcher: clicking it puts that item in the hero, where the big
+// Resume button is. Uniform width, handed in — the row divides itself so the
+// whole of Continue fits with nothing to scroll.
+component RailTile inherits Rectangle {
+    in property <HomeContinue> data;
+    in property <color> accent;
+    in property <bool> selected: false;
+    callback open();
+    border-radius: Surface.rr(11px, self.width, self.height);
+    background: root.selected ? root.accent.with-alpha(0.22)
+        : (t.has-hover ? Theme.glass-strong : Theme.glass);
+    border-width: 1px;
+    border-color: root.selected ? root.accent : Theme.glass-border;
+    animate background, border-color { duration: 120ms; easing: ease-out; }
+    clip: true;
+    t := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
+
+    // Absolute placement, not nested layouts: leftover width does not travel
+    // down through nested Slint layouts, and the stretchy text column came out
+    // ~80 px wide inside a 320 px tab (slint-layout-width-distribution).
+    property <length> cw: (root.height - 20px) * 0.72;
+    property <length> tx: 10px + self.cw + 11px;
+    property <length> colw: Math.max(0px, root.width - self.tx - 10px);
+    property <length> pillh: 36px;
+
+    // Cover keeps a 3:4 portrait footprint whatever the medium.
+    Rectangle {
+        x: 10px; y: 10px; width: root.cw; height: root.height - 20px;
+        border-radius: Surface.rr(7px, self.width, self.height); clip: true;
+        background: root.accent.with-alpha(0.18);
+        if root.data.cover.width > 0: Image {
+            source: root.data.cover; image-fit: cover;
+            width: 100%; height: 100%;
         }
-        VerticalLayout {
-            alignment: center; spacing: 1px; horizontal-stretch: 1;
-            Text { text: root.label; color: Theme.text; font-size: 11.5px; font-weight: 600; overflow: elide; }
-            Text { text: root.stat; color: Theme.text-dim; font-size: 10px; overflow: elide; }
+        if root.data.cover.width == 0: AppIcon {
+            source: root.data.kind == "video" ? Icons.film
+                : (root.data.kind == "podcast" ? Icons.mic : Icons.book-open);
+            tint: root.accent; width: 18px; height: 18px;
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+        }
+    }
+    // Kind tag, filled — the same pill the hero wears.
+    Rectangle {
+        x: root.tx; y: 10px; height: 17px;
+        width: Math.min(root.colw, kind.preferred-width + 16px);
+        border-radius: Surface.rr(6px, self.width, self.height);
+        background: root.accent;
+        kind := Text {
+            text: root.data.kind == "video" ? "VIDEO"
+                : (root.data.kind == "podcast" ? "PODCAST"
+                : (root.data.kind == "book" ? "BOOK" : "AUDIOBOOK"));
+            color: #ffffff; font-size: 8.5px; font-weight: 800;
+            letter-spacing: 0.7px; width: 100%; height: 100%;
+            horizontal-alignment: center; vertical-alignment: center;
+            overflow: elide;
+        }
+    }
+    Text {
+        x: root.tx; y: 33px; width: root.colw; height: 18px;
+        text: root.data.title; color: Theme.text;
+        font-size: 13px; font-weight: 800;
+        vertical-alignment: center; overflow: elide;
+    }
+    Text {
+        x: root.tx; y: 52px; width: root.colw; height: 15px;
+        text: root.data.author == "" ? root.data.sub : root.data.author;
+        color: Theme.text-dim; font-size: 10.5px;
+        vertical-alignment: center; overflow: elide;
+    }
+    // Focused's progress pill: what is left + the percent, over a thick fill.
+    Rectangle {
+        x: root.tx; y: root.height - 10px - root.pillh;
+        width: root.colw; height: root.pillh;
+        border-radius: Surface.rr(9px, self.width, self.height);
+        background: Theme.dark ? root.accent.darker(0.30) : root.accent.with-alpha(0.12);
+        border-width: 1px;
+        border-color: Theme.dark ? #ffffffcc : root.accent.with-alpha(0.55);
+        Text {
+            x: 9px; y: 4px; width: Math.max(0px, parent.width - 48px); height: 14px;
+            text: root.data.sub; color: Theme.dark ? #ffffff : Theme.text;
+            font-size: 11px; font-weight: 700;
+            vertical-alignment: center; overflow: elide;
+        }
+        Text {
+            x: parent.width - 39px; y: 4px; width: 30px; height: 14px;
+            text: root.data.frac < 0 ? "" : Math.round(root.data.frac * 100) + "%";
+            color: Theme.dark ? #ffffff : Theme.text;
+            font-size: 10px; font-weight: 800;
+            horizontal-alignment: right; vertical-alignment: center;
+        }
+        Rectangle {
+            x: 9px; y: parent.height - 13px;
+            width: Math.max(0px, parent.width - 18px); height: 8px;
+            border-radius: 4px;
+            background: Theme.dark ? #ffffff.with-alpha(0.25)
+                                   : root.accent.with-alpha(0.18);
+            Rectangle {
+                x: 0; y: 0; height: 100%; border-radius: 4px;
+                width: parent.width * Math.clamp(root.data.frac, 0.0, 1.0);
+                background: Theme.dark ? #ffffff : root.accent;
+            }
         }
     }
 }
@@ -183,7 +268,7 @@ component GlassPanel inherits Rectangle {
     in property <image> icon;
     in property <color> accent;
     callback clicked();
-    border-radius: Surface.r(15px);
+    border-radius: Surface.rr(15px, self.width, self.height);
     // Deliberately not a real backdrop blur: blurring a live 1440-wide image
     // every frame is the expensive thing on the femtovg renderer, and a dimmed
     // plate over a scrim reads the same at this size.
@@ -192,9 +277,16 @@ component GlassPanel inherits Rectangle {
     border-color: t.has-hover ? root.accent.with-alpha(0.45) : Theme.glass-border;
     animate border-color { duration: 120ms; easing: ease-out; }
     t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    // The card wears the accent of whatever tab is playing — a wash, not a fill,
+    // so Theme.text keeps its contrast on both themes.
+    Rectangle {
+        width: 100%; height: 100%; border-radius: parent.border-radius;
+        background: root.accent.with-alpha(Theme.dark ? 0.16 : 0.10);
+        animate background { duration: 220ms; easing: ease-out; }
+    }
     if Surface.rim: Rim {
         x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
-        radius: Surface.r(15px) - 1px;
+        radius: Surface.rr(15px, self.width, self.height) - 1px;
     }
 }
 
@@ -202,7 +294,8 @@ export component HomeCinema inherits Rectangle {
     // ── Chrome ──────────────────────────────────────────────────────────────
     in property <string> greeting: "Welcome";
     in property <string> date-line: "";
-    in property <string> library-line: "";      // "12,481 items · 1.9 TB"
+    in property <int> logo-choice: 0;
+    in property <bool> festival: false;
     // ── Hero ────────────────────────────────────────────────────────────────
     in property <string> hero-kind: "";
     in property <string> hero-title: "";
@@ -212,50 +305,219 @@ export component HomeCinema inherits Rectangle {
     in property <image> hero-art;
     // ── Shelf ───────────────────────────────────────────────────────────────
     in property <[HomeContinue]> continue-rows: [];
-    in property <HomeStats> stats;
-    // ── Right stack ─────────────────────────────────────────────────────────
-    in property <string> fin-spent: "";
-    in property <string> fin-month: "";
-    in property <string> fin-liquid: "";
-    in property <[float]> fin-months: [];       // 0‥1 per month, oldest first
-    in property <[HomeDue]> fin-dues: [];
-    in property <string> transfer-inbox: "";
-    in property <string> transfer-note: "";     // "2 paired" once the home summary lands
+    // ── Player panel ────────────────────────────────────────────────────────
+    // The right stack is the app's player now: it follows whatever is playing
+    // anywhere, and with nothing loaded its one button shuffles the library —
+    // the same random queue every other surface starts.
+    in property <string> np-title: "";
+    in property <string> np-sub: "";
+    in property <image> np-art;
+    // Per-track colour, sampled from the artwork — the transport follows THIS,
+    // the way Focused's bottom bar does. The card's wash and its header follow
+    // the tab instead (`src-accent`): one says what is playing, the other where
+    // it is playing from.
+    in property <color> np-accent: Theme.sec-music;
+    in property <[MusicLyricLine]> lyrics-rows: [];
+    in property <int> lyrics-active: -1;
+    in property <bool> playing: false;
+    in property <float> pos: 0;
+    in property <float> dur: 0;
+    in property <string> pos-label: "0:00";
+    in property <string> dur-label: "0:00";
+    in property <bool> shuffle: false;
+    in property <string> repeat: "off";
+    in property <float> volume: 100;        // mpv's 0–130 percent, not a fraction
+    in property <bool> muted: false;
+    in property <[MusicSongRow]> queue-rows: [];
+    in property <int> np-index: -1;         // playback position of what is playing
+    // Which tab the sound is coming from. The card says the tab's name instead of
+    // a generic PLAYING, and takes that tab's colour — so a glance at the card
+    // tells you where to go to change what is on.
+    in property <string> player-mode: "music";   // music | podcast | radio | book
+    in property <bool> yt-now-video: false;
     // ── Card visibility (docs/home-layouts/01-cinema.md §Fluid rules) ───────
     in property <bool> hc-hero: true;
     in property <bool> hc-continue: true;
-    in property <bool> hc-photos: true;
-    in property <bool> hc-videos: true;
-    in property <bool> hc-music: true;
-    in property <bool> hc-books: true;
-    in property <bool> hc-cloud: true;
-    in property <bool> hc-tools: true;
-    in property <bool> hc-transfer: true;
-    in property <bool> hc-finances: true;
+    in property <bool> hc-quick: true;      // the launcher pills in the header
+    in property <bool> hc-player: true;
+    in property <bool> hc-hub: true;        // the one-at-a-time hub card under the player
+    // My Hub feed — the same numbers Focused's eight tiles print.
+    in property <HomeStats> stats;
+    in property <int> tool-count: 0;
+    in property <string> transfer-line: "";
+    in property <string> fin-month: "";
 
     callback open-section(string);
-    callback open-search();
+    callback playpause();
+    callback next();
+    callback prev();
+    callback seek(float);
+    callback shuffle-all();
+    callback toggle-shuffle();
+    callback cycle-repeat();
+    callback toggle-mute();
+    callback set-volume(float);
+    callback play-queue(int);
+    // Nothing on Home ever asked the backend to build the Up-next list — only
+    // the Music section's panels did — so the queue here was empty on a fresh
+    // session and stale once tracks advanced. Ask on open, and again whenever
+    // the track changes while the flip is showing.
+    callback refresh-queue();
+    // The player's header row → the Music tab the sound is coming from.
+    callback open-playing-tab();
+    callback open-stream();
+    callback open-youtube();
+    callback open-download();
+    callback open-genesis();
+    callback random-radio();
+    callback open-livetv();
+    callback open-zen();
     callback resume-hero();
     callback hero-details();
+    callback open-book-detail(int);
+    callback continue-filter(string);
     callback continue-open(HomeContinue);
-    callback start-sharing();
 
     // ── Geometry ────────────────────────────────────────────────────────────
     property <length> pad: 34px;
-    property <int> keys: (root.hc-photos ? 1 : 0) + (root.hc-videos ? 1 : 0)
-        + (root.hc-music ? 1 : 0) + (root.hc-books ? 1 : 0)
-        + (root.hc-cloud ? 1 : 0) + (root.hc-tools ? 1 : 0);
     property <bool> rail-on: root.hc-continue && root.continue-rows.length > 0;
-    property <int> stack-n: (root.hc-finances ? 1 : 0) + (root.hc-transfer ? 1 : 0);
-    // The shelf is a band that collapses: rail + keys, either, or nothing.
-    property <length> key-h: root.keys > 0 ? 62px : 0px;
-    property <length> rail-h: root.rail-on ? 135px : 0px;
-    property <length> shelf-h: (root.rail-h > 0px || root.key-h > 0px)
-        ? 18px + root.rail-h + (root.rail-h > 0px && root.key-h > 0px ? 14px : 0px)
-          + root.key-h + 20px
+    // Which Continue item the hero is showing. The rail is the hero's tab strip:
+    // picking a tab swaps the backdrop and the Resume button, it does not open
+    // anything. Opening is what the hero's own button is for.
+    in-out property <int> hero-sel: 0;
+    property <bool> has-sel: root.hc-continue && root.continue-rows.length > 0;
+    property <HomeContinue> sel:
+        root.continue-rows[Math.clamp(root.hero-sel, 0, root.continue-rows.length - 1)];
+    property <string> h-kind: root.has-sel ? root.sel.kind : root.hero-kind;
+    property <string> h-title: root.has-sel ? root.sel.title : root.hero-title;
+    property <string> h-kicker: root.has-sel
+        ? (root.sel.kind == "video" ? "CONTINUE WATCHING"
+            : (root.sel.kind == "podcast" ? "CONTINUE LISTENING"
+            : (root.sel.kind == "book" ? "CONTINUE READING" : "CONTINUE LISTENING")))
+        : root.hero-kicker;
+    property <string> h-meta: root.has-sel
+        ? (root.sel.author == "" ? root.sel.sub : root.sel.author + " · " + root.sel.sub)
+        : root.hero-meta;
+    property <float> h-frac: root.has-sel ? root.sel.frac : root.hero-frac;
+    property <image> h-art: (root.has-sel && root.sel.cover.width > 0)
+        ? root.sel.cover : root.hero-art;
+    property <color> h-accent: root.h-kind == "video" ? Theme.sec-videos
+        : (root.h-kind == "podcast" ? #8b5cf6
+        : (root.h-kind == "book" ? Theme.sec-books
+        : (root.h-kind == "audiobook" ? #3b82f6 : Theme.brand)));
+    property <string> h-rem: root.has-sel ? root.sel.sub : root.hero-meta;
+    property <string> h-tag: root.h-kind == "video" ? "VIDEO"
+        : (root.h-kind == "podcast" ? "PODCAST"
+        : (root.h-kind == "book" ? "BOOK"
+        : (root.h-kind == "audiobook" ? "AUDIOBOOK" : "START")));
+    // The Continue row is 70% of the page — at half, four tabs were narrower
+    // than their own titles. Tabs divide it evenly, so nothing has to scroll
+    // however many are in progress.
+    property <length> rail-w: (root.width - 2 * root.pad) * 0.7;
+    property <length> rail-gap: 8px;
+    property <int> tabs: root.continue-rows.length;
+    // Capped: filtered to one kind the strip can be a single tab, and one tab
+    // half a page wide is a banner, not a tab.
+    property <length> tab-w: root.tabs > 0
+        ? Math.min(320px,
+            Math.max(0px, (root.rail-w - (root.tabs - 1) * root.rail-gap) / root.tabs))
         : 0px;
-    property <length> stack-w: 274px;
-    property <length> hero-w: root.stack-n > 0 ? 520px : 720px;
+    property <length> rail-h: root.rail-on ? 132px : 0px;
+    // The header carries the five filter tabs, so it is a chip row tall.
+    property <length> rail-head-h: 30px;
+    // Shelf paddings, named because shelf-h has to add up to exactly what the
+    // layout inside spends. Bottom is the deepest: My Hub was sitting on the
+    // window edge, and Continue needed to start higher.
+    property <length> shelf-top: 22px;
+    property <length> shelf-bottom: 28px;
+    property <length> shelf-h: root.rail-h > 0px
+        ? root.shelf-top + root.rail-head-h + 9px + root.rail-h + root.shelf-bottom
+        : 0px;
+    property <length> stack-w: 300px;
+    // The panel is CONTENT tall, not column tall: stretched to the full column
+    // it opened a dead band above and below the artwork. The lyric belongs to
+    // the three-line panel beside Continue, not in here.
+    property <length> pl-chrome: 238px;   // header row is 22px now that it is a key
+    // The whole right column between the header and the shelf.
+    property <length> col-avail: Math.max(0px, root.height - root.shelf-h - 96px - 20px);
+    // The hub band takes its slice off the top of the budget, not off whatever
+    // the art happens to leave: the art is elastic, the tile is not.
+    property <length> hub-band: (root.hc-hub && root.col-avail >= 430px) ? 152px : 0px;
+    property <bool> hub-on: root.hub-band > 0px;
+    property <length> pl-avail: Math.max(0px,
+        root.col-avail - (root.hub-on ? root.hub-band + 16px : 0px));
+    property <length> pl-art: Math.max(0px,
+        Math.min(root.stack-w - 26px, root.pl-avail - root.pl-chrome));
+    property <length> player-h: root.pl-art + root.pl-chrome;
+    // ── My Hub, one card at a time ──────────────────────────────────────────
+    // Focused shows all eight side by side; the right column is 300 px wide, so
+    // here they take turns — 10 s each, arrows to step by hand.
+    property <[CineHub]> hub-cards: [
+        { name: "Photos", count: root.stats.photos + " items", icon: Icons.image,
+          accent: Theme.sec-photos, section: "photos" },
+        { name: "Videos", count: root.stats.videos + " items", icon: Icons.film,
+          accent: Theme.sec-videos, section: "videos" },
+        { name: "Music", count: root.stats.songs + " songs", icon: Icons.music,
+          accent: Theme.sec-music, section: "music" },
+        { name: "Books", count: root.stats.books + " books", icon: Icons.book-open,
+          accent: Theme.sec-books, section: "books" },
+        { name: "Clouds", count: root.stats.cloud-remotes + " services", icon: Icons.cloud,
+          accent: Theme.sec-cloud, section: "cloud" },
+        { name: "Tools", count: root.tool-count + " tools", icon: Icons.wrench,
+          accent: Theme.sec-tools, section: "tools" },
+        { name: "Transfer",
+          count: root.transfer-line == "" ? "local network" : root.transfer-line,
+          icon: Icons.share, accent: Theme.sec-transfer, section: "transfer" },
+        { name: "Finances", count: root.fin-month == "" ? "overview" : root.fin-month,
+          icon: Icons.wallet, accent: Theme.sec-finances, section: "finances" },
+    ];
+    property <int> hub-sel: 0;
+    property <CineHub> hub-now: root.hub-cards[root.hub-sel];
+    // Three lyric lines beside Continue, in the 30% the tab strip leaves.
+    property <string> lyr-prev: root.lyrics-active > 0
+        ? root.lyrics-rows[root.lyrics-active - 1].text : "";
+    property <string> lyr-cur: (root.lyrics-active >= 0
+        && root.lyrics-active < root.lyrics-rows.length)
+        ? root.lyrics-rows[root.lyrics-active].text : "";
+    property <string> lyr-next: (root.lyrics-active >= 0
+        && root.lyrics-active + 1 < root.lyrics-rows.length)
+        ? root.lyrics-rows[root.lyrics-active + 1].text : "";
+    property <bool> lyr-on: root.rail-on && root.playing
+        && root.lyrics-rows.length > 0 && root.lyrics-active >= 0;
+    // Which Continue tab strip is filtered to. The backend hands back an already
+    // filtered model, same contract as Focused and Classic.
+    in-out property <string> cont-filter: "all";
+    // Queue lives on the BACK of the artwork: the button turns the square over
+    // rather than dropping a dialog on top of the card.
+    property <bool> qopen: false;
+    // A track change consumes a row: re-ask while the flip is face-up, or the
+    // list keeps offering what already played.
+    changed np-title => { if (root.qopen) { root.refresh-queue(); } }
+    property <float> turn: root.qopen ? 1.0 : 0.0;
+    animate turn { duration: 320ms; easing: ease-in-out; }
+    // 0 → 0.5 → 1 squeezes the square to nothing and back; the faces swap at the
+    // midpoint, which is what makes it read as a flip and not a crossfade.
+    property <float> squeeze: Math.max(0.02, Math.abs(1 - 2 * root.turn));
+    // The playing tab, by name and by colour.
+    property <string> src-name: root.player-mode == "podcast" ? "Podcasts"
+        : (root.player-mode == "radio" ? "Radio"
+        : (root.player-mode == "book" ? "Audiobooks"
+        : (root.yt-now-video ? "YouTube" : "My Music")));
+    property <color> src-accent: root.player-mode == "podcast" ? #8b5cf6
+        : (root.player-mode == "radio" ? Theme.sec-cloud
+        : (root.player-mode == "book" ? Theme.sec-books
+        : (root.yt-now-video ? #ef4444 : Theme.sec-music)));
+    // Volume knob state: the drag moves a local value and a timer flushes it, so
+    // a drag is not one mpv IPC command per mouse move.
+    property <float> vol-drag: -1;
+    property <bool> vol-dirty: false;
+    property <float> vol-frac: root.vol-drag >= 0 ? root.vol-drag
+        : (root.muted ? 0 : Math.clamp(root.volume / 100, 0.0, 1.0));
+    // Wide enough for a long title to break over TWO lines rather than elide at
+    // the first fifteen characters.
+    property <length> hero-w: Math.max(320px,
+        Math.min(root.hc-player ? 880px : 1080px,
+            root.width - 2 * root.pad - (root.hc-player ? root.stack-w + 24px : 0px)));
     // Hero text sits centred in what the shelf leaves behind.
     property <length> hero-y: (root.height - root.shelf-h) * 0.42;
 
@@ -263,13 +525,13 @@ export component HomeCinema inherits Rectangle {
     clip: true;
 
     // ── Backdrop ────────────────────────────────────────────────────────────
-    if root.hc-hero && root.hero-art.width > 0: Image {
-        source: root.hero-art; image-fit: cover;
+    if root.hc-hero && root.h-art.width > 0: Image {
+        source: root.h-art; image-fit: cover;
         width: 100%; height: 100%;
     }
     // No art (or no hero): the app gradient stands in, so the page is never a
     // flat black rectangle with text on it.
-    if !root.hc-hero || root.hero-art.width == 0: Rectangle {
+    if !root.hc-hero || root.h-art.width == 0: Rectangle {
         width: 100%; height: 100%;
         background: @linear-gradient(145deg, Theme.brand.with-alpha(0.45),
             Theme.sec-videos.with-alpha(0.28), Theme.bg);
@@ -286,212 +548,565 @@ export component HomeCinema inherits Rectangle {
     }
 
     // ── Top bar ─────────────────────────────────────────────────────────────
+    // Wordmark, then the greeting in a pill that wears the playing tab's colour,
+    // then Focused's launcher bar pushed right. The search key and the item
+    // count are gone: the palette has its own shortcut, and the count said
+    // nothing you could act on.
     HorizontalLayout {
-        x: root.pad; y: 22px; width: root.width - 2 * root.pad; height: 31px;
-        spacing: 14px; alignment: start;
+        x: root.pad; y: 20px; width: root.width - 2 * root.pad; height: 34px;
+        spacing: 10px;
         VerticalLayout {
             alignment: center; horizontal-stretch: 0;
             HorizontalLayout {
                 spacing: 8px;
+                // The app mark itself, not a dot — the same five-way pick the
+                // Classic header and the tray use.
                 Rectangle {
-                    width: 9px; height: 9px; border-radius: 3px;
+                    width: 22px; height: 22px; horizontal-stretch: 0;
                     y: (parent.height - self.height) / 2;
-                    background: @linear-gradient(140deg, Theme.brand, Theme.sec-music);
+                    border-radius: Surface.rr(7px, self.width, self.height); clip: true;
+                    Image {
+                        source: root.logo-choice == 1 ? @image-url("../resources/appicons/sidebar-color.png")
+                              : root.logo-choice == 2 ? @image-url("../resources/appicons/sidebar-dark.png")
+                              : root.logo-choice == 3 ? @image-url("../resources/appicons/sidebar-white.png")
+                              : root.festival        ? @image-url("../resources/appicons/logo_india.png")
+                              :                        @image-url("../resources/appicons/sidebar-default.png");
+                        image-fit: cover; width: 100%; height: 100%;
+                    }
                 }
-                Text { text: "tulipix"; color: Theme.text; font-size: 15px; font-weight: 700;
+                Text { text: "Tulipix"; color: Theme.text; font-size: 15px; font-weight: 700;
                     vertical-alignment: center; }
             }
         }
-        Rectangle { width: 1px; height: 18px; background: Theme.glass-border;
-            y: (parent.height - self.height) / 2; horizontal-stretch: 0; }
-        Text {
-            text: root.greeting + (root.date-line == "" ? "" : " · " + root.date-line);
-            color: Theme.text-dim; font-size: 12px; vertical-alignment: center;
-            overflow: elide; horizontal-stretch: 1;
+        // One solid pill, the Profile page's App Version button as the palette:
+        // orange fill, white ink. Greeting and name are one line; the date said
+        // nothing the rest of the page did not.
+        Rectangle {
+            horizontal-stretch: 0; y: (parent.height - self.height) / 2;
+            width: gw.preferred-width + 26px; height: 26px; border-radius: 13px;
+            background: #f97316;
+            gw := Text {
+                text: root.greeting;
+                color: #ffffff; font-size: 11.5px; font-weight: 700;
+                width: 100%; height: 100%;
+                horizontal-alignment: center; vertical-alignment: center;
+            }
         }
-        TopPill { label: root.library-line; icon: Icons.image; horizontal-stretch: 0;
-            clicked => { root.open-section("photos"); } }
-        TopPill { icon: Icons.search; icon-only: true; horizontal-stretch: 0;
-            clicked => { root.open-search(); } }
+        Rectangle { horizontal-stretch: 1; background: transparent; }
+        // Focused's launch bar, as header pills.
+        if root.hc-quick: TopPill { solid: true; label: "Stream"; icon: Icons.monitor-play;
+            accent: Theme.sec-videos; horizontal-stretch: 0;
+            y: (parent.height - self.height) / 2;
+            clicked => { root.open-stream(); } }
+        if root.hc-quick: TopPill { solid: true; label: "YouTube"; icon: Icons.play;
+            accent: #ef4444; horizontal-stretch: 0;
+            y: (parent.height - self.height) / 2;
+            clicked => { root.open-youtube(); } }
+        if root.hc-quick: TopPill { solid: true; label: "Music D/L"; icon: Icons.download;
+            accent: Theme.sec-music; horizontal-stretch: 0;
+            y: (parent.height - self.height) / 2;
+            clicked => { root.open-download(); } }
+        if root.hc-quick: TopPill { solid: true; label: "Genesis"; icon: Icons.sparkles;
+            accent: Theme.sec-books; horizontal-stretch: 0;
+            y: (parent.height - self.height) / 2;
+            clicked => { root.open-genesis(); } }
+        if root.hc-quick: TopPill { solid: true; label: "Radio"; icon: Icons.radio;
+            accent: Theme.brand; horizontal-stretch: 0;
+            y: (parent.height - self.height) / 2;
+            clicked => { root.random-radio(); } }
+        if root.hc-quick: TopPill { solid: true; label: "Live TV"; icon: Icons.tv;
+            accent: Theme.sec-cloud; horizontal-stretch: 0;
+            y: (parent.height - self.height) / 2;
+            clicked => { root.open-livetv(); } }
+    }
+
+    // Continue is a slideshow: the hero steps through the tabs on its own, ten
+    // seconds each, and a click on a tab both selects it and restarts the clock
+    // so the page never yanks an item out from under you.
+    slide := Timer {
+        interval: 10s;
+        running: root.hc-hero && root.rail-on && root.continue-rows.length > 1;
+        triggered => {
+            root.hero-sel = Math.mod(root.hero-sel + 1, root.continue-rows.length);
+        }
     }
 
     // ── Hero ────────────────────────────────────────────────────────────────
     if root.hc-hero: Rectangle {
         x: root.pad + 6px; y: root.hero-y; width: root.hero-w;
-        height: 220px; background: transparent;
+        height: 300px; background: transparent;
         VerticalLayout {
             spacing: 0; alignment: start;
             // Kicker — the badge says what the button will do, in the button's words.
             HorizontalLayout {
-                spacing: 9px; alignment: start; height: 20px;
+                spacing: 9px; alignment: start; height: 22px;
+                // The category, in the category's colour — the same pill the
+                // Continue tab carries, so tab and hero read as one thing.
                 Rectangle {
-                    width: 62px; height: 19px; border-radius: 5px; horizontal-stretch: 0;
-                    background: root.hero-title == "" ? Theme.brand : Theme.sec-videos;
-                    Text {
-                        text: root.hero-title == "" ? "START" : "RESUME";
-                        color: #0b0b12; font-size: 9px; font-weight: 700; letter-spacing: 0.8px;
+                    width: tag.preferred-width + 20px; height: 21px;
+                    border-radius: Surface.rr(6px, self.width, self.height);
+                    horizontal-stretch: 0;
+                    background: root.h-accent;
+                    animate background { duration: 200ms; easing: ease-out; }
+                    tag := Text {
+                        text: root.h-tag;
+                        color: #ffffff; font-size: 9px; font-weight: 800; letter-spacing: 0.8px;
                         width: 100%; height: 100%;
                         horizontal-alignment: center; vertical-alignment: center;
                     }
                 }
                 Text {
-                    text: root.hero-title == "" ? "NOTHING IN PROGRESS" : root.hero-kicker;
+                    text: root.h-title == "" ? "NOTHING IN PROGRESS" : root.h-kicker;
                     color: Theme.text-dim; font-size: 10px; font-weight: 600;
                     letter-spacing: 1.4px; vertical-alignment: center; overflow: elide;
                 }
             }
             Rectangle { height: 14px; }
-            // Title. One line, elided — it must never wrap into the shelf.
+            // One line for a short title, two when it needs them — the box is
+            // as tall as the text, not a fixed two lines.
             Text {
-                text: root.hero-title == "" ? "Your library" : root.hero-title;
-                color: Theme.text; font-size: 62px; font-weight: 700;
-                letter-spacing: -2.6px; wrap: no-wrap; overflow: elide;
+                text: root.h-title == "" ? "Your library" : root.h-title;
+                color: Theme.text; font-size: 44px; font-weight: 700;
+                letter-spacing: -1.7px; wrap: word-wrap; overflow: elide;
+                vertical-alignment: top;
             }
             Rectangle { height: 12px; }
             Text {
-                text: root.hero-title == ""
+                text: root.h-title == ""
                     ? "Add a folder and the newest thing you were watching lands here."
-                    : root.hero-meta;
+                    : root.h-meta;
                 color: Theme.text-dim; font-size: 12.5px; overflow: elide;
             }
             Rectangle { height: 16px; }
-            if root.hero-frac >= 0: Rectangle {
-                width: 330px; height: 3px; border-radius: 2px;
-                background: Theme.text.with-alpha(0.2);
+            // Focused's progress pill: what is left, the percent, and a thick
+            // fill — the hairline said nothing you could read at a glance.
+            if root.h-frac >= 0: Rectangle {
+                width: 330px; height: 36px;
+                border-radius: Surface.rr(9px, self.width, self.height);
+                background: Theme.dark ? root.h-accent.darker(0.30)
+                                       : root.h-accent.with-alpha(0.12);
+                border-width: 1px;
+                border-color: Theme.dark ? #ffffffcc : root.h-accent.with-alpha(0.55);
+                Text {
+                    x: 10px; y: 4px; width: parent.width - 50px; height: 14px;
+                    text: root.h-rem; color: Theme.dark ? #ffffff : Theme.text;
+                    font-size: 11px; font-weight: 700;
+                    vertical-alignment: center; overflow: elide;
+                }
+                Text {
+                    x: parent.width - 40px; y: 4px; width: 30px; height: 14px;
+                    text: Math.round(root.h-frac * 100) + "%";
+                    color: Theme.dark ? #ffffff : Theme.text;
+                    font-size: 10px; font-weight: 800;
+                    horizontal-alignment: right; vertical-alignment: center;
+                }
                 Rectangle {
-                    width: parent.width * Math.max(0.0, Math.min(1.0, root.hero-frac));
-                    height: 100%; border-radius: 2px; background: Theme.sec-videos;
+                    x: 10px; y: parent.height - 13px;
+                    width: parent.width - 20px; height: 8px; border-radius: 4px;
+                    background: Theme.dark ? #ffffff.with-alpha(0.25)
+                                           : root.h-accent.with-alpha(0.18);
+                    Rectangle {
+                        x: 0; height: 100%; border-radius: 4px;
+                        width: parent.width * Math.clamp(root.h-frac, 0.0, 1.0);
+                        background: Theme.dark ? #ffffff : root.h-accent;
+                    }
                 }
             }
             Rectangle { height: 20px; }
             HorizontalLayout {
                 spacing: 10px; alignment: start; height: 42px;
                 HeroBtn {
-                    label: root.hero-title == "" ? "Browse Photos" : "Resume";
-                    icon: root.hero-title == "" ? Icons.image : Icons.play;
-                    primary: true;
+                    label: root.h-title == "" ? "Browse Photos" : "Resume";
+                    icon: root.h-title == "" ? Icons.image : Icons.play;
+                    primary: true; fill: root.h-accent;
+                    // The hero opens what the RAIL selected; `resume-hero` is the
+                    // fallback for a page with no Continue rail at all.
                     clicked => {
-                        if (root.hero-title == "") { root.open-section("photos"); }
+                        if (root.h-title == "") { root.open-section("photos"); }
+                        else if (root.has-sel) { root.continue-open(root.sel); }
                         else { root.resume-hero(); }
                     }
                 }
-                if root.hero-title != "": HeroBtn {
+                // Details is a BOOK affordance: only Books has a details popup
+                // to open. A film, an episode or an audiobook resumed straight
+                // into its player, and the button did nothing worth a click.
+                if root.h-title != "" && root.h-kind == "book": HeroBtn {
                     label: "Details"; icon: Icons.info;
-                    clicked => { root.hero-details(); }
+                    // The panel, not the reader — and for the tab the rail has
+                    // selected, which is not necessarily the backend's hero.
+                    clicked => {
+                        if (root.has-sel) { root.open-book-detail(root.sel.id); }
+                        else { root.hero-details(); }
+                    }
                 }
             }
         }
     }
 
-    // ── Right glass stack ───────────────────────────────────────────────────
-    if root.stack-n > 0: Rectangle {
+    // ── Right glass stack — the player ──────────────────────────────────────
+    // Finances and Transfer used to stand here. They are tiles in My Hub now:
+    // both were read-only summaries of a section you then had to open anyway,
+    // and the one thing worth having on a page you leave open is the transport.
+    if root.hc-player: Rectangle {
         x: root.width - root.pad - root.stack-w;
         y: 96px; width: root.stack-w;
-        height: root.height - root.shelf-h - 96px - 20px;
+        height: root.player-h;
         background: transparent;
-        VerticalLayout {
-            spacing: 11px; alignment: start;
-
-            // Finances — the one card on Home that is only numbers.
-            if root.hc-finances: GlassPanel {
-                title: "FINANCES"; accent: Theme.sec-finances; icon: Icons.wallet;
-                height: 30px + 40px + 34px + (root.fin-dues.length * 30px) + 16px;
-                clicked => { root.open-section("finances"); }
-                VerticalLayout {
-                    padding: 13px; spacing: 0;
+        // The breathing ring Focused draws inside its bar — here it stands OFF
+        // the card, 8 px clear on every side, so the panel keeps its own edge.
+        if root.playing: Rectangle {
+            property <float> pulse:
+                Math.abs(Math.sin((animation-tick() / 1ms / 620) * 1rad));
+            x: -8px; y: -8px;
+            width: parent.width + 16px; height: parent.height + 16px;
+            border-radius: Surface.rr(15px, self.width, self.height) + 8px;
+            background: transparent;
+            border-width: 4px;
+            border-color: root.np-accent.mix(Theme.dark ? #ffffff : Theme.brand-2, self.pulse)
+                .with-alpha(0.35 + 0.5 * self.pulse);
+        }
+        pl := GlassPanel {
+            width: 100%; height: 100%;
+            accent: root.src-accent; icon: Icons.music; title: root.src-name;
+            VerticalLayout {
+                padding: 13px; spacing: 0px;
+                // The header names the TAB, not the state: "My Music", "Podcasts",
+                // "Radio". The clock moved down to the ends of the seek bar, where
+                // a position belongs.
+                // Icon and name ride together in the middle, and the whole row is
+                // the door back to the tab the sound comes from.
+                Rectangle {
+                    height: 22px; vertical-stretch: 0;
+                    border-radius: 11px;
+                    background: srcb.has-hover ? root.src-accent.with-alpha(0.16) : transparent;
+                    animate background { duration: 120ms; easing: ease-out; }
+                    srcb := TouchArea { mouse-cursor: pointer;
+                        clicked => { root.open-playing-tab(); } }
                     HorizontalLayout {
-                        spacing: 8px; height: 17px;
-                        AppIcon { source: Icons.wallet; tint: Theme.sec-finances;
-                            width: 13px; height: 13px; horizontal-stretch: 0; }
-                        Text { text: "FINANCES"; color: Theme.sec-finances; font-size: 11px;
-                            font-weight: 700; letter-spacing: 0.3px; vertical-alignment: center; }
-                        Text { text: root.fin-month; color: Theme.text-dim; font-size: 10px;
-                            horizontal-alignment: right; vertical-alignment: center;
-                            horizontal-stretch: 1; }
-                    }
-                    Rectangle { height: 10px; }
-                    Text {
-                        text: root.fin-spent == "" ? "—" : root.fin-spent;
-                        color: Theme.text; font-size: 29px; font-weight: 700;
-                        letter-spacing: -1px;
-                    }
-                    Rectangle { height: 4px; }
-                    Text {
-                        text: root.fin-liquid == "" ? "spent this month"
-                            : "spent this month · " + root.fin-liquid + " liquid";
-                        color: Theme.text-dim; font-size: 10.5px; overflow: elide;
-                    }
-                    // Twelve months, newest last. Bars, not a donut: the shape of a
-                    // year is the thing worth seeing at this size.
-                    Rectangle { height: 12px; }
-                    HorizontalLayout {
-                        height: 30px; spacing: 3px;
-                        for m[i] in root.fin-months: Rectangle {
-                            border-radius: 2px;
-                            y: parent.height - self.height;
-                            height: Math.max(2px, parent.height * Math.max(0.04, m));
-                            background: i == root.fin-months.length - 1
-                                ? Theme.sec-finances
-                                : Theme.sec-finances.with-alpha(0.32);
+                        alignment: center; spacing: 7px;
+                        AppIcon {
+                            source: root.player-mode == "podcast" ? Icons.mic
+                                : (root.player-mode == "radio" ? Icons.radio
+                                : (root.player-mode == "book" ? Icons.book-open : Icons.music));
+                            tint: root.src-accent;
+                            width: 13px; height: 13px; horizontal-stretch: 0;
                         }
-                    }
-                    for d in root.fin-dues: HorizontalLayout {
-                        height: 30px; spacing: 8px;
-                        Rectangle {
-                            width: 6px; height: 6px; border-radius: 3px; horizontal-stretch: 0;
-                            y: (parent.height - self.height) / 2;
-                            background: d.late ? Theme.error : Theme.warn;
-                        }
-                        Text { text: d.name; color: Theme.text; font-size: 11px;
-                            vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
-                        Text { text: d.amount; color: Theme.text; font-size: 11px; font-weight: 600;
-                            vertical-alignment: center; horizontal-stretch: 0; }
-                        Text { text: d.when; color: d.late ? Theme.error : Theme.text-dim;
-                            font-size: 9.5px; vertical-alignment: center;
-                            horizontal-alignment: right; width: 54px; horizontal-stretch: 0; }
+                        Text { text: root.src-name; color: root.src-accent; font-size: 11px;
+                            font-weight: 700; letter-spacing: 0.3px; vertical-alignment: center;
+                            horizontal-stretch: 0; overflow: elide; }
                     }
                 }
-            }
-
-            // Transfer — a door, not a dashboard. The server only binds while the
-            // section is open, so there is nothing live to show here yet; the
-            // panel offers the one action that matters and says where files land.
-            if root.hc-transfer: GlassPanel {
-                title: "TRANSFER"; accent: Theme.sec-transfer; icon: Icons.share;
-                height: 106px;
-                clicked => { root.open-section("transfer"); }
-                VerticalLayout {
-                    padding: 13px; spacing: 9px;
-                    HorizontalLayout {
-                        spacing: 8px; height: 17px;
-                        AppIcon { source: Icons.share; tint: Theme.sec-transfer;
-                            width: 13px; height: 13px; horizontal-stretch: 0; }
-                        Text { text: "TRANSFER"; color: Theme.sec-transfer; font-size: 11px;
-                            font-weight: 700; letter-spacing: 0.3px; vertical-alignment: center; }
-                        Text { text: root.transfer-note; color: Theme.text-dim; font-size: 10px;
-                            horizontal-alignment: right; vertical-alignment: center;
-                            horizontal-stretch: 1; }
-                    }
+                Rectangle { height: 10px; vertical-stretch: 0; }
+                // Title FIRST, then the art: you read what is playing, then look
+                // at it — the other way round the text was an afterthought under
+                // a poster. Centred over a centred square.
+                Text {
+                    text: root.np-title == "" ? "Nothing playing" : root.np-title;
+                    color: Theme.text; font-size: 15px; font-weight: 700;
+                    height: 20px; horizontal-alignment: center;
+                    overflow: elide; vertical-stretch: 0;
+                }
+                Text {
+                    text: root.np-title == "" ? "Press play for a shuffled library" : root.np-sub;
+                    color: Theme.text-dim; font-size: 10.5px;
+                    height: 14px; horizontal-alignment: center;
+                    overflow: elide; vertical-stretch: 0;
+                }
+                Rectangle { height: 7px; vertical-stretch: 0; }
+                // The artwork takes every pixel the controls do not: a fixed square
+                // left a dead band above the transport on a tall window.
+                slot := Rectangle {
+                    height: root.pl-art; vertical-stretch: 0;
+                    property <length> side: Math.max(0px, Math.min(self.width, self.height));
                     Rectangle {
-                        height: 30px; border-radius: Surface.r(15px); horizontal-stretch: 0;
-                        width: 128px;
-                        background: @linear-gradient(140deg, Theme.transfer-accent, Theme.transfer-accent-2);
-                        st := TouchArea { mouse-cursor: pointer; clicked => { root.start-sharing(); } }
-                        HorizontalLayout {
-                            spacing: 6px; alignment: center;
-                            AppIcon { source: Icons.zap; tint: #231000; width: 13px; height: 13px;
+                        width: slot.side * root.squeeze;
+                        height: slot.side;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2;
+                        border-radius: Surface.rr(12px, slot.side, slot.side); clip: true;
+                        background: root.np-accent.with-alpha(0.18);
+                        // Both faces are drawn at the FULL square width, so the
+                        // squeeze clips them instead of reflowing text every frame.
+                        // Front: the cover.
+                        Rectangle {
+                            width: slot.side; height: slot.side;
+                            x: (parent.width - self.width) / 2;
+                            visible: root.turn < 0.5;
+                            if root.np-art.width > 0: Image { source: root.np-art;
+                                image-fit: cover; width: 100%; height: 100%; }
+                            if root.np-art.width == 0: AppIcon { source: Icons.music;
+                                tint: root.np-accent; width: 34px; height: 34px;
+                                x: (parent.width - self.width) / 2;
                                 y: (parent.height - self.height) / 2; }
-                            Text { text: "Start sharing"; color: #231000; font-size: 11px;
-                                font-weight: 700; vertical-alignment: center; }
+                        }
+                        // Back: the queue. `visible` and not just opacity — an
+                        // invisible face still takes clicks, so the queue rows
+                        // were catching taps meant for the cover and starting
+                        // whatever row sat under the finger.
+                        Rectangle {
+                            width: slot.side; height: slot.side;
+                            x: (parent.width - self.width) / 2;
+                            visible: root.turn >= 0.5;
+                            background: Theme.dark ? #0c0c14e6 : #ffffffe6;
+                            VerticalLayout {
+                                padding: 10px; spacing: 6px;
+                                HorizontalLayout {
+                                    height: 16px; spacing: 8px; vertical-stretch: 0;
+                                    Text { text: "Up next"; color: Theme.text;
+                                        font-size: 12px; font-weight: 700;
+                                        horizontal-stretch: 1; vertical-alignment: center; }
+                                    Text { text: root.queue-rows.length + " tracks";
+                                        color: Theme.text-dim; font-size: 10px;
+                                        horizontal-stretch: 0; vertical-alignment: center; }
+                                }
+                                Text {
+                                    text: root.queue-rows.length == 0
+                                        ? "The queue is empty — press play and it fills up." : "";
+                                    color: Theme.text-dim; font-size: 10.5px;
+                                    height: root.queue-rows.length == 0 ? 34px : 0px;
+                                    vertical-stretch: 0; wrap: word-wrap;
+                                }
+                                qsv := ScrollView {
+                                    vertical-stretch: 1;
+                                    VerticalLayout {
+                                        width: qsv.visible-width; spacing: 2px; alignment: start;
+                                        for q in root.queue-rows: Rectangle {
+                                            // The lit row is the one whose PLAYBACK
+                                            // POSITION is playing — not the n-th row.
+                                            property <bool> now:
+                                                q.index == root.np-index && root.np-index >= 0;
+                                            height: 34px;
+                                            border-radius: Surface.rr(9px, self.width, self.height);
+                                            background: self.now
+                                                ? root.np-accent.with-alpha(0.18)
+                                                : (qr.has-hover ? Theme.glass-strong : transparent);
+                                            qr := TouchArea { mouse-cursor: pointer;
+                                                clicked => { root.play-queue(q.index); } }
+                                            HorizontalLayout {
+                                                padding-left: 5px; padding-right: 7px;
+                                                padding-top: 3px; padding-bottom: 3px; spacing: 7px;
+                                                Rectangle {
+                                                    width: 28px; horizontal-stretch: 0;
+                                                    border-radius: Surface.rr(7px, self.width, self.height);
+                                                    clip: true;
+                                                    background: root.np-accent.with-alpha(0.16);
+                                                    if q.thumb.width > 0: Image { source: q.thumb;
+                                                        image-fit: cover; width: 100%; height: 100%; }
+                                                }
+                                                VerticalLayout {
+                                                    alignment: center; spacing: 1px;
+                                                    horizontal-stretch: 1; min-width: 0;
+                                                    Text { text: q.title; color: Theme.text;
+                                                        font-size: 11px; overflow: elide; }
+                                                    Text { text: q.artist; color: Theme.text-dim;
+                                                        font-size: 9px; overflow: elide; }
+                                                }
+                                                Text { text: q.duration; color: Theme.text-dim;
+                                                    font-size: 9px; horizontal-stretch: 0;
+                                                    vertical-alignment: center; }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
                         }
                     }
-                    Text {
-                        text: root.transfer-inbox == "" ? "Files land in your inbox folder"
-                            : "Inbox " + root.transfer-inbox;
-                        color: Theme.text-dim; font-size: 10px; overflow: elide;
+                }
+                Rectangle { height: 8px; vertical-stretch: 0; }
+                // Focused's seek bar: thick, gradient-filled, both times riding
+                // inside it. Click to jump; NOT `moved` — every move event would
+                // be one more mpv IPC command.
+                Rectangle {
+                    height: 22px; border-radius: 11px; vertical-stretch: 0;
+                    background: Theme.text.with-alpha(0.13);
+                    border-width: 1px; border-color: Theme.text.with-alpha(0.22);
+                    clip: true;
+                    Rectangle {
+                        x: 0; height: 100%; border-radius: 11px;
+                        width: parent.width
+                            * Math.clamp(root.dur > 0 ? root.pos / root.dur : 0, 0.0, 1.0);
+                        background: Theme.dark
+                            ? @linear-gradient(90deg, root.np-accent 0%,
+                                root.np-accent.brighter(0.45) 55%, #ffffff 100%)
+                            : @linear-gradient(90deg, root.np-accent 0%, Theme.brand 100%);
+                    }
+                    // Elapsed rides the fill, so it flips to white once the fill
+                    // has actually reached it.
+                    Text { x: 10px; y: (parent.height - self.height) / 2;
+                        text: root.pos-label;
+                        color: (root.dur > 0 && root.pos / root.dur > 0.14)
+                            ? #ffffff : Theme.text-dim;
+                        font-size: 10px; font-weight: 700; }
+                    Text { x: parent.width - self.width - 10px;
+                        y: (parent.height - self.height) / 2;
+                        text: root.dur-label; color: Theme.text-dim;
+                        font-size: 10px; font-weight: 700; }
+                    TouchArea {
+                        mouse-cursor: pointer;
+                        clicked => {
+                            root.seek(root.dur * Math.clamp(self.mouse-x / self.width, 0.0, 1.0));
+                        }
                     }
                 }
+                Rectangle { height: 12px; vertical-stretch: 0; }
+                // The five, centred. With nothing loaded the middle key starts a
+                // shuffled library — the same random queue every other surface
+                // starts — so the panel is never a dead control.
+                HorizontalLayout {
+                    height: 53px; spacing: 8px; alignment: center; vertical-stretch: 0;
+                    CineBtn { icon: Icons.shuffle; lit: root.shuffle; accent: root.np-accent;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.toggle-shuffle(); } }
+                    CineBtn { icon: Icons.skip-back; accent: root.np-accent;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.prev(); } }
+                    CineBtn { icon: root.playing ? Icons.pause : Icons.play;
+                        primary: true; accent: root.np-accent;
+                        y: (parent.height - self.height) / 2;
+                        clicked => {
+                            if (root.np-title == "") { root.shuffle-all(); }
+                            else { root.playpause(); }
+                        } }
+                    CineBtn { icon: Icons.skip-forward; accent: root.np-accent;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.next(); } }
+                    CineBtn { icon: root.repeat == "one" ? Icons.repeat-1 : Icons.repeat;
+                        lit: root.repeat != "off"; accent: root.np-accent;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.cycle-repeat(); } }
+                }
+                Rectangle { height: 10px; vertical-stretch: 0; }
+                // Queue, mute, and the volume track.
+                HorizontalLayout {
+                    height: 32px; spacing: 8px; vertical-stretch: 0;
+                    // Turns the artwork over instead of dropping a dialog on
+                    // the card: the queue is the back of the square above.
+                    CineBtn { icon: Icons.list-music; accent: root.np-accent;
+                        lit: root.qopen;
+                        y: (parent.height - self.height) / 2;
+                        clicked => {
+                            root.qopen = !root.qopen;
+                            if (root.qopen) { root.refresh-queue(); }
+                        } }
+                    CineBtn { icon: root.muted ? Icons.volume-x : Icons.volume;
+                        accent: root.np-accent;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.toggle-mute(); } }
+                    Rectangle {
+                        horizontal-stretch: 1; background: transparent;
+                        Rectangle {
+                            x: 8px; y: (parent.height - self.height) / 2;
+                            width: Math.max(0px, parent.width - 16px);
+                            height: 12px; border-radius: 6px;
+                            background: Theme.text.with-alpha(0.13);
+                            border-width: 1px; border-color: Theme.text.with-alpha(0.22);
+                            Rectangle {
+                                x: 0; height: 100%; border-radius: 6px;
+                                width: parent.width * root.vol-frac;
+                                background: Theme.dark
+                                    ? @linear-gradient(90deg, root.np-accent 0%,
+                                        root.np-accent.brighter(0.45) 100%)
+                                    : @linear-gradient(90deg, root.np-accent 0%, Theme.brand 100%);
+                            }
+                            Rectangle {
+                                width: 16px; height: 16px; border-radius: 8px;
+                                x: Math.clamp(parent.width * root.vol-frac - 8px,
+                                    0px, Math.max(0px, parent.width - 16px));
+                                y: (parent.height - self.height) / 2;
+                                background: #ffffff;
+                                border-width: 2px; border-color: root.np-accent;
+                            }
+                        }
+                        vol := TouchArea {
+                            x: 8px; width: Math.max(0px, parent.width - 16px);
+                            mouse-cursor: pointer;
+                            property <bool> dragged: false;
+                            moved => {
+                                if (self.pressed) {
+                                    self.dragged = true;
+                                    root.vol-drag = Math.clamp(self.mouse-x / self.width, 0.0, 1.0);
+                                    root.vol-dirty = true;
+                                }
+                            }
+                            pointer-event(e) => {
+                                if (e.kind == PointerEventKind.down) { self.dragged = false; }
+                                if (e.kind == PointerEventKind.up) {
+                                    if (self.dragged && root.vol-drag >= 0) {
+                                        root.set-volume(100 * root.vol-drag);
+                                    }
+                                    root.vol-drag = -1;
+                                    root.vol-dirty = false;
+                                }
+                            }
+                            clicked => {
+                                if (!self.dragged) {
+                                    root.set-volume(100 * Math.clamp(self.mouse-x / self.width, 0.0, 1.0));
+                                }
+                            }
+                        }
+                        Timer {
+                            interval: 90ms; running: root.vol-dirty;
+                            triggered => {
+                                if (root.vol-drag >= 0) { root.set-volume(100 * root.vol-drag); }
+                                root.vol-dirty = false;
+                            }
+                        }
+                    }
+                    // Zen: the full-screen player, from the end of the row.
+                    CineBtn { icon: Icons.maximize; accent: root.np-accent;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.open-zen(); } }
+                }
             }
+        }
+    }
+
+    // ── My Hub, in the gap under the player ─────────────────────────────────
+    // Anchored to the BOTTOM of the column (just over the shelf), not hung off
+    // the player: the art is elastic, so hanging it there would make the band
+    // drift with every window resize.
+    if root.hub-on: Rectangle {
+        x: root.width - root.pad - root.stack-w;
+        y: root.height - root.shelf-h - 20px - root.hub-band;
+        width: root.stack-w; height: root.hub-band;
+        background: transparent;
+        // ‹ and › flank the tile at the band's own edges, so the card keeps the
+        // player's width and the arrows cost it 26 px a side.
+        HubArrow {
+            x: 0; y: (parent.height - self.height) / 2;
+            icon: Icons.chevron-left; accent: root.hub-now.accent;
+            clicked => {
+                root.hub-sel = Math.mod(root.hub-sel - 1 + root.hub-cards.length,
+                    root.hub-cards.length);
+                hubslide.restart();
+            }
+        }
+        HubTile {
+            x: 26px; y: 0;
+            width: parent.width - 52px; height: parent.height;
+            // Sized to FILL the 152 px band: 13.5 pad + 56 disc + 9.5 + ~23 name
+            // + 9.5 + 25.5 pill + 13.5 pad ≈ 151, so the tile has no dead margin
+            // over and under its own contents and nothing overflows either.
+            disc: 56px;
+            text-scale: 1.35;
+            wash: 1.4;      // one tile alone in a column needs more paint than eight in a row
+            name: root.hub-now.name; count: root.hub-now.count;
+            icon: root.hub-now.icon; accent: root.hub-now.accent;
+            clicked => { root.open-section(root.hub-now.section); }
+        }
+        HubArrow {
+            x: parent.width - self.width; y: (parent.height - self.height) / 2;
+            icon: Icons.chevron-right; accent: root.hub-now.accent;
+            clicked => {
+                root.hub-sel = Math.mod(root.hub-sel + 1, root.hub-cards.length);
+                hubslide.restart();
+            }
+        }
+        // Ten seconds a card, the same clock the hero slideshow keeps.
+        hubslide := Timer {
+            interval: 10s;
+            running: root.hub-on;
+            triggered => { root.hub-sel = Math.mod(root.hub-sel + 1, root.hub-cards.length); }
         }
     }
 
@@ -502,71 +1117,76 @@ export component HomeCinema inherits Rectangle {
             Theme.bg.with-alpha(0.0));
         VerticalLayout {
             padding-left: root.pad; padding-right: root.pad;
-            padding-top: 18px; padding-bottom: 20px;
-            spacing: 14px;
+            padding-top: root.shelf-top; padding-bottom: root.shelf-bottom;
+            spacing: 0px;
 
             if root.rail-on: VerticalLayout {
                 spacing: 9px;
+                // Title and the five kind tabs share ONE row, same contract as
+                // Focused: the backend hands back an already-filtered model, so
+                // the strip below never has to know about the filter.
                 HorizontalLayout {
-                    height: 16px;
+                    height: root.rail-head-h; width: root.rail-w; spacing: 6px;
                     Text { text: "Continue"; color: Theme.text; font-size: 12.5px; font-weight: 700;
-                        vertical-alignment: center; }
-                    Text {
-                        text: root.continue-rows.length + " in progress";
-                        color: Theme.text-dim; font-size: 10.5px; vertical-alignment: center;
-                        horizontal-alignment: right; horizontal-stretch: 1;
-                    }
+                        vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+                    HomeChip { label: "All"; accent: Theme.sec-music;
+                        emphasized: root.cont-filter == "all";
+                        clicked => { root.cont-filter = "all"; root.hero-sel = 0;
+                            root.continue-filter("all"); } }
+                    HomeChip { label: "Books"; accent: Theme.sec-books;
+                        emphasized: root.cont-filter == "book";
+                        clicked => { root.cont-filter = "book"; root.hero-sel = 0;
+                            root.continue-filter("book"); } }
+                    HomeChip { label: "Videos"; accent: Theme.sec-videos;
+                        emphasized: root.cont-filter == "video";
+                        clicked => { root.cont-filter = "video"; root.hero-sel = 0;
+                            root.continue-filter("video"); } }
+                    HomeChip { label: "Podcasts"; accent: #8b5cf6;
+                        emphasized: root.cont-filter == "podcast";
+                        clicked => { root.cont-filter = "podcast"; root.hero-sel = 0;
+                            root.continue-filter("podcast"); } }
+                    HomeChip { label: "Audiobooks"; accent: #3b82f6;
+                        emphasized: root.cont-filter == "audiobook";
+                        clicked => { root.cont-filter = "audiobook"; root.hero-sel = 0;
+                            root.continue-filter("audiobook"); } }
                 }
-                rsv := ScrollView {
-                    height: 110px;
-                    // Every page in this app opens at the top — and every rail at
-                    // its left edge.
-                    viewport-x: 0px;
-                    HorizontalLayout {
-                        spacing: 11px; alignment: start;
-                        for c in root.continue-rows: RailTile {
-                            data: c;
-                            accent: c.kind == "video" ? Theme.sec-videos
-                                : (c.kind == "podcast" ? Theme.sec-music
-                                : (c.kind == "book" ? Theme.sec-books : Theme.sec-books));
-                            open => { root.continue-open(c); }
-                        }
+                // 70% of the page and NOT scrollable: the tabs divide the row
+                // between them, so however many there are they all fit. The strip
+                // is also the hero's slideshow — see the `slide` timer.
+                HorizontalLayout {
+                    height: root.rail-h; width: root.rail-w; spacing: root.rail-gap;
+                    alignment: start;
+                    for c[i] in root.continue-rows: RailTile {
+                        width: root.tab-w; height: root.rail-h; horizontal-stretch: 0;
+                        data: c;
+                        selected: i == Math.clamp(root.hero-sel, 0, root.continue-rows.length - 1);
+                        accent: c.kind == "video" ? Theme.sec-videos
+                            : (c.kind == "podcast" ? #8b5cf6
+                            : (c.kind == "book" ? Theme.sec-books : #3b82f6));
+                        // Selects, never opens — the hero above carries Resume.
+                        open => { root.hero-sel = i; slide.restart(); }
                     }
                 }
             }
-
-            if root.keys > 0: HorizontalLayout {
-                height: 62px; spacing: 9px;
-                if root.hc-photos: SectionKey {
-                    label: "Photos"; icon: Icons.image; accent: Theme.sec-photos;
-                    stat: root.stats.photos + " items";
-                    clicked => { root.open-section("photos"); }
-                }
-                if root.hc-videos: SectionKey {
-                    label: "Videos"; icon: Icons.film; accent: Theme.sec-videos;
-                    stat: root.stats.videos + " items";
-                    clicked => { root.open-section("videos"); }
-                }
-                if root.hc-music: SectionKey {
-                    label: "Music"; icon: Icons.music; accent: Theme.sec-music;
-                    stat: root.stats.songs + " tracks";
-                    clicked => { root.open-section("music"); }
-                }
-                if root.hc-books: SectionKey {
-                    label: "Books"; icon: Icons.book-open; accent: Theme.sec-books;
-                    stat: root.stats.books + " books";
-                    clicked => { root.open-section("books"); }
-                }
-                if root.hc-cloud: SectionKey {
-                    label: "Cloud"; icon: Icons.cloud; accent: Theme.sec-cloud;
-                    stat: root.stats.cloud-remotes + " remotes";
-                    clicked => { root.open-section("cloud"); }
-                }
-                if root.hc-tools: SectionKey {
-                    label: "Tools"; icon: Icons.wrench; accent: Theme.sec-tools;
-                    stat: root.stats.tools-note == "" ? "ready" : root.stats.tools-note;
-                    clicked => { root.open-section("tools"); }
-                }
+        }
+        // Three lyric lines in the space the 70% strip leaves — no plate, no
+        // outline, no title: just the words, and only while something with
+        // lyrics is playing.
+        if root.lyr-on: Rectangle {
+            x: root.pad + root.rail-w + 28px;
+            y: root.shelf-top + root.rail-head-h + 9px;
+            width: Math.max(0px, root.width - root.pad - self.x);
+            height: root.rail-h;
+            background: transparent;
+            VerticalLayout {
+                alignment: center; spacing: 7px;
+                Text { text: root.lyr-prev; color: root.np-accent.with-alpha(0.45);
+                    font-size: 13px; horizontal-alignment: center; overflow: elide; }
+                Text { text: root.lyr-cur; color: root.np-accent;
+                    font-size: 19px; font-weight: 700;
+                    horizontal-alignment: center; overflow: elide; }
+                Text { text: root.lyr-next; color: root.np-accent.with-alpha(0.45);
+                    font-size: 13px; horizontal-alignment: center; overflow: elide; }
             }
         }
     }

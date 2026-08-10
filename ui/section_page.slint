@@ -24,7 +24,7 @@ component ToolPill inherits Skin {
     callback clicked();
     height: 30px; min-width: 80px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: Surface.r(10px);
+    border-radius: Surface.rr(10px, self.width, self.height);
     background: primary ? Accent.color.with-alpha(0.18) : (touch.has-hover ? Theme.panel-2 : transparent);
     border-width: 1px;
     border-color: primary ? Accent.color.with-alpha(0.45) : Theme.outline;
@@ -67,7 +67,7 @@ export component SectionPage inherits Rectangle {
                 width: 6px; height: 44px;
                 horizontal-stretch: 0; vertical-stretch: 0;
                 y: (parent.height - self.height) / 2;
-                border-radius: Surface.r(3px);
+                border-radius: Surface.rr(3px, self.width, self.height);
                 background: @linear-gradient(180deg, Accent.color 0%, Accent.color.with-alpha(0.5) 100%);
             }
             VerticalLayout {
@@ -129,7 +129,7 @@ export component SectionPage inherits Rectangle {
                         x: tile.col * (tile-size + tile-gap) + 14px;
                         y: tile.row * (tile-size + tile-gap) + 14px;
                         width: tile-size; height: tile-size;
-                        border-radius: Surface.r(12px);
+                        border-radius: Surface.rr(12px, self.width, self.height);
                         clip: true;
                         border-width: 1px;
                         border-color: ta.has-hover ? Accent.color : Theme.outline;

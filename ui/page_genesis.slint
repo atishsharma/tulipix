@@ -83,7 +83,7 @@ component Chip inherits Skin {
     in property <string> label;
     in property <bool> on: false;
     callback clicked();
-    horizontal-stretch: 0; height: 32px; border-radius: Surface.r(16px);
+    horizontal-stretch: 0; height: 32px; border-radius: Surface.rr(16px, self.width, self.height);
     background: root.on ? BookTheme.tint-violet : BookTheme.pill-bg;
     border-width: 1.5px;
     border-color: root.on ? BookTheme.accent.with-alpha(0.45) : transparent;
@@ -109,7 +109,7 @@ component Picker inherits Skin {
     in property <[string]> options;
     callback pick(string);
 
-    horizontal-stretch: 0; height: 32px; border-radius: Surface.r(16px);
+    horizontal-stretch: 0; height: 32px; border-radius: Surface.rr(16px, self.width, self.height);
     background: BookTheme.pill-bg;
     border-width: 1.5px;
     border-color: ta.has-hover ? BookTheme.accent.with-alpha(0.45) : transparent;
@@ -143,7 +143,7 @@ component Picker inherits Skin {
         height: menucol.preferred-height;
         close-policy: close-on-click-outside;
         Rectangle {
-            border-radius: Surface.r(12px);
+            border-radius: Surface.rr(12px, self.width, self.height);
             background: BookTheme.card;
             border-width: 1px; border-color: BookTheme.hairline;
             drop-shadow-blur: Surface.cast(24px);
@@ -152,7 +152,7 @@ component Picker inherits Skin {
             menucol := VerticalLayout {
                 padding: 6px; spacing: 1px;
                 for o in root.options: Rectangle {
-                    height: 30px; border-radius: Surface.r(8px);
+                    height: 30px; border-radius: Surface.rr(8px, self.width, self.height);
                     background: o == root.value ? BookTheme.tint-violet
                         : (ot.has-hover ? BookTheme.pill-bg : transparent);
                     ot := TouchArea {
@@ -182,7 +182,7 @@ component Picker inherits Skin {
 component MirrorChip inherits Skin {
     in property <string> text;
     in property <string> tone;   // ok | warn | bad
-    horizontal-stretch: 0; height: 32px; border-radius: Surface.r(16px);
+    horizontal-stretch: 0; height: 32px; border-radius: Surface.rr(16px, self.width, self.height);
     property <color> hue:
         root.tone == "ok"   ? #22c55e :
         root.tone == "warn" ? #f59e0b :
@@ -192,7 +192,7 @@ component MirrorChip inherits Skin {
         padding-left: 13px; padding-right: 15px; spacing: 8px; alignment: center;
         VerticalLayout {
             alignment: center; horizontal-stretch: 0;
-            Rectangle { width: 7px; height: 7px; border-radius: Surface.r(4px); background: root.hue; }
+            Rectangle { width: 7px; height: 7px; border-radius: Surface.rr(4px, self.width, self.height); background: root.hue; }
         }
         Text {
             text: root.text; color: BookTheme.ink; font-size: 12px; font-weight: 600;
@@ -207,7 +207,7 @@ component IconBtn inherits Skin {
     in property <length> side: 38px;
     callback clicked();
     horizontal-stretch: 0; width: root.side; height: root.side;
-    border-radius: Surface.r(12px);
+    border-radius: Surface.rr(12px, self.width, self.height);
     background: ta.has-hover ? BookTheme.tint-violet : BookTheme.pill-bg;
     border-width: 1.5px;
     border-color: ta.has-hover ? BookTheme.accent : BookTheme.accent.with-alpha(0.45);
@@ -234,7 +234,7 @@ component EmptyState inherits Rectangle {
         HorizontalLayout {
             alignment: center;
             Rectangle {
-                width: 56px; height: 56px; border-radius: Surface.r(28px);
+                width: 56px; height: 56px; border-radius: Surface.rr(28px, self.width, self.height);
                 background: root.tint.with-alpha(0.13);
                 AppIcon {
                     source: root.icon; tint: root.tint;
@@ -295,7 +295,7 @@ component ConfirmBox inherits Rectangle {
             HorizontalLayout {
                 spacing: 9px; alignment: end; vertical-stretch: 0;
                 Rectangle {
-                    height: 36px; min-width: 92px; border-radius: Surface.r(18px);
+                    height: 36px; min-width: 92px; border-radius: Surface.rr(18px, self.width, self.height);
                     background: cno.has-hover ? BookTheme.track : transparent;
                     border-width: 1.5px; border-color: BookTheme.hairline;
                     cno := TouchArea {
@@ -310,7 +310,7 @@ component ConfirmBox inherits Rectangle {
                     }
                 }
                 Rectangle {
-                    height: 36px; min-width: 104px; border-radius: Surface.r(18px);
+                    height: 36px; min-width: 104px; border-radius: Surface.rr(18px, self.width, self.height);
                     background: cyes.has-hover ? #ef4444.darker(0.15) : #ef4444;
                     cyes := TouchArea {
                         mouse-cursor: pointer;
@@ -331,7 +331,7 @@ component ConfirmBox inherits Rectangle {
 
 // ── a skeleton block, for the searching state ───────────────────────────────
 component Skel inherits Rectangle {
-    border-radius: Surface.r(6px);
+    border-radius: Surface.rr(6px, self.width, self.height);
     background: BookTheme.track;
     opacity: 0.75;
     animate opacity { duration: 900ms; iteration-count: -1; direction: alternate; }
@@ -354,7 +354,7 @@ component BookCard inherits Rectangle {
         root.data.format == "MOBI" ? BookTheme.tint-orange :
         root.data.format == "CBZ"  ? BookTheme.tint-blue : BookTheme.tint-violet;
 
-    border-radius: Surface.r(14px);
+    border-radius: Surface.rr(14px, self.width, self.height);
     background: ca.has-hover ? BookTheme.pill-bg : BookTheme.card;
     border-width: 1px;
     border-color: ca.has-hover ? BookTheme.accent.with-alpha(0.4) : BookTheme.hairline;
@@ -374,7 +374,7 @@ component BookCard inherits Rectangle {
         // which is also what a book with no cover keeps for good.
         Rectangle {
             height: root.width * 1.18;
-            border-radius: Surface.r(10px);
+            border-radius: Surface.rr(10px, self.width, self.height);
             background: root.plate;
             clip: true;
 
@@ -405,7 +405,7 @@ component BookCard inherits Rectangle {
                 x: parent.width - self.width - 8px;
                 y: parent.height - self.height - 8px;
                 width: fmt.preferred-width + 16px; height: 22px;
-                border-radius: Surface.r(6px);
+                border-radius: Surface.rr(6px, self.width, self.height);
                 background: BookTheme.card;
                 fmt := Text {
                     text: root.data.format; color: BookTheme.ink;
@@ -417,7 +417,7 @@ component BookCard inherits Rectangle {
             // Already in the library: a check, not a button.
             if root.data.have: Rectangle {
                 x: 8px; y: 8px;
-                width: 24px; height: 24px; border-radius: Surface.r(12px);
+                width: 24px; height: 24px; border-radius: Surface.rr(12px, self.width, self.height);
                 background: #22c55e;
                 AppIcon {
                     source: Icons.check; tint: #ffffff;
@@ -462,7 +462,7 @@ component BookCard inherits Rectangle {
         // separate things on a card that only ever does one. Filled, they read
         // as a single control: what you are about to fetch, and how big it is.
         if !root.data.have: Rectangle {
-            height: 30px; border-radius: Surface.r(15px);
+            height: 30px; border-radius: Surface.rr(15px, self.width, self.height);
             vertical-stretch: 0;
             opacity: root.can-download && !root.busy ? 1.0 : 0.45;
             background: dl.has-hover && root.can-download && !root.busy
@@ -502,7 +502,7 @@ component BookCard inherits Rectangle {
             animate background { duration: 120ms; }
         }
         if root.data.have: Rectangle {
-            height: 30px; border-radius: Surface.r(15px);
+            height: 30px; border-radius: Surface.rr(15px, self.width, self.height);
             vertical-stretch: 0;
             background: #22c55e.with-alpha(0.18);
             HorizontalLayout {
@@ -689,7 +689,7 @@ export component GenesisPage inherits Rectangle {
             VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
                 Rectangle {
-                    height: 46px; border-radius: Surface.r(23px);
+                    height: 46px; border-radius: Surface.rr(23px, self.width, self.height);
                     background: BookTheme.tint-violet;
                     border-width: 1.5px;
                     border-color: BookTheme.accent.with-alpha(0.5);
@@ -747,7 +747,7 @@ export component GenesisPage inherits Rectangle {
         HorizontalLayout {
             spacing: 12px; vertical-stretch: 0;
             Rectangle {
-                horizontal-stretch: 1; height: 52px; border-radius: Surface.r(26px);
+                horizontal-stretch: 1; height: 52px; border-radius: Surface.rr(26px, self.width, self.height);
                 background: BookTheme.tint-violet;
                 border-width: 1.5px;
                 border-color: ti.has-focus
@@ -780,7 +780,7 @@ export component GenesisPage inherits Rectangle {
                     if root.terms != "": VerticalLayout {
                         alignment: center; horizontal-stretch: 0;
                         Rectangle {
-                            width: 28px; height: 28px; border-radius: Surface.r(14px);
+                            width: 28px; height: 28px; border-radius: Surface.rr(14px, self.width, self.height);
                             background: clr.has-hover ? BookTheme.track : transparent;
                             clr := TouchArea {
                                 mouse-cursor: pointer;
@@ -800,7 +800,7 @@ export component GenesisPage inherits Rectangle {
             VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
                 Rectangle {
-                    height: 52px; min-width: 156px; border-radius: Surface.r(26px);
+                    height: 52px; min-width: 156px; border-radius: Surface.rr(26px, self.width, self.height);
                     clip: true;
                     // Replaying: the button becomes its own progress bar. The
                     // fill is driven by the phase rather than by a timer, so
@@ -919,7 +919,7 @@ export component GenesisPage inherits Rectangle {
             if root.rows.length > 0 && !root.more-done: VerticalLayout {
                 alignment: center; horizontal-stretch: 0;
                 Rectangle {
-                    height: 32px; min-width: 108px; border-radius: Surface.r(16px);
+                    height: 32px; min-width: 108px; border-radius: Surface.rr(16px, self.width, self.height);
                     background: root.more-busy
                         ? #ef4444.with-alpha(0.55)
                         : (lm.has-hover ? #ef4444.darker(0.15) : #ef4444);
@@ -963,7 +963,7 @@ export component GenesisPage inherits Rectangle {
         // ── body ────────────────────────────────────────────────────────────
         Rectangle {
             vertical-stretch: 1;
-            border-radius: Surface.r(16px);
+            border-radius: Surface.rr(16px, self.width, self.height);
             background: BookTheme.card;
             border-width: 1px; border-color: BookTheme.hairline;
             clip: true;
@@ -1010,7 +1010,7 @@ export component GenesisPage inherits Rectangle {
                 HorizontalLayout {
                     alignment: center;
                     Rectangle {
-                        height: 38px; min-width: 118px; border-radius: Surface.r(19px);
+                        height: 38px; min-width: 118px; border-radius: Surface.rr(19px, self.width, self.height);
                         background: rt.has-hover ? BookTheme.accent.darker(0.1) : BookTheme.accent;
                         rt := TouchArea { mouse-cursor: pointer; clicked => { root.retry(); } }
                         Text {
@@ -1058,7 +1058,7 @@ export component GenesisPage inherits Rectangle {
 
         // ── download strip ──────────────────────────────────────────────────
         if root.busy: Rectangle {
-            height: 66px; border-radius: Surface.r(14px);
+            height: 66px; border-radius: Surface.rr(14px, self.width, self.height);
             background: BookTheme.pill-bg;
             border-width: 1px; border-color: BookTheme.hairline;
             vertical-stretch: 0;
@@ -1078,9 +1078,9 @@ export component GenesisPage inherits Rectangle {
                         }
                     }
                     Rectangle {
-                        height: 6px; border-radius: Surface.r(3px); background: BookTheme.track;
+                        height: 6px; border-radius: Surface.rr(3px, self.width, self.height); background: BookTheme.track;
                         Rectangle {
-                            x: 0; y: 0; height: parent.height; border-radius: Surface.r(3px);
+                            x: 0; y: 0; height: parent.height; border-radius: Surface.rr(3px, self.width, self.height);
                             width: parent.width * root.busy-pct;
                             background: BookTheme.accent;
                             animate width { duration: 200ms; easing: ease-out; }
@@ -1090,7 +1090,7 @@ export component GenesisPage inherits Rectangle {
                 VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
                     Rectangle {
-                        height: 34px; min-width: 90px; border-radius: Surface.r(17px);
+                        height: 34px; min-width: 90px; border-radius: Surface.rr(17px, self.width, self.height);
                         background: cx.has-hover ? BookTheme.track : transparent;
                         border-width: 1.5px; border-color: BookTheme.hairline;
                         cx := TouchArea { mouse-cursor: pointer; clicked => { root.cancel(); } }
@@ -1106,7 +1106,7 @@ export component GenesisPage inherits Rectangle {
         }
 
         if !root.busy && root.done-name != "": Rectangle {
-            height: 62px; border-radius: Surface.r(14px);
+            height: 62px; border-radius: Surface.rr(14px, self.width, self.height);
             background: BookTheme.tint-green;
             vertical-stretch: 0;
             HorizontalLayout {
@@ -1114,7 +1114,7 @@ export component GenesisPage inherits Rectangle {
                 VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
                     Rectangle {
-                        width: 32px; height: 32px; border-radius: Surface.r(16px);
+                        width: 32px; height: 32px; border-radius: Surface.rr(16px, self.width, self.height);
                         background: #22c55e.with-alpha(0.2);
                         AppIcon {
                             source: Icons.check; tint: #22c55e; width: 16px; height: 16px;
@@ -1136,7 +1136,7 @@ export component GenesisPage inherits Rectangle {
                 VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
                     Rectangle {
-                        height: 32px; min-width: 96px; border-radius: Surface.r(16px);
+                        height: 32px; min-width: 96px; border-radius: Surface.rr(16px, self.width, self.height);
                         background: opn.has-hover ? BookTheme.card : transparent;
                         border-width: 1.5px; border-color: #22c55e.with-alpha(0.4);
                         opn := TouchArea { mouse-cursor: pointer; clicked => { root.open-dest(); } }
@@ -1192,7 +1192,7 @@ export component GenesisPage inherits Rectangle {
                         VerticalLayout {
                             alignment: center; horizontal-stretch: 0;
                             Rectangle {
-                                width: 30px; height: 30px; border-radius: Surface.r(15px);
+                                width: 30px; height: 30px; border-radius: Surface.rr(15px, self.width, self.height);
                                 background: xs.has-hover ? BookTheme.track : transparent;
                                 xs := TouchArea {
                                     mouse-cursor: pointer;
@@ -1221,7 +1221,7 @@ export component GenesisPage inherits Rectangle {
                         spacing: 8px; vertical-stretch: 0;
                         Rectangle {
                             horizontal-stretch: 1; height: 40px;
-                            border-radius: Surface.r(10px);
+                            border-radius: Surface.rr(10px, self.width, self.height);
                             background: BookTheme.pill-bg;
                             border-width: 1px; border-color: BookTheme.hairline;
                             clip: true;
@@ -1239,7 +1239,7 @@ export component GenesisPage inherits Rectangle {
                             alignment: center; horizontal-stretch: 0;
                             Rectangle {
                                 height: 40px; min-width: 96px;
-                                border-radius: Surface.r(10px);
+                                border-radius: Surface.rr(10px, self.width, self.height);
                                 background: pd.has-hover
                                     ? BookTheme.accent.darker(0.1) : BookTheme.accent;
                                 pd := TouchArea {
@@ -1283,7 +1283,7 @@ export component GenesisPage inherits Rectangle {
                         VerticalLayout {
                             alignment: center; horizontal-stretch: 0;
                             Rectangle {
-                                width: 46px; height: 28px; border-radius: Surface.r(8px);
+                                width: 46px; height: 28px; border-radius: Surface.rr(8px, self.width, self.height);
                                 background: BookTheme.pill-bg;
                                 Text {
                                     text: root.limit; color: BookTheme.ink;
@@ -1297,7 +1297,7 @@ export component GenesisPage inherits Rectangle {
 
                     // ── the mirror that is answering right now ──
                     if root.active-url != "": Rectangle {
-                        height: 54px; border-radius: Surface.r(12px);
+                        height: 54px; border-radius: Surface.rr(12px, self.width, self.height);
                         background: BookTheme.tint-green;
                         vertical-stretch: 0;
                         HorizontalLayout {
@@ -1305,7 +1305,7 @@ export component GenesisPage inherits Rectangle {
                             VerticalLayout {
                                 alignment: center; horizontal-stretch: 0;
                                 Rectangle {
-                                    width: 8px; height: 8px; border-radius: Surface.r(4px);
+                                    width: 8px; height: 8px; border-radius: Surface.rr(4px, self.width, self.height);
                                     background: #22c55e;
                                 }
                             }
@@ -1330,7 +1330,7 @@ export component GenesisPage inherits Rectangle {
                         letter-spacing: 0.6px; vertical-stretch: 0;
                     }
                     Rectangle {
-                        vertical-stretch: 1; border-radius: Surface.r(10px);
+                        vertical-stretch: 1; border-radius: Surface.rr(10px, self.width, self.height);
                         background: BookTheme.pill-bg;
                         border-width: 1px;
                         border-color: mi.has-focus ? BookTheme.accent : BookTheme.hairline;
@@ -1361,7 +1361,7 @@ export component GenesisPage inherits Rectangle {
                     HorizontalLayout {
                         spacing: 9px; alignment: end; vertical-stretch: 0;
                         Rectangle {
-                            height: 38px; min-width: 96px; border-radius: Surface.r(19px);
+                            height: 38px; min-width: 96px; border-radius: Surface.rr(19px, self.width, self.height);
                             background: rs.has-hover ? BookTheme.track : transparent;
                             border-width: 1.5px; border-color: BookTheme.hairline;
                             rs := TouchArea {
@@ -1376,7 +1376,7 @@ export component GenesisPage inherits Rectangle {
                             }
                         }
                         Rectangle {
-                            height: 38px; min-width: 120px; border-radius: Surface.r(19px);
+                            height: 38px; min-width: 120px; border-radius: Surface.rr(19px, self.width, self.height);
                             background: root.settings-saved
                                 ? #22c55e
                                 : (sv.has-hover ? BookTheme.accent.darker(0.1) : BookTheme.accent);
@@ -1450,7 +1450,7 @@ export component GenesisPage inherits Rectangle {
                             HorizontalLayout {
                                 spacing: 6px;
                                 Rectangle {
-                                    width: 28px; height: 28px; border-radius: Surface.r(14px);
+                                    width: 28px; height: 28px; border-radius: Surface.rr(14px, self.width, self.height);
                                     background: hp.has-hover ? BookTheme.pill-bg : transparent;
                                     border-width: 1.5px; border-color: BookTheme.hairline;
                                     opacity: root.history-page > 0 ? 1.0 : 0.35;
@@ -1478,7 +1478,7 @@ export component GenesisPage inherits Rectangle {
                                     }
                                 }
                                 Rectangle {
-                                    width: 28px; height: 28px; border-radius: Surface.r(14px);
+                                    width: 28px; height: 28px; border-radius: Surface.rr(14px, self.width, self.height);
                                     background: hn.has-hover ? BookTheme.pill-bg : transparent;
                                     border-width: 1.5px; border-color: BookTheme.hairline;
                                     opacity: root.history-page + 1 < root.history-pages ? 1.0 : 0.35;
@@ -1502,7 +1502,7 @@ export component GenesisPage inherits Rectangle {
                         if root.history.length > 0: VerticalLayout {
                             alignment: center; horizontal-stretch: 0;
                             Rectangle {
-                                height: 30px; min-width: 78px; border-radius: Surface.r(15px);
+                                height: 30px; min-width: 78px; border-radius: Surface.rr(15px, self.width, self.height);
                                 background: hc.has-hover ? BookTheme.track : transparent;
                                 border-width: 1.5px; border-color: BookTheme.hairline;
                                 hc := TouchArea {
@@ -1520,7 +1520,7 @@ export component GenesisPage inherits Rectangle {
                         VerticalLayout {
                             alignment: center; horizontal-stretch: 0;
                             Rectangle {
-                                width: 30px; height: 30px; border-radius: Surface.r(15px);
+                                width: 30px; height: 30px; border-radius: Surface.rr(15px, self.width, self.height);
                                 background: hx.has-hover ? BookTheme.track : transparent;
                                 hx := TouchArea {
                                     mouse-cursor: pointer;
@@ -1551,7 +1551,7 @@ export component GenesisPage inherits Rectangle {
                             property <int> at: root.history-page * root.history-per-page + i;
                             height: hrow.at < root.history.length ? 46px : 0px;
                             visible: hrow.at < root.history.length;
-                            border-radius: Surface.r(9px);
+                            border-radius: Surface.rr(9px, self.width, self.height);
                             background: ht.has-hover ? BookTheme.pill-bg : transparent;
                             ht := TouchArea {
                                 mouse-cursor: pointer;
@@ -1665,7 +1665,7 @@ export component GenesisPage inherits Rectangle {
                         VerticalLayout {
                             alignment: center; horizontal-stretch: 0;
                             Rectangle {
-                                width: 30px; height: 30px; border-radius: Surface.r(15px);
+                                width: 30px; height: 30px; border-radius: Surface.rr(15px, self.width, self.height);
                                 background: dx.has-hover ? BookTheme.track : transparent;
                                 dx := TouchArea {
                                     mouse-cursor: pointer;
@@ -1689,7 +1689,7 @@ export component GenesisPage inherits Rectangle {
                             alignment: start; horizontal-stretch: 0;
                             Rectangle {
                                 width: 176px; height: 240px;
-                                border-radius: Surface.r(12px);
+                                border-radius: Surface.rr(12px, self.width, self.height);
                                 background: BookTheme.tint-violet;
                                 clip: true;
                                 if root.details.cover.width > 0: Image {
@@ -1789,7 +1789,7 @@ export component GenesisPage inherits Rectangle {
                                     if !root.details.have: Rectangle {
                                         horizontal-stretch: 0;
                                         height: 38px; min-width: 148px;
-                                        border-radius: Surface.r(19px);
+                                        border-radius: Surface.rr(19px, self.width, self.height);
                                         opacity: root.can-download && !root.busy ? 1.0 : 0.4;
                                         background: dg.has-hover && root.can-download && !root.busy
                                             ? BookTheme.accent.darker(0.1) : BookTheme.accent;

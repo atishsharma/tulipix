@@ -25,6 +25,12 @@ export struct LiveChannel {
     logo: image,
 }
 
+// One sidebar category: its name and how many channels carry it.
+export struct LiveGroup {
+    name: string,
+    count: int,
+}
+
 // One selectable iptv-org playlist. `kind` is category | language | country.
 export struct LivePlaylist {
     name: string,
@@ -40,10 +46,11 @@ export struct LivePlaylist {
 // nobody reads. The sidebar shows them as a list.
 component GroupRow inherits Skin {
     in property <string> label;
+    in property <int> count: -1;          // <0 = no pill (the "All" row prints its own)
     in property <bool> active: false;
     callback clicked();
     height: 32px; vertical-stretch: 0;
-    border-radius: Surface.r(8px);
+    border-radius: Surface.rr(8px, self.width, self.height);
     background: root.active ? VP.accent : (ta.has-hover ? VP.btn-2-hi : transparent);
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
@@ -53,6 +60,23 @@ component GroupRow inherits Skin {
             font-weight: root.active ? 700 : 500;
             color: root.active ? VP.accent-ink : VP.text-dim;
             vertical-alignment: center; overflow: elide;
+            horizontal-stretch: 1;
+        }
+        // Channel count, on its own pill. Width hugs the number — a plain
+        // Rectangle in a layout would take whatever width is going.
+        if root.count >= 0: Rectangle {
+            horizontal-stretch: 0;
+            width: cnt.preferred-width + 14px;
+            height: 18px; y: (parent.height - self.height) / 2;
+            border-radius: 9px;
+            background: root.active ? VP.accent-ink.with-alpha(0.22)
+                                    : VP.accent.with-alpha(0.18);
+            cnt := Text {
+                text: root.count; font-size: 10.5px; font-weight: 700;
+                color: root.active ? VP.accent-ink : VP.accent;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2;
+            }
         }
     }
 }
@@ -71,7 +95,7 @@ component ChannelCard inherits Skin {
     /// Some channel — not necessarily this one — is currently on.
     in property <bool> any-playing: false;
     callback play();
-    border-radius: Surface.r(10px);
+    border-radius: Surface.rr(10px, self.width, self.height);
     background: ta.has-hover ? VP.surface-2 : VP.surface;
     border-width: root.playing ? 2px : 1px;
     border-color: root.playing ? VP.accent : (ta.has-hover ? VP.accent-44 : VP.hair);
@@ -90,7 +114,7 @@ component ChannelCard inherits Skin {
         // being shared out as gaps between the two labels.
         Rectangle {
             vertical-stretch: 1; min-height: 62px;
-            border-radius: Surface.r(8px);
+            border-radius: Surface.rr(8px, self.width, self.height);
             // One shared token, so the three wells cannot drift apart.
             background: VP.logo-well;
             clip: true;
@@ -156,7 +180,7 @@ component PickRow inherits Skin {
     in property <string> label;
     in property <bool> on: false;
     callback clicked();
-    height: 32px; border-radius: Surface.r(7px);
+    height: 32px; border-radius: Surface.rr(7px, self.width, self.height);
     background: ta.has-hover ? VP.btn-2-hi : transparent;
     ta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
     HorizontalLayout {
@@ -164,7 +188,7 @@ component PickRow inherits Skin {
         VerticalLayout {
             alignment: center; horizontal-stretch: 0;
             Rectangle {
-                width: 17px; height: 17px; border-radius: Surface.r(5px);
+                width: 17px; height: 17px; border-radius: Surface.rr(5px, self.width, self.height);
                 background: root.on ? VP.accent : transparent;
                 border-width: 1px;
                 border-color: root.on ? VP.accent : VP.hair-2;
@@ -203,7 +227,7 @@ export component LiveTvPage inherits Rectangle {
     /// Rust — the grid draws what it is handed.
     in property <[LiveChannel]> channels: [];
     // Distinct `group-title` values across the loaded channels, for the sidebar.
-    in property <[string]> groups: [];
+    in property <[LiveGroup]> groups: [];
     in-out property <string> group: "";   // "" = every group
     in-out property <string> query: "";
     in property <bool> busy: false;
@@ -285,7 +309,7 @@ export component LiveTvPage inherits Rectangle {
                 VerticalLayout {
                     alignment: center; horizontal-stretch: 0;
                     Rectangle {
-                        width: 34px; height: 34px; border-radius: Surface.r(10px);
+                        width: 34px; height: 34px; border-radius: Surface.rr(10px, self.width, self.height);
                         background: VP.accent-22;
                         AppIcon {
                             source: Icons.film; tint: VP.accent; width: 18px; height: 18px;
@@ -351,7 +375,7 @@ export component LiveTvPage inherits Rectangle {
                                 }
                             }
                             if root.query != "": Rectangle {
-                                width: 26px; height: 26px; border-radius: Surface.r(13px);
+                                width: 26px; height: 26px; border-radius: Surface.rr(13px, self.width, self.height);
                                 horizontal-stretch: 0; vertical-stretch: 0;
                                 y: (parent.height - self.height) / 2;
                                 background: cx.has-hover ? VP.btn-2-hi : VP.btn-2;
@@ -520,7 +544,7 @@ export component LiveTvPage inherits Rectangle {
                             clicked => { root.set-sort("res", root.asc); }
                         }
                         Rectangle {
-                            width: 34px; height: 30px; border-radius: Surface.r(8px);
+                            width: 34px; height: 30px; border-radius: Surface.rr(8px, self.width, self.height);
                             horizontal-stretch: 0; vertical-stretch: 0;
                             background: dirb.has-hover ? VP.btn-2-hi : VP.btn-2;
                             dirb := TouchArea {
@@ -553,7 +577,7 @@ export component LiveTvPage inherits Rectangle {
                     HorizontalLayout {
                         spacing: 6px;
                         Rectangle {
-                            width: 34px; height: 34px; border-radius: Surface.r(8px);
+                            width: 34px; height: 34px; border-radius: Surface.rr(8px, self.width, self.height);
                             background: prevp.has-hover ? VP.btn-2-hi : VP.btn-2;
                             opacity: root.page > 0 ? 1.0 : 0.4;
                             prevp := TouchArea {
@@ -576,7 +600,7 @@ export component LiveTvPage inherits Rectangle {
                             }
                         }
                         Rectangle {
-                            width: 34px; height: 34px; border-radius: Surface.r(8px);
+                            width: 34px; height: 34px; border-radius: Surface.rr(8px, self.width, self.height);
                             background: nextp.has-hover ? VP.btn-2-hi : VP.btn-2;
                             opacity: root.page + 1 < root.pages ? 1.0 : 0.4;
                             nextp := TouchArea {
@@ -608,7 +632,7 @@ export component LiveTvPage inherits Rectangle {
                     HorizontalLayout {
                         alignment: center;
                         Rectangle {
-                            width: 96px; height: 96px; border-radius: Surface.r(20px);
+                            width: 96px; height: 96px; border-radius: Surface.rr(20px, self.width, self.height);
                             background: VP.accent-22;
                             AppIcon {
                                 source: Icons.tv; tint: VP.accent; width: 42px; height: 42px;
@@ -720,11 +744,13 @@ export component LiveTvPage inherits Rectangle {
                                 width: parent.width; alignment: start; spacing: 2px;
                                 GroupRow {
                                     label: "All categories"; active: root.group == "";
+                                    count: root.total;
                                     clicked => { root.set-group(""); }
                                 }
                                 for g in root.groups: GroupRow {
-                                    label: g; active: root.group == g;
-                                    clicked => { root.set-group(g); }
+                                    label: g.name; count: g.count;
+                                    active: root.group == g.name;
+                                    clicked => { root.set-group(g.name); }
                                 }
                             }
                         }
@@ -768,7 +794,7 @@ export component LiveTvPage inherits Rectangle {
                 // wrapping stream URL has a definite height and the sheet can
                 // be sized from its own contents instead of a guess.
                 height: sheet.preferred-height;
-                border-radius: Surface.r(16px);
+                border-radius: Surface.rr(16px, self.width, self.height);
                 background: VP.modal; border-width: 1px; border-color: VP.hair-2;
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
@@ -780,7 +806,7 @@ export component LiveTvPage inherits Rectangle {
                         spacing: 12px; vertical-stretch: 0;
                         Rectangle {
                             width: 64px; height: 64px; horizontal-stretch: 0;
-                            border-radius: Surface.r(10px);
+                            border-radius: Surface.rr(10px, self.width, self.height);
                             background: VP.logo-well;
                             clip: true;
                             if root.now-logo.width > 0: Image {
@@ -822,7 +848,7 @@ export component LiveTvPage inherits Rectangle {
                         VerticalLayout {
                             alignment: start; horizontal-stretch: 0;
                             Rectangle {
-                                width: 30px; height: 30px; border-radius: Surface.r(8px);
+                                width: 30px; height: 30px; border-radius: Surface.rr(8px, self.width, self.height);
                                 background: ix.has-hover ? VP.btn-2-hi : VP.btn-2;
                                 ix := TouchArea {
                                     mouse-cursor: pointer;
@@ -865,7 +891,7 @@ export component LiveTvPage inherits Rectangle {
             background: VP.scrim;
             TouchArea { clicked => { root.config-open = false; } }
             Rectangle {
-                width: 560px; height: 600px; border-radius: Surface.r(16px);
+                width: 560px; height: 600px; border-radius: Surface.rr(16px, self.width, self.height);
                 background: VP.modal; border-width: 1px; border-color: VP.hair-2;
                 x: (parent.width - self.width) / 2;
                 y: (parent.height - self.height) / 2;
@@ -876,7 +902,7 @@ export component LiveTvPage inherits Rectangle {
                     HorizontalLayout {
                         alignment: start; spacing: 10px; vertical-stretch: 0;
                         Rectangle {
-                            width: 4px; height: 18px; border-radius: Surface.r(2px);
+                            width: 4px; height: 18px; border-radius: Surface.rr(2px, self.width, self.height);
                             background: VP.accent;
                             horizontal-stretch: 0; vertical-stretch: 0; y: 1px;
                         }
@@ -910,7 +936,7 @@ export component LiveTvPage inherits Rectangle {
 
                     Rectangle {
                         height: 38px; vertical-stretch: 0;
-                        border-radius: Surface.r(10px); background: VP.field;
+                        border-radius: Surface.rr(10px, self.width, self.height); background: VP.field;
                         border-width: 1px;
                         border-color: cq.has-focus ? VP.accent : VP.field-edge;
                         clip: true;
@@ -942,7 +968,7 @@ export component LiveTvPage inherits Rectangle {
                     }
 
                     Rectangle {
-                        vertical-stretch: 1; border-radius: Surface.r(10px);
+                        vertical-stretch: 1; border-radius: Surface.rr(10px, self.width, self.height);
                         background: VP.field; border-width: 1px; border-color: VP.field-edge;
                         clip: true;
                         if root.playlists.length == 0: Text {

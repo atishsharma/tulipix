@@ -36,8 +36,27 @@ export struct HomeContinue {
     path: string,     // book abs path (books only)
 }
 
-// 24px pill chip — one size everywhere.
-component HomeChip inherits Rectangle {
+// One recently-added book on the Welcome layout's Recently Added → Books shelf.
+// Carries the BAKED 3D renditions (the same `_book5` / dark bake the Books grid
+// and the Continue Reading card draw), not the flat cover, plus the per-title
+// hue the Books section derives its outlines from.
+export struct HomeBook {
+    book: image,        // the `_book5` hardcover bake — one rendition, both themes
+    cover: image,       // flat art, the fallback while the prebake sweep catches up
+    title: string,
+    author: string,
+    hue: color,         // per-title, the same hue the Books section outlines with
+    id: int,
+}
+
+// One line of the Welcome hero's quote shelf. The model arrives already
+// shuffled from `tulipix_common::quotes`; the UI just walks it a minute at a
+// time, so nothing here has to know the order.
+export struct HomeQuote { text: string, author: string }
+
+// 24px pill chip — one size everywhere. Exported because the Welcome layout
+// reuses Continue's kind tabs verbatim.
+export component HomeChip inherits Rectangle {
     in property <string> label;
     in property <bool> emphasized: false;
     in property <bool> fill: false;              // stretch to share the row (tabs)
@@ -80,7 +99,7 @@ component TitlePill inherits Rectangle {
     // icon so the label shines in the card's colour. Light theme keeps the
     // white pill with accent text. Accent outline in both.
     property <color> ink: Theme.dark ? #ffffff : root.accent;
-    border-radius: Surface.r(10px);
+    border-radius: Surface.rr(10px, self.width, self.height);
     background: Surface.tile(Theme.dark ? root.accent.darker(0.55) : #ffffff);
     border-width: Surface.clay ? 0px : 1.5px; border-color: root.accent;
     drop-shadow-blur: Surface.clay ? 16px : 12px;
@@ -320,7 +339,7 @@ component HomeMusicCard inherits Rectangle {
         // light themes), and a stronger wash so it stays clearly pink there.
         Rectangle {
             vertical-stretch: 1;
-            border-radius: Surface.r(12px);
+            border-radius: Surface.rr(12px, self.width, self.height);
             // Theme-aware player fill: white-cream on light themes (design
             // match), theme panel surface on dark — the fixed cream glared.
             background: Surface.body(Theme.dark ? Theme.panel-2 : #FAFAF7);
@@ -403,7 +422,7 @@ component FlowCard inherits Rectangle {
     in property <image> img;
     in property <bool> fill: false;       // cover-fill the tile vs letterbox-contain
     in property <bool> top-crop: false;   // anchor the cover crop to the TOP of the photo
-    clip: true; border-radius: Surface.r(12px);
+    clip: true; border-radius: Surface.rr(12px, self.width, self.height);
     background: Surface.tile(#14161f);
     border-width: Surface.clay ? 0px : 1.5px; border-color: #ffffff5c;
     drop-shadow-blur: Surface.clay ? 24px : 18px;
@@ -436,7 +455,10 @@ component FanSlot inherits FlowCard {
     // Sub-linear horizontal offset (mild compression) so the 3rd layer hugs the
     // 2nd for a stacked-deck read while the fan still reaches both card edges.
     property <float> off: root.rel * (1 - 0.05 * Math.abs(root.rel));
-    img: root.photos[Math.mod(Math.floor(root.pos) + root.k, Math.max(root.n, 1))];
+    // `+ n` before the mod: k is -1 / -2 for the left half of the fan, and at
+    // pos 0 that indexes negatively — those two cards drew blank for the first
+    // two dwells.
+    img: root.photos[Math.mod(Math.floor(root.pos) + root.k + root.n, Math.max(root.n, 1))];
     // Big square tiles — all 5 near-full-height so they fill the card edge-to-edge
     // (centre only a little larger). Upright, vertically centred, no tilt/crop.
     height: root.areah * (0.63 + 0.12 * root.prox);                // ~25% smaller tiles
@@ -541,7 +563,7 @@ component HomeTileBox inherits Rectangle {
     in property <color> hilite: Theme.text-dim;
     out property <bool> hovered: tta.has-hover;
     callback clicked();
-    border-radius: Surface.r(10px);
+    border-radius: Surface.rr(10px, self.width, self.height);
     background: Surface.body(tta.has-hover ? Theme.panel : Theme.panel-2);
     border-width: Surface.clay ? 0px : (tta.has-hover ? 2px : 1.5px);
     border-color: tta.has-hover ? root.hilite : Theme.outline.with-alpha(0.9);
@@ -553,10 +575,14 @@ component HomeTileBox inherits Rectangle {
     drop-shadow-offset-y: Math.max(Surface.tile-shadow-y(), tta.has-hover ? 5px : 0px);
     animate background, border-color, drop-shadow-blur, drop-shadow-offset-y { duration: 130ms; easing: ease-out; }
     tta := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    if Surface.rim: Rim {
+    // Always instantiated, blanked by `on` — this box is repeated (book covers,
+    // remotes), and an `if` around a component inside a repeater panics with
+    // "accessing deleted parent" when the model is replaced (slint#6426).
+    Rim {
+        on: Surface.rim;
         x: 1px; y: 1px;
         width: parent.width - 2px; height: parent.height - 2px;
-        radius: Math.max(2px, Surface.r(10px) - 1px);
+        radius: Math.max(2px, Surface.rr(10px, self.width, self.height) - 1px);
     }
     @children
 }
@@ -658,7 +684,7 @@ component BookRow inherits RowCard {
             width: area.tile-w; height: area.tile-h;
             x: area.hover-idx * (area.tile-w + area.gap);
             y: (area.height - self.height) / 2 - 12px;
-            border-radius: Surface.r(10px); clip: true;
+            border-radius: Surface.rr(10px, self.width, self.height); clip: true;
             border-width: 2px; border-color: root.accent;
             drop-shadow-blur: Surface.clay ? 24px : 18px;
             drop-shadow-color: Surface.shadow-ink;
@@ -885,7 +911,7 @@ export component HomePage inherits Rectangle {
         HorizontalLayout {
             spacing: 16px; height: 84px;
             Rectangle {
-                width: 84px; height: 84px; border-radius: Surface.r(20px); clip: true;
+                width: 84px; height: 84px; border-radius: Surface.rr(20px, self.width, self.height); clip: true;
                 horizontal-stretch: 0; vertical-stretch: 0;
                 drop-shadow-blur: Surface.tile-shadow();
                 drop-shadow-color: Surface.shadow-ink;
@@ -950,7 +976,7 @@ export component HomePage inherits Rectangle {
                         width: 15px; height: 15px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
                     viz-menu := PopupWindow {
                         x: -110px; y: 36px; width: 140px; close-policy: close-on-click-outside;
-                        Rectangle { width: 100%; border-radius: Surface.r(10px); background: Surface.body(Theme.panel);
+                        Rectangle { width: 100%; border-radius: Surface.rr(10px, self.width, self.height); background: Surface.body(Theme.panel);
                             border-width: 1px; border-color: Theme.outline;
                             drop-shadow-blur: 24px; drop-shadow-color: #00000066;
                             // NOTE: viz-menu.close() must be the LAST statement in every
@@ -1084,7 +1110,8 @@ export component HomePage inherits Rectangle {
                             }
                         }
                     }
-                    // Rich resume cards — FIVE fixed pill slots (design parity), filled
+                    // Rich resume cards — FOUR fixed pill slots (`cont-slot-w` divides the
+                    // left column by four, and Rust caps the model at four), filled
                     // left→right with only as many items as exist; never stretched.
                     HorizontalLayout {
                         spacing: root.cont-gap; vertical-stretch: 1; alignment: start;
@@ -1093,7 +1120,7 @@ export component HomePage inherits Rectangle {
                             color: Theme.text-dim; font-size: 10px; wrap: word-wrap;
                             vertical-alignment: center; }
                         for r[i] in root.continue-rows: ccard := Rectangle {
-                            width: root.cont-slot-w; border-radius: Surface.r(10px);
+                            width: root.cont-slot-w; border-radius: Surface.rr(10px, self.width, self.height);
                             property <color> kaccent: r.kind == "video" ? Theme.sec-videos
                                 : r.kind == "podcast" ? #8b5cf6 : #3b82f6;
                             background: Surface.body(cta.has-hover ? Theme.panel : Theme.panel.with-alpha(0.6));
@@ -1104,10 +1131,14 @@ export component HomePage inherits Rectangle {
                             drop-shadow-offset-y: Surface.tile-shadow-y();
                             animate background, border-color { duration: 120ms; easing: ease-out; }
                             cta := TouchArea { mouse-cursor: pointer; clicked => { root.continue-open(r); } }
-                            if Surface.rim: Rim {
+                            // Present-but-blank rather than `if`: these cards
+                            // live in a repeater whose model Rust replaces
+                            // wholesale (slint#6426).
+                            Rim {
+                                on: Surface.rim;
                                 x: 1px; y: 1px;
                                 width: parent.width - 2px; height: parent.height - 2px;
-                                radius: Math.max(2px, Surface.r(10px) - 1px);
+                                radius: Math.max(2px, Surface.rr(10px, self.width, self.height) - 1px);
                             }
                             HorizontalLayout {
                                 padding: 10px; spacing: 10px;
@@ -1116,12 +1147,12 @@ export component HomePage inherits Rectangle {
                                 // ring draws the border, inner rect (2px inset) holds
                                 // the clipped image → ~1px transparent gap between.
                                 Rectangle {
-                                    width: root.cont-thumb-w; border-radius: Surface.r(9px);
+                                    width: root.cont-thumb-w; border-radius: Surface.rr(9px, self.width, self.height);
                                     border-width: 1px; border-color: ccard.kaccent;
                                     Rectangle {
                                         x: 2px; y: 2px;
                                         width: parent.width - 4px; height: parent.height - 4px;
-                                        border-radius: Surface.r(7px); clip: true;
+                                        border-radius: Surface.rr(7px, self.width, self.height); clip: true;
                                         background: Surface.wash(ccard.kaccent, 0.15);
                                         if r.cover.width > 0: Image { source: r.cover; image-fit: cover; width: 100%; height: 100%; }
                                         if r.cover.width == 0: AppIcon {
@@ -1152,7 +1183,7 @@ export component HomePage inherits Rectangle {
                                     // dark outline (light) / light outline (dark).
                                     Rectangle {
                                         vertical-stretch: 0;   // size to content — don't split the column slack
-                                        border-radius: Surface.r(9px);
+                                        border-radius: Surface.rr(9px, self.width, self.height);
                                         background: Surface.tile(Theme.dark ? ccard.kaccent.darker(0.30) : #ffffff);
                                         border-width: Surface.clay ? 0px : 1px;
                                         border-color: Theme.dark ? #ffffffcc : #00000088;
@@ -1210,7 +1241,7 @@ export component HomePage inherits Rectangle {
                             // Context menu — single "Remove" action → confirmation box.
                             if root.cont-menu-idx == i: Rectangle {
                                 x: parent.width - 108px; y: 26px; width: 102px; height: 32px;
-                                border-radius: Surface.r(8px); background: Surface.body(Theme.panel);
+                                border-radius: Surface.rr(8px, self.width, self.height); background: Surface.body(Theme.panel);
                                 border-width: 1px; border-color: Theme.outline;
                                 drop-shadow-blur: 14px; drop-shadow-color: #00000077;
                                 TouchArea { mouse-cursor: pointer;

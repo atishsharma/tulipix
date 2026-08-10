@@ -21,7 +21,7 @@ component Btn inherits Skin {
     in property <bool> primary: false;
     callback clicked();
     height: 30px;
-    border-radius: Surface.r(8px);
+    border-radius: Surface.rr(8px, self.width, self.height);
     background: touch.has-hover
         ? (danger ? #b91c1c : (primary ? #6d28d9 : Theme.panel-2))
         : (danger ? #7f1d1d : (primary ? Theme.brand : Theme.panel));
@@ -138,13 +138,13 @@ export component SettingsLibraries inherits Rectangle {
                     color: Theme.text-dim; font-size: 11px; vertical-alignment: center; }
             }
             Rectangle {
-                height: 6px; border-radius: Surface.r(3px); background: Surface.body(Theme.panel); clip: true;
+                height: 6px; border-radius: Surface.rr(3px, self.width, self.height); background: Surface.body(Theme.panel); clip: true;
                 border-width: 1px; border-color: Surface.hairline;
                 // Determinate fill when busy-frac >= 0; a soft full bar otherwise.
                 Rectangle {
                     x: 0; y: 0; height: parent.height;
                     width: root.busy-frac >= 0 ? parent.width * Math.max(0, Math.min(1, root.busy-frac)) : parent.width;
-                    border-radius: Surface.r(3px);
+                    border-radius: Surface.rr(3px, self.width, self.height);
                     background: @linear-gradient(90deg, Theme.brand, #8b5cf6);
                     animate width { duration: 180ms; easing: ease-out; }
                 }

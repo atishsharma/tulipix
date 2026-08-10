@@ -13,7 +13,7 @@ component WizBtn inherits Skin {
     callback clicked();
     height: 38px; min-width: 110px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: Surface.r(10px);
+    border-radius: Surface.rr(10px, self.width, self.height);
     background: ghost ? transparent : (primary ? Theme.brand : Theme.panel-2);
     border-width: 1px;
     border-color: ghost ? transparent : (primary ? Theme.brand : Theme.outline);
@@ -74,7 +74,7 @@ export component OnboardingWizard inherits Rectangle {
             HorizontalLayout {
                 alignment: center; spacing: 8px;
                 for i in [0, 1, 2, 3, 4]: Rectangle {
-                    width: i == root.step ? 22px : 8px; height: 8px; border-radius: Surface.r(4px);
+                    width: i == root.step ? 22px : 8px; height: 8px; border-radius: Surface.rr(4px, self.width, self.height);
                     background: i == root.step ? Accent.color : Theme.outline;
                     animate width { duration: 160ms; easing: ease-out; }
                 }

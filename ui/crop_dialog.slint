@@ -25,7 +25,7 @@ export component CropDialog inherits Rectangle {
     Rectangle {
         width: mask-w + 80px; height: mask-h + 168px;
         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-        border-radius: Surface.r(16px); background: Surface.body(Theme.panel-2);
+        border-radius: Surface.rr(16px, self.width, self.height); background: Surface.body(Theme.panel-2);
         border-width: 1px; border-color: Surface.hairline;
         drop-shadow-blur: Surface.cast(30px); drop-shadow-color: #000000aa;
 
@@ -90,14 +90,14 @@ export component CropDialog inherits Rectangle {
             HorizontalLayout {
                 spacing: 10px; alignment: center;
                 Rectangle {
-                    width: 100px; height: 34px; border-radius: Surface.r(8px);
+                    width: 100px; height: 34px; border-radius: Surface.rr(8px, self.width, self.height);
                     background: cnl.has-hover ? Theme.panel : Theme.panel-2;
                     border-width: 1px; border-color: Surface.hairline;
                     cnl := TouchArea { mouse-cursor: pointer; clicked => { root.cancel(); } }
                     Text { text: "Cancel"; color: Theme.text; font-size: 12px; width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
                 }
                 Rectangle {
-                    width: 120px; height: 34px; border-radius: Surface.r(8px);
+                    width: 120px; height: 34px; border-radius: Surface.rr(8px, self.width, self.height);
                     background: ok.has-hover ? Accent.color.with-alpha(0.85) : Accent.color;
                     ok := TouchArea {
                         mouse-cursor: pointer;

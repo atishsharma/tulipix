@@ -229,7 +229,7 @@ fn load(weak: slint::Weak<MainWindow>, announce: bool) {
     if urls.is_empty() {
         let _ = weak.upgrade_in_event_loop(|w| {
             w.set_livetv_channels(ModelRc::new(VecModel::<LiveChannel>::default()));
-            w.set_livetv_groups(ModelRc::new(VecModel::<SharedString>::default()));
+            w.set_livetv_groups(ModelRc::new(VecModel::<LiveGroup>::default()));
             w.set_livetv_total(0);
             w.set_livetv_matched(0);
             w.set_livetv_pages(1);
@@ -499,16 +499,21 @@ fn watch_mpv(weak: slint::Weak<MainWindow>, name: String, epoch: u64) {
 
 // ── models ─────────────────────────────────────────────────────────────────
 
-/// The sidebar: every distinct `group-title`, alphabetical.
+/// The sidebar: every distinct `group-title`, alphabetical, with how many
+/// channels carry it — the count the row prints on its pill.
 fn push_groups(w: &MainWindow) {
-    let mut groups: Vec<String> = Vec::new();
+    let mut groups: Vec<(String, i32)> = Vec::new();
     for c in state().channels.iter() {
-        if !c.group.is_empty() && !groups.iter().any(|g| *g == c.group) {
-            groups.push(c.group.clone());
+        if c.group.is_empty() { continue; }
+        match groups.iter_mut().find(|(g, _)| *g == c.group) {
+            Some((_, n)) => *n += 1,
+            None => groups.push((c.group.clone(), 1)),
         }
     }
-    groups.sort_by_key(|g| g.to_lowercase());
-    let rows: Vec<SharedString> = groups.into_iter().map(Into::into).collect();
+    groups.sort_by_key(|(g, _)| g.to_lowercase());
+    let rows: Vec<LiveGroup> = groups.into_iter()
+        .map(|(name, count)| LiveGroup { name: name.into(), count })
+        .collect();
     w.set_livetv_groups(ModelRc::new(VecModel::from(rows)));
 }
 

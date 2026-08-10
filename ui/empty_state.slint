@@ -55,7 +55,7 @@ export component EmptyState inherits Rectangle {
 
         Rectangle {
             height: 36px;
-            border-radius: Surface.r(10px);
+            border-radius: Surface.rr(10px, self.width, self.height);
             background: Accent.color;
             TouchArea {
                 clicked => { root.cta-clicked(); }
@@ -83,7 +83,7 @@ export component HeartBurst inherits Rectangle {
         y: parent.height / 2 - 6px;
         width: 12px;
         height: 12px;
-        border-radius: Surface.r(6px);
+        border-radius: Surface.rr(6px, self.width, self.height);
         background: #ec4899;
         opacity: playing ? 0.0 : 1.0;
         animate opacity { duration: dur; easing: ease-out; }

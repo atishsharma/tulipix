@@ -22,12 +22,12 @@ component PillToggle inherits Skin {
     callback toggled(bool);
     width: 48px; height: 26px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: Surface.r(13px);
+    border-radius: Surface.rr(13px, self.width, self.height);
     background: on ? Accent.color : Theme.outline;
     animate background { duration: 140ms; easing: ease-out; }
     TouchArea { mouse-cursor: pointer; clicked => { root.toggled(!root.on); } }
     Rectangle {
-        width: 20px; height: 20px; border-radius: Surface.r(10px); background: #ffffff;
+        width: 20px; height: 20px; border-radius: Surface.rr(10px, self.width, self.height); background: #ffffff;
         x: on ? parent.width - self.width - 3px : 3px;
         y: (parent.height - self.height) / 2;
         animate x { duration: 140ms; easing: ease-out; }
@@ -36,7 +36,7 @@ component PillToggle inherits Skin {
 
 component StatusDot inherits Skin {
     in property <string> state;
-    width: 9px; height: 9px; border-radius: Surface.r(5px);
+    width: 9px; height: 9px; border-radius: Surface.rr(5px, self.width, self.height);
     horizontal-stretch: 0; vertical-stretch: 0;
     background:
         state == "ok"    ? Theme.ok :
@@ -50,7 +50,7 @@ component Btn inherits Skin {
     callback clicked();
     height: 30px; min-width: 110px;
     horizontal-stretch: 0; vertical-stretch: 0;
-    border-radius: Surface.r(8px);
+    border-radius: Surface.rr(8px, self.width, self.height);
     background: touch.has-hover ? Theme.brand : Theme.panel;
     border-color: Surface.hairline; border-width: 1px;
     touch := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
@@ -100,13 +100,13 @@ component Row inherits Skin {
         if item.kind == "action" && item.state == "busy": Rectangle {
             height: 30px; min-width: 110px;
             horizontal-stretch: 0; vertical-stretch: 0;
-            border-radius: Surface.r(8px); clip: true;
+            border-radius: Surface.rr(8px, self.width, self.height); clip: true;
             background: Surface.body(Theme.panel);
             border-color: Accent.color.with-alpha(0.6); border-width: 1px;
             property <float> ph: Math.mod(animation-tick() / 1ms, 1100) / 1100;
             Rectangle {
                 width: 44%; height: 100%;
-                border-radius: Surface.r(8px);
+                border-radius: Surface.rr(8px, self.width, self.height);
                 background: Accent.color.with-alpha(0.30);
                 x: (parent.width - self.width) * (ph < 0.5 ? ph * 2 : (1 - ph) * 2);
             }
@@ -140,7 +140,7 @@ component Row inherits Skin {
             Rectangle {
                 height: 30px; min-width: 110px;
                 horizontal-stretch: 0; vertical-stretch: 0;
-                border-radius: Surface.r(8px); clip: true;
+                border-radius: Surface.rr(8px, self.width, self.height); clip: true;
                 background: Surface.body(Theme.panel);
                 border-color: Accent.color.with-alpha(0.6); border-width: 1px;
                 Rectangle {
@@ -166,7 +166,7 @@ component Row inherits Skin {
                 { k: "pa",   label: "ਪੰਜਾਬੀ" },
                 { k: "auto", label: "Auto" },
             ]: Rectangle {
-                width: 66px; height: 30px; border-radius: Surface.r(8px);
+                width: 66px; height: 30px; border-radius: Surface.rr(8px, self.width, self.height);
                 property <bool> sel: item.value == opt.k || (item.value == "" && opt.k == "en");
                 background: sel ? Accent.color : Theme.panel;
                 border-color: sel ? Accent.color : Theme.outline; border-width: 1px;
@@ -186,7 +186,7 @@ component Row inherits Skin {
                 { k: "small", label: "Small" },
                 { k: "turbo", label: "Turbo" },
             ]: Rectangle {
-                width: 62px; height: 30px; border-radius: Surface.r(8px);
+                width: 62px; height: 30px; border-radius: Surface.rr(8px, self.width, self.height);
                 property <bool> sel: item.value == opt.k || (item.value == "" && opt.k == "tiny");
                 background: sel ? Accent.color : Theme.panel;
                 border-color: sel ? Accent.color : Theme.outline; border-width: 1px;
@@ -200,7 +200,7 @@ component Row inherits Skin {
             width: 280px; height: 34px;
             horizontal-stretch: 0; vertical-stretch: 0;
             y: (parent.height - self.height) / 2;
-            border-radius: Surface.r(9px);
+            border-radius: Surface.rr(9px, self.width, self.height);
             background: Surface.body(Theme.panel); border-color: Surface.hairline; border-width: 1px;
             ti := TextInput {
                 x: 12px; width: parent.width - 24px; height: parent.height;

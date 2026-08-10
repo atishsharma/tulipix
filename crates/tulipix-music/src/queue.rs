@@ -58,6 +58,45 @@ pub async fn pop_first(pool: &SqlitePool) -> Result<Option<i64>> {
     Ok(Some(item_id))
 }
 
+/// Replace the whole queue with `ids`, in that order. One statement per row in
+/// a single transaction: playing from a list has to leave NOTHING of the list
+/// you were on before, or the old context leaks into the new one one track at a
+/// time (np.p6.music.context-queue).
+pub async fn replace(pool: &SqlitePool, ids: &[i64], source: &str) -> Result<()> {
+    let mut tx = pool.begin().await?;
+    sqlx::query("DELETE FROM play_queue").execute(&mut *tx).await?;
+    let t = now();
+    for (pos, id) in ids.iter().enumerate() {
+        sqlx::query("INSERT INTO play_queue (item_id, position, source, added) VALUES (?,?,?,?)")
+            .bind(id).bind(pos as i64).bind(source).bind(t).execute(&mut *tx).await?;
+    }
+    tx.commit().await?;
+    Ok(())
+}
+
+/// Drop everything up to and including the first entry for `item_id`. Playing a
+/// row out of the queue panel consumes the rows above it — otherwise the track
+/// you jumped to is still sitting in the queue and plays itself again.
+pub async fn drop_through(pool: &SqlitePool, item_id: i64) -> Result<()> {
+    let cut: Option<(i64,)> = sqlx::query_as(
+        "SELECT position FROM play_queue WHERE item_id = ? ORDER BY position LIMIT 1")
+        .bind(item_id).fetch_optional(pool).await?;
+    let Some((position,)) = cut else { return Ok(()); };
+    sqlx::query("DELETE FROM play_queue WHERE position <= ?").bind(position).execute(pool).await?;
+    Ok(())
+}
+
+/// Pop a random entry rather than the front — shuffle stays inside the queue
+/// (the album/playlist you started) instead of escaping to the whole library.
+pub async fn pop_random(pool: &SqlitePool) -> Result<Option<i64>> {
+    let row: Option<(i64, i64)> = sqlx::query_as(
+        "SELECT position, item_id FROM play_queue ORDER BY RANDOM() LIMIT 1")
+        .fetch_optional(pool).await?;
+    let Some((position, item_id)) = row else { return Ok(None); };
+    sqlx::query("DELETE FROM play_queue WHERE position = ?").bind(position).execute(pool).await?;
+    Ok(Some(item_id))
+}
+
 /// Append a finished play to history and bump the track's play_count.
 pub async fn record_play(pool: &SqlitePool, item_id: i64, ms_played: i64) -> Result<()> {
     let t = now();
@@ -90,6 +129,24 @@ mod tests {
         assert_eq!(list(&pool).await.unwrap(), vec![a, b, c]);
         move_item(&pool, 2, 0).await.unwrap(); // c to front
         assert_eq!(list(&pool).await.unwrap(), vec![c, a, b]);
+    }
+
+    #[tokio::test]
+    async fn replace_and_drop_through() {
+        let (_t, pool) = open_pool().await;
+        let a = add_track(&pool, "/m/a.flac").await;
+        let b = add_track(&pool, "/m/b.flac").await;
+        let c = add_track(&pool, "/m/c.flac").await;
+        enqueue(&pool, a, "old").await.unwrap();
+        // Replacing leaves nothing of the previous context behind.
+        replace(&pool, &[c, b, a], "ctx").await.unwrap();
+        assert_eq!(list(&pool).await.unwrap(), vec![c, b, a]);
+        // Jumping to `b` consumes `c` above it as well as `b` itself.
+        drop_through(&pool, b).await.unwrap();
+        assert_eq!(list(&pool).await.unwrap(), vec![a]);
+        // An id that is not queued changes nothing.
+        drop_through(&pool, c).await.unwrap();
+        assert_eq!(list(&pool).await.unwrap(), vec![a]);
     }
 
     #[tokio::test]

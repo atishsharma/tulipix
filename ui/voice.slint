@@ -23,7 +23,7 @@ export component MicBtn inherits Rectangle {
     in property <string> target;
     in property <bool> dark: true;
     property <bool> live: VoiceSearch.target == root.target && VoiceSearch.state != "idle";
-    width: 28px; height: 28px; border-radius: Surface.r(14px);
+    width: 28px; height: 28px; border-radius: Surface.rr(14px, self.width, self.height);
     horizontal-stretch: 0; vertical-stretch: 0;
     background: live
         ? (VoiceSearch.state == "busy" ? #b45309 : #dc2626)

@@ -37,11 +37,17 @@ export global Surface {
 
     // ── geometry ────────────────────────────────────────────────────────────
     // Radius is paint, not layout: nothing reflows when it changes.
+    // Clay's corners are generous on BIG surfaces and restrained on small
+    // chrome. A radius past ~40% of an element's short side stops being a corner
+    // — the box renders as a stadium, and a page of stadiums reads as a bug
+    // rather than as a language. Panels and cards are tall enough to carry
+    // 24-30px; rows, buttons and glyph plates are 26-44px tall, so their tokens
+    // sit near a third of that.
     out property <length> panel-radius: clay ? 30px : (skeuo ? 14px : Theme.radius-lg);
-    out property <length> card-radius:  clay ? 26px : (skeuo ? 12px : 14px);
-    out property <length> row-radius:   clay ? 18px : (skeuo ? 10px : Theme.radius-md);
-    out property <length> btn-radius:   clay ? 16px : (skeuo ?  9px : 10px);
-    out property <length> glyph-radius: clay ? 13px : (skeuo ?  8px :  9px);
+    out property <length> card-radius:  clay ? 24px : (skeuo ? 12px : 14px);
+    out property <length> row-radius:   clay ? 13px : (skeuo ? 10px : Theme.radius-md);
+    out property <length> btn-radius:   clay ? 12px : (skeuo ?  9px : 10px);
+    out property <length> glyph-radius: clay ?  9px : (skeuo ?  8px :  9px);
 
     /// Scale a radius that a component already chose for itself.
     ///
@@ -52,6 +58,31 @@ export global Surface {
     /// untouched, so it is a true no-op there.
     public pure function r(base: length) -> length {
         return clay ? base * 1.9 : (skeuo ? Math.max(4px, base * 0.72) : base);
+    }
+
+    /// The same scale, clamped against the element it is drawn on.
+    ///
+    /// [`r`] cannot see the box it lands on, and clay's 1.9x turned every short
+    /// element into an oval: a 30px row asking for an 8px corner got 15px, which
+    /// IS half its height, so it rendered as a stadium. The clamp is two-sided
+    /// and cannot make anything worse than Standard:
+    ///
+    /// * never more than 38% of the short side — the line where a corner stops
+    ///   reading as a corner;
+    /// * never *less* than the base the component chose for itself, so shapes
+    ///   that are meant to be pills (a 32px chip asking for 16px) stay pills in
+    ///   every language.
+    ///
+    /// Big surfaces are untouched: 38% of a 150px tile is 57px, well past
+    /// anything `r` returns.
+    /// Skeuo SHRINKS radii (0.72x) and must be handed straight through — the
+    /// floor below exists only to protect shapes from clay's inflation, and
+    /// applying it there would undo the tighter moulded corner. Standard returns
+    /// the base unchanged and takes the same path.
+    public pure function rr(base: length, w: length, h: length) -> length {
+        return r(base) <= base
+            ? r(base)
+            : Math.max(base, Math.min(r(base), Math.min(w, h) * 0.38));
     }
 
     // ── material ────────────────────────────────────────────────────────────
@@ -392,29 +423,34 @@ export global Surface {
 //
 // `pressed` inverts the sheen — shade where the light used to be — which is the
 // whole reason a pushed key looks pushed.
+// `on` exists so callers inside a REPEATER can keep the rim present and merely
+// blank rather than gating it with `if Surface.rim:` — an `if` around a
+// component inside a repeater is the shape that panics with "accessing deleted
+// parent" when the model is replaced (slint#6426).
 export component Rim inherits Rectangle {
     in property <bool> pressed: false;
+    in property <bool> on: true;
     in property <length> radius: 0px;
 
     border-radius: root.radius;
-    border-width: 1px;
+    border-width: root.on ? 1px : 0px;
     border-color: Surface.rim-ink;
     // 160°: the light is up and to the left in all three tiers. Break that on
     // one surface and the page reads as a rendering bug rather than a style.
-    background: root.pressed
+    background: !root.on ? transparent : (root.pressed
         ? @linear-gradient(160deg,
             Surface.sheen-lo 0%, transparent 48%, Surface.sheen-hi 100%)
         : @linear-gradient(160deg,
-            Surface.sheen-hi 0%, transparent 52%, Surface.sheen-lo 100%);
+            Surface.sheen-hi 0%, transparent 52%, Surface.sheen-lo 100%));
 
     // Clay's soft second edge. One hard hairline is an outline; two, the second
     // fainter and a pixel further in, is a rounded edge catching the light.
-    if Surface.clay: Rectangle {
+    Rectangle {
         x: 1px; y: 1px;
         width: parent.width - 2px; height: parent.height - 2px;
         border-radius: Math.max(1px, root.radius - 1px);
         background: transparent;
-        border-width: 1px;
+        border-width: (Surface.clay && root.on) ? 1px : 0px;
         border-color: Surface.rim-ink-2;
     }
 }
