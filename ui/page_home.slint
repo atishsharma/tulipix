@@ -772,6 +772,15 @@ export component HomePage inherits Rectangle {
     in property <string> user-secondary: "";
     in property <image> avatar-image;
     in property <bool> music-left: false;          // music block on the left vs right
+    // ── Card visibility (Settings › Home Layout; docs/home-layouts/05-classic.md)
+    // The left column's six cards. The rail's two (player, quick) still owe their
+    // geometry work, so the popup does not offer them yet.
+    in property <bool> hc-photos: true;
+    in property <bool> hc-videos: true;
+    in property <bool> hc-books: true;
+    in property <bool> hc-cloud: true;
+    in property <bool> hc-tools: true;
+    in property <bool> hc-continue: true;
     // now-playing feed
     in property <string> np-title: ""; in property <string> np-sub: ""; in property <string> np-album: "";
     in property <image> np-art; in property <color> np-accent: Theme.sec-music;
@@ -859,7 +868,9 @@ export component HomePage inherits Rectangle {
     property <length> music-w: (300px * player-scale + 40px) * 1.05;   // +5% so the 5 source tabs fit one aligned row
     property <length> left-w: grid-w - music-w - 30px;       // left column inner width (30px gutter holds the divider)
     // CONTINUE pill geometry — full left width now → wider tiles + bigger gaps.
-    property <length> cont-h: 250px;
+    // Switched off in Settings › Home Layout, the strip collapses to nothing and
+    // the two card rows above (both vertical-stretch: 1) take its 250 px.
+    property <length> cont-h: root.hc-continue ? 250px : 0px;
     property <length> cont-gap: 14px;
     property <length> cont-slot-w: (left-w - 28px - 3 * cont-gap) / 4;
     property <length> cont-thumb-w: (cont-h - 93px) * 3 / 5;
@@ -1006,12 +1017,12 @@ export component HomePage inherits Rectangle {
                 // Photos / Videos
                 HorizontalLayout {
                     spacing: 10px; vertical-stretch: 1;
-                    PhotoSlideshow { horizontal-stretch: 1; icon: Icons.image; accent: Theme.sec-photos; name: "Photos";
+                    if root.hc-photos: PhotoSlideshow { horizontal-stretch: 1; icon: Icons.image; accent: Theme.sec-photos; name: "Photos";
                         photos: root.recent-photos; tile-top: true; empty-icon: Icons.image-off;
                         stat: root.stats.photos + " items · " + root.stats.photos-albums + " albums";
                         footer: root.stats.photos-scan; clicked => { root.open-section("photos"); }
                         open-item(i) => { root.open-photo-item(i); } }
-                    PhotoSlideshow { horizontal-stretch: 1; icon: Icons.film; accent: Theme.sec-videos; name: "Videos";
+                    if root.hc-videos: PhotoSlideshow { horizontal-stretch: 1; icon: Icons.film; accent: Theme.sec-videos; name: "Videos";
                         photos: root.recent-videos; show-play: true; tile-aspect: 1.6;
                         cycle: 3000ms; empty-icon: Icons.video-off;
                         stat: root.stats.videos + " items · " + root.stats.videos-shows + " shows";
@@ -1021,19 +1032,19 @@ export component HomePage inherits Rectangle {
                 // Books / Cloud / Tools
                 HorizontalLayout {
                     spacing: 10px; vertical-stretch: 1;
-                    BookRow { horizontal-stretch: 1; icon: Icons.book-open; accent: Theme.sec-books; name: "Books";
+                    if root.hc-books: BookRow { horizontal-stretch: 1; icon: Icons.book-open; accent: Theme.sec-books; name: "Books";
                         covers: root.book-covers; total: root.stats.books;
                         stat: root.stats.books + " books" + (root.stats.books-reading > 0
                             ? " · " + root.stats.books-reading + " reading" : "");
                         clicked => { root.open-section("books"); } open-book(i) => { root.open-book-item(i); } }
-                    CloudRow { horizontal-stretch: 1; icon: Icons.cloud; accent: Theme.sec-cloud; name: "Cloud";
+                    if root.hc-cloud: CloudRow { horizontal-stretch: 1; icon: Icons.cloud; accent: Theme.sec-cloud; name: "Cloud";
                         remotes: root.cloud-remotes; total: root.stats.cloud-remotes; stat: "";
                         clicked => { root.open-section("cloud"); } open-remote(n) => { root.open-remote(n); } }
-                    ToolRow { horizontal-stretch: 1; icon: Icons.wrench; accent: Theme.sec-tools; name: "Tools"; stat: "";
+                    if root.hc-tools: ToolRow { horizontal-stretch: 1; icon: Icons.wrench; accent: Theme.sec-tools; name: "Tools"; stat: "";
                         clicked => { root.open-section("tools"); } open-tool(c) => { root.open-tool(c); } }
                 }
                 // ── Continue (full left width) — wider tiles, bigger gaps ──
-                Rectangle {
+                if root.hc-continue: Rectangle {
                     height: root.cont-h; border-radius: Surface.card-radius;
                 // Pink reads brighter than the other accents — 0.03 matches the
                 // dark cards' perceived fill; idle chrome matches Photos/Videos
@@ -1312,7 +1323,7 @@ export component HomePage inherits Rectangle {
 
     // Remove-from-Continue confirmation — Enter removes, Escape cancels,
     // backdrop click cancels. Painted above the whole page.
-    if root.cont-confirm-open: Rectangle {
+    if root.cont-confirm-open && root.hc-continue: Rectangle {
         width: 100%; height: 100%; background: #00000088;
         TouchArea { clicked => { root.cont-confirm-open = false; } }
         FocusScope {

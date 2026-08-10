@@ -38,6 +38,13 @@ import { SettingsList, SettingItem } from "settings_panels.slint";
 import { ChatOverlay, ChatTurn } from "chat_overlay.slint";
 import { Gated, GateMode } from "gated.slint";
 import { HomePage, HomeStats, HomeRemote, HomeContinue } from "page_home.slint";
+import { SettingsHomeLayout, HomeCardRow } from "settings_home_layout.slint";
+import { HomeCinema, HomeDue } from "page_home_cinema.slint";
+import { HomeEditorial } from "page_home_editorial.slint";
+import { HomeColumns } from "page_home_columns.slint";
+import { HomeStream, HomeEvent } from "page_home_stream.slint";
+import { HomeDeck } from "page_home_deck.slint";
+import { HomeWelcome } from "page_home_welcome.slint";
 import { BooksPage, BookTile, BooksHero, BookStat, BookChip, CollChip, CollRow, StatBookRow } from "page_books.slint";
 import { BookReader, TocRow, BookmarkRow, SearchRow, AnnotRow, HlRect, ThumbRow } from "book_reader.slint";
 import { GenesisPage, GenesisRow, GenesisTopic, GenesisSearch, GenesisDetails } from "page_genesis.slint";
@@ -311,6 +318,29 @@ component SettingsPage inherits Rectangle {
     callback lib-row-save-section(int, string);
     callback set-default-cadence(string);
     callback set-cadence-override(string, string);
+    callback status-refresh();
+
+    // Home Layout tab (docs/home-layouts/README.md).
+    in property <string> home-layout: "classic";
+    in property <[HomeCardRow]> home-cards: [];
+    callback use-home-layout(string);
+    callback home-card-set(string, bool);
+    callback home-cards-reset();
+    in property <bool> hc-hero: true;
+    in property <bool> hc-continue: true;
+    in property <bool> hc-player: true;
+    in property <bool> hc-quick: true;
+    in property <bool> hc-photos: true;
+    in property <bool> hc-videos: true;
+    in property <bool> hc-music: true;
+    in property <bool> hc-books: true;
+    in property <bool> hc-cloud: true;
+    in property <bool> hc-tools: true;
+    in property <bool> hc-transfer: true;
+    in property <bool> hc-finances: true;
+    in property <bool> hc-library: true;
+    in property <bool> hc-next: true;
+    in property <bool> hc-ticker: true;
 
     background: transparent;
 
@@ -333,6 +363,7 @@ component SettingsPage inherits Rectangle {
 
             SettingsNavCaption { text: "PERSONAL"; }
             SettingsNavItem { label: "Profile & Style"; icon: Icons.user; active: root.tab == "profile"; clicked => { root.active-tab = "profile"; } }
+            SettingsNavItem { label: "Home Layout"; icon: Icons.layout-grid; active: root.tab == "home-layout"; clicked => { root.active-tab = "home-layout"; } }
 
             SettingsNavCaption { text: "MEDIA"; }
             SettingsNavItem { label: "Libraries"; icon: Icons.folder;       active: root.tab == "libraries"; clicked => { root.active-tab = "libraries"; } }
@@ -348,6 +379,9 @@ component SettingsPage inherits Rectangle {
 
             SettingsNavCaption { text: "SYSTEM"; }
             SettingsNavItem { label: "Advanced"; icon: Icons.wrench; active: root.tab == "advanced"; clicked => { root.active-tab = "advanced"; } }
+            // The native dashboard. Its snapshot only refreshes while it is on
+            // screen, so opening the tab asks for one pass immediately.
+            SettingsNavItem { label: "Status"; icon: Icons.waveform; active: root.tab == "status"; clicked => { root.active-tab = "status"; root.status-refresh(); } }
 
             Rectangle { vertical-stretch: 1; }
         }
@@ -485,6 +519,44 @@ component SettingsPage inherits Rectangle {
                     action(k) => { root.setting-action(k); }
                 }
             }
+            if tab == "home-layout": Rectangle {
+                width: parent.width; height: parent.height; background: transparent;
+                SettingsHomeLayout {
+                    width: parent.width; height: parent.height;
+                    layout: root.home-layout;
+                    cards: root.home-cards;
+                    hc-hero: root.hc-hero;
+                    hc-continue: root.hc-continue;
+                    hc-player: root.hc-player;
+                    hc-quick: root.hc-quick;
+                    hc-photos: root.hc-photos;
+                    hc-videos: root.hc-videos;
+                    hc-music: root.hc-music;
+                    hc-books: root.hc-books;
+                    hc-cloud: root.hc-cloud;
+                    hc-tools: root.hc-tools;
+                    hc-transfer: root.hc-transfer;
+                    hc-finances: root.hc-finances;
+                    hc-library: root.hc-library;
+                    hc-next: root.hc-next;
+                    hc-ticker: root.hc-ticker;
+                    use-layout(l) => { root.use-home-layout(l); }
+                    card-set(c, on) => { root.home-card-set(c, on); }
+                    cards-reset => { root.home-cards-reset(); }
+                }
+            }
+
+            // Status — passed in as a child rather than through properties. The
+            // page takes twenty-six of them plus four callbacks, and every one
+            // would be forwarded verbatim; the slot keeps them where they
+            // already are, on the window. Gated with `visible` and not `if`
+            // because `@children` cannot live inside a conditional.
+            Rectangle {
+                visible: root.tab == "status";
+                width: parent.width; height: parent.height; background: transparent;
+                VerticalLayout { @children }
+            }
+
             if tab == "advanced": Rectangle {
                 width: parent.width; height: parent.height; background: transparent;
                 SettingsList {
@@ -821,6 +893,66 @@ export component MainWindow inherits Window {
     in-out property <string> home-greeting: "Welcome";
     in-out property <string> home-date-line: "";
     in-out property <bool> home-music-left: false;   // music block side (Settings)
+
+    // ── Home layout (Settings › PERSONAL › Home Layout) ─────────────────────
+    // Seven compositions over one data set; see docs/home-layouts/README.md.
+    // "classic" is the default and the fallback for an unknown stored value.
+    in-out property <string> home-layout: "classic";
+    callback use-home-layout(string);
+    /// Cards of the active layout, for the customize popup. Built in Rust so a
+    /// layout only ever lists the cards it has a place for.
+    in property <[HomeCardRow]> home-cards: [];
+    callback home-card-set(string /*card id*/, bool);
+    callback home-cards-reset();
+    // Card visibility for the active layout. Named booleans rather than a model
+    // lookup: Slint cannot search a model, and `for : if : Component` is the
+    // shape slint#6426 crashes on.
+    in property <bool> hc-hero: true;
+    in property <bool> hc-continue: true;
+    in property <bool> hc-player: true;
+    in property <bool> hc-quick: true;
+    in property <bool> hc-photos: true;
+    in property <bool> hc-videos: true;
+    in property <bool> hc-music: true;
+    in property <bool> hc-books: true;
+    in property <bool> hc-cloud: true;
+    in property <bool> hc-tools: true;
+    in property <bool> hc-transfer: true;
+    in property <bool> hc-finances: true;
+    in property <bool> hc-library: true;
+    in property <bool> hc-next: true;
+    in property <bool> hc-ticker: true;
+    // Cinema's hero — the top in-progress item, resolved in Rust from the same
+    // rows that feed the Continue strip (no extra query).
+    in property <string> home-hero-kind: "";
+    in property <string> home-hero-title: "";
+    in property <string> home-hero-kicker: "";
+    in property <string> home-hero-meta: "";
+    in property <float> home-hero-frac: -1;
+    in property <image> home-hero-art;
+    in property <int> home-hero-id: -1;
+    in property <string> home-hero-path: "";
+    callback home-hero-resume();
+    callback home-hero-details();
+    // Cinema's two number panels. `home-fin-*` are Home-shaped copies of the
+    // Finances data so this page needs no import from page_finances.slint.
+    in property <[float]> home-fin-months: [];
+    in property <[HomeDue]> home-fin-dues: [];
+    in property <string> home-transfer-inbox: "";
+    in property <string> home-transfer-note: "";
+    // Columns' selected pane, persisted under `home.columns.open`. Resolved in
+    // Rust so it can never name a pane whose card is switched off.
+    in property <string> home-open-pane: "photos";
+    callback home-pane-open(string);
+    // Stream's feed. Merged in Rust from the section databases plus the activity
+    // log (there is no events table — docs/home-layouts/04-stream.md §Data), then
+    // filtered by the section cards and the chip below.
+    in property <[HomeEvent]> home-events: [];
+    in-out property <string> home-feed-filter: "all";   // all | media | money | devices
+    in property <string> home-feed-note: "";
+    in property <[HomeDue]> home-next-rows: [];
+    callback home-feed-filter-set(string);
+    callback home-event-action(HomeEvent);
     callback home-open-photo-item(int);   // Home Photos card → open in photo viewer
     callback home-open-video-item(int);   // Home Videos card → play with the video default
     callback home-open-book-item(int);    // Home Books card → open that book in the reader
@@ -2944,6 +3076,9 @@ callback cloud-go-home();
 
     callback set-default-cadence(string);
     callback set-cadence-override(string, string);
+    /// Opening the Status tab in Settings. The snapshot tick only fills the page
+    /// while it is on screen, so the first pass is asked for on arrival.
+    callback status-refresh();
 
     out property <Section> active-enum:
         active-section == "videos"   ? Section.videos :
@@ -4218,7 +4353,328 @@ callback cloud-go-home();
                 submit-again() => { root.fin-submit-again(); }
                 refresh() => { root.fin-refresh(); }
             }
-            if active-section == "home": HomePage {
+            // Home layout 1 — Cinema (docs/home-layouts/01-cinema.md). Each of the
+            // five layouts names itself; Classic is last and takes whatever is
+            // left, which is also what an unknown stored value lands on.
+            if active-section == "home" && root.home-layout == "cinema": HomeCinema {
+                width: parent.width; height: parent.height;
+                greeting: root.home-greeting;
+                date-line: root.home-date-line;
+                library-line: root.home-stats.photos + root.home-stats.videos + root.home-stats.books
+                    + " items";
+                hero-kind: root.home-hero-kind;
+                hero-title: root.home-hero-title;
+                hero-kicker: root.home-hero-kicker;
+                hero-meta: root.home-hero-meta;
+                hero-frac: root.home-hero-frac;
+                hero-art: root.home-hero-art;
+                continue-rows: root.home-continue-rows;
+                stats: root.home-stats;
+                fin-spent: root.fin-spent-total;
+                fin-month: root.fin-month-label;
+                fin-liquid: root.fin-liquid-total;
+                fin-months: root.home-fin-months;
+                fin-dues: root.home-fin-dues;
+                transfer-inbox: root.home-transfer-inbox;
+                transfer-note: root.home-transfer-note;
+                hc-hero: root.hc-hero;
+                hc-continue: root.hc-continue;
+                hc-photos: root.hc-photos;
+                hc-videos: root.hc-videos;
+                hc-music: root.hc-music;
+                hc-books: root.hc-books;
+                hc-cloud: root.hc-cloud;
+                hc-tools: root.hc-tools;
+                hc-transfer: root.hc-transfer;
+                hc-finances: root.hc-finances;
+                open-section(s) => { root.active-section = s; root.section-changed(s); }
+                open-search => { root.palette-open = true; }
+                resume-hero => { root.home-hero-resume(); }
+                hero-details => { root.home-hero-details(); }
+                continue-open(r) => {
+                    if (r.kind == "video") { root.home-continue-video(r.id, r.path); }
+                    else if (r.kind == "podcast") { root.music-podcast-play(r.id); }
+                    else if (r.kind == "book") { root.books-open-details(r.id); }
+                    else { root.music-view = "audiobooks"; root.active-section = "music"; root.section-changed("music"); }
+                }
+                start-sharing => { root.active-section = "transfer"; root.section-changed("transfer"); root.transfer-start(); }
+            }
+            // Home layout 3 — Editorial (docs/home-layouts/03-editorial.md).
+            if active-section == "home" && root.home-layout == "editorial": HomeEditorial {
+                width: parent.width; height: parent.height;
+                greeting: root.home-greeting;
+                date-line: root.home-date-line;
+                // Already thousands-separated and byte-summed by kick_home_stats.
+                library-line: root.user.secondary;
+                stats: root.home-stats;
+                recent-photos: root.home-recent-photos;
+                recent-videos: root.home-recent-videos;
+                book-covers: root.home-book-covers;
+                cloud-remotes: root.home-cloud-remotes;
+                fin-spent: root.fin-spent-total;
+                fin-month: root.fin-month-label;
+                fin-liquid: root.fin-liquid-total;
+                fin-months: root.home-fin-months;
+                fin-dues: root.home-fin-dues;
+                transfer-inbox: root.home-transfer-inbox;
+                np-title: root.music-np-title;
+                np-sub: root.music-np-sub;
+                np-art: root.music-np-art;
+                np-accent: root.music-np-accent;
+                playing: root.music-playing;
+                pos-label: root.music-pos-label;
+                dur-label: root.music-dur-label;
+                vis-bars: root.music-vis-bars;
+                hc-photos: root.hc-photos;
+                hc-videos: root.hc-videos;
+                hc-music: root.hc-music;
+                hc-books: root.hc-books;
+                hc-cloud: root.hc-cloud;
+                hc-tools: root.hc-tools;
+                hc-transfer: root.hc-transfer;
+                hc-finances: root.hc-finances;
+                hc-ticker: root.hc-ticker;
+                open-section(s) => { root.active-section = s; root.section-changed(s); }
+                open-search => { root.palette-open = true; }
+                // tools-set-category (not home-open-tool) so the backend also runs
+                // tools_refresh — a bare category set leaves the op list empty.
+                open-tool(c) => { root.tools-set-category(c); root.active-section = "tools"; root.section-changed("tools"); }
+                open-remote(n) => { root.home-open-remote(n); root.active-section = "cloud"; root.section-changed("cloud"); }
+                start-sharing => { root.active-section = "transfer"; root.section-changed("transfer"); root.transfer-start(); }
+                playpause => { if (root.music-np-title == "") { root.music-shuffle-all(); } else { root.music-toggle-pause(); } }
+                next => { root.music-next(); }
+                prev => { root.music-prev(); }
+            }
+            // Home layout 2 — Columns (docs/home-layouts/02-columns.md).
+            if active-section == "home" && root.home-layout == "columns": HomeColumns {
+                width: parent.width; height: parent.height;
+                greeting: root.home-greeting;
+                date-line: root.home-date-line;
+                library-line: root.user.secondary;
+                stats: root.home-stats;
+                recent-photos: root.home-recent-photos;
+                recent-videos: root.home-recent-videos;
+                book-covers: root.home-book-covers;
+                cloud-remotes: root.home-cloud-remotes;
+                continue-rows: root.home-continue-rows;
+                fin-spent: root.fin-spent-total;
+                fin-month: root.fin-month-label;
+                fin-liquid: root.fin-liquid-total;
+                fin-months: root.home-fin-months;
+                fin-dues: root.home-fin-dues;
+                transfer-inbox: root.home-transfer-inbox;
+                np-art: root.music-np-art;
+                np-title: root.music-np-title;
+                np-sub: root.music-np-sub;
+                open-pane: root.home-open-pane;
+                hc-photos: root.hc-photos;
+                hc-videos: root.hc-videos;
+                hc-music: root.hc-music;
+                hc-books: root.hc-books;
+                hc-cloud: root.hc-cloud;
+                hc-tools: root.hc-tools;
+                hc-transfer: root.hc-transfer;
+                hc-finances: root.hc-finances;
+                pane-open(p) => { root.home-pane-open(p); }
+                open-section(s) => { root.active-section = s; root.section-changed(s); }
+                open-search => { root.palette-open = true; }
+                open-tool(c) => { root.tools-set-category(c); root.active-section = "tools"; root.section-changed("tools"); }
+                open-remote(n) => { root.home-open-remote(n); root.active-section = "cloud"; root.section-changed("cloud"); }
+                continue-open(r) => {
+                    if (r.kind == "video") { root.home-continue-video(r.id, r.path); }
+                    else if (r.kind == "podcast") { root.music-podcast-play(r.id); }
+                    else if (r.kind == "book") { root.books-open-details(r.id); }
+                    else { root.music-view = "audiobooks"; root.active-section = "music"; root.section-changed("music"); }
+                }
+                start-sharing => { root.active-section = "transfer"; root.section-changed("transfer"); root.transfer-start(); }
+            }
+            // Home layout 4 — Stream (docs/home-layouts/04-stream.md).
+            if active-section == "home" && root.home-layout == "stream": HomeStream {
+                width: parent.width; height: parent.height;
+                greeting: root.home-greeting;
+                date-line: root.home-date-line;
+                library-line: root.user.secondary;
+                events: root.home-events;
+                filter: root.home-feed-filter;
+                feed-note: root.home-feed-note;
+                stats: root.home-stats;
+                np-title: root.music-np-title;
+                np-sub: root.music-np-sub;
+                np-art: root.music-np-art;
+                np-accent: root.music-np-accent;
+                playing: root.music-playing;
+                pos-label: root.music-pos-label;
+                dur-label: root.music-dur-label;
+                fin-spent: root.fin-spent-total;
+                fin-month: root.fin-month-label;
+                fin-liquid: root.fin-liquid-total;
+                fin-months: root.home-fin-months;
+                fin-dues: root.home-fin-dues;
+                transfer-inbox: root.home-transfer-inbox;
+                next-rows: root.home-next-rows;
+                hc-photos: root.hc-photos;
+                hc-videos: root.hc-videos;
+                hc-music: root.hc-music;
+                hc-books: root.hc-books;
+                hc-cloud: root.hc-cloud;
+                hc-tools: root.hc-tools;
+                hc-transfer: root.hc-transfer;
+                hc-finances: root.hc-finances;
+                hc-player: root.hc-player;
+                hc-library: root.hc-library;
+                hc-next: root.hc-next;
+                set-filter(f) => { root.home-feed-filter-set(f); }
+                event-action(e) => { root.home-event-action(e); }
+                open-section(s) => { root.active-section = s; root.section-changed(s); }
+                open-search => { root.palette-open = true; }
+                start-sharing => { root.active-section = "transfer"; root.section-changed("transfer"); root.transfer-start(); }
+                playpause => { if (root.music-np-title == "") { root.music-shuffle-all(); } else { root.music-toggle-pause(); } }
+                next => { root.music-next(); }
+                prev => { root.music-prev(); }
+            }
+            // Home layout 6 — Deck (docs/home-layouts/06-deck.md).
+            if active-section == "home" && root.home-layout == "deck": HomeDeck {
+                width: parent.width; height: parent.height;
+                greeting: root.home-greeting;
+                date-line: root.home-date-line;
+                library-line: root.user.secondary;
+                avatar-image: root.user.avatar-image;
+                stats: root.home-stats;
+                continue-rows: root.home-continue-rows;
+                recent-photos: root.home-recent-photos;
+                recent-videos: root.home-recent-videos;
+                book-covers: root.home-book-covers;
+                cloud-remotes: root.home-cloud-remotes;
+                transfer-inbox: root.home-transfer-inbox;
+                transfer-note: root.home-transfer-note;
+                fin-spent: root.fin-spent-total;
+                fin-month: root.fin-month-label;
+                fin-income: root.fin-txn-income;
+                fin-liquid: root.fin-liquid-total;
+                fin-months: root.home-fin-months;
+                fin-dues: root.home-fin-dues;
+                np-title: root.music-np-title;
+                np-sub: root.music-np-sub;
+                np-art: root.music-np-art;
+                np-accent: root.music-np-accent;
+                playing: root.music-playing;
+                pos: root.music-pos; dur: root.music-dur;
+                pos-label: root.music-pos-label; dur-label: root.music-dur-label;
+                shuffle: root.music-shuffle; repeat: root.music-repeat;
+                volume: root.music-volume; muted: root.music-muted;
+                hc-continue: root.hc-continue;
+                hc-library: root.hc-library;
+                hc-player: root.hc-player;
+                hc-quick: root.hc-quick;
+                hc-photos: root.hc-photos;
+                hc-videos: root.hc-videos;
+                hc-music: root.hc-music;
+                hc-books: root.hc-books;
+                hc-cloud: root.hc-cloud;
+                hc-tools: root.hc-tools;
+                hc-transfer: root.hc-transfer;
+                hc-finances: root.hc-finances;
+                open-section(s) => { root.active-section = s; root.section-changed(s); }
+                open-search => { root.palette-open = true; }
+                open-profile => { root.active-settings-tab = "profile"; root.active-section = "settings"; root.section-changed("settings"); }
+                // The status dashboard is a Settings tab, not a section.
+                open-status => { root.active-settings-tab = "status"; root.active-section = "settings"; root.section-changed("settings"); root.status-refresh(); }
+                open-photo-item(i) => { root.home-open-photo-item(i); }
+                open-video-item(i) => { root.home-open-video-item(i); }
+                open-book-item(i) => { root.home-open-book-item(i); }
+                // tools-set-category (not home-open-tool) so the backend also runs
+                // tools_refresh — a bare category set leaves the op list empty.
+                open-tool(c) => { root.tools-set-category(c); root.active-section = "tools"; root.section-changed("tools"); }
+                open-remote(n) => { root.home-open-remote(n); root.active-section = "cloud"; root.section-changed("cloud"); }
+                continue-open(r) => {
+                    if (r.kind == "video") { root.home-continue-video(r.id, r.path); }
+                    else if (r.kind == "podcast") { root.music-podcast-play(r.id); }
+                    else if (r.kind == "book") { root.books-open-details(r.id); }
+                    else { root.music-view = "audiobooks"; root.active-section = "music"; root.section-changed("music"); }
+                }
+                start-sharing => { root.active-section = "transfer"; root.section-changed("transfer"); root.transfer-start(); }
+                open-stream => { root.set-video-kind("stream"); root.video-kind = "stream"; root.active-section = "videos"; root.section-changed("videos"); }
+                open-livetv => { root.set-video-kind("livetv"); root.video-kind = "livetv"; root.active-section = "videos"; root.section-changed("videos"); }
+                open-download => { root.music-view = "mymusic"; root.music-set-lib-tab("downloader"); root.active-section = "music"; root.section-changed("music"); }
+                random-radio => { root.home-random-radio(); }
+                playpause => { if (root.music-np-title == "") { root.music-shuffle-all(); } else { root.music-toggle-pause(); } }
+                next => { root.music-next(); } prev => { root.music-prev(); }
+                seek(s) => { root.music-seek(s); }
+                set-volume(v) => { root.music-set-volume(v); }
+                toggle-mute => { root.music-toggle-mute(); }
+                toggle-shuffle => { root.music-toggle-shuffle(); }
+                cycle-repeat => { root.music-cycle-repeat(); }
+                open-zen => { root.music-fullscreen = true; }
+            }
+            // Home layout 7 — Welcome (docs/home-layouts/07-welcome.md).
+            if active-section == "home" && root.home-layout == "welcome": HomeWelcome {
+                width: parent.width; height: parent.height;
+                greeting: root.home-greeting;
+                date-line: root.home-date-line;
+                library-line: root.user.secondary;
+                avatar-image: root.user.avatar-image;
+                logo-choice: root.app-logo-choice;
+                festival: root.festival-logo;
+                stats: root.home-stats;
+                continue-rows: root.home-continue-rows;
+                recent-photos: root.home-recent-photos;
+                recent-videos: root.home-recent-videos;
+                book-covers: root.home-book-covers;
+                fin-month: root.fin-month-label;
+                np-title: root.music-np-title;
+                np-sub: root.music-np-sub;
+                np-art: root.music-np-art;
+                np-accent: root.music-np-accent;
+                playing: root.music-playing;
+                pos: root.music-pos; dur: root.music-dur;
+                pos-label: root.music-pos-label; dur-label: root.music-dur-label;
+                shuffle: root.music-shuffle; repeat: root.music-repeat;
+                muted: root.music-muted;
+                vis-bars: root.music-vis-bars;
+                hc-hero: root.hc-hero;
+                hc-quick: root.hc-quick;
+                hc-continue: root.hc-continue;
+                hc-library: root.hc-library;
+                hc-player: root.hc-player;
+                hc-photos: root.hc-photos;
+                hc-videos: root.hc-videos;
+                hc-music: root.hc-music;
+                hc-books: root.hc-books;
+                hc-cloud: root.hc-cloud;
+                hc-tools: root.hc-tools;
+                hc-transfer: root.hc-transfer;
+                hc-finances: root.hc-finances;
+                open-section(s) => { root.active-section = s; root.section-changed(s); }
+                open-search => { root.palette-open = true; }
+                open-profile => { root.active-settings-tab = "profile"; root.active-section = "settings"; root.section-changed("settings"); }
+                open-photo-item(i) => { root.home-open-photo-item(i); }
+                open-video-item(i) => { root.home-open-video-item(i); }
+                open-book-item(i) => { root.home-open-book-item(i); }
+                continue-open(r) => {
+                    if (r.kind == "video") { root.home-continue-video(r.id, r.path); }
+                    else if (r.kind == "podcast") { root.music-podcast-play(r.id); }
+                    else if (r.kind == "book") { root.books-open-details(r.id); }
+                    else { root.music-view = "audiobooks"; root.active-section = "music"; root.section-changed("music"); }
+                }
+                open-stream => { root.set-video-kind("stream"); root.video-kind = "stream"; root.active-section = "videos"; root.section-changed("videos"); }
+                open-livetv => { root.set-video-kind("livetv"); root.video-kind = "livetv"; root.active-section = "videos"; root.section-changed("videos"); }
+                open-download => { root.music-view = "mymusic"; root.music-set-lib-tab("downloader"); root.active-section = "music"; root.section-changed("music"); }
+                // Genesis is a sub-page of Books, like the reader.
+                open-genesis => { root.active-section = "books"; root.section-changed("books"); root.genesis-enter(); }
+                random-radio => { root.home-random-radio(); }
+                playpause => { if (root.music-np-title == "") { root.music-shuffle-all(); } else { root.music-toggle-pause(); } }
+                next => { root.music-next(); } prev => { root.music-prev(); }
+                seek(s) => { root.music-seek(s); }
+                toggle-mute => { root.music-toggle-mute(); }
+                toggle-shuffle => { root.music-toggle-shuffle(); }
+                cycle-repeat => { root.music-cycle-repeat(); }
+                open-queue => { root.music-view = "mymusic"; root.active-section = "music"; root.section-changed("music"); }
+                open-zen => { root.music-fullscreen = true; }
+            }
+            if active-section == "home" && root.home-layout != "cinema"
+                    && root.home-layout != "editorial" && root.home-layout != "columns"
+                    && root.home-layout != "stream" && root.home-layout != "deck"
+                    && root.home-layout != "welcome": HomePage {
                 width: parent.width; height: parent.height;
                 stats: root.home-stats;
                 recent-photos: root.home-recent-photos;
@@ -4467,44 +4923,6 @@ callback cloud-go-home();
                 set-search-contents(on) => { root.books-set-search-contents(on); }
                 open-stats => { root.books-open-stats(); }
             }
-            // The in-window twin of the loopback dashboard. Its Rescan / Add
-            // Folder / Reset buttons call the app's own handlers directly —
-            // the same ones the browser page reaches through an HTTP action.
-            if active-section == "status": StatusPage {
-                width: parent.width; height: parent.height;
-                level: root.status-level;
-                headline: root.st-headline;
-                note: root.st-note;
-                updated: root.st-updated;
-                sections-online: root.st-sections-online;
-                jobs-running: root.st-jobs-running;
-                jobs-failed: root.st-jobs-failed;
-                library-bytes: root.st-library-bytes;
-                library-items: root.st-library-items;
-                library-week: root.st-library-week;
-                spark-line: root.st-spark-line;
-                spark-area: root.st-spark-area;
-                metrics: root.st-metrics;
-                cards: root.st-cards;
-                timeline: root.st-timeline;
-                today: root.st-today;
-                roots: root.st-roots;
-                lib-sections: root.st-lib-sections;
-                scan: root.st-scan;
-                lib-items: root.st-lib-items;
-                lib-bytes: root.st-lib-bytes;
-                lib-databases: root.st-lib-databases;
-                scan-running: root.st-scan-running;
-                system-idx: root.st-system-idx;
-                tools-idx: root.st-tools-idx;
-                open-section(s) => {
-                    root.active-section = s;
-                    root.section-changed(s);
-                }
-                rescan() => { root.lib-rescan-all(); }
-                add-folder() => { root.lib-add(); }
-                reset-app() => { root.lib-reset-app(); }
-            }
             if active-section == "settings": SettingsPage {
                 width: parent.width; height: parent.height;
                 active-tab <=> root.active-settings-tab;
@@ -4557,6 +4975,69 @@ callback cloud-go-home();
                 lib-row-save-section(i, s) => { root.lib-row-save-section(i, s); }
                 set-default-cadence(c) => { root.set-default-cadence(c); }
                 set-cadence-override(id, c) => { root.set-cadence-override(id, c); }
+                status-refresh => { root.status-refresh(); }
+                home-layout: root.home-layout;
+                home-cards: root.home-cards;
+                use-home-layout(l) => { root.use-home-layout(l); }
+                home-card-set(c, on) => { root.home-card-set(c, on); }
+                home-cards-reset => { root.home-cards-reset(); }
+                hc-hero: root.hc-hero;
+                hc-continue: root.hc-continue;
+                hc-player: root.hc-player;
+                hc-quick: root.hc-quick;
+                hc-photos: root.hc-photos;
+                hc-videos: root.hc-videos;
+                hc-music: root.hc-music;
+                hc-books: root.hc-books;
+                hc-cloud: root.hc-cloud;
+                hc-tools: root.hc-tools;
+                hc-transfer: root.hc-transfer;
+                hc-finances: root.hc-finances;
+                hc-library: root.hc-library;
+                hc-next: root.hc-next;
+                hc-ticker: root.hc-ticker;
+
+                // The in-window twin of the loopback dashboard, living in the
+                // Status tab of the rail above. Its Rescan / Add Folder / Reset
+                // buttons call the app's own handlers directly — the same ones
+                // the browser page reaches through an HTTP action. No width or
+                // height: the tab's layout hands it the content stage, which is
+                // the whole settings page minus the rail.
+                StatusPage {
+                    horizontal-stretch: 1; vertical-stretch: 1;
+                    level: root.status-level;
+                    headline: root.st-headline;
+                    note: root.st-note;
+                    updated: root.st-updated;
+                    sections-online: root.st-sections-online;
+                    jobs-running: root.st-jobs-running;
+                    jobs-failed: root.st-jobs-failed;
+                    library-bytes: root.st-library-bytes;
+                    library-items: root.st-library-items;
+                    library-week: root.st-library-week;
+                    spark-line: root.st-spark-line;
+                    spark-area: root.st-spark-area;
+                    metrics: root.st-metrics;
+                    cards: root.st-cards;
+                    timeline: root.st-timeline;
+                    today: root.st-today;
+                    roots: root.st-roots;
+                    lib-sections: root.st-lib-sections;
+                    scan: root.st-scan;
+                    lib-items: root.st-lib-items;
+                    lib-bytes: root.st-lib-bytes;
+                    lib-databases: root.st-lib-databases;
+                    scan-running: root.st-scan-running;
+                    system-idx: root.st-system-idx;
+                    tools-idx: root.st-tools-idx;
+                    open-section(s) => {
+                        root.active-section = s;
+                        root.section-changed(s);
+                    }
+                    rescan() => { root.lib-rescan-all(); }
+                    add-folder() => { root.lib-add(); }
+                    reset-app() => { root.lib-reset-app(); }
+                }
             }
         }
     }

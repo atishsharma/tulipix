@@ -632,13 +632,9 @@ export component Sidebar inherits Rectangle {
             badge-alarm: root.finances-badge-overdue;
             clicked => { root.active-section = "finances"; root.section-changed("finances"); }
         }
-        // The native dashboard, alongside the StatusBtn below that opens the
-        // browser one. Both exist so the two renderings of the same snapshot
-        // can be compared side by side.
-        NavRow { icon-img: Icons.waveform; label: "Status"; accent: Theme.sec-status; collapsed: root.collapsed;
-            active: root.active-section == "status";
-            clicked => { root.active-section = "status"; root.section-changed("status"); }
-        }
+        // The native dashboard is not a section of its own any more — it lives in
+        // Settings › System › Status. The StatusBtn in the dock below still opens
+        // the browser rendering of the same snapshot.
 
         // Bottom spacer pushes user card + footer dock to the bottom.
         Rectangle { vertical-stretch: 1; horizontal-stretch: 1; background: transparent; }

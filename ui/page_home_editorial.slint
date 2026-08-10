@@ -1,0 +1,607 @@
+// Home layout 3 of 5 — EDITORIAL. Spec: docs/home-layouts/03-editorial.md.
+//
+// No cards. Eight hairline rows, one per section: an index number in the gutter,
+// the name, a strip of the real artwork, and the one number that matters. The
+// identity is zero radius and rules — nothing here goes through the card skin.
+//
+// The fluid rule runs the other way from the rest: removing a row makes every
+// remaining row *taller* and its thumbnails bigger, so a stripped Editorial is
+// the best-looking Editorial. Five rows is the sweet spot.
+import { Theme } from "tokens.slint";
+import { Icons, AppIcon } from "icons.slint";
+import { HomeStats, HomeRemote } from "page_home.slint";
+import { HomeDue } from "page_home_cinema.slint";
+
+// ── Thumbnail strip ─────────────────────────────────────────────────────────
+// Absolutely placed rather than laid out: a layout would keep the spacing of an
+// off-screen child, and the strip must never leave a gap or half-clip a frame.
+// `shown` is how many whole thumbnails fit, so the strip always ends cleanly.
+export component ThumbStrip inherits Rectangle {
+    in property <[image]> shots: [];
+    in property <length> tw: 74px;      // thumbnail width
+    in property <length> th: 52px;      // thumbnail height
+    in property <color> accent;
+    in property <bool> round: false;    // music covers read as squares, not frames
+    // How many fit packed at the minimum gap.
+    property <int> cap: Math.max(0, Math.floor(root.width / (root.tw + 6px)));
+    // Fewer items than slots (ten book spines in a 19-slot strip) would leave the
+    // row half empty, so the strip spreads them to its full width instead. More
+    // items than slots: pack tight and show only whole thumbnails.
+    property <bool> spread: root.shots.length > 0 && root.shots.length <= root.cap;
+    property <length> step: root.spread
+        ? (root.shots.length > 1 ? (root.width - root.tw) / (root.shots.length - 1) : 0px)
+        : root.tw + 6px;
+    property <int> shown: root.spread ? root.shots.length : root.cap;
+    clip: true;
+    background: transparent;
+    for im[i] in root.shots: Rectangle {
+        x: i * root.step;
+        y: (parent.height - root.th) / 2;
+        // Zero width instead of a conditional element: `for` + `if` over a model
+        // that Rust replaces is the shape slint#6426 crashes on.
+        width: i < root.shown ? root.tw : 0px;
+        height: root.th;
+        border-radius: root.round ? 4px : 0px;
+        clip: true;
+        background: Theme.panel-2;
+        opacity: i < root.shown ? 1.0 : 0.0;
+        if im.width > 0: Image { source: im; image-fit: cover; width: 100%; height: 100%; }
+        if im.width == 0: Rectangle {
+            width: 100%; height: 100%;
+            background: root.accent.with-alpha(0.16);
+        }
+    }
+}
+
+// ── Plate strip ─────────────────────────────────────────────────────────────
+// Music has no cover feed on Home (the album tiles only load once you open the
+// section), so its slot carries tinted plates in the section hue with whatever
+// is playing as the first plate. Honest, and it keeps the row's rhythm.
+export component PlateStrip inherits Rectangle {
+    in property <image> lead;
+    in property <length> tw: 52px;
+    in property <color> accent;
+    property <length> step: root.tw + 6px;
+    property <int> shown: Math.max(0, Math.floor(root.width / root.step));
+    clip: true;
+    background: transparent;
+    for n[i] in [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]: Rectangle {
+        x: i * root.step;
+        y: (parent.height - root.tw) / 2;
+        width: i < root.shown ? root.tw : 0px;
+        height: root.tw;
+        border-radius: root.tw / 2;
+        clip: true;
+        opacity: i < root.shown ? 1.0 : 0.0;
+        background: root.accent.with-alpha(i == 0 ? 0.34 : 0.20);
+        if i == 0 && root.lead.width > 0: Image {
+            source: root.lead; image-fit: cover; width: 100%; height: 100%;
+        }
+    }
+}
+
+// ── Chip ────────────────────────────────────────────────────────────────────
+// The rows without artwork (Cloud, Tools, Transfer, Finances) put their facts
+// here. A hairline box, not a pill — this layout has no radius.
+export component EdChip inherits Rectangle {
+    in property <string> label;
+    in property <string> value;
+    in property <color> accent;
+    in property <bool> dot: false;
+    in property <bool> late: false;
+    height: 26px;
+    width: lab.preferred-width + val.preferred-width
+        + (root.dot ? 32px : 22px) + (root.value == "" ? 0px : 8px);
+    border-width: 1px;
+    border-color: root.late ? Theme.error.with-alpha(0.55) : Theme.outline-strong;
+    background: root.late ? Theme.error.with-alpha(0.10) : transparent;
+    HorizontalLayout {
+        padding-left: 10px; padding-right: 10px; spacing: 8px; alignment: start;
+        if root.dot: Rectangle {
+            width: 6px; height: 6px; border-radius: 3px; horizontal-stretch: 0;
+            y: (parent.height - self.height) / 2;
+            background: root.late ? Theme.error : root.accent;
+        }
+        lab := Text {
+            text: root.label; color: Theme.text; font-size: 11px;
+            vertical-alignment: center; horizontal-stretch: 0;
+        }
+        val := Text {
+            text: root.value; color: root.late ? Theme.error : Theme.text-dim;
+            font-size: 11px; font-weight: 600;
+            vertical-alignment: center; horizontal-stretch: 0;
+        }
+    }
+}
+
+// ── One row ─────────────────────────────────────────────────────────────────
+// Fixed column tracks so every row in the page aligns: number, name, strip,
+// value, arrow. The strip is the only flexible track — it takes what is left.
+component EdRow inherits Rectangle {
+    in property <string> num;
+    in property <string> name;
+    in property <string> hint;
+    in property <string> value;
+    in property <string> unit;
+    in property <image> icon;
+    in property <color> accent;
+    in property <bool> solo: false;      // the one-row-left treatment
+    in property <bool> alarm: false;     // value goes red (Finances, overdue)
+    callback clicked();
+    background: t.has-hover ? Theme.glass : transparent;
+    animate background { duration: 110ms; easing: ease-out; }
+    t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    // The accent tick lives in the page gutter, so the colours read as an index
+    // down the left edge of the page rather than as eight coloured buttons.
+    Rectangle {
+        x: -22px; width: 3px;
+        height: root.height - 16px; y: 8px;
+        background: t.has-hover ? root.accent : root.accent.with-alpha(0.55);
+        animate background { duration: 110ms; easing: ease-out; }
+    }
+    HorizontalLayout {
+        spacing: 22px; alignment: start;
+        // Index.
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0; width: root.solo ? 44px : 22px;
+            Text {
+                text: root.num; color: Theme.text-dim.with-alpha(0.55);
+                font-size: root.solo ? 22px : 11px; font-weight: 600;
+            }
+        }
+        // Name + hint.
+        VerticalLayout {
+            alignment: center; spacing: root.solo ? 8px : 3px;
+            horizontal-stretch: 0; width: root.solo ? 420px : 196px;
+            HorizontalLayout {
+                spacing: 10px; alignment: start;
+                AppIcon {
+                    source: root.icon; tint: root.accent;
+                    width: root.solo ? 30px : 15px; height: self.width;
+                    horizontal-stretch: 0;
+                    y: (parent.height - self.height) / 2;
+                }
+                Text {
+                    text: root.name; color: Theme.text;
+                    font-size: root.solo ? 56px : 20px;
+                    font-weight: 700;
+                    letter-spacing: root.solo ? -2px : -0.4px;
+                    vertical-alignment: center; overflow: elide;
+                }
+            }
+            Text {
+                text: root.hint; color: Theme.text-dim;
+                font-size: root.solo ? 15px : 11px; overflow: elide;
+            }
+        }
+        // Strip — whatever the caller puts here. One slot, used once.
+        Rectangle { horizontal-stretch: 1; min-width: 0; background: transparent; @children }
+        // Value + unit.
+        VerticalLayout {
+            alignment: center; spacing: 2px; horizontal-stretch: 0;
+            width: root.solo ? 260px : 172px;
+            Text {
+                text: root.value;
+                color: root.alarm ? Theme.error : Theme.text;
+                // Long money strings ("₹1,84,000") need the smaller step or they
+                // run out of the 172 px track.
+                font-size: root.solo ? 40px : (root.value.character-count > 8 ? 18px : 21px);
+                font-weight: 700; letter-spacing: -0.6px;
+                horizontal-alignment: right; overflow: elide;
+            }
+            Text {
+                text: root.unit; color: Theme.text-dim;
+                font-size: root.solo ? 12px : 10px; letter-spacing: 0.6px;
+                horizontal-alignment: right; overflow: elide;
+            }
+        }
+        // Arrow.
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0; width: 26px;
+            AppIcon {
+                source: Icons.arrow-right;
+                tint: t.has-hover ? root.accent : Theme.text-dim.with-alpha(0.5);
+                width: 16px; height: 16px;
+            }
+        }
+    }
+    // Hairline under every row. `Theme.outline` directly: under the Clay design
+    // language `MusicTheme.line` is transparent and the rules would vanish.
+    Rectangle {
+        y: parent.height - 1px; width: 100%; height: 1px;
+        background: Theme.outline;
+    }
+}
+
+// ── Transport button in the ticker ──────────────────────────────────────────
+component TickBtn inherits Rectangle {
+    in property <image> icon;
+    in property <bool> primary: false;
+    callback clicked();
+    width: root.primary ? 30px : 26px;
+    height: self.width;
+    border-radius: self.width / 2;
+    background: root.primary
+        ? (t.has-hover ? Theme.text : Theme.text.with-alpha(0.88))
+        : (t.has-hover ? Theme.glass-strong : transparent);
+    animate background { duration: 110ms; easing: ease-out; }
+    t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    AppIcon {
+        source: root.icon;
+        tint: root.primary ? Theme.text-inv : Theme.text-dim;
+        width: root.primary ? 14px : 13px; height: self.width;
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+    }
+}
+
+export component HomeEditorial inherits Rectangle {
+    // ── Header ──────────────────────────────────────────────────────────────
+    in property <string> greeting: "Welcome";
+    in property <string> date-line: "";
+    in property <string> library-line: "";       // "12,304 items · 41 GB"
+    // ── Row data ────────────────────────────────────────────────────────────
+    in property <HomeStats> stats;
+    in property <[image]> recent-photos: [];
+    in property <[image]> recent-videos: [];
+    in property <[image]> book-covers: [];
+    in property <[HomeRemote]> cloud-remotes: [];
+    in property <string> fin-spent: "";
+    in property <string> fin-month: "";
+    in property <string> fin-liquid: "";
+    in property <[float]> fin-months: [];        // 0‥1 per month, oldest first
+    in property <[HomeDue]> fin-dues: [];
+    in property <string> transfer-inbox: "";
+    // ── Ticker ──────────────────────────────────────────────────────────────
+    in property <string> np-title: "";
+    in property <string> np-sub: "";
+    in property <image> np-art;
+    in property <color> np-accent: Theme.sec-music;
+    in property <bool> playing: false;
+    in property <string> pos-label: "";
+    in property <string> dur-label: "";
+    in property <[float]> vis-bars: [];
+    // ── Card visibility (docs/home-layouts/03-editorial.md §Fluid rules) ────
+    in property <bool> hc-photos: true;
+    in property <bool> hc-videos: true;
+    in property <bool> hc-music: true;
+    in property <bool> hc-books: true;
+    in property <bool> hc-cloud: true;
+    in property <bool> hc-tools: true;
+    in property <bool> hc-transfer: true;
+    in property <bool> hc-finances: true;
+    in property <bool> hc-ticker: true;
+
+    callback open-section(string);
+    callback open-search();
+    callback open-tool(string);
+    callback open-remote(string);
+    callback start-sharing();
+    callback playpause();
+    callback next();
+    callback prev();
+
+    // ── Geometry (spec §Geometry) ───────────────────────────────────────────
+    property <length> pad: 40px;
+    property <int> rows: (root.hc-photos ? 1 : 0) + (root.hc-videos ? 1 : 0)
+        + (root.hc-music ? 1 : 0) + (root.hc-books ? 1 : 0)
+        + (root.hc-cloud ? 1 : 0) + (root.hc-tools ? 1 : 0)
+        + (root.hc-transfer ? 1 : 0) + (root.hc-finances ? 1 : 0);
+    property <length> head-h: 100px;
+    property <length> tick-h: root.hc-ticker ? 58px : 0px;
+    // Rows share what the header and the ticker leave. Fewer rows = taller rows,
+    // which is the whole point of this layout.
+    property <length> row-h: root.rows > 0
+        ? Math.max(56px, (root.height - 30px - root.head-h - root.tick-h) / root.rows)
+        : 0px;
+    property <bool> solo: root.rows == 1;
+    // Thumbnails scale with the row, not with the count.
+    property <length> land-w: root.solo ? 150px : root.row-h * 0.83;
+    property <length> land-h: root.land-w * 0.70;
+    property <length> post-w: root.solo ? 96px : root.row-h * 0.43;
+    property <length> post-h: root.post-w * 1.47;
+    property <length> sq-w: root.solo ? 120px : root.row-h * 0.58;
+    // Dues are pushed overdue-first, so the first one answers "is anything late".
+    property <bool> fin-late: root.fin-dues.length > 0 && root.fin-dues[0].late;
+
+    background: Theme.bg;
+    clip: true;
+
+    // ── Header ──────────────────────────────────────────────────────────────
+    Rectangle {
+        x: root.pad; y: 22px;
+        width: root.width - 2 * root.pad; height: root.head-h - 22px;
+        background: transparent;
+        HorizontalLayout {
+            alignment: start; spacing: 20px;
+            VerticalLayout {
+                alignment: center; spacing: 4px; horizontal-stretch: 1;
+                Text {
+                    text: root.greeting; color: Theme.text;
+                    font-size: 44px; font-weight: 700; letter-spacing: -1.8px;
+                    overflow: elide;
+                }
+                Text {
+                    text: root.date-line; color: Theme.text-dim;
+                    font-size: 12px; letter-spacing: 0.4px; overflow: elide;
+                }
+            }
+            VerticalLayout {
+                alignment: center; spacing: 6px; horizontal-stretch: 0;
+                Text {
+                    text: root.library-line == "" ? "—" : root.library-line;
+                    color: Theme.text-dim; font-size: 11px; font-weight: 600;
+                    letter-spacing: 1.2px; horizontal-alignment: right;
+                }
+                Rectangle {
+                    height: 28px; horizontal-stretch: 0;
+                    width: 92px; x: parent.width - self.width;
+                    border-width: 1px; border-color: Theme.outline-strong;
+                    background: st.has-hover ? Theme.glass : transparent;
+                    st := TouchArea { mouse-cursor: pointer; clicked => { root.open-search(); } }
+                    HorizontalLayout {
+                        spacing: 7px; alignment: center;
+                        AppIcon { source: Icons.search; tint: Theme.text-dim;
+                            width: 13px; height: 13px; y: (parent.height - self.height) / 2; }
+                        Text { text: "Search"; color: Theme.text-dim; font-size: 11px;
+                            vertical-alignment: center; }
+                    }
+                }
+            }
+        }
+    }
+    // The heavy rule under the header — one of the two 1 px rules that carry the
+    // page's structure.
+    Rectangle {
+        x: root.pad; y: root.head-h; width: root.width - 2 * root.pad; height: 1px;
+        background: Theme.outline-strong;
+    }
+
+    // ── Rows ────────────────────────────────────────────────────────────────
+    Rectangle {
+        x: root.pad; y: root.head-h + 1px;
+        width: root.width - 2 * root.pad;
+        height: root.height - root.head-h - 1px - root.tick-h;
+        background: transparent;
+        VerticalLayout {
+            alignment: start; spacing: 0;
+
+            if root.hc-photos: EdRow {
+                height: root.row-h;
+                num: "01"; name: "Photos"; icon: Icons.image; accent: Theme.sec-photos;
+                hint: root.stats.photos-albums + " albums";
+                value: root.stats.photos + ""; unit: "ITEMS";
+                solo: root.solo;
+                clicked => { root.open-section("photos"); }
+                ThumbStrip {
+                    shots: root.recent-photos; accent: Theme.sec-photos;
+                    tw: root.land-w; th: root.land-h;
+                    width: 100%; height: 100%;
+                }
+            }
+            if root.hc-videos: EdRow {
+                height: root.row-h;
+                num: "02"; name: "Videos"; icon: Icons.film; accent: Theme.sec-videos;
+                hint: root.stats.videos-shows + " shows";
+                value: root.stats.videos + ""; unit: "FILES";
+                solo: root.solo;
+                clicked => { root.open-section("videos"); }
+                ThumbStrip {
+                    shots: root.recent-videos; accent: Theme.sec-videos;
+                    tw: root.land-w; th: root.land-h;
+                    width: 100%; height: 100%;
+                }
+            }
+            if root.hc-music: EdRow {
+                height: root.row-h;
+                num: "03"; name: "Music"; icon: Icons.music; accent: Theme.sec-music;
+                hint: root.stats.podcasts + " podcasts · " + root.stats.radio + " stations";
+                value: root.stats.songs + ""; unit: "TRACKS";
+                solo: root.solo;
+                clicked => { root.open-section("music"); }
+                PlateStrip {
+                    lead: root.np-art; accent: Theme.sec-music; tw: root.sq-w;
+                    width: 100%; height: 100%;
+                }
+            }
+            if root.hc-books: EdRow {
+                height: root.row-h;
+                num: "04"; name: "Books"; icon: Icons.book-open; accent: Theme.sec-books;
+                hint: root.stats.books-reading + " in progress · "
+                    + root.stats.audiobooks + " audiobooks";
+                value: root.stats.books + ""; unit: "BOOKS";
+                solo: root.solo;
+                clicked => { root.open-section("books"); }
+                ThumbStrip {
+                    shots: root.book-covers; accent: Theme.sec-books;
+                    tw: root.post-w; th: root.post-h;
+                    width: 100%; height: 100%;
+                }
+            }
+            // Cloud, Tools and Transfer have no artwork; their strip slot carries
+            // chips of the facts instead.
+            if root.hc-cloud: EdRow {
+                height: root.row-h;
+                num: "05"; name: "Cloud"; icon: Icons.cloud; accent: Theme.sec-cloud;
+                hint: root.cloud-remotes.length == 0 ? "No remotes configured" : "rclone";
+                value: root.stats.cloud-remotes + ""; unit: "REMOTES";
+                solo: root.solo;
+                clicked => { root.open-section("cloud"); }
+                Rectangle {
+                    width: 100%; height: 100%; clip: true; background: transparent;
+                    HorizontalLayout {
+                        spacing: 8px; alignment: start;
+                        for r in root.cloud-remotes: EdChip {
+                            label: r.name; value: r.usage; accent: Theme.sec-cloud; dot: true;
+                            y: (parent.height - self.height) / 2;
+                            horizontal-stretch: 0;
+                        }
+                    }
+                }
+            }
+            if root.hc-tools: EdRow {
+                height: root.row-h;
+                num: "06"; name: "Tools"; icon: Icons.wrench; accent: Theme.sec-tools;
+                hint: root.stats.tools-note == "" ? "Nothing queued" : root.stats.tools-note;
+                value: root.stats.tools-jobs + ""; unit: "JOBS RUN";
+                solo: root.solo;
+                clicked => { root.open-section("tools"); }
+                Rectangle {
+                    width: 100%; height: 100%; clip: true; background: transparent;
+                    HorizontalLayout {
+                        spacing: 8px; alignment: start;
+                        for c in [
+                            { id: "convert", label: "Convert" },
+                            { id: "compress", label: "Compress" },
+                            { id: "subtitles", label: "Subtitles" },
+                            { id: "metadata", label: "Metadata" },
+                        ]: EdChip {
+                            label: c.label; accent: Theme.sec-tools;
+                            y: (parent.height - self.height) / 2;
+                            horizontal-stretch: 0;
+                            TouchArea { mouse-cursor: pointer; clicked => { root.open-tool(c.id); } }
+                        }
+                    }
+                }
+            }
+            // Transfer is a door: the server only binds while its section is
+            // open, so the row offers the action and says where files land.
+            if root.hc-transfer: EdRow {
+                height: root.row-h;
+                num: "07"; name: "Transfer"; icon: Icons.share; accent: Theme.sec-transfer;
+                hint: root.transfer-inbox == "" ? "Files land in your inbox folder"
+                    : "Inbox " + root.transfer-inbox;
+                value: "—"; unit: "OPEN TO PAIR";
+                solo: root.solo;
+                clicked => { root.open-section("transfer"); }
+                Rectangle {
+                    width: 100%; height: 100%; clip: true; background: transparent;
+                    Rectangle {
+                        width: 128px; height: 30px; x: 0;
+                        y: (parent.height - self.height) / 2;
+                        background: @linear-gradient(140deg, Theme.transfer-accent,
+                            Theme.transfer-accent-2);
+                        sh := TouchArea { mouse-cursor: pointer; clicked => { root.start-sharing(); } }
+                        HorizontalLayout {
+                            spacing: 6px; alignment: center;
+                            AppIcon { source: Icons.zap; tint: #231000; width: 13px; height: 13px;
+                                y: (parent.height - self.height) / 2; }
+                            Text { text: "Start sharing"; color: #231000; font-size: 11px;
+                                font-weight: 700; vertical-alignment: center; }
+                        }
+                    }
+                }
+            }
+            // Finances is the row that is only numbers: obligation chips and the
+            // year in bars, and the value turns red when anything is overdue.
+            if root.hc-finances: EdRow {
+                height: root.row-h;
+                num: "08"; name: "Finances"; icon: Icons.wallet; accent: Theme.sec-finances;
+                hint: root.fin-liquid == "" ? root.fin-month
+                    : root.fin-month + " · " + root.fin-liquid + " liquid";
+                value: root.fin-spent == "" ? "—" : root.fin-spent;
+                unit: "SPENT THIS MONTH";
+                alarm: root.fin-late;
+                solo: root.solo;
+                clicked => { root.open-section("finances"); }
+                Rectangle {
+                    width: 100%; height: 100%; clip: true; background: transparent;
+                    HorizontalLayout {
+                        spacing: 12px; alignment: start;
+                        for d in root.fin-dues: EdChip {
+                            label: d.name; value: d.amount; accent: Theme.sec-finances;
+                            dot: true; late: d.late;
+                            y: (parent.height - self.height) / 2;
+                            horizontal-stretch: 0;
+                        }
+                        // Twelve months, newest last — the shape of a year inline.
+                        Rectangle {
+                            width: 12 * 7px; horizontal-stretch: 0;
+                            height: Math.min(34px, parent.height - 16px);
+                            y: (parent.height - self.height) / 2;
+                            background: transparent;
+                            for m[i] in root.fin-months: Rectangle {
+                                x: i * 7px; width: 4px;
+                                height: Math.max(2px, parent.height * Math.max(0.04, m));
+                                y: parent.height - self.height;
+                                background: i == root.fin-months.length - 1
+                                    ? Theme.sec-finances
+                                    : Theme.sec-finances.with-alpha(0.32);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Ticker ──────────────────────────────────────────────────────────────
+    if root.hc-ticker: Rectangle {
+        y: root.height - root.tick-h; width: root.width; height: root.tick-h;
+        background: Theme.bg;
+        Rectangle { width: 100%; height: 1px; background: Theme.outline-strong; }
+        HorizontalLayout {
+            padding-left: root.pad; padding-right: root.pad;
+            spacing: 14px; alignment: start;
+            // Art.
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                Rectangle {
+                    width: 34px; height: 34px; clip: true;
+                    background: root.np-accent.with-alpha(0.22);
+                    if root.np-art.width > 0: Image {
+                        source: root.np-art; image-fit: cover; width: 100%; height: 100%;
+                    }
+                    if root.np-art.width == 0: AppIcon {
+                        source: Icons.music; tint: root.np-accent; width: 15px; height: 15px;
+                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                    }
+                }
+            }
+            // Title line. Empty player says so rather than showing a blank strip.
+            VerticalLayout {
+                alignment: center; spacing: 2px; horizontal-stretch: 1; min-width: 0;
+                Text {
+                    text: root.np-title == "" ? "Nothing playing" : root.np-title;
+                    color: Theme.text; font-size: 12.5px; font-weight: 600; overflow: elide;
+                }
+                Text {
+                    text: root.np-title == "" ? "Pick something in Music"
+                        : (root.np-sub == "" ? "" : root.np-sub);
+                    color: Theme.text-dim; font-size: 10.5px; overflow: elide;
+                }
+            }
+            // Transport.
+            HorizontalLayout {
+                spacing: 6px; alignment: center; horizontal-stretch: 0;
+                TickBtn { icon: Icons.skip-back; clicked => { root.prev(); }
+                    y: (parent.height - self.height) / 2; }
+                TickBtn { icon: root.playing ? Icons.pause : Icons.play; primary: true;
+                    clicked => { root.playpause(); }
+                    y: (parent.height - self.height) / 2; }
+                TickBtn { icon: Icons.skip-forward; clicked => { root.next(); }
+                    y: (parent.height - self.height) / 2; }
+            }
+            // Clock.
+            VerticalLayout {
+                alignment: center; horizontal-stretch: 0; width: 92px;
+                Text {
+                    text: root.pos-label + (root.dur-label == "" ? "" : " / " + root.dur-label);
+                    color: Theme.text-dim; font-size: 10.5px; horizontal-alignment: right;
+                }
+            }
+            // Spectrum — the one moving thing on the page, and only while playing.
+            Rectangle {
+                width: 118px; height: 22px; horizontal-stretch: 0; clip: true;
+                y: (parent.height - self.height) / 2;
+                background: transparent;
+                for b[i] in root.vis-bars: Rectangle {
+                    x: i * 5px; width: 3px;
+                    height: Math.max(2px, parent.height * Math.max(0.05, b));
+                    y: parent.height - self.height;
+                    opacity: i * 5px < parent.width ? 1.0 : 0.0;
+                    background: root.np-accent.with-alpha(0.75);
+                }
+            }
+        }
+    }
+}

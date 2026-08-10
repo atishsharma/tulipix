@@ -1308,6 +1308,19 @@ fn main() -> Result<()> {
         #[cfg(feature = "finances")]
         tulipix_sec_finances::section_changed(&w0, s.as_str());
         if s.as_str() == "home" {
+            // Every layout but Classic shows the money somewhere, and all of it
+            // comes from what the Finances section loads. One pass on entry.
+            #[cfg(feature = "finances")]
+            {
+                if home_layout_wants_money(w0.get_home_layout().as_str()) {
+                    tulipix_sec_finances::refresh(&w0);
+                }
+            }
+            push_home_cinema_extras(&w0);
+            push_home_next(&w0);
+            // Stream's feed is eight queries, so it only runs for the layout that
+            // draws it.
+            if w0.get_home_layout().as_str() == "stream" { kick_home_events(&w0); }
             // Fresh greeting (time of day) + counts on every Home landing.
             set_home_greeting_now(&w0);
             kick_home_stats(&w0);
@@ -1325,13 +1338,6 @@ fn main() -> Result<()> {
             if music_warm_once("podcast_trends") { populate_podcast_trends(&w0); }
             // Warm YouTube in the background too, so its first open is instant.
             warm_youtube(&w0);
-        }
-        if s.as_str() == "status" {
-            // The refresh tick runs every thirty seconds while nothing is
-            // watching, so landing here would otherwise show an empty dashboard
-            // for up to half a minute. One pass now; the tick has already
-            // switched to its two-second period by the next one.
-            kick_status_snapshot(&w0);
         }
     });
     let w = window.as_weak();
@@ -1972,6 +1978,8 @@ fn main() -> Result<()> {
 
     // ── Status: sidebar lamp + the browser dashboard ──────── — see wire_status()
     wire_status(&window);
+    wire_home_layout(&window);
+    wire_home_stream(&window);
 
     // ── Settings panels: load persisted settings, seed the UI models ───────
     {
@@ -1995,6 +2003,10 @@ fn main() -> Result<()> {
         }
         // Home command center (np.p6.home): greeting + date line + live stats.
         window.set_home_music_left(s.flag("home.music-left", false));
+        // Which of the five Home compositions is in use, and which of its cards
+        // are switched off (docs/home-layouts/README.md §3).
+        window.set_home_layout(home_layout_valid(&s.text("home.layout")).into());
+        apply_home_cards(&window);
         window.set_design_lang(design_lang_index(&s.text("ui.design-language")));
         set_home_greeting_now(&window);
         kick_home_stats(&window);
@@ -2003,6 +2015,9 @@ fn main() -> Result<()> {
         kick_home_books(&window);
         kick_home_cloud(&window);
         kick_home_continue(&window);
+        // Home is the section the app opens on, so Stream needs its feed at boot
+        // too — `on_section_changed` never fires for the section already showing.
+        if window.get_home_layout().as_str() == "stream" { kick_home_events(&window); }
         // Restore the last-used app theme and keep it until the user changes it.
         let choice = match s.theme.as_str() {
             "extra-dark" => ThemeChoice::ExtraDark,
@@ -4228,6 +4243,16 @@ fn wire_status(window: &MainWindow) {
     // how long the app has been up and not how long the page has been open.
     tulipix_status::uptime_secs();
 
+    // Opening Settings › System › Status. The tick below only fills the page
+    // while it is on screen, so without this the tab would sit empty for up to
+    // the slow period after being opened.
+    let weak = window.as_weak();
+    window.on_status_refresh(move || {
+        if let Some(w) = weak.upgrade() {
+            kick_status_snapshot(&w);
+        }
+    });
+
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<tulipix_status::Action>();
 
     // Actions arriving from the page. Every one of them ends in a Slint call,
@@ -4280,11 +4305,12 @@ fn wire_status(window: &MainWindow) {
                     w.set_status_level(level.into());
                     w.set_status_note(note.into());
                     // The native Status page draws the same snapshot. Filled
-                    // only while it is the section on screen: building ten
+                    // only while its Settings tab is on screen: building ten
                     // nested models for a page nobody is looking at is the work
                     // the slow tick below exists to avoid, and this is the one
                     // place that can tell whether anyone is looking.
-                    let on = w.get_active_section().as_str() == "status";
+                    let on = w.get_active_section().as_str() == "settings"
+                        && w.get_active_settings_tab().as_str() == "status";
                     if on {
                         tulipix_sec_status::apply(&w, &json);
                     }
@@ -4658,6 +4684,780 @@ fn save_home_cont_dismissed() {
     }
 }
 
+// ── Home layout (Settings › PERSONAL › Home Layout) ─────────────────────────
+// Seven compositions over one data set. Spec: docs/home-layouts/README.md.
+// Stored in Settings.advanced, so there is no schema change: `home.layout` holds
+// the choice and `home.hidden.<layout>` a comma-separated list of switched-off
+// card ids, per layout, so switching away and back restores what you had.
+
+/// Every card id any layout can own, in one place. `apply_home_cards` walks this
+/// to set the window booleans, so adding a card is one line here plus one there.
+const HOME_CARD_IDS: [&str; 15] = [
+    "hero", "continue", "player", "quick", "photos", "videos", "music", "books",
+    "cloud", "tools", "transfer", "finances", "library", "next", "ticker",
+];
+
+fn home_layout_valid(v: &str) -> &'static str {
+    match v {
+        "cinema" => "cinema",
+        "columns" => "columns",
+        "editorial" => "editorial",
+        "stream" => "stream",
+        "deck" => "deck",
+        "welcome" => "welcome",
+        // Unknown or unset falls back to today's Home rather than a blank page.
+        _ => "classic",
+    }
+}
+
+/// The cards a layout offers, in popup order. A layout never lists a card it has
+/// no place for, and never lists one whose switch would not do anything yet —
+/// Classic's rail cards (player, quick) still owe their geometry work, so they
+/// are absent until `docs/home-layouts/05-classic.md` is done.
+fn home_layout_cards(layout: &str) -> &'static [(&'static str, &'static str, &'static str)] {
+    match layout {
+        "cinema" => &[
+            ("hero", "Hero", "The full-bleed backdrop and Resume for what you were watching"),
+            ("continue", "Continue rail", "In-progress films, books and episodes along the shelf"),
+            ("photos", "Photos key", "Section key in the shelf strip"),
+            ("videos", "Videos key", "Section key in the shelf strip"),
+            ("music", "Music key", "Section key in the shelf strip"),
+            ("books", "Books key", "Section key in the shelf strip"),
+            ("cloud", "Cloud key", "Section key in the shelf strip"),
+            ("tools", "Tools key", "Section key in the shelf strip"),
+            ("finances", "Finances panel", "Month spend, the year in bars, what needs paying"),
+            ("transfer", "Transfer panel", "Start sharing, and where received files land"),
+        ],
+        "columns" => &[
+            ("photos", "Photos pane", "One full-height pane"),
+            ("videos", "Videos pane", "One full-height pane"),
+            ("music", "Music pane", "One full-height pane"),
+            ("books", "Books pane", "One full-height pane"),
+            ("cloud", "Cloud pane", "One full-height pane"),
+            ("tools", "Tools pane", "One full-height pane"),
+            ("transfer", "Transfer pane", "One full-height pane"),
+            ("finances", "Finances pane", "One full-height pane"),
+        ],
+        "editorial" => &[
+            ("photos", "Photos row", "Name, thumbnail strip, item count"),
+            ("videos", "Videos row", "Name, poster strip, item count"),
+            ("music", "Music row", "Name, cover strip, track count"),
+            ("books", "Books row", "Name, spine strip, book count"),
+            ("cloud", "Cloud row", "Remote chips and total size"),
+            ("tools", "Tools row", "Tool chips and queue state"),
+            ("transfer", "Transfer row", "Device chips and today's bytes"),
+            ("finances", "Finances row", "Obligation chips and the year in bars"),
+            ("ticker", "Now-playing ticker", "The strip pinned along the bottom"),
+        ],
+        "stream" => &[
+            ("photos", "Photo events", "Imports and album changes in the feed"),
+            ("videos", "Video events", "Additions and what you left half-watched"),
+            ("music", "Music events", "What played, and what finished"),
+            ("books", "Book events", "Reading and listening progress"),
+            ("cloud", "Cloud events", "Sync runs and their results"),
+            ("tools", "Tool events", "Finished and failed jobs"),
+            ("transfer", "Transfer events", "Files sent and received, plus the DEVICES block"),
+            ("finances", "Money events", "Dues and payments, plus the STANDING block"),
+            ("player", "Player block", "Now playing at the top of the rail"),
+            ("library", "Library block", "The counter table in the rail"),
+            ("next", "What's next", "Tomorrow's dues, scheduled rescans, nearly-finished books"),
+        ],
+        "deck" => &[
+            ("continue", "Continue strip", "The four things you were part-way through"),
+            ("library", "Recently Added", "The newest photos, videos and covers, with a filter"),
+            ("photos", "Photos key", "Section key in the top strip"),
+            ("videos", "Videos key", "Section key in the top strip"),
+            ("music", "Music key", "Section key in the top strip"),
+            ("books", "Books key", "Section key in the top strip"),
+            ("cloud", "Cloud", "Section key, plus the remotes panel in Your Hub"),
+            ("tools", "Tools", "Section key, plus the utilities panel in Your Hub"),
+            ("transfer", "Transfer", "Section key, plus Start sharing in Your Hub"),
+            ("finances", "Finances", "Section key, the money panel, and At a Glance in the rail"),
+            ("player", "Now Playing", "The full player at the top of the rail"),
+            ("quick", "Quick Access", "Stream, Live TV, the downloader and random radio"),
+        ],
+        "welcome" => &[
+            ("hero", "Hero greeting", "The big hello and the collage from your own library"),
+            ("quick", "Launch bar", "Stream, Random Radio, Music D/L, Genesis, Live TV, Tools"),
+            ("continue", "Continue card", "Three in-progress rows with their progress bars"),
+            ("library", "Recently Added", "The six newest thumbnails"),
+            ("photos", "Photos tile", "One tile in My Hub"),
+            ("videos", "Videos tile", "One tile in My Hub"),
+            ("music", "Music tile", "One tile in My Hub"),
+            ("books", "Books tile", "One tile in My Hub"),
+            ("cloud", "Clouds tile", "One tile in My Hub"),
+            ("tools", "Tools tile", "One tile in My Hub"),
+            ("transfer", "Transfer tile", "One tile in My Hub"),
+            ("finances", "Finances tile", "One tile in My Hub"),
+            ("player", "Player bar", "The transport pinned along the bottom of the page"),
+        ],
+        // classic
+        _ => &[
+            ("photos", "Photos", "Slideshow tile, top row"),
+            ("videos", "Videos", "Slideshow tile, top row"),
+            ("books", "Books", "Cover spines and the book you are reading"),
+            ("cloud", "Cloud", "Your remotes and their sizes"),
+            ("tools", "Tools", "The tools you reach for most"),
+            ("continue", "Continue", "The four-slot resume strip"),
+        ],
+    }
+}
+
+/// Columns' panes, left to right. The order is the layout's reading order, and
+/// it is also the order "open" hands over in when a pane's card is switched off.
+const HOME_PANE_IDS: [&str; 8] = [
+    "photos", "videos", "music", "books", "cloud", "tools", "transfer", "finances",
+];
+
+/// The pane Columns should open: the wanted one if it is still visible, otherwise
+/// the next visible pane to its right, wrapping (spec §Fluid rules).
+fn home_pane_resolve(hidden: &std::collections::HashSet<String>, want: &str) -> &'static str {
+    if let Some(id) = HOME_PANE_IDS.iter().find(|p| **p == want) {
+        if !hidden.contains(*id) { return id; }
+    }
+    let start = HOME_PANE_IDS.iter().position(|p| *p == want).map_or(0, |i| i + 1);
+    for k in 0..HOME_PANE_IDS.len() {
+        let id = HOME_PANE_IDS[(start + k) % HOME_PANE_IDS.len()];
+        if !hidden.contains(id) { return id; }
+    }
+    // Every pane hidden cannot happen — the last card standing is locked — but a
+    // name is still needed, and the first pane is the honest default.
+    "photos"
+}
+
+/// Layouts that put the Finances numbers on Home, and therefore need one
+/// Finances pass when Home opens — the section itself may never have run.
+fn home_layout_wants_money(layout: &str) -> bool {
+    // Every new layout puts the money somewhere: a glass panel, a row, a pane, a
+    // rail block, a hub panel, a tile subtitle. Only Classic leaves it to the section.
+    matches!(layout, "cinema" | "editorial" | "columns" | "stream" | "deck" | "welcome")
+}
+
+fn home_hidden_key(layout: &str) -> String { format!("home.hidden.{layout}") }
+
+/// Card ids switched off in this layout. Unknown ids are ignored on read, so a
+/// card renamed later cannot poison the file.
+fn home_hidden(layout: &str) -> std::collections::HashSet<String> {
+    let s = tulipix_core::settings::Settings::load().unwrap_or_default();
+    s.text(&home_hidden_key(layout))
+        .split(',')
+        .map(|p| p.trim())
+        .filter(|p| HOME_CARD_IDS.contains(p))
+        .map(|p| p.to_string())
+        .collect()
+}
+
+fn home_hidden_save(layout: &str, hidden: &std::collections::HashSet<String>) {
+    let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
+    let key = home_hidden_key(layout);
+    if hidden.is_empty() {
+        s.advanced.remove(&key);
+    } else {
+        // Written in HOME_CARD_IDS order so the file is stable across writes.
+        let csv = HOME_CARD_IDS.iter().filter(|id| hidden.contains(**id))
+            .copied().collect::<Vec<_>>().join(",");
+        s.advanced.insert(key, csv);
+    }
+    if let Err(e) = s.save() { tracing::warn!(error = %e, "save home cards"); }
+}
+
+/// Push the active layout's card state into the window: the fifteen booleans the
+/// layouts read, and the row model the customize popup lists.
+fn apply_home_cards(w: &MainWindow) {
+    let layout = w.get_home_layout().to_string();
+    let hidden = home_hidden(&layout);
+    let on = |id: &str| !hidden.contains(id);
+    w.set_hc_hero(on("hero"));
+    w.set_hc_continue(on("continue"));
+    w.set_hc_player(on("player"));
+    w.set_hc_quick(on("quick"));
+    w.set_hc_photos(on("photos"));
+    w.set_hc_videos(on("videos"));
+    w.set_hc_music(on("music"));
+    w.set_hc_books(on("books"));
+    w.set_hc_cloud(on("cloud"));
+    w.set_hc_tools(on("tools"));
+    w.set_hc_transfer(on("transfer"));
+    w.set_hc_finances(on("finances"));
+    w.set_hc_library(on("library"));
+    w.set_hc_next(on("next"));
+    w.set_hc_ticker(on("ticker"));
+
+    // Columns' open pane is part of the card state: switching its card off has to
+    // hand "open" to a pane that is still there.
+    let want = {
+        let s = tulipix_core::settings::Settings::load().unwrap_or_default();
+        let stored = s.text("home.columns.open");
+        if stored.is_empty() { w.get_home_open_pane().to_string() } else { stored }
+    };
+    w.set_home_open_pane(home_pane_resolve(&hidden, &want).into());
+
+    let cards = home_layout_cards(&layout);
+    let live = cards.iter().filter(|(id, _, _)| on(*id)).count();
+    let rows: Vec<HomeCardRow> = cards.iter().map(|(id, label, hint)| HomeCardRow {
+        id: (*id).into(),
+        label: (*label).into(),
+        hint: (*hint).into(),
+        on: on(*id),
+        // The last card standing cannot be switched off: Home would be blank.
+        locked: on(id) && live <= 1,
+        })
+        .collect();
+    w.set_home_cards(slint::ModelRc::new(slint::VecModel::from(rows)));
+
+    // Stream's section cards filter the feed, so the rows it already gathered
+    // have to be re-pushed against the new card state. Cheap: no queries, just
+    // the cached rows through the filter again.
+    push_home_events(&w.as_weak());
+}
+
+fn wire_home_layout(window: &MainWindow) {
+    let w = window.as_weak();
+    window.on_use_home_layout(move |l| {
+        let Some(w) = w.upgrade() else { return; };
+        let layout = home_layout_valid(l.as_str());
+        let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
+        s.advanced.insert("home.layout".into(), layout.to_string());
+        if let Err(e) = s.save() { tracing::warn!(error = %e, "save home layout"); }
+        w.set_home_layout(layout.into());
+        apply_home_cards(&w);
+        // The money panel (Cinema), row (Editorial), pane (Columns) and rail block
+        // (Stream) all read the Finances props, which only the section fills. Ask
+        // for one pass now so choosing a layout is not followed by em dashes.
+        #[cfg(feature = "finances")]
+        {
+            if home_layout_wants_money(layout) { tulipix_sec_finances::refresh(&w); }
+        }
+        push_home_cinema_extras(&w);
+        push_home_next(&w);
+        // Stream's feed costs eight queries, so it is gathered when the layout
+        // that shows it is chosen rather than on every Home landing.
+        if layout == "stream" { kick_home_events(&w); }
+        tracing::info!(%layout, "home layout chosen");
+    });
+
+    let w = window.as_weak();
+    window.on_home_card_set(move |card, on| {
+        let Some(w) = w.upgrade() else { return; };
+        let card = card.to_string();
+        if !HOME_CARD_IDS.contains(&card.as_str()) { return; }
+        let layout = w.get_home_layout().to_string();
+        let mut hidden = home_hidden(&layout);
+        if on {
+            hidden.remove(&card);
+        } else {
+            // Enforced here as well as in the popup: a layout with nothing left
+            // is a blank Home, and the UI is not the only caller.
+            let cards = home_layout_cards(&layout);
+            let live = cards.iter().filter(|(id, _, _)| !hidden.contains(*id)).count();
+            if live <= 1 { return; }
+            hidden.insert(card);
+        }
+        home_hidden_save(&layout, &hidden);
+        apply_home_cards(&w);
+    });
+
+    // Columns: clicking a spine opens it, and the choice survives a restart.
+    let w = window.as_weak();
+    window.on_home_pane_open(move |pane| {
+        let Some(w) = w.upgrade() else { return; };
+        let hidden = home_hidden("columns");
+        let pane = home_pane_resolve(&hidden, pane.as_str());
+        let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
+        s.advanced.insert("home.columns.open".into(), pane.to_string());
+        if let Err(e) = s.save() { tracing::warn!(error = %e, "save home pane"); }
+        w.set_home_open_pane(pane.into());
+    });
+
+    let w = window.as_weak();
+    window.on_home_cards_reset(move || {
+        let Some(w) = w.upgrade() else { return; };
+        let layout = w.get_home_layout().to_string();
+        home_hidden_save(&layout, &std::collections::HashSet::new());
+        apply_home_cards(&w);
+    });
+
+    // Cinema's hero buttons. Resume routes by kind through the same handlers the
+    // Continue strip uses, so there is one resume path per medium, not two.
+    let w = window.as_weak();
+    window.on_home_hero_resume(move || {
+        let Some(w) = w.upgrade() else { return; };
+        let kind = w.get_home_hero_kind().to_string();
+        let id = w.get_home_hero_id();
+        let path = w.get_home_hero_path().to_string();
+        match kind.as_str() {
+            "video" => w.invoke_home_continue_video(id, path.into()),
+            "podcast" => w.invoke_music_podcast_play(id),
+            "book" => w.invoke_books_open_details(id),
+            _ => {
+                w.set_music_view("audiobooks".into());
+                w.set_active_section("music".into());
+                w.invoke_section_changed("music".into());
+            }
+        }
+    });
+    let w = window.as_weak();
+    window.on_home_hero_details(move || {
+        let Some(w) = w.upgrade() else { return; };
+        // "Details" means the section that owns the item, with it selected.
+        let kind = w.get_home_hero_kind().to_string();
+        let id = w.get_home_hero_id();
+        if kind == "book" {
+            w.invoke_books_open_details(id);
+            return;
+        }
+        let section = if kind == "video" { "videos" } else { "music" };
+        w.set_active_section(section.into());
+        w.invoke_section_changed(section.into());
+    });
+}
+
+/// The money and transfer facts Home shows — Cinema's two glass panels and
+/// Editorial's two rows — shaped for Home so neither page has to import
+/// `page_finances.slint`. Reads what the Finances section has already loaded;
+/// empty until it has run once.
+fn push_home_cinema_extras(w: &MainWindow) {
+    // Twelve months as 0‥1 heights, oldest first — the bar row wants a ratio,
+    // and the section already computed the percentage.
+    let months: Vec<f32> = w.get_fin_months().iter()
+        .map(|m| (m.expense_pct as f32 / 100.0).clamp(0.0, 1.0))
+        .collect();
+    w.set_home_fin_months(slint::ModelRc::new(slint::VecModel::from(months)));
+
+    // Up to three obligations, overdue first — the panel is 274 px wide and a
+    // fourth row would push the shelf.
+    let mut dues: Vec<HomeDue> = w.get_fin_needs_you().iter()
+        .map(|o| HomeDue {
+            name: o.name.clone(),
+            amount: if o.actual.is_empty() { o.estimate.clone() } else { o.actual.clone() },
+            when: o.due.clone(),
+            late: o.status.as_str() == "overdue",
+        })
+        .collect();
+    dues.sort_by_key(|d| !d.late);
+    dues.truncate(3);
+    w.set_home_fin_dues(slint::ModelRc::new(slint::VecModel::from(dues)));
+
+    // Transfer stays a door: the server binds only while that section is open,
+    // so Home can honestly show where files land and nothing more. The path comes
+    // from the prop `tulipix_sec_transfer::wire` already resolved at boot — the
+    // raw setting is empty until someone picks a folder, the resolved one is not.
+    w.set_home_transfer_inbox(w.get_transfer_inbox());
+    w.set_home_transfer_note("".into());
+}
+
+// ── Stream layout: the activity feed ────────────────────────────────────────
+// Spec: docs/home-layouts/04-stream.md §Data. There is no events table in
+// tulipix, and this does not add one: eight small `ORDER BY … LIMIT` queries plus
+// the app's activity log, merged and sorted in Rust when Home opens. Correct by
+// construction — it reads the same rows the sections read — and there are no new
+// write paths to keep honest.
+
+/// One merged activity event, before it becomes a `HomeEvent` for the page.
+#[derive(Clone)]
+struct HomeEvRow {
+    at: i64,
+    section: &'static str,
+    kind: &'static str,
+    title: String,
+    sub: String,
+    /// Pill label. Only set where there is a concrete thing to resume — the row
+    /// itself already opens the section, and two controls doing one job is noise.
+    action: &'static str,
+    alarm: bool,
+    id: i64,
+    path: String,
+}
+
+/// How many events the feed keeps after the merge.
+const HOME_EVENTS_MAX: usize = 40;
+/// Same section + same kind inside this window collapses into one row, so a big
+/// import cannot flood the feed with four hundred "added" lines.
+const HOME_EVENT_WINDOW: i64 = 15 * 60;
+
+fn home_ev_cache() -> &'static std::sync::Mutex<Vec<HomeEvRow>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<Vec<HomeEvRow>>> = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(Vec::new()))
+}
+
+fn file_name_of(path: &str) -> String {
+    std::path::Path::new(path).file_name()
+        .map(|f| f.to_string_lossy().into_owned())
+        .unwrap_or_else(|| path.to_string())
+}
+
+/// Newly scanned files in a section that keeps the common `items` table.
+///
+/// The title is written as `"one|many"`: `collapse_events` picks the half it
+/// needs once it knows how many rows folded together, so neither the query nor
+/// the page has to guess the plural.
+async fn ev_items(section: &'static str, one: &'static str, many: &'static str) -> Vec<HomeEvRow> {
+    let Ok(pool) = pool_for(section).await else { return Vec::new(); };
+    sqlx::query_as::<_, (String, i64)>(
+        "SELECT abs_path, added FROM items WHERE missing_since IS NULL \
+         ORDER BY added DESC LIMIT 30")
+        .fetch_all(&pool).await.unwrap_or_default()
+        .into_iter()
+        .map(|(path, at)| HomeEvRow {
+            at, section, kind: "added",
+            title: format!("{one}|{many}"),
+            sub: file_name_of(&path),
+            action: "", alarm: false, id: -1, path,
+        })
+        .collect()
+}
+
+/// Books: what was added, and what you were reading. Progress is the one resume
+/// source with a timestamp of its own, which is why videos only report additions.
+async fn ev_books() -> Vec<HomeEvRow> {
+    let Ok(pool) = pool_for("books").await else { return Vec::new(); };
+    let mut out: Vec<HomeEvRow> = sqlx::query_as::<_, (String, String, i64)>(
+        "SELECT title, author, added_at FROM books WHERE missing = 0 \
+         ORDER BY added_at DESC LIMIT 12")
+        .fetch_all(&pool).await.unwrap_or_default()
+        .into_iter()
+        .map(|(title, author, at)| HomeEvRow {
+            at, section: "books", kind: "added",
+            title: "Book added|books added".into(),
+            sub: if author.is_empty() { title } else { format!("{title} · {author}") },
+            action: "", alarm: false, id: -1, path: String::new(),
+        })
+        .collect();
+    out.extend(
+        sqlx::query_as::<_, (i64, String, f64, i64)>(
+            "SELECT b.id, b.title, p.percent, p.updated_at \
+             FROM progress p JOIN books b ON b.id = p.book_id \
+             WHERE b.finished = 0 AND b.missing = 0 ORDER BY p.updated_at DESC LIMIT 8")
+            .fetch_all(&pool).await.unwrap_or_default()
+            .into_iter()
+            .map(|(id, title, pct, at)| HomeEvRow {
+                at, section: "books", kind: "resumed",
+                title: format!("Reading {title}"),
+                sub: format!("{}% through", (pct.clamp(0.0, 100.0)).round() as i64),
+                action: "Resume", alarm: false, id, path: String::new(),
+            }));
+    out
+}
+
+/// What played. `play_history` is written by the player itself, so this is the
+/// one source that needs no interpretation.
+async fn ev_music() -> Vec<HomeEvRow> {
+    let Ok(pool) = pool_for("music").await else { return Vec::new(); };
+    sqlx::query_as::<_, (Option<String>, String, i64)>(
+        "SELECT tm.title, i.abs_path, h.played_at FROM play_history h \
+         JOIN items i ON i.id = h.item_id \
+         LEFT JOIN track_meta tm ON tm.item_id = h.item_id \
+         ORDER BY h.played_at DESC LIMIT 30")
+        .fetch_all(&pool).await.unwrap_or_default()
+        .into_iter()
+        .map(|(title, path, at)| HomeEvRow {
+            at, section: "music", kind: "played",
+            title: "Track played|tracks played".into(),
+            sub: title.filter(|t| !t.is_empty()).unwrap_or_else(|| file_name_of(&path)),
+            action: "", alarm: false, id: -1, path: String::new(),
+        })
+        .collect()
+}
+
+/// Podcast episodes that arrived. Episodes have a `published` date but no local
+/// timestamp, so this reports the feed's clock, which is the honest one.
+async fn ev_podcasts() -> Vec<HomeEvRow> {
+    let Ok(pool) = pool_for("podcasts").await else { return Vec::new(); };
+    sqlx::query_as::<_, (i64, Option<String>, String, Option<i64>)>(
+        "SELECT e.id, e.title, p.title, e.published FROM podcast_episodes e \
+         JOIN podcasts p ON p.id = e.podcast_id \
+         WHERE e.published IS NOT NULL ORDER BY e.published DESC LIMIT 8")
+        .fetch_all(&pool).await.unwrap_or_default()
+        .into_iter()
+        .filter_map(|(id, ep, show, published)| {
+            let at = published?;
+            Some(HomeEvRow {
+                at, section: "music", kind: "episode",
+                title: format!("New episode — {}", ep.unwrap_or_else(|| show.clone())),
+                sub: show, action: "Play", alarm: false, id, path: String::new(),
+            })
+        })
+        .collect()
+}
+
+/// Finished and failed Tools jobs, from the executor's own table.
+async fn ev_tools() -> Vec<HomeEvRow> {
+    let Ok(pool) = pool_for("tools").await else { return Vec::new(); };
+    sqlx::query_as::<_, (String, String, i64, Option<String>)>(
+        "SELECT kind, state, updated, message FROM jobs \
+         WHERE state IN ('done', 'error') ORDER BY updated DESC LIMIT 10")
+        .fetch_all(&pool).await.unwrap_or_default()
+        .into_iter()
+        .map(|(kind, state, at, msg)| HomeEvRow {
+            at, section: "tools", kind: "job",
+            title: if state == "error" { format!("Job failed — {kind}") }
+                else { format!("Job finished — {kind}") },
+            sub: msg.filter(|m| !m.is_empty()).unwrap_or_else(|| "no message".into()),
+            action: "", alarm: state == "error", id: -1, path: String::new(),
+        })
+        .collect()
+}
+
+/// The transfer ledger. Both directions: a phone that pushed a file here is
+/// exactly what this feed exists to show, and it happens with the app untouched.
+async fn ev_transfers() -> Vec<HomeEvRow> {
+    let Ok(pool) = pool_for("transfers").await else { return Vec::new(); };
+    sqlx::query_as::<_, (String, String, i64, String, String, i64)>(
+        "SELECT direction, name, bytes, peer, status, at FROM transfers \
+         ORDER BY at DESC LIMIT 10")
+        .fetch_all(&pool).await.unwrap_or_default()
+        .into_iter()
+        .map(|(dir, name, bytes, peer, status, at)| {
+            let ok = status == "ok";
+            HomeEvRow {
+                at, section: "transfer",
+                kind: if dir == "in" { "received" } else { "sent" },
+                title: match (dir.as_str(), ok) {
+                    (_, false) => format!("Transfer failed — {name}"),
+                    ("in", _) => format!("Received {name}"),
+                    _ => format!("Sent {name}"),
+                },
+                sub: format!("{} · {peer}", human_size(bytes.max(0) as u64)),
+                action: "", alarm: !ok, id: -1, path: String::new(),
+            }
+        })
+        .collect()
+}
+
+/// Collapse runs of the same section + kind inside `HOME_EVENT_WINDOW`, and turn
+/// the `"one|many"` titles the `added` / `played` sources carry into real ones.
+fn collapse_events(rows: Vec<HomeEvRow>) -> Vec<HomeEvRow> {
+    let mut out: Vec<HomeEvRow> = Vec::new();
+    let mut counts: Vec<usize> = Vec::new();
+    for r in rows {
+        let fold = out.last().is_some_and(|p: &HomeEvRow| {
+            p.section == r.section && p.kind == r.kind && p.at - r.at <= HOME_EVENT_WINDOW
+        });
+        if fold {
+            if let Some(n) = counts.last_mut() { *n += 1; }
+            continue;
+        }
+        out.push(r);
+        counts.push(1);
+    }
+    for (r, n) in out.iter_mut().zip(counts) {
+        let parts = r.title.split_once('|').map(|(a, b)| (a.to_string(), b.to_string()));
+        if let Some((one, many)) = parts {
+            r.title = if n > 1 { format!("{n} {many}") } else { one };
+            if n > 1 { r.sub = format!("{} +{} more", r.sub, n - 1); }
+        } else if n > 1 {
+            r.sub = format!("{} +{} more", r.sub, n - 1);
+        }
+    }
+    out
+}
+
+/// Gather every source, merge, collapse, cap, cache — then push through the
+/// active filter. Runs on Home entry for the Stream layout only.
+fn kick_home_events(w: &MainWindow) {
+    let weak = w.as_weak();
+    tokio::runtime::Handle::current().spawn(async move {
+        // Independent databases, so they run concurrently: the feed lands in
+        // ~max(source) rather than the sum.
+        let (photos, videos, books, music, pods, tools, transfers) = tokio::join!(
+            ev_items("photos", "Photo added", "photos added"),
+            ev_items("videos", "Video added", "videos added"),
+            ev_books(),
+            ev_music(),
+            ev_podcasts(),
+            ev_tools(),
+            ev_transfers(),
+        );
+        let mut all: Vec<HomeEvRow> = Vec::new();
+        all.extend(photos);
+        all.extend(videos);
+        all.extend(books);
+        all.extend(music);
+        all.extend(pods);
+        all.extend(tools);
+        all.extend(transfers);
+
+        #[cfg(feature = "finances")]
+        {
+            for (at, title, sub, alarm) in tulipix_sec_finances::recent_events(10).await {
+                all.push(HomeEvRow {
+                    at, section: "finances", kind: "paid",
+                    title, sub, action: "", alarm, id: -1, path: String::new(),
+                });
+            }
+        }
+
+        // The events with no table of their own: a folder watched, a folder
+        // dropped, a rescan started. Section "library", so no section card hides
+        // them — they are about the library itself.
+        for (at, _accent, title, sub) in tulipix_common::load_activity() {
+            all.push(HomeEvRow {
+                at, section: "library", kind: "note",
+                title, sub, action: "", alarm: false, id: -1, path: String::new(),
+            });
+        }
+
+        all.retain(|r| r.at > 0);
+        all.sort_by(|a, b| b.at.cmp(&a.at));
+        let mut rows = collapse_events(all);
+        rows.truncate(HOME_EVENTS_MAX);
+        if let Ok(mut g) = home_ev_cache().lock() { *g = rows; }
+        push_home_events(&weak);
+    });
+}
+
+/// Which filter chip a section belongs to. "library" notes only show under
+/// Everything: they are not media, money or a device.
+fn home_ev_in_filter(section: &str, filter: &str) -> bool {
+    match filter {
+        "media" => matches!(section, "photos" | "videos" | "music" | "books"),
+        "money" => section == "finances",
+        "devices" => matches!(section, "transfer" | "cloud" | "tools"),
+        _ => true,
+    }
+}
+
+/// Push the cached events through the section cards and the active filter chip,
+/// deciding the clock string and the group caption on the way.
+fn push_home_events(weak: &slint::Weak<MainWindow>) {
+    let rows = home_ev_cache().lock().map(|g| g.clone()).unwrap_or_default();
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        let filter = w.get_home_feed_filter().to_string();
+        let on = |section: &str| match section {
+            "photos" => w.get_hc_photos(),
+            "videos" => w.get_hc_videos(),
+            "music" => w.get_hc_music(),
+            "books" => w.get_hc_books(),
+            "cloud" => w.get_hc_cloud(),
+            "tools" => w.get_hc_tools(),
+            "transfer" => w.get_hc_transfer(),
+            "finances" => w.get_hc_finances(),
+            // Library notes are not a card; they always belong.
+            _ => true,
+        };
+        // Thumbnails come from the feeds Home already decoded — the newest photos
+        // *are* the newest additions, so the first three answer for that row. No
+        // per-event decode, which the spec's risk 2 warns about.
+        let pick = |m: &slint::ModelRc<slint::Image>, i: usize| -> slint::Image {
+            use slint::Model;
+            m.row_data(i).unwrap_or_default()
+        };
+        let photos_m = w.get_home_recent_photos();
+        let videos_m = w.get_home_recent_videos();
+        let books_m = w.get_home_book_covers();
+        let mut photo_done = false;
+        let mut video_done = false;
+        let mut book_done = false;
+
+        let now = tulipix_common::now_secs();
+        let today = chrono::Local::now().date_naive();
+        let mut last_group = String::new();
+        let mut out: Vec<HomeEvent> = Vec::new();
+        for r in rows.iter().filter(|r| on(r.section) && home_ev_in_filter(r.section, &filter)) {
+            let dt = chrono::DateTime::<chrono::Utc>::from_timestamp(r.at, 0)
+                .map(|t| t.with_timezone(&chrono::Local));
+            let group = if now - r.at < 1800 {
+                "NOW"
+            } else {
+                match dt.map(|d| (today - d.date_naive()).num_days()) {
+                    Some(0) => "TODAY",
+                    Some(1) => "YESTERDAY",
+                    _ => "EARLIER",
+                }
+            };
+            let head = group != last_group;
+            last_group = group.to_string();
+            // One thumbnail cluster per medium — the newest row of that section.
+            let (t1, t2, t3) = match (r.section, r.kind) {
+                ("photos", "added") if !photo_done => {
+                    photo_done = true;
+                    (pick(&photos_m, 0), pick(&photos_m, 1), pick(&photos_m, 2))
+                }
+                ("videos", "added") if !video_done => {
+                    video_done = true;
+                    (pick(&videos_m, 0), pick(&videos_m, 1), pick(&videos_m, 2))
+                }
+                ("books", _) if !book_done => {
+                    book_done = true;
+                    (pick(&books_m, 0), slint::Image::default(), slint::Image::default())
+                }
+                _ => (slint::Image::default(), slint::Image::default(), slint::Image::default()),
+            };
+            out.push(HomeEvent {
+                at: dt.map(|d| d.format("%H:%M").to_string()).unwrap_or_default().into(),
+                group: group.into(),
+                head,
+                section: r.section.into(),
+                kind: r.kind.into(),
+                title: r.title.as_str().into(),
+                sub: r.sub.as_str().into(),
+                action: r.action.into(),
+                alarm: r.alarm,
+                id: r.id as i32,
+                path: r.path.as_str().into(),
+                t1, t2, t3,
+            });
+        }
+        // An empty today is not an empty page: the feed simply reaches further
+        // back, and says so.
+        let stale = out.first()
+            .is_some_and(|e| e.group.as_str() != "NOW" && e.group.as_str() != "TODAY");
+        w.set_home_feed_note(if stale { "Nothing today — showing what came before.".into() }
+            else { slint::SharedString::new() });
+        w.set_home_events(slint::ModelRc::new(slint::VecModel::from(out)));
+    });
+}
+
+/// Stream's NEXT block: what has not happened yet. Dues that are not late, and
+/// what you are nearly finished with — both read from what Home already holds.
+fn push_home_next(w: &MainWindow) {
+    use slint::Model;
+    let mut rows: Vec<HomeDue> = Vec::new();
+    for d in w.get_home_fin_dues().iter().filter(|d| !d.late) {
+        rows.push(d);
+    }
+    for c in w.get_home_continue_rows().iter() {
+        if c.frac >= 0.8 && c.frac < 1.0 {
+            rows.push(HomeDue {
+                name: c.title.clone(),
+                amount: format!("{}%", (c.frac * 100.0).round() as i64).into(),
+                when: match c.kind.as_str() {
+                    "video" => "film".into(),
+                    "podcast" => "episode".into(),
+                    "audiobook" => "listening".into(),
+                    _ => "reading".into(),
+                },
+                late: false,
+            });
+        }
+    }
+    rows.truncate(6);
+    w.set_home_next_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+}
+
+fn wire_home_stream(window: &MainWindow) {
+    let w = window.as_weak();
+    window.on_home_feed_filter_set(move |f| {
+        let Some(w) = w.upgrade() else { return; };
+        w.set_home_feed_filter(f);
+        push_home_events(&w.as_weak());
+    });
+    let w = window.as_weak();
+    window.on_home_event_action(move |e| {
+        let Some(w) = w.upgrade() else { return; };
+        match (e.section.as_str(), e.kind.as_str()) {
+            ("books", "resumed") => w.invoke_books_open_details(e.id),
+            ("music", "episode") => w.invoke_music_podcast_play(e.id),
+            // Everything else has no id worth acting on; the row click already
+            // opens the section, so this is the same door.
+            (s, _) => {
+                w.set_active_section(s.into());
+                w.invoke_section_changed(s.into());
+            }
+        }
+    });
+}
+
 /// Cap a CONTINUE card title at 50 characters, then "...". Counted in chars,
 /// not bytes, so a Devanagari or accented title is not cut mid-codepoint.
 const CONTINUE_TITLE_CHARS: usize = 50;
@@ -4670,6 +5470,43 @@ fn clip_title(title: &str) -> String {
     format!("{}...", head.trim_end())
 }
 
+/// Cinema's hero: the newest in-progress item, spelled out for the page. Nothing
+/// queries for this — it is the first row the CONTINUE strip already gathered, so
+/// the hero and the rail can never disagree about what you were last doing.
+fn set_home_hero(w: &MainWindow, row: Option<&HomeContRow>) {
+    let Some(r) = row else {
+        // Empty library, or nothing started yet. The page has its own copy for
+        // this case; clearing the title is what selects it.
+        w.set_home_hero_kind("".into());
+        w.set_home_hero_title("".into());
+        w.set_home_hero_kicker("".into());
+        w.set_home_hero_meta("".into());
+        w.set_home_hero_frac(-1.0);
+        w.set_home_hero_art(slint::Image::default());
+        w.set_home_hero_id(-1);
+        w.set_home_hero_path("".into());
+        return;
+    };
+    // The kicker says which medium it is, in the words that medium uses; the meta
+    // line carries the detail the 62 px title has no room for.
+    let kicker = match r.kind {
+        "video" => "VIDEO",
+        "podcast" => "PODCAST",
+        "audiobook" => "AUDIOBOOK",
+        _ => "BOOK",
+    };
+    let meta = if r.sub.is_empty() { r.author.clone() } else { r.sub.clone() };
+    w.set_home_hero_kind(r.kind.into());
+    w.set_home_hero_title(r.title.as_str().into());
+    w.set_home_hero_kicker(if r.author.is_empty() { kicker.into() }
+        else { format!("{kicker} · {}", r.author).into() });
+    w.set_home_hero_meta(meta.into());
+    w.set_home_hero_frac(r.frac);
+    w.set_home_hero_art(r.cover.clone().map(slint::Image::from_rgba8).unwrap_or_default());
+    w.set_home_hero_id(r.id as i32);
+    w.set_home_hero_path(r.path.as_str().into());
+}
+
 /// Push the cached CONTINUE rows through the active kind filter (≤4 cards —
 /// the strip has four fixed pill slots). "All" shows ONE card per kind (the
 /// newest of each — video/book/podcast/audiobook), kind tabs show up to 4.
@@ -4677,6 +5514,10 @@ fn push_home_continue(weak: &slint::Weak<MainWindow>) {
     let filter = home_cont_filter().lock().map(|g| g.clone()).unwrap_or_else(|_| "all".into());
     let rows = home_cont_rows().lock().map(|g| g.clone()).unwrap_or_default();
     let _ = weak.upgrade_in_event_loop(move |w| {
+        // Cinema's hero is the newest in-progress item overall, taken before the
+        // filter runs: the chips are a Continue-strip control, and the backdrop
+        // has no business changing because someone clicked "Podcasts".
+        set_home_hero(&w, rows.first());
         // Rows are already newest-first, so "first of each kind" = newest.
         let mut seen_kinds = std::collections::HashSet::new();
         let items: Vec<HomeContinue> = rows.into_iter()
@@ -4694,6 +5535,8 @@ fn push_home_continue(weak: &slint::Weak<MainWindow>) {
             })
             .collect();
         w.set_home_continue_rows(slint::ModelRc::new(slint::VecModel::from(items)));
+        // Stream's NEXT block reads these rows for what is nearly finished.
+        push_home_next(&w);
     });
 }
 

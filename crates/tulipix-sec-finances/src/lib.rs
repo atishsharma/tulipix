@@ -785,6 +785,40 @@ pub fn wire(window: &MainWindow) {
     });
 }
 
+/// Recent money events for Home's Stream layout, newest first:
+/// `(unix seconds, title, detail, alarm)`.
+///
+/// Lives here rather than in the app because the amount has to be formatted by
+/// `money::format_minor` — the grouping is Indian for INR, the fractional part is
+/// dropped when zero, and duplicating either in the app would drift.
+pub async fn recent_events(limit: usize) -> Vec<(i64, String, String, bool)> {
+    let Ok(pool) = pool().await else { return Vec::new() };
+    let rows = sqlx::query_as::<_, (i64, String, i64, String, String, String)>(
+        "SELECT t.created_at, t.kind, t.base_minor, t.currency, t.description, \
+                COALESCE(a.name, '') \
+         FROM transactions t LEFT JOIN accounts a ON a.id = t.account_id \
+         ORDER BY t.created_at DESC LIMIT ?",
+    )
+    .bind(limit as i64)
+    .fetch_all(&pool)
+    .await
+    .unwrap_or_default();
+    rows.into_iter()
+        .map(|(at, kind, minor, currency, desc, account)| {
+            let amount = money::format_minor(minor, &currency);
+            let title = match kind.as_str() {
+                "income" => format!("{amount} in — {desc}"),
+                "transfer" => format!("{amount} moved — {desc}"),
+                _ => format!("{amount} — {desc}"),
+            };
+            let sub = if account.is_empty() { kind.clone() } else { format!("{kind} · {account}") };
+            // Money events are never alarms on their own: a posted transaction is
+            // a fact, and what needs attention is a due, which the rail shows.
+            (at, title, sub, false)
+        })
+        .collect()
+}
+
 /// Called from the sidebar hook. Runs the calendar catch-up on entry.
 pub fn section_changed(window: &MainWindow, section: &str) {
     if section == "finances" {

@@ -1,0 +1,779 @@
+// Home layout 7 of 7 — WELCOME. Spec: docs/home-layouts/07-welcome.md (mockup l4.png).
+//
+// The front door: a big greeting with a collage of what is actually in the
+// library, a bar of the six things you launch by name, Continue beside the
+// newest arrivals, the section tiles as "My Hub", and the player pinned along
+// the bottom of the page.
+//
+// Same data as every other layout — only the composition differs.
+import { Theme } from "tokens.slint";
+import { Surface, Rim } from "surface.slint";
+import { Icons, AppIcon } from "icons.slint";
+import { ScrollView } from "std-widgets.slint";
+import { HomeStats, HomeContinue } from "page_home.slint";
+
+// ── Panel base ──────────────────────────────────────────────────────────────
+component WelCard inherits Rectangle {
+    border-radius: Surface.card-radius;
+    background: Surface.body(Theme.panel);
+    border-width: 1px;
+    border-color: Surface.hairline;
+    drop-shadow-blur: Surface.card-shadow;
+    drop-shadow-color: Surface.shadow-ink;
+    drop-shadow-offset-y: Surface.card-shadow-y;
+    if Surface.rim: Rim {
+        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+        radius: Surface.card-radius - 1px;
+    }
+    @children
+}
+
+// ── Card caption with a "View all" door ─────────────────────────────────────
+component WelCap inherits Rectangle {
+    in property <string> title;
+    in property <string> link: "";
+    callback link-clicked();
+    height: 24px;
+    background: transparent;
+    HorizontalLayout {
+        spacing: 8px;
+        Text { text: root.title; color: Theme.text; font-size: 14px; font-weight: 700;
+            vertical-alignment: center; horizontal-stretch: 1; overflow: elide; }
+        Rectangle {
+            width: root.link == "" ? 0px : lk.preferred-width + 4px;
+            horizontal-stretch: 0;
+            background: transparent;
+            lt := TouchArea { mouse-cursor: pointer; clicked => { root.link-clicked(); } }
+            lk := Text {
+                text: root.link;
+                color: lt.has-hover ? Theme.brand-2 : Theme.brand;
+                font-size: 11px; font-weight: 600;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            }
+        }
+    }
+}
+
+// ── Launch shortcut in the top bar ──────────────────────────────────────────
+component Launcher inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <color> accent;
+    callback clicked();
+    background: t.has-hover ? Theme.glass : transparent;
+    border-radius: Surface.r(14px);
+    animate background { duration: 120ms; easing: ease-out; }
+    t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        spacing: 10px; alignment: center;
+        Rectangle {
+            width: 40px; height: 40px; horizontal-stretch: 0;
+            y: (parent.height - self.height) / 2;
+            border-radius: Surface.r(12px);
+            background: root.accent.with-alpha(Theme.dark ? 0.24 : 0.14);
+            AppIcon { source: root.icon; tint: root.accent; width: 18px; height: 18px;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+        }
+        Text { text: root.label; color: Theme.text; font-size: 12.5px; font-weight: 600;
+            vertical-alignment: center; horizontal-stretch: 0; overflow: elide; }
+    }
+}
+
+// ── My Hub tile ─────────────────────────────────────────────────────────────
+component HubTile inherits Rectangle {
+    in property <string> name;
+    in property <string> count;
+    in property <image> icon;
+    in property <color> accent;
+    callback clicked();
+    horizontal-stretch: 0;
+    border-radius: Surface.r(16px);
+    background: root.accent.with-alpha(t.has-hover ? (Theme.dark ? 0.28 : 0.18)
+                                                   : (Theme.dark ? 0.16 : 0.10));
+    border-width: 1px;
+    border-color: t.has-hover ? root.accent.with-alpha(0.45) : transparent;
+    animate background, border-color { duration: 130ms; easing: ease-out; }
+    t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    HorizontalLayout {
+        padding-left: 14px; padding-right: 12px; spacing: 11px;
+        Rectangle {
+            width: 44px; height: 44px; horizontal-stretch: 0;
+            y: (parent.height - self.height) / 2;
+            border-radius: Surface.r(13px);
+            background: Theme.dark ? Theme.panel : #ffffff;
+            AppIcon { source: root.icon; tint: root.accent; width: 20px; height: 20px;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+        }
+        VerticalLayout {
+            alignment: center; spacing: 2px; horizontal-stretch: 1;
+            Text { text: root.name; color: Theme.text; font-size: 13.5px; font-weight: 700;
+                overflow: elide; }
+            Text { text: root.count; color: Theme.text-dim; font-size: 10.5px; overflow: elide; }
+        }
+    }
+}
+
+// ── Transport button ────────────────────────────────────────────────────────
+component WelBtn inherits Rectangle {
+    in property <image> icon;
+    in property <bool> primary: false;
+    in property <bool> lit: false;
+    in property <color> accent: Theme.brand;
+    callback clicked();
+    width: root.primary ? 40px : 30px;
+    height: self.width;
+    horizontal-stretch: 0;
+    border-radius: self.width / 2;
+    background: root.primary
+        ? (t.has-hover ? Theme.glass-strong : Theme.glass)
+        : (t.has-hover ? Theme.glass : transparent);
+    border-width: root.primary ? 1px : 0px;
+    border-color: root.accent.with-alpha(0.5);
+    animate background { duration: 110ms; easing: ease-out; }
+    t := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    AppIcon {
+        source: root.icon;
+        tint: root.primary ? root.accent : (root.lit ? root.accent : Theme.text-dim);
+        width: root.primary ? 16px : 14px; height: self.width;
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+    }
+}
+
+export component HomeWelcome inherits Rectangle {
+    // ── Header / hero ───────────────────────────────────────────────────────
+    in property <string> greeting: "Welcome";
+    in property <string> date-line: "";
+    in property <string> library-line: "";
+    in property <image> avatar-image;
+    // The app mark, same picker (and same seasonal default) as Classic's header.
+    in property <int> logo-choice: 0;
+    in property <bool> festival: false;
+    // ── Body ────────────────────────────────────────────────────────────────
+    in property <HomeStats> stats;
+    in property <[HomeContinue]> continue-rows: [];
+    in property <[image]> recent-photos: [];
+    in property <[image]> recent-videos: [];
+    in property <[image]> book-covers: [];
+    in property <string> fin-month: "";
+    // ── Player ──────────────────────────────────────────────────────────────
+    in property <string> np-title: "";
+    in property <string> np-sub: "";
+    in property <image> np-art;
+    in property <color> np-accent: Theme.sec-music;
+    in property <bool> playing: false;
+    in property <float> pos: 0;
+    in property <float> dur: 1;
+    in property <string> pos-label: "";
+    in property <string> dur-label: "";
+    in property <bool> shuffle: false;
+    in property <string> repeat: "off";
+    in property <bool> muted: false;
+    in property <[float]> vis-bars: [];
+    // ── Card visibility ─────────────────────────────────────────────────────
+    in property <bool> hc-hero: true;
+    in property <bool> hc-quick: true;
+    in property <bool> hc-continue: true;
+    in property <bool> hc-library: true;      // Recently Added grid
+    in property <bool> hc-player: true;       // the bottom bar
+    in property <bool> hc-photos: true;
+    in property <bool> hc-videos: true;
+    in property <bool> hc-music: true;
+    in property <bool> hc-books: true;
+    in property <bool> hc-cloud: true;
+    in property <bool> hc-tools: true;
+    in property <bool> hc-transfer: true;
+    in property <bool> hc-finances: true;
+
+    callback open-section(string);
+    callback open-search();
+    callback open-profile();
+    callback open-photo-item(int);
+    callback open-video-item(int);
+    callback open-book-item(int);
+    callback continue-open(HomeContinue);
+    callback open-stream();
+    callback open-livetv();
+    callback open-download();
+    callback open-genesis();
+    callback random-radio();
+    callback playpause();
+    callback next();
+    callback prev();
+    callback seek(float);
+    callback toggle-mute();
+    callback toggle-shuffle();
+    callback cycle-repeat();
+    callback open-zen();
+    callback open-queue();
+
+    // ── Geometry ────────────────────────────────────────────────────────────
+    property <length> pad: 26px;
+    property <length> gap: 14px;
+    property <length> bar-h: root.hc-player ? 88px : 0px;
+    property <length> body-w: root.width - 2 * root.pad;
+    // My Hub tiles divide the card evenly — computed, because nested layouts do
+    // not hand leftover width down (slint-layout-width-distribution).
+    property <int> tiles: (root.hc-photos ? 1 : 0) + (root.hc-videos ? 1 : 0)
+        + (root.hc-books ? 1 : 0) + (root.hc-music ? 1 : 0) + (root.hc-cloud ? 1 : 0)
+        + (root.hc-tools ? 1 : 0) + (root.hc-transfer ? 1 : 0) + (root.hc-finances ? 1 : 0);
+    property <length> tile-w: root.tiles > 0
+        ? (root.body-w - 28px - (root.tiles - 1) * 10px) / root.tiles : 0px;
+    // Continue / Recently Added split the row; either one alone takes it all.
+    property <length> half-w: root.hc-continue && root.hc-library
+        ? (root.body-w - root.gap) / 2 : root.body-w;
+    property <int> res-n: Math.min(3, root.continue-rows.length);
+    property <int> ra-n: Math.min(6, root.recent-photos.length + root.recent-videos.length
+        + root.book-covers.length);
+
+    function accent-of(kind: string) -> color {
+        kind == "video" ? Theme.sec-videos
+            : kind == "book" ? Theme.sec-books
+            : Theme.sec-music
+    }
+
+    background: Theme.bg;
+    clip: true;
+
+    // ── Page ────────────────────────────────────────────────────────────────
+    Rectangle {
+        x: root.pad; y: 0px; width: root.body-w;
+        height: root.height - root.bar-h;
+        background: transparent;
+        clip: true;
+        psv := ScrollView {
+            width: 100%; height: 100%;
+            // Every page opens at the top (ui-scroll-start-top).
+            viewport-y: 0px;
+            VerticalLayout {
+                width: psv.visible-width;
+                spacing: root.gap; alignment: start;
+                padding-top: 18px; padding-bottom: 18px;
+
+                // ── Top bar: mark · search · avatar ─────────────────────────
+                Rectangle {
+                    height: 52px;
+                    background: transparent;
+                    HorizontalLayout {
+                        spacing: 10px; alignment: start;
+                        Rectangle {
+                            width: 34px; height: 34px; horizontal-stretch: 0;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: Surface.r(10px); clip: true;
+                            background: transparent;
+                            Image {
+                                source: root.logo-choice == 1
+                                        ? @image-url("../resources/appicons/sidebar-color.png")
+                                      : root.logo-choice == 2
+                                        ? @image-url("../resources/appicons/sidebar-dark.png")
+                                      : root.logo-choice == 3
+                                        ? @image-url("../resources/appicons/sidebar-white.png")
+                                      : root.festival
+                                        ? @image-url("../resources/appicons/logo_india.png")
+                                      : @image-url("../resources/appicons/sidebar-default.png");
+                                image-fit: cover; width: 100%; height: 100%;
+                            }
+                        }
+                        Text { text: "Tulipix"; color: Theme.text; font-size: 20px;
+                            font-weight: 700; letter-spacing: -0.6px;
+                            vertical-alignment: center; horizontal-stretch: 0; }
+                    }
+                    Rectangle {
+                        width: Math.min(560px, parent.width * 0.42); height: 46px;
+                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                        border-radius: 23px;
+                        background: Surface.body(sb.has-hover ? Theme.panel-2 : Theme.panel);
+                        border-width: 1px; border-color: Surface.hairline;
+                        drop-shadow-blur: Surface.card-shadow;
+                        drop-shadow-color: Surface.shadow-ink;
+                        drop-shadow-offset-y: Surface.card-shadow-y;
+                        sb := TouchArea { mouse-cursor: pointer; clicked => { root.open-search(); } }
+                        HorizontalLayout {
+                            padding-left: 18px; padding-right: 16px; spacing: 12px;
+                            AppIcon { source: Icons.search; tint: Theme.text-dim;
+                                width: 16px; height: 16px; horizontal-stretch: 0;
+                                y: (parent.height - self.height) / 2; }
+                            Text { text: "Search anything in Tulipix…"; color: Theme.text-dim;
+                                font-size: 12.5px; vertical-alignment: center;
+                                horizontal-stretch: 1; overflow: elide; }
+                        }
+                    }
+                    HorizontalLayout {
+                        x: parent.width - 88px; width: 88px; spacing: 10px; alignment: end;
+                        Rectangle {
+                            width: 40px; height: 40px; horizontal-stretch: 0;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 20px;
+                            background: Surface.body(bt.has-hover ? Theme.panel-2 : Theme.panel);
+                            border-width: 1px; border-color: Surface.hairline;
+                            bt := TouchArea { mouse-cursor: pointer;
+                                clicked => { root.open-section("transfer"); } }
+                            AppIcon { source: Icons.bell; tint: Theme.text-dim;
+                                width: 16px; height: 16px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2; }
+                        }
+                        Rectangle {
+                            width: 40px; height: 40px; horizontal-stretch: 0;
+                            y: (parent.height - self.height) / 2;
+                            border-radius: 20px; clip: true;
+                            background: Theme.brand.with-alpha(0.22);
+                            border-width: 2px; border-color: Surface.hairline;
+                            at := TouchArea { mouse-cursor: pointer;
+                                clicked => { root.open-profile(); } }
+                            if root.avatar-image.width > 0: Image { source: root.avatar-image;
+                                image-fit: cover; width: 100%; height: 100%; }
+                            if root.avatar-image.width == 0: AppIcon { source: Icons.user;
+                                tint: Theme.brand; width: 17px; height: 17px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2; }
+                        }
+                    }
+                }
+
+                // ── Hero ────────────────────────────────────────────────────
+                if root.hc-hero: Rectangle {
+                    height: 196px;
+                    background: transparent;
+                    // Collage on the right: colour fields plus what is actually in
+                    // the library. No stock art ships with the app, so the "3D"
+                    // objects of the mockup are the newest photo, the current
+                    // artwork and a real book cover.
+                    Rectangle {
+                        x: parent.width * 0.46; width: parent.width * 0.54; height: 100%;
+                        background: transparent;
+                        clip: true;
+                        Rectangle {
+                            x: parent.width * 0.06; y: 26px;
+                            width: 150px; height: 150px; border-radius: 75px;
+                            background: Theme.sec-videos.with-alpha(Theme.dark ? 0.20 : 0.16);
+                        }
+                        Rectangle {
+                            x: parent.width * 0.42; y: 8px;
+                            width: 168px; height: 168px; border-radius: 84px;
+                            background: Theme.sec-music.with-alpha(Theme.dark ? 0.18 : 0.15);
+                        }
+                        Rectangle {
+                            x: parent.width * 0.68; y: 54px;
+                            width: 132px; height: 132px; border-radius: 66px;
+                            background: Theme.sec-books.with-alpha(Theme.dark ? 0.18 : 0.15);
+                        }
+                        // Newest photo.
+                        Rectangle {
+                            x: parent.width * 0.05; y: 30px;
+                            width: 186px; height: 132px;
+                            border-radius: Surface.r(16px); clip: true;
+                            background: Theme.sec-photos.with-alpha(0.2);
+                            drop-shadow-blur: 26px; drop-shadow-color: Surface.shadow-ink;
+                            drop-shadow-offset-y: 8px;
+                            pt := TouchArea { mouse-cursor: pointer;
+                                clicked => { root.open-photo-item(0); } }
+                            if root.recent-photos.length > 0: Image {
+                                source: root.recent-photos[0]; image-fit: cover;
+                                width: 100%; height: 100%;
+                                opacity: pt.has-hover ? 1.0 : 0.95;
+                            }
+                            if root.recent-photos.length == 0: AppIcon { source: Icons.image;
+                                tint: Theme.sec-photos; width: 26px; height: 26px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2; }
+                        }
+                        // What is playing, as a disc.
+                        Rectangle {
+                            x: parent.width * 0.44; y: 22px;
+                            width: 120px; height: 120px; border-radius: 60px; clip: true;
+                            background: root.np-accent.with-alpha(0.35);
+                            drop-shadow-blur: 24px; drop-shadow-color: Surface.shadow-ink;
+                            drop-shadow-offset-y: 8px;
+                            nt := TouchArea { mouse-cursor: pointer;
+                                clicked => { root.open-section("music"); } }
+                            if root.np-art.width > 0: Image { source: root.np-art;
+                                image-fit: cover; width: 100%; height: 100%; }
+                            if root.np-art.width == 0: AppIcon { source: Icons.headphones;
+                                tint: root.np-accent; width: 34px; height: 34px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2; }
+                        }
+                        // A book off the shelf.
+                        Rectangle {
+                            x: parent.width * 0.70; y: 58px;
+                            width: 104px; height: 138px;
+                            border-radius: Surface.r(12px); clip: true;
+                            background: Theme.sec-books.with-alpha(0.3);
+                            drop-shadow-blur: 22px; drop-shadow-color: Surface.shadow-ink;
+                            drop-shadow-offset-y: 8px;
+                            bkt := TouchArea { mouse-cursor: pointer;
+                                clicked => { root.open-book-item(0); } }
+                            if root.book-covers.length > 0: Image {
+                                source: root.book-covers[0]; image-fit: cover;
+                                width: 100%; height: 100%; }
+                            if root.book-covers.length == 0: AppIcon { source: Icons.book-open;
+                                tint: Theme.sec-books; width: 26px; height: 26px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2; }
+                        }
+                    }
+                    // The greeting itself.
+                    VerticalLayout {
+                        width: parent.width * 0.46; alignment: center; spacing: 8px;
+                        Text { text: root.greeting + " 👋"; color: Theme.text;
+                            font-size: 40px; font-weight: 800; letter-spacing: -1.6px;
+                            wrap: word-wrap; }
+                        Text { text: "Your hub for everything that matters.";
+                            color: Theme.text-dim; font-size: 17px; wrap: word-wrap; }
+                        Text {
+                            text: root.date-line
+                                + (root.library-line == "" ? "" : "  ·  " + root.library-line);
+                            color: Theme.text-dim; font-size: 11px; overflow: elide;
+                        }
+                    }
+                }
+
+                // ── Launch bar ──────────────────────────────────────────────
+                if root.hc-quick: WelCard {
+                    height: 84px;
+                    HorizontalLayout {
+                        padding-left: 8px; padding-right: 8px; spacing: 0;
+                        Launcher { label: "Stream"; icon: Icons.monitor-play;
+                            accent: Theme.sec-videos; clicked => { root.open-stream(); } }
+                        Rectangle { width: 1px; horizontal-stretch: 0;
+                            background: Surface.hairline; }
+                        Launcher { label: "Random Radio"; icon: Icons.radio;
+                            accent: Theme.sec-transfer; clicked => { root.random-radio(); } }
+                        Rectangle { width: 1px; horizontal-stretch: 0;
+                            background: Surface.hairline; }
+                        Launcher { label: "Music D/L"; icon: Icons.download;
+                            accent: Theme.sec-books; clicked => { root.open-download(); } }
+                        Rectangle { width: 1px; horizontal-stretch: 0;
+                            background: Surface.hairline; }
+                        Launcher { label: "Genesis"; icon: Icons.sparkles;
+                            accent: Theme.brand; clicked => { root.open-genesis(); } }
+                        Rectangle { width: 1px; horizontal-stretch: 0;
+                            background: Surface.hairline; }
+                        Launcher { label: "Live TV"; icon: Icons.tv;
+                            accent: Theme.sec-music; clicked => { root.open-livetv(); } }
+                        Rectangle { width: 1px; horizontal-stretch: 0;
+                            background: Surface.hairline; }
+                        Launcher { label: "Tools"; icon: Icons.layout-grid;
+                            accent: Theme.sec-tools; clicked => { root.open-section("tools"); } }
+                    }
+                }
+
+                // ── Continue · Recently Added ───────────────────────────────
+                if root.hc-continue || root.hc-library: HorizontalLayout {
+                    height: 268px; spacing: root.gap;
+
+                    if root.hc-continue: WelCard {
+                        width: root.half-w; horizontal-stretch: 0;
+                        VerticalLayout {
+                            padding: 16px; spacing: 10px;
+                            WelCap { title: "Continue";
+                                link: root.continue-rows.length > 0 ? "View all" : "";
+                                link-clicked => { root.open-section("videos"); } }
+                            if root.continue-rows.length == 0: Text {
+                                text: "Nothing half-finished yet. Whatever you start shows up "
+                                    + "here with the page or the minute you stopped at.";
+                                color: Theme.text-dim; font-size: 12px; wrap: word-wrap;
+                            }
+                            VerticalLayout {
+                                spacing: 8px; vertical-stretch: 1;
+                                for r[i] in root.continue-rows: Rectangle {
+                                    // Zero-height past the third row rather than an
+                                    // `if` inside a repeater (slint#6426).
+                                    height: i < root.res-n ? 68px : 0px;
+                                    border-radius: Surface.r(12px);
+                                    background: ct.has-hover ? Theme.glass : transparent;
+                                    clip: true;
+                                    animate background { duration: 120ms; easing: ease-out; }
+                                    ct := TouchArea { mouse-cursor: pointer;
+                                        clicked => { root.continue-open(r); } }
+                                    HorizontalLayout {
+                                        padding: 8px; spacing: 12px;
+                                        Rectangle {
+                                            width: 46px; height: 52px; horizontal-stretch: 0;
+                                            y: (parent.height - self.height) / 2;
+                                            border-radius: Surface.r(8px); clip: true;
+                                            background: root.accent-of(r.kind).with-alpha(0.2);
+                                            if r.cover.width > 0: Image { source: r.cover;
+                                                image-fit: cover; width: 100%; height: 100%; }
+                                            if r.cover.width == 0: AppIcon {
+                                                source: r.kind == "video" ? Icons.film
+                                                    : r.kind == "book" ? Icons.book-open
+                                                    : Icons.headphones;
+                                                tint: root.accent-of(r.kind);
+                                                width: 18px; height: 18px;
+                                                x: (parent.width - self.width) / 2;
+                                                y: (parent.height - self.height) / 2; }
+                                        }
+                                        VerticalLayout {
+                                            alignment: center; spacing: 5px; horizontal-stretch: 1;
+                                            HorizontalLayout {
+                                                spacing: 8px;
+                                                Text { text: r.title; color: Theme.text;
+                                                    font-size: 13px; font-weight: 700;
+                                                    overflow: elide; horizontal-stretch: 1; }
+                                            }
+                                            HorizontalLayout {
+                                                spacing: 8px; height: 14px;
+                                                Text {
+                                                    text: r.sub == "" ? r.author : r.sub;
+                                                    color: Theme.text-dim; font-size: 10.5px;
+                                                    vertical-alignment: center;
+                                                    overflow: elide; horizontal-stretch: 1;
+                                                }
+                                                Text {
+                                                    text: r.frac < 0 ? ""
+                                                        : Math.round(r.frac * 100) + "%";
+                                                    color: Theme.text; font-size: 10.5px;
+                                                    font-weight: 700; width: 34px;
+                                                    horizontal-alignment: right;
+                                                    horizontal-stretch: 0;
+                                                    vertical-alignment: center;
+                                                }
+                                            }
+                                            Rectangle {
+                                                height: 4px; border-radius: 2px;
+                                                background: Theme.text.with-alpha(0.13);
+                                                Rectangle {
+                                                    x: 0; height: 100%; border-radius: 2px;
+                                                    width: parent.width
+                                                        * Math.clamp(r.frac, 0.0, 1.0);
+                                                    background: root.accent-of(r.kind);
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                                Rectangle { vertical-stretch: 1; }
+                            }
+                        }
+                    }
+
+                    if root.hc-library: WelCard {
+                        width: root.half-w; horizontal-stretch: 0;
+                        VerticalLayout {
+                            padding: 16px; spacing: 10px;
+                            WelCap { title: "Recently Added"; link: "View all";
+                                link-clicked => { root.open-section("photos"); } }
+                            if root.ra-n == 0: Text {
+                                text: "Nothing indexed yet. Add a folder and the newest of "
+                                    + "everything lands here.";
+                                color: Theme.text-dim; font-size: 12px; wrap: word-wrap;
+                            }
+                            // Two rows of three: photos first, then videos, then a
+                            // book cover — whatever the library actually has.
+                            GridLayout {
+                                spacing: 10px;
+                                Row {
+                                    Rectangle {
+                                        border-radius: Surface.r(12px); clip: true;
+                                        background: Theme.sec-photos.with-alpha(0.14);
+                                        g0 := TouchArea { mouse-cursor: pointer;
+                                            clicked => { root.open-photo-item(0); } }
+                                        if root.recent-photos.length > 0: Image {
+                                            source: root.recent-photos[0]; image-fit: cover;
+                                            width: 100%; height: 100%; }
+                                    }
+                                    Rectangle {
+                                        border-radius: Surface.r(12px); clip: true;
+                                        background: Theme.sec-photos.with-alpha(0.14);
+                                        g1 := TouchArea { mouse-cursor: pointer;
+                                            clicked => { root.open-photo-item(1); } }
+                                        if root.recent-photos.length > 1: Image {
+                                            source: root.recent-photos[1]; image-fit: cover;
+                                            width: 100%; height: 100%; }
+                                    }
+                                    Rectangle {
+                                        border-radius: Surface.r(12px); clip: true;
+                                        background: Theme.sec-photos.with-alpha(0.14);
+                                        g2 := TouchArea { mouse-cursor: pointer;
+                                            clicked => { root.open-photo-item(2); } }
+                                        if root.recent-photos.length > 2: Image {
+                                            source: root.recent-photos[2]; image-fit: cover;
+                                            width: 100%; height: 100%; }
+                                    }
+                                }
+                                Row {
+                                    Rectangle {
+                                        border-radius: Surface.r(12px); clip: true;
+                                        background: Theme.sec-videos.with-alpha(0.14);
+                                        g3 := TouchArea { mouse-cursor: pointer;
+                                            clicked => { root.open-video-item(0); } }
+                                        if root.recent-videos.length > 0: Image {
+                                            source: root.recent-videos[0]; image-fit: cover;
+                                            width: 100%; height: 100%; }
+                                    }
+                                    Rectangle {
+                                        border-radius: Surface.r(12px); clip: true;
+                                        background: Theme.sec-videos.with-alpha(0.14);
+                                        g4 := TouchArea { mouse-cursor: pointer;
+                                            clicked => { root.open-video-item(1); } }
+                                        if root.recent-videos.length > 1: Image {
+                                            source: root.recent-videos[1]; image-fit: cover;
+                                            width: 100%; height: 100%; }
+                                    }
+                                    Rectangle {
+                                        border-radius: Surface.r(12px); clip: true;
+                                        background: Theme.sec-books.with-alpha(0.14);
+                                        g5 := TouchArea { mouse-cursor: pointer;
+                                            clicked => { root.open-book-item(0); } }
+                                        if root.book-covers.length > 0: Image {
+                                            source: root.book-covers[0]; image-fit: cover;
+                                            width: 100%; height: 100%; }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                // ── My Hub ──────────────────────────────────────────────────
+                if root.tiles > 0: WelCard {
+                    height: 132px;
+                    VerticalLayout {
+                        padding: 14px; spacing: 10px;
+                        Text { text: "My Hub"; color: Theme.brand; font-size: 13px;
+                            font-weight: 700; height: 18px; }
+                        HorizontalLayout {
+                            spacing: 10px; alignment: start; vertical-stretch: 1;
+                            if root.hc-photos: HubTile { width: root.tile-w;
+                                name: "Photos"; count: root.stats.photos + " items";
+                                icon: Icons.image; accent: Theme.sec-photos;
+                                clicked => { root.open-section("photos"); } }
+                            if root.hc-videos: HubTile { width: root.tile-w;
+                                name: "Videos"; count: root.stats.videos + " items";
+                                icon: Icons.film; accent: Theme.sec-videos;
+                                clicked => { root.open-section("videos"); } }
+                            if root.hc-books: HubTile { width: root.tile-w;
+                                name: "Books"; count: root.stats.books + " books";
+                                icon: Icons.book-open; accent: Theme.sec-books;
+                                clicked => { root.open-section("books"); } }
+                            if root.hc-music: HubTile { width: root.tile-w;
+                                name: "Music"; count: root.stats.songs + " songs";
+                                icon: Icons.music; accent: Theme.sec-music;
+                                clicked => { root.open-section("music"); } }
+                            if root.hc-cloud: HubTile { width: root.tile-w;
+                                name: "Clouds"; count: root.stats.cloud-remotes + " services";
+                                icon: Icons.cloud; accent: Theme.sec-cloud;
+                                clicked => { root.open-section("cloud"); } }
+                            if root.hc-tools: HubTile { width: root.tile-w;
+                                name: "Tools"; icon: Icons.wrench; accent: Theme.sec-tools;
+                                count: root.stats.tools-note == "" ? "utilities"
+                                    : root.stats.tools-note;
+                                clicked => { root.open-section("tools"); } }
+                            if root.hc-transfer: HubTile { width: root.tile-w;
+                                name: "Transfer"; count: "local network";
+                                icon: Icons.share; accent: Theme.sec-transfer;
+                                clicked => { root.open-section("transfer"); } }
+                            if root.hc-finances: HubTile { width: root.tile-w;
+                                name: "Finances";
+                                count: root.fin-month == "" ? "overview" : root.fin-month;
+                                icon: Icons.wallet; accent: Theme.sec-finances;
+                                clicked => { root.open-section("finances"); } }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // ── Bottom player bar ───────────────────────────────────────────────────
+    if root.hc-player: WelCard {
+        x: root.pad; y: root.height - root.bar-h;
+        width: root.body-w; height: root.bar-h - 14px;
+        HorizontalLayout {
+            padding-left: 14px; padding-right: 16px; spacing: 14px;
+
+            // Art + title.
+            Rectangle {
+                width: 54px; height: 54px; horizontal-stretch: 0;
+                y: (parent.height - self.height) / 2;
+                border-radius: Surface.r(12px); clip: true;
+                background: root.np-accent.with-alpha(0.25);
+                zt := TouchArea { mouse-cursor: pointer; clicked => { root.open-zen(); } }
+                if root.np-art.width > 0: Image { source: root.np-art; image-fit: cover;
+                    width: 100%; height: 100%; }
+                if root.np-art.width == 0: AppIcon { source: Icons.music; tint: root.np-accent;
+                    width: 20px; height: 20px;
+                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+            }
+            VerticalLayout {
+                width: 190px; horizontal-stretch: 0; alignment: center; spacing: 2px;
+                Text { text: root.np-title == "" ? "Nothing playing" : root.np-title;
+                    color: Theme.text; font-size: 13px; font-weight: 700; overflow: elide; }
+                Text { text: root.np-sub; color: Theme.text-dim; font-size: 10.5px;
+                    overflow: elide; }
+            }
+
+            // Transport + seek.
+            VerticalLayout {
+                horizontal-stretch: 1; alignment: center; spacing: 4px;
+                HorizontalLayout {
+                    height: 40px; spacing: 8px; alignment: center;
+                    WelBtn { icon: Icons.shuffle; lit: root.shuffle; accent: root.np-accent;
+                        y: (parent.height - self.height) / 2;
+                        clicked => { root.toggle-shuffle(); } }
+                    WelBtn { icon: Icons.skip-back; accent: root.np-accent;
+                        y: (parent.height - self.height) / 2; clicked => { root.prev(); } }
+                    WelBtn { icon: root.playing ? Icons.pause : Icons.play; primary: true;
+                        accent: root.np-accent;
+                        y: (parent.height - self.height) / 2; clicked => { root.playpause(); } }
+                    WelBtn { icon: Icons.skip-forward; accent: root.np-accent;
+                        y: (parent.height - self.height) / 2; clicked => { root.next(); } }
+                    WelBtn { icon: root.repeat == "one" ? Icons.repeat-1 : Icons.repeat;
+                        lit: root.repeat != "off"; accent: root.np-accent;
+                        y: (parent.height - self.height) / 2; clicked => { root.cycle-repeat(); } }
+                }
+                HorizontalLayout {
+                    height: 14px; spacing: 10px;
+                    Text { text: root.pos-label; color: Theme.text-dim; font-size: 9.5px;
+                        width: 34px; horizontal-stretch: 0; vertical-alignment: center; }
+                    Rectangle {
+                        height: 4px; border-radius: 2px; horizontal-stretch: 1;
+                        y: (parent.height - self.height) / 2;
+                        background: Theme.text.with-alpha(0.13);
+                        Rectangle {
+                            x: 0; height: 100%; border-radius: 2px;
+                            width: parent.width
+                                * Math.clamp(root.dur > 0 ? root.pos / root.dur : 0, 0.0, 1.0);
+                            background: root.np-accent;
+                        }
+                        sk := TouchArea {
+                            mouse-cursor: pointer;
+                            clicked => { root.seek(root.dur * (self.mouse-x / parent.width)); }
+                        }
+                    }
+                    Text { text: root.dur-label; color: Theme.text-dim; font-size: 9.5px;
+                        width: 34px; horizontal-alignment: right; horizontal-stretch: 0;
+                        vertical-alignment: center; }
+                }
+            }
+
+            // Spectrum — the same bars the Music section draws.
+            Rectangle {
+                width: 176px; horizontal-stretch: 0; background: transparent;
+                HorizontalLayout {
+                    height: 32px; width: 100%; spacing: 2px;
+                    y: (parent.height - self.height) / 2;
+                    for b in root.vis-bars: Rectangle {
+                        border-radius: 1px;
+                        y: parent.height - self.height;
+                        height: Math.max(2px, 32px * Math.clamp(b, 0.02, 1.0));
+                        background: root.np-accent.with-alpha(0.75);
+                    }
+                }
+            }
+
+            // Volume · queue · zen.
+            HorizontalLayout {
+                width: 104px; horizontal-stretch: 0; spacing: 4px; alignment: end;
+                WelBtn { icon: root.muted ? Icons.volume-x : Icons.volume;
+                    accent: root.np-accent; y: (parent.height - self.height) / 2;
+                    clicked => { root.toggle-mute(); } }
+                WelBtn { icon: Icons.list-music; accent: root.np-accent;
+                    y: (parent.height - self.height) / 2; clicked => { root.open-queue(); } }
+                WelBtn { icon: Icons.chevron-up; accent: root.np-accent;
+                    y: (parent.height - self.height) / 2; clicked => { root.open-zen(); } }
+            }
+        }
+    }
+}
