@@ -343,7 +343,6 @@ component SettingsPage inherits Rectangle {
     in property <bool> hc-transfer: true;
     in property <bool> hc-finances: true;
     in property <bool> hc-library: true;
-    in property <bool> hc-next: true;
     in property <bool> hc-ticker: true;
     in property <bool> hc-hub: true;
 
@@ -543,7 +542,6 @@ component SettingsPage inherits Rectangle {
                     hc-transfer: root.hc-transfer;
                     hc-finances: root.hc-finances;
                     hc-library: root.hc-library;
-                    hc-next: root.hc-next;
                     hc-ticker: root.hc-ticker;
                     hc-hub: root.hc-hub;
                     use-layout(l) => { root.use-home-layout(l); }
@@ -1027,7 +1025,6 @@ export component MainWindow inherits Window {
     in property <bool> hc-transfer: true;
     in property <bool> hc-finances: true;
     in property <bool> hc-library: true;
-    in property <bool> hc-next: true;
     in property <bool> hc-ticker: true;
     in property <bool> hc-hub: true;
     // Cinema's hero — the top in-progress item, resolved in Rust from the same
@@ -1045,6 +1042,8 @@ export component MainWindow inherits Window {
     // Cinema's two number panels. `home-fin-*` are Home-shaped copies of the
     // Finances data so this page needs no import from page_finances.slint.
     in property <[float]> home-fin-months: [];
+    in property <[string]> home-fin-month-labels: [];
+    in property <[string]> home-fin-month-spends: [];
     in property <[HomeDue]> home-fin-dues: [];
     in property <string> home-transfer-inbox: "";
     in property <string> home-transfer-note: "";
@@ -1056,7 +1055,6 @@ export component MainWindow inherits Window {
     in property <[HomeEvent]> home-events: [];
     in-out property <string> home-feed-filter: "all";   // all | media | money | devices
     in property <string> home-feed-note: "";
-    in property <[HomeDue]> home-next-rows: [];
     callback home-feed-filter-set(string);
     callback home-event-action(HomeEvent);
     callback home-open-photo-item(int);   // Home Photos card → open in photo viewer
@@ -1065,6 +1063,11 @@ export component MainWindow inherits Window {
     callback home-open-tool(string);      // Home Tools card → open that tool category
     callback home-open-remote(string);    // Home Cloud card → open that remote
     callback home-random-radio();         // Quick Actions → random Hindi station in the home player
+    // Fired by the Finances refresh when its props have landed. The Home
+    // layouts push their money blocks on ENTRY, which is before that async
+    // pass finishes — so without this, STANDING stayed empty until the
+    // Finances page had been opened once.
+    callback home-money-ready();
     callback section-changed(string);   // sidebar section click → preload that section
     // Status — app health for the sidebar lamp, and the click that starts the
     // loopback server and opens the dashboard in the default browser.
@@ -4572,24 +4575,39 @@ callback cloud-go-home();
                 greeting: root.home-greeting;
                 date-line: root.home-date-line;
                 library-line: root.user.secondary;
+                logo-choice: root.app-logo-choice;
+                festival: root.festival-logo;
                 events: root.home-events;
                 filter: root.home-feed-filter;
                 feed-note: root.home-feed-note;
                 stats: root.home-stats;
+                tool-count: root.tools-op-total;
                 np-title: root.music-np-title;
                 np-sub: root.music-np-sub;
                 np-art: root.music-np-art;
                 np-accent: root.music-np-accent;
                 playing: root.music-playing;
+                pos: root.music-pos;
+                dur: root.music-dur;
                 pos-label: root.music-pos-label;
                 dur-label: root.music-dur-label;
+                shuffle: root.music-shuffle;
+                repeat: root.music-repeat;
+                volume: root.music-volume;
+                muted: root.music-muted;
+                queue-rows: root.music-queue-rows;
+                np-index: root.music-np-index;
+                lyrics-rows: root.music-lyrics-rows;
+                lyrics-active: root.music-lyrics-active;
+                player-mode: root.music-player-mode;
+                yt-now-video: root.music-yt-now-video;
                 fin-spent: root.fin-spent-total;
                 fin-month: root.fin-month-label;
-                fin-liquid: root.fin-liquid-total;
                 fin-months: root.home-fin-months;
+                fin-month-labels: root.home-fin-month-labels;
+                fin-month-spends: root.home-fin-month-spends;
                 fin-dues: root.home-fin-dues;
                 transfer-inbox: root.home-transfer-inbox;
-                next-rows: root.home-next-rows;
                 hc-photos: root.hc-photos;
                 hc-videos: root.hc-videos;
                 hc-music: root.hc-music;
@@ -4600,15 +4618,42 @@ callback cloud-go-home();
                 hc-finances: root.hc-finances;
                 hc-player: root.hc-player;
                 hc-library: root.hc-library;
-                hc-next: root.hc-next;
+                hc-quick: root.hc-quick;
                 set-filter(f) => { root.home-feed-filter-set(f); }
                 event-action(e) => { root.home-event-action(e); }
                 open-section(s) => { root.active-section = s; root.section-changed(s); }
-                open-search => { root.palette-open = true; }
                 start-sharing => { root.active-section = "transfer"; root.section-changed("transfer"); root.transfer-start(); }
+                // Header launcher pills — the same six doors Cinema opens, with
+                // the same warm-the-tab setters.
+                open-stream => { root.set-video-kind("stream"); root.video-kind = "stream"; root.active-section = "videos"; root.section-changed("videos"); }
+                open-livetv => { root.set-video-kind("livetv"); root.video-kind = "livetv"; root.active-section = "videos"; root.section-changed("videos"); }
+                open-youtube => { root.music-view = "youtube"; root.active-section = "music"; root.section-changed("music"); }
+                open-download => { root.music-view = "mymusic"; root.music-set-lib-tab("downloader"); root.active-section = "music"; root.section-changed("music"); }
+                open-genesis => { root.genesis-enter(); root.active-section = "books"; root.section-changed("books"); }
+                random-radio => { root.home-random-radio(); }
+                open-zen => { root.music-fullscreen = true; }
                 playpause => { if (root.music-np-title == "") { root.music-shuffle-all(); } else { root.music-toggle-pause(); } }
                 next => { root.music-next(); }
                 prev => { root.music-prev(); }
+                seek(s) => { root.music-seek(s); }
+                shuffle-all => { root.music-shuffle-all(); }
+                toggle-shuffle => { root.music-toggle-shuffle(); }
+                cycle-repeat => { root.music-cycle-repeat(); }
+                toggle-mute => { root.music-toggle-mute(); }
+                set-volume(v) => { root.music-set-volume(v); }
+                play-queue(i) => { root.music-play-queue(i); }
+                refresh-queue => { root.music-build-queue(); }
+                // The rail's PLAYING caption names the tab the sound comes from —
+                // clicking it goes there. active-section LAST (slint#6426 sibling
+                // rule: the assignment deletes this component).
+                open-playing-tab => {
+                    root.music-view = root.music-player-mode == "podcast" ? "podcasts"
+                        : (root.music-player-mode == "radio" ? "radio"
+                        : (root.music-player-mode == "book" ? "audiobooks"
+                        : (root.music-yt-now-video ? "youtube" : "mymusic")));
+                    root.section-changed("music");
+                    root.active-section = "music";
+                }
             }
             // Home layout 7 — Welcome (docs/home-layouts/07-welcome.md).
             if active-section == "home" && root.home-layout == "welcome": HomeWelcome {
@@ -5049,7 +5094,6 @@ callback cloud-go-home();
                 hc-transfer: root.hc-transfer;
                 hc-finances: root.hc-finances;
                 hc-library: root.hc-library;
-                hc-next: root.hc-next;
                 hc-ticker: root.hc-ticker;
 
                 // The in-window twin of the loopback dashboard, living in the
@@ -5275,12 +5319,14 @@ callback cloud-go-home();
         next-chapter => { root.books-reader-next-chapter(); }
     }
 
-    // App-wide draggable mini-player. Suppressed on Home's CLASSIC bento and on
-    // CINEMA, both of which carry a full player of their own — everywhere else
-    // it waits for consent (`home-mini-allowed`) before floating over Home.
+    // App-wide draggable mini-player. Suppressed on Home's CLASSIC bento, on
+    // CINEMA and on TIMELINE, all of which carry a full player of their own —
+    // everywhere else it waits for consent (`home-mini-allowed`) before
+    // floating over Home.
     if root.music-mini-open && !root.music-mini-bubble
             && !(root.active-section == "home"
                  && (root.home-layout == "classic" || root.home-layout == "cinema"
+                     || root.home-layout == "stream"
                      || !root.home-mini-allowed)): Rectangle {
         x: root.music-mini-x; y: root.music-mini-y;
         width: root.music-mini-w; height: root.music-mini-h;
@@ -5378,7 +5424,8 @@ callback cloud-go-home();
     // to reposition; tap to restore the full mini-player.
     if root.music-mini-open && root.music-mini-bubble
             && !(root.active-section == "home"
-                 && (root.home-layout == "classic" || root.home-layout == "cinema")): Rectangle {
+                 && (root.home-layout == "classic" || root.home-layout == "cinema"
+                     || root.home-layout == "stream")): Rectangle {
         x: root.width - 78px;
         y: root.music-bubble-y < 0px ? root.height / 2 - 30px : root.music-bubble-y;
         width: 60px; height: 60px;

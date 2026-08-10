@@ -2672,6 +2672,10 @@ pub fn refresh(window: &MainWindow) {
             w.set_fin_fixed_pct(fixed_pct);
             w.set_fin_envelopes_spent(envelopes_spent.into());
             w.set_fin_badge(badge as i32);
+            // Home reads `fin_months` / `fin_needs_you` / `fin_spent_total` for
+            // its money blocks and pushes them on section entry — which happens
+            // before this pass lands. Say we are done so it can re-read.
+            w.invoke_home_money_ready();
         });
     });
 }

@@ -37,7 +37,8 @@ export struct HomeDue {
 }
 
 // ── Top-bar pill ────────────────────────────────────────────────────────────
-component TopPill inherits Rectangle {
+// Exported because Timeline wears the same header row.
+export component TopPill inherits Rectangle {
     in property <string> label;
     in property <image> icon;
     in property <color> accent: Theme.text-dim;
@@ -130,7 +131,8 @@ component HubArrow inherits Rectangle {
 }
 
 // ── Round transport key for the player panel ────────────────────────────────
-component CineBtn inherits Rectangle {
+// Exported: Timeline's rail player is the same transport, one column narrower.
+export component CineBtn inherits Rectangle {
     in property <image> icon;
     in property <bool> primary: false;    // play/pause — filled at rest
     in property <bool> lit: false;        // shuffle on / repeat on
@@ -789,7 +791,10 @@ export component HomeCinema inherits Rectangle {
                                 : (root.player-mode == "radio" ? Icons.radio
                                 : (root.player-mode == "book" ? Icons.book-open : Icons.music));
                             tint: root.src-accent;
-                            width: 13px; height: 13px; horizontal-stretch: 0;
+                            // Full row height, `image-fit: contain` keeps the glyph
+                            // 13px and centres it — a fixed 13px box would sit at the
+                            // top, because a layout pins a fixed-size child to the start.
+                            width: 13px; height: parent.height; horizontal-stretch: 0;
                         }
                         Text { text: root.src-name; color: root.src-accent; font-size: 11px;
                             font-weight: 700; letter-spacing: 0.3px; vertical-alignment: center;

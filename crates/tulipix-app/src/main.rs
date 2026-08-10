@@ -977,9 +977,27 @@ fn main() -> Result<()> {
     // one of its panels opens; the Home players have no panel of their own, so
     // without this their queue was whatever the last panel open had left behind
     // — empty on a fresh session, and stale once the track advanced.
+    // Home can be a whole session on its own: the My Music caches (music_ids,
+    // and the id→position map every queue row is built from) are only filled
+    // when the Music section loads. Asked from Home before that, the queue came
+    // back either empty or full of positions that point at nothing — which is
+    // what "it plays whatever it likes" was. Warm the caches, then build again.
+    let warm_q: &'static slint::Timer = Box::leak(Box::new(slint::Timer::default()));
     let w = window.as_weak();
     window.on_music_build_queue(move || {
-        if let Some(w) = w.upgrade() { build_music_queue(&w); }
+        let Some(w) = w.upgrade() else { return; };
+        if music_ids().lock().map(|g| g.is_empty()).unwrap_or(true) {
+            populate_music_views(w.as_weak());
+            // ponytail: a fixed wait, because populate_music_views is
+            // fire-and-forget; give it a completion signal if this proves flaky.
+            let weak = w.as_weak();
+            warm_q.start(
+                slint::TimerMode::SingleShot,
+                std::time::Duration::from_millis(600),
+                move || { if let Some(w) = weak.upgrade() { build_music_queue(&w); } },
+            );
+        }
+        build_music_queue(&w);
     });
     // Play a track from the queue panel (index = playback position).
     let w = window.as_weak();
@@ -1339,7 +1357,6 @@ fn main() -> Result<()> {
                 }
             }
             push_home_cinema_extras(&w0);
-            push_home_next(&w0);
             // Stream's feed is eight queries, so it only runs for the layout that
             // draws it.
             if w0.get_home_layout().as_str() == "stream" { kick_home_events(&w0); }
@@ -4755,9 +4772,9 @@ fn save_home_cont_dismissed() {
 
 /// Every card id any layout can own, in one place. `apply_home_cards` walks this
 /// to set the window booleans, so adding a card is one line here plus one there.
-const HOME_CARD_IDS: [&str; 16] = [
+const HOME_CARD_IDS: [&str; 15] = [
     "hero", "continue", "player", "quick", "photos", "videos", "music", "books",
-    "cloud", "tools", "transfer", "finances", "library", "next", "ticker", "hub",
+    "cloud", "tools", "transfer", "finances", "library", "ticker", "hub",
 ];
 
 fn home_layout_valid(v: &str) -> &'static str {
@@ -4796,12 +4813,12 @@ fn home_layout_cards(layout: &str) -> &'static [(&'static str, &'static str, &'s
             ("books", "Book events", "Reading and listening progress"),
             ("cloud", "Cloud events", "Sync runs and their results"),
             ("tools", "Tool events", "Finished and failed jobs"),
-            ("transfer", "Transfer events", "Files sent and received, plus the DEVICES block"),
+            ("transfer", "Transfer events", "Files sent and received, plus the TRANSFERS block"),
             ("finances", "Money events", "Dues and payments, plus the STANDING block"),
+            ("quick", "Quick actions", "Stream, YouTube, Music D/L, Genesis, Radio and Live TV in the header"),
             ("player", "Player block", "Now playing at the top of the rail"),
             ("library", "Library block", "The counter table in the rail"),
-            ("next", "What's next", "Tomorrow's dues, scheduled rescans, nearly-finished books"),
-        ],
+            ],
         "welcome" => &[
             ("hero", "Hero greeting", "The big hello and the collage from your own library"),
             ("quick", "Launch bar", "Stream, Random Radio, Music D/L, Genesis, Live TV, Tools"),
@@ -4885,7 +4902,6 @@ fn apply_home_cards(w: &MainWindow) {
     w.set_hc_transfer(on("transfer"));
     w.set_hc_finances(on("finances"));
     w.set_hc_library(on("library"));
-    w.set_hc_next(on("next"));
     w.set_hc_ticker(on("ticker"));
     w.set_hc_hub(on("hub"));
 
@@ -4926,7 +4942,6 @@ fn wire_home_layout(window: &MainWindow) {
             if home_layout_wants_money(layout) { tulipix_sec_finances::refresh(&w); }
         }
         push_home_cinema_extras(&w);
-        push_home_next(&w);
         // Stream's feed costs eight queries, so it is gathered when the layout
         // that shows it is chosen rather than on every Home landing.
         if layout == "stream" { kick_home_events(&w); }
@@ -5001,6 +5016,18 @@ fn wire_home_layout(window: &MainWindow) {
 /// Editorial's two rows — shaped for Home so neither page has to import
 /// `page_finances.slint`. Reads what the Finances section has already loaded;
 /// empty until it has run once.
+/// `2026-08-15` → `15-08-26`. Anything that is not an ISO date comes back
+/// unchanged, so a humanised string the section may hand over still prints.
+fn home_due_date(iso: &str) -> String {
+    let p: Vec<&str> = iso.split('-').collect();
+    match p.as_slice() {
+        [y, m, d] if y.len() == 4 && m.len() == 2 && d.len() == 2 => {
+            format!("{d}-{m}-{}", &y[2..])
+        }
+        _ => iso.to_string(),
+    }
+}
+
 fn push_home_cinema_extras(w: &MainWindow) {
     // Twelve months as 0‥1 heights, oldest first — the bar row wants a ratio,
     // and the section already computed the percentage.
@@ -5008,6 +5035,14 @@ fn push_home_cinema_extras(w: &MainWindow) {
         .map(|m| (m.expense_pct as f32 / 100.0).clamp(0.0, 1.0))
         .collect();
     w.set_home_fin_months(slint::ModelRc::new(slint::VecModel::from(months)));
+    // …and what each bar stands for, so Timeline's chart can restate STANDING
+    // when a bar is picked without asking the backend for another month.
+    let labels: Vec<slint::SharedString> =
+        w.get_fin_months().iter().map(|m| m.long.clone()).collect();
+    w.set_home_fin_month_labels(slint::ModelRc::new(slint::VecModel::from(labels)));
+    let spends: Vec<slint::SharedString> =
+        w.get_fin_months().iter().map(|m| m.expense.clone()).collect();
+    w.set_home_fin_month_spends(slint::ModelRc::new(slint::VecModel::from(spends)));
 
     // Up to three obligations, overdue first — the panel is 274 px wide and a
     // fourth row would push the shelf.
@@ -5015,7 +5050,9 @@ fn push_home_cinema_extras(w: &MainWindow) {
         .map(|o| HomeDue {
             name: o.name.clone(),
             amount: if o.actual.is_empty() { o.estimate.clone() } else { o.actual.clone() },
-            when: o.due.clone(),
+            // The section stores ISO (`2026-08-15`); Home prints DD-MM-YY, which
+            // is what the rest of this app's dates look like.
+            when: home_due_date(o.due.as_str()).into(),
             late: o.status.as_str() == "overdue",
         })
         .collect();
@@ -5054,8 +5091,10 @@ struct HomeEvRow {
     path: String,
 }
 
-/// How many events the feed keeps after the merge.
-const HOME_EVENTS_MAX: usize = 40;
+/// How many events the feed keeps after the merge. Rows are newest-first by the
+/// time this bites, so the cap drops the OLDEST — the tail of the list — and the
+/// hundredth-newest event is the last one Timeline will ever draw.
+const HOME_EVENTS_MAX: usize = 50;
 /// Same section + same kind inside this window collapses into one row, so a big
 /// import cannot flood the feed with four hundred "added" lines.
 const HOME_EVENT_WINDOW: i64 = 15 * 60;
@@ -5370,6 +5409,9 @@ fn push_home_events(weak: &slint::Weak<MainWindow>) {
             };
             out.push(HomeEvent {
                 at: dt.map(|d| d.format("%H:%M").to_string()).unwrap_or_default().into(),
+                // The clock alone never said which day a row belonged to once the
+                // feed reached past yesterday — the gutter prints both now.
+                day: dt.map(|d| d.format("%d-%m-%y").to_string()).unwrap_or_default().into(),
                 group: group.into(),
                 head,
                 section: r.section.into(),
@@ -5393,34 +5435,15 @@ fn push_home_events(weak: &slint::Weak<MainWindow>) {
     });
 }
 
-/// Stream's NEXT block: what has not happened yet. Dues that are not late, and
-/// what you are nearly finished with — both read from what Home already holds.
-fn push_home_next(w: &MainWindow) {
-    use slint::Model;
-    let mut rows: Vec<HomeDue> = Vec::new();
-    for d in w.get_home_fin_dues().iter().filter(|d| !d.late) {
-        rows.push(d);
-    }
-    for c in w.get_home_continue_rows().iter() {
-        if c.frac >= 0.8 && c.frac < 1.0 {
-            rows.push(HomeDue {
-                name: c.title.clone(),
-                amount: format!("{}%", (c.frac * 100.0).round() as i64).into(),
-                when: match c.kind.as_str() {
-                    "video" => "film".into(),
-                    "podcast" => "episode".into(),
-                    "audiobook" => "listening".into(),
-                    _ => "reading".into(),
-                },
-                late: false,
-            });
-        }
-    }
-    rows.truncate(6);
-    w.set_home_next_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
-}
-
 fn wire_home_stream(window: &MainWindow) {
+    // The Finances refresh is async: Home pushes its money blocks on entry, and
+    // the numbers land afterwards. This is that landing — without it, Timeline's
+    // STANDING and Cinema's Finances tile stayed empty until the Finances page
+    // had been opened once.
+    let w = window.as_weak();
+    window.on_home_money_ready(move || {
+        if let Some(w) = w.upgrade() { push_home_cinema_extras(&w); }
+    });
     let w = window.as_weak();
     window.on_home_feed_filter_set(move |f| {
         let Some(w) = w.upgrade() else { return; };
@@ -5538,8 +5561,6 @@ fn push_home_continue(weak: &slint::Weak<MainWindow>) {
             })
             .collect();
         w.set_home_continue_rows(slint::ModelRc::new(slint::VecModel::from(items)));
-        // Stream's NEXT block reads these rows for what is nearly finished.
-        push_home_next(&w);
     });
 }
 

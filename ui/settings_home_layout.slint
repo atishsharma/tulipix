@@ -43,7 +43,6 @@ export component LayoutThumb inherits Rectangle {
     in property <bool> hc-transfer: true;
     in property <bool> hc-finances: true;
     in property <bool> hc-library: true;
-    in property <bool> hc-next: true;
     in property <bool> hc-ticker: true;
     in property <bool> hc-hub: true;
 
@@ -61,7 +60,7 @@ export component LayoutThumb inherits Rectangle {
     property <int> panes: root.keys + (root.hc-transfer ? 1 : 0) + (root.hc-finances ? 1 : 0);
     property <int> rows: root.panes;
     property <int> rail: (root.hc-player ? 1 : 0) + (root.hc-finances ? 1 : 0)
-        + (root.hc-transfer ? 1 : 0) + (root.hc-library ? 1 : 0) + (root.hc-next ? 1 : 0);
+        + (root.hc-transfer ? 1 : 0) + (root.hc-library ? 1 : 0);
 
     background: Theme.dark ? #06070f : #f4f2fb;
     border-radius: Surface.rr(9px, self.width, self.height);
@@ -307,7 +306,6 @@ export component LayoutThumb inherits Rectangle {
                 if root.hc-finances: Rectangle { border-radius: 3px; background: Theme.sec-finances.with-alpha(0.5); }
                 if root.hc-transfer: Rectangle { border-radius: 3px; background: Theme.sec-transfer.with-alpha(0.5); }
                 if root.hc-library: Rectangle { border-radius: 3px; background: Theme.sec-photos.with-alpha(0.4); }
-                if root.hc-next: Rectangle { border-radius: 3px; background: Theme.sec-videos.with-alpha(0.4); }
             }
         }
     }
@@ -436,7 +434,6 @@ export component SettingsHomeLayout inherits Rectangle {
     in property <bool> hc-transfer: true;
     in property <bool> hc-finances: true;
     in property <bool> hc-library: true;
-    in property <bool> hc-next: true;
     in property <bool> hc-ticker: true;
     in property <bool> hc-hub: true;
 
@@ -668,7 +665,6 @@ export component SettingsHomeLayout inherits Rectangle {
                                 hc-transfer: root.hc-transfer;
                                 hc-finances: root.hc-finances;
                                 hc-library: root.hc-library;
-                                hc-next: root.hc-next;
                                 hc-ticker: root.hc-ticker;
                                 hc-hub: root.hc-hub;
                             }

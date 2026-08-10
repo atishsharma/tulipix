@@ -176,7 +176,8 @@ component WelTip inherits Rectangle {
 // The loop is an `animate` with `iteration-count: -1`, not an `animation-tick()`
 // binding: the tick would repaint every frame for every line, including the
 // short ones that never move.
-component WelMarquee inherits Rectangle {
+// Exported: Timeline's rail player runs its two lines through the same marquee.
+export component WelMarquee inherits Rectangle {
     in property <string> label;
     in property <color> ink;
     in property <length> size;
