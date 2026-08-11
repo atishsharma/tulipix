@@ -1,0 +1,200 @@
+// The window's own caption row.
+//
+// The Mini Player button has to sit WITH the window buttons, not in a strip
+// below them, and nothing can be added to a row the OS draws — so the main
+// window goes frameless (`no-frame`) and this row replaces the system one
+// rather than adding a second bar.
+//
+// Button order follows the platform: minimise/maximise/close live on the right
+// on Windows and Linux, so Mini Player goes to their left; macOS keeps its
+// native traffic lights (the frame stays, with a transparent titlebar), so
+// there the row draws only the Mini Player button, clear of the lights.
+//
+// Dragging is handed to the compositor via `begin-drag` — Wayland has no
+// window-positioning API, so a frameless window cannot move itself.
+
+import { Theme } from "tokens.slint";
+import { Icons, AppIcon } from "icons.slint";
+import { Surface } from "surface.slint";
+
+// A system caption button: square, full-height, flat until hovered. Close gets
+// the red hover every platform uses, so it is recognisable without a label.
+component CapBtn inherits Rectangle {
+    in property <image> icon;
+    in property <bool> danger: false;
+    in property <length> isz: 13px;
+    callback clicked();
+    width: 40px;
+    horizontal-stretch: 0;
+    background: cb.has-hover ? (root.danger ? #e81123 : Theme.glass) : transparent;
+    animate background { duration: 90ms; easing: ease-out; }
+    AppIcon {
+        source: root.icon;
+        tint: root.danger && cb.has-hover ? #ffffff : (cb.has-hover ? Theme.text : Theme.text-dim);
+        width: root.isz; height: root.isz;
+        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+    }
+    cb := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+export component TitleRow inherits Rectangle {
+    in property <string> win-title: "Tulipix";
+    // macOS keeps its native frame + traffic lights; this row only contributes
+    // the Mini Player button there.
+    in property <bool> mac: false;
+    in property <bool> maximized: false;
+    // No track loaded → no button. A dead control in the caption row is noise.
+    in property <bool> has-track: false;
+    in property <bool> playing: false;
+    in property <color> accent: #ec4899;
+
+    callback mini();
+    callback minimize();
+    callback maximize-toggle();
+    callback close-win();
+    callback begin-drag();
+
+    height: 38px;
+    background: transparent;
+
+    // The caption row carries the track only while it is actually playing.
+    // Three seconds after a pause it goes back to the app's own mark and name:
+    // a paused track is not what the window is, and a title bar naming
+    // something that stopped four minutes ago is stale, not informative.
+    // No track at all is idle from the start — there is nothing to name.
+    property <bool> idle: !root.has-track || root.settled;
+    property <bool> settled: false;
+    changed playing => { if (root.playing) { root.settled = false; } }
+    // `running` as a binding rather than started by hand: it then also covers a
+    // track that is loaded but never started, which no change handler sees.
+    idlet := Timer {
+        interval: 3s;
+        running: root.has-track && !root.playing && !root.settled;
+        triggered => { root.settled = true; }
+    }
+
+    // Drag surface under everything; buttons sit above it and swallow their own
+    // clicks. Double-click toggles maximise, which is what a title bar does.
+    //
+    // `cooling` is not cosmetic. Once the compositor takes over the move it
+    // keeps the pointer for the whole drag, so the release never comes back to
+    // Slint and this TouchArea stays grabbed — and a grabbed TouchArea receives
+    // every pointer event in the window, which left the app dragging itself
+    // around from clicks anywhere on any page and nothing else responding. A
+    // disabled TouchArea drops its grab on the next event it sees and forwards
+    // that event on, so standing down for a beat after each drag hands control
+    // back.
+    property <bool> cooling: false;
+    drag := TouchArea {
+        enabled: !root.cooling;
+        mouse-cursor: default;
+        pointer-event(e) => {
+            if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
+                root.cooling = true;
+                root.begin-drag();
+                cool.running = true;
+            }
+        }
+        double-clicked => { if (!root.mac) { root.maximize-toggle(); } }
+    }
+    cool := Timer {
+        interval: 900ms;
+        running: false;
+        triggered => { self.running = false; root.cooling = false; }
+    }
+
+    HorizontalLayout {
+        spacing: 0px;
+        // macOS: clear the traffic lights, then the button, then the title.
+        padding-left: root.mac ? 82px : 12px;
+
+        if !root.mac: VerticalLayout {
+            alignment: center;
+            if root.idle: Image {
+                source: @image-url("icons/tulipix.png"); image-fit: contain;
+                width: 16px; height: 16px;
+            }
+            if !root.idle: AppIcon {
+                source: Icons.music; tint: root.accent; width: 15px; height: 15px;
+            }
+        }
+        if !root.mac: Rectangle { width: 9px; background: transparent; }
+
+        // `if` rather than `visible`: an invisible element still takes its
+        // slot in a layout, which would leave a gap where the button was.
+        if root.mac && root.has-track: mini-mac := Rectangle {
+            width: 28px; height: 26px;
+            y: (parent.height - self.height) / 2;
+            horizontal-stretch: 0;
+            border-radius: Surface.rr(8px, self.width, self.height);
+            background: root.playing ? root.accent.with-alpha(0.18)
+                : (mm.has-hover ? Theme.glass : transparent);
+            border-width: root.playing ? 1px : 0px;
+            border-color: root.accent.with-alpha(0.45);
+            AppIcon {
+                source: Icons.pip;
+                tint: root.playing ? root.accent : Theme.text-dim;
+                width: 14px; height: 14px;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            }
+            mm := TouchArea { mouse-cursor: pointer; clicked => { root.mini(); } }
+        }
+
+        // Title. Centred on macOS (its convention), left-aligned elsewhere.
+        Text {
+            text: root.idle ? "Tulipix" : root.win-title;
+            color: Theme.text-dim;
+            font-size: root.mac ? 12.5px : 12px;
+            font-weight: root.mac ? 600 : 400;
+            vertical-alignment: center;
+            horizontal-alignment: root.mac ? center : left;
+            overflow: elide;
+            horizontal-stretch: 1;
+        }
+
+        // ── Windows / Linux: Mini Player, then the system trio ───────────
+        if !root.mac && root.has-track: mini-btn := Rectangle {
+            width: 40px; horizontal-stretch: 0;
+            background: root.playing ? root.accent.with-alpha(0.16)
+                : (mb.has-hover ? Theme.glass : transparent);
+            animate background { duration: 90ms; easing: ease-out; }
+            // A hairline ring instead of a full border: the button belongs to
+            // the app, the three beside it belong to the window.
+            Rectangle {
+                width: 28px; height: 24px;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                border-radius: Surface.rr(7px, self.width, self.height);
+                background: transparent;
+                border-width: root.playing ? 1px : 0px;
+                border-color: root.accent.with-alpha(0.45);
+            }
+            AppIcon {
+                source: Icons.pip;
+                tint: root.playing ? root.accent : (mb.has-hover ? Theme.text : Theme.text-dim);
+                width: 14px; height: 14px;
+                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+            }
+            mb := TouchArea { mouse-cursor: pointer; clicked => { root.mini(); } }
+        }
+        if !root.mac: Rectangle {
+            width: 1px; height: 16px; horizontal-stretch: 0;
+            y: (parent.height - self.height) / 2;
+            background: Theme.outline;
+        }
+        if !root.mac: CapBtn { icon: Icons.minus; isz: 12px; clicked => { root.minimize(); } }
+        // A plain square for maximise and overlapping squares for restore —
+        // the shapes every desktop uses. (Icons.maximize is the expand-arrows
+        // glyph, which reads as fullscreen, not as maximise.)
+        if !root.mac: CapBtn {
+            icon: root.maximized ? Icons.restore : Icons.square; isz: 12px;
+            clicked => { root.maximize-toggle(); }
+        }
+        if !root.mac: CapBtn { icon: Icons.x; danger: true; clicked => { root.close-win(); } }
+    }
+
+    // Hairline under the row, so the caption reads as chrome and not as page.
+    Rectangle {
+        y: parent.height - 1px; height: 1px;
+        background: Theme.outline;
+    }
+}

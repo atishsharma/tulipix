@@ -19,6 +19,12 @@ import { TransferPage, TransferFile, TransferDevice, TransferUp, TransferRow, Tr
 import { StatusPage, StRow, StKpi, StCell, StTableRow, StGroup, StCard, StMetric,
          StEvent, StToday, StRoot, StLibSection, StScan } from "page_status.slint";
 import { ThemePicker, ThemeChoice } from "theme_picker.slint";
+import { TitleRow } from "title_row.slint";
+// Two extra top-level windows. Only ui/main.slint is fed to the compiler
+// (crates/tulipix-ui/build.rs), so they are re-exported here to be generated
+// into the same module as MainWindow.
+import { MiniWidget, TrayPopup } from "mini_widget.slint";
+export { MiniWidget, TrayPopup }
 import { Surface, Skin, DesignLangPicker } from "surface.slint";
 import { UserState } from "user_card.slint";
 import { CropDialog } from "crop_dialog.slint";
@@ -34,7 +40,7 @@ import { CmdPalette, PaletteRow } from "cmd_palette.slint";
 import { ShortcutHelp, ShortcutGroup, ShortcutItem } from "shortcut_help.slint";
 import { ErrorBoundary } from "error_page.slint";
 import { PropertiesWindow, AssetProperties } from "properties.slint";
-import { SettingsList, SettingItem } from "settings_panels.slint";
+import { SettingsList, SettingItem, StylePicker } from "settings_panels.slint";
 import { ChatOverlay, ChatTurn } from "chat_overlay.slint";
 import { Gated, GateMode } from "gated.slint";
 import { HomePage, HomeStats, HomeRemote, HomeContinue, HomeBook, HomeQuote } from "page_home.slint";
@@ -255,6 +261,10 @@ component SettingsPage inherits Rectangle {
     callback reduce-motion-changed(bool);
     in property <bool> home-music-left;   // Home layout: music block on the left
     in property <int> design-lang;        // 0 Standard · 1 Claymorphism · 2 Skeuomorphism
+    // Mini Player + tray styles (Profile & Style) — names, not indices, so the
+    // stored value survives a reordering of the picker.
+    in property <string> mini-widget-style: "bar";
+    in property <string> tray-menu-style: "popup";
     in property <bool> account-sync-allowed;
     in property <UserState> user;
     // BUILT WITH credits — static, vendored logo assets (no runtime fetch).
@@ -736,6 +746,37 @@ component SettingsPage inherits Rectangle {
                                         v == 1 ? "clay" : (v == 2 ? "skeuo" : "standard"));
                                 }
                             }
+
+                            // ── Mini Player + tray ──────────────────────────
+                            Rectangle { height: 1px; background: Theme.outline; }
+                            Text { text: "MINI PLAYER & TRAY"; color: Theme.text-dim; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
+                            VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Desktop widget"; color: Theme.text; font-size: 13px; font-weight: 600; }
+                                Text { text: "Shape the app shrinks into — the ⧉ button in the title bar"; color: Theme.text-dim; font-size: 11px; }
+                            }
+                            StylePicker {
+                                choice: root.mini-widget-style;
+                                options: [
+                                    { label: "Bar",    value: "bar",    note: "380 × 120", pw: 62px, ph: 20px },
+                                    { label: "Square",  value: "square", note: "260 × 336", pw: 30px, ph: 39px },
+                                    { label: "Pill",   value: "pill",   note: "216 × 56",  pw: 54px, ph: 14px },
+                                ];
+                                changed(v) => { root.setting-text("ui.mini-widget.style", v); }
+                            }
+                            VerticalLayout {
+                                spacing: 2px;
+                                Text { text: "Tray menu"; color: Theme.text; font-size: 13px; font-weight: 600; }
+                                Text { text: "Right-click the tray icon — a native menu, or a popup with art and a seek bar"; color: Theme.text-dim; font-size: 11px; }
+                            }
+                            StylePicker {
+                                choice: root.tray-menu-style;
+                                options: [
+                                    { label: "Popup",  value: "popup",  note: "art · seek · volume", pw: 34px, ph: 42px },
+                                    { label: "Native", value: "native", note: "OS menu, text rows",  pw: 44px, ph: 34px },
+                                ];
+                                changed(v) => { root.setting-text("ui.tray-menu.style", v); }
+                            }
                             HorizontalLayout {
                                 spacing: 12px;
                                 VerticalLayout {
@@ -1127,6 +1168,8 @@ export component MainWindow inherits Window {
     // the three languages has to hold on all three tiers, so this is a second
     // axis rather than three more theme choices.
     in-out property <int> design-lang <=> Surface.lang;
+    in-out property <string> mini-widget-style: "bar";
+    in-out property <string> tray-menu-style: "popup";
     in-out property <bool> reduce-motion <=> Theme.reduce-motion;
     callback reduce-motion-changed(bool);
     // Theme unified (2026-07-05): MusicTheme now derives from the app Theme, so
@@ -2201,6 +2244,27 @@ callback cloud-go-home();
     in-out property <bool> app-fullscreen: false;
     property <bool> fs-peek: false;
     callback app-quit();
+
+    // ── Custom caption row (ui/title_row.slint) ─────────────────────────────
+    // The Mini Player button has to sit with the window buttons, and the OS
+    // draws that row — so the window goes frameless and we draw the caption
+    // ourselves. `csd` is set from Rust before the window is shown (no-frame is
+    // read at window creation); TULIPIX_NATIVE_FRAME=1 turns it back off.
+    // macOS keeps its native frame and traffic lights, so there the row carries
+    // only the Mini Player button.
+    in property <bool> csd: false;
+    in property <bool> csd-mac: false;
+    no-frame: root.csd && !root.csd-mac;
+    // Frameless means no OS resize borders either. Slint 1.17 grows them back
+    // for us: the winit backend hit-tests this margin and hands the drag to the
+    // compositor, which replaced eight hand-rolled edge strips.
+    resize-border-width: root.csd && !root.app-fullscreen ? 6px : 0px;
+    // minimized / maximized are two-way Window builtins as of 1.17, so the
+    // caption glyph follows the real window state — including when a tiling WM
+    // or a keyboard shortcut changes it — with no Rust and no polling.
+    callback win-close();
+    callback win-drag();            // hand the move to the compositor
+    callback open-mini-widget();    // shrink the app into the desktop widget
     // (Re)arm the 5 s idle countdown that auto-starts the slideshow when the
     // setup row is left untouched. Each setup interaction re-arms it.
     callback slideshow-arm();
@@ -3268,6 +3332,15 @@ callback cloud-go-home();
             if (e.modifiers.control || e.modifiers.meta) && e.text == "j" {
                 root.chat-open = true; return accept;
             }
+            // Ctrl/Cmd+Shift+M — shrink into the desktop widget. Works wherever
+            // the caption row's button is unavailable (macOS keeps native
+            // decorations), so the feature is never unreachable. Slint reports
+            // the shifted character, hence both cases.
+            if (e.modifiers.control || e.modifiers.meta) && e.modifiers.shift
+                    && (e.text == "M" || e.text == "m") {
+                if (root.music-np-title != "") { root.open-mini-widget(); }
+                return accept;
+            }
             if e.text == "?" {
                 root.shortcuts-open = true; return accept;
             }
@@ -3301,9 +3374,29 @@ callback cloud-go-home();
             return reject;
         }
 
+    // Our caption row, in place of the one the OS would have drawn. Hidden in
+    // logo-fullscreen, which has its own hover-peek bar further down.
+    if root.csd && !root.app-fullscreen: TitleRow {
+        x: 0; y: 0; width: root.width;
+        mac: root.csd-mac;
+        maximized: root.maximized;
+        win-title: root.music-np-title == "" ? "Tulipix"
+            : "Tulipix — " + root.music-np-title;
+        has-track: root.music-np-title != "";
+        playing: root.music-playing;
+        accent: Accent.color;
+        mini => { root.open-mini-widget(); }
+        minimize => { root.minimized = true; }
+        maximize-toggle => { root.maximized = !root.maximized; }
+        close-win => { root.win-close(); }
+        begin-drag => { root.win-drag(); }
+    }
+
     // Foreground app shell.
     HorizontalLayout {
         padding: 14px;
+        // Clear the caption row when we are the ones drawing it.
+        padding-top: root.csd && !root.app-fullscreen ? 48px : 14px;
         spacing: 14px;
 
         Sidebar {
@@ -5031,6 +5124,8 @@ callback cloud-go-home();
                 reduce-motion-changed(v) => { root.reduce-motion-changed(v); }
                 home-music-left: root.home-music-left;
                 design-lang: root.design-lang;
+                mini-widget-style: root.mini-widget-style;
+                tray-menu-style: root.tray-menu-style;
                 account-sync-allowed: root.account-sync-allowed;
                 user: root.user;
                 api-rows: root.api-rows;

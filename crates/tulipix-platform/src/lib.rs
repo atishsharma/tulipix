@@ -225,9 +225,45 @@ pub fn drain_menu_events<F: FnMut(&str)>(_handler: F) {}
 
 // ── Tray icon ──────────────────────────────────────────────────────────
 
+/// What the tray context menu says about playback.
+///
+/// Pushed from the app with [`update_tray`] whenever the track or transport
+/// state changes; the tray re-renders its menu from this. Deliberately without
+/// a playback position: the menu would have to be re-published over D-Bus every
+/// second to keep a clock honest, and the popup window (the other tray style)
+/// already shows one.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct TrayNowPlaying {
+    pub title: String,
+    pub artist: String,
+    pub playing: bool,
+    pub has_track: bool,
+    pub shuffle: bool,
+    /// "off" · "all" · "one"
+    pub repeat: String,
+    /// Album art as PNG bytes — what a StatusNotifierItem menu row takes
+    /// (`icon_data`), already scaled down to menu-icon size by the caller.
+    /// Empty means no art, and the row draws without one.
+    pub art_png: Vec<u8>,
+    /// Tray style is "popup": a left click should open the popup window rather
+    /// than raising the main one.
+    pub popup: bool,
+}
+
 #[cfg(all(feature = "tray", not(target_os = "linux")))]
 thread_local! {
     static TRAY: RefCell<Option<TrayIcon>> = const { RefCell::new(None) };
+    /// Menu items whose text changes with playback, kept so they can be
+    /// relabelled in place — rebuilding the menu would drop it while open.
+    static TRAY_ITEMS: RefCell<Option<TrayItems>> = const { RefCell::new(None) };
+}
+
+#[cfg(all(feature = "tray", not(target_os = "linux")))]
+struct TrayItems {
+    now: tray_icon::menu::MenuItem,
+    playpause: tray_icon::menu::MenuItem,
+    shuffle: tray_icon::menu::MenuItem,
+    repeat: tray_icon::menu::MenuItem,
 }
 
 // ── Linux tray: StatusNotifierItem over D-Bus ────────────────────────────────
@@ -249,9 +285,26 @@ mod linux_tray {
     pub struct TulipixTray {
         pub icon: Vec<ksni::Icon>,
         pub tx: Sender<&'static str>,
+        pub np: crate::TrayNowPlaying,
+    }
+
+    /// Menu labels have to fit a menu, not a window.
+    fn clip(s: &str, max: usize) -> String {
+        if s.chars().count() <= max {
+            return s.to_string();
+        }
+        let head: String = s.chars().take(max.saturating_sub(1)).collect();
+        format!("{}…", head.trim_end())
     }
 
     impl ksni::Tray for TulipixTray {
+        /// Any click opens the menu, not just the right one. The host draws the
+        /// menu itself — an app cannot ask it to — so this property is the only
+        /// way to say "left click means menu too". It replaces `activate`
+        /// entirely, which is why the header row below carries what a left
+        /// click used to do.
+        const MENU_ON_ACTIVATE: bool = true;
+
         fn id(&self) -> String {
             "tulipix".into()
         }
@@ -265,22 +318,151 @@ mod linux_tray {
         fn icon_pixmap(&self) -> Vec<ksni::Icon> {
             self.icon.clone()
         }
+        /// Hovering the icon says what is playing without opening anything.
+        fn tool_tip(&self) -> ksni::ToolTip {
+            ksni::ToolTip {
+                title: "Tulipix".into(),
+                description: if self.np.has_track {
+                    format!("{} — {}", self.np.title, self.np.artist)
+                } else {
+                    String::new()
+                },
+                ..Default::default()
+            }
+        }
+        /// Left click. With the popup tray style this opens the popup window;
+        /// otherwise it raises the app, which is what it always did.
+        fn activate(&mut self, _x: i32, _y: i32) {
+            let _ = self.tx.send(if self.np.popup { "tray.popup" } else { "tray.open" });
+        }
         fn menu(&self) -> Vec<ksni::MenuItem<Self>> {
-            use ksni::menu::StandardItem;
-            vec![
+            use ksni::menu::{CheckmarkItem, StandardItem, SubMenu};
+            let mut items: Vec<ksni::MenuItem<Self>> = Vec::new();
+
+            // Header — art + track. A StatusNotifierItem menu row takes an icon
+            // and a label and nothing else, so this is the whole "thumbnail":
+            // one ~22px pixmap beside the title. The popup tray style exists for
+            // when that is not enough.
+            if self.np.has_track {
+                items.push(
+                    StandardItem {
+                        label: clip(&self.np.title, 34),
+                        icon_data: self.np.art_png.clone(),
+                        // The popup tray style's window has no click of its own
+                        // left (see MENU_ON_ACTIVATE) — the track row is where
+                        // it lives now.
+                        activate: Box::new(|t: &mut Self| {
+                            let _ = t.tx.send(if t.np.popup { "tray.popup" } else { "tray.open" });
+                        }),
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+                if !self.np.artist.is_empty() {
+                    items.push(
+                        StandardItem {
+                            label: clip(&self.np.artist, 38),
+                            enabled: false,
+                            ..Default::default()
+                        }
+                        .into(),
+                    );
+                }
+                items.push(ksni::MenuItem::Separator);
+                items.push(
+                    StandardItem {
+                        label: "Previous".into(),
+                        activate: Box::new(|t: &mut Self| { let _ = t.tx.send("tray.prev"); }),
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+                items.push(
+                    StandardItem {
+                        label: if self.np.playing { "Pause".into() } else { "Play".to_string() },
+                        activate: Box::new(|t: &mut Self| { let _ = t.tx.send("tray.playpause"); }),
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+                items.push(
+                    StandardItem {
+                        label: "Next".into(),
+                        activate: Box::new(|t: &mut Self| { let _ = t.tx.send("tray.next"); }),
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+                items.push(ksni::MenuItem::Separator);
+                items.push(
+                    CheckmarkItem {
+                        label: "Shuffle".into(),
+                        checked: self.np.shuffle,
+                        activate: Box::new(|t: &mut Self| { let _ = t.tx.send("tray.shuffle"); }),
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+                items.push(
+                    SubMenu {
+                        label: "Repeat".into(),
+                        submenu: vec![
+                            CheckmarkItem {
+                                label: "Off".into(),
+                                checked: self.np.repeat == "off",
+                                activate: Box::new(|t: &mut Self| { let _ = t.tx.send("tray.repeat.off"); }),
+                                ..Default::default()
+                            }
+                            .into(),
+                            CheckmarkItem {
+                                label: "All".into(),
+                                checked: self.np.repeat == "all",
+                                activate: Box::new(|t: &mut Self| { let _ = t.tx.send("tray.repeat.all"); }),
+                                ..Default::default()
+                            }
+                            .into(),
+                            CheckmarkItem {
+                                label: "This track".into(),
+                                checked: self.np.repeat == "one",
+                                activate: Box::new(|t: &mut Self| { let _ = t.tx.send("tray.repeat.one"); }),
+                                ..Default::default()
+                            }
+                            .into(),
+                        ],
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+                items.push(ksni::MenuItem::Separator);
+            }
+
+            items.push(
                 StandardItem {
                     label: "Open Tulipix".into(),
                     activate: Box::new(|t: &mut Self| { let _ = t.tx.send("tray.open"); }),
                     ..Default::default()
                 }
                 .into(),
+            );
+            items.push(
+                StandardItem {
+                    label: "Mini Player".into(),
+                    enabled: self.np.has_track,
+                    activate: Box::new(|t: &mut Self| { let _ = t.tx.send("tray.mini"); }),
+                    ..Default::default()
+                }
+                .into(),
+            );
+            items.push(ksni::MenuItem::Separator);
+            items.push(
                 StandardItem {
                     label: "Quit".into(),
                     activate: Box::new(|t: &mut Self| { let _ = t.tx.send("tray.quit"); }),
                     ..Default::default()
                 }
                 .into(),
-            ]
+            );
+            items
         }
     }
 
@@ -296,6 +478,18 @@ mod linux_tray {
             *g = Some(rx);
         }
         tx
+    }
+
+    /// App → tray-thread state pushes. Unbounded and lossy-by-latest: the tray
+    /// only ever draws the newest state, and `update_tray` drops a push that
+    /// equals the last one, so this cannot back up behind a slow D-Bus round
+    /// trip. Tokio's channel rather than std's because the receiving side lives
+    /// in the tray thread's async block, next to `Handle::update`, which is
+    /// itself async.
+    pub fn state_channel() -> &'static Mutex<Option<tokio::sync::mpsc::UnboundedSender<crate::TrayNowPlaying>>> {
+        static ST: OnceLock<Mutex<Option<tokio::sync::mpsc::UnboundedSender<crate::TrayNowPlaying>>>> =
+            OnceLock::new();
+        ST.get_or_init(|| Mutex::new(None))
     }
 
     /// RGBA (what `image` produces) → ARGB32 network byte order (what the SNI
@@ -330,6 +524,10 @@ pub fn init_tray(icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
         .map(|i| vec![i])
         .unwrap_or_default();
     let tx = linux_tray::new_channel();
+    let (state_tx, mut state_rx) = tokio::sync::mpsc::unbounded_channel::<TrayNowPlaying>();
+    if let Ok(mut g) = linux_tray::state_channel().lock() {
+        *g = Some(state_tx);
+    }
     let handle = std::thread::Builder::new().name("tulipix-tray".into()).spawn(move || {
         // Its own current-thread runtime: init_tray is called during startup on
         // the UI thread, and the tray's D-Bus service should not depend on the
@@ -342,11 +540,16 @@ pub fn init_tray(icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
             }
         };
         rt.block_on(async move {
-            match (linux_tray::TulipixTray { icon, tx }).spawn().await {
+            let tray = linux_tray::TulipixTray { icon, tx, np: TrayNowPlaying::default() };
+            match tray.spawn().await {
                 Ok(handle) => {
-                    // Park: the handle must outlive the service, and dropping it
-                    // would remove the icon.
-                    std::mem::forget(handle);
+                    // Park on the state channel instead of on `pending`: the
+                    // handle has to outlive the service (dropping it withdraws
+                    // the icon) and it is also the only way to re-publish the
+                    // menu, so this task owns it for the process lifetime.
+                    while let Some(np) = state_rx.recv().await {
+                        let _ = handle.update(move |t| t.np = np).await;
+                    }
                     std::future::pending::<()>().await;
                 }
                 Err(e) => tracing::warn!(error = %e, "tray: no StatusNotifier host"),
@@ -356,14 +559,64 @@ pub fn init_tray(icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
     handle.is_ok()
 }
 
+/// Push now-playing state into the tray menu.
+///
+/// Cheap to call on a tick: a push that matches the last one is dropped here,
+/// so the menu is only re-published over D-Bus when something a user could see
+/// has actually changed.
+#[cfg(all(feature = "tray", target_os = "linux"))]
+pub fn update_tray(np: TrayNowPlaying) {
+    use std::sync::Mutex as StdMutex;
+    static LAST: StdMutex<Option<TrayNowPlaying>> = StdMutex::new(None);
+    if let Ok(mut last) = LAST.lock() {
+        if last.as_ref() == Some(&np) {
+            return;
+        }
+        *last = Some(np.clone());
+    }
+    if let Ok(g) = linux_tray::state_channel().lock() {
+        if let Some(tx) = g.as_ref() {
+            let _ = tx.send(np);
+        }
+    }
+}
+
 #[cfg(all(feature = "tray", not(target_os = "linux")))]
 pub fn init_tray(icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
+    use tray_icon::menu::{MenuItem, PredefinedMenuItem as Pre};
     TRAY.with(|cell| {
         if cell.borrow().is_some() { return true; }
         let menu = TrayMenu::new();
-        let open = tray_icon::menu::MenuItem::with_id("tray.open", "Open Tulipix", true, None);
-        let quit = tray_icon::menu::MenuItem::with_id("tray.quit", "Quit", true, None);
-        if menu.append(&open).is_err() || menu.append(&quit).is_err() { return false; }
+        // Built once and relabelled in place: rebuilding the menu would drop it
+        // out from under a user who has it open. Win32 menus take no artwork —
+        // the track row is text, and the thumbnail lives on the taskbar
+        // thumbnail toolbar instead.
+        // Own id, not "tray.open": ids address menu items, and two rows sharing
+        // one makes the click ambiguous. The app routes it to the same handler.
+        let now = MenuItem::with_id("tray.now", "Nothing playing", false, None);
+        let prev = MenuItem::with_id("tray.prev", "Previous", true, None);
+        let playpause = MenuItem::with_id("tray.playpause", "Play", true, None);
+        let next = MenuItem::with_id("tray.next", "Next", true, None);
+        let shuffle = MenuItem::with_id("tray.shuffle", "Shuffle", true, None);
+        let repeat = MenuItem::with_id("tray.repeat", "Repeat: off", true, None);
+        let open = MenuItem::with_id("tray.open", "Open Tulipix", true, None);
+        let mini = MenuItem::with_id("tray.mini", "Mini Player", true, None);
+        let quit = MenuItem::with_id("tray.quit", "Quit", true, None);
+        let ok = menu.append(&now).is_ok()
+            && menu.append(&Pre::separator()).is_ok()
+            && menu.append(&prev).is_ok()
+            && menu.append(&playpause).is_ok()
+            && menu.append(&next).is_ok()
+            && menu.append(&Pre::separator()).is_ok()
+            && menu.append(&shuffle).is_ok()
+            && menu.append(&repeat).is_ok()
+            && menu.append(&Pre::separator()).is_ok()
+            && menu.append(&open).is_ok()
+            && menu.append(&mini).is_ok()
+            && menu.append(&Pre::separator()).is_ok()
+            && menu.append(&quit).is_ok();
+        if !ok { return false; }
+        let items = TrayItems { now, playpause, shuffle, repeat };
         let mut b = TrayIconBuilder::new()
             .with_menu(Box::new(menu))
             .with_tooltip("Tulipix");
@@ -371,7 +624,11 @@ pub fn init_tray(icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
             if let Ok(i) = tray_icon::Icon::from_rgba(rgba, w, h) { b = b.with_icon(i); }
         }
         match b.build() {
-            Ok(t) => { *cell.borrow_mut() = Some(t); true }
+            Ok(t) => {
+                *cell.borrow_mut() = Some(t);
+                TRAY_ITEMS.with(|c| *c.borrow_mut() = Some(items));
+                true
+            }
             Err(e) => {
                 tracing::warn!(error = %e, "tray init failed");
                 false
@@ -379,6 +636,40 @@ pub fn init_tray(icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {
         }
     })
 }
+
+/// Push now-playing state into the tray menu (Windows / macOS).
+///
+/// Must be called on the thread that built the tray — the items are
+/// thread-local, and both platforms want menu mutation on the UI thread anyway.
+#[cfg(all(feature = "tray", not(target_os = "linux")))]
+pub fn update_tray(np: TrayNowPlaying) {
+    TRAY_ITEMS.with(|c| {
+        let b = c.borrow();
+        let Some(items) = b.as_ref() else { return };
+        items.now.set_text(if np.has_track {
+            if np.artist.is_empty() { np.title.clone() } else { format!("{} — {}", np.title, np.artist) }
+        } else {
+            "Nothing playing".to_string()
+        });
+        items.playpause.set_text(if np.playing { "Pause" } else { "Play" });
+        items.playpause.set_enabled(np.has_track);
+        items.shuffle.set_text(if np.shuffle { "Shuffle: on" } else { "Shuffle: off" });
+        let rep = if np.repeat.is_empty() { "off" } else { np.repeat.as_str() };
+        items.repeat.set_text(format!("Repeat: {rep}"));
+    });
+    TRAY.with(|c| {
+        if let Some(t) = c.borrow().as_ref() {
+            let _ = t.set_tooltip(Some(if np.has_track {
+                format!("Tulipix — {}", np.title)
+            } else {
+                "Tulipix".to_string()
+            }));
+        }
+    });
+}
+
+#[cfg(not(feature = "tray"))]
+pub fn update_tray(_np: TrayNowPlaying) {}
 
 #[cfg(not(feature = "tray"))]
 pub fn init_tray(_icon_rgba: Option<(Vec<u8>, u32, u32)>) -> bool {

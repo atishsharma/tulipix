@@ -174,3 +174,24 @@ installer-win:
 
 installer-mac:
     cargo bundle --release -p tulipix-app
+
+# Desktop identity for an UNINSTALLED dev run (Linux). Wayland has no window-icon
+# call: the compositor matches the toplevel app_id ("tulipix") against an installed
+# desktop entry and reads Icon= from it. Running out of the build directory there is
+# no such entry, so the title bar and the dock show the generic Wayland mark. This
+# installs the shipped entry into the user prefix with Exec pointed at the dev
+# script. Run once; re-run after changing packaging/linux/tulipix.desktop.
+install-desktop:
+    install -Dm644 resources/icons/tulipix-256.png \
+      ~/.local/share/icons/hicolor/256x256/apps/tulipix.png
+    install -Dm644 resources/icons/tulipix-64.png \
+      ~/.local/share/icons/hicolor/64x64/apps/tulipix.png
+    install -Dm644 resources/icons/tulipix-app.svg \
+      ~/.local/share/icons/hicolor/scalable/apps/tulipix.svg
+    mkdir -p ~/.local/share/applications
+    sed 's|^Exec=.*|Exec={{justfile_directory()}}/run-dev-lite.sh|' \
+      packaging/linux/tulipix.desktop \
+      > ~/.local/share/applications/tulipix.desktop
+    -gtk-update-icon-cache -f -t ~/.local/share/icons/hicolor 2>/dev/null
+    -update-desktop-database ~/.local/share/applications 2>/dev/null
+    @echo "installed: tulipix.desktop + hicolor icons (app_id=tulipix)"

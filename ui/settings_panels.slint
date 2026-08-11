@@ -248,3 +248,73 @@ export component SettingsList inherits Rectangle {
         }
     }
 }
+
+// ── Style pickers (Profile & Style) ─────────────────────────────────────────
+// One segmented control with a scaled silhouette above each label, used for
+// both the desktop mini-player size class and the tray menu style. Read-only
+// `choice` like DesignLangPicker: the click goes to Rust, which persists the
+// name and pushes the new value back.
+export struct StyleOption {
+    label: string,
+    value: string,
+    note: string,
+    pw: length,   // preview width  — the real widget proportions, scaled down
+    ph: length,   // preview height
+}
+
+export component StylePicker inherits Rectangle {
+    in property <[StyleOption]> options: [];
+    in property <string> choice: "";
+    callback changed(string);
+
+    height: 96px;
+    border-radius: Theme.radius-md;
+    background: Theme.panel-2;
+    border-color: Theme.outline;
+    border-width: 1px;
+
+    HorizontalLayout {
+        padding: 6px; spacing: 6px;
+        for o in root.options: Rectangle {
+            horizontal-stretch: 1;
+            property <bool> on: root.choice == o.value;
+            border-radius: Theme.radius-sm;
+            background: on ? Accent.color.with-alpha(0.16) : (op.has-hover ? Theme.glass : transparent);
+            border-width: on ? 1px : 0px;
+            border-color: Accent.color.with-alpha(0.55);
+            animate background { duration: 130ms; easing: ease-out; }
+            op := TouchArea { mouse-cursor: pointer; clicked => { root.changed(o.value); } }
+            VerticalLayout {
+                alignment: center; spacing: 7px; padding: 6px;
+                // Silhouette — the accent ring the real surface wears.
+                Rectangle {
+                    width: o.pw; height: o.ph;
+                    horizontal-stretch: 0; vertical-stretch: 0;
+                    x: (parent.width - self.width) / 2;
+                    border-radius: Surface.rr(5px, self.width, self.height);
+                    background: on ? @linear-gradient(135deg, #ec4899, #8b5cf6 55%, #06b6d4)
+                                   : Theme.outline-strong;
+                    Rectangle {
+                        x: 1.5px; y: 1.5px;
+                        width: parent.width - 3px; height: parent.height - 3px;
+                        border-radius: Surface.rr(4px, self.width, self.height);
+                        background: Theme.dark ? #121422 : #ffffff;
+                    }
+                }
+                VerticalLayout {
+                    spacing: 1px;
+                    Text {
+                        text: o.label; color: on ? Theme.text : Theme.text-dim;
+                        font-size: 11.5px; font-weight: 600;
+                        horizontal-alignment: center;
+                    }
+                    Text {
+                        text: o.note; color: Theme.text-dim;
+                        font-size: 9.5px; horizontal-alignment: center;
+                        overflow: elide;
+                    }
+                }
+            }
+        }
+    }
+}

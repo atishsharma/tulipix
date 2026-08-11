@@ -1299,12 +1299,12 @@ const PODCAST_HOME_PAGE: usize = 14;  // Home "Your shows": 2 rows × 7
 const PODCAST_HOME_MAX_PAGES: usize = 2;  // Home caps at 2 pages; rest live on Subscribed
 
 // ── Trends (hardcoded podcast directory) ──────────────────────────────────
-// Feed URLs are baked into the binary from podc.md at the repo root, so the
+// Feed URLs are baked into the binary from resources/podcast-feeds.txt, so the
 // Trends page stays populated even after a full podcast-library reset. Edit
-// podc.md (one feed URL per line; '#'/blank lines ignored) and rebuild to add
-// more. Per-feed metadata (title/author/art/category) is fetched live and
-// cached for the session.
-const TREND_FEEDS_RAW: &str = include_str!("../../../podc.md");
+// that file (one feed URL per line; '#'/blank lines ignored) and rebuild to add
+// more — crates/tulipix-app/build.rs watches it. Per-feed metadata
+// (title/author/art/category) is fetched live and cached for the session.
+const TREND_FEEDS_RAW: &str = include_str!("../../../resources/podcast-feeds.txt");
 
 pub fn trend_feed_urls() -> Vec<String> {
     TREND_FEEDS_RAW.lines()
@@ -1513,7 +1513,7 @@ pub fn populate_podcast_trends(w: &MainWindow) {
             }
             for m in fetched { stored.insert(m.feed_url.clone(), m); }
         }
-        // 3. Build the cache in feed (podc.md) order.
+        // 3. Build the cache in feed-list order.
         let metas: Vec<TrendMeta> = feeds.iter().filter_map(|u| stored.get(u).cloned()).collect();
         if let Ok(mut g) = trend_cache().lock() { *g = metas; }
         let _ = weak.upgrade_in_event_loop(move |w| {
@@ -5094,13 +5094,12 @@ pub fn shuffle_state() -> &'static std::sync::Mutex<(Vec<i32>, Vec<i32>)> {
     SHUFFLE_STATE.get_or_init(|| std::sync::Mutex::new((Vec::new(), Vec::new())))
 }
 
-/// Next shuffled index. Pushes `cur` onto the history, pops the bag (refilling
-/// it with a Fisher–Yates permutation of the library minus `cur` when empty).
+/// Next shuffled index. Pops the bag (refilling it with a Fisher–Yates
+/// permutation of the library minus `cur` when empty). The history is no longer
+/// pushed here — `play_music_at` records every play, shuffled or not.
 pub fn shuffle_next(total: i32, cur: i32) -> i32 {
     let Ok(mut g) = shuffle_state().lock() else { return rand_index(total) };
-    let (bag, hist) = &mut *g;
-    hist.push(cur);
-    if hist.len() > 500 { hist.remove(0); }
+    let (bag, _hist) = &mut *g;
     // A stale bag (library shrank / re-sorted) is rebuilt from scratch.
     if bag.iter().any(|i| *i >= total) { bag.clear(); }
     if bag.is_empty() {
@@ -5117,7 +5116,17 @@ pub fn shuffle_next(total: i32, cur: i32) -> i32 {
     bag.pop().unwrap_or(cur)
 }
 
-/// The previously played index under shuffle (true played order), if any.
+/// Set while Prev is walking back, so the play it triggers does not push the
+/// track it is leaving and trap Prev between the same two tracks forever.
+static STEPPING_BACK: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Play `idx` as a step BACKWARDS through the played order.
+pub fn play_previous_at(w: &MainWindow, idx: i32) {
+    STEPPING_BACK.store(true, std::sync::atomic::Ordering::SeqCst);
+    play_music_at(w, idx);
+}
+
+/// The previously played index (true played order), if any.
 pub fn shuffle_prev_index(total: i32) -> Option<i32> {
     shuffle_state().lock().ok().and_then(|mut g| {
         while let Some(i) = g.1.pop() {
@@ -5160,6 +5169,19 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
         let Some(p) = g.get(idx as usize).cloned() else { return; };
         (p, total)
     };
+    // Record what we are leaving. Every play funnels through here — queue pops,
+    // shuffle, a click on a row — so this is the one place that sees the real
+    // played order, which is what Prev has to walk. Prev used to step to
+    // `index - 1` in the LIBRARY: play an album through the queue and Prev left
+    // it for whatever track happened to sort before the current one.
+    let stepping_back = STEPPING_BACK.swap(false, std::sync::atomic::Ordering::SeqCst);
+    let leaving = w.get_music_np_index();
+    if !stepping_back && leaving >= 0 && leaving != idx {
+        if let Ok(mut g) = shuffle_state().lock() {
+            g.1.push(leaving);
+            if g.1.len() > 500 { g.1.remove(0); }
+        }
+    }
     // Library track — not a YouTube video.
     if let Ok(mut g) = yt_cur_audio().lock() { g.clear(); }
     YT_QUEUE_ACTIVE.store(false, std::sync::atomic::Ordering::Relaxed);

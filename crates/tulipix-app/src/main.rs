@@ -37,6 +37,8 @@ pub(crate) use tulipix_common::{
 // MPRIS/SMTC handle storage now lives in common; setup_media_controls in main
 // writes to it.
 pub(crate) use tulipix_common::MEDIA_CONTROLS;
+// Mini-player size classes — shared with the widget window (see miniwin).
+use tulipix_music::mini_player::MiniStyle;
 // Photos section (grid/library/editor/viewer helpers) lives in
 // tulipix-sec-photos; glob-import so the photo `window.on_*` callbacks that
 // stay in main keep calling `show_photo_at` / `open_editor` / … unqualified.
@@ -57,6 +59,7 @@ const IDLE_NEVER_SECS: u64 = 60 * 60 * 24 * 365;
 mod dev_reload;
 #[cfg(feature = "hot")]
 mod hot;
+mod miniwin;
 mod profile_image;
 
 fn detect_dark() -> bool {
@@ -167,7 +170,14 @@ fn main() -> Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
             EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| EnvFilter::new("info,icu_provider=error")),
+                // sctk_adwaita: the client-side-decoration crate warns
+                // "Ignoring unknown button type: icon" for every button in the
+                // desktop's `button-layout` setting it has no drawing for. We
+                // draw our own caption row, so its opinion of that layout is
+                // noise about a frame nobody sees.
+                .unwrap_or_else(|_| {
+                    EnvFilter::new("info,icu_provider=error,sctk_adwaita=error")
+                }),
         )
         .init();
     tulipix_core::crash::install_panic_hook();
@@ -217,6 +227,27 @@ fn main() -> Result<()> {
         tracing::warn!(error = %e, "capabilities load failed; default-deny");
     }
 
+    // Wayland/X11 window identity. Neither protocol carries a window icon the
+    // app can push: the compositor matches the toplevel's app_id against an
+    // installed `<app_id>.desktop` (or its StartupWMClass) and takes the icon
+    // from there. Without this the app_id is empty, nothing matches, and the
+    // title bar plus the dock fall back to the generic Wayland mark. Must be
+    // set before the window is created — winit reads it when building the
+    // window attributes, not on show.
+    // `set_xdg_app_id` only writes into an already-live platform context — its
+    // own factory is `Err(NoPlatform)`, so calling it first fails with "No
+    // default Slint platform was selected". Selecting the backend here creates
+    // that context; MainWindow::new() below then reuses it instead of building
+    // its own.
+    #[cfg(target_os = "linux")]
+    {
+        if let Err(e) = slint::BackendSelector::new().select() {
+            tracing::warn!(error = %e, "slint backend select failed");
+        }
+        if let Err(e) = slint::set_xdg_app_id("tulipix") {
+            tracing::warn!(error = %e, "xdg app id not set — desktop icon will fall back");
+        }
+    }
     let window = MainWindow::new()?;
     register_bundled_fonts();
     tulipix_platform::install_menubar(&tulipix_platform::default_menubar());
@@ -906,12 +937,13 @@ fn main() -> Result<()> {
             music_ipc(&["seek", "0", "absolute"]);
             return;
         }
-        // Under shuffle, walk the real played order back instead of index−1.
-        if w.get_music_shuffle() {
-            if let Some(prev) = shuffle_prev_index(total) {
-                play_music_at(&w, prev);
-                return;
-            }
+        // Walk the real played order back, shuffled or not. Next pops the QUEUE
+        // — the album or playlist you started from — so index−1 in the library
+        // was never the track you actually came from; only an empty history
+        // falls back to it.
+        if let Some(prev) = shuffle_prev_index(total) {
+            play_previous_at(&w, prev);
+            return;
         }
         play_music_at(&w, (w.get_music_np_index() - 1).rem_euclid(total));
     });
@@ -1238,16 +1270,38 @@ fn main() -> Result<()> {
         std::time::Duration::from_millis(500),
         move || {
             let weak = wtr.clone();
-            tulipix_platform::drain_tray_events(move |id| match id {
-                "tray.open" => {
-                    if let Some(w) = weak.upgrade() {
-                        let _ = w.show();
-                        w.window().set_minimized(false);
+            tulipix_platform::drain_tray_events(move |id| {
+                let Some(w) = weak.upgrade() else { return };
+                match id {
+                    // "tray.now" is the header row carrying the artwork; it
+                    // raises the app like the Open item, it just looks different.
+                    "tray.open" | "tray.now" => miniwin::restore(&w),
+                    "tray.popup" => miniwin::toggle_popup(&w),
+                    "tray.mini" => miniwin::open_mini(&w),
+                    "tray.playpause" => w.invoke_music_toggle_pause(),
+                    "tray.next" => w.invoke_music_next(),
+                    "tray.prev" => w.invoke_music_prev(),
+                    "tray.shuffle" => w.invoke_music_toggle_shuffle(),
+                    // The submenu names the target state; cycle until it matches
+                    // rather than adding a setter the rest of the app has no use
+                    // for. Three states, so this lands in at most two steps.
+                    "tray.repeat.off" | "tray.repeat.all" | "tray.repeat.one" => {
+                        let want = id.rsplit('.').next().unwrap_or("off");
+                        for _ in 0..3 {
+                            if w.get_music_repeat() == want { break; }
+                            w.invoke_music_cycle_repeat();
+                        }
                     }
+                    "tray.quit" => { let _ = slint::quit_event_loop(); }
+                    _ => {}
                 }
-                "tray.quit" => { let _ = slint::quit_event_loop(); }
-                _ => {}
             });
+            // Same tick feeds the widget/popup windows and the tray menu — both
+            // only need to be right to the second, and update_tray drops a push
+            // that has not changed.
+            if let Some(w) = wtr.upgrade() {
+                miniwin::sync(&w);
+            }
         },
     );
     // Playback-progress ticker (5s) — persists the live podcast/audiobook
@@ -2019,6 +2073,8 @@ fn main() -> Result<()> {
     wire_status(&window);
     wire_home_layout(&window);
     wire_home_stream(&window);
+    // ── Mini Player widget + our own caption row ─────────── — see miniwin::wire()
+    miniwin::wire(&window);
 
     // ── Settings panels: load persisted settings, seed the UI models ───────
     {
@@ -2892,6 +2948,21 @@ fn main() -> Result<()> {
                 w.set_design_lang(design_lang_index(&s.text("ui.design-language")));
             }
         }
+        // Mini-player + tray styles. Both are read back off the window by the
+        // widget/tray plumbing, so pushing the new value here is all it takes
+        // for the picker to light up and the next open to use it.
+        if key == "ui.mini-widget.style" {
+            if let Some(w) = w.upgrade() {
+                let style = MiniStyle::from_name(&s.text("ui.mini-widget.style"));
+                w.set_mini_widget_style(style.name().into());
+            }
+        }
+        if key == "ui.tray-menu.style" {
+            if let Some(w) = w.upgrade() {
+                let popup = s.text("ui.tray-menu.style") != "native";
+                w.set_tray_menu_style(if popup { "popup" } else { "native" }.into());
+            }
+        }
         tracing::info!(%key, "setting text edited");
         // Segmented pickers (whisper model choice) need a re-seed so the
         // selected pill updates; free-text fields must NOT re-seed per
@@ -3563,10 +3634,23 @@ fn main() -> Result<()> {
         tracing::info!(startup_ms = ms, "ready");
     });
 
-    // Launch filling the screen (maximised, decorations kept) rather than a
-    // small floating window.
+    // Launch filling the screen rather than as a small floating window. The
+    // caption row reads the state back off the `maximized` Window builtin, so
+    // there is nothing to mirror here.
     window.window().set_maximized(true);
-    window.run()?;
+    if TRAY_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+        // With a tray icon there is a way back in, so closing the window hides
+        // it instead of ending the process — which is also what makes the Mini
+        // Player widget possible: it hides the main window, and dismissing the
+        // widget would otherwise take the last visible window down with the app.
+        window.window().on_close_requested(|| slint::CloseRequestResponse::HideWindow);
+        window.show()?;
+        slint::run_event_loop_until_quit()?;
+    } else {
+        // No tray host: last window closed has to mean quit, or the process
+        // would keep running with nothing on screen and no way to reach it.
+        window.run()?;
+    }
 
     // Stop all playback so nothing keeps playing after the window closes.
     kill_all_mpv();
@@ -3592,8 +3676,11 @@ fn main() -> Result<()> {
 /// "Sans". The font covers weights 100..900; Slint picks the right axis.
 fn register_bundled_fonts() {
     static SORA_VAR: &[u8] = include_bytes!("../../../resources/fonts/Sora[wght].ttf");
-    let blob = slint::fontique_08::fontique::Blob::new(std::sync::Arc::new(SORA_VAR.to_vec()));
-    let mut collection = slint::fontique_08::shared_collection();
+    // Slint 1.17 renamed the module with the fontique bump (0.8 → 0.10); the
+    // API is unchanged. It is versioned in the path on purpose, so this moves
+    // again on the next fontique major.
+    let blob = slint::fontique_010::fontique::Blob::new(std::sync::Arc::new(SORA_VAR.to_vec()));
+    let mut collection = slint::fontique_010::shared_collection();
     let registered = collection.register_fonts(blob, None);
     tracing::info!(count = registered.len(), "registered bundled fonts");
 }
@@ -10779,7 +10866,8 @@ fn wire_music_podcasts(window: &MainWindow) {
             _ => { w0.set_music_podcast_cat("All".into()); w0.set_music_podcast_sub_page(0); populate_podcasts(&w0); }
         }
     });
-    // Trends — subscribe to a baked/hardcoded feed by its index in podc.md.
+    // Trends — subscribe to a baked feed by its index in
+    // resources/podcast-feeds.txt.
     let w = window.as_weak();
     window.on_music_podcast_trend_subscribe(move |idx| {
         let Some(w0) = w.upgrade() else { return; };

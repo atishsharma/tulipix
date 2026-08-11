@@ -43,7 +43,8 @@ CREATE TABLE IF NOT EXISTS podcast_episodes (
 CREATE INDEX IF NOT EXISTS podcast_episodes_pod_idx ON podcast_episodes(podcast_id, published DESC);
 CREATE INDEX IF NOT EXISTS podcast_episodes_dl_idx  ON podcast_episodes(downloaded_path);
 
--- Trends metadata cache: fetched once from the baked feed list (podc.md), then
+-- Trends metadata cache: fetched once from the baked feed list
+-- (resources/podcast-feeds.txt), then
 -- loaded from here on every launch so we never re-fetch the network on startup.
 CREATE TABLE IF NOT EXISTS podcast_trends (
     feed_url   TEXT PRIMARY KEY,

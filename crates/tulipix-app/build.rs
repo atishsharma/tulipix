@@ -14,8 +14,9 @@ fn main() {
         let _ = embed_resource::compile("app.rc", embed_resource::NONE);
     }
 
-    // Trends feed list is include_str!'d from podc.md — rebuild when it changes.
-    println!("cargo:rerun-if-changed=../../podc.md");
+    // Trends feed list is include_str!'d by tulipix-sec-music — rebuild when it
+    // changes (cargo does not track include_str! targets across crates).
+    println!("cargo:rerun-if-changed=../../resources/podcast-feeds.txt");
     // Nothing links libmpv any more. The embedded player was the only caller of
     // the render API; playback runs as an external mpv process found on PATH, so
     // there is no mpv.lib / mpv-2.dll / TULIPIX_MPV_LIB_DIR to arrange at build
