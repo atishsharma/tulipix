@@ -507,6 +507,14 @@ fn install(part: &Path, final_path: &Path, force: bool) -> Result<bool> {
                 let _ = std::fs::remove_file(part);
                 return Ok(false);
             }
+            // A filesystem that has no hard links at all — exFAT, FAT32, most
+            // SMB shares, Android's SD-card mount — is the common case here, not
+            // an error: a library saved to a USB stick would otherwise fail
+            // every download at the very last step, with the bytes already on
+            // disk under the `.part` name.
+            Err(error) if !links_supported(&error) => {
+                return install_by_copy(part, final_path);
+            }
             Err(error) => {
                 return Err(error).with_context(|| {
                     format!(
@@ -529,6 +537,60 @@ fn install(part: &Path, final_path: &Path, force: bool) -> Result<bool> {
             part.display()
         )
     })?;
+    Ok(true)
+}
+
+/// Whether the failure means "this filesystem does not do hard links" rather
+/// than "that link could not be made".
+fn links_supported(error: &std::io::Error) -> bool {
+    !matches!(
+        error.kind(),
+        std::io::ErrorKind::Unsupported | std::io::ErrorKind::PermissionDenied
+    )
+}
+
+/// Install by copying into an exclusively-created file.
+///
+/// `create_new` fails if the name is taken, which is the same guarantee the
+/// hard link gave: an existing file is never replaced without `force`.
+fn install_by_copy(part: &Path, final_path: &Path) -> Result<bool> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        // The hard-link path gives the final name the partial file's own mode,
+        // so match it rather than letting a copied book be more visible than a
+        // linked one.
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let mut destination = match options.open(final_path) {
+        Ok(file) => file,
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(part);
+            return Ok(false);
+        }
+        Err(error) => {
+            return Err(error)
+                .with_context(|| format!("could not create {}", final_path.display()));
+        }
+    };
+
+    let mut source = std::fs::File::open(part)
+        .with_context(|| format!("could not reopen {}", part.display()))?;
+    if let Err(error) = std::io::copy(&mut source, &mut destination)
+        .and_then(|_| destination.flush())
+        .with_context(|| format!("could not write {}", final_path.display()))
+    {
+        // A half-written file under the real name is worse than no file.
+        drop(destination);
+        let _ = std::fs::remove_file(final_path);
+        return Err(error);
+    }
+    drop(destination);
+    drop(source);
+
+    std::fs::remove_file(part).with_context(|| format!("could not remove {}", part.display()))?;
     Ok(true)
 }
 

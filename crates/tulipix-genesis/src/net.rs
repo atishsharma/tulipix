@@ -441,7 +441,7 @@ pub fn join_uri(base: &Uri, reference: &str) -> Result<Uri> {
         .ok_or_else(|| err!("base URL has no authority: {base}"))?
         .as_str();
 
-    let joined = if reference.contains("://") {
+    let joined = if has_scheme(reference) {
         reference.to_string()
     } else if let Some(rest) = reference.strip_prefix("//") {
         format!("{scheme}://{rest}")
@@ -461,6 +461,26 @@ pub fn join_uri(base: &Uri, reference: &str) -> Result<Uri> {
         .parse()
         .map_err(|e| Error::from(format!("invalid URL `{joined}`: {e}")))?;
     Ok(uri)
+}
+
+/// Whether a reference names its own scheme, as in `https://host/path`.
+///
+/// Testing for a bare `://` anywhere in the string is not good enough: Libgen
+/// and its interstitials routinely emit links that carry a URL inside a query
+/// parameter — `/out.php?u=https://cdn.example/f` — and reading one of those as
+/// absolute drops the base and yields a host-less URI that fails validation
+/// several steps later with an error naming the wrong thing. The separator has
+/// to come before anything that would have started a path, query or fragment.
+fn has_scheme(reference: &str) -> bool {
+    let Some(colon) = reference.find("://") else {
+        return false;
+    };
+    let scheme = &reference[..colon];
+    !scheme.is_empty()
+        && scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+        && scheme
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '-' | '.'))
 }
 
 /// Collapse `.` and `..` segments so a relative link cannot climb out of the
@@ -657,6 +677,24 @@ mod tests {
         assert_eq!(
             join_uri(&base, "//cdn.example/x").unwrap().to_string(),
             "https://cdn.example/x"
+        );
+    }
+
+    #[test]
+    fn a_url_inside_a_query_parameter_is_still_a_relative_link() {
+        // The interstitials hand out `/out.php?u=https://…` constantly. Reading
+        // the inner URL as the whole reference drops the base and produces a
+        // host-less URI that fails much later, naming the wrong thing.
+        let base = uri("https://libgen.li/a/b/page.php");
+        assert_eq!(
+            join_uri(&base, "/out.php?u=https://cdn.example/f")
+                .unwrap()
+                .to_string(),
+            "https://libgen.li/out.php?u=https://cdn.example/f"
+        );
+        assert_eq!(
+            join_uri(&base, "https://cdn.example/f").unwrap().to_string(),
+            "https://cdn.example/f"
         );
     }
 

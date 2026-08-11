@@ -441,7 +441,13 @@ fn decode_one(body: &str) -> Option<String> {
         } else {
             num.parse::<u32>().ok()?
         };
-        return char::from_u32(code).map(|c| c.to_string());
+        // Control characters are dropped rather than decoded. `text` already
+        // strips them from the text it collects, but attribute values go
+        // through here too, and `&#27;` in an href is an escape sequence
+        // smuggled past that filter into whatever prints the URL.
+        return char::from_u32(code)
+            .filter(|c| !c.is_control())
+            .map(|c| c.to_string());
     }
     let named = match body.to_ascii_lowercase().as_str() {
         "amp" => "&",

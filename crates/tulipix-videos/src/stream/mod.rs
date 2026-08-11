@@ -154,9 +154,36 @@ fn cover_url(v: &Value) -> String {
     }
 }
 
-/// Titles arrive decorated — `"The Movie [HD][Hindi]"`. Keep the name only.
+/// Titles arrive decorated — `"The Movie [HD][Hindi]"`, `"The Show (Hindi
+/// Dubbed)"`, `"The Show S1-S3"`. Keep the name only.
+///
+/// A parenthesis is only cut when it holds a dub note: plenty of real titles
+/// end in one (`"Alien (1979)"`, `"Oldboy (2003)"`) and cutting those blindly
+/// would rename the film. The season suffix is cut only when what follows the
+/// `S` is digits, dashes and further `S`es, so `"Toy Story"` survives.
 fn clean_title(raw: &str) -> String {
-    raw.split('[').next().unwrap_or(raw).trim().to_string()
+    let mut end = raw.len();
+
+    if let Some(at) = raw[..end].find(" [") {
+        end = at;
+    }
+    if let Some(at) = raw[..end].find(" (") {
+        let inside = raw[at..end].to_ascii_lowercase();
+        if inside.contains("dub") || inside.contains("hindi") {
+            end = at;
+        }
+    }
+    if let Some(at) = raw[..end].rfind(" S") {
+        let suffix = &raw[at + 2..end];
+        let season = suffix
+            .chars()
+            .all(|c| c.is_ascii_digit() || c == '-' || c == 'S')
+            && suffix.starts_with(|c: char| c.is_ascii_digit());
+        if season {
+            end = at;
+        }
+    }
+    raw[..end].trim().to_string()
 }
 
 /// `"2024-06-14"` → `"2024"`. Anything without a leading 4-digit year is dropped.
@@ -1757,6 +1784,18 @@ mod tests {
         assert_eq!(split("İstanbul"), ("İstanbul".into(), None));
         // Marker matching stays case-insensitive.
         assert_eq!(split("Dark SEASON 3"), ("Dark".into(), Some(3)));
+    }
+
+    #[test]
+    fn decorated_titles_lose_the_decoration_and_nothing_else() {
+        assert_eq!(clean_title("The Movie [HD][Hindi]"), "The Movie");
+        assert_eq!(clean_title("The Show (Hindi Dubbed)"), "The Show");
+        assert_eq!(clean_title("The Show S1-S3"), "The Show");
+        // A year in parentheses is part of the name, not a dub note.
+        assert_eq!(clean_title("Alien (1979)"), "Alien (1979)");
+        // A word starting with S is not a season marker.
+        assert_eq!(clean_title("Toy Story"), "Toy Story");
+        assert_eq!(clean_title("Plain Title"), "Plain Title");
     }
 
     #[test]

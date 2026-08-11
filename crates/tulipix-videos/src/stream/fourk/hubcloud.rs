@@ -26,9 +26,9 @@ pub async fn resolve(
     label: &str,
 ) -> Result<Vec<Candidate>, StreamError> {
     let host = host_of(url).unwrap_or_default();
-    if host.starts_with("hubcloud.") {
+    if host.contains("hubcloud.") {
         resolve_hubcloud(http, url).await
-    } else if host.starts_with("hubdrive.") {
+    } else if host.contains("hubdrive.") {
         resolve_hubdrive(http, url).await
     } else {
         Ok(vec![(playable(url)?, label.to_string())])
@@ -43,11 +43,16 @@ async fn resolve_hubcloud(
     require(drive_url, "hubcloud.", "/drive/")?;
     let drive_html = fetch(http, drive_url).await?;
 
+    // Any https link on `a#download`, not one named host. The resolver has been
+    // `sportverse.` and it will be something else next quarter — pinning the
+    // name turned a routine domain rotation into "4KHDHub playback returns 404
+    // and nothing else changed". The link is followed through `playable`
+    // anyway, which is where the actual safety lives.
     let resolver_url = dom::find_all(&drive_html, "a", None)
         .into_iter()
         .filter(|a| dom::attr(a.attrs, "id").as_deref() == Some("download"))
         .filter_map(|a| dom::attr(a.attrs, "href"))
-        .find(|href| href.starts_with("https://sportverse."))
+        .find(|href| href.starts_with("https://"))
         .ok_or(StreamError::ApiStatus(404))?;
 
     let html = fetch(http, &resolver_url).await?;
@@ -90,7 +95,7 @@ async fn resolve_hubdrive(
         .into_iter()
         .filter_map(|a| dom::attr(a.attrs, "href"))
         .find(|href| {
-            host_of(href).map(|h| h.starts_with("hubcloud.")).unwrap_or(false)
+            host_of(href).map(|h| h.contains("hubcloud.")).unwrap_or(false)
                 && href.contains("/drive/")
         })
         .ok_or(StreamError::ApiStatus(404))?;
@@ -179,10 +184,17 @@ pub fn playable(raw: &str) -> Result<String, StreamError> {
     Ok(url.to_string())
 }
 
-fn require(raw: &str, host_prefix: &str, path_prefix: &str) -> Result<(), StreamError> {
+/// `host_marker` is matched anywhere in the host, not only at its start: the
+/// site links `www.hubcloud.…` and regional prefixes as freely as the bare
+/// name, and `starts_with` rejected those.
+///
+/// This is a routing check, not a safety one — it decides which hop chain to
+/// run, and the page that supplied the URL is untrusted either way. Everything
+/// that is actually handed to a player goes through [`playable`].
+fn require(raw: &str, host_marker: &str, path_prefix: &str) -> Result<(), StreamError> {
     let url = reqwest::Url::parse(raw).map_err(|_| StreamError::ApiStatus(400))?;
     let ok = url.scheme() == "https"
-        && url.host_str().unwrap_or_default().starts_with(host_prefix)
+        && url.host_str().unwrap_or_default().contains(host_marker)
         && url.path().starts_with(path_prefix);
     ok.then_some(()).ok_or(StreamError::ApiStatus(400))
 }
@@ -201,41 +213,73 @@ fn is_public(ip: IpAddr) -> bool {
                 || a.is_documentation()
                 || a.is_unspecified())
         }
-        IpAddr::V6(a) => !(a.is_loopback() || a.is_unspecified() || a.is_unique_local()),
+        IpAddr::V6(a) => {
+            !(a.is_loopback()
+                || a.is_unspecified()
+                || a.is_unique_local()
+                // fe80::/10 — the v6 half of the private-address guard, and the
+                // one address family a link-local host is reachable on without
+                // any routing at all.
+                || a.is_unicast_link_local())
+        }
     }
 }
 
 /// PixelDrain's viewer URL rewritten to its direct-download API path.
+///
+/// Any `pixeldrain.` host and either shape of path: the resolver serves `.dev`
+/// and `.com` interchangeably and links both the viewer (`/u/`) and the file
+/// (`/api/file/`). Matching one host and one path meant the fastest mirror on
+/// the page was silently skipped whenever the page used the other spelling.
 fn pixeldrain_api_url(raw: &str) -> Option<String> {
     let url = reqwest::Url::parse(raw).ok()?;
-    if url.host_str() != Some("pixeldrain.dev") {
+    let host = url.host_str()?;
+    if !host.contains("pixeldrain.") {
         return None;
     }
-    let id = url.path().strip_prefix("/u/")?.trim_matches('/');
+    let path = url.path();
+    let id = match path.strip_prefix("/u/") {
+        Some(rest) => rest,
+        None => path.strip_prefix("/api/file/")?,
+    }
+    .trim_matches('/');
     let clean =
         !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'-' || b == b'_');
-    clean.then(|| format!("https://pixeldrain.dev/api/file/{id}?download"))
+    clean.then(|| format!("https://{host}/api/file/{id}?download"))
 }
 
-/// PixelDrain links the resolver page keeps in `var pxl…` rather than in a
-/// link. They are usually the fastest mirror, so they are worth digging out.
+/// PixelDrain links the resolver page keeps in a script variable rather than in
+/// a link. They are usually the fastest mirror, so they are worth digging out.
+///
+/// The whole page is scanned rather than only what follows `var pxl`: the
+/// variable has been renamed before, and a prefix scan costs nothing since
+/// every hit still has to survive [`pixeldrain_api_url`].
 fn script_pixeldrain_urls(html: &str) -> Vec<String> {
-    const PREFIX: &str = "https://pixeldrain.dev/u/";
+    const PREFIXES: [&str; 4] = [
+        "https://pixeldrain.dev/u/",
+        "https://pixeldrain.com/u/",
+        "https://pixeldrain.dev/api/file/",
+        "https://pixeldrain.com/api/file/",
+    ];
     let mut out: Vec<String> = Vec::new();
-    let mut rest = html;
-    while let Some(at) = rest.find("var pxl") {
-        let tail = &rest[at..];
-        let Some(url_at) = tail.find(PREFIX) else { break };
-        let candidate = &tail[url_at..];
-        let end = candidate
-            .find(|c: char| c == '"' || c == '\'' || c.is_whitespace())
-            .unwrap_or(candidate.len());
-        if let Some(url) = pixeldrain_api_url(&candidate[..end])
-            && !out.contains(&url)
-        {
-            out.push(url);
+    for prefix in PREFIXES {
+        let mut rest = html;
+        while let Some(at) = rest.find(prefix) {
+            let candidate = &rest[at..];
+            // `<` and `\` end a URL too — the first because the script tag
+            // closed, the second because JSON escaped the quote.
+            let end = candidate
+                .find(|c: char| {
+                    c == '"' || c == '\'' || c.is_whitespace() || c == '<' || c == '\\'
+                })
+                .unwrap_or(candidate.len());
+            if let Some(url) = pixeldrain_api_url(&candidate[..end])
+                && !out.contains(&url)
+            {
+                out.push(url);
+            }
+            rest = &candidate[end..];
         }
-        rest = &candidate[end..];
     }
     out
 }
@@ -278,6 +322,8 @@ mod tests {
         assert!(playable("https://nas.local/file.mkv").is_err());
         assert!(playable("https://cdn.example/pack.zip").is_err());
         assert!(playable("https://cdn.example/logout").is_err());
+        // fe80::/10 is private on the one interface that needs no routing.
+        assert!(playable("https://[fe80::1]/file.mkv").is_err());
     }
 
     #[test]
@@ -286,6 +332,15 @@ mod tests {
             pixeldrain_api_url("https://pixeldrain.dev/u/aB3-x_9").as_deref(),
             Some("https://pixeldrain.dev/api/file/aB3-x_9?download"),
         );
+        // Both spellings of the host, both shapes of path.
+        assert_eq!(
+            pixeldrain_api_url("https://pixeldrain.com/u/aB3-x_9").as_deref(),
+            Some("https://pixeldrain.com/api/file/aB3-x_9?download"),
+        );
+        assert_eq!(
+            pixeldrain_api_url("https://pixeldrain.com/api/file/xyz").as_deref(),
+            Some("https://pixeldrain.com/api/file/xyz?download"),
+        );
         assert!(pixeldrain_api_url("https://pixeldrain.dev/u/../etc").is_none());
         assert!(pixeldrain_api_url("https://elsewhere.dev/u/abc").is_none());
     }
@@ -293,14 +348,14 @@ mod tests {
     #[test]
     fn script_only_mirrors_are_recovered() {
         let html = r#"<script>var pxl1 = "https://pixeldrain.dev/u/aaa";
-                      var pxl2 = 'https://pixeldrain.dev/u/bbb';</script>"#;
-        assert_eq!(
-            script_pixeldrain_urls(html),
-            [
-                "https://pixeldrain.dev/api/file/aaa?download",
-                "https://pixeldrain.dev/api/file/bbb?download",
-            ],
-        );
+                      var anything = 'https://pixeldrain.com/u/bbb';
+                      var esc = "https://pixeldrain.dev/u/ccc\";</script>"#;
+        let found = script_pixeldrain_urls(html);
+        // Not tied to `var pxl`, and the JSON-escaped quote ends the URL rather
+        // than being swallowed into the id.
+        assert!(found.contains(&"https://pixeldrain.dev/api/file/aaa?download".to_string()));
+        assert!(found.contains(&"https://pixeldrain.com/api/file/bbb?download".to_string()));
+        assert!(found.contains(&"https://pixeldrain.dev/api/file/ccc?download".to_string()));
     }
 
     #[test]
@@ -312,7 +367,10 @@ mod tests {
     #[test]
     fn resolver_hops_insist_on_the_right_host_and_path() {
         assert!(require("https://hubcloud.one/drive/abc", "hubcloud.", "/drive/").is_ok());
+        // A subdomain the site actually links has to route, not 400.
+        assert!(require("https://www.hubcloud.one/drive/abc", "hubcloud.", "/drive/").is_ok());
         assert!(require("https://evil.example/drive/abc", "hubcloud.", "/drive/").is_err());
         assert!(require("https://hubcloud.one/other/abc", "hubcloud.", "/drive/").is_err());
+        assert!(require("http://hubcloud.one/drive/abc", "hubcloud.", "/drive/").is_err());
     }
 }
