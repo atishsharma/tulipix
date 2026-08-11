@@ -11,9 +11,9 @@
 
 [package]
 edition = "2024"
-rust-version = "1.88"
+rust-version = "1.92"
 name = "i-slint-compiler"
-version = "1.16.1"
+version = "1.17.1"
 authors = ["Slint Developers <info@slint.dev>"]
 build = "build.rs"
 autolib = false
@@ -40,7 +40,10 @@ features = [
 rustdoc-args = ["--generate-link-to-definition"]
 
 [features]
-bundle-translations = ["dep:rspolib"]
+bundle-translations = [
+    "dep:rspolib",
+    "i-slint-common/locale-decimal-separator",
+]
 cpp = []
 default = []
 display-diagnostics = ["dep:annotate-snippets"]
@@ -67,12 +70,17 @@ sdf-fonts = [
     "dep:nalgebra",
     "dep:rayon",
 ]
+slint-sc = [
+    "quote",
+    "proc-macro2",
+]
 software-renderer = [
     "image",
     "dep:resvg",
     "dep:swash",
     "dep:skrifa",
     "i-slint-common/shared-fontique",
+    "i-slint-common/svg-text",
     "dep:rayon",
 ]
 
@@ -83,6 +91,14 @@ path = "lib.rs"
 [[test]]
 name = "consistent_styles"
 path = "tests/consistent_styles.rs"
+
+[[test]]
+name = "llr_lowering"
+path = "tests/llr_lowering.rs"
+
+[[test]]
+name = "lower_shadows"
+path = "tests/lower_shadows.rs"
 
 [[test]]
 name = "syntax_tests"
@@ -136,7 +152,7 @@ version = "1.1.5"
 optional = true
 
 [dependencies.i-slint-common]
-version = "=1.16.1"
+version = "=1.17.1"
 features = [
     "default",
     "color-parsing",
@@ -223,7 +239,7 @@ version = "1.0.96"
 optional = true
 
 [dependencies.skrifa]
-version = "0.40"
+version = "0.42"
 optional = true
 
 [dependencies.smol_str]

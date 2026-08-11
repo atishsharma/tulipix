@@ -189,7 +189,7 @@ fn gen_layout_info_prop(elem: &ElementRc, diag: &mut BuildDiagnostics) {
                         return None;
                     }
                     let explicit_constraints =
-                        LayoutConstraints::new(c, diag, DiagnosticLevel::Error);
+                        LayoutConstraints::new(c, Some((&mut *diag, DiagnosticLevel::Error)));
 
                     let compute = |orientation| {
                         if explicit_constraints.has_explicit_restrictions(orientation) {
@@ -199,6 +199,7 @@ fn gen_layout_info_prop(elem: &ElementRc, diag: &mut BuildDiagnostics) {
                                 c,
                                 orientation,
                                 BuiltinFilter::SkipNonImplicit,
+                                None,
                             )
                         }
                     };
@@ -224,11 +225,19 @@ fn gen_layout_info_prop(elem: &ElementRc, diag: &mut BuildDiagnostics) {
     );
     elem.borrow_mut().layout_info_prop = Some((li_h.clone(), li_v.clone()));
     let mut expr_h =
-        implicit_layout_info_call(elem, Orientation::Horizontal, BuiltinFilter::All).unwrap();
+        implicit_layout_info_call(elem, Orientation::Horizontal, BuiltinFilter::All, None).unwrap();
     let mut expr_v =
-        implicit_layout_info_call(elem, Orientation::Vertical, BuiltinFilter::All).unwrap();
+        implicit_layout_info_call(elem, Orientation::Vertical, BuiltinFilter::All, None).unwrap();
 
-    let explicit_constraints = LayoutConstraints::new(elem, diag, DiagnosticLevel::Warning);
+    // The redundant-size-constraint diagnostic of a component root is reported by the lower_layouts
+    // pass, so only report here for non-root elements.
+    let is_root = elem
+        .borrow()
+        .enclosing_component
+        .upgrade()
+        .is_some_and(|c| Rc::ptr_eq(elem, &c.root_element));
+    let explicit_constraints =
+        LayoutConstraints::new(elem, (!is_root).then_some((&mut *diag, DiagnosticLevel::Warning)));
     if !explicit_constraints.fixed_width {
         merge_explicit_constraints(&mut expr_h, &explicit_constraints, Orientation::Horizontal);
     }

@@ -470,7 +470,10 @@ impl LookupObject for ElementRc {
             _ => false,
         };
         if !is_global {
-            for (name, ty, _) in crate::typeregister::reserved_properties() {
+            for (name, ty, visibility) in crate::typeregister::reserved_properties() {
+                if visibility == PropertyVisibility::Private {
+                    continue;
+                }
                 let name = SmolStr::new_static(name);
                 let e =
                     expression_from_reference(NamedReference::new(self, name.clone()), &ty, None);
@@ -1037,6 +1040,7 @@ impl LookupObject for StringExpression<'_> {
             .or_else(|| f("to-uppercase", member_function(BuiltinFunction::StringToUppercase)))
     }
 }
+
 struct ColorExpression<'a>(&'a Expression);
 impl LookupObject for ColorExpression<'_> {
     fn for_each_entry<R>(
@@ -1159,6 +1163,9 @@ impl LookupObject for NumberExpression<'_> {
             .or_else(|| f2("sign", member_macro(BuiltinMacroFunction::Sign)))
             .or_else(|| f2("to-fixed", member_function(BuiltinFunction::ToFixed)))
             .or_else(|| f2("to-precision", member_function(BuiltinFunction::ToPrecision)))
+            .or_else(|| {
+                f2("to-string-unlocalized", member_function(BuiltinFunction::ToStringUnlocalized))
+            })
             .or_else(|| NumberWithUnitExpression(self.0).for_each_entry(ctx, f))
     }
 }

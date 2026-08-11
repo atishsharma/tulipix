@@ -53,8 +53,12 @@ repository = "https://github.com/atishsharma/tulipix"
 # possible. Either one now builds everything: nothing is coupled to a renderer
 # since the embedded player was dropped for out-of-process mpv. See app
 # Cargo.toml.
-slint = { version = "1.8", default-features = false, features = ["std", "compat-1-2", "backend-winit", "unstable-fontique-08", "raw-window-handle-06"] }
-slint-build = "1.8"
+# unstable-winit-030: `slint::winit_030::WinitWindowAccessor`, the only way to
+# reach `drag_window()`. The caption row we draw ourselves has to hand its move
+# drag to the compositor — Wayland gives a toplevel no way to position itself —
+# and Slint exposes no drag API of its own.
+slint = { version = "1.17", default-features = false, features = ["std", "compat-1-2", "backend-winit", "unstable-fontique-010", "raw-window-handle-06", "unstable-winit-030"] }
+slint-build = "1.17"
 # Trimmed from "full": no crate uses tokio::net / signal / io-std (reqwest and
 # sqlx enable their own net stack). Member crates may add features on top.
 tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "time", "fs", "process", "io-util"] }
@@ -110,10 +114,12 @@ codegen-units = 1
 strip = "symbols"
 panic = "abort"
 
-# Upstream i-slint-compiler 1.16.1 requests image with the "default" feature,
+# Upstream i-slint-compiler 1.17.1 requests image with the "default" feature,
 # which drags the AVIF encoder (rav1e — one of the slowest crates on crates.io),
 # exr, and ~20 other crates into every fresh build. Our .slint files only embed
 # SVG (handled by resvg) and png/jpeg, so the vendored copy trims image to
-# png+jpeg only. Re-vendor when bumping Slint past 1.16.1.
+# png+jpeg only. Re-vendor when bumping Slint past 1.17.1: slint pins the
+# compiler with "=<its own version>", so a stale vendor silently stops being
+# used (cargo warns "patch not used") and rav1e comes back.
 [patch.crates-io]
 i-slint-compiler = { path = "vendor/i-slint-compiler" }

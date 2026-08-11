@@ -263,7 +263,13 @@ mod visitor {
     }
 
     pub fn visit_public_component(
-        PublicComponent { public_properties, private_properties: _, item_tree, name:_ }: &mut PublicComponent,
+        PublicComponent {
+            public_properties,
+            private_properties: _,
+            item_tree,
+            name: _,
+            top_level_type: _,
+        }: &mut PublicComponent,
         state: &VisitorState,
         visitor: &mut (impl Visitor + ?Sized),
     ) {
@@ -292,6 +298,7 @@ mod visitor {
             animations,
             two_way_bindings,
             const_properties,
+            pre_init_code,
             init_code,
             geometries,
             layout_info_h,
@@ -370,14 +377,14 @@ mod visitor {
             })
             .collect();
 
-        for (a, b, _) in two_way_bindings {
-            visit_member_reference(a, &scope, state, visitor);
-            visit_member_reference(b, &scope, state, visitor);
+        for twb in two_way_bindings {
+            visit_local_member_reference(&mut twb.prop1, &scope, state, visitor);
+            visit_member_reference(&mut twb.prop2, &scope, state, visitor);
         }
         for c in const_properties {
             visit_local_member_reference(c, &scope, state, visitor);
         }
-        for i in init_code {
+        for i in pre_init_code.iter_mut().chain(init_code) {
             visit_expression(i.get_mut(), &scope, state, visitor);
         }
         for g in geometries.iter_mut().flatten() {
