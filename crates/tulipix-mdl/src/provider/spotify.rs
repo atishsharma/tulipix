@@ -407,10 +407,11 @@ fn parse_track_page(html: &str) -> (Option<String>, Option<String>) {
 
 /// The album out of `Artist · Song · Album · Year`.
 ///
-/// The `Song` marker is what anchors it: the description has a different shape
-/// for podcasts and episodes, and the segment before `Song` is only the album
-/// when there is an artist segment in front of it too — hence the index test
-/// rather than a plain "second from the end".
+/// The `Song` marker is what anchors it, with an artist segment ahead of it —
+/// podcasts and episodes use the same tag with another shape, and a stray
+/// "Song" with nothing in front of it is not a track description. A single
+/// carries no album at all (`Artist · Song · Year`), which is why the album
+/// segment has to be followed by the year rather than merely exist.
 fn album_from_description(description: Option<&str>) -> Option<String> {
     let segments: Vec<&str> = description?
         .split(" · ")
@@ -418,10 +419,10 @@ fn album_from_description(description: Option<&str>) -> Option<String> {
         .filter(|s| !s.is_empty())
         .collect();
     let song_at = segments.iter().position(|s| s.eq_ignore_ascii_case("song"))?;
-    if song_at < 2 {
+    if song_at == 0 || song_at + 2 >= segments.len() {
         return None;
     }
-    Some(segments[song_at - 1].to_string())
+    Some(segments[song_at + 1].to_string())
 }
 
 /// The handful of entities Spotify actually emits in a meta tag.
@@ -596,6 +597,8 @@ mod tests {
         assert_eq!(album_from_description(Some("Podcast · Episode · Jan 2020")), None);
         assert_eq!(album_from_description(Some("Song · Album · 2019")), None);
         assert_eq!(album_from_description(None), None);
+        // A single: the year sits where the album would, and is not one.
+        assert_eq!(album_from_description(Some("Artist · Song · 2019")), None);
     }
 
     #[test]

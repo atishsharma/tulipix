@@ -173,13 +173,17 @@ fn clean_title(raw: &str) -> String {
             end = at;
         }
     }
+    // A trailing season marker is decoration only when it spans several: "S1-S3"
+    // names a pack, and the pack is not a title. A lone "S5" is deliberately
+    // left on — `parse_search` splits that off itself, and it is what folds five
+    // per-season subjects into one card. Stripping it here left five results all
+    // called the same thing and no season numbers to group them by.
     if let Some(at) = raw[..end].rfind(" S") {
         let suffix = &raw[at + 2..end];
-        let season = suffix
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == '-' || c == 'S')
-            && suffix.starts_with(|c: char| c.is_ascii_digit());
-        if season {
+        let pack = suffix.starts_with(|c: char| c.is_ascii_digit())
+            && suffix.chars().all(|c| c.is_ascii_digit() || c == '-' || c == 'S')
+            && suffix.chars().any(|c| c == '-' || c == 'S');
+        if pack {
             end = at;
         }
     }
@@ -1791,6 +1795,9 @@ mod tests {
         assert_eq!(clean_title("The Movie [HD][Hindi]"), "The Movie");
         assert_eq!(clean_title("The Show (Hindi Dubbed)"), "The Show");
         assert_eq!(clean_title("The Show S1-S3"), "The Show");
+        // A single season is NOT stripped here: the search parser needs it to
+        // fold per-season subjects into one card.
+        assert_eq!(clean_title("The Show S5"), "The Show S5");
         // A year in parentheses is part of the name, not a dub note.
         assert_eq!(clean_title("Alien (1979)"), "Alien (1979)");
         // A word starting with S is not a season marker.

@@ -170,9 +170,13 @@ pub fn playable(raw: &str) -> Result<String, StreamError> {
     }
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     let path = url.path().to_ascii_lowercase();
+    // `host_str` keeps the brackets on an IPv6 literal, and "[fe80::1]" does not
+    // parse as an address — so without trimming them every v6 private address
+    // walked straight through the check that exists to stop exactly that.
+    let literal = host.trim_start_matches('[').trim_end_matches(']');
     let private = host == "localhost"
         || host.ends_with(".local")
-        || host.parse::<IpAddr>().is_ok_and(|ip| !is_public(ip));
+        || literal.parse::<IpAddr>().is_ok_and(|ip| !is_public(ip));
     if host.is_empty()
         || private
         || path.ends_with(".zip")
