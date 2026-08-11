@@ -498,12 +498,28 @@ export component StatusPage inherits Rectangle {
     // repeater, which is the exact parent chain slint#6426 breaks on: opening
     // it panicked with "accessing deleted parent" every time. An index needs no
     // repeater to resolve, so the popup's parent is this component directly.
-    property <int> open-card: -1;
-    property <int> open-metric: -1;
+    // WHICH one, and WHETHER it is open, are two separate properties on
+    // purpose, and closing never touches the index.
+    //
+    // Everything inside these popups reads `cards[open-card]` /
+    // `metrics[open-metric]` — one binding in the card popup, ten in the metric
+    // one. Clearing the index to -1 on close marked every one of those dirty at
+    // the same instant the `if` deleted the elements holding them, and
+    // re-evaluating a binding whose element is gone is exactly slint#6426:
+    // `accessing deleted parent`, from eval.rs, app gone. The flag deletes; the
+    // index stays where it was until the next open moves it.
+    property <int> open-card: 0;
+    property <int> open-metric: 0;
+    property <bool> card-shown: false;
+    property <bool> metric-shown: false;
     property <bool> lib-open: false;
     // Guarded against a refresh that shrinks the list while a popup is open.
-    property <bool> card-open: root.open-card >= 0 && root.open-card < root.cards.length;
-    property <bool> metric-open: root.open-metric >= 0 && root.open-metric < root.metrics.length;
+    // The lower bound still matters: `system-idx` and `tools-idx` are -1 until
+    // Rust resolves them, and the three header figures open by index.
+    property <bool> card-open:
+        root.card-shown && root.open-card >= 0 && root.open-card < root.cards.length;
+    property <bool> metric-open:
+        root.metric-shown && root.open-metric >= 0 && root.open-metric < root.metrics.length;
     property <bool> modal-open: root.card-open || root.metric-open || root.lib-open;
     // Reset is two deliberate acts: arm it, then type the word. Held here so a
     // refresh underneath cannot disarm a half-typed confirmation.
@@ -512,20 +528,20 @@ export component StatusPage inherits Rectangle {
 
     /// Closes whichever popup is open, and does *nothing* afterwards.
     ///
-    /// Every caller is a button living inside the popup being closed, so the
-    /// assignment that flips the popup's `if` off deletes the element whose
-    /// handler is running — and Slint panics ("Recursion detected",
-    /// properties.rs) on anything a handler touches after that. Clearing the
-    /// three flags in a row therefore closed the popup on the *first* one and
-    /// then kept assigning, which is why the close button took the app down
-    /// from any of the three. Reset state first, then exactly one deletion,
-    /// then return.
+    /// Two rules, both learned the hard way, and both needed:
+    ///
+    /// - Only the flag is assigned. Moving the index would dirty the bindings
+    ///   inside the popup as it is being deleted — see above.
+    /// - Exactly one assignment, and nothing after it. Every caller is a button
+    ///   inside the popup being closed, so that assignment deletes the element
+    ///   whose handler is running, and Slint panics on anything a handler
+    ///   touches once its component is gone.
     function close-modal() {
         root.reset-armed = false;
         root.reset-typed = "";
         if (root.lib-open) { root.lib-open = false; return; }
-        if (root.open-metric >= 0) { root.open-metric = -1; return; }
-        root.open-card = -1;
+        if (root.metric-shown) { root.metric-shown = false; return; }
+        root.card-shown = false;
     }
 
     background: Theme.bg;
@@ -598,7 +614,7 @@ export component StatusPage inherits Rectangle {
                                 animate background { duration: 120ms; }
                                 ta1 := TouchArea {
                                     mouse-cursor: pointer;
-                                    clicked => { root.open-card = root.system-idx; }
+                                    clicked => { root.open-card = root.system-idx; root.card-shown = true; }
                                 }
                                 HorizontalLayout {
                                     padding: 13px; spacing: 11px; alignment: start;
@@ -624,7 +640,7 @@ export component StatusPage inherits Rectangle {
                                 animate background { duration: 120ms; }
                                 ta2 := TouchArea {
                                     mouse-cursor: pointer;
-                                    clicked => { root.open-card = root.tools-idx; }
+                                    clicked => { root.open-card = root.tools-idx; root.card-shown = true; }
                                 }
                                 HorizontalLayout {
                                     padding: 13px; spacing: 11px; alignment: start;
@@ -650,7 +666,7 @@ export component StatusPage inherits Rectangle {
                                 animate background { duration: 120ms; }
                                 ta3 := TouchArea {
                                     mouse-cursor: pointer;
-                                    clicked => { root.open-card = root.tools-idx; }
+                                    clicked => { root.open-card = root.tools-idx; root.card-shown = true; }
                                 }
                                 HorizontalLayout {
                                     padding: 13px; spacing: 11px; alignment: start;
@@ -737,7 +753,7 @@ export component StatusPage inherits Rectangle {
                     min-height: 104px; max-height: 104px;
                     mt := TouchArea {
                         mouse-cursor: pointer;
-                        clicked => { root.open-metric = i; }
+                        clicked => { root.open-metric = i; root.metric-shown = true; }
                     }
                     // The "?" badge. It is the affordance: without it a tile
                     // that opens an explanation looks like a tile that does not.
@@ -846,7 +862,7 @@ export component StatusPage inherits Rectangle {
                         Btn {
                             label: c.more != "" ? c.more : "View Details";
                             tint: c.accent; filled: false;
-                            clicked => { root.open-card = i; }
+                            clicked => { root.open-card = i; root.card-shown = true; }
                         }
                     }
                 }
@@ -987,6 +1003,12 @@ export component StatusPage inherits Rectangle {
                     // repeater — the parent chain slint#6426 cannot walk, and
                     // opening any card popup panicked on it. One `if` under
                     // this component is the whole fix.
+                    //
+                    // The other half of the same issue is the binding below:
+                    // it must not depend on anything that closing changes, or
+                    // it goes dirty while the element holding it is being
+                    // deleted. Hence `card-shown`, and an `open-card` that
+                    // closing leaves alone.
                     if root.card-open: CardModal {
                         card: root.cards[root.open-card];
                         close => { root.close-modal(); }
@@ -996,9 +1018,12 @@ export component StatusPage inherits Rectangle {
 
                     // ── metric help ─────────────────────────────────────────
                     // Indexed straight off the model rather than bound to a
-                    // local copy: `open-metric` is only ever a valid index while
-                    // this branch exists, and a `property <StMetric>` here would
-                    // have to be reached through three `parent`s from the header.
+                    // local copy: a `property <StMetric>` here would have to be
+                    // reached through three `parent`s from the header. Ten
+                    // bindings below read `metrics[open-metric]`, which is why
+                    // closing flips `metric-shown` and never moves the index —
+                    // ten bindings going dirty as their elements are deleted is
+                    // ten chances at "accessing deleted parent".
                     if root.metric-open: VerticalLayout {
                         spacing: 0px;
                         Rectangle {
