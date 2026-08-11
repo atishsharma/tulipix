@@ -826,8 +826,11 @@ pub fn populate_favorites(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("music").await else { return; };
+        // Music only: a loved book chapter belongs on the Audiobooks shelf.
         let ids: Vec<i64> = sqlx::query_scalar(
-            "SELECT item_id FROM track_meta WHERE loved = 1 ORDER BY title COLLATE NOCASE")
+            "SELECT item_id FROM track_meta \
+             WHERE loved = 1 AND COALESCE(is_audiobook, 0) = 0 \
+             ORDER BY title COLLATE NOCASE")
             .fetch_all(&pool).await.unwrap_or_default();
         let _ = weak.upgrade_in_event_loop(move |w| {
             if let Ok(mut g) = fav_ids().lock() { *g = ids; }
@@ -863,8 +866,14 @@ pub fn populate_history(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("music").await else { return; };
+        // Music only — the History tab lives in My Music, and a book chapter
+        // played from the Audiobooks shelf writes the same play_history row a
+        // song does. Books have their own progress and their own shelf.
         let ids: Vec<i64> = sqlx::query_scalar(
-            "SELECT item_id FROM play_history ORDER BY played_at DESC LIMIT 150")
+            "SELECT ph.item_id FROM play_history ph \
+             JOIN track_meta tm ON tm.item_id = ph.item_id \
+             WHERE COALESCE(tm.is_audiobook, 0) = 0 \
+             ORDER BY ph.played_at DESC LIMIT 150")
             .fetch_all(&pool).await.unwrap_or_default();
         let _ = weak.upgrade_in_event_loop(move |w| {
             if let Ok(mut g) = history_ids().lock() { *g = ids; }
@@ -4352,7 +4361,9 @@ pub fn populate_music_views(weak: slint::Weak<MainWindow>) {
             "SELECT id, abs_path FROM items WHERE section = 'music' AND missing_since IS NULL")
             .fetch_all(&pool).await.unwrap_or_default();
         let recent = tulipix_music::dashboard::recently_played(&pool, 20).await.unwrap_or_default();
-        let most   = tulipix_music::dashboard::most_played(&pool, 20).await.unwrap_or_default();
+        // Seven, because the rail draws seven across and lays the rest out
+        // past the right edge of the page where nothing can reach them.
+        let most   = tulipix_music::dashboard::most_played(&pool, 7).await.unwrap_or_default();
         let loved  = tulipix_music::rating::loved(&pool, 20).await.unwrap_or_default();
         let fresh  = tulipix_music::dashboard::new_this_week(&pool, 20).await.unwrap_or_default();
         // Home — Continue listening + the listening strip. Both are reads over
@@ -4458,10 +4469,23 @@ pub fn populate_music_views(weak: slint::Weak<MainWindow>) {
             let tile_at = |pos: i32| -> Option<PhotoTile> {
                 if pos >= 0 && (pos as usize) < songs.row_count() { songs.row_data(pos as usize) } else { None }
             };
+            // Tagged title by item_id. The scanned tile is labelled with the
+            // file stem — right for the Songs grid, which has to name a track
+            // with no tags at all — but a rail that has the item_id in hand can
+            // show the real title, so it does whenever one is stored.
+            let title_of: std::collections::HashMap<i64, slint::SharedString> = song_rows.iter()
+                .filter_map(|r| r.1.as_ref()
+                    .filter(|t| !t.trim().is_empty())
+                    .map(|t| (r.0, t.as_str().into())))
+                .collect();
             let rail = |id_list: &[i64]| -> Vec<PhotoTile> {
-                id_list.iter().filter_map(|id| pos_of.get(id).copied())
-                    .filter_map(|pos| tile_at(pos).map(|mut t| { t.index = pos; t }))
-                    .collect()
+                id_list.iter().filter_map(|id| {
+                    let pos = pos_of.get(id).copied()?;
+                    let mut t = tile_at(pos)?;
+                    t.index = pos;
+                    if let Some(title) = title_of.get(id) { t.label = title.clone(); }
+                    Some(t)
+                }).collect()
             };
             // First playback position for each grouping key.
             let mut first_album: std::collections::HashMap<i64, i32> = std::collections::HashMap::new();
@@ -4477,14 +4501,25 @@ pub fn populate_music_views(weak: slint::Weak<MainWindow>) {
             w.set_music_recent(slint::ModelRc::new(slint::VecModel::from(rail(&recent))));
             w.set_music_most(slint::ModelRc::new(slint::VecModel::from(rail(&most))));
             w.set_music_loved(slint::ModelRc::new(slint::VecModel::from(rail(&loved))));
-            w.set_music_fresh(slint::ModelRc::new(slint::VecModel::from(rail(&fresh))));
+            // Seven, and no more: the rail is one row of seven cells and lays
+            // anything past that out beyond the card's right edge, where it
+            // shows as a stray tile outside the outline. Truncated here rather
+            // than in the query because `rail` drops rows whose file is not in
+            // the current walk — asking SQL for seven can hand back four.
+            let mut fresh_tiles = rail(&fresh);
+            fresh_tiles.truncate(7);
+            w.set_music_fresh(slint::ModelRc::new(slint::VecModel::from(fresh_tiles)));
             // Continue listening — `count` carries percent-complete, which is
             // the only spare integer on PhotoTile and what the card's progress
             // hairline reads.
             let cont: Vec<PhotoTile> = resume_rows.iter().filter_map(|(id, pct)| {
                 let pos = pos_of.get(id).copied()?;
-                tile_at(pos).map(|mut t| { t.index = pos; t.count = *pct; t })
-            }).collect();
+                tile_at(pos).map(|mut t| {
+                    t.index = pos; t.count = *pct;
+                    if let Some(title) = title_of.get(id) { t.label = title.clone(); }
+                    t
+                })
+            }).take(7).collect();
             w.set_music_continue_rows(slint::ModelRc::new(slint::VecModel::from(cont)));
             // Listening strip. An empty total hides the whole strip rather
             // than showing four em dashes on a library nobody has played yet.
@@ -4617,7 +4652,8 @@ pub fn populate_music_views(weak: slint::Weak<MainWindow>) {
             // Top artists / albums (most tracks first, capped) for the Home grids.
             let mut top_artist_src = artists.clone();
             top_artist_src.sort_by(|a, b| b.2.cmp(&a.2));
-            let top_artist_tiles: Vec<PhotoTile> = top_artist_src.iter().take(6).map(|(id, name, _)| {
+            // Eight, for the Home grid's four columns by two rows.
+            let top_artist_tiles: Vec<PhotoTile> = top_artist_src.iter().take(8).map(|(id, name, _)| {
                 let pos = first_artist.get(id).copied().unwrap_or(-1);
                 PhotoTile { thumb: tile_at(pos).map(|t| t.thumb).unwrap_or_default(),
                     label: name.clone().into(), index: pos, ..Default::default() }
@@ -5046,7 +5082,9 @@ pub fn advance_music(w: &MainWindow) {
 fn advance_or_wrap(w: &MainWindow, wrap: bool) {
     if wrap && !w.get_music_shuffle() && w.get_music_repeat() == "off" {
         let total = w.get_music_np_total();
-        if total > 0 { play_music_at(w, (w.get_music_np_index() + 1).rem_euclid(total)); }
+        if let Some(p) = step_music_pos(w.get_music_np_index(), total, 1) {
+            play_music_at(w, p);
+        }
         return;
     }
     advance_sequential(w);
@@ -5141,6 +5179,32 @@ pub fn shuffle_reset() {
     if let Ok(mut g) = shuffle_state().lock() { g.0.clear(); g.1.clear(); }
 }
 
+/// True when this library position is an audiobook chapter.
+///
+/// `music_paths` / `music_ids` cover the whole music SECTION, books included —
+/// the Audiobooks tab resolves its chapters by position out of the same list —
+/// so every walk over that index space has to filter, or My Music's Next lands
+/// in the middle of a book. (User report: the queue "sometimes" played
+/// audiobook tracks; sometimes = whenever the walk stepped past the last song
+/// before a book folder.)
+pub fn is_audiobook_pos(idx: i32) -> bool {
+    music_songs().lock().ok()
+        .map(|g| g.iter().any(|s| s.pos == idx && s.is_audiobook))
+        .unwrap_or(false)
+}
+
+/// The next MUSIC position from `idx`, walking `step` (+1 / -1) and wrapping.
+/// Returns `None` when the library holds nothing but audiobooks.
+pub fn step_music_pos(idx: i32, total: i32, step: i32) -> Option<i32> {
+    if total <= 0 { return None; }
+    let mut p = idx;
+    for _ in 0..total {
+        p = (p + step).rem_euclid(total);
+        if !is_audiobook_pos(p) { return Some(p); }
+    }
+    None
+}
+
 /// Sequential / shuffle / repeat advance over the library list (the fallback
 /// when no queue is active).
 pub fn advance_sequential(w: &MainWindow) {
@@ -5149,11 +5213,29 @@ pub fn advance_sequential(w: &MainWindow) {
     let idx = w.get_music_np_index();
     let next = match w.get_music_repeat().as_str() {
         "one" => idx,
-        _ if w.get_music_shuffle() && total > 1 => shuffle_next(total, idx),
-        "all" => (idx + 1).rem_euclid(total),
+        _ if w.get_music_shuffle() && total > 1 => {
+            // The bag is over the whole index space, so a book chapter can come
+            // out of it — draw again until it does not. Bounded: after `total`
+            // tries the library is all books and there is nothing to play.
+            let mut pick = shuffle_next(total, idx);
+            let mut tries = 0;
+            while is_audiobook_pos(pick) && tries < total {
+                pick = shuffle_next(total, idx);
+                tries += 1;
+            }
+            if is_audiobook_pos(pick) { w.set_music_playing(false); return; }
+            pick
+        }
+        "all" => match step_music_pos(idx, total, 1) {
+            Some(p) => p,
+            None => { w.set_music_playing(false); return; }
+        },
         _ => { // off: stop at the end of the list
-            if idx + 1 >= total { w.set_music_playing(false); return; }
-            idx + 1
+            match step_music_pos(idx, total, 1) {
+                // Wrapping past the end means there is no later song left.
+                Some(p) if p > idx => p,
+                _ => { w.set_music_playing(false); return; }
+            }
         }
     };
     play_music_at(w, next);

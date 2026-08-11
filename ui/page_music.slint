@@ -750,6 +750,32 @@ component SongCard inherits Skin {
     }
 }
 
+// "See all" on a Home rail header. A rail shows the first few of something the
+// library has a real page for; this is the way through to it.
+export component RailLink inherits Rectangle {
+    in property <string> label;
+    callback clicked();
+    height: 24px;
+    width: rl.preferred-width + 22px;
+    horizontal-stretch: 0; vertical-stretch: 0;
+    border-radius: Surface.rr(12px, self.width, self.height);
+    background: rt.has-hover ? MusicTheme.surf1 : transparent;
+    border-width: 1px;
+    border-color: rt.has-hover ? MusicTheme.line : transparent;
+    animate background, border-color { duration: 120ms; easing: ease-out; }
+    rt := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    rl := HorizontalLayout {
+        padding-left: 11px; padding-right: 11px; spacing: 5px;
+        VerticalLayout { alignment: center;
+            Text { text: root.label; color: rt.has-hover ? MusicTheme.fg : MusicTheme.fg-dim2;
+                font-size: 12px; font-weight: 600; } }
+        VerticalLayout { alignment: center;
+            AppIcon { source: Icons.chevron-right;
+                tint: rt.has-hover ? MusicTheme.fg : MusicTheme.fg-dim2;
+                width: 12px; height: 12px; } }
+    }
+}
+
 // Library sub-tab chip — thin wrapper over the shared HdrChip with the
 // YT-Music pink theme baked in, matching the Photos header pill shape.
 export component MusicTab inherits HdrChip {
@@ -772,14 +798,35 @@ export component LiveTabRing inherits Rectangle {
     horizontal-stretch: 1;
     property <angle> ga: (Math.mod(animation-tick() / 18ms, 360)) * 1deg;
     border-radius: self.height / 2;
-    background: live ? @linear-gradient(ga, tint, tint.with-alpha(0.2), tint.brighter(0.6), tint) : transparent;
-    // 3px header-surface gap between the 2px ring and the chip, so the
-    // animation reads as a distinct halo rather than a border.
-    Rectangle { x: root.live ? 2px : 0px; y: root.live ? 2px : 0px;
-        width: parent.width - (root.live ? 4px : 0px); height: parent.height - (root.live ? 4px : 0px);
+    background: transparent;
+    // The chip always gets the full cage. The ring used to wrap it — 2px of
+    // gradient plus a 5px inset — which meant the tab visibly SHRANK the moment
+    // its section started playing and grew back when it stopped, so a row of
+    // five tabs never held one size. It is drawn inside the chip instead now.
+    HorizontalLayout { @children }
+    // Second outline, inset over the chip's own edge: same footprint, so
+    // nothing reflows. A border takes a colour and not a gradient, so the
+    // rotation the old ring got from `@linear-gradient(ga, …)` comes from
+    // sweeping the ink between the tint and a bright tint instead.
+    property <float> puls: 0.5 + 0.5 * Math.sin(root.ga);
+    if root.live: Rectangle {
+        x: 2px; y: 2px;
+        width: parent.width - 4px; height: parent.height - 4px;
         border-radius: self.height / 2;
-        background: root.live ? MusicTheme.surf-header : transparent; }
-    HorizontalLayout { padding: root.live ? 5px : 0px; @children }
+        background: transparent;
+        border-width: 2px;
+        border-color: root.tint.mix(root.tint.brighter(0.85), 1.0 - root.puls);
+        // A fainter companion a pixel further in, so the ring reads as a lit
+        // edge rather than as a drawn circle.
+        Rectangle {
+            x: 1px; y: 1px;
+            width: parent.width - 2px; height: parent.height - 2px;
+            border-radius: self.height / 2;
+            background: transparent;
+            border-width: 1px;
+            border-color: #ffffff.with-alpha(0.20 + 0.25 * root.puls);
+        }
+    }
 }
 
 // Browse chip (artist/genre) — label only, click plays first track.
@@ -2176,6 +2223,9 @@ export component MusicPage inherits Rectangle {
     callback playlist-back();
     callback playlist-create();              // manual from playlist-new-name
     callback playlist-create-smart(string);  // "loved" | "recent"
+    /// Home → Recently added → the "Recently Added" smart playlist, created if
+    /// this is the first time anyone asked for it.
+    callback open-recent-playlist();
     callback playlist-play-track(int);
     callback playlist-remove-track(int);
     callback playlist-move(int, int);       // reorder: row i → new index
@@ -2802,18 +2852,10 @@ export component MusicPage inherits Rectangle {
                                 ? 1.0 * (root.dl-done + root.dl-skipped) / (root.dl-selected > 0 ? root.dl-selected : root.dl-total)
                                 : 0.0)
                             : (root.yt-dl-jobs.length > 0 ? Math.clamp(root.yt-dl-active-frac, 0, 1) : -1); } }
-                // App theme toggle (unified) — cycles the whole app light → dark → OLED.
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Rectangle { width: 40px; height: 40px; border-radius: Surface.rr(20px, self.width, self.height);
-                        background: thb.has-hover ? MusicTheme.hov2 : MusicTheme.surf0;
-                        border-width: 1px; border-color: MusicTheme.line;
-                        thb := TouchArea { mouse-cursor: pointer; clicked => {
-                            if (!Theme.dark) { Theme.dark = true; Theme.oled = false; }
-                            else if (!Theme.oled) { Theme.oled = true; }
-                            else { Theme.dark = false; Theme.oled = false; }
-                            root.music-theme-changed(); } }
-                        AppIcon { source: MusicTheme.light ? Icons.sun : (MusicTheme.oled ? Icons.star : Icons.moon); tint: MusicTheme.fg2;
-                            width: 18px; height: 18px; x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; } } }
+                // No theme toggle here. The sidebar already carries one that
+                // cycles the same three tiers app-wide; a second button doing
+                // the identical thing two inches away is a duplicate control,
+                // not a shortcut.
             }
         }
 
@@ -4716,7 +4758,7 @@ export component MusicPage inherits Rectangle {
                         AppIcon { source: Icons.disc; tint: #ffffff; width: 22px; height: 22px; } } }
                     VerticalLayout { alignment: center; spacing: 1px;
                         Text { text: "Music Downloader"; color: MusicTheme.fg; font-size: 22px; font-weight: 800; }
-                        Text { text: "Paste a Spotify, Apple or YT Music link — tracks land in your library with full metadata."; color: MusicTheme.fg-dim2; font-size: 12px; } }
+                        Text { text: "Paste a Spotify, Apple, YT Music, Amazon, Bandcamp, Deezer, Qobuz, SoundCloud or Tidal link — tracks land in your library with full metadata."; color: MusicTheme.fg-dim2; font-size: 12px; overflow: elide; } }
                     Rectangle { horizontal-stretch: 1; }
                     // Mode toggle — Search (yt-dlp ytsearch on YT Music) vs URL
                     // (paste + resolve). Only the active mode carries a fill.
@@ -5233,13 +5275,16 @@ export component MusicPage inherits Rectangle {
                                 for s[i] in root.recent-rows: TrackRow { track: s; np-index: root.np-index; np-playing: root.playing; phase: root.phase; clicked => { root.tile-clicked(s.index); }
                                     context(ax, ay) => { root.trk-ctx-idx = s.index; root.trk-ctx-x = ax - root.absolute-position.x; root.trk-ctx-y = ay - root.absolute-position.y; root.trk-ctx-open = true; } } }
                         } }
-                        // Top artists — fixed 3×2 grid.
-                        GradOutline { on: root.home-connect; width: 520px; horizontal-stretch: 0;
+                        // Top artists — fixed 4×2 grid. The width buys the fourth
+                        // column at the same cell size (520/3 ≈ 173, 692/4 ≈ 173);
+                        // the recently-played column is the stretchy one, so it
+                        // gives up exactly this much and nothing reflows.
+                        GradOutline { on: root.home-connect; width: 692px; horizontal-stretch: 0;
                         VerticalLayout {
                             padding: root.home-connect ? 14px : 0px;
                             horizontal-stretch: 1; spacing: 12px;
                             Text { text: "Top artists"; color: MusicTheme.fg; font-size: 20px; font-weight: 700; }
-                            TileGrid { items: root.top-artists; circular: true; force-cols: 3; pick(i) => { root.artist-open(i); } }
+                            TileGrid { items: root.top-artists; circular: true; force-cols: 4; pick(i) => { root.artist-open(i); } }
                         } }
                     }
                 }
@@ -5281,7 +5326,16 @@ export component MusicPage inherits Rectangle {
                     padding-left: 36px; padding-right: 36px;
                     GradOutline { on: root.home-connect; horizontal-stretch: 1;
                     VerticalLayout { padding: root.home-connect ? 14px : 0px; spacing: 12px;
-                        Text { text: "Continue listening"; color: MusicTheme.fg; font-size: 20px; font-weight: 700; }
+                        // The rail is the last few things you were in the
+                        // middle of; the whole story is the History tab.
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: "Continue listening"; color: MusicTheme.fg;
+                                font-size: 20px; font-weight: 700; }
+                            Rectangle { horizontal-stretch: 1; }
+                            RailLink { label: "History";
+                                clicked => { root.set-lib-tab("history"); } }
+                        }
                         Rectangle { horizontal-stretch: 1;
                             property <int> gcols: Math.max(1, Math.min(7, root.continue-rows.length));
                             property <length> cell: self.width / gcols;
@@ -5320,7 +5374,16 @@ export component MusicPage inherits Rectangle {
                     padding-left: 36px; padding-right: 36px;
                     GradOutline { on: root.home-connect; horizontal-stretch: 1;
                     VerticalLayout { padding: root.home-connect ? 14px : 0px; spacing: 12px;
-                        Text { text: "Recently added"; color: MusicTheme.fg; font-size: 20px; font-weight: 700; }
+                        HorizontalLayout {
+                            spacing: 8px;
+                            Text { text: "Recently added"; color: MusicTheme.fg;
+                                font-size: 20px; font-weight: 700; }
+                            Rectangle { horizontal-stretch: 1; }
+                            // Opens the smart playlist of the same name,
+                            // creating it on first use.
+                            RailLink { label: "See all";
+                                clicked => { root.open-recent-playlist(); } }
+                        }
                         Rectangle { horizontal-stretch: 1;
                             property <int> gcols: Math.max(1, Math.min(7, root.fresh.length));
                             property <length> cell: self.width / gcols;
@@ -6420,7 +6483,7 @@ export component MusicPage inherits Rectangle {
                                 SetCard { horizontal-stretch: 1; icon: Icons.sparkles; tint: #f59e0b;
                                     title: "Appearance"; sub: "Little touches across the section";
                                     SetToggle { label: "Bold gradient outline on the mini players"; on: root.mini-outline; tint: #f59e0b; clicked => { root.toggle-mini-outline(); } }
-                                    SetHint { text: "Theme (light / dark / OLED) cycles from the moon button on the player bar."; } } }
+                                    SetHint { text: "Theme (light / dark / OLED) cycles from the moon button in the sidebar."; } } }
 
                             // ── Per tab ──────────────────────────────────
                             Rectangle { height: 10px; }

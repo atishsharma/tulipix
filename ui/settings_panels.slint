@@ -256,10 +256,162 @@ export component SettingsList inherits Rectangle {
 // name and pushes the new value back.
 export struct StyleOption {
     label: string,
-    value: string,
+    value: string,   // also picks the schematic — see StyleThumb
     note: string,
-    pw: length,   // preview width  — the real widget proportions, scaled down
-    ph: length,   // preview height
+}
+
+// What each option actually looks like, drawn rather than outlined.
+//
+// Same idea as the Home layout thumbnails: an empty rounded rectangle in the
+// right proportion tells you the widget's SHAPE and nothing about what is in
+// it, and five of them side by side read as five empty boxes. These draw the
+// furniture — art, title lines, transport, seek, menu rows — at the position
+// the real surface puts it, so the choice is recognisable before the label is
+// read. `on` swaps the ink to the accent, which is how the selected cell says
+// so without a second badge.
+component StyleThumb inherits Rectangle {
+    in property <string> kind: "bar";
+    in property <bool> on: false;
+
+    // The body is the widget; the furniture sits on it.
+    property <length> pad: 5px;
+    property <color> ink: root.on ? Accent.color : Theme.text-dim;
+    property <brush> art: root.on
+        ? @linear-gradient(135deg, #ec4899, #8b5cf6 55%, #06b6d4)
+        : Theme.outline-strong;
+
+    background: Theme.dark ? #0d0f1a : #ffffff;
+    border-radius: Surface.rr(6px, self.width, self.height);
+    border-width: 1px;
+    border-color: root.on ? Accent.color.with-alpha(0.55) : Theme.outline-strong;
+    clip: true;
+
+    // ── bar — square art at the left, titles and transport at the right ─────
+    if root.kind == "bar": Rectangle {
+        x: root.pad; y: root.pad;
+        width: root.width - 2 * root.pad; height: root.height - 2 * root.pad;
+        property <length> art-w: self.height;
+        Rectangle {
+            width: parent.art-w; height: parent.height;
+            border-radius: 3px; background: root.art;
+        }
+        Rectangle {
+            x: parent.art-w + 5px; y: parent.height * 0.16;
+            width: (parent.width - parent.art-w - 5px) * 0.8; height: 3px;
+            border-radius: 1.5px; background: root.ink.with-alpha(0.85);
+        }
+        Rectangle {
+            x: parent.art-w + 5px; y: parent.height * 0.34;
+            width: (parent.width - parent.art-w - 5px) * 0.5; height: 2px;
+            border-radius: 1px; background: root.ink.with-alpha(0.45);
+        }
+        // Transport: three keys, the middle one filled.
+        for k[i] in [0, 1, 2]: Rectangle {
+            x: parent.art-w + 5px + i * 11px; y: parent.height * 0.58;
+            width: 8px; height: 8px; border-radius: 4px;
+            background: i == 1 ? root.art : root.ink.with-alpha(0.35);
+        }
+        Rectangle {
+            x: parent.art-w + 5px; y: parent.height - 3px;
+            width: parent.width - parent.art-w - 5px; height: 2px;
+            border-radius: 1px; background: root.ink.with-alpha(0.3);
+        }
+    }
+
+    // ── square — art on top, titles under it, transport at the foot ─────────
+    if root.kind == "square": Rectangle {
+        x: root.pad; y: root.pad;
+        width: root.width - 2 * root.pad; height: root.height - 2 * root.pad;
+        Rectangle {
+            width: parent.width; height: parent.height * 0.5;
+            border-radius: 3px; background: root.art;
+        }
+        Rectangle {
+            y: parent.height * 0.58; width: parent.width * 0.72; height: 3px;
+            border-radius: 1.5px; background: root.ink.with-alpha(0.85);
+        }
+        Rectangle {
+            y: parent.height * 0.7; width: parent.width * 0.45; height: 2px;
+            border-radius: 1px; background: root.ink.with-alpha(0.45);
+        }
+        for k[i] in [0, 1, 2]: Rectangle {
+            x: parent.width / 2 - 13px + i * 11px; y: parent.height - 9px;
+            width: 8px; height: 8px; border-radius: 4px;
+            background: i == 1 ? root.art : root.ink.with-alpha(0.35);
+        }
+    }
+
+    // ── pill — round art, one line, two keys ────────────────────────────────
+    if root.kind == "pill": Rectangle {
+        x: root.pad; y: root.pad;
+        width: root.width - 2 * root.pad; height: root.height - 2 * root.pad;
+        property <length> d: Math.min(self.height, 18px);
+        Rectangle {
+            y: (parent.height - self.height) / 2;
+            width: parent.d; height: parent.d;
+            border-radius: parent.d / 2; background: root.art;
+        }
+        Rectangle {
+            x: parent.d + 5px; y: parent.height / 2 - 4px;
+            width: (parent.width - parent.d - 5px) * 0.62; height: 3px;
+            border-radius: 1.5px; background: root.ink.with-alpha(0.85);
+        }
+        Rectangle {
+            x: parent.d + 5px; y: parent.height / 2 + 2px;
+            width: (parent.width - parent.d - 5px) * 0.38; height: 2px;
+            border-radius: 1px; background: root.ink.with-alpha(0.45);
+        }
+        for k[i] in [0, 1]: Rectangle {
+            x: parent.width - 19px + i * 11px; y: parent.height / 2 - 4px;
+            width: 8px; height: 8px; border-radius: 4px;
+            background: i == 0 ? root.art : root.ink.with-alpha(0.35);
+        }
+    }
+
+    // ── popup tray — art, title, seek, volume ───────────────────────────────
+    if root.kind == "popup": Rectangle {
+        x: root.pad; y: root.pad;
+        width: root.width - 2 * root.pad; height: root.height - 2 * root.pad;
+        Rectangle {
+            x: (parent.width - self.width) / 2;
+            width: parent.height * 0.42; height: parent.height * 0.42;
+            border-radius: 3px; background: root.art;
+        }
+        Rectangle {
+            x: (parent.width - self.width) / 2; y: parent.height * 0.5;
+            width: parent.width * 0.6; height: 3px;
+            border-radius: 1.5px; background: root.ink.with-alpha(0.85);
+        }
+        // Seek: filled to a third.
+        Rectangle {
+            y: parent.height * 0.68; width: parent.width; height: 3px;
+            border-radius: 1.5px; background: root.ink.with-alpha(0.25);
+            Rectangle { width: parent.width * 0.35; height: parent.height;
+                border-radius: 1.5px; background: root.art; }
+        }
+        Rectangle {
+            y: parent.height * 0.86; width: parent.width; height: 3px;
+            border-radius: 1.5px; background: root.ink.with-alpha(0.25);
+            Rectangle { width: parent.width * 0.6; height: parent.height;
+                border-radius: 1.5px; background: root.art; }
+        }
+    }
+
+    // ── native tray — the OS menu: text rows and a rule ──────────────────────
+    if root.kind == "native": Rectangle {
+        x: root.pad; y: root.pad;
+        width: root.width - 2 * root.pad; height: root.height - 2 * root.pad;
+        for k[i] in [0, 1, 2, 3]: Rectangle {
+            y: i * (parent.height / 4.2);
+            width: parent.width * (i == 0 ? 0.8 : (i == 2 ? 0.55 : 0.68));
+            height: 3px; border-radius: 1.5px;
+            background: i == 0 ? root.art : root.ink.with-alpha(0.5);
+        }
+        Rectangle {
+            y: parent.height - 3px; width: parent.width; height: 1px;
+            background: root.ink.with-alpha(0.3);
+        }
+    }
 }
 
 export component StylePicker inherits Rectangle {
@@ -267,16 +419,26 @@ export component StylePicker inherits Rectangle {
     in property <string> choice: "";
     callback changed(string);
 
-    height: 96px;
+    // Equal square cells filling the row, whatever the option count. Stretch
+    // factors would not do it: a BoxLayout splits only the LEFTOVER width, so a
+    // cell whose note is "art · seek · volume" ends up wider than one that says
+    // "588 × 246". The cells are sized off the picker's own width instead, and
+    // the picker's height follows the cell so they come out square.
+    property <length> gap: 6px;
+    property <length> cell:
+        (root.width - 12px - (root.options.length - 1) * root.gap)
+        / Math.max(1, root.options.length);
+    height: root.cell + 12px;
     border-radius: Theme.radius-md;
     background: Theme.panel-2;
     border-color: Theme.outline;
     border-width: 1px;
 
     HorizontalLayout {
-        padding: 6px; spacing: 6px;
+        padding: 6px; spacing: root.gap;
         for o in root.options: Rectangle {
-            horizontal-stretch: 1;
+            width: root.cell;
+            horizontal-stretch: 0;
             property <bool> on: root.choice == o.value;
             border-radius: Theme.radius-sm;
             background: on ? Accent.color.with-alpha(0.16) : (op.has-hover ? Theme.glass : transparent);
@@ -286,20 +448,12 @@ export component StylePicker inherits Rectangle {
             op := TouchArea { mouse-cursor: pointer; clicked => { root.changed(o.value); } }
             VerticalLayout {
                 alignment: center; spacing: 7px; padding: 6px;
-                // Silhouette — the accent ring the real surface wears.
-                Rectangle {
-                    width: o.pw; height: o.ph;
+                // The widget itself, drawn — see StyleThumb.
+                StyleThumb {
+                    kind: o.value; on: on;
+                    width: root.cell - 24px;
+                    height: (root.cell - 24px) * 0.62;
                     horizontal-stretch: 0; vertical-stretch: 0;
-                    x: (parent.width - self.width) / 2;
-                    border-radius: Surface.rr(5px, self.width, self.height);
-                    background: on ? @linear-gradient(135deg, #ec4899, #8b5cf6 55%, #06b6d4)
-                                   : Theme.outline-strong;
-                    Rectangle {
-                        x: 1.5px; y: 1.5px;
-                        width: parent.width - 3px; height: parent.height - 3px;
-                        border-radius: Surface.rr(4px, self.width, self.height);
-                        background: Theme.dark ? #121422 : #ffffff;
-                    }
                 }
                 VerticalLayout {
                     spacing: 1px;
@@ -316,5 +470,61 @@ export component StylePicker inherits Rectangle {
                 }
             }
         }
+    }
+}
+
+// ── Profile & Home shared bits ───────────────────────────────────────────────
+// Here rather than in main.slint so the You & Home page can use them: main
+// imports that page, so the page cannot import back out of main.
+
+export struct CreditEntry { icon: image, label: string, link: string }
+
+/// One logo in the BUILT WITH wall.
+export component CreditTile inherits Skin {
+    in property <CreditEntry> entry;
+    callback open();
+    background: Surface.body(Theme.panel-2);
+    border-radius: Surface.rr(10px, self.width, self.height);
+    // Height comes from the grid (square cells), not from the tile.
+    height: 74px;
+    border-width: t.has-hover ? 2px : 1px;
+    border-color: t.has-hover ? Accent.color : Surface.hairline;
+    animate border-color, border-width { duration: 120ms; easing: ease-out; }
+    t := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
+    VerticalLayout {
+        padding: 10px; spacing: 8px; alignment: center;
+        HorizontalLayout { alignment: center;
+            // Scales with the cell: 22px was sized for a 74px-tall strip, and the
+            // grid squares are nearly twice that.
+            Image { source: entry.icon;
+                width: Math.clamp(root.height * 0.30, 22px, 40px); height: self.width; } }
+        Text { text: entry.label; color: Theme.text;
+            font-size: root.height > 100px ? 11px : 10px;
+            horizontal-alignment: center; overflow: elide; }
+    }
+}
+
+/// Selectable sidebar-logo swatch.
+export component LogoChip inherits Skin {
+    in property <image> logo;
+    in property <bool> selected: false;
+    callback clicked();
+    width: 46px; height: 46px; border-radius: Surface.rr(12px, self.width, self.height);
+    clip: true;
+    background: Surface.body(Theme.panel);
+    border-width: selected ? 2px : 1px;
+    border-color: selected ? Accent.color : Theme.outline;
+    TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+    Image { source: logo; image-fit: cover; width: 100%; height: 100%; }
+    // The selected mark wears the app's double ring — outer edge, a gap, then a
+    // second line inside it. Drawn over the image rather than around the chip so
+    // the mark itself stays exactly the size every other chip's does.
+    if root.selected: Rectangle {
+        x: 4px; y: 4px;
+        width: parent.width - 8px; height: parent.height - 8px;
+        border-radius: Math.max(2px, parent.border-radius - 4px);
+        background: transparent;
+        border-width: 1.5px;
+        border-color: Accent.color.with-alpha(0.75);
     }
 }

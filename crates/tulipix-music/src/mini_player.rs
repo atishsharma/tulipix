@@ -51,10 +51,12 @@ impl MiniStyle {
         match self {
             // 420 wide, not 380: the chrome cluster went from three buttons to
             // five (theme + next layout), and at 380 the title row was left
-            // eliding after about six characters. 176 tall, not 144: the volume
-            // track drops vertically out of its button and needs somewhere to
-            // land — and the artwork, which fills the height, grows with it.
-            Self::Bar => (420.0, 176.0),
+            // eliding after about six characters. 212 tall, not 176: the bar
+            // now stacks five rows in its right column — mark + window buttons,
+            // track, seek, transport, volume — where it used to overlay the
+            // chrome on the top-right corner and hang the volume off a flyout.
+            // The artwork fills the height, so it grows with it.
+            Self::Bar => (420.0, 212.0),
             Self::Square => (280.0, 496.0),
             // 300 wide, not the 260 it was drawn at: even collapsed the pill
             // carries play plus the chevron. 80 tall, not 56: a button label
@@ -137,7 +139,7 @@ pub const PILL_CLUSTER_NO_PIN: f64 = 119.0;
 
 /// How much larger than the design reference the widget opens. The reference
 /// sizes were drawn for a 1× desktop and read as a stamp on anything bigger.
-pub const DEFAULT_SCALE: f64 = 1.4;
+pub const DEFAULT_SCALE: f64 = 1.2;
 
 #[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
 pub struct MiniPlayer {

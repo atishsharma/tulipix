@@ -54,13 +54,22 @@ pub async fn resume(pool: &SqlitePool, limit: i64) -> Result<Vec<i64>> {
 /// "continue" rail — the SQL filters both. Tracks with no known duration are
 /// reported at 0% rather than dropped: the row is still worth resuming, we
 /// just cannot draw a bar for it.
+///
+/// MUSIC ONLY. The table it reads is `audiobook_progress` — every long-form
+/// player writes its position there, books included — so without the
+/// `is_audiobook = 0` filter this returned book chapters, and My Music's
+/// Continue listening rail filled up with the audiobook the user was halfway
+/// through. Books have their own shelf and their own resume; the two libraries
+/// do not mix. The join has to be inner for the same reason: a row with no
+/// `track_meta` at all cannot be shown to be music.
 pub async fn resume_pct(pool: &SqlitePool, limit: i64) -> Result<Vec<(i64, i32)>> {
     let rows: Vec<(i64, f64, Option<f64>)> = sqlx::query_as(
         "SELECT ap.item_id, ap.position_s, tm.duration_s
          FROM audiobook_progress ap
          JOIN items ON items.id = ap.item_id
-         LEFT JOIN track_meta tm ON tm.item_id = ap.item_id
+         JOIN track_meta tm ON tm.item_id = ap.item_id
          WHERE ap.finished = 0 AND ap.position_s > 0 AND items.missing_since IS NULL
+           AND tm.is_audiobook = 0
          ORDER BY ap.updated DESC LIMIT ?",
     ).bind(limit).fetch_all(pool).await?;
     Ok(rows.into_iter().map(|(id, pos, dur)| {
@@ -89,22 +98,28 @@ pub struct Stats {
 /// not played anything yet, and zeroing a real streak because the clock rolled
 /// over would be wrong. It breaks at the first day with no play.
 pub async fn stats(pool: &SqlitePool) -> Result<Stats> {
+    // Every figure here is MUSIC listening: the strip sits on My Music's home,
+    // and books keep their own reading stats. `play_history` is shared by every
+    // long-form player, so each query joins `track_meta` to filter chapters —
+    // and the join being inner also drops rows with no music metadata at all.
+    const MUSIC: &str = "JOIN track_meta tm ON tm.item_id = ph.item_id \
+         WHERE COALESCE(tm.is_audiobook, 0) = 0";
     let n = now();
-    let (total_ms,): (i64,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(ms_played), 0) FROM play_history")
+    let (total_ms,): (i64,) = sqlx::query_as(&format!(
+        "SELECT COALESCE(SUM(ph.ms_played), 0) FROM play_history ph {MUSIC}"))
         .fetch_one(pool).await.unwrap_or((0,));
-    let (week_ms,): (i64,) = sqlx::query_as(
-        "SELECT COALESCE(SUM(ms_played), 0) FROM play_history WHERE played_at >= ?")
+    let (week_ms,): (i64,) = sqlx::query_as(&format!(
+        "SELECT COALESCE(SUM(ph.ms_played), 0) FROM play_history ph {MUSIC} AND ph.played_at >= ?"))
         .bind(n - 7 * 86_400).fetch_one(pool).await.unwrap_or((0,));
     let top_genre: Option<(String,)> = sqlx::query_as(
         "SELECT tm.genre FROM play_history ph
          JOIN track_meta tm ON tm.item_id = ph.item_id
-         WHERE tm.genre IS NOT NULL AND tm.genre != ''
+         WHERE COALESCE(tm.is_audiobook, 0) = 0 AND tm.genre IS NOT NULL AND tm.genre != ''
          GROUP BY tm.genre ORDER BY COUNT(*) DESC LIMIT 1")
         .fetch_optional(pool).await.unwrap_or(None);
     // Distinct local days with a play, newest first.
-    let days: Vec<(i64,)> = sqlx::query_as(
-        "SELECT DISTINCT played_at / 86400 FROM play_history ORDER BY 1 DESC LIMIT 400")
+    let days: Vec<(i64,)> = sqlx::query_as(&format!(
+        "SELECT DISTINCT ph.played_at / 86400 FROM play_history ph {MUSIC} ORDER BY 1 DESC LIMIT 400"))
         .fetch_all(pool).await.unwrap_or_default();
     let today = n / 86_400;
     let mut streak = 0i64;
@@ -169,6 +184,25 @@ mod tests {
         }
         let got = resume_pct(&pool, 10).await.unwrap();
         assert_eq!(got, vec![(a, 25)]);
+    }
+
+    // The bug this file's `is_audiobook = 0` filters exist for: My Music's
+    // Continue listening rail filling up with the book the user was halfway
+    // through, because every long-form player writes to `audiobook_progress`.
+    #[tokio::test]
+    async fn resume_pct_leaves_books_on_the_book_shelf() {
+        let (_t, pool) = open_pool().await;
+        let song = add_track(&pool, "/m/song.flac").await;
+        let chapter = add_track(&pool, "/m/book/ch1.m4b").await;
+        sqlx::query("UPDATE track_meta SET duration_s = 1000 WHERE item_id IN (?, ?)")
+            .bind(song).bind(chapter).execute(&pool).await.unwrap();
+        sqlx::query("UPDATE track_meta SET is_audiobook = 1 WHERE item_id = ?")
+            .bind(chapter).execute(&pool).await.unwrap();
+        for id in [song, chapter] {
+            sqlx::query("INSERT INTO audiobook_progress (item_id, position_s, finished, updated) VALUES (?, 250, 0, 1)")
+                .bind(id).execute(&pool).await.unwrap();
+        }
+        assert_eq!(resume_pct(&pool, 10).await.unwrap(), vec![(song, 25)]);
     }
 
     #[test]

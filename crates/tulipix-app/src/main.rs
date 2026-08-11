@@ -945,7 +945,11 @@ fn main() -> Result<()> {
             play_previous_at(&w, prev);
             return;
         }
-        play_music_at(&w, (w.get_music_np_index() - 1).rem_euclid(total));
+        // Same audiobook filter the forward walk uses: index−1 in the library
+        // can be a book chapter, and My Music never plays those.
+        if let Some(p) = step_music_pos(w.get_music_np_index(), total, -1) {
+            play_music_at(&w, p);
+        }
     });
     let w = window.as_weak();
     window.on_music_stop(move || {
@@ -3607,7 +3611,7 @@ fn main() -> Result<()> {
         set_scan_silent(true); // startup restore never shows the scan popup
         for path in folders {
             if path.exists() {
-                add_folder_path(&window, path);
+                add_folder_path_deferred(&window, path);
             } else {
                 tracing::warn!(path = %path.display(), "watched folder gone — skipping");
             }
@@ -10187,6 +10191,32 @@ fn wire_music_playlist(window: &MainWindow) {
     window.on_music_playlist_open(move |pid| {
         if let Some(w) = w.upgrade() { build_playlist_detail(&w, pid as i64); }
     });
+    // Home → Recently added → "See all". The smart playlist is created on first
+    // use with the same rule the Playlists tab's one-click chip uses, so the two
+    // entry points cannot end up with two playlists of the same name.
+    let w = window.as_weak();
+    window.on_music_open_recent_playlist(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let weak = w.clone();
+        w0.set_music_lib_tab("playlists".into());
+        tokio::runtime::Handle::current().spawn(async move {
+            use tulipix_music::playlists::{SmartRule, Combine};
+            let Ok(pool) = pool_for("music").await else { return; };
+            const NAME: &str = "Recently Added";
+            let rule = SmartRule { combine: Combine::All, conditions: vec![], limit: Some(100) };
+            let pid = match tulipix_music::playlists::find_by_name(&pool, NAME).await.ok().flatten() {
+                Some(id) => id,
+                None => match tulipix_music::playlists::create(&pool, NAME, Some(&rule)).await {
+                    Ok(id) => id,
+                    Err(_) => return,
+                },
+            };
+            let _ = weak.upgrade_in_event_loop(move |w| {
+                populate_music_views(w.as_weak());
+                build_playlist_detail(&w, pid);
+            });
+        });
+    });
     // Set a custom cover image for the open playlist (np.p5.music.playlists-builder).
     let w = window.as_weak();
     window.on_music_playlist_set_art(move || {
@@ -11213,6 +11243,25 @@ fn wire_music_podcasts(window: &MainWindow) {
 /// models. Shared by the folder picker and the startup restore path.
 fn add_folder_path(window: &MainWindow, path: PathBuf) {
     let counts = classify_folder(&path);
+    add_folder_counted(window, path, counts);
+}
+
+/// The same, with the classification walk already done.
+///
+/// `classify_folder` walks the WHOLE tree and stats every file. On a warm page
+/// cache that is milliseconds; on the first launch after a boot it is the
+/// single slowest thing the app does, and it used to run on the main thread
+/// before the window was shown — which is exactly why the first launch dragged
+/// and every launch after it felt instant. The startup restore now walks off
+/// the main thread and calls this when it has the counts (see
+/// `add_folder_path_deferred`); an explicit "Add folder" still goes through
+/// `add_folder_path`, where the user has just picked the folder and is
+/// expecting it to be looked at.
+fn add_folder_counted(
+    window: &MainWindow,
+    path: PathBuf,
+    counts: std::collections::HashMap<&'static str, i64>,
+) {
     let total_all: i64 = counts.values().sum();
     tracing::info!(total_all, "classified totals");
 
@@ -11279,6 +11328,18 @@ fn add_folder_path(window: &MainWindow, path: PathBuf) {
     for (lib_id, section, total) in scheduled {
         kick_section_scan(window, path.clone(), lib_id, section, total);
     }
+}
+
+/// Startup restore: classify off the main thread, then seed the rows and kick
+/// the scans back on it. Nothing here is visible before the first frame — the
+/// grids fill as each section's scan reports in, exactly as they do for a
+/// folder added by hand — so the walk has no business holding up the window.
+fn add_folder_path_deferred(window: &MainWindow, path: PathBuf) {
+    let weak = window.as_weak();
+    std::thread::spawn(move || {
+        let counts = classify_folder(&path);
+        let _ = weak.upgrade_in_event_loop(move |w| add_folder_counted(&w, path, counts));
+    });
 }
 
 fn section_label(section: &str) -> &'static str {

@@ -23,16 +23,23 @@ component CapBtn inherits Rectangle {
     in property <image> icon;
     in property <bool> danger: false;
     in property <length> isz: 13px;
+    // Hover fill. Each caption button gets its own — the traffic-light
+    // vocabulary, which is legible on both themes because the plate is a
+    // saturated mid-tone in every case and the glyph on it is always white.
+    in property <color> tone: #e81123;
     callback clicked();
     width: 40px;
     horizontal-stretch: 0;
-    background: cb.has-hover ? (root.danger ? #e81123 : Theme.glass) : transparent;
+    background: cb.pressed ? root.tone.darker(0.25)
+        : (cb.has-hover ? root.tone : transparent);
     animate background { duration: 90ms; easing: ease-out; }
     AppIcon {
         source: root.icon;
-        tint: root.danger && cb.has-hover ? #ffffff : (cb.has-hover ? Theme.text : Theme.text-dim);
+        // Ink at rest — black on light, white on dark — white on the fill.
+        tint: cb.has-hover ? #ffffff : (Theme.dark ? #ffffff : #000000);
         width: root.isz; height: root.isz;
-        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2 + (cb.pressed ? 1px : 0px);
     }
     cb := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
 }
@@ -127,15 +134,21 @@ export component TitleRow inherits Rectangle {
             y: (parent.height - self.height) / 2;
             horizontal-stretch: 0;
             border-radius: Surface.rr(8px, self.width, self.height);
-            background: root.playing ? root.accent.with-alpha(0.18)
-                : (mm.has-hover ? Theme.glass : transparent);
-            border-width: root.playing ? 1px : 0px;
-            border-color: root.accent.with-alpha(0.45);
+            // Fills on hover the way the close button does, in one blue that
+            // works on both themes — the accent wash it used to wear WHILE
+            // PLAYING was a coloured plate sitting in the caption bar doing
+            // nothing but shouting. Darker while held, so the press reads.
+            background: mm.pressed ? #1d4ed8 : (mm.has-hover ? #2563eb : transparent);
+            animate background { duration: 90ms; easing: ease-out; }
             AppIcon {
                 source: Icons.pip;
-                tint: root.playing ? root.accent : Theme.text-dim;
+                // Ink at rest — black on light, white on dark — white once the
+                // blue is under it.
+                tint: mm.has-hover ? #ffffff : (Theme.dark ? #ffffff : #000000);
                 width: 14px; height: 14px;
-                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                x: (parent.width - self.width) / 2;
+                // One pixel down while held — the whole press feedback.
+                y: (parent.height - self.height) / 2 + (mm.pressed ? 1px : 0px);
             }
             mm := TouchArea { mouse-cursor: pointer; clicked => { root.mini(); } }
         }
@@ -155,24 +168,16 @@ export component TitleRow inherits Rectangle {
         // ── Windows / Linux: Mini Player, then the system trio ───────────
         if !root.mac && root.has-track: mini-btn := Rectangle {
             width: 40px; horizontal-stretch: 0;
-            background: root.playing ? root.accent.with-alpha(0.16)
-                : (mb.has-hover ? Theme.glass : transparent);
+            // Full-height blue fill on hover, like the close button two along
+            // — same rule as the mac variant, no wash while playing, no ring.
+            background: mb.pressed ? #1d4ed8 : (mb.has-hover ? #2563eb : transparent);
             animate background { duration: 90ms; easing: ease-out; }
-            // A hairline ring instead of a full border: the button belongs to
-            // the app, the three beside it belong to the window.
-            Rectangle {
-                width: 28px; height: 24px;
-                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                border-radius: Surface.rr(7px, self.width, self.height);
-                background: transparent;
-                border-width: root.playing ? 1px : 0px;
-                border-color: root.accent.with-alpha(0.45);
-            }
             AppIcon {
                 source: Icons.pip;
-                tint: root.playing ? root.accent : (mb.has-hover ? Theme.text : Theme.text-dim);
+                tint: mb.has-hover ? #ffffff : (Theme.dark ? #ffffff : #000000);
                 width: 14px; height: 14px;
-                x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
+                x: (parent.width - self.width) / 2;
+                y: (parent.height - self.height) / 2 + (mb.pressed ? 1px : 0px);
             }
             mb := TouchArea { mouse-cursor: pointer; clicked => { root.mini(); } }
         }
@@ -181,12 +186,14 @@ export component TitleRow inherits Rectangle {
             y: (parent.height - self.height) / 2;
             background: Theme.outline;
         }
-        if !root.mac: CapBtn { icon: Icons.minus; isz: 12px; clicked => { root.minimize(); } }
+        if !root.mac: CapBtn { icon: Icons.minus; isz: 12px; tone: #d97706;
+            clicked => { root.minimize(); } }
         // A plain square for maximise and overlapping squares for restore —
         // the shapes every desktop uses. (Icons.maximize is the expand-arrows
         // glyph, which reads as fullscreen, not as maximise.)
         if !root.mac: CapBtn {
             icon: root.maximized ? Icons.restore : Icons.square; isz: 12px;
+            tone: #15803d;
             clicked => { root.maximize-toggle(); }
         }
         if !root.mac: CapBtn { icon: Icons.x; danger: true; clicked => { root.close-win(); } }

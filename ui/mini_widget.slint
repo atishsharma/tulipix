@@ -27,6 +27,30 @@ global Tip {
     in-out property <color> tint: #8b5cf6;
 }
 
+// The widget's own two-colour ramp, and every gradient built from it.
+//
+// Light follows the ARTWORK: `art` is the dominant colour Rust pulls off the
+// cover (the same `music-np-accent` the in-app player uses), so the widget
+// wears the record it is playing. Dark ignores it and runs the Music section's
+// pink→violet instead — an art colour can be anything, including a muddy brown
+// or a near-black, and on a dark panel that is a control you cannot find. Held
+// as a global because a gradient cannot read a function argument but can read
+// these, and because eight components would otherwise each need the pair
+// passed in.
+global Tone {
+    in-out property <color> art: #ec4899;
+    out property <color> a: Theme.dark ? #ec4899 : Tone.art;
+    out property <color> b: Theme.dark ? #8b5cf6 : Tone.art.darker(0.45);
+    // Light art can be pale enough to lose white glyphs and thin type; this is
+    // the same ramp pushed dark enough to sit under both.
+    out property <color> ink: Theme.dark ? #ec4899 : Tone.art.darker(0.25);
+    out property <brush> diag:  @linear-gradient(135deg, Tone.a, Tone.b);
+    out property <brush> horiz: @linear-gradient(90deg,  Tone.a, Tone.b);
+    out property <brush> vert:  @linear-gradient(0deg,   Tone.b, Tone.a);
+    out property <brush> ring:  @linear-gradient(135deg, Tone.a, Tone.b 55%,
+        Theme.dark ? #06b6d4 : Tone.a.brighter(0.35));
+}
+
 // Round glass button. `tone`: 0 ghost · 1 glass · 2 accent-on · 3 gradient play
 // · 4 solid `fill` with a white glyph (the window buttons).
 component WBtn inherits Rectangle {
@@ -44,38 +68,52 @@ component WBtn inherits Rectangle {
     background: tone == 0 ? (ta.has-hover ? Theme.glass : transparent)
         : tone == 2 ? root.accent.with-alpha(0.22)
         : tone == 3 ? transparent
-        : tone == 4 ? (ta.has-hover ? root.fill.brighter(0.25) : root.fill)
+        // Tone 4 sits back until you reach for it: a tinted glass plate at
+        // rest, the solid colour under the pointer. Five saturated discs in a
+        // 24px row was the loudest thing in a widget whose job is to sit in a
+        // corner of the desktop.
+        : tone == 4 ? (ta.has-hover ? root.fill : root.fill.with-alpha(0.22))
         : (ta.has-hover ? Theme.glass-strong : Theme.glass);
-    border-width: tone == 2 ? 1px : (tone == 1 ? 1px : 0px);
-    border-color: tone == 2 ? root.accent.with-alpha(0.5) : Theme.outline;
+    border-width: (tone == 2 || tone == 1 || tone == 4) ? 1px : 0px;
+    border-color: tone == 2 ? root.accent.with-alpha(0.5)
+        : tone == 4 ? root.fill.with-alpha(ta.has-hover ? 0.0 : 0.45)
+        : Theme.outline;
     animate background { duration: 120ms; easing: ease-out; }
     // The play button is the one filled control — accent gradient, own shadow.
     if tone == 3: Rectangle {
         width: 100%; height: 100%; border-radius: parent.width / 2;
-        background: @linear-gradient(135deg, #ec4899, #8b5cf6);
-        drop-shadow-blur: 14px; drop-shadow-color: #ec489966;
+        background: Tone.diag;
+        drop-shadow-blur: 14px; drop-shadow-color: Tone.a.with-alpha(0.4);
     }
     AppIcon {
         source: root.icon;
-        tint: (tone == 3 || tone == 4) ? #ffffff
+        tint: tone == 3 ? #ffffff
+            : tone == 4 ? (ta.has-hover ? #ffffff : root.fill)
             : (tone == 2 ? root.accent : (ta.has-hover ? Theme.text : Theme.text-dim));
         width: root.isz; height: root.isz;
         x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
     }
+    // A click retires this button's label until the pointer has left and come
+    // back. Without it the pill hangs over the control you just used — the
+    // pointer is still inside the button, so nothing else was ever going to
+    // take it down, and on the styles where a click changes the layout it
+    // could outlive the button it names.
+    property <bool> tip-used: false;
     ta := TouchArea {
         mouse-cursor: pointer;
-        clicked => { root.clicked(); }
+        clicked => { Tip.text = ""; root.tip-used = true; root.clicked(); }
         // Publish/retract the label. The retract is guarded on still owning the
         // text so a fast slide between two buttons cannot have the one being
         // left clear the one being entered.
         changed has-hover => {
-            if (self.has-hover && root.tip != "") {
+            if (self.has-hover && root.tip != "" && !root.tip-used) {
                 Tip.text = root.tip;
-                Tip.tint = root.tone == 4 ? root.fill : root.accent;
+                Tip.tint = root.tone == 4 ? root.fill : Tone.ink;
                 Tip.cx = root.absolute-position.x + root.width / 2;
                 Tip.top = root.absolute-position.y;
-            } else if (Tip.text == root.tip) {
-                Tip.text = "";
+            } else if (!self.has-hover) {
+                root.tip-used = false;
+                if (Tip.text == root.tip) { Tip.text = ""; }
             }
         }
     }
@@ -88,7 +126,7 @@ component ArtTile inherits Rectangle {
     in property <length> radius: 12px;
     border-radius: Surface.rr(root.radius, self.width, self.height);
     clip: true;
-    background: @linear-gradient(150deg, #ec4899, #8b5cf6 52%, #06b6d4);
+    background: Tone.ring;
     if root.art.width > 0: Image {
         source: root.art; width: 100%; height: 100%;
         image-fit: cover;
@@ -117,7 +155,7 @@ component SeekBar inherits Rectangle {
         Rectangle {
             x: 0; width: parent.width * root.frac; height: 100%;
             border-radius: self.height / 2;
-            background: @linear-gradient(90deg, #ec4899, #8b5cf6);
+            background: Tone.horiz;
         }
         // Knob only once there is something to scrub, and only on the roomy
         // styles — the pill's bar is decoration plus a hit box.
@@ -126,50 +164,13 @@ component SeekBar inherits Rectangle {
             x: parent.width * root.frac - self.width / 2;
             y: (parent.height - self.height) / 2;
             background: #ffffff;
-            drop-shadow-blur: 6px; drop-shadow-color: #ec4899a0;
+            drop-shadow-blur: 6px; drop-shadow-color: Tone.a.with-alpha(0.63);
         }
     }
     sk := TouchArea {
         mouse-cursor: pointer;
         moved => { if (self.pressed && root.dur > 0) { root.seek(Math.clamp(self.mouse-x / root.width, 0, 1) * root.dur); } }
         clicked => { if (root.dur > 0) { root.seek(Math.clamp(self.mouse-x / root.width, 0, 1) * root.dur); } }
-    }
-}
-
-// Vertical slider for the volume flyout — fills from the bottom, and a press
-// anywhere on the track jumps there rather than only accepting a knob drag.
-component VSlider inherits Rectangle {
-    in property <float> value;
-    in property <float> max: 130;
-    in property <color> accent: #ec4899;
-    in property <float> uiscale: 1.0;
-    callback changed(float);
-    property <float> frac: root.max > 0 ? Math.clamp(root.value / root.max, 0, 1) : 0;
-    width: 20px * root.uiscale;
-    Rectangle {
-        width: 6px * root.uiscale; height: 100%;
-        x: (parent.width - self.width) / 2;
-        border-radius: self.width / 2;
-        background: Theme.glass-strong;
-        Rectangle {
-            width: 100%; height: parent.height * root.frac;
-            y: parent.height - self.height;
-            border-radius: parent.width / 2;
-            background: @linear-gradient(0deg, #8b5cf6, #ec4899);
-        }
-        Rectangle {
-            width: 11px * root.uiscale; height: self.width; border-radius: self.width / 2;
-            x: (parent.width - self.width) / 2;
-            y: parent.height * (1 - root.frac) - self.height / 2;
-            background: #ffffff;
-            drop-shadow-blur: 6px; drop-shadow-color: #ec4899a0;
-        }
-    }
-    vt := TouchArea {
-        mouse-cursor: pointer;
-        // Screen y grows downward, volume grows upward — hence the inversion.
-        moved => { if (vt.pressed) { root.changed(Math.clamp(1 - vt.mouse-y / root.height, 0, 1) * root.max); } }
-        clicked => { root.changed(Math.clamp(1 - vt.mouse-y / root.height, 0, 1) * root.max); }
     }
 }
 
@@ -183,12 +184,16 @@ component Transport inherits HorizontalLayout {
     in property <string> repeat: "off";
     in property <color> accent: #ec4899;
     in property <length> play-size: 34px;
+    // Space between the five. The bar runs it wider now that the transport has
+    // a row to itself — at 5px the keys read as one strip rather than as five
+    // controls.
+    in property <length> gap: 5px;
     callback shuffled();
     callback prev();
     callback playpause();
     callback next();
     callback repeated();
-    spacing: 5px * root.uiscale;
+    spacing: root.gap * root.uiscale;
     // Five buttons, three sizes: without this they line up on their top edges
     // and the play button hangs below the rest. An explicit `y` cannot do it —
     // a BoxLayout overwrites its children's cross-axis position.
@@ -301,7 +306,7 @@ export component MiniWidget inherits Window {
     // Deliberately NOT bound to `width`/`height`: a binding would fight the
     // compositor and the widget could never be resized.
     property <length> base-w: root.is-pill ? 300px : (root.is-square ? 280px : 420px);
-    property <length> base-h: root.is-pill ? 80px  : (root.is-square ? 496px : 176px);
+    property <length> base-h: root.is-pill ? 80px  : (root.is-square ? 496px : 212px);
     // The pill measures itself against its HEIGHT: extending it sideways for the
     // window buttons must not scale every glyph in it. The two agree everywhere
     // else — the window is aspect-locked, so width/base-w == height/base-h.
@@ -311,7 +316,12 @@ export component MiniWidget inherits Window {
     min-height: root.base-h * 0.7;
 
     in property <image> art;
+    // The cover's dominant colour, pushed from Rust with every track change.
+    // Copied into `Tone` rather than read from there: a global cannot bind to a
+    // component property, and every gradient in the widget hangs off it.
     in property <color> accent: #ec4899;
+    changed accent => { Tone.art = root.accent; }
+    init => { Tone.art = root.accent; }
     in property <string> np-title;
     in property <string> np-sub;
     in property <bool> playing;
@@ -357,9 +367,6 @@ export component MiniWidget inherits Window {
     // the size on screen, not a running total. Rust adds it to the current size.
     callback resize-drag(float, float);
 
-    // Volume flyout state. Closed on any transport click so it cannot be left
-    // hanging over the controls.
-    property <bool> vol-open: false;
     // True while the drag surface is standing down after handing a move to the
     // compositor — see the `hold` timer.
     property <bool> drag-cooling: false;
@@ -375,7 +382,7 @@ export component MiniWidget inherits Window {
     Rectangle {
         width: 100%; height: 100%;
         border-radius: Surface.rr(root.is-pill ? 16px : 20px, self.width, self.height) * root.uiscale;
-        background: @linear-gradient(135deg, #ec4899, #8b5cf6 55%, #06b6d4);
+        background: Tone.ring;
         drop-shadow-blur: 42px; drop-shadow-color: #000000e6;
     }
     body := Rectangle {
@@ -399,7 +406,6 @@ export component MiniWidget inherits Window {
             mouse-cursor: hold.running ? move : default;
             pointer-event(e) => {
                 if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
-                    root.vol-open = false;
                     hold.running = true;
                 }
                 if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
@@ -449,17 +455,39 @@ export component MiniWidget inherits Window {
                 radius: 14px;
             }
             VerticalLayout {
-                spacing: 2px * root.uiscale; horizontal-stretch: 1; alignment: center;
-                // Title + artist, clear of the three chrome buttons.
+                spacing: 4px * root.uiscale; horizontal-stretch: 1; alignment: center;
+                // Mark and window buttons, on a row of their own. They used to
+                // float over the top-right corner of the whole widget, which is
+                // why the title underneath had to reserve 150px of dead width
+                // it could never use.
                 HorizontalLayout {
-                    padding-right: (root.no-stacking-control ? 121px : 150px) * root.uiscale;
-                    VerticalLayout {
-                        spacing: 0px; alignment: center;
-                        Line { text: root.np-title == "" ? "Nothing playing" : root.np-title;
-                            color: Theme.text; font-size: 14px * root.uiscale; font-weight: 700; }
-                        Line { text: root.np-sub == "" ? "Pick a track" : root.np-sub;
-                            color: Theme.text-dim; font-size: 11.5px * root.uiscale; }
+                    spacing: 7px * root.uiscale; height: 24px * root.uiscale;
+                    cross-axis-alignment: center;
+                    Image {
+                        source: @image-url("icons/tulipix.png"); image-fit: contain;
+                        width: 16px * root.uiscale; height: self.width;
                     }
+                    Line { text: "Tulipix"; color: Theme.text;
+                        font-size: 11.5px * root.uiscale; font-weight: 700; }
+                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    Chrome {
+                        uiscale: root.uiscale; pinned: root.pinned; accent: root.accent;
+                        no-pin: root.no-stacking-control;
+                        height: 24px * root.uiscale;
+                        pin => { root.toggle-pin(); }
+                        maximize => { root.expand(); }
+                        theme => { root.toggle-theme(); }
+                        next-style => { root.cycle-style(); }
+                        close-me => { root.close-widget(); }
+                    }
+                }
+                // Track, on the full width of the column.
+                VerticalLayout {
+                    spacing: 0px;
+                    Line { text: root.np-title == "" ? "Nothing playing" : root.np-title;
+                        color: Theme.text; font-size: 14px * root.uiscale; font-weight: 700; }
+                    Line { text: root.np-sub == "" ? "Pick a track" : root.np-sub;
+                        color: Theme.text-dim; font-size: 11.5px * root.uiscale; }
                 }
                 SeekBar { pos: root.pos; dur: root.dur; thickness: 5px * root.uiscale;
                     height: 14px * root.uiscale; seek(s) => { root.seek(s); } }
@@ -470,66 +498,39 @@ export component MiniWidget inherits Window {
                         font-size: 10px * root.uiscale;
                         horizontal-alignment: right; horizontal-stretch: 1; }
                 }
-                // Bottom row: volume + zen pinned left, transport centred.
+                // Transport alone on its row, centred and spaced out.
                 HorizontalLayout {
-                    spacing: 5px * root.uiscale; padding-top: 2px * root.uiscale;
-                    cross-axis-alignment: center;
-                    // The button carries its own flyout, so "hangs from the
-                    // button" is a local coordinate rather than a guess at where
-                    // a centred column put its last row.
-                    vol := Rectangle {
-                        width: 26px * root.uiscale; height: self.width;
-                        horizontal-stretch: 0; background: transparent;
-                        WBtn { icon: root.muted ? Icons.volume-x : Icons.volume;
-                            tone: root.vol-open ? 2 : 0; size: 26px * root.uiscale; isz: 13px * root.uiscale;
-                            accent: root.accent; tip: "Volume";
-                            clicked => { root.vol-open = !root.vol-open; } }
-                        // Vertical track, top edge flush under the button, foot
-                        // at the panel's bottom padding. The height is measured
-                        // rather than fixed: whatever is left below the button
-                        // is what the track gets, so it can never overrun the
-                        // panel and be clipped in half.
-                        if root.vol-open: Rectangle {
-                            width: 32px * root.uiscale;
-                            x: (parent.width - self.width) / 2;
-                            y: parent.height + 4px * root.uiscale;
-                            height: Math.max(46px * root.uiscale,
-                                root.height - 2px - 8px * root.uiscale
-                                - (parent.absolute-position.y + parent.height + 4px * root.uiscale));
-                            border-radius: Surface.rr(11px, self.width, self.height) * root.uiscale;
-                            background: Theme.dark ? #1a1d2ff5 : #ffffffF5;
-                            border-width: 1px; border-color: Theme.outline-strong;
-                            drop-shadow-blur: 24px; drop-shadow-color: #000000b0;
-                            VerticalLayout {
-                                padding: 6px * root.uiscale; spacing: 4px * root.uiscale;
-                                cross-axis-alignment: center;
-                                Line { text: Math.round(root.volume); color: Theme.text-dim;
-                                    font-size: 9px * root.uiscale; horizontal-alignment: center;
-                                    height: 11px * root.uiscale; }
-                                VSlider {
-                                    value: root.muted ? 0 : root.volume; max: 130;
-                                    accent: root.accent; uiscale: root.uiscale;
-                                    vertical-stretch: 1;
-                                    changed(v) => { root.set-volume(v); }
-                                }
-                            }
-                        }
-                    }
-                    WBtn { icon: Icons.maximize; tone: 0; size: 26px * root.uiscale; isz: 13px * root.uiscale;
-                        tip: "Full screen";
-                        clicked => { root.vol-open = false; root.open-zen(); } }
-                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                    alignment: center;
                     Transport {
                         uiscale: root.uiscale; playing: root.playing;
                         shuffle: root.shuffle; repeat: root.repeat; accent: root.accent;
-                        play-size: 34px;
-                        shuffled => { root.vol-open = false; root.toggle-shuffle(); }
-                        prev => { root.vol-open = false; root.prev(); }
-                        playpause => { root.vol-open = false; root.playpause(); }
-                        next => { root.vol-open = false; root.next(); }
-                        repeated => { root.vol-open = false; root.cycle-repeat(); }
+                        play-size: 34px; gap: 9px;
+                        shuffled => { root.toggle-shuffle(); }
+                        prev => { root.prev(); }
+                        playpause => { root.playpause(); }
+                        next => { root.next(); }
+                        repeated => { root.cycle-repeat(); }
                     }
-                    Rectangle { horizontal-stretch: 1; background: transparent; }
+                }
+                // Volume across the row, always on screen. The flyout that used
+                // to hang off the button could only ever be as tall as the panel
+                // had left under it, which at this size was a ~90px track.
+                HorizontalLayout {
+                    spacing: 8px * root.uiscale; cross-axis-alignment: center;
+                    WBtn { icon: root.muted ? Icons.volume-x : Icons.volume; tone: 0;
+                        size: 24px * root.uiscale; isz: 12px * root.uiscale;
+                        tip: root.muted ? "Unmute" : "Mute";
+                        clicked => { root.toggle-mute(); } }
+                    SeekBar {
+                        pos: root.muted ? 0 : root.volume; dur: 130;
+                        thickness: 5px * root.uiscale; height: 20px * root.uiscale;
+                        horizontal-stretch: 1;
+                        seek(v) => { root.set-volume(v); }
+                    }
+                    WBtn { icon: Icons.maximize; tone: 0;
+                        size: 24px * root.uiscale; isz: 12px * root.uiscale;
+                        tip: "Full screen";
+                        clicked => { root.open-zen(); } }
                 }
             }
         }
@@ -557,7 +558,7 @@ export component MiniWidget inherits Window {
                     no-pin: root.no-stacking-control;
                     height: 24px * root.uiscale;
                     pin => { root.toggle-pin(); }
-                    maximize => { root.vol-open = false; root.expand(); }
+                    maximize => { root.expand(); }
                     theme => { root.toggle-theme(); }
                     next-style => { root.cycle-style(); }
                     close-me => { root.close-widget(); }
@@ -573,26 +574,38 @@ export component MiniWidget inherits Window {
                 if root.lyrics-open: VerticalLayout {
                     spacing: 10px * root.uiscale; alignment: center;
                     padding: 14px * root.uiscale;
-                    padding-top: root.width * 0.35 + 6px * root.uiscale;
-                    Text { text: root.lyric-prev; color: Theme.text-dim;
+                    // Flush under the shrunk art, which is now centred above:
+                    // the lines start where it ends, so the three of them get
+                    // the rest of the block instead of a band of empty panel.
+                    padding-top: parent.width * 0.35;
+                    // The lines run on the same ramp as every control in the
+                    // widget: the current one at full strength, the two round
+                    // it dimmed toward the panel — pink over near-black in the
+                    // dark theme, the cover's colour in the light one.
+                    Text { text: root.lyric-prev;
+                        color: Tone.a.mix(Theme.dark ? #000000 : Theme.text-dim, 0.45);
                         font-size: 11px * root.uiscale; horizontal-alignment: center;
                         wrap: word-wrap; }
                     Text { text: root.lyric-now == "" ? "…" : root.lyric-now;
-                        color: root.accent; font-size: 16px * root.uiscale; font-weight: 700;
+                        color: Tone.ink; font-size: 16px * root.uiscale; font-weight: 700;
                         horizontal-alignment: center; wrap: word-wrap; }
-                    Text { text: root.lyric-next; color: Theme.text-dim;
+                    Text { text: root.lyric-next;
+                        color: Tone.a.mix(Theme.dark ? #000000 : Theme.text-dim, 0.45);
                         font-size: 11px * root.uiscale; horizontal-alignment: center;
                         wrap: word-wrap; }
                 }
                 sqart := ArtTile {
                     art: root.art; accent: root.accent; radius: 16px;
-                    x: 0; y: 0;
+                    // Top CENTRE once it shrinks, not the top-left corner: the
+                    // lyrics under it are centred, and a cover pinned to one
+                    // side left the block reading as two unrelated things.
+                    x: (parent.width - self.width) / 2; y: 0;
                     width: parent.width * (root.lyrics-open ? 0.35 : 1.0);
                     height: root.lyrics-open ? self.width : parent.height;
                     animate width, height { duration: 180ms; easing: ease-out; }
                 }
                 arta := TouchArea {
-                    x: 0; y: 0; width: sqart.width; height: sqart.height;
+                    x: sqart.x; y: 0; width: sqart.width; height: sqart.height;
                     mouse-cursor: root.has-lyrics ? pointer : default;
                     clicked => { if (root.has-lyrics) { root.lyrics-flip = !root.lyrics-flip; } }
                 }
@@ -638,11 +651,11 @@ export component MiniWidget inherits Window {
                     uiscale: root.uiscale; playing: root.playing;
                     shuffle: root.shuffle; repeat: root.repeat; accent: root.accent;
                     play-size: 40px;
-                    shuffled => { root.vol-open = false; root.toggle-shuffle(); }
-                    prev => { root.vol-open = false; root.prev(); }
-                    playpause => { root.vol-open = false; root.playpause(); }
-                    next => { root.vol-open = false; root.next(); }
-                    repeated => { root.vol-open = false; root.cycle-repeat(); }
+                    shuffled => { root.toggle-shuffle(); }
+                    prev => { root.prev(); }
+                    playpause => { root.playpause(); }
+                    next => { root.next(); }
+                    repeated => { root.cycle-repeat(); }
                 }
             }
             // Volume inline (there is width for it here) + zen on the right.
@@ -690,9 +703,20 @@ export component MiniWidget inherits Window {
                     color: Theme.text; font-size: 12px * root.uiscale; font-weight: 700; }
                 Line { text: root.np-sub == "" ? "Pick a track" : root.np-sub;
                     color: Theme.text-dim; font-size: 10px * root.uiscale; }
-                SeekBar { pos: root.pos; dur: root.dur; compact: true;
-                    thickness: 3px * root.uiscale; height: 8px * root.uiscale;
-                    seek(s) => { root.seek(s); } }
+                // Elapsed and total flanking the track. Tiny type on purpose —
+                // it has to fit inside the pill's one text column without
+                // taking width the title needs.
+                HorizontalLayout {
+                    spacing: 5px * root.uiscale; cross-axis-alignment: center;
+                    Line { text: root.pos-label; color: Theme.text-dim;
+                        font-size: 8.5px * root.uiscale; horizontal-stretch: 0; }
+                    SeekBar { pos: root.pos; dur: root.dur; compact: true;
+                        thickness: 3px * root.uiscale; height: 8px * root.uiscale;
+                        horizontal-stretch: 1;
+                        seek(s) => { root.seek(s); } }
+                    Line { text: root.dur-label; color: Theme.text-dim;
+                        font-size: 8.5px * root.uiscale; horizontal-stretch: 0; }
+                }
             }
             WBtn { icon: root.playing ? Icons.pause : Icons.play; tone: 3;
                 size: 30px * root.uiscale; isz: 14px * root.uiscale;
@@ -713,32 +737,6 @@ export component MiniWidget inherits Window {
                 no-pin: root.no-stacking-control;
                 pin => { root.toggle-pin(); }
                 maximize => { root.expand(); }
-                theme => { root.toggle-theme(); }
-                next-style => { root.cycle-style(); }
-                close-me => { root.close-widget(); }
-            }
-        }
-
-        // ── chrome — pin · restore · close ───────────────────────────────
-        // Absolutely placed in a box of its own size. The previous build put a
-        // HorizontalLayout here with only `x` set: a layout child of a Rectangle
-        // still stretches to the parent, so the buttons ended up laid out across
-        // the whole widget and the visible glyphs were not where the hit boxes
-        // were — which is why none of the three responded.
-        if !root.is-pill && !root.is-square: Rectangle {
-            // 24px per button plus 5px between them — four buttons when the
-            // pin is hidden (no stacking control to offer), five otherwise.
-            width: (root.no-stacking-control ? 111px : 140px) * root.uiscale;
-            height: 24px * root.uiscale;
-            x: parent.width - self.width - 8px * root.uiscale;
-            y: 8px * root.uiscale;
-            background: transparent;
-            Chrome {
-                width: 100%; height: 100%;
-                uiscale: root.uiscale; pinned: root.pinned; accent: root.accent;
-                no-pin: root.no-stacking-control;
-                pin => { root.toggle-pin(); }
-                maximize => { root.vol-open = false; root.expand(); }
                 theme => { root.toggle-theme(); }
                 next-style => { root.cycle-style(); }
                 close-me => { root.close-widget(); }
@@ -784,9 +782,6 @@ export component MiniWidget inherits Window {
         }
         grip := TouchArea {
             mouse-cursor: nwse-resize;
-            pointer-event(e) => {
-                if (e.kind == PointerEventKind.down) { root.vol-open = false; }
-            }
             moved => {
                 root.resize-drag(
                     (self.mouse-x - self.pressed-x) / 1px,
@@ -807,6 +802,12 @@ export component MiniWidget inherits Window {
     // window has cropped is worse than one on the other side.
     if Tip.text != "": Rectangle {
         property <bool> below: Tip.top < 26px * root.uiscale;
+        // Backstop. `changed has-hover` takes the pill down in every ordinary
+        // case, but a press that the compositor takes over (the move-drag, the
+        // resize) can leave a button believing the pointer is still on it, and
+        // a label stuck over the panel with nothing under it is the one failure
+        // that has no way out.
+        Timer { interval: 2500ms; triggered => { Tip.text = ""; } }
         width: tipt.preferred-width + 18px * root.uiscale;
         height: 20px * root.uiscale;
         x: Math.clamp(Tip.cx - self.width / 2, 4px, root.width - self.width - 4px);

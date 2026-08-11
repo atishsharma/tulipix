@@ -120,17 +120,21 @@ export global Surface {
     // primitive for. Both non-standard languages need it; OLED needs it most,
     // because there it is the only thing separating one black box from another.
     out property <bool> rim: clay || skeuo;
-    out property <color> rim-ink: clay
-        ? (Theme.dark ? (Theme.oled ? rgba(255,255,255,0.20) : rgba(255,255,255,0.15))
-                      : rgba(255,255,255,0.95))
-        : (Theme.dark ? (Theme.oled ? rgba(255,255,255,0.16) : rgba(255,255,255,0.12))
-                      : rgba(255,255,255,0.92));
-    // Clay's second ring. A single hard hairline reads as a drawn outline,
-    // which is the one thing clay must not have; a fainter ring a pixel further
-    // in turns it into a soft edge instead.
-    out property <color> rim-ink-2: Theme.dark
-        ? (Theme.oled ? rgba(255,255,255,0.07) : rgba(255,255,255,0.05))
-        : rgba(255,255,255,0.55);
+    // NEITHER language carries a rim on ANY tier. The hairline was meant to
+    // read as an inner highlight — Slint has no inner shadow — but a 1px line
+    // traced around every card, row and section header reads as a drawn outline
+    // whatever it is drawn in: cream on the light tier, chalk on the dark ones.
+    // What is left is the half that was doing the work: clay by its cast shadow
+    // and soft sheen, moulded by `hairline` (Theme.outline-strong) and its own
+    // top-lit gradient. Hover, active and pressed states are untouched — they
+    // are fills, not rims.
+    //
+    // Kept as tokens rather than deleted so [`Rim`] and [`Skin`] stay one edit
+    // away from a rim if one is ever wanted per-tier again.
+    out property <color> rim-ink: transparent;
+    // Clay's second ring — a fainter line a pixel further in, which softened
+    // the hairline above. With nothing to soften it goes too.
+    out property <color> rim-ink-2: transparent;
 
     // The sheen running across a surface — light where it faces the lamp,
     // shade where it turns away. Held as globals rather than built inline

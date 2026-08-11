@@ -40,11 +40,11 @@ import { CmdPalette, PaletteRow } from "cmd_palette.slint";
 import { ShortcutHelp, ShortcutGroup, ShortcutItem } from "shortcut_help.slint";
 import { ErrorBoundary } from "error_page.slint";
 import { PropertiesWindow, AssetProperties } from "properties.slint";
-import { SettingsList, SettingItem, StylePicker } from "settings_panels.slint";
+import { SettingsList, SettingItem, StylePicker, CreditEntry, CreditTile, LogoChip } from "settings_panels.slint";
 import { ChatOverlay, ChatTurn } from "chat_overlay.slint";
 import { Gated, GateMode } from "gated.slint";
 import { HomePage, HomeStats, HomeRemote, HomeContinue, HomeBook, HomeQuote } from "page_home.slint";
-import { SettingsHomeLayout, HomeCardRow } from "settings_home_layout.slint";
+import { SettingsYouHome, HomeCardRow } from "settings_you_home.slint";
 import { HomeCinema, HomeDue } from "page_home_cinema.slint";
 import { HomeStream, HomeEvent } from "page_home_stream.slint";
 import { HomeWelcome } from "page_home_welcome.slint";
@@ -201,46 +201,6 @@ component SettingsNavCaption inherits Text {
 
 // One credit tile in the Profile page's BUILT WITH grid — vendored logo,
 // name, click opens the project link.
-export struct CreditEntry { icon: image, label: string, link: string }
-
-component CreditTile inherits Skin {
-    in property <CreditEntry> entry;
-    callback open();
-    background: Surface.body(Theme.panel-2);
-    border-radius: Surface.rr(10px, self.width, self.height);
-    // Height comes from the grid now (square cells), not from the tile.
-    height: 74px;
-    border-width: t.has-hover ? 2px : 1px;
-    border-color: t.has-hover ? Accent.color : Surface.hairline;
-    animate border-color, border-width { duration: 120ms; easing: ease-out; }
-    t := TouchArea { mouse-cursor: pointer; clicked => { root.open(); } }
-    VerticalLayout {
-        padding: 10px; spacing: 8px; alignment: center;
-        HorizontalLayout { alignment: center;
-            // Scales with the cell: 22px was sized for a 74px-tall strip, and the
-            // grid squares are nearly twice that.
-            Image { source: entry.icon;
-                width: Math.clamp(root.height * 0.30, 22px, 40px); height: self.width; } }
-        Text { text: entry.label; color: Theme.text;
-            font-size: root.height > 100px ? 11px : 10px;
-            horizontal-alignment: center; overflow: elide; }
-    }
-}
-
-// Selectable sidebar-logo swatch in the Appearance card.
-component LogoChip inherits Skin {
-    in property <image> logo;
-    in property <bool> selected: false;
-    callback clicked();
-    width: 46px; height: 46px; border-radius: Surface.rr(12px, self.width, self.height);
-    clip: true;
-    background: Surface.body(Theme.panel);
-    border-width: selected ? 2px : 1px;
-    border-color: selected ? Accent.color : Theme.outline;
-    TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
-    Image { source: logo; image-fit: cover; width: 100%; height: 100%; }
-}
-
 component SettingsPage inherits Rectangle {
     in-out property <string> active-tab: "appearance";
     // Old deep-link keys (palette history, muscle memory) land on the merged
@@ -249,7 +209,7 @@ component SettingsPage inherits Rectangle {
         active-tab == "schedule" ? "libraries" :
         (active-tab == "api-keys" || active-tab == "endpoints") ? "services" :
         active-tab == "system" ? "advanced" :
-        active-tab == "appearance" ? "profile" :
+        (active-tab == "appearance" || active-tab == "home-layout") ? "profile" :
         active-tab;
     // Sub-views inside merged sections. Bindings pre-select the right half
     // when arriving via an old deep-link; first click takes over.
@@ -309,7 +269,10 @@ component SettingsPage inherits Rectangle {
     callback profile-save(string /*display name*/, string /*avatar emoji*/, int /*sidebar logo*/);
     in property <int> logo-choice: 0;
     // Seasonal India branding — the "default" chip previews the India mark.
-    in property <bool> festival: false;
+    // in-out because picking the plain mark ON PURPOSE has to switch the swap
+    // off for the session; Rust turns it back on at the next launch inside the
+    // window, which is the behaviour the setting promises.
+    in-out property <bool> festival: false;
     callback pick-cover-image();
     callback pick-avatar-image();
     in property <string> app-version: "dev";
@@ -333,6 +296,9 @@ component SettingsPage inherits Rectangle {
     callback set-default-cadence(string);
     callback set-cadence-override(string, string);
     callback status-refresh();
+    // App health, for the You & Home page's pill.
+    in property <string> status-level: "unknown";
+    in property <string> status-note: "Starting…";
 
     // Home Layout tab (docs/home-layouts/README.md).
     in property <string> home-layout: "welcome";
@@ -376,8 +342,10 @@ component SettingsPage inherits Rectangle {
             }
 
             SettingsNavCaption { text: "PERSONAL"; }
-            SettingsNavItem { label: "Profile & Style"; icon: Icons.user; active: root.tab == "profile"; clicked => { root.active-tab = "profile"; } }
-            SettingsNavItem { label: "Home Layout"; icon: Icons.layout-grid; active: root.tab == "home-layout"; clicked => { root.active-tab = "home-layout"; } }
+            // One entry: both halves answer "what does the app look like when I
+            // open it", and choosing a layout then theming it used to mean
+            // crossing the nav twice.
+            SettingsNavItem { label: "You & Home"; icon: Icons.user; active: root.tab == "profile"; clicked => { root.active-tab = "profile"; } }
 
             SettingsNavCaption { text: "MEDIA"; }
             SettingsNavItem { label: "Libraries"; icon: Icons.folder;       active: root.tab == "libraries"; clicked => { root.active-tab = "libraries"; } }
@@ -533,9 +501,10 @@ component SettingsPage inherits Rectangle {
                     action(k) => { root.setting-action(k); }
                 }
             }
-            if tab == "home-layout": Rectangle {
+            // You & Home — identity, look, and the shape of Home on one page.
+            if tab == "profile": Rectangle {
                 width: parent.width; height: parent.height; background: transparent;
-                SettingsHomeLayout {
+                SettingsYouHome {
                     width: parent.width; height: parent.height;
                     layout: root.home-layout;
                     cards: root.home-cards;
@@ -557,6 +526,33 @@ component SettingsPage inherits Rectangle {
                     use-layout(l) => { root.use-home-layout(l); }
                     card-set(c, on) => { root.home-card-set(c, on); }
                     cards-reset => { root.home-cards-reset(); }
+
+                    user: root.user;
+                    app-version: root.app-version;
+                    festival: root.festival;
+                    logo-choice: root.logo-choice;
+                    theme-choice <=> root.theme-choice;
+                    design-lang: root.design-lang;
+                    mini-widget-style: root.mini-widget-style;
+                    tray-menu-style: root.tray-menu-style;
+                    reduce-motion <=> root.reduce-motion;
+                    credits: root.credits;
+                    pick-cover-image => { root.pick-cover-image(); }
+                    pick-avatar-image => { root.pick-avatar-image(); }
+                    open-url(u) => { root.open-url(u); }
+                    theme-changed(c) => { root.theme-changed(c); }
+                    setting-text(k, v) => { root.setting-text(k, v); }
+                    reduce-motion-changed(v) => { root.reduce-motion-changed(v); }
+                    status-level: root.status-level;
+                    status-note: root.status-note;
+                    open-status => { root.active-tab = "status"; root.status-refresh(); }
+                    profile-save(n, x, l) => {
+                        // Picking the plain mark on purpose retires the seasonal
+                        // swap for this session — otherwise slot 0 keeps
+                        // rendering India and the pick looks like it did nothing.
+                        if (self.default-picked) { root.festival = false; }
+                        root.profile-save(n, x, l);
+                    }
                 }
             }
 
@@ -583,414 +579,6 @@ component SettingsPage inherits Rectangle {
                 }
             }
 
-            // Profile & Style — one centred card column (identity + avatar +
-            // appearance + privacy), not edge-to-edge rows.
-            if tab == "profile": Rectangle {
-                width: parent.width; height: parent.height;
-                background: transparent;
-                // Sidebar logo being edited; starts from the saved value.
-                property <int> sel-logo: logo-choice;
-                // Save-button feedback — flips the pill to "Saved ✓" for 2s.
-                property <bool> just-saved: false;
-                sv := ScrollView {
-                  width: parent.width; height: parent.height;
-                  VerticalLayout {
-                    width: sv.visible-width;
-                    padding-bottom: 24px;
-
-                    // ── Cover — full width, edge to edge (np.p1.profile.cover).
-                    // Custom image when set; layered gradient fallback.
-                    Rectangle {
-                        height: 150px; clip: true;
-                        background: @linear-gradient(120deg, Theme.brand, Theme.brand-2, Accent.color);
-                        if user.cover-image.width != 0: Image {
-                            source: user.cover-image; image-fit: cover;
-                            width: 100%; height: 100%;
-                        }
-                        if user.cover-image.width == 0: Rectangle { // soft highlight orb
-                            x: parent.width - 150px; y: -55px; width: 190px; height: 190px;
-                            border-radius: 95px; background: #ffffff2a;
-                        }
-                        if user.cover-image.width == 0: Rectangle {
-                            x: -40px; y: 44px; width: 130px; height: 130px;
-                            border-radius: 65px; background: #00000022;
-                        }
-                        Rectangle {
-                            width: 110px; height: 28px; border-radius: Surface.rr(8px, self.width, self.height);
-                            x: parent.width - self.width - 12px; y: parent.height - self.height - 12px;
-                            background: cov-t.has-hover ? #000000aa : #00000077;
-                            border-width: 1px; border-color: #ffffff55;
-                            cov-t := TouchArea { mouse-cursor: pointer; clicked => { root.pick-cover-image(); } }
-                            Text { text: "Change cover"; color: #ffffff; font-size: 11px; font-weight: 600;
-                                width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center; }
-                        }
-                    }
-
-                    // ── Card — auto-sizes to content; avatar straddles the seam.
-                    HorizontalLayout {
-                      alignment: center;
-                      Rectangle {
-                        width: min(540px, root.width - 40px);
-                        border-radius: Surface.rr(20px, self.width, self.height);
-                        background: Surface.body(Theme.panel-2); border-color: Surface.hairline; border-width: 1px;
-                        drop-shadow-blur: Surface.cast(28px); drop-shadow-color: #00000038;
-
-                        VerticalLayout {
-                            spacing: 12px;
-                            padding-left: 28px; padding-right: 28px;
-                            padding-top: 56px;
-                            padding-bottom: 20px;
-
-                            // Name — borderless centred field, accent underline on focus.
-                            // Capped at 12 characters: the Welcome home layout
-                            // sizes its greeting off a width factor, and past 12
-                            // the headline wraps to a second line. Slint has no
-                            // max-length and no substring, so the cap is a revert
-                            // — the last accepted value is kept and restored on
-                            // overflow. (The restore re-enters `edited`, which
-                            // then takes the accepted branch, so it terminates.)
-                            // Rust clamps again on save and on load.
-                            property <string> name-ok: user.display-name;
-                            VerticalLayout {
-                                spacing: 4px;
-                                name-ti := TextInput {
-                                    text: user.display-name;
-                                    color: Theme.text; font-size: 21px; font-weight: 700;
-                                    horizontal-alignment: center; single-line: true;
-                                    height: 30px;
-                                    edited => {
-                                        if (self.text.character-count > 12) { self.text = name-ok; }
-                                        else { name-ok = self.text; }
-                                    }
-                                }
-                                if name-ti.text == "" && !name-ti.has-focus: Text {
-                                    text: "Click to set your name"; color: Theme.text-dim; font-size: 12px;
-                                    horizontal-alignment: center;
-                                }
-                                Text {
-                                    text: "Up to 12 characters"; color: Theme.text-dim; font-size: 11px;
-                                    horizontal-alignment: center;
-                                }
-                                Rectangle {
-                                    height: 2px; width: 180px; border-radius: Surface.rr(1px, self.width, self.height);
-                                    x: (parent.width - self.width) / 2;
-                                    background: name-ti.has-focus ? Accent.color : Theme.outline;
-                                    animate background { duration: 140ms; easing: ease-out; }
-                                }
-                            }
-
-                            // Version chip + project links.
-                            HorizontalLayout {
-                                spacing: 8px; alignment: center;
-                                // Three solid chips, each its own colour: the
-                                // version is the loud one, GitHub is the light
-                                // one, Releases is the go one. Solid fills, not
-                                // washes — they are the page's only buttons here.
-                                Rectangle {
-                                    height: 28px; border-radius: Surface.rr(14px, self.width, self.height);
-                                    horizontal-stretch: 0; vertical-stretch: 0;
-                                    background: #f97316;
-                                    HorizontalLayout { padding-left: 12px; padding-right: 12px;
-                                        Text { text: "Tulipix v" + root.app-version; color: #ffffff;
-                                            font-size: 11px; font-weight: 700; vertical-alignment: center; } }
-                                }
-                                Rectangle {
-                                    height: 28px; border-radius: Surface.rr(14px, self.width, self.height);
-                                    horizontal-stretch: 0; vertical-stretch: 0;
-                                    background: gh-t.has-hover ? #e8eefc : #ffffff;
-                                    animate background { duration: 120ms; easing: ease-out; }
-                                    gh-t := TouchArea { mouse-cursor: pointer;
-                                        clicked => { root.open-url("https://github.com/atishsharma/tulipix"); } }
-                                    HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 6px;
-                                        VerticalLayout { alignment: center;
-                                            AppIcon { source: Icons.command; tint: #1d4ed8; width: 12px; height: 12px; } }
-                                        Text { text: "GitHub"; color: #1d4ed8; font-size: 11px; font-weight: 700; vertical-alignment: center; } }
-                                }
-                                Rectangle {
-                                    height: 28px; border-radius: Surface.rr(14px, self.width, self.height);
-                                    horizontal-stretch: 0; vertical-stretch: 0;
-                                    background: rel-t.has-hover ? #15803d : #16a34a;
-                                    animate background { duration: 120ms; easing: ease-out; }
-                                    rel-t := TouchArea { mouse-cursor: pointer;
-                                        clicked => { root.open-url("https://github.com/atishsharma/tulipix/releases"); } }
-                                    HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 6px;
-                                        VerticalLayout { alignment: center;
-                                            AppIcon { source: Icons.download; tint: #ffffff; width: 12px; height: 12px; } }
-                                        Text { text: "Releases"; color: #ffffff; font-size: 11px; font-weight: 700; vertical-alignment: center; } }
-                                }
-                            }
-
-                            // ── Appearance — same card, hairline divider ────
-                            Rectangle { height: 1px; background: Theme.outline; }
-                            Text { text: "APPEARANCE"; color: Theme.text-dim; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
-                            ThemePicker {
-                                choice <=> root.theme-choice;
-                                changed(c) => { root.theme-changed(c); }
-                            }
-
-                            // Design language. A second axis, not a fourth
-                            // theme: each of the three has to hold on light,
-                            // dark and OLED, so picking one here changes how
-                            // surfaces are painted and nothing else — no
-                            // layout moves, nothing is hidden, and Standard is
-                            // the look the app already shipped.
-                            VerticalLayout {
-                                spacing: 2px;
-                                Text { text: "Design language"; color: Theme.text; font-size: 13px; font-weight: 600; }
-                                Text { text: "How surfaces are painted — Home and the sidebar first"; color: Theme.text-dim; font-size: 11px; }
-                            }
-                            DesignLangPicker {
-                                choice: root.design-lang;
-                                changed(v) => {
-                                    root.setting-text("ui.design-language",
-                                        v == 1 ? "clay" : (v == 2 ? "skeuo" : "standard"));
-                                }
-                            }
-
-                            // ── Mini Player + tray ──────────────────────────
-                            Rectangle { height: 1px; background: Theme.outline; }
-                            Text { text: "MINI PLAYER & TRAY"; color: Theme.text-dim; font-size: 10px; font-weight: 700; letter-spacing: 1px; }
-                            VerticalLayout {
-                                spacing: 2px;
-                                Text { text: "Desktop widget"; color: Theme.text; font-size: 13px; font-weight: 600; }
-                                Text { text: "Shape the app shrinks into — the ⧉ button in the title bar"; color: Theme.text-dim; font-size: 11px; }
-                            }
-                            StylePicker {
-                                choice: root.mini-widget-style;
-                                options: [
-                                    { label: "Bar",    value: "bar",    note: "380 × 120", pw: 62px, ph: 20px },
-                                    { label: "Square",  value: "square", note: "260 × 336", pw: 30px, ph: 39px },
-                                    { label: "Pill",   value: "pill",   note: "216 × 56",  pw: 54px, ph: 14px },
-                                ];
-                                changed(v) => { root.setting-text("ui.mini-widget.style", v); }
-                            }
-                            VerticalLayout {
-                                spacing: 2px;
-                                Text { text: "Tray menu"; color: Theme.text; font-size: 13px; font-weight: 600; }
-                                Text { text: "Right-click the tray icon — a native menu, or a popup with art and a seek bar"; color: Theme.text-dim; font-size: 11px; }
-                            }
-                            StylePicker {
-                                choice: root.tray-menu-style;
-                                options: [
-                                    { label: "Popup",  value: "popup",  note: "art · seek · volume", pw: 34px, ph: 42px },
-                                    { label: "Native", value: "native", note: "OS menu, text rows",  pw: 44px, ph: 34px },
-                                ];
-                                changed(v) => { root.setting-text("ui.tray-menu.style", v); }
-                            }
-                            HorizontalLayout {
-                                spacing: 12px;
-                                VerticalLayout {
-                                    alignment: center; spacing: 2px; horizontal-stretch: 1;
-                                    Text { text: "Reduce motion"; color: Theme.text; font-size: 13px; font-weight: 600; }
-                                    Text { text: "Calmer UI — skips ripples, drifts, and fades"; color: Theme.text-dim; font-size: 11px; }
-                                }
-                                Rectangle {
-                                    width: 52px; height: 28px;
-                                    horizontal-stretch: 0; vertical-stretch: 0;
-                                    y: (parent.height - self.height) / 2;
-                                    border-radius: Surface.rr(14px, self.width, self.height);
-                                    background: root.reduce-motion ? Accent.color : Theme.outline;
-                                    animate background { duration: 140ms; easing: ease-out; }
-                                    TouchArea { mouse-cursor: pointer; clicked => { root.reduce-motion-changed(!root.reduce-motion); } }
-                                    Rectangle {
-                                        width: 22px; height: 22px; border-radius: Surface.rr(11px, self.width, self.height);
-                                        background: #ffffff;
-                                        x: root.reduce-motion ? parent.width - self.width - 3px : 3px;
-                                        y: (parent.height - self.height) / 2;
-                                        animate x { duration: 140ms; easing: ease-out; }
-                                    }
-                                }
-                            }
-
-                            // "Music block on left" used to live here. It is gone
-                            // from Settings on purpose: the Home header already
-                            // carries the same flip as a one-click button next to
-                            // the block it moves, and a second control for it two
-                            // pages away was the wrong place to look for it. The
-                            // flag and the header button are untouched.
-
-                            // Sidebar logo — pick one of the five bundled marks.
-                            VerticalLayout {
-                                spacing: 2px;
-                                Text { text: "Sidebar logo"; color: Theme.text; font-size: 13px; font-weight: 600; }
-                                Text { text: "Shown at the top of the sidebar — five marks, India included"; color: Theme.text-dim; font-size: 11px; }
-                            }
-                            HorizontalLayout {
-                                spacing: 10px; alignment: center;
-                                LogoChip { logo: festival
-                                        ? @image-url("../resources/appicons/logo_india.png")
-                                        : @image-url("../resources/appicons/sidebar-default.png");
-                                    selected: sel-logo == 0; clicked => { sel-logo = 0; } }
-                                LogoChip { logo: @image-url("../resources/appicons/sidebar-color.png");
-                                    selected: sel-logo == 1; clicked => { sel-logo = 1; } }
-                                LogoChip { logo: @image-url("../resources/appicons/sidebar-dark.png");
-                                    selected: sel-logo == 2; clicked => { sel-logo = 2; } }
-                                LogoChip { logo: @image-url("../resources/appicons/sidebar-white.png");
-                                    selected: sel-logo == 3; clicked => { sel-logo = 3; } }
-                                // The India mark, pickable all year. The seasonal
-                                // swap only touches the DEFAULT chip; choosing it
-                                // here is a standing choice, not a date.
-                                LogoChip { logo: @image-url("../resources/appicons/logo_india.png");
-                                    selected: sel-logo == 4; clicked => { sel-logo = 4; } }
-                            }
-
-                            // Save — below the appearance block so one click
-                            // persists identity + appearance together. Flips
-                            // to "Saved ✓" for 2s as inline feedback.
-                            HorizontalLayout {
-                                alignment: center;
-                                Rectangle {
-                                    width: 180px; height: 36px; border-radius: Surface.rr(18px, self.width, self.height);
-                                    horizontal-stretch: 0; vertical-stretch: 0;
-                                    background: just-saved ? #22c55e : (save-t.has-hover ? Accent.color.with-alpha(0.85) : Accent.color);
-                                    animate background { duration: 120ms; easing: ease-out; }
-                                    save-t := TouchArea { mouse-cursor: pointer;
-                                        clicked => { root.profile-save(name-ti.text, "", sel-logo); just-saved = true; } }
-                                    Text { text: just-saved ? "Saved ✓" : "Save profile"; color: #ffffff; font-size: 12px; font-weight: 700;
-                                        width: 100%; height: 100%;
-                                        horizontal-alignment: center; vertical-alignment: center; }
-                                    Timer { interval: 2s; running: just-saved; triggered => { just-saved = false; } }
-                                }
-                            }
-                        }
-
-                        // Avatar — straddles the cover/card seam, centered.
-                        // Click anywhere on it to pick a new image; custom image
-                        // wins, otherwise the user glyph.
-                        Rectangle {
-                            width: 96px; height: 96px; border-radius: 48px;
-                            x: (parent.width - self.width) / 2; y: -48px;
-                            clip: true;
-                            background: @linear-gradient(135deg, Theme.brand, Theme.brand-2);
-                            border-width: 4px; border-color: av-pick.has-hover ? Accent.color : Theme.panel-2;
-                            drop-shadow-blur: Surface.cast(16px); drop-shadow-color: #00000055;
-                            animate border-color { duration: 140ms; easing: ease-out; }
-                            if user.avatar-image.width != 0: Image {
-                                source: user.avatar-image; image-fit: cover; width: 100%; height: 100%;
-                            }
-                            if user.avatar-image.width == 0: AppIcon { source: Icons.user; tint: #ffffff; width: 40px; height: 40px;
-                                x: (parent.width - self.width)/2; y: (parent.height - self.height)/2; }
-                            // Click-to-change scrim + camera hint (fades in on hover).
-                            Rectangle {
-                                width: 100%; height: 100%;
-                                background: #000000aa.with-alpha(av-pick.has-hover ? 0.42 : 0.0);
-                                animate background { duration: 140ms; easing: ease-out; }
-                                AppIcon { source: Icons.pencil; tint: #ffffff;
-                                    width: 26px; height: 26px; opacity: av-pick.has-hover ? 1.0 : 0.0;
-                                    x: (parent.width - self.width)/2; y: (parent.height - self.height)/2;
-                                    animate opacity { duration: 140ms; easing: ease-out; } }
-                            }
-                            av-pick := TouchArea { mouse-cursor: pointer; clicked => { root.pick-avatar-image(); } }
-                        }
-                      }
-                    }
-
-                    Rectangle { height: 18px; }
-                    Text {
-                        text: "Tulipix © 2026 — Developed by Atish Ak Sharma";
-                        color: Theme.text-dim; font-size: 11px;
-                        horizontal-alignment: center;
-                    }
-                    Rectangle { height: 10px; }
-                    Text { text: "BUILT WITH"; color: Theme.text-dim; font-size: 10px; font-weight: 700; letter-spacing: 1px; horizontal-alignment: center; }
-                    Rectangle { height: 4px; }
-                    // Sixteen credits as an 8 x 2 grid of equal SQUARES, spanning
-                    // the whole page rather than the 540px identity card — it is a
-                    // wall of logos, and the card is for the things you edit.
-                    // Placed by hand inside a box that measures itself: a
-                    // GridLayout sizes its columns from what the tiles ask for, so
-                    // the widest label would take a wider column and the squares
-                    // would stop being square.
-                    cgrid := Rectangle {
-                        property <length> cell: Math.min((self.width - 40px - 7 * 10px) / 8, 128px);
-                        property <length> step: self.cell + 10px;
-                        property <length> left: (self.width - (8 * self.cell + 7 * 10px)) / 2;
-                        height: self.cell * 2 + 10px;
-                        vertical-stretch: 0;
-                        CreditTile {
-                            entry: credits[0];
-                            x: cgrid.left + 0 * cgrid.step; y: 0 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[1];
-                            x: cgrid.left + 1 * cgrid.step; y: 0 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[2];
-                            x: cgrid.left + 2 * cgrid.step; y: 0 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[3];
-                            x: cgrid.left + 3 * cgrid.step; y: 0 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[4];
-                            x: cgrid.left + 4 * cgrid.step; y: 0 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[5];
-                            x: cgrid.left + 5 * cgrid.step; y: 0 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[6];
-                            x: cgrid.left + 6 * cgrid.step; y: 0 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[7];
-                            x: cgrid.left + 7 * cgrid.step; y: 0 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[8];
-                            x: cgrid.left + 0 * cgrid.step; y: 1 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[9];
-                            x: cgrid.left + 1 * cgrid.step; y: 1 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[10];
-                            x: cgrid.left + 2 * cgrid.step; y: 1 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[11];
-                            x: cgrid.left + 3 * cgrid.step; y: 1 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[12];
-                            x: cgrid.left + 4 * cgrid.step; y: 1 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[13];
-                            x: cgrid.left + 5 * cgrid.step; y: 1 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[14];
-                            x: cgrid.left + 6 * cgrid.step; y: 1 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                        CreditTile {
-                            entry: credits[15];
-                            x: cgrid.left + 7 * cgrid.step; y: 1 * cgrid.step;
-                            width: cgrid.cell; height: cgrid.cell;
-                            open => { root.open-url(self.entry.link); } }
-                    }
-                  }
-                }
-            }
         }
     }
 }
@@ -2629,6 +2217,8 @@ callback cloud-go-home();
     in-out property <bool> music-playlist-new-open: false;
     in-out property <string> music-playlist-new-name: "";
     callback music-playlist-open(int);
+    // Home rail → the "Recently Added" smart playlist, created on first use.
+    callback music-open-recent-playlist();
     callback music-playlist-set-art();
     callback music-playlist-back();
     callback music-playlist-create();
@@ -3882,7 +3472,8 @@ callback cloud-go-home();
                 playlist-tracks: root.music-playlist-tracks; playlist-name <=> root.music-playlist-name;
                 playlist-cover: root.music-playlist-cover; playlist-set-art => { root.music-playlist-set-art(); }
                 playlist-new-open <=> root.music-playlist-new-open; playlist-new-name <=> root.music-playlist-new-name;
-                playlist-open(i) => { root.music-playlist-open(i); } playlist-back => { root.music-playlist-back(); }
+                playlist-open(i) => { root.music-playlist-open(i); }
+                open-recent-playlist => { root.music-open-recent-playlist(); } playlist-back => { root.music-playlist-back(); }
                 playlist-delete(i) => { root.music-playlist-delete(i); }
                 playlist-create => { root.music-playlist-create(); } playlist-create-smart(k) => { root.music-playlist-create-smart(k); }
                 playlist-play-track(i) => { root.music-playlist-play-track(i); } playlist-remove-track(i) => { root.music-playlist-remove-track(i); }
@@ -5147,7 +4738,9 @@ callback cloud-go-home();
                 user-action(a) => { root.user-action(a); }
                 profile-save(n, e, l) => { root.profile-save(n, e, l); }
                 logo-choice: root.app-logo-choice;
-                festival: root.festival-logo;
+                festival <=> root.festival-logo;
+                status-level: root.status-level;
+                status-note: root.status-note;
                 pick-cover-image => { root.pick-cover-image(); }
                 pick-avatar-image => { root.pick-avatar-image(); }
                 app-version: root.app-version;
@@ -5292,7 +4885,17 @@ callback cloud-go-home();
         toggle-mute => { root.music-toggle-mute(); } cycle-repeat => { root.music-cycle-repeat(); }
         toggle-shuffle => { root.music-toggle-shuffle(); }
         play-queue(i) => { root.music-play-queue(i); } love => { root.music-love(); } rate(n) => { root.music-rate(n); }
-        open-now-album => { root.music-open-now-album(); } open-now-artist => { root.music-open-now-artist(); }
+        // Zen is reachable from Home and from every mini now, so it cannot
+        // assume the Music section is already behind it: without the section
+        // switch these opened the detail panel under whatever page you came
+        // from, which since the Home layouts landed meant Home. The Rust side
+        // closes zen, so it goes LAST — it deletes this component.
+        open-now-album => {
+            root.music-view = "mymusic"; root.active-section = "music";
+            root.section-changed("music"); root.music-open-now-album(); }
+        open-now-artist => {
+            root.music-view = "mymusic"; root.active-section = "music";
+            root.section-changed("music"); root.music-open-now-artist(); }
         theme-changed => { root.music-theme-changed(); }
     }
 
