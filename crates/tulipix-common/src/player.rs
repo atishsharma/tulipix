@@ -90,6 +90,10 @@ where
                 sub.push_str(&format!("{{\"command\":[\"observe_property\",{id},\"{name}\"]}}\n"));
             }
             let _ = stream.write_all(sub.as_bytes());
+            // Same once-a-second throttle the persistent reader applies; see it
+            // for why. Podcasts, radio and the legacy per-track path all land
+            // here, and they push into the same UI properties.
+            let mut last_pos = i64::MIN;
             let rd = BufReader::new(stream);
             for line in rd.lines().map_while(Result::ok) {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
@@ -97,6 +101,13 @@ where
                     continue;
                 }
                 let name = v["name"].as_str().unwrap_or("");
+                if name == "time-pos" {
+                    let secs = v["data"].as_f64().unwrap_or(-1.0).floor() as i64;
+                    if secs == last_pos {
+                        continue;
+                    }
+                    last_pos = secs;
+                }
                 on_prop(name, &v["data"]);
             }
         }
@@ -182,8 +193,9 @@ pub struct PersistentLaunch<'a> {
 /// property explicitly on every load is what stops one track's resume point
 /// leaking into the rest of the session. `"none"` is mpv's own default.
 ///
-/// Both commands go down one connection: `music_ipc` opens a fresh one per
-/// call, and each abandoned client is a `[ipc_N] Write error (Broken pipe)`.
+/// Both commands go down the SHARED connection the reader thread is draining,
+/// so mpv has somewhere to put its replies. A connect-write-drop client is one
+/// `[ipc_N] Write error (Broken pipe)` in mpv's log per command.
 ///
 /// Returns whether mpv **acknowledged** the load. Every step here can fail
 /// quietly — no socket recorded, a stale endpoint nothing listens on, a write
@@ -192,20 +204,86 @@ pub struct PersistentLaunch<'a> {
 /// on underneath a seek bar counting a song it is not playing. The caller
 /// respawns on `false`, which is loud and correct.
 fn ipc_loadfile(src: &Path, start_s: Option<f64>) -> bool {
-    let Some(sock) = music_sock().lock().ok().and_then(|g| g.clone()) else { return false; };
     let start = match start_s {
         Some(v) if v > 1.0 => format!("{v:.0}"),
         _ => "none".to_string(),
     };
+    // Distinct ids on purpose: mpv answers the `set_property` first, and if it
+    // carried the load's id the wait below would return on THAT reply — an ack
+    // for a load mpv had not looked at yet, which is exactly the silent failure
+    // this function exists to catch.
     let set = serde_json::json!({
         "command": ["set_property", "start", start], "request_id": 1 });
     let cmd = serde_json::json!({
-        "command": ["loadfile", src.display().to_string(), "replace"], "request_id": 2 });
+        "command": ["loadfile", src.display().to_string(), "replace"],
+        "request_id": LOAD_REQ_ID });
+    let payload = format!("{set}\n{cmd}\n");
+
+    // Arm the answer slot BEFORE writing, or a fast reply lands in a slot that
+    // is about to be cleared and the load reads as unacknowledged.
+    LOAD_ACK.store(ACK_WAITING, std::sync::atomic::Ordering::SeqCst);
+    if crate::music_ipc_raw(&payload) {
+        return wait_load_ack();
+    }
+    LOAD_ACK.store(ACK_NONE, std::sync::atomic::Ordering::SeqCst);
+
+    // No shared connection yet — mpv is alive but its reader has not attached.
+    // Fall back to a one-shot client that reads its own reply.
+    let Some(sock) = music_sock().lock().ok().and_then(|g| g.clone()) else { return false; };
     let Ok(mut s) = mpv_ipc::connect(&sock) else { return false; };
-    if s.write_all(format!("{set}\n{cmd}\n").as_bytes()).is_err() {
+    if s.write_all(payload.as_bytes()).is_err() {
         return false;
     }
     load_ack(s)
+}
+
+/// Request id used for both halves of a load. The reader thread watches for it.
+const LOAD_REQ_ID: u64 = 2;
+const ACK_NONE: u8 = 0;
+const ACK_WAITING: u8 = 1;
+const ACK_OK: u8 = 2;
+const ACK_FAILED: u8 = 3;
+
+/// mpv's answer to the last `loadfile`, filled in by the reader thread.
+///
+/// The reader owns the only read end of the shared connection, so the ack
+/// cannot be read here directly — it is handed over through this instead.
+pub(crate) static LOAD_ACK: std::sync::atomic::AtomicU8 =
+    std::sync::atomic::AtomicU8::new(ACK_NONE);
+
+/// Record a reply the reader thread recognised as ours.
+pub(crate) fn note_load_ack(success: bool) {
+    // Only while something is waiting: a reply that arrives after the wait gave
+    // up must not be sitting in the slot when the next load arms it.
+    let _ = LOAD_ACK.compare_exchange(
+        ACK_WAITING,
+        if success { ACK_OK } else { ACK_FAILED },
+        std::sync::atomic::Ordering::SeqCst,
+        std::sync::atomic::Ordering::SeqCst,
+    );
+}
+
+/// Block until the reader reports the load, or 250ms passes.
+///
+/// The wait is what keeps this honest on the UI thread: a wedged mpv costs a
+/// quarter second and a respawn, not a frozen window. Polling rather than a
+/// condvar because the reader must never block on a UI-side lock.
+fn wait_load_ack() -> bool {
+    for _ in 0..50 {
+        match LOAD_ACK.load(std::sync::atomic::Ordering::SeqCst) {
+            ACK_OK => {
+                LOAD_ACK.store(ACK_NONE, std::sync::atomic::Ordering::SeqCst);
+                return true;
+            }
+            ACK_FAILED => {
+                LOAD_ACK.store(ACK_NONE, std::sync::atomic::Ordering::SeqCst);
+                return false;
+            }
+            _ => std::thread::sleep(std::time::Duration::from_millis(5)),
+        }
+    }
+    LOAD_ACK.store(ACK_NONE, std::sync::atomic::Ordering::SeqCst);
+    false
 }
 
 /// Read mpv's reply to `request_id: 2` (the `loadfile`) off the same
@@ -222,7 +300,7 @@ fn load_ack(s: mpv_ipc::IpcConn) -> bool {
     let rd = BufReader::new(s);
     for line in rd.lines().map_while(Result::ok).take(64) {
         let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
-        if v["request_id"] == 2 {
+        if v["request_id"] == LOAD_REQ_ID {
             return v["error"] == "success";
         }
     }
@@ -344,14 +422,43 @@ where
                 sub.push_str(&format!("{{\"command\":[\"observe_property\",{id},\"{name}\"]}}\n"));
             }
             let _ = stream.write_all(sub.as_bytes());
+            // Every later command rides this same connection, which this
+            // thread drains — see `crate::MUSIC_CMD`. Without the shared write
+            // half each control opened its own client and closed it before mpv
+            // could answer, which is the burst of broken-pipe lines a track
+            // change used to print.
+            crate::set_music_cmd(stream.try_clone().ok());
+            // Last whole second forwarded to the UI — see the throttle below.
+            let mut last_pos = i64::MIN;
             let rd = BufReader::new(stream);
             for line in rd.lines().map_while(Result::ok) {
                 let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
+                // A reply, not an event: the only one anybody waits for is the
+                // `loadfile` ack.
+                if v["request_id"] == LOAD_REQ_ID {
+                    note_load_ack(v["error"] == "success");
+                    continue;
+                }
                 match v["event"].as_str().unwrap_or("") {
                     "property-change" => {
+                        let name = v["name"].as_str().unwrap_or("");
+                        // mpv reports `time-pos` many times a second, and every
+                        // one of them crossed into the UI thread to set a float
+                        // and re-format a clock string that only changes once a
+                        // second. Nothing downstream draws finer than that — the
+                        // seek bar moves a pixel a second — so a repeat of the
+                        // same whole second is dropped here rather than waking
+                        // the event loop to write the value it already holds.
+                        if name == "time-pos" {
+                            let secs = v["data"].as_f64().unwrap_or(-1.0).floor() as i64;
+                            if secs == last_pos {
+                                continue;
+                            }
+                            last_pos = secs;
+                        }
                         if let Ok(h) = persist_handlers().lock() {
                             if let Some((p, _, _)) = h.as_ref() {
-                                p(v["name"].as_str().unwrap_or(""), &v["data"]);
+                                p(name, &v["data"]);
                             }
                         }
                     }
@@ -378,6 +485,9 @@ where
         if PERSIST_SESSION.load(std::sync::atomic::Ordering::SeqCst) != session {
             return;
         }
+        // Nothing is draining the socket any more, so the shared write half has
+        // to go with it: writing into it would put mpv back where it started.
+        crate::set_music_cmd(None);
         if let Ok(mut g) = persist_args().lock() {
             *g = None;
         }

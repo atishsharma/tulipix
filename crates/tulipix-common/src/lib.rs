@@ -444,12 +444,18 @@ pub fn stop_music_child() {
         if let Some(s) = &sock { mpv_ipc::cleanup(s); }
         return;
     };
-    if let Some(s) = &sock {
-        use std::io::Write;
-        if let Ok(mut c) = mpv_ipc::connect(s) {
-            let _ = c.write_all(b"{\"command\":[\"quit\"]}\n");
+    // Quit down the shared connection when there is one, so the goodbye does
+    // not itself cost a broken-pipe line. Then drop it: this process is on its
+    // way out and the handle is about to be dead.
+    if !music_ipc_raw("{\"command\":[\"quit\"]}\n") {
+        if let Some(s) = &sock {
+            use std::io::Write;
+            if let Ok(mut c) = mpv_ipc::connect(s) {
+                let _ = c.write_all(b"{\"command\":[\"quit\"]}\n");
+            }
         }
     }
+    set_music_cmd(None);
     let mut exited = false;
     for _ in 0..8 {
         match child.try_wait() {
@@ -480,16 +486,74 @@ pub fn music_sock() -> &'static std::sync::Mutex<Option<PathBuf>> {
 pub static MUSIC_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 
-/// Send a single JSON command to the live music mpv over its IPC socket.
-pub fn music_ipc(args: &[&str]) {
+/// The live music-mpv IPC connection, shared by every command sender.
+///
+/// This is the same socket the player's reader thread is listening on, cloned
+/// at the write end. It exists because the obvious alternative — connect,
+/// write, drop — is what mpv complains about: it answers EVERY command with a
+/// reply and broadcasts its events to every attached client, so a client that
+/// writes and closes is a socket mpv then writes into. That is one
+/// `[ipc_N] Write error (Broken pipe)` per command, with N climbing forever,
+/// and a track change sends a burst of them (volume, mute, replaygain, speed,
+/// pause, loadfile…) which is why the burst arrived a dozen at a time.
+///
+/// One long-lived connection, drained by the reader thread, means mpv has
+/// somewhere to put those replies and nothing to complain about.
+pub static MUSIC_CMD: std::sync::OnceLock<std::sync::Mutex<Option<mpv_ipc::IpcConn>>> =
+    std::sync::OnceLock::new();
+pub fn music_cmd() -> &'static std::sync::Mutex<Option<mpv_ipc::IpcConn>> {
+    MUSIC_CMD.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+/// Hand the shared command connection over (or drop it when the reader dies).
+pub fn set_music_cmd(conn: Option<mpv_ipc::IpcConn>) {
+    if let Ok(mut g) = music_cmd().lock() {
+        *g = conn;
+    }
+}
+
+/// Write a raw, newline-terminated JSON-IPC payload to the live music mpv.
+///
+/// Returns whether it went out on the SHARED connection. `false` means the
+/// caller cannot expect a reply to be seen by the reader thread — either
+/// nothing is connected yet (mpv was spawned a moment ago and the reader is
+/// still retrying) or the write failed, in which case the dead connection is
+/// dropped so the next call re-establishes or falls back.
+pub fn music_ipc_raw(payload: &str) -> bool {
     use std::io::Write;
-    let Some(sock) = music_sock().lock().ok().and_then(|g| g.clone()) else { return; };
-    let payload = format!("{{\"command\":[{}]}}\n",
+    let Ok(mut g) = music_cmd().lock() else { return false; };
+    let Some(conn) = g.as_mut() else { return false; };
+    if conn.write_all(payload.as_bytes()).is_ok() {
+        return true;
+    }
+    // mpv is gone, or the pipe half-closed under us. Drop it: a stale handle
+    // would fail every later command silently.
+    *g = None;
+    false
+}
+
+/// Build the JSON for one command.
+fn ipc_payload(args: &[&str]) -> String {
+    format!("{{\"command\":[{}]}}\n",
         args.iter().map(|a| {
             // numbers/bools pass through; everything else is JSON-quoted.
             if a.parse::<f64>().is_ok() || **a == *"true" || **a == *"false" { a.to_string() }
             else { format!("\"{a}\"") }
-        }).collect::<Vec<_>>().join(","));
+        }).collect::<Vec<_>>().join(","))
+}
+
+/// Send a single JSON command to the live music mpv over its IPC socket.
+pub fn music_ipc(args: &[&str]) {
+    use std::io::Write;
+    let payload = ipc_payload(args);
+    if music_ipc_raw(&payload) {
+        return;
+    }
+    // No shared connection: mpv was spawned moments ago and its reader has not
+    // attached yet, or this is a control sent after the process died. A
+    // one-shot connection still gets the command through — and still costs one
+    // broken-pipe line — but it is now the rare path rather than every call.
+    let Some(sock) = music_sock().lock().ok().and_then(|g| g.clone()) else { return; };
     if let Ok(mut s) = mpv_ipc::connect(&sock) {
         let _ = s.write_all(payload.as_bytes());
     }
