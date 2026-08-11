@@ -367,6 +367,123 @@ impl Spotify {
     }
 }
 
+// ── Per-track enrichment ─────────────────────────────────────────────────────
+// The embed's `trackList` carries a title, an artist string and a duration —
+// and nothing else. Tagging from that alone means every track in a PLAYLIST
+// gets the playlist's name written into its album tag, and a single-track link
+// gets no album at all. The public track page states the real one in its
+// `og:description`: `Artist · Song · Album · Year`.
+
+/// How many track pages are read at once. Eight is upstream's number: enough
+/// that a 100-track playlist resolves in a few seconds, few enough that Spotify
+/// does not start refusing.
+const ENRICH_CONCURRENCY: usize = 8;
+
+/// `(album, artwork_url)` out of a track page's meta tags.
+fn parse_track_page(html: &str) -> (Option<String>, Option<String>) {
+    let re = Regex::new(
+        r#"<meta[^>]+(?:property|name)=["']([^"']+)["'][^>]+content=["']([^"']*)["'][^>]*>"#,
+    )
+    .unwrap();
+    let mut og_description = None;
+    let mut tw_description = None;
+    let mut og_image = None;
+    let mut tw_image = None;
+    for c in re.captures_iter(html) {
+        let value = decode_entities(&c[2]);
+        match &c[1] {
+            "og:description" => og_description = Some(value),
+            "twitter:description" => tw_description = Some(value),
+            "og:image" => og_image = Some(value),
+            "twitter:image" => tw_image = Some(value),
+            _ => {}
+        }
+    }
+    let description =
+        get_first_non_empty(&[og_description.as_deref(), tw_description.as_deref()]);
+    let artwork = get_first_non_empty(&[og_image.as_deref(), tw_image.as_deref()]);
+    (album_from_description(description.as_deref()), artwork)
+}
+
+/// The album out of `Artist · Song · Album · Year`.
+///
+/// The `Song` marker is what anchors it: the description has a different shape
+/// for podcasts and episodes, and the segment before `Song` is only the album
+/// when there is an artist segment in front of it too — hence the index test
+/// rather than a plain "second from the end".
+fn album_from_description(description: Option<&str>) -> Option<String> {
+    let segments: Vec<&str> = description?
+        .split(" · ")
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .collect();
+    let song_at = segments.iter().position(|s| s.eq_ignore_ascii_case("song"))?;
+    if song_at < 2 {
+        return None;
+    }
+    Some(segments[song_at - 1].to_string())
+}
+
+/// The handful of entities Spotify actually emits in a meta tag.
+fn decode_entities(value: &str) -> String {
+    value
+        .replace("&amp;", "&")
+        .replace("&quot;", "\"")
+        .replace("&#x27;", "'")
+        .replace("&#39;", "'")
+}
+
+async fn fetch_track_page(
+    client: &reqwest::Client,
+    url: &str,
+) -> Option<(Option<String>, Option<String>)> {
+    let html = client
+        .get(url)
+        .header("user-agent", "Mozilla/5.0")
+        .send()
+        .await
+        .ok()?
+        .error_for_status()
+        .ok()?
+        .text()
+        .await
+        .ok()?;
+    Some(parse_track_page(&html))
+}
+
+/// Fill in album and artwork from each track's own page.
+///
+/// Best-effort by design: a track page that 404s or changes shape leaves the
+/// track exactly as the embed described it, because a missing album tag is a
+/// smaller problem than a failed download.
+async fn enrich_tracks(client: &reqwest::Client, tracks: &mut [Track]) {
+    let mut start = 0usize;
+    while start < tracks.len() {
+        let end = (start + ENRICH_CONCURRENCY).min(tracks.len());
+        let mut set = tokio::task::JoinSet::new();
+        for (offset, track) in tracks[start..end].iter().enumerate() {
+            let Some(url) = track.source_url.clone() else {
+                continue;
+            };
+            let client = client.clone();
+            let at = start + offset;
+            set.spawn(async move { (at, fetch_track_page(&client, &url).await) });
+        }
+        while let Some(joined) = set.join_next().await {
+            let Ok((at, Some((album, artwork)))) = joined else {
+                continue;
+            };
+            if let Some(album) = album {
+                tracks[at].album = Some(album);
+            }
+            if let Some(artwork) = artwork {
+                tracks[at].artwork_url = Some(artwork);
+            }
+        }
+        start = end;
+    }
+}
+
 #[async_trait::async_trait]
 impl Provider for Spotify {
     fn id(&self) -> ProviderId {
@@ -407,7 +524,13 @@ impl Provider for Spotify {
             .error_for_status()?
             .text()
             .await?;
-        Self::parse_collection_html(&html, url)
+        let mut playlist = Self::parse_collection_html(&html, url)?;
+        // An ALBUM link already knows its album — its tracks are the album. A
+        // playlist's are not, and a bare track link never carries one.
+        if kind != "album" {
+            enrich_tracks(client, &mut playlist.tracks).await;
+        }
+        Ok(playlist)
     }
 }
 
@@ -453,6 +576,26 @@ mod tests {
             Some("https://open.spotify.com/track/aaa")
         );
         assert_eq!(pl.tracks[1].artists, vec!["Artist C".to_string()]);
+    }
+
+    #[test]
+    fn the_track_page_supplies_the_real_album() {
+        let html = r#"<html><head>
+<meta property="og:description" content="Artist A &amp; B · Song · Real Album · 2019">
+<meta property="og:image" content="https://i.scdn.co/image/track-art">
+</head></html>"#;
+        let (album, artwork) = parse_track_page(html);
+        assert_eq!(album.as_deref(), Some("Real Album"));
+        assert_eq!(artwork.as_deref(), Some("https://i.scdn.co/image/track-art"));
+    }
+
+    #[test]
+    fn a_description_that_is_not_a_song_yields_no_album() {
+        // Podcast episodes and shows use the same meta tag with another shape;
+        // taking "second from the end" there would tag a book as an album.
+        assert_eq!(album_from_description(Some("Podcast · Episode · Jan 2020")), None);
+        assert_eq!(album_from_description(Some("Song · Album · 2019")), None);
+        assert_eq!(album_from_description(None), None);
     }
 
     #[test]
