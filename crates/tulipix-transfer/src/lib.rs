@@ -72,6 +72,18 @@ pub struct StatusSnapshot {
     pub recv_bytes: u64,
 }
 
+/// One download on the wire, matched to its Recent Transfers row by `row`.
+///
+/// A send has no pane of its own: the phone pulls the file, so the row in the
+/// table is the only place it appears, and until this existed that row said
+/// "Completed" from the first chunk.
+pub struct SendRow {
+    /// `transfers.id` of the ledger row this is filling in.
+    pub row: i64,
+    pub done: u64,
+    pub total: u64,
+}
+
 /// One upload in flight (or just finished).
 pub struct UploadRow {
     /// Server-side upload id, so a failed row can name itself to `dismiss_upload`.
@@ -116,6 +128,8 @@ pub struct Snapshot {
     /// `(address, wrong guesses)`, worst first. Empty when nobody has missed.
     pub attempts: Vec<(String, u32)>,
     pub uploads: Vec<UploadRow>,
+    /// Downloads moving right now, for the table rows that are still filling.
+    pub sends: Vec<SendRow>,
     pub total_bytes: u64,
     /// Bumped on every ledger write; the UI refetches Recent Transfers when it
     /// changes rather than polling the database.
@@ -188,12 +202,17 @@ impl TransferService {
             .lock()
             .map(|a| a.device_count(now) as i64)
             .unwrap_or(0);
-        let inflight = run
+        // Both directions. A phone pulling a film is as much "in flight" as one
+        // pushing a photo, and counting only uploads left the dashboard saying
+        // nothing was running while a download filled the link.
+        let uploading = run
             .state
             .uploads
             .lock()
             .map(|u| u.iter().filter(|x| x.state == "active").count() as i64)
             .unwrap_or(0);
+        let sending = run.state.sends.lock().map(|s| s.len() as i64).unwrap_or(0);
+        let inflight = uploading + sending;
         use std::sync::atomic::Ordering::Relaxed;
         StatusSnapshot {
             running: true,
@@ -521,6 +540,11 @@ impl TransferService {
             })
             .collect();
 
+        let sends = lock(&run.state.sends)
+            .iter()
+            .map(|s| SendRow { row: s.row, done: s.done, total: s.total })
+            .collect();
+
         Snapshot {
             running: true,
             port: run.port,
@@ -537,6 +561,7 @@ impl TransferService {
             devices,
             attempts,
             uploads,
+            sends,
             total_bytes,
             rev: run.state.rev.load(std::sync::atomic::Ordering::Relaxed),
             inbox: self.inbox.clone(),

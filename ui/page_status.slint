@@ -510,12 +510,22 @@ export component StatusPage inherits Rectangle {
     property <bool> reset-armed: false;
     property <string> reset-typed: "";
 
+    /// Closes whichever popup is open, and does *nothing* afterwards.
+    ///
+    /// Every caller is a button living inside the popup being closed, so the
+    /// assignment that flips the popup's `if` off deletes the element whose
+    /// handler is running — and Slint panics ("Recursion detected",
+    /// properties.rs) on anything a handler touches after that. Clearing the
+    /// three flags in a row therefore closed the popup on the *first* one and
+    /// then kept assigning, which is why the close button took the app down
+    /// from any of the three. Reset state first, then exactly one deletion,
+    /// then return.
     function close-modal() {
-        root.open-card = -1;
-        root.open-metric = -1;
-        root.lib-open = false;
         root.reset-armed = false;
         root.reset-typed = "";
+        if (root.lib-open) { root.lib-open = false; return; }
+        if (root.open-metric >= 0) { root.open-metric = -1; return; }
+        root.open-card = -1;
     }
 
     background: Theme.bg;

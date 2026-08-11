@@ -259,6 +259,53 @@ pub fn wire(window: &MainWindow) {
         }
     });
 
+    // Retry a send that failed. The desktop cannot push, so "send it again"
+    // means putting the file back in the tray for the phone to pull — and
+    // dropping the row it failed on, so the table does not end up with a stale
+    // failure sitting next to the attempt that replaced it.
+    let w = window.as_weak();
+    window.on_transfer_retry_row(move |idx| {
+        let Some(w) = w.upgrade() else { return };
+        let Some(row) = w.get_transfer_rows().row_data(idx.max(0) as usize) else { return };
+        if row.direction != "out" || row.path.is_empty() {
+            return;
+        }
+        let path = PathBuf::from(row.path.to_string());
+        if !path.exists() {
+            // The file moved since it failed. Nothing to re-offer, and the row
+            // is already greyed to say so.
+            return;
+        }
+        // Sharing may have been stopped since — a retry is what happens after
+        // the connection comes back — and a tray that is not serving swallows
+        // the file silently, so nothing is dropped from the ledger until it has
+        // actually been re-offered.
+        let offered = with(|svc| {
+            if !svc.is_running() {
+                return false;
+            }
+            svc.add(&path);
+            true
+        })
+        .unwrap_or(false);
+        if !offered {
+            return;
+        }
+        let id = row.id as i64;
+        let weak = w.as_weak();
+        spawn(async move {
+            if let Some(pool) = with(|svc| svc.pool()).flatten() {
+                if let Err(e) = tulipix_transfer::ledger::forget(&pool, id).await {
+                    tracing::warn!(error = %e, "transfer: could not drop the failed row");
+                }
+            }
+            let _ = weak.upgrade_in_event_loop(|w| {
+                refresh(&w);
+                load_history(&w, w.get_transfer_page().max(0) as usize);
+            });
+        });
+    });
+
     let w = window.as_weak();
     window.on_transfer_clear_history(move || {
         let w = w.clone();
@@ -382,7 +429,24 @@ fn spawn<F: std::future::Future<Output = ()> + Send + 'static>(fut: F) {
     }
 }
 
+/// Serialises start against start, and start against stop.
+///
+/// A start takes the service out of `service()` and owns it across an await, so
+/// two arriving together each built one: the second bound the fallback port
+/// (the first already held 8420), then parked itself over the first — which
+/// dropped the first server and freed 8420 again. The page was left showing a
+/// random port that Stop/Start then "fixed", because by then 8420 really was
+/// free. Home's Transfer tile does exactly that: `section-changed("transfer")`
+/// and `transfer-start()` on the one click. With this held, the second caller
+/// finds the service already running and `TransferService::start` returns
+/// early.
+fn lifecycle() -> &'static tokio::sync::Mutex<()> {
+    static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(tokio::sync::Mutex::default)
+}
+
 async fn start_service() {
+    let _serialised = lifecycle().lock().await;
     let inbox = inbox_path();
     let mut svc = guard().take().unwrap_or_else(|| TransferService::new(inbox.clone()));
     svc.set_inbox(inbox);
@@ -394,6 +458,7 @@ async fn start_service() {
 }
 
 async fn stop_service() {
+    let _serialised = lifecycle().lock().await;
     let taken = guard().take();
     if let Some(mut svc) = taken {
         svc.stop().await;
@@ -532,6 +597,24 @@ fn refresh(w: &MainWindow) {
         .collect();
     set_rows(&w.get_transfer_devices(), devices, |rows| w.set_transfer_devices(rows));
 
+    // One sampling for both directions: the service hands over cumulative byte
+    // counts and no clock, on purpose, so the rate is the difference between
+    // two ticks and this is the only place that knows how far apart they were.
+    let moving: Vec<(String, u64)> = snap
+        .uploads
+        .iter()
+        .filter(|u| u.state == "active")
+        .map(|u| (format!("up:{}", u.id), u.done))
+        .chain(snap.sends.iter().map(|s| (format!("tx:{}", s.row), s.done)))
+        .collect();
+    let rates = sample_rates(&moving);
+    let rate_of = |key: &str| -> SharedString {
+        match rates.get(key).copied().unwrap_or(0) {
+            0 => SharedString::new(),
+            b => format!("{}/s", human_size(b)).into(),
+        }
+    };
+
     let uploads: Vec<TransferUp> = snap
         .uploads
         .iter()
@@ -540,10 +623,25 @@ fn refresh(w: &MainWindow) {
             name: u.name.clone().into(),
             size: human_size(u.total.max(u.done)).into(),
             pct: if u.total == 0 { 0.0 } else { (u.done as f32 / u.total as f32).min(1.0) },
+            // "12.4 MB / 40 MB" only while it is moving; a finished row already
+            // says "Done" and its size, and two ways of saying the same size is
+            // one too many.
+            moved: if u.state == "active" && u.total > 0 {
+                format!("{} / {}", human_size(u.done), human_size(u.total)).into()
+            } else {
+                SharedString::new()
+            },
+            rate: if u.state == "active" { rate_of(&format!("up:{}", u.id)) } else { "".into() },
             state: u.state.clone().into(),
         })
         .collect();
     set_rows(&w.get_transfer_uploads(), uploads, |rows| w.set_transfer_uploads(rows));
+
+    // Downloads have no pane of their own — their row in Recent Transfers is
+    // the only place they appear — so the progress is written onto that row
+    // rather than into a list of its own. In place, not a model swap: these
+    // rows carry live buttons, and swapping the model under one is slint#6426.
+    patch_send_progress(w, &snap, &rates);
 
     // The QR carries a single-use key with a 60-second life, so the address is
     // not the only thing that can invalidate it: the first phone to scan spends
@@ -690,6 +788,94 @@ fn status_line(snap: &tulipix_transfer::Snapshot) -> String {
     format!("Serving on {}. Open until you stop sharing or close the app.", snap.url)
 }
 
+/// One file's byte counter, as it was the last time it was looked at.
+struct Sample {
+    done: u64,
+    at: std::time::Instant,
+    rate: f64,
+}
+
+fn rate_table() -> std::sync::MutexGuard<'static, std::collections::HashMap<String, Sample>> {
+    static RATES: OnceLock<Mutex<std::collections::HashMap<String, Sample>>> = OnceLock::new();
+    RATES.get_or_init(Mutex::default).lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// Bytes per second for every file moving right now, keyed `up:<id>` for an
+/// upload and `tx:<ledger row>` for a download.
+///
+/// Smoothed, because a 600 ms sample that happens to land between two 64 KB
+/// chunks reads as a stall, and a rate that flickers to zero on a healthy
+/// transfer is worse than no rate at all. Entries for files that have stopped
+/// moving are dropped here rather than swept elsewhere — the caller passes the
+/// whole live set on every tick, so anything absent is finished.
+fn sample_rates(live: &[(String, u64)]) -> std::collections::HashMap<String, u64> {
+    let now = std::time::Instant::now();
+    let mut table = rate_table();
+    let mut out = std::collections::HashMap::with_capacity(live.len());
+    for (key, done) in live {
+        let seen = table
+            .entry(key.clone())
+            .or_insert(Sample { done: *done, at: now, rate: 0.0 });
+        let elapsed = now.duration_since(seen.at).as_secs_f64();
+        if elapsed >= 0.25 {
+            let moved = done.saturating_sub(seen.done) as f64;
+            let instant = moved / elapsed;
+            seen.rate = if seen.rate == 0.0 { instant } else { seen.rate * 0.6 + instant * 0.4 };
+            seen.done = *done;
+            seen.at = now;
+        }
+        out.insert(key.clone(), seen.rate as u64);
+    }
+    table.retain(|key, _| out.contains_key(key));
+    out
+}
+
+/// Fill in the progress of every Recent Transfers row that is still sending,
+/// and blank it on every row that is not.
+///
+/// `set_row_data` rather than a rebuilt model: the table is reloaded only when
+/// the ledger's revision changes, which a download in progress does not touch,
+/// and rebuilding it several times a second would tear down rows that hold live
+/// buttons.
+fn patch_send_progress(
+    w: &MainWindow,
+    snap: &tulipix_transfer::Snapshot,
+    rates: &std::collections::HashMap<String, u64>,
+) {
+    let rows = w.get_transfer_rows();
+    for i in 0..rows.row_count() {
+        let Some(row) = rows.row_data(i) else { continue };
+        if row.status != "sending" {
+            // A row that has just settled keeps its stale bar until the reload
+            // lands, which is a tick away.
+            if row.pct != 0.0 || !row.progress.is_empty() {
+                rows.set_row_data(i, TransferRow { pct: 0.0, progress: "".into(), ..row });
+            }
+            continue;
+        }
+        let live = snap.sends.iter().find(|s| s.row == row.id as i64);
+        let (pct, progress) = match live {
+            Some(s) if s.total > 0 => {
+                let pct = (s.done as f32 / s.total as f32).min(1.0);
+                let rate = rates.get(&format!("tx:{}", s.row)).copied().unwrap_or(0);
+                let pctlabel = format!("{}%", (pct * 100.0).round() as i32);
+                let label = if rate > 0 {
+                    format!("{pctlabel} · {}/s", human_size(rate))
+                } else {
+                    pctlabel
+                };
+                (pct, SharedString::from(label))
+            }
+            // In the ledger as sending, but not on the wire: the settling
+            // update is one tick behind, or this is a row from an earlier run.
+            _ => (0.0, SharedString::new()),
+        };
+        if row.pct != pct || row.progress != progress {
+            rows.set_row_data(i, TransferRow { pct, progress, ..row });
+        }
+    }
+}
+
 /// Install rows without swapping the model out from under a live repeater.
 fn set_rows<T: Clone + 'static>(
     model: &ModelRc<T>,
@@ -714,7 +900,8 @@ fn load_history(w: &MainWindow, page: usize) {
         let entries =
             tulipix_transfer::ledger::recent(&pool, page, sort, desc).await.unwrap_or_default();
         let total = tulipix_transfer::ledger::count(&pool).await.unwrap_or(0);
-        type Row = (String, String, String, String, String, String, String, String, String, bool);
+        type Row =
+            (i64, String, String, String, String, String, String, String, String, String, bool);
         let rows: Vec<Row> = entries
             .into_iter()
             .map(|e| {
@@ -725,6 +912,7 @@ fn load_history(w: &MainWindow, page: usize) {
                 let kind = kind_of(&e.name);
                 let kindlabel = kind_label(&e.name);
                 (
+                    e.id,
                     e.direction,
                     e.name,
                     path,
@@ -743,20 +931,39 @@ fn load_history(w: &MainWindow, page: usize) {
         let _ = weak.upgrade_in_event_loop(move |w| {
             let rows: Vec<TransferRow> = rows
                 .into_iter()
-                .map(|(direction, name, path, size, peer, status, stamp, kind, kindlabel, missing)| {
-                    TransferRow {
-                        direction: direction.into(),
-                        name: name.into(),
-                        path: path.into(),
-                        size: size.into(),
-                        peer: peer.into(),
-                        status: status.into(),
-                        stamp: stamp.into(),
-                        kind: kind.into(),
-                        kindlabel: kindlabel.into(),
+                .map(
+                    |(
+                        id,
+                        direction,
+                        name,
+                        path,
+                        size,
+                        peer,
+                        status,
+                        stamp,
+                        kind,
+                        kindlabel,
                         missing,
-                    }
-                })
+                    )| {
+                        TransferRow {
+                            id: id as i32,
+                            direction: direction.into(),
+                            name: name.into(),
+                            path: path.into(),
+                            size: size.into(),
+                            peer: peer.into(),
+                            status: status.into(),
+                            stamp: stamp.into(),
+                            kind: kind.into(),
+                            kindlabel: kindlabel.into(),
+                            missing,
+                            // Filled in on the next tick by `patch_send_progress`,
+                            // which is what knows the bytes actually moving.
+                            pct: 0.0,
+                            progress: SharedString::new(),
+                        }
+                    },
+                )
                 .collect();
             set_rows(&w.get_transfer_rows(), rows, |rows| w.set_transfer_rows(rows));
             w.set_transfer_pages(pages as i32);

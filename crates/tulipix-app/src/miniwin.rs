@@ -121,7 +121,10 @@ fn push_lyrics(window: &MainWindow, mini: &MiniWidget) {
         }
         rows.row_data(i as usize).map(|r| r.text).unwrap_or_default()
     };
-    mini.set_has_lyrics(n > 0);
+    // Only when the rows belong to what is playing. A podcast, a station, a
+    // YouTube track or an audiobook chapter carries no lyrics, and the square
+    // style went on flipping to the last song's over all of them.
+    mini.set_has_lyrics(n > 0 && window.get_music_lyrics_live());
     mini.set_lyric_prev(line(active - 1));
     mini.set_lyric_now(line(active));
     mini.set_lyric_next(line(active + 1));

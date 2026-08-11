@@ -1445,6 +1445,7 @@ callback cloud-go-home();
     callback transfer-pick-inbox();
     callback transfer-open-inbox();
     callback transfer-open-row(int);
+    callback transfer-retry-row(int);
     callback transfer-clear-history();
     callback transfer-set-page(int);
     callback transfer-set-sort(int, bool);
@@ -2145,6 +2146,18 @@ callback cloud-go-home();
     // Phase 5 music — synced lyrics / audio output / visualizer / cast / tags.
     in-out property <[MusicLyricLine]> music-lyrics-rows: [];
     in-out property <int> music-lyrics-active: -1;
+    /// Whether the rows above belong to what is playing *now*. Only library
+    /// audio has lyrics; a podcast, a station, an audiobook or a YouTube track
+    /// has none, and every panel that draws them keys off the row list, so
+    /// without this the last song's lyrics stayed up over all four. Set by
+    /// Rust (`clear_music_lyrics` / `load_music_lyrics`) rather than derived
+    /// from the player mode, which cannot tell a YouTube track from a library
+    /// one — both play in "music" mode.
+    in-out property <bool> music-lyrics-live: false;
+    /// What a lyrics panel should treat as the current line: the real index for
+    /// library audio, and "none" for everything else, which is what takes the
+    /// panel down without every consumer having to know the rule.
+    property <int> music-lyric-line: root.music-lyrics-live ? root.music-lyrics-active : -1;
     in-out property <float> music-lyrics-line-progress: 0;
     in-out property <int> music-lyrics-offset-ms: 0;
     callback music-lyrics-offset(int);
@@ -3957,6 +3970,7 @@ callback cloud-go-home();
                 pick-inbox() => { root.transfer-pick-inbox(); }
                 open-inbox() => { root.transfer-open-inbox(); }
                 open-row(i) => { root.transfer-open-row(i); }
+                retry-row(i) => { root.transfer-retry-row(i); }
                 clear-history() => { root.transfer-clear-history(); }
                 set-page(p) => { root.transfer-set-page(p); }
                 set-sort(c, d) => { root.transfer-set-sort(c, d); }
@@ -4181,7 +4195,7 @@ callback cloud-go-home();
                 np-art: root.music-np-art;
                 np-accent: root.music-np-accent;
                 lyrics-rows: root.music-lyrics-rows;
-                lyrics-active: root.music-lyrics-active;
+                lyrics-active: root.music-lyric-line;
                 player-mode: root.music-player-mode;
                 yt-now-video: root.music-yt-now-video;
                 playing: root.music-playing;
@@ -4282,7 +4296,7 @@ callback cloud-go-home();
                 queue-rows: root.music-queue-rows;
                 np-index: root.music-np-index;
                 lyrics-rows: root.music-lyrics-rows;
-                lyrics-active: root.music-lyrics-active;
+                lyrics-active: root.music-lyric-line;
                 player-mode: root.music-player-mode;
                 yt-now-video: root.music-yt-now-video;
                 fin-spent: root.fin-spent-total;
@@ -4481,7 +4495,7 @@ callback cloud-go-home();
                 player-mode: root.music-player-mode;
                 vis-bars: root.music-vis-bars; vis-style: root.music-vis-style;
                 set-vis-style(s) => { root.music-vis-style = s; root.music-set-vis-style(s); }
-                queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
+                queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyric-line;
                 radio-initial: root.music-radio-np-initial; yt-now-video: root.music-yt-now-video;
                 podcast-speed: root.music-podcast-speed; podcast-episodes: root.music-podcast-d-episodes; podcast-summary: root.music-podcast-d-desc;
                 book-speed: root.music-book-speed; book-chapters: root.music-book-chapter-rows; np-index: root.music-np-index;
@@ -4869,7 +4883,12 @@ callback cloud-go-home();
         album: root.music-np-album; vis-bars: root.music-vis-bars; vis-style <=> root.music-vis-style; vis-style-changed(s) => { root.music-set-vis-style(s); }
         zen-viz <=> root.music-zen-viz;
         changed zen-viz => { root.music-set-zen-viz(self.zen-viz); }
-        queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
+        queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyric-line;
+        // Whether lyrics are even possible here. With them impossible AND the
+        // visualizer switched off the middle of the zen page is empty, so it
+        // shows the visualizer anyway rather than a hole — without touching the
+        // stored preference, which belongs to the tracks that do have lyrics.
+        lyrics-possible: root.music-lyrics-live;
         podcast-mode: root.music-player-mode == "podcast"; speed: root.music-podcast-speed; set-speed(v) => { root.music-podcast-set-speed(v); }
         yt-now-video: root.music-yt-now-video; watch-video() => { root.music-yt-watch-current(); }
         tab <=> root.music-fs-tab;
@@ -4878,7 +4897,7 @@ callback cloud-go-home();
         close => { root.music-fullscreen = false; root.music-exit-zen();
             if (root.music-player-mode != "music") { root.music-center-mini(); } }
         // Lyrics auto-open only makes sense for library tracks.
-        init => { root.music-enter-zen(); self.zen-lyrics = root.music-player-mode == "music"; }
+        init => { root.music-enter-zen(); self.zen-lyrics = root.music-lyrics-live; }
         playpause => { root.music-toggle-pause(); }
         next => { root.music-next(); } prev => { root.music-prev(); }
         seek(s) => { root.music-seek(s); } set-volume(v) => { root.music-set-volume(v); }
@@ -5045,7 +5064,7 @@ callback cloud-go-home();
             art: root.music-np-art; accent: root.music-np-accent; title: root.music-np-title; sub: root.music-np-sub; album: root.music-np-album; playing: root.music-playing;
             pos: root.music-pos; dur: root.music-dur; pos-label: root.music-pos-label; dur-label: root.music-dur-label;
             shuffle: root.music-shuffle; volume: root.music-volume; muted: root.music-muted; repeat: root.music-repeat;
-            queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyrics-active;
+            queue-rows: root.music-queue-rows; lyrics-rows: root.music-lyrics-rows; lyrics-active: root.music-lyric-line;
             radio-mode: root.music-player-mode == "radio"; radio-initial: root.music-radio-np-initial;
             book-mode: root.music-player-mode == "book";
             yt-now-video: root.music-yt-now-video; watch-video => { root.music-yt-watch-current(); }

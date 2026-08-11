@@ -378,16 +378,49 @@ export component MiniWidget inherits Window {
     in-out property <bool> pill-open: false;
     property <bool> lyrics-open: root.lyrics-flip && root.has-lyrics;
 
+    // Space bar plays and pauses while the widget has the keyboard, which is
+    // what every media window does and what a widget with no menu especially
+    // needs. Focused on show — a FocusScope that never takes focus sees no keys
+    // — and it is the only one here, so nothing can steal it back.
+    keys := FocusScope {
+        init => { self.focus(); }
+        key-pressed(e) => {
+            if (e.text == " ") { root.playpause(); return accept; }
+            if (e.text == Key.RightArrow) { root.next(); return accept; }
+            if (e.text == Key.LeftArrow) { root.prev(); return accept; }
+            return reject;
+        }
+    }
+
+    // Room for the shadow to fall into.
+    //
+    // The window is frameless and exactly the size of the widget, so a shadow
+    // cast by a rectangle filling it had nowhere to go: what showed was the
+    // blur cropped by the window's own square edge — a dark box around a
+    // rounded object, on all four sides. The panel is inset instead, and the
+    // margin is spent underneath (2px above against 12px below) so the shadow
+    // reads as the widget standing off the desktop rather than glowing.
+    property <length> pad-x: 7px * root.uiscale;
+    property <length> pad-top: 2px * root.uiscale;
+    property <length> pad-bottom: 12px * root.uiscale;
+
     // 2px gradient ring — the same pink→violet→cyan the in-app mini uses.
     Rectangle {
-        width: 100%; height: 100%;
+        x: root.pad-x; y: root.pad-top;
+        width: parent.width - 2 * root.pad-x;
+        height: parent.height - root.pad-top - root.pad-bottom;
         border-radius: Surface.rr(root.is-pill ? 16px : 20px, self.width, self.height) * root.uiscale;
         background: Tone.ring;
-        drop-shadow-blur: 42px; drop-shadow-color: #000000e6;
+        // Downwards only. An even blur in every direction is what a flat sticker
+        // casts; a shadow that sits below the object is what gives it height.
+        drop-shadow-blur: 16px * root.uiscale;
+        drop-shadow-offset-y: 6px * root.uiscale;
+        drop-shadow-color: #00000080;
     }
     body := Rectangle {
-        x: 2px; y: 2px;
-        width: parent.width - 4px; height: parent.height - 4px;
+        x: root.pad-x + 2px; y: root.pad-top + 2px;
+        width: parent.width - 2 * root.pad-x - 4px;
+        height: parent.height - root.pad-top - root.pad-bottom - 4px;
         border-radius: Surface.rr(root.is-pill ? 14px : 18px, self.width, self.height) * root.uiscale;
         background: Theme.dark ? #121422e6 : #fbfaffe6;
         clip: true;
@@ -407,6 +440,9 @@ export component MiniWidget inherits Window {
             pointer-event(e) => {
                 if (e.kind == PointerEventKind.down && e.button == PointerEventButton.left) {
                     hold.running = true;
+                    // Takes the keyboard back if anything else in the window
+                    // took it, so the space bar keeps working after a click.
+                    keys.focus();
                 }
                 if (e.kind == PointerEventKind.up || e.kind == PointerEventKind.cancel) {
                     hold.running = false;
@@ -764,8 +800,10 @@ export component MiniWidget inherits Window {
         // The hit box is bigger than the mark — a 2px arc is not a target.
         width: (root.is-pill ? 16px : 20px) * root.uiscale;
         height: self.width;
-        x: parent.width - self.width - 3px;
-        y: parent.height - self.height - 3px;
+        // Inside the panel, not the window: the window carries the shadow
+        // margin, and a grip pinned to its corner would float in the shadow.
+        x: parent.width - self.width - 3px - root.pad-x;
+        y: parent.height - self.height - 3px - root.pad-bottom;
         background: transparent;
         // An arc that runs PARALLEL to the corner it sits in, 3px in from the
         // panel edge, rather than a circle stamped over it. A circle read as a

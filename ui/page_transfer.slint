@@ -42,15 +42,27 @@ export struct TransferDevice {
 // One upload in flight (or just finished). `state` is active | done | failed.
 // A success clears itself after a few seconds; a failure stays until dismissed,
 // which is what `id` is for.
-export struct TransferUp { id: int, name: string, size: string, pct: float, state: string }
+// `moved` is "12.4 MB / 40 MB" and `rate` "3.1 MB/s" — both empty unless the
+// file is actually moving, since a rate on a finished row is a number about the
+// past pretending to be about now.
+export struct TransferUp {
+    id: int, name: string, size: string, pct: float, state: string,
+    moved: string, rate: string,
+}
 
 // One row of the ledger. `direction` is in | out; `missing` greys a row whose
 // file has since been moved or deleted rather than hiding it.
 // `stamp` rather than `when`, which is a Slint keyword.
+// `status` is the ledger's own word — ok | failed | sending. A row that is
+// still sending carries `pct` and `progress` ("43% · 3.1 MB/s"), filled in on
+// every tick from the bytes actually on the wire; `id` is the ledger row id,
+// which is what matches the two together and what the retry button names.
 export struct TransferRow {
+    id: int,
     direction: string, name: string, path: string, size: string,
     peer: string, status: string, stamp: string,
     kind: string, kindlabel: string, missing: bool,
+    pct: float, progress: string,
 }
 
 // One address a phone could reach. Both a hotspot and a Wi-Fi link commonly
@@ -707,8 +719,21 @@ component UploadRow inherits Rectangle {
                 animate width { duration: 200ms; easing: ease-out; }
             }
         }
-        if !root.failed: Text {
-            text: root.up.size; color: Theme.text-dim; font-size: 10.5px;
+        // While it is arriving: how much has landed out of how much, and how
+        // fast. A bare percentage says nothing about whether a 2 GB file is
+        // going to take one minute or twenty.
+        if !root.failed: HorizontalLayout {
+            spacing: 6px;
+            Text {
+                text: root.up.moved != "" ? root.up.moved : root.up.size;
+                color: Theme.text-dim; font-size: 10.5px;
+                horizontal-stretch: 1; overflow: elide; vertical-alignment: center;
+            }
+            if root.up.rate != "": Text {
+                text: root.up.rate; color: root.tint;
+                font-size: 10.5px; font-weight: 700;
+                horizontal-stretch: 0; vertical-alignment: center;
+            }
         }
         // The phone is the sender, so nothing on this end can re-pull the file.
         // Saying where the retry actually lives beats a button that cannot work.
@@ -1013,6 +1038,9 @@ export component TransferPage inherits Rectangle {
     callback pick-inbox();
     callback open-inbox();
     callback open-row(int);
+    /// Re-offer the file behind a failed send, by row index, and drop the row
+    /// it failed on.
+    callback retry-row(int);
     callback clear-history();
     callback set-page(int);
     callback set-sort(int, bool);
@@ -1944,24 +1972,44 @@ export component TransferPage inherits Rectangle {
                                 }
                             }
 
-                            // Status.
+                            // Status. A file still on the wire says how far along
+                            // it is and how fast, over its own progress bar —
+                            // the row is written on the first chunk, so without
+                            // this a 4 GB download claimed to be done at once.
                             HorizontalLayout {
                                 min-width: 160px; horizontal-stretch: 0; spacing: 7px;
                                 alignment: center;
                                 VerticalLayout {
                                     alignment: center; horizontal-stretch: 0;
                                     AppIcon {
-                                        source: r.status == "ok" ? Icons.check : Icons.triangle-alert;
-                                        colorize: r.status == "ok" ? Theme.ok : Theme.error;
+                                        source: r.status == "ok" ? Icons.check
+                                            : r.status == "sending" ? Icons.arrow-up
+                                            : Icons.triangle-alert;
+                                        colorize: r.status == "ok" ? Theme.ok
+                                            : r.status == "sending" ? root.accent : Theme.error;
                                         width: 15px; height: 15px;
                                     }
                                 }
                                 VerticalLayout {
-                                    alignment: center; horizontal-stretch: 1;
+                                    alignment: center; horizontal-stretch: 1; spacing: 3px;
                                     Text {
-                                        text: r.status == "ok" ? "Completed" : r.status;
-                                        color: r.status == "ok" ? Theme.ok : Theme.error;
+                                        text: r.status == "ok" ? "Completed"
+                                            : r.status == "sending"
+                                                ? (r.progress != "" ? r.progress : "Sending…")
+                                                : r.status;
+                                        color: r.status == "ok" ? Theme.ok
+                                            : r.status == "sending" ? root.accent : Theme.error;
                                         font-size: 12px; font-weight: 600; vertical-alignment: center;
+                                    }
+                                    if r.status == "sending": Rectangle {
+                                        height: 3px; border-radius: 1.5px;
+                                        background: Theme.outline;
+                                        Rectangle {
+                                            x: 0; y: 0; height: parent.height; border-radius: 1.5px;
+                                            width: parent.width * r.pct;
+                                            background: root.accent;
+                                            animate width { duration: 200ms; easing: ease-out; }
+                                        }
                                     }
                                 }
                             }
@@ -1977,6 +2025,39 @@ export component TransferPage inherits Rectangle {
                                     text: r.peer; color: Theme.text; font-size: 11.5px;
                                     font-weight: 600; min-width: 190px;
                                     horizontal-alignment: center;
+                                }
+                                // Offers the file again, and drops the failed row
+                                // so the table does not keep a record that has
+                                // been superseded. Only for a send: an upload is
+                                // the phone's to repeat, and only while the file
+                                // is still where it was read from.
+                                if r.status == "failed" && r.direction == "out" && !r.missing
+                                        && r.path != "": Rectangle {
+                                    height: 20px; min-width: 68px; border-radius: 7px;
+                                    background: retry.has-hover
+                                        ? Surface.wash(root.accent, 0.18) : transparent;
+                                    border-width: 1px;
+                                    border-color: Surface.edge(root.accent, 0.4);
+                                    retry := TouchArea {
+                                        mouse-cursor: pointer;
+                                        clicked => { root.retry-row(i); }
+                                    }
+                                    HorizontalLayout {
+                                        padding-left: 7px; padding-right: 7px; spacing: 5px;
+                                        alignment: center;
+                                        VerticalLayout {
+                                            alignment: center;
+                                            AppIcon {
+                                                source: Icons.refresh-cw; colorize: root.accent;
+                                                width: 11px; height: 11px;
+                                            }
+                                        }
+                                        Text {
+                                            text: "Send again"; color: root.accent;
+                                            font-size: 10px; font-weight: 600;
+                                            vertical-alignment: center;
+                                        }
+                                    }
                                 }
                             }
                             VerticalLayout {

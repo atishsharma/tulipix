@@ -78,6 +78,18 @@ impl Upload {
     }
 }
 
+/// One download on the wire, keyed by the ledger row it wrote on its first
+/// chunk. Enough for the Recent Transfers row to show how far along it is; the
+/// rate is derived by the UI from two samples, the same way the totals are.
+#[derive(Clone, Debug)]
+pub struct Outgoing {
+    /// `transfers.id`. The row on screen and the bytes moving are matched by it.
+    pub row: i64,
+    pub name: String,
+    pub done: u64,
+    pub total: u64,
+}
+
 pub struct AppState {
     pub auth: Mutex<Auth>,
     pub tray: Mutex<Tray>,
@@ -85,6 +97,9 @@ pub struct AppState {
     pub inbox: Mutex<PathBuf>,
     pub pool: Option<SqlitePool>,
     pub uploads: Mutex<Vec<Upload>>,
+    /// Downloads in flight. Emptied as each finishes — unlike `uploads`, which
+    /// lingers, because the Recent Transfers row *is* the record of a send.
+    pub sends: Mutex<Vec<Outgoing>>,
     next_upload: AtomicU64,
     /// Bumped on every ledger write. The UI refetches Recent Transfers when it
     /// changes rather than polling the database on a timer.
@@ -112,10 +127,35 @@ impl AppState {
         self.rev.fetch_add(1, Ordering::Relaxed);
     }
 
-    async fn record(&self, row: ledger::Row) {
-        let Some(pool) = &self.pool else { return };
-        if let Err(e) = ledger::record(pool, row, now_secs() as i64).await {
-            tracing::warn!(error = %e, "transfer: ledger write failed");
+    /// The row id, when there is a ledger to write to. `None` with no database
+    /// (tests, and a run where `transfers.db` would not open) — which is also
+    /// why nothing downstream may treat a missing id as an error.
+    async fn record(&self, row: ledger::Row) -> Option<i64> {
+        let pool = self.pool.as_ref()?;
+        let id = match ledger::record(pool, row, now_secs() as i64).await {
+            Ok(id) => Some(id),
+            Err(e) => {
+                tracing::warn!(error = %e, "transfer: ledger write failed");
+                None
+            }
+        };
+        self.bump();
+        id
+    }
+
+    /// Settle a send: `ok` when the last chunk went out, `failed` when the
+    /// stream ended early. Idempotent — the drop guard and the normal end of
+    /// the stream both arrive for a download that completed.
+    async fn settle(&self, row: i64, status: &'static str) {
+        {
+            let mut sends = lock(&self.sends);
+            let Some(at) = sends.iter().position(|s| s.row == row) else { return };
+            sends.remove(at);
+        }
+        if let Some(pool) = &self.pool {
+            if let Err(e) = ledger::finish(pool, row, status).await {
+                tracing::warn!(error = %e, "transfer: ledger update failed");
+            }
         }
         self.bump();
     }
@@ -169,6 +209,10 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
     // A phone that paired before the app restarted keeps its 48 hours.
     if let Some(pool) = &cfg.pool {
         let _ = ledger::forget_expired(pool, now as i64).await;
+        // Whatever was mid-flight when this process last ended is not moving
+        // now. Left alone it would sit at "sending" for good, and a row that
+        // never looks failed is a row the retry button never offers to redo.
+        let _ = ledger::settle_stale(pool).await;
         if let Ok(rows) = ledger::devices(pool, now as i64).await {
             for d in rows {
                 auth.restore(Token {
@@ -195,6 +239,7 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
         inbox: Mutex::new(cfg.inbox.clone()),
         pool: cfg.pool,
         uploads: Mutex::new(Vec::new()),
+        sends: Mutex::new(Vec::new()),
         next_upload: AtomicU64::new(0),
         rev: AtomicU64::new(0),
         sent_bytes: AtomicU64::new(0),
@@ -727,15 +772,20 @@ async fn download(
     // Only the first request of a download is recorded. A resumed transfer sends
     // `Range: bytes=N-` with N > 0, and one row per resume would turn a flaky
     // Wi-Fi link into a page of identical entries.
-    if start == 0 {
+    let row = if start == 0 {
         let from = path.to_string_lossy().into_owned();
-        st.record(ledger::Row::sent(&name, &from, len as i64, &peer_ip(peer))).await;
+        st.record(ledger::Row::sent(&name, &from, len as i64, &peer_ip(peer))).await
+    } else {
+        None
+    };
+    if let Some(row) = row {
+        lock(&st.sends).push(Outgoing { row, name: name.clone(), done: 0, total: span });
     }
 
     // The stream stamps the device on every chunk, so the ring in the Connection
     // card follows the actual bytes rather than the request that started them —
     // a 200 MB video keeps the ring lit for as long as it is really sending.
-    let body = Body::from_stream(file_stream(file, span, st.clone(), token));
+    let body = Body::from_stream(file_stream(file, span, st.clone(), token, row));
     let disposition = format!("attachment; filename=\"{}\"", name.replace('"', "'"));
     let mut res = Response::new(body);
     {
@@ -761,32 +811,87 @@ fn insert(headers: &mut HeaderMap, name: header::HeaderName, value: &str) {
 }
 
 /// `span` bytes from wherever the handle is already seeked to, in `CHUNK` reads.
+/// Settles the ledger row of a download however the stream ends.
+///
+/// A dropped body is the common ending, not the exceptional one: a phone that
+/// walks out of range, a browser tab closed mid-file, a cancelled download.
+/// Nothing calls back to say so, so `Drop` is the only place that can stop the
+/// row saying "sending" forever.
+struct SendGuard {
+    st: Shared,
+    row: Option<i64>,
+}
+
+impl SendGuard {
+    async fn settle(&mut self, status: &'static str) {
+        let Some(row) = self.row.take() else { return };
+        self.st.settle(row, status).await;
+    }
+}
+
+impl Drop for SendGuard {
+    fn drop(&mut self) {
+        let Some(row) = self.row.take() else { return };
+        let st = self.st.clone();
+        // Which ending this was is decided by the bytes counted, not by whether
+        // the stream was polled one last time: with a known Content-Length the
+        // server may stop asking as soon as it has them all, and a download that
+        // completed must not be filed as a failure because of it.
+        let status = {
+            let sends = lock(&st.sends);
+            match sends.iter().find(|s| s.row == row) {
+                Some(s) if s.done >= s.total => "ok",
+                _ => "failed",
+            }
+        };
+        // Drop cannot await. Outside a runtime there is nothing to spawn onto
+        // either — the row is then settled by `settle_stale` on the next start.
+        if let Ok(rt) = tokio::runtime::Handle::try_current() {
+            rt.spawn(async move { st.settle(row, status).await });
+        }
+    }
+}
+
 fn file_stream(
     file: tokio::fs::File,
     span: u64,
     st: Shared,
     token: String,
+    row: Option<i64>,
 ) -> impl futures_util::stream::Stream<Item = Result<Vec<u8>, std::io::Error>> {
     use tokio::io::AsyncReadExt as _;
-    futures_util::stream::unfold((file, span), move |(mut file, left)| {
+    let guard = SendGuard { st: st.clone(), row };
+    futures_util::stream::unfold((file, span, guard), move |(mut file, left, mut guard)| {
         let st = st.clone();
         let token = token.clone();
         async move {
             if left == 0 {
+                guard.settle("ok").await;
                 return None;
             }
             let want = CHUNK.min(left as usize);
             let mut buf = vec![0u8; want];
             match file.read(&mut buf).await {
                 // A short file under a stale length: stop rather than pad with zeros.
-                Ok(0) => None,
+                Ok(0) => {
+                    guard.settle("failed").await;
+                    None
+                }
                 Ok(n) => {
                     buf.truncate(n);
                     lock(&st.auth).mark_active(&token, now_secs());
                     st.sent_bytes.fetch_add(n as u64, Ordering::Relaxed);
-                    Some((Ok(buf), (file, left - n as u64)))
+                    if let Some(row) = guard.row {
+                        if let Some(s) = lock(&st.sends).iter_mut().find(|s| s.row == row) {
+                            s.done += n as u64;
+                        }
+                    }
+                    Some((Ok(buf), (file, left - n as u64, guard)))
                 }
-                Err(e) => Some((Err(e), (file, 0))),
+                Err(e) => {
+                    guard.settle("failed").await;
+                    Some((Err(e), (file, 0, guard)))
+                }
             }
         }
     })
@@ -834,7 +939,7 @@ async fn upload(
             // The client vanished — a phone that walked out of range.
             sink.abort().await;
             finish_upload(&st, id, "failed");
-            st.record(ledger::Row::received(&name, "", total as i64, &peer_ip).failed()).await;
+            let _ = st.record(ledger::Row::received(&name, "", total as i64, &peer_ip).failed()).await;
             return StatusCode::BAD_REQUEST.into_response();
         };
         if sink.write(&chunk).await.is_err() {
@@ -842,7 +947,7 @@ async fn upload(
             let written = sink.written;
             sink.abort().await;
             finish_upload(&st, id, "failed");
-            st.record(ledger::Row::received(&name, "", written as i64, &peer_ip).failed()).await;
+            let _ = st.record(ledger::Row::received(&name, "", written as i64, &peer_ip).failed()).await;
             return StatusCode::INSUFFICIENT_STORAGE.into_response();
         }
         st.recv_bytes.fetch_add(chunk.len() as u64, Ordering::Relaxed);
@@ -859,13 +964,13 @@ async fn upload(
                 .file_name()
                 .map(|n| n.to_string_lossy().to_string())
                 .unwrap_or_else(|| name.clone());
-            st.record(ledger::Row::received(&shown, &landed, written as i64, &peer_ip)).await;
+            let _ = st.record(ledger::Row::received(&shown, &landed, written as i64, &peer_ip)).await;
             StatusCode::OK.into_response()
         }
         Err(e) => {
             tracing::warn!(error = %e, "transfer: upload could not be finalised");
             finish_upload(&st, id, "failed");
-            st.record(ledger::Row::received(&name, "", written as i64, &peer_ip).failed()).await;
+            let _ = st.record(ledger::Row::received(&name, "", written as i64, &peer_ip).failed()).await;
             StatusCode::INTERNAL_SERVER_ERROR.into_response()
         }
     }
@@ -1067,6 +1172,52 @@ mod tests {
         // An id that was never in the tray is a 404, not a path to try.
         let missing = c.get(format!("{base}/dl/9999")).send().await.unwrap();
         assert_eq!(missing.status(), 404);
+        run.stop().await;
+    }
+
+    /// The ledger row of a download is written on the first chunk, so it has to
+    /// be settled when the last one goes out — a row stuck at "sending" is one
+    /// the table can never report as finished.
+    #[tokio::test]
+    async fn a_download_leaves_its_ledger_row_settled() {
+        let dir = tempfile::tempdir().unwrap();
+        let pool = sqlx::SqlitePool::connect("sqlite::memory:").await.unwrap();
+        ledger::apply_schema(&pool).await.unwrap();
+        let run = start(Config {
+            inbox: dir.path().to_path_buf(),
+            bind: "127.0.0.1:0".into(),
+            pool: Some(pool.clone()),
+            tls: false,
+        })
+        .await
+        .unwrap();
+        let base = format!("http://127.0.0.1:{}", run.port);
+
+        let p = dir.path().join("song.bin");
+        std::fs::write(&p, b"0123456789").unwrap();
+        lock(&run.state.tray).add(&p);
+        let id = lock(&run.state.tray).items()[0].id;
+
+        let c = client();
+        c.post(format!("{base}/auth")).body(run.pin.clone()).send().await.unwrap();
+        let res = c.get(format!("{base}/dl/{id}")).send().await.unwrap();
+        assert_eq!(res.bytes().await.unwrap().as_ref(), b"0123456789");
+
+        // The settling can be one spawned task behind the last byte, so this
+        // waits for it rather than assuming the ordering.
+        let mut status = String::new();
+        for _ in 0..50 {
+            let rows = ledger::recent(&pool, 0, ledger::Sort::default(), true).await.unwrap();
+            assert_eq!(rows.len(), 1, "one row per download, resumes included");
+            status = rows[0].status.clone();
+            if status != "sending" {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert_eq!(status, "ok");
+        // And nothing is left claiming to be on the wire.
+        assert!(lock(&run.state.sends).is_empty());
         run.stop().await;
     }
 

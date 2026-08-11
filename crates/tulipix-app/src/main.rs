@@ -7459,6 +7459,10 @@ fn wire_youtube(window: &MainWindow) {
         if let Some(m) = yt_lookup(&id) {
             w0.set_music_player_mode("music".into());
             w0.set_music_yt_now_video(true);
+            // This paints before the stream resolves, so it also has to take
+            // down the last track's lyrics — otherwise they keep scrolling over
+            // a YouTube video for as long as the resolve takes.
+            clear_music_lyrics(&w0);
             w0.set_music_np_title(m.title.clone().into());
             w0.set_music_np_sub(if m.channel.is_empty() { "YouTube".into() } else { m.channel.clone().into() });
             w0.set_music_np_art(yt_img(&m.thumb));

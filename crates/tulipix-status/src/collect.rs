@@ -306,7 +306,10 @@ pub async fn collect(live: &Live) -> Snapshot {
     }
 
     let cloud_status = cloud.card["status"].as_str().unwrap_or("—").to_string();
-    let jobs_running = tools.running;
+    // Files on the wire count as work in progress. Without them the page said
+    // "0 jobs running" underneath a headline that had gone busy *because* of a
+    // transfer — the one card that can be busy without owning a row in `jobs`.
+    let jobs_running = tools.running + live.transfer_inflight;
     let jobs_failed = tools.failed;
     let metrics_v = metrics(live, lib_bytes, jobs_running, jobs_failed, &cloud_status,
         podcasts, radio);
@@ -1402,8 +1405,9 @@ fn metrics(
           "accent": "cyan",
           "help": {
             "is": "Background work from the Tools section — conversions, \
-                   transcodes, downloads. The big number is running right now; \
-                   the line under it is what errored in the last 24 hours.",
+                   transcodes, downloads — plus any file moving over Transfer. \
+                   The big number is running right now; the line under it is \
+                   what errored in the last 24 hours.",
             "for": "A queue that never drains, or a failure count that keeps \
                     climbing, is the first sign a bundled binary went missing.",
             "rows": vec![

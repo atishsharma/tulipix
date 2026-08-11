@@ -7423,10 +7423,18 @@ export component MusicFullscreen inherits Rectangle {
     // waveform popup, or `v`). With it off the lyric block takes the whole
     // middle of the page instead of a strip at the bottom of it.
     in-out property <bool> zen-viz: true;
+    /// Whether what is playing can have lyrics at all — a library track, as
+    /// opposed to a podcast, a station, an audiobook or a YouTube video.
+    in property <bool> lyrics-possible: false;
+    // What is actually drawn in the middle. Switching the visualizer off is a
+    // choice about tracks that have something else to put there; with nothing
+    // else to put there it would leave the middle of the page blank, so the
+    // preference is overridden for the drawing and left alone in settings.
+    property <bool> viz-shown: root.zen-viz || !root.lyrics-possible;
     // Lyrics are only ever shown for library audio; `zlyr-big` is the state
     // where they are the ONLY thing in the middle and get the room to say so.
     property <bool> zlyr: root.zen-lyrics && !root.yt-now-video;
-    property <bool> zlyr-big: root.zlyr && !root.zen-viz;
+    property <bool> zlyr-big: root.zlyr && !root.viz-shown;
     // Podcast playback in the zen player — show a speed control.
     in property <bool> podcast-mode: false;
     in property <float> speed: 1.0;
@@ -7531,7 +7539,7 @@ export component MusicFullscreen inherits Rectangle {
                 Text { text: album == "" ? sub : sub + "   ·   " + album; color: sta.has-hover ? #ec4899 : MusicTheme.fg-dim; font-size: 16px; horizontal-alignment: center; vertical-alignment: center; overflow: elide; } } }
         // Big visualizer — selectable style, ~2× wide, centred. Gone entirely
         // when switched off, so the middle belongs to the lyrics.
-        if root.zen-viz: Rectangle { vertical-stretch: 1;
+        if root.viz-shown: Rectangle { vertical-stretch: 1;
             VizView { width: Math.min(root.width - 120px, 1800px); height: parent.height - 20px;
                 x: (parent.width - self.width) / 2; y: 10px;
                 bars: root.vis-bars; style: root.vis-style; active: root.vis-bars.length > 0; } }
@@ -7541,7 +7549,7 @@ export component MusicFullscreen inherits Rectangle {
         // centred, on bigger type — and keeps a deep top/bottom padding so it
         // still reads as its own block rather than filling the page edge to edge.
         if root.zlyr: VerticalLayout {
-            vertical-stretch: root.zen-viz ? 0 : 1;
+            vertical-stretch: root.viz-shown ? 0 : 1;
             alignment: center;
             spacing: root.zlyr-big ? 22px : 8px;
             padding-top: root.zlyr-big ? 56px : 10px;
@@ -7559,7 +7567,7 @@ export component MusicFullscreen inherits Rectangle {
         // Nothing in the middle at all (viz off, lyrics off): hold the space so
         // the transport stays at the foot of the page instead of climbing to
         // meet the title.
-        if !root.zen-viz && !root.zlyr: Rectangle { vertical-stretch: 1; }
+        if !root.viz-shown && !root.zlyr: Rectangle { vertical-stretch: 1; }
         Rectangle { height: 24px; }
         // Seekbar.
         HorizontalLayout { spacing: 14px;

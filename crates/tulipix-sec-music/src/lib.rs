@@ -2804,6 +2804,9 @@ pub fn play_music_file(w: &MainWindow, url: &str, title: &str, sub: &str) {
         .unwrap_or_default();
     w.set_music_np_art(art);
     w.set_music_radio_np_uuid("".into()); // a non-radio stream ends any LIVE state
+    // A stream is not a library track: nothing here has lyrics, and the last
+    // song's would otherwise keep scrolling behind it.
+    clear_music_lyrics(w);
     w.set_music_playing(true);
     w.set_music_pos(0.0); w.set_music_dur(0.0);
     w.set_music_pos_label("0:00".into()); w.set_music_dur_label("0:00".into());
@@ -3218,6 +3221,7 @@ pub fn play_radio(w: &MainWindow, st: &tulipix_music::radio::Station) {
     w.set_music_np_album("".into());      // no stale artist·album on the second line
     w.set_music_np_art(slint::Image::default());
     w.set_music_np_accent(slint::Color::from_rgb_u8(0x14, 0xb8, 0xa6));
+    clear_music_lyrics(w);
     w.set_music_playing(true);
     w.set_music_pos(0.0); w.set_music_dur(0.0);
     w.set_music_pos_label("0:00".into()); w.set_music_dur_label("LIVE".into());
@@ -4006,15 +4010,32 @@ pub fn rebuild_lyrics_manager(w: &MainWindow) {
     });
 }
 
+/// Take whatever lyrics are on screen down.
+///
+/// Called at the top of a load, and — the reason it is public — whenever
+/// playback moves to something that cannot have lyrics at all: a podcast
+/// episode, a radio station, a YouTube track. Every consumer (the Home layouts'
+/// lyric panel, the square widget, the zen middle) keys off the row list, so
+/// without this the last song's lyrics stayed up, scrolling, over a podcast.
+///
+/// `music-lyrics-live` is the flag those consumers gate on rather than the rows
+/// themselves: a lyrics fetch for the previous track can still be in the air
+/// when this runs, and an empty list is not proof that nothing is coming.
+pub fn clear_music_lyrics(w: &MainWindow) {
+    w.set_music_lyrics_live(false);
+    w.set_music_lyrics_offset_ms(0);
+    w.set_music_lyrics_active(-1);
+    w.set_music_lyrics_text("".into());
+    if let Ok(mut g) = music_lyrics_lines().lock() { g.clear(); }
+    w.set_music_lyrics_rows(slint::ModelRc::new(slint::VecModel::<MusicLyricLine>::default()));
+}
+
 /// Load synced/plain lyrics for the current track from the lyrics table (empty
 /// when none — LRCLIB fetch needs network). Parses synced LRC into rows for the
 /// scrolling highlight (np.p4.music.lyrics / np.p5.music.lyrics-synced).
 pub fn load_music_lyrics(w: &MainWindow) {
-    w.set_music_lyrics_offset_ms(0);
-    w.set_music_lyrics_active(-1);
-    if let Ok(mut g) = music_lyrics_lines().lock() { g.clear(); }
-    w.set_music_lyrics_rows(slint::ModelRc::new(slint::VecModel::<MusicLyricLine>::default()));
-    let Some(id) = current_music_id(w) else { w.set_music_lyrics_text("".into()); return; };
+    clear_music_lyrics(w);
+    let Some(id) = current_music_id(w) else { return; };
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
         let Ok(pool) = pool_for("music").await else { return; };
@@ -4063,6 +4084,9 @@ pub fn load_music_lyrics(w: &MainWindow) {
                     text: t.clone().into(),
                 }).collect();
                 w.set_music_lyrics_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
+                // These belong to the track playing now, and everything that
+                // draws them is waiting on this to say so.
+                w.set_music_lyrics_live(true);
                 if let Ok(mut g) = music_lyrics_lines().lock() { *g = lines; }
                 update_lyrics_active(&w);
             }
@@ -7036,6 +7060,9 @@ pub fn yt_play_inapp(w: &MainWindow, id: String, path: String, title: String, su
     w.set_music_np_sub(if sub.is_empty() { "YouTube".into() } else { sub.into() });
     w.set_music_np_art(yt_img(&thumb));
     w.set_music_player_mode("music".into());
+    // A YouTube track is played in music mode but is not in the library, so it
+    // has no lyrics row of its own — and must not inherit the last song's.
+    clear_music_lyrics(w);
     w.set_music_playing(true);
     w.set_music_pos(0.0); w.set_music_dur(0.0);
     w.set_music_pos_label("0:00".into()); w.set_music_dur_label("0:00".into());

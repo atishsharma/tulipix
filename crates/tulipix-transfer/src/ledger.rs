@@ -133,6 +133,13 @@ impl Row {
     /// same reason a received file's is: the ledger's reveal button needs
     /// somewhere to point, and a sent row without one was the only kind that
     /// could not be opened.
+    ///
+    /// Written on the first chunk, not the last — a 4 GB file has to be
+    /// visible while it is moving — so it starts at `sending` and is settled by
+    /// [`finish`]. Recording it at the end instead would mean the table said
+    /// nothing at all for minutes and then said "Completed"; recording it at
+    /// the start as "ok" is what made a download that had barely begun claim to
+    /// be finished.
     pub fn sent(name: &str, path: &str, bytes: i64, peer: &str) -> Self {
         Self {
             direction: "out",
@@ -140,7 +147,7 @@ impl Row {
             abs_path: Some(path.into()),
             bytes,
             peer: peer.into(),
-            status: "ok",
+            status: "sending",
         }
     }
 
@@ -161,8 +168,10 @@ impl Row {
     }
 }
 
-pub async fn record(pool: &SqlitePool, row: Row, at: i64) -> Result<()> {
-    sqlx::query(
+/// Writes the row and hands back its id, which is what a still-moving transfer
+/// is later settled by — see [`finish`].
+pub async fn record(pool: &SqlitePool, row: Row, at: i64) -> Result<i64> {
+    let done = sqlx::query(
         "INSERT INTO transfers (direction, name, abs_path, bytes, peer, status, at)
          VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
@@ -170,15 +179,47 @@ pub async fn record(pool: &SqlitePool, row: Row, at: i64) -> Result<()> {
     .bind(&row.name)
     .bind(&row.abs_path)
     .bind(row.bytes)
-    .bind(&row.peer)
+    .bind(row.peer.as_str())
     .bind(row.status)
     .bind(at)
     .execute(pool)
     .await?;
+    Ok(done.last_insert_rowid())
+}
+
+/// Settle a row that was written while its bytes were still moving: `ok` when
+/// the last chunk went out, `failed` when the phone walked away first.
+pub async fn finish(pool: &SqlitePool, id: i64, status: &str) -> Result<()> {
+    sqlx::query("UPDATE transfers SET status = ? WHERE id = ?")
+        .bind(status)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// Drop one row. The retry button's "override the failed one": the new attempt
+/// writes its own row, and two rows for one file — one of them a lie by then —
+/// is worse than none.
+pub async fn forget(pool: &SqlitePool, id: i64) -> Result<()> {
+    sqlx::query("DELETE FROM transfers WHERE id = ?").bind(id).execute(pool).await?;
+    Ok(())
+}
+
+/// Nothing can still be sending across a restart. A crash or a kill leaves the
+/// row mid-flight, and a permanent "sending" is a row that can never be retried
+/// because it never looks failed.
+pub async fn settle_stale(pool: &SqlitePool) -> Result<()> {
+    sqlx::query("UPDATE transfers SET status = 'failed' WHERE status = 'sending'")
+        .execute(pool)
+        .await?;
     Ok(())
 }
 
 pub struct Entry {
+    /// Row id, so a live transfer can be matched to its progress and a failed
+    /// one can name itself to the retry button.
+    pub id: i64,
     pub name: String,
     pub abs_path: Option<String>,
     pub direction: String,
@@ -204,20 +245,22 @@ pub async fn recent(
     // across pages instead of drifting between queries.
     let column = sort.column();
     let dir = if desc { "DESC" } else { "ASC" };
-    let rows = sqlx::query_as::<_, (String, Option<String>, String, i64, String, String, i64)>(
-        &format!(
-            "SELECT direction, abs_path, name, bytes, peer, status, at
-             FROM transfers ORDER BY {column} {dir}, id DESC LIMIT ? OFFSET ?"
-        ),
-    )
-    .bind(PAGE_SIZE as i64)
-    .bind((page * PAGE_SIZE) as i64)
-    .fetch_all(pool)
-    .await?;
+    let rows =
+        sqlx::query_as::<_, (i64, String, Option<String>, String, i64, String, String, i64)>(
+            &format!(
+                "SELECT id, direction, abs_path, name, bytes, peer, status, at
+                 FROM transfers ORDER BY {column} {dir}, id DESC LIMIT ? OFFSET ?"
+            ),
+        )
+        .bind(PAGE_SIZE as i64)
+        .bind((page * PAGE_SIZE) as i64)
+        .fetch_all(pool)
+        .await?;
 
     Ok(rows
         .into_iter()
-        .map(|(direction, abs_path, name, bytes, peer, status, at)| Entry {
+        .map(|(id, direction, abs_path, name, bytes, peer, status, at)| Entry {
+            id,
             direction,
             abs_path,
             name,
@@ -414,6 +457,40 @@ mod tests {
         // Out of range falls back rather than panicking.
         assert_eq!(Sort::from_index(99), Sort::Time);
         assert_eq!(Sort::from_index(-1), Sort::Time);
+    }
+
+    #[tokio::test]
+    async fn a_row_written_while_it_moves_is_settled_by_its_id() {
+        let pool = mem_pool().await;
+        let id = record(&pool, Row::sent("film.mkv", "/tmp/out", 900, "1.2.3.4"), 100)
+            .await
+            .unwrap();
+        // Written mid-flight, so it must not claim to be done yet.
+        assert_eq!(newest(&pool, 0).await[0].status, "sending");
+        assert_eq!(newest(&pool, 0).await[0].id, id);
+
+        finish(&pool, id, "ok").await.unwrap();
+        assert_eq!(newest(&pool, 0).await[0].status, "ok");
+
+        forget(&pool, id).await.unwrap();
+        assert!(newest(&pool, 0).await.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_transfer_left_mid_flight_by_a_crash_reads_as_failed() {
+        let pool = mem_pool().await;
+        record(&pool, Row::sent("half.mkv", "/tmp/out", 900, "1.2.3.4"), 100).await.unwrap();
+        record(&pool, Row::received("whole.mp3", "/in/w", 5, "1.2.3.4"), 100).await.unwrap();
+
+        settle_stale(&pool).await.unwrap();
+
+        let rows = newest(&pool, 0).await;
+        let status = |name: &str| {
+            rows.iter().find(|r| r.name == name).map(|r| r.status.clone()).unwrap()
+        };
+        assert_eq!(status("half.mkv"), "failed");
+        // Anything already settled is left exactly as it was.
+        assert_eq!(status("whole.mp3"), "ok");
     }
 
     #[tokio::test]
