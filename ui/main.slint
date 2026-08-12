@@ -263,6 +263,9 @@ component SettingsPage inherits Rectangle {
     callback setting-toggle(string, bool);
     callback setting-text(string, string);
     callback setting-action(string);
+    /// "Requirements" on the AI Features title row — the sheet is owned by the
+    /// window, which is the only thing that can cover the whole page.
+    callback ai-req-open();
 
     callback theme-changed(ThemeChoice);
     callback user-action(string);
@@ -474,6 +477,8 @@ component SettingsPage inherits Rectangle {
                     width: parent.width; height: parent.height;
                     title: "AI Features"; blurb: "Everything runs on this device. Models download once, on demand — nothing leaves your computer unless you turn on cloud offload.";
                     rows: root.ai-rows;
+                    head-btn: "Requirements";
+                    head-clicked => { root.ai-req-open(); }
                     toggle(k, v) => { root.setting-toggle(k, v); }
                     text-edited(k, s) => { root.setting-text(k, s); }
                     action(k) => { root.setting-action(k); }
@@ -777,6 +782,12 @@ export component MainWindow inherits Window {
     in-out property <[SettingItem]> data-rows: [];
     in-out property <[SettingItem]> playback-rows: [];
     in-out property <[SettingItem]> system-rows: [];
+    // "Requirements" sheet on the AI Features page — one row per on-device
+    // model: what it is for, and what the machine wants to run it. Seeded in
+    // Rust off the same manifest the download rows come from, so a model can
+    // never appear in one list and not the other.
+    in-out property <bool> ai-req-open: false;
+    in-out property <[SettingItem]> ai-req-rows: [];
     callback setting-toggle(string, bool);
     callback setting-text(string, string);
     callback setting-action(string);
@@ -1846,6 +1857,10 @@ callback cloud-go-home();
     // only the Mini Player button.
     in property <bool> csd: false;
     in property <bool> csd-mac: false;
+    // Set by Rust once the desktop widget's window has actually been built in
+    // the background. The caption row's Mini Player button waits on it, so the
+    // button never exists in a state where pressing it would stall.
+    in-out property <bool> mini-widget-ready: false;
     no-frame: root.csd && !root.csd-mac;
     // Frameless means no OS resize borders either. Slint 1.17 grows them back
     // for us: the winit backend hit-tests this margin and hands the drag to the
@@ -1924,6 +1939,10 @@ callback cloud-go-home();
     in-out property <string> music-dl-name-method: "Artist - Song";
     in-out property <int> music-dl-parallel: 2;    // concurrent tracks (1–4)
     in-out property <int> music-dl-threads: 2;     // fragments per track (1–8)
+    // Downloader Rescan — music-only library refresh, reported as a pill on
+    // the button that started it.
+    in-out property <bool> music-dl-rescan-busy: false;
+    in-out property <float> music-dl-rescan-frac: 0;
     in-out property <[DlHistoryEntry]> music-dl-history: [];
     in-out property <int> music-dl-history-page: 0;
     in-out property <int> music-dl-history-pages: 1;
@@ -2109,6 +2128,7 @@ callback cloud-go-home();
     callback music-dl-url-changed(string);
     callback music-dl-pick-folder();
         callback music-dl-resolve();
+        callback music-dl-cancel-resolve();
     callback music-dl-search();
     callback music-dl-download();
     callback music-dl-cancel();
@@ -2170,6 +2190,7 @@ callback cloud-go-home();
     in-out property <bool> music-gapless: true;
     in-out property <bool> music-home-connect: false;
     in-out property <bool> music-yt-home-connect: true;
+    in-out property <string> music-yt-fetcher: "auto";   // auto | piped | ytdlp
     in-out property <bool> music-mini-outline: true;
     in-out property <float> music-crossfade: 0;
     in-out property <float> music-preamp-db: 0;
@@ -2179,6 +2200,7 @@ callback cloud-go-home();
     callback music-toggle-gapless();
     callback music-toggle-home-connect();
     callback music-toggle-yt-home-connect();
+    callback music-set-yt-fetcher(string);
     callback music-toggle-mini-outline();
     callback music-set-crossfade(float);
     callback music-set-preamp(float);
@@ -2902,28 +2924,12 @@ callback cloud-go-home();
         width: root.width; height: root.height;
     }
 
-    // Ambient screensaver — fades in while idle, click to wake.
-    AmbientScreensaver {
-        active <=> root.ambient-active;
-        clock-text: root.ambient-clock;
-        caption: root.ambient-caption;
-        photo: root.ambient-photo;
-        photo-next: root.ambient-photo-next;
-        photo-fade: root.ambient-photo-fade;
-        music-art: root.music-np-art;
-        music-title: root.music-np-title;
-        music-artist: root.music-np-sub;
-        music-playing: root.music-playing;
-        pin-required: root.ambient-pin-required;
-        pin-len: root.ambient-pin-len;
-        pin-error: root.ambient-pin-error;
-        music-toggle => { root.music-toggle-pause(); }
-        music-next => { root.music-next(); }
-        pin-digit(d) => { root.ambient-pin-digit(d); }
-        pin-backspace => { root.ambient-pin-backspace(); }
-        pin-clear => { root.ambient-pin-clear(); }
-        unlock => { root.ambient-unlock(); }
-    }
+    // The ambient screensaver used to be declared here, ahead of the caption
+    // row, and a lock screen with the window's own title bar still drawn across
+    // the top of it is not a lock screen. It lives at the bottom of this
+    // component now, past the caption row and the shell — the same place Zen
+    // sits, and for the same reason: in Slint the later sibling is the one on
+    // top, whatever `z` says.
     changed ambient-active => { if !root.ambient-active { root.ambient-dismissed(); } }
 
     // Global keyboard shortcuts — Ctrl/Cmd+K opens the palette, ? / F1 opens
@@ -2996,6 +3002,7 @@ callback cloud-go-home();
         win-title: root.music-np-title == "" ? "Tulipix"
             : "Tulipix — " + root.music-np-title;
         has-track: root.music-np-title != "";
+        mini-ready: root.mini-widget-ready;
         playing: root.music-playing;
         accent: Accent.color;
         mini => { root.open-mini-widget(); }
@@ -3346,6 +3353,8 @@ callback cloud-go-home();
                 dl-name-method <=> root.music-dl-name-method;
                 dl-parallel <=> root.music-dl-parallel;
                 dl-threads <=> root.music-dl-threads;
+                dl-rescan-busy: root.music-dl-rescan-busy;
+                dl-rescan-frac: root.music-dl-rescan-frac;
                 dl-history <=> root.music-dl-history;
                 dl-history-page <=> root.music-dl-history-page;
                 dl-history-pages <=> root.music-dl-history-pages;
@@ -3374,6 +3383,7 @@ callback cloud-go-home();
                 dl-url-changed(u) => { root.music-dl-url-changed(u); }
                 dl-pick-folder() => { root.music-dl-pick-folder(); }
                 dl-resolve() => { root.music-dl-resolve(); }
+                dl-cancel-resolve() => { root.music-dl-cancel-resolve(); }
                 dl-search() => { root.music-dl-search(); }
                 dl-download() => { root.music-dl-download(); }
                 dl-cancel() => { root.music-dl-cancel(); }
@@ -3474,6 +3484,7 @@ callback cloud-go-home();
                 hp-status: root.music-hp-status; hp-match(q) => { root.music-hp-match(q); } hp-off => { root.music-hp-off(); }
                 home-connect <=> root.music-home-connect; toggle-home-connect => { root.music-toggle-home-connect(); }
                 yt-home-connect <=> root.music-yt-home-connect; toggle-yt-home-connect => { root.music-toggle-yt-home-connect(); }
+                yt-fetcher: root.music-yt-fetcher; set-yt-fetcher(v) => { root.music-set-yt-fetcher(v); }
                 mini-outline <=> root.music-mini-outline; toggle-mini-outline => { root.music-toggle-mini-outline(); }
                 set-device(d) => { root.music-set-device(d); } toggle-exclusive => { root.music-toggle-exclusive(); }
                 toggle-gapless => { root.music-toggle-gapless(); } set-crossfade(v) => { root.music-set-crossfade(v); }
@@ -3779,6 +3790,23 @@ callback cloud-go-home();
                 np-album: root.music-np-album; set-sleep(m) => { root.music-set-sleep(m); }
                 open-now-album => { root.music-open-now-album(); } open-now-artist => { root.music-open-now-artist(); }
                 mini-active: root.music-mini-open;
+                // The floating mini. Every pip in this page — the now-playing
+                // bar's and the radio/podcast/audiobook header ones — routes
+                // here; without the binding they fired a callback nobody was
+                // listening to and the button did nothing at all.
+                //
+                // `music-mini-bubble` is deliberately NOT cleared first: leaving
+                // it set is what lets the Rust handler take its restore path, so
+                // a mini that was minimised to the side bubble comes back rather
+                // than toggling off. Home's copy of this clears it because Home
+                // has its own consent gate to raise.
+                open-mini => {
+                    if (root.music-mini-x == 0px && root.music-mini-y == 0px) {
+                        root.music-mini-x = (root.width - root.music-mini-w) / 2;
+                        root.music-mini-y = (root.height - root.music-mini-h) / 2;
+                    }
+                    root.music-open-mini();
+                }
                 open-fullscreen => { root.music-open-fullscreen(); }
                 np-next => { root.music-next(); } np-prev => { root.music-prev(); } np-playpause => { root.music-toggle-pause(); } }
             if active-section == "cloud":    CloudPage  {
@@ -4738,6 +4766,7 @@ callback cloud-go-home();
             if active-section == "settings": SettingsPage {
                 width: parent.width; height: parent.height;
                 active-tab <=> root.active-settings-tab;
+                ai-req-open => { root.ai-req-open = true; }
                 theme-choice <=> root.theme-choice;
                 reduce-motion <=> root.reduce-motion;
                 reduce-motion-changed(v) => { root.reduce-motion-changed(v); }
@@ -5744,6 +5773,101 @@ callback cloud-go-home();
         }
     }
 
+    // AI model requirements — the sheet behind the Requirements button on the
+    // AI Features page. Read-only: every row is a model, its job, and what it
+    // asks of the machine. A "header" row is a section rule, exactly as on the
+    // settings lists themselves.
+    if root.ai-req-open: Rectangle {
+        z: 19;
+        background: #000000aa;
+        init => { reqfs.focus(); }
+        reqfs := FocusScope {
+            width: 0px; height: 0px;
+            key-pressed(e) => {
+                if (e.text == Key.Escape) { root.ai-req-open = false; return accept; }
+                return reject;
+            }
+        }
+        TouchArea { clicked => { root.ai-req-open = false; } }
+        Rectangle {
+            width: Math.min(720px, parent.width - 80px);
+            height: Math.min(560px, parent.height - 80px);
+            x: (parent.width - self.width) / 2;
+            y: (parent.height - self.height) / 2;
+            border-radius: Surface.card-radius;
+            background: Surface.body(Theme.panel-2);
+            border-width: 1px; border-color: Surface.hairline;
+            drop-shadow-blur: 34px; drop-shadow-color: #000000aa;
+            // Swallows clicks so they do not reach the scrim behind.
+            TouchArea {}
+            VerticalLayout {
+                padding: 22px; spacing: 14px;
+                HorizontalLayout {
+                    spacing: 12px; vertical-stretch: 0;
+                    VerticalLayout {
+                        alignment: center; spacing: 3px; horizontal-stretch: 1;
+                        Text { text: "On-device model requirements"; color: Theme.text;
+                            font-size: 17px; font-weight: 700; }
+                        Text { text: "What each model does, and what it wants from this computer. Everything runs locally — the numbers are while the model is loaded, not all at once.";
+                            color: Theme.text-dim; font-size: 11.5px; wrap: word-wrap; }
+                    }
+                    VerticalLayout {
+                        alignment: start; horizontal-stretch: 0;
+                        Rectangle {
+                            width: 30px; height: 30px;
+                            border-radius: Surface.rr(15px, self.width, self.height);
+                            background: reqx.has-hover ? Theme.glass : transparent;
+                            reqx := TouchArea { mouse-cursor: pointer;
+                                clicked => { root.ai-req-open = false; } }
+                            AppIcon { source: Icons.x; tint: Theme.text-dim;
+                                width: 14px; height: 14px;
+                                x: (parent.width - self.width) / 2;
+                                y: (parent.height - self.height) / 2; }
+                        }
+                    }
+                }
+                ScrollView {
+                    vertical-stretch: 1;
+                    VerticalLayout {
+                        spacing: 7px;
+                        for r in root.ai-req-rows: Rectangle {
+                            height: r.kind == "header" ? 28px : 62px;
+                            vertical-stretch: 0;
+                            border-radius: r.kind == "header" ? 0 : Theme.radius-md;
+                            background: r.kind == "header" ? transparent : Theme.panel;
+                            border-width: r.kind == "header" ? 0 : 1px;
+                            border-color: r.kind == "header" ? transparent : Theme.outline;
+                            if r.kind == "header": Text {
+                                x: 2px; text: r.label; color: Theme.text-dim;
+                                font-size: 10.5px; font-weight: 700; letter-spacing: 0.7px;
+                                vertical-alignment: bottom; height: 100%;
+                            }
+                            if r.kind != "header": HorizontalLayout {
+                                padding: 13px; spacing: 14px;
+                                VerticalLayout {
+                                    alignment: center; spacing: 3px; horizontal-stretch: 1;
+                                    Text { text: r.label; color: Theme.text;
+                                        font-size: 12.5px; font-weight: 600; overflow: elide; }
+                                    if r.desc != "": Text { text: r.desc; color: Theme.text-dim;
+                                        font-size: 11px; overflow: elide; }
+                                }
+                                VerticalLayout {
+                                    alignment: center; horizontal-stretch: 0;
+                                    Text { text: r.value;
+                                        color: r.state == "warn" ? #f59e0b
+                                             : (r.state == "ok" ? Theme.ok : Theme.text-dim);
+                                        font-size: 11.5px; font-weight: 600;
+                                        horizontal-alignment: right; }
+                                }
+                            }
+                        }
+                        Rectangle { vertical-stretch: 1; }
+                    }
+                }
+            }
+        }
+    }
+
     // Profile cover/avatar crop overlay — above content, below onboarding.
     if root.crop-dialog-open: CropDialog {
         x: 0; y: 0; width: root.width; height: root.height;
@@ -5831,6 +5955,33 @@ callback cloud-go-home();
                         clicked => { root.app-quit(); } }
                 } }
         }
+    }
+
+    // ── Ambient screensaver / lock ─────────────────────────────────────────
+    // Last child on purpose: it has to cover the caption row, the shell and
+    // every overlay above them, and in Slint the later sibling wins. Declared
+    // ahead of the caption row it was a lock screen with a title bar across it.
+    AmbientScreensaver {
+        active <=> root.ambient-active;
+        clock-text: root.ambient-clock;
+        caption: root.ambient-caption;
+        photo: root.ambient-photo;
+        photo-next: root.ambient-photo-next;
+        photo-fade: root.ambient-photo-fade;
+        music-art: root.music-np-art;
+        music-title: root.music-np-title;
+        music-artist: root.music-np-sub;
+        music-playing: root.music-playing;
+        pin-required: root.ambient-pin-required;
+        pin-len: root.ambient-pin-len;
+        pin-error: root.ambient-pin-error;
+        music-toggle => { root.music-toggle-pause(); }
+        music-next => { root.music-next(); }
+        music-prev => { root.music-prev(); }
+        pin-digit(d) => { root.ambient-pin-digit(d); }
+        pin-backspace => { root.ambient-pin-backspace(); }
+        pin-clear => { root.ambient-pin-clear(); }
+        unlock => { root.ambient-unlock(); }
     }
 }
 

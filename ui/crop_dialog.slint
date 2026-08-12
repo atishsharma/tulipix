@@ -11,8 +11,14 @@ export component CropDialog inherits Rectangle {
     in property <string> mode: "cover"; // "cover" | "avatar"
     in property <int> nat-w: 1;
     in property <int> nat-h: 1;
-    property <length> mask-w: mode == "avatar" ? 220px : 480px;
-    property <length> mask-h: mode == "avatar" ? 220px : 120px;
+    // The cover mask is 4:1, and the well it lands in on the You & Home page is
+    // 4:1 too (its height is derived from its width there). That is the whole
+    // fix for "the crop does not match the preview": the page used to show a
+    // fixed-height well of whatever proportion the window gave it, and
+    // `image-fit: cover` trimmed the difference off the top and bottom of every
+    // cover after the fact. Change one of these two and change the other.
+    property <length> mask-w: mode == "avatar" ? 220px : 560px;
+    property <length> mask-h: mode == "avatar" ? 220px : 140px;
 
     callback confirm(string, float, length, length, length, length); // mode, zoom, pan-x, pan-y, mask-w, mask-h
     callback cancel();

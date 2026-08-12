@@ -374,8 +374,15 @@ fn main() -> Result<()> {
             tracing::warn!(error = %e, "xdg app id not set — desktop icon will fall back");
         }
     }
-    let window = MainWindow::new()?;
+    // BEFORE the window, not after. Building the component tree lays out every
+    // Text in it, and a Text's preferred width comes from the font it will be
+    // drawn in. Registering Sora afterwards meant that first layout ran against
+    // whatever the system fallback is — wider, so rows of chips and buttons
+    // came out over-subscribed and elided ("Podca…", "Audiobo…"). The metrics
+    // are cached, so they stayed wrong until something dirtied the layout, which
+    // is why picking any design language in Settings appeared to "fix" it.
     register_bundled_fonts();
+    let window = MainWindow::new()?;
     tulipix_platform::install_menubar(&tulipix_platform::default_menubar());
     // Seasonal India branding (Aug 1–31 + Jan 15–31, every year): the tray
     // icon switches for the whole window, and in-app logos DEFAULT to the
@@ -437,6 +444,14 @@ fn main() -> Result<()> {
             let Some(w) = w.upgrade() else { return; };
             let autolock = tulipix_core::settings::Settings::load()
                 .map(|s| s.flag("autolock", false)).unwrap_or(false);
+            // Idle only counts while the app is actually on screen. Minimised
+            // or tucked away as the desktop widget, there is nothing to lock in
+            // front of and no keyboard to catch — locking there just meant a PIN
+            // prompt waiting the next time the window came back.
+            if idle && (!w.window().is_visible() || w.window().is_minimized()) {
+                tulipix_core::idle::mark_active();
+                return;
+            }
             if idle {
                 w.set_ambient_clock(clock_now().into());
                 if autolock {
@@ -452,6 +467,7 @@ fn main() -> Result<()> {
         });
     });
     window.on_ambient_dismissed(tulipix_core::idle::mark_active);
+    wire_lock_slideshow(&window);
 
     // Initial theme — start light (overridden below by persisted setting).
     apply_theme_choice(&window, ThemeChoice::Light);
@@ -511,6 +527,24 @@ fn main() -> Result<()> {
         set_scan_silent(true);
         for path in load_watched_folders() {
             if path.exists() { add_folder_path(window, path); }
+        }
+    }
+
+    /// Rescan the MUSIC library only — what the Downloader's Rescan button does.
+    ///
+    /// It used to call `refresh_library_silent`, which re-adds every watched
+    /// folder: a "did my download land?" check that rescanned photos, videos
+    /// and books along with it. The folder walk stays (one folder can hold both
+    /// tracks and cover art), but every non-music count is dropped before the
+    /// scan is scheduled, so nothing outside Music is touched.
+    fn refresh_music_library_silent(window: &MainWindow) {
+        set_scan_silent(true);
+        for path in load_watched_folders() {
+            if !path.exists() { continue; }
+            let mut counts = classify_folder(&path);
+            counts.retain(|section, _| *section == "music");
+            if counts.is_empty() { continue; }
+            add_folder_counted(window, path, counts);
         }
     }
 
@@ -1619,6 +1653,10 @@ fn main() -> Result<()> {
         let w = window.as_weak();
         move || { if let Some(win) = w.upgrade() { mdl::start_resolve(win.as_weak(), win.get_music_dl_url().to_string()); } }
     });
+    window.on_music_dl_cancel_resolve({
+        let w = window.as_weak();
+        move || { if let Some(win) = w.upgrade() { mdl::cancel_resolve(win.as_weak()); } }
+    });
     window.on_music_dl_search({
         let w = window.as_weak();
         move || { if let Some(win) = w.upgrade() {
@@ -1677,7 +1715,16 @@ fn main() -> Result<()> {
     });
     window.on_music_dl_refresh_library({
         let w = window.as_weak();
-        move || { if let Some(win) = w.upgrade() { refresh_library_silent(&win); } }
+        move || {
+            if let Some(win) = w.upgrade() {
+                // Light the pill immediately: the classify walk below runs
+                // before any counter exists, and a button that looks idle for a
+                // second after a click reads as a button that did nothing.
+                win.set_music_dl_rescan_busy(true);
+                win.set_music_dl_rescan_frac(0.0);
+                refresh_music_library_silent(&win);
+            }
+        }
     });
     window.on_music_dl_set_parallel({
         let w = window.as_weak();
@@ -3274,6 +3321,29 @@ fn wire_settings_panels(window: &MainWindow) {
                     seed_settings_panels(&w);
                 }
             }
+            // Lock-screen wallpapers — a folder, of which the first ten
+            // pictures become the slideshow. A folder rather than ten separate
+            // file pickers: one dialog, and swapping the set later is a matter
+            // of moving files rather than re-running the picker ten times.
+            "lock-wallpapers-browse" => {
+                if let Some(dir) = rfd::FileDialog::new()
+                    .set_title("Choose the folder holding your lock screen pictures")
+                    .pick_folder()
+                {
+                    let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
+                    s.advanced.insert("lock.wallpapers".into(), dir.display().to_string());
+                    if let Err(e) = s.save() { tracing::warn!(error = %e, "save lock wallpapers"); }
+                    seed_settings_panels(&w);
+                }
+            }
+            "lock-wallpapers-clear" => {
+                let mut s = tulipix_core::settings::Settings::load().unwrap_or_default();
+                s.advanced.insert("lock.wallpapers".into(), String::new());
+                if let Err(e) = s.save() { tracing::warn!(error = %e, "clear lock wallpapers"); }
+                w.set_ambient_photo(Default::default());
+                w.set_ambient_photo_next(Default::default());
+                seed_settings_panels(&w);
+            }
             // Reset the tools directory back to the app default (bundled + PATH),
             // behind a confirmation dialog.
             "tools-dir-reset" => {
@@ -4321,7 +4391,7 @@ fn urlencoding(s: &str) -> String {
 /// Register an OS media-control surface (MPRIS / SMTC / MediaPlayer) so the
 /// hardware/keyboard media keys drive playback (np.p4.music.player-keys).
 fn setup_media_controls(window: &MainWindow) {
-    use souvlaki::{MediaControlEvent, MediaControls, MediaPlayback, PlatformConfig};
+    use souvlaki::{MediaControlEvent, MediaControls, MediaPlayback, PlatformConfig, SeekDirection};
 
     // Windows SMTC requires the native window handle; souvlaki panics on
     // `hwnd: None`. The HWND only exists once the window is realized, so this is
@@ -4358,6 +4428,28 @@ fn setup_media_controls(window: &MainWindow) {
                 MediaControlEvent::Stop  => if  w.get_music_playing() { w.invoke_music_toggle_pause(); },
                 MediaControlEvent::Next     => w.invoke_music_next(),
                 MediaControlEvent::Previous => w.invoke_music_prev(),
+                // Scrubbing from the applet. `SetPosition` is absolute;
+                // `SeekBy` is a relative jump; a bare `Seek` carries no amount,
+                // so it gets the same 10 s the app's own arrow keys use.
+                MediaControlEvent::SetPosition(p) => w.invoke_music_seek(p.0.as_secs_f32()),
+                MediaControlEvent::SeekBy(dir, d) => {
+                    let step = d.as_secs_f32()
+                        * if dir == SeekDirection::Backward { -1.0 } else { 1.0 };
+                    w.invoke_music_seek((w.get_music_pos() + step).max(0.0));
+                }
+                MediaControlEvent::Seek(dir) => {
+                    let step = if dir == SeekDirection::Backward { -10.0 } else { 10.0 };
+                    w.invoke_music_seek((w.get_music_pos() + step).max(0.0));
+                }
+                // MPRIS requires the value to be echoed back, or the remote's
+                // slider springs to where it thinks we still are. The app's
+                // scale is 0..130 (mpv allows the boost), the wire's is 0..1.
+                MediaControlEvent::SetVolume(v) => {
+                    w.invoke_music_set_volume((v as f32 * 100.0).clamp(0.0, 130.0));
+                    tulipix_common::media_set_volume(v);
+                }
+                MediaControlEvent::Raise => crate::miniwin::restore(&w),
+                MediaControlEvent::Quit  => w.invoke_app_quit(),
                 _ => {}
             }
         });
@@ -4898,9 +4990,59 @@ async fn home_thumbs_parallel(paths: Vec<String>, kind: tulipix_core::thumbs::Th
     thumbs
 }
 
+/// Decoded pixels for one Home rail image. `slint::Image` is not `Send`, so it
+/// cannot cross a thread — but `SharedPixelBuffer` is, which is what makes this
+/// possible at all.
+type HomePixels = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
+
+/// Decode `paths` into pixel buffers off the UI thread, in order.
+///
+/// The rails used to call `Image::load_from_path` inside the `upgrade_in_event_loop`
+/// closure, which put every decode on the event loop: ten photos, ten videos,
+/// ten covers and four baked hardcovers is ~34 image decodes in front of the
+/// first frame of Home. That is the hitch when the app opens — the fan-out
+/// across sections was already parallel, the decoding at the end of it was not.
+///
+/// Missing or undecodable files are skipped, so the caller gets a dense list.
+async fn decode_home_pixels(paths: Vec<PathBuf>) -> Vec<HomePixels> {
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(4));
+    let handles: Vec<_> = paths
+        .into_iter()
+        .map(|p| {
+            let sem = sem.clone();
+            // Permit taken in the async half: `spawn_blocking` cannot await one,
+            // and without it thirty-odd decodes would each claim a blocking
+            // thread at once — the opposite of not overloading the machine.
+            tokio::spawn(async move {
+                let _permit = sem.acquire().await.ok();
+                tokio::task::spawn_blocking(move || {
+                    let img = image::open(&p).ok()?.into_rgba8();
+                    let (w, h) = img.dimensions();
+                    Some(HomePixels::clone_from_slice(img.as_raw(), w, h))
+                })
+                .await
+                .ok()
+                .flatten()
+            })
+        })
+        .collect();
+    let mut out = Vec::with_capacity(handles.len());
+    for h in handles {
+        if let Ok(Some(px)) = h.await {
+            out.push(px);
+        }
+    }
+    out
+}
+
+/// Wrap decoded pixels back into images. Cheap — no decode, just a handle.
+fn home_images(px: Vec<HomePixels>) -> Vec<slint::Image> {
+    px.into_iter().map(slint::Image::from_rgba8).collect()
+}
+
 /// Load the 10 most-recent photo thumbnails for the Home Photos slideshow.
-/// DB read + thumb render happen off the UI thread; the images are handed back
-/// via the event loop as a model the coverflow fan cycles through.
+/// DB read, thumb render and image decode all happen off the UI thread; the
+/// event loop only wraps the finished pixels.
 fn kick_home_photos(w: &MainWindow) {
     let weak = w.as_weak();
     tokio::runtime::Handle::current().spawn(async move {
@@ -4916,10 +5058,9 @@ fn kick_home_photos(w: &MainWindow) {
         // Concurrent (bounded) instead of one-by-one: a cold cache means real
         // decodes per item, and serially that held the whole row back.
         let thumbs = home_thumbs_parallel(paths, tulipix_core::thumbs::ThumbKind::Photo).await;
+        let px = decode_home_pixels(thumbs).await;
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let imgs: Vec<slint::Image> = thumbs.iter()
-                .filter_map(|t| slint::Image::load_from_path(t).ok()).collect();
-            w.set_home_recent_photos(slint::ModelRc::new(slint::VecModel::from(imgs)));
+            w.set_home_recent_photos(slint::ModelRc::new(slint::VecModel::from(home_images(px))));
         });
     });
 }
@@ -4938,10 +5079,9 @@ fn kick_home_videos(w: &MainWindow) {
         // Same bounded-concurrency thumb render as the Photos row — video
         // thumbs cost an ffmpeg frame-grab each on a cold cache.
         let thumbs = home_thumbs_parallel(paths, tulipix_core::thumbs::ThumbKind::Video).await;
+        let px = decode_home_pixels(thumbs).await;
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let imgs: Vec<slint::Image> = thumbs.iter()
-                .filter_map(|t| slint::Image::load_from_path(t).ok()).collect();
-            w.set_home_recent_videos(slint::ModelRc::new(slint::VecModel::from(imgs)));
+            w.set_home_recent_videos(slint::ModelRc::new(slint::VecModel::from(home_images(px))));
         });
     });
 }
@@ -4963,30 +5103,55 @@ fn kick_home_books(w: &MainWindow) {
         if let Ok(mut g) = recent_home_books().lock() {
             *g = rows.iter().map(|(id, _, _, _)| *id).collect();
         }
+        // Covers for the row, decoded off-thread like the other two rails.
+        let cover_px =
+            decode_home_pixels(rows.iter().map(|(_, p, _, _)| PathBuf::from(p)).collect()).await;
+        // The Welcome shelf's four: flat art plus its baked hardcover. Slot-wise
+        // (Option per image, not a filtered list) because a book whose bake has
+        // not landed yet still occupies its place on the shelf.
+        let shelf_src: Vec<(PathBuf, PathBuf)> = rows
+            .iter()
+            .take(4)
+            .map(|(_, p, _, _)| {
+                let flat = PathBuf::from(p);
+                let baked = tulipix_books::covers::baked_path(
+                    &flat, tulipix_books::covers::BOOK_SUFFIX);
+                (flat, baked)
+            })
+            .collect();
+        let shelf_px: Vec<(Option<HomePixels>, Option<HomePixels>)> =
+            tokio::task::spawn_blocking(move || {
+                let load = |p: &std::path::Path| -> Option<HomePixels> {
+                    let img = image::open(p).ok()?.into_rgba8();
+                    let (w, h) = img.dimensions();
+                    Some(HomePixels::clone_from_slice(img.as_raw(), w, h))
+                };
+                shelf_src.iter().map(|(flat, baked)| (load(baked), load(flat))).collect()
+            })
+            .await
+            .unwrap_or_default();
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let imgs: Vec<slint::Image> = rows.iter()
-                .filter_map(|(_, p, _, _)| slint::Image::load_from_path(std::path::Path::new(p)).ok())
-                .collect();
-            w.set_home_book_covers(slint::ModelRc::new(slint::VecModel::from(imgs)));
+            w.set_home_book_covers(slint::ModelRc::new(slint::VecModel::from(home_images(cover_px))));
             // The Welcome layout's Books shelf wants the BAKED `_book5`
             // hardcover, the same rendition the Books grid draws, plus the
             // per-title hue its outlines use. Load-only: the bake is produced at
             // scan time and by the prebake sweep, never here, so a book whose
             // bake has not landed yet simply falls back to its flat art.
-            let books: Vec<HomeBook> = rows.iter().take(4).map(|(id, p, title, author)| {
-                let flat = std::path::Path::new(p);
-                let baked = tulipix_books::covers::baked_path(
-                    flat, tulipix_books::covers::BOOK_SUFFIX);
-                let [r, g, b] = tulipix_books::cover_hue_rgb(title);
-                HomeBook {
-                    book: slint::Image::load_from_path(&baked).unwrap_or_default(),
-                    cover: slint::Image::load_from_path(flat).unwrap_or_default(),
-                    title: title.clone().into(),
-                    author: author.clone().into(),
-                    hue: slint::Color::from_rgb_u8(r, g, b),
-                    id: *id as i32,
-                }
-            }).collect();
+            let wrap = |px: Option<HomePixels>| {
+                px.map(slint::Image::from_rgba8).unwrap_or_default()
+            };
+            let books: Vec<HomeBook> = rows.iter().take(4).zip(shelf_px)
+                .map(|((id, _, title, author), (baked, flat))| {
+                    let [r, g, b] = tulipix_books::cover_hue_rgb(title);
+                    HomeBook {
+                        book: wrap(baked),
+                        cover: wrap(flat),
+                        title: title.clone().into(),
+                        author: author.clone().into(),
+                        hue: slint::Color::from_rgb_u8(r, g, b),
+                        id: *id as i32,
+                    }
+                }).collect();
             w.set_home_recent_books(slint::ModelRc::new(slint::VecModel::from(books)));
         });
     });
@@ -5854,18 +6019,15 @@ fn push_home_continue(weak: &slint::Weak<MainWindow>) {
         set_home_hero(&w, rows.first());
         // Rows are already newest-first, so "first of each kind" = newest.
         let picked: Vec<_> = if filter == "all" {
+            // Strictly ONE per kind, and nothing else. Free slots used to be
+            // backfilled with the next-newest rows, which meant "All" could show
+            // four books — the same four the Books chip shows — and stopped
+            // being the overview it is there to be.
             let mut seen_kinds = std::collections::HashSet::new();
             let mut out: Vec<_> = Vec::with_capacity(4);
             for r in rows.iter() {
                 if out.len() == 4 { break; }
                 if seen_kinds.insert(r.kind) { out.push(r.clone()); }
-            }
-            // Slots still free go to the next-newest rows, kind be damned.
-            if out.len() < 4 {
-                for r in rows.iter() {
-                    if out.len() == 4 { break; }
-                    if !out.iter().any(|p| p.id == r.id && p.kind == r.kind) { out.push(r.clone()); }
-                }
             }
             out
         } else {
@@ -6121,6 +6283,7 @@ fn seed_settings_panels(w: &MainWindow) {
         tog(&s, "ai.cloud-offload", false, "Allow cloud AI help", "Send selected questions to a cloud AI service. Off = everything stays on-device"),
     ]);
     w.set_ai_rows(ModelRc::new(VecModel::from(ai)));
+    w.set_ai_req_rows(ModelRc::new(VecModel::from(ai_requirement_rows())));
 
     // Servers & sources — np.p1.api.*. Plain-language copy: optional keys
     // first, provider toggles second, self-host overrides last.
@@ -6152,7 +6315,10 @@ fn seed_settings_panels(w: &MainWindow) {
     let sec = vec![
         hdr("LOCK"),
         tog(&s, "autolock", false, "Auto-lock when idle", "Lock the app and show the screensaver after a period of no activity"),
-        si("idle_lock_secs", "text", "Idle timeout (seconds)", "How long before auto-lock kicks in — blank uses the default", &idle_secs_val, false, ""),
+        si("idle_lock_secs", "text", "Idle timeout (seconds)", "How long before auto-lock kicks in — blank means 600 (ten minutes). Idle is only counted while the window is on screen; minimised does not lock", &idle_secs_val, false, ""),
+        txt(&s, "lock.wallpapers", "Lock screen wallpapers", "Folder of pictures for the lock screen slideshow — the first ten are used, one every twelve seconds. Blank = the gradient"),
+        act("lock-wallpapers-browse", "Choose wallpaper folder", "Pick the folder holding the pictures you want behind the lock screen", "Browse…"),
+        act("lock-wallpapers-clear", "Clear wallpapers", "Back to the plain gradient", "Clear"),
         hdr("UNLOCK"),
         tog(&s, "passkey", false, "Unlock with a passkey", "Use a security key or fingerprint instead of a password"),
         hdr("ENCRYPTION"),
@@ -6429,6 +6595,191 @@ fn voice_route(w: &MainWindow, target: &str, text: &str) {
     }
 }
 
+/// The lock screen's wallpapers: the first ten pictures in the folder named by
+/// `lock.wallpapers`, in name order. Empty when the setting is blank or the
+/// folder holds nothing we can decode — the overlay falls back to its gradient.
+fn lock_wallpapers() -> Vec<std::path::PathBuf> {
+    let Some(dir) = tulipix_core::settings::Settings::load().ok()
+        .map(|s| s.text("lock.wallpapers"))
+        .filter(|d| !d.trim().is_empty())
+    else { return Vec::new(); };
+    let Ok(rd) = std::fs::read_dir(dir.trim()) else { return Vec::new(); };
+    let mut out: Vec<std::path::PathBuf> = rd
+        .filter_map(|e| e.ok().map(|e| e.path()))
+        .filter(|p| {
+            p.extension().and_then(|e| e.to_str())
+                .map(|e| matches!(e.to_ascii_lowercase().as_str(),
+                                  "jpg" | "jpeg" | "png" | "webp" | "bmp" | "tiff" | "gif"))
+                .unwrap_or(false)
+        })
+        .collect();
+    out.sort();
+    out.truncate(10);
+    out
+}
+
+/// Drive the lock screen's wallpaper slideshow.
+///
+/// One repeating timer, alive for the session, that does nothing at all unless
+/// the overlay is up. Each turn it loads the next picture on a worker thread —
+/// decode plus a Gaussian, neither of which belongs on the event loop — and
+/// drops the result into whichever of the overlay's two image slots is
+/// currently hidden, then flips `ambient-photo-fade`. The .slint side animates
+/// that flip, so the pictures ping-pong between the slots and there is never a
+/// snap back through zero.
+///
+/// The blur is applied here because Slint has no blur at draw time; softening
+/// the picture is what keeps the clock and the now-playing card readable over
+/// a busy photograph.
+fn wire_lock_slideshow(window: &MainWindow) {
+    use std::cell::Cell;
+    thread_local! {
+        static TIMER: std::cell::RefCell<Option<slint::Timer>> =
+            const { std::cell::RefCell::new(None) };
+        /// Which wallpaper comes next, and whether a load is already in flight
+        /// (a slow disk must not stack up four decodes).
+        static NEXT: Cell<usize> = const { Cell::new(0) };
+        static BUSY: Cell<bool> = const { Cell::new(false) };
+        /// Seconds the overlay has been up. Ticking once a second rather than
+        /// once every twelve is what makes the FIRST picture land immediately
+        /// on lock instead of after a twelve-second stare at the gradient.
+        static TICK: Cell<u32> = const { Cell::new(0) };
+    }
+    let weak = window.as_weak();
+    let timer = slint::Timer::default();
+    timer.start(slint::TimerMode::Repeated, std::time::Duration::from_secs(1), move || {
+        let Some(w) = weak.upgrade() else { return };
+        if !w.get_ambient_active() {
+            TICK.with(|c| c.set(0));   // re-arm: the next lock opens on a picture
+            return;
+        }
+        let t = TICK.with(|c| { let t = c.get(); c.set(t + 1); t });
+        if t % 12 != 0 || BUSY.with(|c| c.get()) { return; }
+        let shots = lock_wallpapers();
+        if shots.is_empty() { return; }
+        let i = NEXT.with(|c| { let i = c.get() % shots.len(); c.set(i + 1); i });
+        let path = shots[i].clone();
+        BUSY.with(|c| c.set(true));
+        let wk = w.as_weak();
+        std::thread::spawn(move || {
+            // 1600px is plenty for a full-screen backdrop and keeps the blur
+            // (which is O(pixels)) off the far side of a second.
+            let px = image::open(&path).ok().map(|img| {
+                let img = img.thumbnail(1600, 1600).to_rgba8();
+                let blurred = image::imageops::blur(&img, 6.0);
+                let (bw, bh) = (blurred.width(), blurred.height());
+                slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(
+                    blurred.as_raw(), bw, bh)
+            });
+            let _ = wk.upgrade_in_event_loop(move |w| {
+                BUSY.with(|c| c.set(false));
+                let Some(px) = px else { return };
+                let img = slint::Image::from_rgba8(px);
+                // Fill the slot that is faded OUT, then cross to it.
+                if w.get_ambient_photo_fade() < 0.5 {
+                    w.set_ambient_photo_next(img);
+                    w.set_ambient_photo_fade(1.0);
+                } else {
+                    w.set_ambient_photo(img);
+                    w.set_ambient_photo_fade(0.0);
+                }
+            });
+        });
+    });
+    TIMER.with(|c| *c.borrow_mut() = Some(timer));
+}
+
+/// Installed RAM in MB, or 0 where we cannot tell. Used only to colour the
+/// requirement rows — a machine that cannot be measured gets a neutral row
+/// rather than a guess.
+fn total_ram_mb() -> u64 {
+    #[cfg(target_os = "linux")]
+    {
+        std::fs::read_to_string("/proc/meminfo").ok().and_then(|s| {
+            s.lines()
+                .find(|l| l.starts_with("MemTotal:"))
+                .and_then(|l| l.split_whitespace().nth(1))
+                .and_then(|kb| kb.parse::<u64>().ok())
+                .map(|kb| kb / 1024)
+        }).unwrap_or(0)
+    }
+    #[cfg(not(target_os = "linux"))]
+    { 0 }
+}
+
+/// The "Requirements" sheet on AI Features: one row per on-device model saying
+/// what it wants from the machine.
+///
+/// Built off the SAME manifest as the download rows, so the two lists can never
+/// disagree about which models exist. The RAM figure is a recommendation, not a
+/// measurement: weights have to be resident and the runtime needs working
+/// buffers on top, which in practice lands near three times the file — floored
+/// at 512 MB so a tiny model does not read as free.
+fn ai_requirement_rows() -> Vec<SettingItem> {
+    let ram = total_ram_mb();
+    let mut rows = vec![hdr("THIS COMPUTER")];
+    rows.push(stat(
+        "Installed memory",
+        &if ram > 0 { format!("{:.1} GB", ram as f64 / 1024.0) } else { "Unknown".to_string() },
+        if ram == 0 { "muted" } else if ram >= 8192 { "ok" } else { "warn" },
+    ));
+    rows.push(stat(
+        "Graphics acceleration",
+        if cfg!(feature = "ai-onnx") { "ONNX runtime compiled in — GPU used when available" }
+        else { "CPU only in this build" },
+        if cfg!(feature = "ai-onnx") { "ok" } else { "muted" },
+    ));
+
+    rows.push(hdr("ON-DEVICE MODELS"));
+    for m in &ai_manifest().models {
+        let mb = m.size_bytes / 1_000_000;
+        let need = (mb * 3).max(512);
+        let (nice, purpose) = model_display(&m.name, &m.cap);
+        // What the row asks for, in the order it matters: memory, then disk,
+        // then whether a GPU is required or merely welcome.
+        let gpu = if m.min_vram_mb > 0 {
+            format!(" · {} MB VRAM", m.min_vram_mb)
+        } else {
+            String::new()
+        };
+        let state = if ram == 0 { "muted" }
+            else if ram >= need + 2048 { "ok" }
+            else if ram >= need { "warn" }
+            else { "error" };
+        rows.push(si(
+            "", "status", nice,
+            if purpose.is_empty() { "Downloads on first use" } else { purpose },
+            &format!("~{} MB RAM · {} MB disk{}", need, mb, gpu),
+            false, state,
+        ));
+    }
+
+    rows.push(hdr("VOICE RECOGNITION (WHISPER)"));
+    // Not in the manifest — these ship or download through the whisper-cli
+    // path, so their sizes are stated rather than read.
+    for (name, mb, note) in [
+        ("Tiny", 75u64, "Bundled. Fine for search phrases"),
+        ("Base", 142, "The all-rounder"),
+        ("Small", 466, "Catches names and accents"),
+        ("Turbo", 1500, "Dictation-grade; slowest to load"),
+    ] {
+        let need = (mb * 2).max(512);
+        let state = if ram == 0 { "muted" }
+            else if ram >= need + 2048 { "ok" }
+            else if ram >= need { "warn" }
+            else { "error" };
+        rows.push(si("", "status", &format!("Whisper {name}"), note,
+                     &format!("~{need} MB RAM · {mb} MB disk"), false, state));
+    }
+
+    rows.push(hdr("NOTES"));
+    rows.push(stat("Only what you use is loaded",
+                   "Models load on demand and unload after", "muted"));
+    rows.push(stat("Transcription is CPU-heavy",
+                   "Expect roughly real-time on four cores", "muted"));
+    rows
+}
+
 /// Human name + purpose line for a manifest model, keyed off its capability
 /// gate so the Settings row says what the model DOES, not its filename.
 fn model_display<'a>(name: &'a str, cap: &str) -> (&'a str, &'static str) {
@@ -6623,7 +6974,31 @@ static SCAN_SILENT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBoo
 fn scan_silent() -> bool { SCAN_SILENT.load(std::sync::atomic::Ordering::Relaxed) }
 fn set_scan_silent(v: bool) { SCAN_SILENT.store(v, std::sync::atomic::Ordering::Relaxed); }
 
+/// Feed the Downloader's Rescan pill from the music section's own counters.
+///
+/// Deliberately separate from the scan popup below: the Rescan button starts a
+/// SILENT scan (no popup — it is a music-only refresh, not a library event), and
+/// `flush_progress` returns early on those. Without this the button had no way
+/// to say it was working.
+fn push_music_rescan(weak: &slint::Weak<MainWindow>) {
+    use std::sync::atomic::Ordering::Relaxed;
+    let (total, done, active) = match scan_state().lock() {
+        Ok(g) => match g.get("music") {
+            Some(c) => (c.total.load(Relaxed),
+                        c.added.load(Relaxed) + c.failed.load(Relaxed),
+                        c.active.load(Relaxed)),
+            None => (0, 0, false),
+        },
+        Err(_) => (0, 0, false),
+    };
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        w.set_music_dl_rescan_busy(active);
+        w.set_music_dl_rescan_frac(if total > 0 { done as f32 / total as f32 } else { 0.0 });
+    });
+}
+
 fn flush_progress(weak: &slint::Weak<MainWindow>) {
+    push_music_rescan(weak);
     if scan_silent() { return; }
     let snapshot: Vec<(&'static str, i32, i32, i32, bool, String)> = {
         let g = scan_state().lock().unwrap();
@@ -6995,6 +7370,10 @@ fn kick_section_scan(
                 w.set_library_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
             });
             tulipix_sec_books::books_refresh(weak.clone(), 0);
+            // The scan only wrote rows. Cover art (extract + two bakes per
+            // book) drains here instead, in batches, so the sweep itself
+            // finishes at parse speed and the grid fills in behind it.
+            tulipix_sec_books::books_build_art(weak.clone());
             tulipix_sec_books::books_backfill_metadata(weak.clone());
             // Content indexing for library-wide search — slow on big
             // libraries but resumable, so a partial run picks up next time.
@@ -7410,7 +7789,7 @@ fn wire_youtube(window: &MainWindow) {
         tokio::runtime::Handle::current().spawn(async move {
             let client = tulipix_core::net::http().clone();
             let dir = yt_thumb_dir();
-            let videos = ytdlp_search(&q, 20).await;
+            let videos = yt_fetch_search(&q, 20).await;
             let rows = yt_vid_data_all(&client, &dir, &videos).await;
             yt_remember(&rows);
             if let Ok(pool) = pool_for("youtube").await {
@@ -9524,6 +9903,15 @@ fn wire_music_p5a(window: &MainWindow) {
         w.set_music_yt_home_connect(on);
         save_music_pref("music.yt_home_connect", if on { "1" } else { "0" });
     });
+    // YouTube listing backend — auto (Piped, falling back to yt-dlp) | piped | ytdlp.
+    let w = window.as_weak();
+    window.on_music_set_yt_fetcher(move |v| {
+        let Some(w) = w.upgrade() else { return; };
+        let v = v.to_string();
+        let v = if v == "piped" || v == "ytdlp" { v } else { "auto".to_string() };
+        w.set_music_yt_fetcher(v.clone().into());
+        save_music_pref("music.yt.fetcher", &v);
+    });
     // Bold gradient outline on the now-playing mini players (default on) — persisted.
     let w = window.as_weak();
     window.on_music_toggle_mini_outline(move || {
@@ -10757,6 +11145,9 @@ fn wire_music_playlist(window: &MainWindow) {
         window.set_music_home_connect(s.advanced.get("music.home_connect").map(|v| v == "1").unwrap_or(false));
         // YouTube Home gradient outline defaults ON when unset.
         window.set_music_yt_home_connect(s.advanced.get("music.yt_home_connect").map(|v| v == "1").unwrap_or(true));
+        window.set_music_yt_fetcher(s.advanced.get("music.yt.fetcher")
+            .filter(|v| v.as_str() == "piped" || v.as_str() == "ytdlp")
+            .cloned().unwrap_or_else(|| "auto".into()).into());
         // Mini-player bold outline defaults ON when unset.
         window.set_music_mini_outline(s.advanced.get("music.mini_outline").map(|v| v == "1").unwrap_or(true));
         window.set_music_crossfade(s.advanced.get("music.crossfade").and_then(|v| v.parse().ok()).unwrap_or(0.0));

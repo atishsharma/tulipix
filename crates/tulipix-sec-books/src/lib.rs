@@ -927,8 +927,11 @@ pub fn wire(window: &MainWindow) {
     // (`pick-folder` in main.slint), so books folders land in the Watched
     // folders / Auto-scan panels and rescan on startup like music.
 
-    // Initial paint + background metadata backfill (publication dates etc.).
+    // Initial paint, then the two background drains: cover art for anything a
+    // previous session left unbuilt, and online metadata (publication dates
+    // etc.). Both are single-flight and no-op on an already-complete library.
     books_refresh(window.as_weak(), 0);
+    books_build_art(window.as_weak());
     books_backfill_metadata(window.as_weak());
 }
 
@@ -1563,6 +1566,43 @@ fn books_fetch_summary(weak: slint::Weak<MainWindow>, id: i64) {
         });
         // Refresh the grid so the tile's publication-date pill updates too.
         books_refresh(weak, 0);
+    });
+}
+
+/// Single-flight guard for the cover-art builder — same reasoning as
+/// [`BACKFILL_RUNNING`], and it matters more here: two loops would claim the
+/// same rows and bake every cover twice.
+static ART_RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Background: build cover art for every book that has none yet, in small
+/// batches, refreshing the grid between them so covers appear progressively.
+///
+/// This is the other half of making "add books" fast. Ingest now writes the row
+/// and moves on; the three image renditions per book happen here instead, at a
+/// pace that leaves the machine usable. Safe to call from anywhere — it is
+/// single-flight and returns immediately when the queue is empty.
+pub fn books_build_art(weak: slint::Weak<MainWindow>) {
+    use std::sync::atomic::Ordering::SeqCst;
+    if ART_RUNNING.swap(true, SeqCst) {
+        return; // already draining the queue
+    }
+    tokio::runtime::Handle::current().spawn(async move {
+        if let Ok(pool) = pool_for("books").await {
+            loop {
+                let done = tulipix_books::scan::build_art(&pool, tulipix_books::scan::ART_BATCH)
+                    .await
+                    .unwrap_or(0);
+                if done == 0 {
+                    break;
+                }
+                books_refresh(weak.clone(), 0);
+                // Breathe between batches. Baking is CPU- and memory-hungry and
+                // this runs while the user is using the app, so the queue drains
+                // steadily rather than as fast as the box allows.
+                tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+            }
+        }
+        ART_RUNNING.store(false, SeqCst);
     });
 }
 

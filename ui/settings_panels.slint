@@ -224,6 +224,9 @@ export component SettingsList inherits Rectangle {
     in property <string> title;
     in property <string> blurb;
     in property <[SettingItem]> rows;
+    /// Optional action at the right edge of the title row. Empty = no button.
+    in property <string> head-btn;
+    callback head-clicked();
     callback toggle(string /*key*/, bool);
     callback text-edited(string /*key*/, string /*value*/);
     callback action(string /*key*/);
@@ -231,7 +234,15 @@ export component SettingsList inherits Rectangle {
 
     VerticalLayout {
         spacing: 12px;
-        if root.title != "": Text { text: root.title; color: Theme.text; font-size: 20px; font-weight: 700; }
+        if root.title != "": HorizontalLayout {
+            spacing: 12px; vertical-stretch: 0;
+            Text { text: root.title; color: Theme.text; font-size: 20px; font-weight: 700;
+                horizontal-stretch: 1; vertical-alignment: center; }
+            if root.head-btn != "": VerticalLayout {
+                alignment: center; horizontal-stretch: 0;
+                Btn { label: root.head-btn; clicked => { root.head-clicked(); } }
+            }
+        }
         if root.blurb != "": Text { text: root.blurb; color: Theme.text-dim; font-size: 12px; wrap: word-wrap; }
         ScrollView {
             vertical-stretch: 1;

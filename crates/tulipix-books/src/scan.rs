@@ -1,6 +1,12 @@
-//! Library scanner — walks the configured book folders, upserts new files
-//! (metadata + cover extracted off the DB path), and flags rows whose file
-//! vanished as `missing`.
+//! Library scanner — walks the configured book folders, upserts new files, and
+//! flags rows whose file vanished as `missing`.
+//!
+//! **The sweep only writes rows.** Cover art (extract or draw, then bake two
+//! mockup renditions) and library-wide content indexing are both deferred to
+//! background passes — [`build_art`] and [`index_contents`] — that the app
+//! drains in batches afterwards. Adding a folder finishes at the speed of
+//! parsing metadata, not at the speed of three image pipelines per book, and a
+//! rescan of a large library is cheap for the same reason.
 
 use crate::{covers, format_of, metadata, schema};
 use anyhow::Result;
@@ -266,6 +272,78 @@ where
     Ok(report)
 }
 
+/// How many books one [`build_art`] call may claim. Small on purpose: the
+/// caller refreshes the grid between batches, so this is also how often covers
+/// appear while a big import is draining.
+pub const ART_BATCH: i64 = 6;
+
+/// How many art pipelines run at once inside a batch.
+///
+/// Two, not four. Each one holds a decoded cover plus two mockup bitmaps in
+/// memory while it warps, and this runs *alongside* whatever else the app is
+/// doing — the point of moving it off the ingest path was to stop the machine
+/// being saturated by adding books, so the builder does not get to saturate it
+/// either.
+const ART_JOBS: usize = 2;
+
+/// Build the cover art for the next batch of books that have none yet.
+///
+/// Returns how many rows were processed; `0` means the queue is empty and the
+/// caller can stop looping. Every claimed book is stamped done whatever the
+/// outcome — a file with no extractable art gets a drawn title card, and one
+/// that fails outright must not come back on the next pass forever.
+///
+/// Three images come out of this per book: the flat cover (extracted from the
+/// file, or rendered from the title), and two bakes — the grid hardcover and
+/// the flat hero. The UI reads them straight off disk and does not memoise
+/// misses, so tiles pick each one up as soon as it lands.
+pub async fn build_art(pool: &SqlitePool, limit: i64) -> Result<usize> {
+    let batch = crate::library::needs_art(pool, limit).await?;
+    if batch.is_empty() {
+        return Ok(0);
+    }
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(ART_JOBS));
+    let mut set = tokio::task::JoinSet::new();
+    for (id, path, format, title, author) in batch {
+        let sem = sem.clone();
+        set.spawn(async move {
+            let _permit = sem.acquire_owned().await.ok();
+            let cover = tokio::task::spawn_blocking(move || art_for(&path, &format, &title, &author))
+                .await
+                .unwrap_or_default();
+            (id, cover)
+        });
+    }
+    let mut done = 0usize;
+    while let Some(res) = set.join_next().await {
+        if let Ok((id, cover)) = res {
+            crate::library::set_art(pool, id, &cover).await?;
+            done += 1;
+        }
+    }
+    Ok(done)
+}
+
+/// The blocking half of [`build_art`] for one book: extract or draw the flat
+/// cover, then bake both renditions from it. Returns the flat cover path, or
+/// an empty string when the book had no art of its own (the placeholder was
+/// still drawn and baked — it just is not something to point `cover_path` at,
+/// since the UI derives the placeholder path from the book path).
+fn art_for(path: &str, format: &str, title: &str, author: &str) -> String {
+    let p = Path::new(path);
+    let cover = covers::extract(p, format).map(|c| c.display().to_string()).unwrap_or_default();
+    let flat = if cover.is_empty() {
+        covers::placeholder_flat(p, title, author, crate::cover_hue_rgb(title)).ok()
+    } else {
+        Some(PathBuf::from(&cover))
+    };
+    if let Some(cp) = flat {
+        let _ = covers::bake_book(&cp);
+        let _ = covers::bake_hero(&cp);
+    }
+    cover
+}
+
 /// Index book *contents* for library-wide search (FTS). Walks books that have
 /// no `book_fts` row yet, extracts their text (blocking parse, off-thread), and
 /// inserts it. Best-effort + resumable — run in a background task after a scan.
@@ -311,34 +389,32 @@ mod tests {
 }
 
 /// Upsert a single file (also used by drag-drop / file-picker adds).
-/// The blocking file work (metadata parse, cover extract, 3D bake) runs on a
-/// blocking worker so concurrent `add_one`s actually parallelise.
+///
+/// Metadata only. Cover extraction and the three image renditions that follow
+/// it are **not** done here — they are left to [`build_art`], which a caller
+/// drains in the background. Ingest used to run at the speed of that pipeline:
+/// per book it decoded the embedded art (or rendered a title card with a text
+/// rasteriser), then warped it onto two separate mockups with their lighting
+/// multiplied back over it. That is minutes of work for a folder of 500 books,
+/// all of it in front of the row appearing in the grid, and none of it needed
+/// until a tile is actually on screen.
+///
+/// The parse still runs on a blocking worker so concurrent `add_one`s
+/// parallelise.
 pub async fn add_one(pool: &SqlitePool, path: &Path) -> Result<i64> {
     let Some(format) = format_of(path) else { anyhow::bail!("unsupported file") };
     let path_str = path.display().to_string();
     let p = path.to_path_buf();
-    let (meta, size, cover) = tokio::task::spawn_blocking(move || {
+    let (meta, size) = tokio::task::spawn_blocking(move || {
         let meta = metadata::extract(&p, format);
         let size = std::fs::metadata(&p).map(|m| m.len() as i64).unwrap_or(0);
-        let cover = covers::extract(&p, format)
-            .map(|c| c.display().to_string())
-            .unwrap_or_default();
-        // Pre-bake the 3D renditions here (blocking worker) so the library
-        // grid never has to bake during a page flip. Coverless books get a
-        // generated title-card placeholder baked through the same pipeline.
-        let flat = if cover.is_empty() {
-            covers::placeholder_flat(&p, &meta.title, &meta.author, crate::cover_hue_rgb(&meta.title)).ok()
-        } else {
-            Some(PathBuf::from(&cover))
-        };
-        if let Some(cp) = flat {
-            let _ = covers::bake_book(&cp);
-            let _ = covers::bake_hero(&cp);
-        }
-        (meta, size, cover)
+        (meta, size)
     })
     .await
     .map_err(|e| anyhow::anyhow!("join: {e}"))?;
+    // Empty until the art builder fills it in; `art_state` defaults to 0, which
+    // is what puts this row in that queue.
+    let cover = String::new();
     let (_, mtime) = file_stamp(path);
     let id: i64 = sqlx::query_scalar(
         "INSERT INTO books (path, format, title, author, genre, series, published,
@@ -367,31 +443,24 @@ pub async fn add_one(pool: &SqlitePool, path: &Path) -> Result<i64> {
 }
 
 /// Re-index a book whose file changed on disk (size/mtime moved): drop the
-/// stale cached cover art, re-extract metadata + cover, and update the row.
+/// stale cached cover art, re-extract metadata, and update the row.
 /// User-owned fields (rating, favorite, collections, progress) are untouched.
+///
+/// Art is re-queued rather than rebuilt here, for the same reason [`add_one`]
+/// defers it: a rescan that finds fifty touched files should not sit through a
+/// hundred bakes before the grid updates. Clearing `cover_path` and resetting
+/// `art_state` is what puts the book back in [`build_art`]'s queue.
 async fn refresh_one(pool: &SqlitePool, path: &Path) -> Result<()> {
     let Some(format) = format_of(path) else { anyhow::bail!("unsupported file") };
     let path_str = path.display().to_string();
     let p = path.to_path_buf();
-    let (meta, size, mtime, cover) = tokio::task::spawn_blocking(move || {
+    let (meta, size, mtime) = tokio::task::spawn_blocking(move || {
         // The cover cache is keyed by book path, which hasn't changed — so the
         // stale art has to be evicted or `extract` would just serve it back.
         covers::purge_cached(&p);
         let meta = metadata::extract(&p, format);
         let (size, mtime) = file_stamp(&p);
-        let cover = covers::extract(&p, format)
-            .map(|c| c.display().to_string())
-            .unwrap_or_default();
-        let flat = if cover.is_empty() {
-            covers::placeholder_flat(&p, &meta.title, &meta.author, crate::cover_hue_rgb(&meta.title)).ok()
-        } else {
-            Some(PathBuf::from(&cover))
-        };
-        if let Some(cp) = flat {
-            let _ = covers::bake_book(&cp);
-            let _ = covers::bake_hero(&cp);
-        }
-        (meta, size, mtime, cover)
+        (meta, size, mtime)
     })
     .await
     .map_err(|e| anyhow::anyhow!("join: {e}"))?;
@@ -399,8 +468,8 @@ async fn refresh_one(pool: &SqlitePool, path: &Path) -> Result<()> {
     // by hand, and a re-index shouldn't undo that. It's set once, on insert.
     sqlx::query(
         "UPDATE books SET format = ?, title = ?, author = ?, genre = ?, series = ?,
-                          published = ?, size_bytes = ?, file_mtime = ?, cover_path = ?,
-                          missing = 0
+                          published = ?, size_bytes = ?, file_mtime = ?,
+                          cover_path = '', art_state = 0, missing = 0
          WHERE path = ?",
     )
     .bind(format)
@@ -411,7 +480,6 @@ async fn refresh_one(pool: &SqlitePool, path: &Path) -> Result<()> {
     .bind(&meta.published)
     .bind(size)
     .bind(mtime)
-    .bind(&cover)
     .bind(&path_str)
     .execute(pool)
     .await?;

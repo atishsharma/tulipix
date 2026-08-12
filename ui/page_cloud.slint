@@ -810,7 +810,9 @@ export component CloudPage inherits Rectangle {
                 spacing: 0px;
                 // Left rail
                 Rectangle {
-                    width: 248px; horizontal-stretch: 0; vertical-stretch: 1; background: surf2;
+                    // 310, not 248: a quarter wider, so a full remote name fits
+                    // on its row instead of eliding two thirds of the way in.
+                    width: 310px; horizontal-stretch: 0; vertical-stretch: 1; background: surf2;
                     Rectangle { x: parent.width - 1px; y: 0; width: 1px; height: 100%; background: hair; }
                     VerticalLayout {
                         padding: 14px; spacing: 8px;

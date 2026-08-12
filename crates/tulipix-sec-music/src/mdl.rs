@@ -17,6 +17,26 @@ fn cancel_flag() -> &'static Arc<AtomicBool> {
     CANCEL.get_or_init(|| Arc::new(AtomicBool::new(false)))
 }
 
+/// The in-flight resolve/search task, so Cancel can drop it. A resolve is one
+/// opaque `await` deep inside a provider client — there is no flag to poll, so
+/// the only honest stop is aborting the task at its next suspension point.
+static RESOLVE_TASK: OnceLock<Mutex<Option<tokio::task::AbortHandle>>> = OnceLock::new();
+fn resolve_task() -> &'static Mutex<Option<tokio::task::AbortHandle>> {
+    RESOLVE_TASK.get_or_init(|| Mutex::new(None))
+}
+
+/// Stop the running resolve/search. Aborting a task that already finished is a
+/// no-op, so this is safe to call on a stale handle.
+pub fn cancel_resolve(weak: Weak<MainWindow>) {
+    if let Some(h) = resolve_task().lock().unwrap().take() {
+        h.abort();
+    }
+    // Supersede any art fetch the aborted resolve may already have kicked off.
+    art_gen().fetch_add(1, Ordering::Relaxed);
+    cli_push(&weak, "  cancelled");
+    set_status(&weak, "idle");
+}
+
 /// Rust-side mirror of the on-screen worker rows.
 #[derive(Clone)]
 struct RowData {
@@ -588,7 +608,7 @@ fn stream_art(weak: Weak<MainWindow>, playlist: Playlist, kind: String, generati
 pub fn start_search(weak: Weak<MainWindow>, query: String, provider: String) {
     set_status(&weak, "resolving");
     let _ = weak.upgrade_in_event_loop(|w| w.set_music_dl_yt_warn(false));
-    tokio::runtime::Handle::current().spawn(async move {
+    let task = tokio::runtime::Handle::current().spawn(async move {
         let result = if provider == "Spotify" {
             cli_push(&weak, &format!("▸ searching Spotify: {query}"));
             let client = tulipix_core::net::http().clone();
@@ -625,6 +645,7 @@ pub fn start_search(weak: Weak<MainWindow>, query: String, provider: String) {
             Err(e) => set_status(&weak, &format!("error: {e}")),
         }
     });
+    *resolve_task().lock().unwrap() = Some(task.abort_handle());
 }
 
 /// Resolve a URL and show the tracklist preview (all rows selected).
@@ -632,7 +653,7 @@ pub fn start_resolve(weak: Weak<MainWindow>, url: String) {
     set_status(&weak, "resolving");
     let _ = weak.upgrade_in_event_loop(|w| w.set_music_dl_yt_warn(false));
     cli_push(&weak, &format!("▸ resolving {url}"));
-    tokio::runtime::Handle::current().spawn(async move {
+    let task = tokio::runtime::Handle::current().spawn(async move {
         let client = tulipix_core::net::http().clone();
         match tulipix_mdl::resolve_url(&client, &url).await {
             Ok(pl) => {
@@ -663,6 +684,7 @@ pub fn start_resolve(weak: Weak<MainWindow>, url: String) {
             Err(e) => set_status(&weak, &format!("error: {e}")),
         }
     });
+    *resolve_task().lock().unwrap() = Some(task.abort_handle());
 }
 
 /// Clear the resolved playlist + queue rows (title-row "Clear" button).

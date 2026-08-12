@@ -534,10 +534,50 @@ pub async fn repoint_covers(pool: &SqlitePool, pairs: &[(String, String)]) -> Re
 /// (path, title, author).
 pub async fn coverless_books(pool: &SqlitePool) -> Result<Vec<(String, String, String)>> {
     Ok(sqlx::query_as(
+        // `art_state = 1` matters: a book waiting on the background art builder
+        // also has an empty `cover_path`, and it may well have real embedded
+        // art. Drawing it a title-card placeholder here would beat the builder
+        // to the punch and the generated card would win.
         "SELECT path, title, author FROM books
-         WHERE cover_path = '' AND missing = 0 AND trashed = 0",
+         WHERE cover_path = '' AND art_state = 1 AND missing = 0 AND trashed = 0",
     )
     .fetch_all(pool)
+    .await?)
+}
+
+/// The next `limit` books whose cover art has not been built yet, oldest first.
+///
+/// Returns `(id, path, format, title, author)` — everything the blocking art
+/// pipeline needs, so it never has to come back to the DB mid-batch.
+pub async fn needs_art(pool: &SqlitePool, limit: i64) -> Result<Vec<(i64, String, String, String, String)>> {
+    Ok(sqlx::query_as(
+        "SELECT id, path, format, title, author FROM books
+         WHERE art_state = 0 AND missing = 0 AND trashed = 0
+         ORDER BY added_at ASC LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?)
+}
+
+/// Record the outcome of building one book's art. `cover_path` is empty when
+/// the file had no extractable art — the row is still stamped done, because a
+/// placeholder was drawn and baked for it and re-trying would find nothing.
+pub async fn set_art(pool: &SqlitePool, id: i64, cover_path: &str) -> Result<()> {
+    sqlx::query("UPDATE books SET cover_path = ?, art_state = 1 WHERE id = ?")
+        .bind(cover_path)
+        .bind(id)
+        .execute(pool)
+        .await?;
+    Ok(())
+}
+
+/// How many books are still waiting on their art (progress display / tests).
+pub async fn pending_art(pool: &SqlitePool) -> Result<i64> {
+    Ok(sqlx::query_scalar(
+        "SELECT COUNT(*) FROM books WHERE art_state = 0 AND missing = 0 AND trashed = 0",
+    )
+    .fetch_one(pool)
     .await?)
 }
 

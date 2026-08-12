@@ -243,13 +243,13 @@ fn ipc_loadfile(src: &Path, start_s: Option<f64>) -> bool {
     LOAD_ACK.store(ACK_NONE, std::sync::atomic::Ordering::SeqCst);
 
     // No shared connection yet — mpv is alive but its reader has not attached.
-    // Fall back to a one-shot client that reads its own reply.
+    // Fall back to a one-shot client, which reads its own replies rather than
+    // hanging up on mpv mid-answer.
     let Some(sock) = music_sock().lock().ok().and_then(|g| g.clone()) else { return false; };
-    let Ok(mut s) = mpv_ipc::connect(&sock) else { return false; };
-    if s.write_all(payload.as_bytes()).is_err() {
-        return false;
+    match crate::ipc_oneshot(&sock, &payload) {
+        Some(lines) => load_ack(&lines),
+        None => false,
     }
-    load_ack(s)
 }
 
 /// Request id used for both halves of a load. The reader thread watches for it.
@@ -301,32 +301,25 @@ fn wait_load_ack() -> bool {
     false
 }
 
-/// Read mpv's reply to `request_id: 2` (the `loadfile`) off the same
-/// connection. mpv broadcasts its own events to every client, so the reply is
-/// not necessarily the first line back — hence the scan for the request id.
-///
-/// The timeout is what keeps this safe on the UI thread: a wedged mpv costs a
-/// quarter second and a respawn, not a frozen window.
+/// Find mpv's reply to `request_id: 2` (the `loadfile`) among the lines the
+/// one-shot client drained. Not necessarily the first — the `disable_event`
+/// ack precedes it, and the `set_property start` ack sits in between — hence
+/// the scan for the request id.
 #[cfg(not(windows))]
-fn load_ack(s: mpv_ipc::IpcConn) -> bool {
-    if s.set_read_timeout(Some(std::time::Duration::from_millis(250))).is_err() {
-        return true; // cannot bound the read — do not risk blocking the UI
-    }
-    let rd = BufReader::new(s);
-    for line in rd.lines().map_while(Result::ok).take(64) {
-        let Ok(v) = serde_json::from_str::<serde_json::Value>(&line) else { continue; };
-        if v["request_id"] == LOAD_REQ_ID {
-            return v["error"] == "success";
-        }
-    }
-    false
+fn load_ack(lines: &[String]) -> bool {
+    lines.iter()
+        .filter_map(|l| serde_json::from_str::<serde_json::Value>(l).ok())
+        .find(|v| v["request_id"] == LOAD_REQ_ID)
+        .map(|v| v["error"] == "success")
+        .unwrap_or(false)
 }
 
-/// Windows named pipes carry no per-handle read timeout, and a blocking read on
-/// the UI thread is worse than the bug this check exists to catch. The writes
-/// having succeeded is the acknowledgement here.
+/// Windows named pipes carry no per-handle read timeout, so `ipc_oneshot` hands
+/// back no lines there — a blocking read on the UI thread is worse than the bug
+/// this check exists to catch. The writes having succeeded is the
+/// acknowledgement.
 #[cfg(windows)]
-fn load_ack(_s: mpv_ipc::IpcConn) -> bool {
+fn load_ack(_lines: &[String]) -> bool {
     true
 }
 

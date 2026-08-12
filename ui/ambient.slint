@@ -35,9 +35,16 @@ export component AmbientScreensaver inherits Rectangle {
     in-out property <bool> active: false;
 
     // Slideshow — current photo (crossfades on change). Empty → gradient only.
+    //
+    // Rust never animates the fade itself: it drops the incoming picture into
+    // whichever of the two slots is currently hidden and flips this target, and
+    // the animation below carries it. That way there is no snap back to zero
+    // between frames, which a "fade in then reset" scheme cannot avoid.
     in property <image> photo;
-    in property <image> photo-next;   // preloaded next frame for crossfade
-    in property <float> photo-fade;    // 0 = show `photo`, 1 = show `photo-next`
+    in property <image> photo-next;   // the other slot in the ping-pong
+    // in-out rather than in only because Slint refuses to animate an input.
+    in-out property <float> photo-fade;  // 0 = show `photo`, 1 = show `photo-next`
+    animate photo-fade { duration: 900ms; easing: ease-in-out; }
 
     // Now-playing mini-card. Hidden when `music-title` is empty.
     in property <image> music-art;
@@ -46,6 +53,7 @@ export component AmbientScreensaver inherits Rectangle {
     in property <bool> music-playing: false;
     callback music-toggle();
     callback music-next();
+    callback music-prev();
 
     // PIN. `pin-required` gates dismissal; `pin-len` drives the dot row;
     // `pin-error` flashes the dots red. Rust owns verification.
@@ -65,8 +73,9 @@ export component AmbientScreensaver inherits Rectangle {
     width: 100%; height: 100%;
     z: 1000;
 
-    // Reset wake state whenever the overlay (re)activates.
-    changed active => { if root.active { root.woke = false; } }
+    // Reset wake state whenever the overlay (re)activates, and take the keyboard
+    // so Space reaches the transport without a click first.
+    changed active => { if root.active { root.woke = false; keys.focus(); } }
 
     // ---- Slideshow layer (Ken Burns) --------------------------------------
     if active: Rectangle {
@@ -85,13 +94,19 @@ export component AmbientScreensaver inherits Rectangle {
             height: parent.height * 0.7;
         }
         // Current + next photo, cross-faded. Ken Burns scale via the animated t.
+        //
+        // Both sit at 80% over the dark ground: a wallpaper at full strength
+        // fights the clock and the now-playing card for the eye, and the point
+        // of the picture here is atmosphere. The softening that goes with it is
+        // a real Gaussian applied when the file is decoded — Slint has no
+        // blur filter, so it cannot be done at draw time.
         Image {
             source: root.photo; image-fit: cover;
             width: parent.width * (1.0 + t * 0.08);
             height: parent.height * (1.0 + t * 0.08);
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            opacity: 1.0 - root.photo-fade;
+            opacity: 0.8 * (1.0 - root.photo-fade);
         }
         Image {
             source: root.photo-next; image-fit: cover;
@@ -99,7 +114,7 @@ export component AmbientScreensaver inherits Rectangle {
             height: parent.height * (1.0 + t * 0.08);
             x: (parent.width - self.width) / 2;
             y: (parent.height - self.height) / 2;
-            opacity: root.photo-fade;
+            opacity: 0.8 * root.photo-fade;
         }
         // Legibility scrim under the clock / pad.
         Rectangle {
@@ -109,6 +124,35 @@ export component AmbientScreensaver inherits Rectangle {
         init => { self.t = 1; }
     }
 
+    // Wake / dismiss. Declared HERE, before the clock and the now-playing card,
+    // because in Slint the later sibling is the one on top: as the last child
+    // this covered the whole overlay and swallowed every press meant for the
+    // transport, so the card's buttons could be seen but not used.
+    //
+    // Click anywhere not on a control: with a PIN, reveal the pad and let Rust
+    // dismiss on the right code; without one, unlock immediately.
+    if active: TouchArea {
+        clicked => {
+            if root.pin-required {
+                root.woke = true;
+            } else {
+                root.unlock();
+                root.active = false;
+            }
+        }
+    }
+
+    // Space is play/pause, as it is everywhere else. Focused whenever the
+    // overlay activates so the key works without a click first — which is the
+    // point: the transport is usable WITHOUT waking the app.
+    keys := FocusScope {
+        width: 0px; height: 0px;
+        key-pressed(e) => {
+            if (!root.active) { return reject; }
+            if (e.text == " ") { root.music-toggle(); return accept; }
+            return reject;
+        }
+    }
     // ---- Clock + caption (bottom, hidden once the pad shows) ---------------
     if active && !(root.woke && root.pin-required): VerticalLayout {
         alignment: end; padding: 60px;
@@ -129,7 +173,9 @@ export component AmbientScreensaver inherits Rectangle {
     // ---- Now-playing mini-card (top-left) ---------------------------------
     if active && root.music-title != "": Rectangle {
         x: 40px; y: 40px;
-        width: 320px; height: 76px;
+        // 360, not 320: Previous joined Play and Next, and three 32px keys plus
+        // the artwork left the title about four characters.
+        width: 360px; height: 76px;
         border-radius: Surface.rr(14px, self.width, self.height);
         background: #0b0b16cc;
         border-width: 1px; border-color: #ffffff22;
@@ -147,9 +193,16 @@ export component AmbientScreensaver inherits Rectangle {
                 Text { text: root.music-artist; color: #f8faffa0; font-size: 11px;
                     overflow: elide; horizontal-alignment: left; }
             }
-            // Play/pause + next.
+            // Previous · play/pause · next. All three work here without waking
+            // the app — the wake TouchArea is below them in the tree now.
             HorizontalLayout {
                 alignment: end; spacing: 4px;
+                TouchArea {
+                    width: 32px; height: 56px; mouse-cursor: pointer;
+                    clicked => { root.music-prev(); }
+                    AppIcon { source: Icons.skip-back; tint: #f8faff; width: 20px; height: 20px;
+                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; }
+                }
                 TouchArea {
                     width: 32px; height: 56px; mouse-cursor: pointer;
                     clicked => { root.music-toggle(); }
@@ -213,16 +266,4 @@ export component AmbientScreensaver inherits Rectangle {
         }
     }
 
-    // Wake / dismiss. Click anywhere not on the pad/card: if a PIN is required
-    // reveal the pad (Rust dismisses on correct code); else unlock immediately.
-    TouchArea {
-        clicked => {
-            if root.pin-required {
-                root.woke = true;
-            } else {
-                root.unlock();
-                root.active = false;
-            }
-        }
-    }
 }

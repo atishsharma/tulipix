@@ -125,27 +125,99 @@ component DlPill inherits Rectangle {
         horizontal-alignment: center; vertical-alignment: center; }
 }
 
-// Downloader — an accent-outlined card that pops off the page background.
-component DlCard inherits Skin {
-    in property <color> accent: #8b5cf6;
-    border-radius: Surface.rr(16px, self.width, self.height);
-    background: MusicTheme.surf1;
-    // Pop off the page bg via accent border + tint. Shadow only in dark themes
-    // (a dark drop-shadow reads as grime in light mode); light leans on a
-    // stronger accent border + wash instead.
-    border-width: Theme.dark ? 1.5px : 2px;
-    border-color: root.accent.with-alpha(Theme.dark ? 0.45 : 0.62);
-    drop-shadow-blur: Theme.dark ? 24px : 0px;
-    drop-shadow-color: Theme.dark ? #00000045 : transparent;
-    Rectangle { // faint accent wash so the surface reads tinted, not flat
-        border-radius: parent.border-radius;
-        background: root.accent; opacity: Theme.dark ? 0.07 : 0.10;
+// Downloader — one tab on the entries table (queue · downloaded · searches).
+// The two history lists used to be modal windows; they are tabs on the same
+// table now, so nothing about the downloader covers the downloader.
+component DlTab inherits Rectangle {
+    in property <string> label;
+    in property <image> icon;
+    in property <int> count: -1;        // < 0 hides the badge
+    in property <bool> active: false;
+    in property <color> tint: #ec4899;
+    callback clicked();
+    height: 38px; horizontal-stretch: 0;
+    border-radius: Surface.rr(10px, self.width, self.height);
+    background: root.active ? root.tint.with-alpha(0.16)
+        : (dth.has-hover ? MusicTheme.hov : transparent);
+    border-width: 1.5px;
+    border-color: root.active ? root.tint : transparent;
+    animate background, border-color { duration: MusicMotion.fast; }
+    HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 7px;
+        VerticalLayout { alignment: center; AppIcon { source: root.icon;
+            tint: root.active ? root.tint : MusicTheme.fg-dim2; width: 14px; height: 14px; } }
+        VerticalLayout { alignment: center; Text { text: root.label;
+            color: root.active ? MusicTheme.fg : MusicTheme.fg-dim2;
+            font-size: 13px; font-weight: 700; } }
+        if root.count >= 0: VerticalLayout { alignment: center; Rectangle {
+            height: 18px; min-width: 24px; horizontal-stretch: 0;
+            border-radius: Surface.rr(9px, self.width, self.height);
+            background: root.active ? root.tint.with-alpha(0.22) : MusicTheme.surf1;
+            HorizontalLayout { alignment: center; padding-left: 7px; padding-right: 7px;
+                Text { text: root.count; color: root.active ? root.tint : MusicTheme.fg-mute;
+                    font-size: 10px; font-weight: 800; vertical-alignment: center; } } } }
     }
-    Rectangle { // crisp inner highlight edge
-        border-radius: parent.border-radius;
-        border-width: 1px; border-color: #ffffff10;
-        x: 1px; y: 1px; width: parent.width - 2px; height: parent.height - 2px;
+    dth := TouchArea { mouse-cursor: pointer; clicked => { root.clicked(); } }
+}
+
+// Downloader — the label line at the top of a control-rail section.
+component DlRailTitle inherits HorizontalLayout {
+    in property <string> label;
+    in property <color> tint: #8b5cf6;
+    spacing: 7px;
+    VerticalLayout { alignment: center; Rectangle { width: 6px; height: 6px;
+        border-radius: 3px; background: root.tint; horizontal-stretch: 0; } }
+    VerticalLayout { alignment: center; Text { text: root.label;
+        color: MusicTheme.fg-dim2; font-size: 11px; font-weight: 800;
+        letter-spacing: 0.6px; } }
+    Rectangle { horizontal-stretch: 1; }
+}
+
+// Downloader — one section of the control rail.
+//
+// Deliberately style-free: no fill, no outline, no shadow. The rail is ONE
+// panel, and six outlined-and-shadowed cards nested inside it read as six
+// panels stacked in a seventh. A hairline between sections is all the
+// separation they need.
+component DlRailSec inherits Rectangle {
+    in property <bool> last: false;
+    background: transparent;
+    vertical-stretch: 0;
+    // Drawn under whatever the caller adds — it is one pixel at the very
+    // bottom edge, where no section puts content.
+    if !root.last: Rectangle {
+        y: parent.height - 1px; height: 1px; width: parent.width;
+        background: MusicTheme.line;
     }
+}
+
+// Downloader — a row's stage as ONE outlined pill: the progress fills it and
+// the word (or the live percentage while it runs) sits inside. Same language as
+// the players' seek pill, so a filled pill means the same thing app-wide. It
+// replaces a bare fill behind the whole row plus a separate word-chip plus a
+// separate percent column.
+component DlStage inherits Rectangle {
+    in property <string> stage;
+    in property <float> percent;       // 0..100
+    in property <color> tint;
+    in property <bool> running: false; // show the number instead of the word
+    // Done and queued are STATES, not progress, so their pill is filled edge to
+    // edge rather than partway. At full strength the tint swallowed its own
+    // label, so every fill is 70% and the word on top of one goes white.
+    property <bool> solid: root.stage == "done" || root.stage == "queued";
+    height: 24px; min-width: 118px; horizontal-stretch: 0;
+    border-radius: Surface.rr(12px, self.width, self.height);
+    background: root.tint.with-alpha(0.14);
+    border-width: 1px; border-color: root.tint.with-alpha(0.55);
+    clip: true;
+    Rectangle { x: 0; y: 0; height: 100%;
+        width: parent.width * (root.solid ? 1.0 : Math.clamp(root.percent / 100, 0, 1));
+        background: @linear-gradient(90deg,
+            root.tint.darker(0.12).with-alpha(0.7), root.tint.with-alpha(0.7));
+        animate width { duration: MusicMotion.slow; easing: ease-out; } }
+    Text { text: root.running ? Math.round(root.percent) + "%" : root.stage;
+        color: (root.running || root.solid) ? #ffffff : root.tint;
+        font-size: 10px; font-weight: 800;
+        horizontal-alignment: center; vertical-alignment: center; }
 }
 
 component AlbumCard inherits Skin {
@@ -340,7 +412,10 @@ component Scrubber inherits Rectangle {
     in property <bool> wiggle: false;   // seekbars draw a squiggly waveform on drag
     in property <color> track-color: MusicTheme.line;  // base track (embedded card uses accent wash)
     callback changed(float);            // new absolute value
-    height: 6px; border-radius: Surface.rr(3px, self.width, self.height); background: track-color;
+    // Radius off the height rather than a fixed 3px: the pills below run this
+    // thicker, and a 3px corner on an 8px bar reads as a rounded rectangle
+    // instead of a track. Identical to the old value at the default height.
+    height: 6px; border-radius: Surface.rr(self.height / 2, self.width, self.height); background: track-color;
     property <float> frac: root.maximum > 0 ? Math.clamp(root.value / root.maximum, 0.0, 1.0) : 0.0;
     // Static sine path (midline y=9, amp 5, wavelength 32) sampled densely so the
     // stroke reads as a smooth Material-You squiggle; scrolled left for flow.
@@ -348,7 +423,7 @@ component Scrubber inherits Rectangle {
     // Flat gradient fill — the normal track (volume/crossfade always; seekbars
     // whenever not actively dragging).
     if !root.wiggle || !ta.pressed: Rectangle {
-        x: 0; y: 0; height: parent.height; border-radius: Surface.rr(3px, self.width, self.height);
+        x: 0; y: 0; height: parent.height; border-radius: Surface.rr(self.height / 2, self.width, self.height);
         width: parent.width * root.frac;
         background: @linear-gradient(90deg, root.fill-color 0%, root.fill-color.brighter(0.3) 100%);
         // Glow trail so seeks read as fluid motion, not a snap.
@@ -389,6 +464,116 @@ component Scrubber inherits Rectangle {
         mouse-cursor: pointer;
         clicked => { root.changed(root.maximum * Math.clamp(self.mouse-x / self.width, 0.0, 1.0)); }
         moved => { if (self.pressed) { root.changed(root.maximum * Math.clamp(self.mouse-x / self.width, 0.0, 1.0)); } }
+    }
+}
+
+// The app's one seek control: elapsed · bar · total inside a single outlined
+// pill.
+//
+// This is the treatment the Home card's embedded player was drawn with, lifted
+// out so every player in the app wears it — the Music section's bottom bar, the
+// zen player, the floating mini, the podcast and audiobook minis, and (redrawn
+// by hand, since that is a separate component tree) the desktop widget. A
+// seekbar used to look different in each of them.
+//
+// The bar fills with `ink` rather than the accent because the pill is already an
+// accent wash, and accent-on-accent vanished on dark covers (user report
+// 2026-07-12).
+export component SeekPill inherits Rectangle {
+    in property <float> pos;
+    in property <float> dur;
+    in property <string> pos-label: "0:00";
+    in property <string> dur-label: "0:00";
+    in property <color> accent: #ec4899;
+    in property <color> ink: MusicTheme.fg;
+    in property <float> uiscale: 1.0;
+    /// Tighter geometry for the small players (the floating mini, the podcast
+    /// and book minis) — same shape, less of it.
+    in property <bool> compact: false;
+    in property <bool> wiggle: true;
+    callback seek(float);
+    height: (root.compact ? 22px : 26px) * root.uiscale;
+    vertical-stretch: 0;
+    border-radius: self.height / 2;
+    background: root.accent.with-alpha(0.20);
+    border-width: 1px;
+    border-color: root.accent.with-alpha(0.45);
+    HorizontalLayout {
+        padding-left: (root.compact ? 9px : 12px) * root.uiscale;
+        padding-right: (root.compact ? 9px : 12px) * root.uiscale;
+        spacing: (root.compact ? 6px : 8px) * root.uiscale;
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Text { text: root.pos-label; color: root.ink;
+                font-size: (root.compact ? 9px : 10px) * root.uiscale; font-weight: 700; }
+        }
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 1;
+            Scrubber {
+                value: root.pos; maximum: root.dur > 0 ? root.dur : 1.0; wiggle: root.wiggle;
+                height: (root.compact ? 6px : 8px) * root.uiscale;
+                fill-color: root.ink; track-color: root.ink.with-alpha(0.22);
+                changed(v) => { root.seek(v); }
+            }
+        }
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Text { text: root.dur-label; color: root.ink;
+                font-size: (root.compact ? 9px : 10px) * root.uiscale; font-weight: 700; }
+        }
+    }
+}
+
+// Volume in the same pill, so the two controls read as a set: mute on the left,
+// the level inside, the number on the right. The mute button lives IN here —
+// every player used to carry a separate round one beside the bar.
+export component VolPill inherits Rectangle {
+    in property <float> volume;
+    in property <bool> muted;
+    in property <color> accent: #ec4899;
+    in property <color> ink: MusicTheme.fg;
+    in property <float> uiscale: 1.0;
+    in property <bool> compact: false;
+    callback set-volume(float);
+    callback toggle-mute();
+    height: (root.compact ? 22px : 26px) * root.uiscale;
+    vertical-stretch: 0;
+    border-radius: self.height / 2;
+    background: root.accent.with-alpha(0.20);
+    border-width: 1px;
+    border-color: root.accent.with-alpha(0.45);
+    HorizontalLayout {
+        padding-left: (root.compact ? 8px : 10px) * root.uiscale;
+        padding-right: (root.compact ? 9px : 12px) * root.uiscale;
+        spacing: (root.compact ? 6px : 8px) * root.uiscale;
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Rectangle {
+                width: (root.compact ? 14px : 16px) * root.uiscale; height: self.width;
+                AppIcon {
+                    source: root.muted ? Icons.volume-x : Icons.volume;
+                    tint: root.muted ? root.accent : root.ink;
+                    width: 100%; height: 100%;
+                }
+                TouchArea { mouse-cursor: pointer; clicked => { root.toggle-mute(); } }
+            }
+        }
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 1;
+            Scrubber {
+                // Muted reads as zero rather than as the level it will come
+                // back to — the icon is the thing that says why.
+                value: root.muted ? 0 : root.volume; maximum: 130.0;
+                height: (root.compact ? 6px : 8px) * root.uiscale;
+                fill-color: root.ink; track-color: root.ink.with-alpha(0.22);
+                changed(v) => { root.set-volume(v); }
+            }
+        }
+        VerticalLayout {
+            alignment: center; horizontal-stretch: 0;
+            Text { text: Math.round(root.volume); color: root.ink;
+                font-size: (root.compact ? 9px : 10px) * root.uiscale; font-weight: 700; }
+        }
     }
 }
 
@@ -1855,6 +2040,7 @@ export component MusicPage inherits Rectangle {
     in property <int> item-count: 0;
     in property <bool> home-connect: false;       // gradient-outline the Home blocks
     in property <bool> yt-home-connect: true;     // gradient-outline the YouTube Home rails (default on)
+    in property <string> yt-fetcher: "auto";      // listing backend: auto | piped | ytdlp
     in property <bool> mini-outline: true;        // bold gradient ring on the now-playing mini players
     // How many tracks the library holds. Was a `[PhotoTile]` model — one decoded
     // thumbnail per track — that this page only ever asked for `.length`.
@@ -1887,6 +2073,8 @@ export component MusicPage inherits Rectangle {
     in-out property <string> dl-name-method: "Artist - Song";
     in-out property <int> dl-parallel: 2;              // concurrent tracks (1–4)
     in-out property <int> dl-threads: 2;               // fragments per track (1–8)
+    in property <bool> dl-rescan-busy: false;          // music-only library rescan running
+    in property <float> dl-rescan-frac: 0;
     in-out property <[DlHistoryEntry]> dl-history: [];
     in-out property <int> dl-history-page: 0;
     in-out property <int> dl-history-pages: 1;
@@ -1908,6 +2096,7 @@ export component MusicPage inherits Rectangle {
     callback dl-url-changed(string);
     callback dl-pick-folder();
     callback dl-resolve();
+    callback dl-cancel-resolve();
     callback dl-search();                          // Search mode: yt-dlp ytsearch on YT Music
     in-out property <string> dl-mode: "url";       // "url" | "search" — source-card input mode
     in-out property <string> dl-search-provider: "YT Music"; // "YT Music" | "Spotify" — search backend
@@ -2164,6 +2353,7 @@ export component MusicPage inherits Rectangle {
     callback toggle-gapless();
     callback toggle-home-connect();
     callback toggle-yt-home-connect();
+    callback set-yt-fetcher(string);
     callback toggle-mini-outline();
     callback set-crossfade(float);
     callback set-preamp(float);
@@ -3307,26 +3497,6 @@ export component MusicPage inherits Rectangle {
                 if root.radio-rec-file != "": Text {
                     text: "Saving to " + root.radio-rec-file;
                     color: MusicTheme.fg-mute; font-size: 11px; overflow: elide; }
-                // Heard on this station — the log, so "what was that song" can
-                // be answered one or two tracks late.
-                if root.radio-track-log.length > 1: VerticalLayout { spacing: 6px;
-                    Text { text: "Heard on this station"; color: MusicTheme.fg2;
-                        font-size: 12px; font-weight: 700; letter-spacing: 0.5px; }
-                    // Index 0 is the one already shown above as ON AIR, and a
-                    // `for` cannot be conditioned, so the row collapses to zero
-                    // height instead of being skipped.
-                    for t[i] in root.radio-track-log: Rectangle {
-                        height: (i > 0 && i < 7) ? 30px : 0px;
-                        visible: i > 0 && i < 7;
-                        border-radius: Surface.rr(8px, self.width, self.height);
-                        background: lg.has-hover ? MusicTheme.hov : transparent;
-                        lg := TouchArea { mouse-cursor: pointer; clicked => { root.radio-track-search(t); } }
-                        HorizontalLayout { padding-left: 10px; padding-right: 10px; spacing: 8px;
-                            Text { text: t; color: MusicTheme.fg-dim; font-size: 12px;
-                                vertical-alignment: center; overflow: elide; horizontal-stretch: 1; }
-                            if lg.has-hover: VerticalLayout { alignment: center;
-                                AppIcon { source: Icons.search; tint: MusicTheme.fg2; width: 12px; height: 12px; } } } }
-                }
                 // Home — curated category tiles.
                 if root.radio-tab == "home" && !root.radio-cat-open: RadioCatGrid {
                     labels: root.radio-genres; icons: root.radio-genre-icons; counts: root.radio-genre-counts;
@@ -4222,7 +4392,13 @@ export component MusicPage inherits Rectangle {
                                         width: 12px; height: 12px; } } } } } }
 
                 // ── HOME (Latest) ──────────────────────────────────────────
-                if root.podcast-tab == "home": VerticalLayout { spacing: 18px;
+                // `alignment: start` is not cosmetic here. Without it a
+                // BoxLayout hands its leftover height to the children, so a tab
+                // holding one show and a short episode list came out stretched
+                // down the page: "Latest episodes" landed at the bottom with
+                // nothing above it, and a single pinned show floated in the
+                // middle instead of sitting under its own heading.
+                if root.podcast-tab == "home": VerticalLayout { spacing: 18px; alignment: start;
                     if root.podcast-home-cards.length > 0: VerticalLayout { spacing: 10px;
                         HorizontalLayout { spacing: 8px;
                             Text { text: "Your shows"; color: MusicTheme.fg; font-size: 17px; font-weight: 700;
@@ -4257,7 +4433,10 @@ export component MusicPage inherits Rectangle {
                 if root.podcast-tab == "trends": VerticalLayout { spacing: 10px;
                     HorizontalLayout { spacing: 8px;
                         VerticalLayout { alignment: center; horizontal-stretch: 1;
-                            HorizontalLayout { alignment: center; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.flame; tint: MusicTheme.fg; width: 20px; height: 20px; } } Text { text: "Trending podcasts"; color: MusicTheme.fg; font-size: 20px; font-weight: 800; vertical-alignment: center; } } }
+                            // Left-aligned: this is the page's title, and it was
+                            // sitting in the middle of the row because the group
+                            // centred itself inside a stretchy cell.
+                            HorizontalLayout { alignment: start; spacing: 6px; VerticalLayout { alignment: center; AppIcon { source: Icons.flame; tint: MusicTheme.fg; width: 20px; height: 20px; } } Text { text: "Trending podcasts"; color: MusicTheme.fg; font-size: 20px; font-weight: 800; vertical-alignment: center; } } }
                         VerticalLayout { alignment: center; Text { text: "Sort"; color: MusicTheme.fg-dim; font-size: 12px; vertical-alignment: center; } }
                         VerticalLayout { alignment: center; SortChip { label: "Name"; active: root.podcast-trends-sort == "name"; clicked => { root.podcast-trends-set-sort("name"); } } }
                         VerticalLayout { alignment: center; SortChip { label: "Category"; active: root.podcast-trends-sort == "category"; clicked => { root.podcast-trends-set-sort("category"); } } }
@@ -4729,466 +4908,755 @@ export component MusicPage inherits Rectangle {
             // exactly once per arrival. Opacity only — these sit inside a
             // layout, which owns `y`.
             opacity: 0;
-            init => { self.opacity = 1; }
+            // Both history lists are loaded on arrival rather than on the click
+            // that opens their tab: they feed the counts on the tab strip, and a
+            // tab that says nothing until you press it is not worth pressing.
+            // Both are paginated in Rust, so this is one small page each.
+            init => { self.opacity = 1; root.dl-open-history(0); root.dl-open-searches(0); }
             animate opacity { duration: MusicMotion.slow; easing: ease-out; }
           // Field-title color, distinct per theme so labels read well everywhere.
           property <color> ftitle: Theme.oled ? #f472b6 : (Theme.dark ? #a5b4fc : #6d28d9);
-          ScrollView {
-            vertical-stretch: 1; horizontal-stretch: 1;
-            HorizontalLayout { alignment: center;
-              VerticalLayout {
-                width: Math.min(1012px, root.width - 96px);
-                alignment: start;
-                padding-top: 22px; padding-bottom: 24px;
-                // Outer double-line pink frame — makes the whole downloader read
-                // as one floating panel, with the inner cards floating inside it.
-                Rectangle {
-                  border-radius: 24px;
-                  border-width: 2px; border-color: #ec4899;
-                  background: #ec489912;
-                  drop-shadow-blur: Theme.dark ? 40px : 0px;
-                  drop-shadow-color: Theme.dark ? #ec489933 : transparent;
-                  Rectangle { // second (inner) line
-                      x: 6px; y: 6px; width: parent.width - 12px; height: parent.height - 12px;
-                      border-radius: Surface.rr(18px, self.width, self.height); border-width: 1.5px;
-                      border-color: #ec4899.with-alpha(0.5); background: transparent; }
-                  VerticalLayout { padding: 20px; spacing: 16px;
-                // Header — music logo + title.
-                HorizontalLayout { spacing: 12px;
-                    VerticalLayout { alignment: center; Rectangle { width: 40px; height: 40px; border-radius: Surface.rr(12px, self.width, self.height);
-                        background: @linear-gradient(135deg, #ec4899, #8b5cf6);
-                        AppIcon { source: Icons.disc; tint: #ffffff; width: 22px; height: 22px; } } }
-                    VerticalLayout { alignment: center; spacing: 1px;
-                        Text { text: "Music Downloader"; color: MusicTheme.fg; font-size: 22px; font-weight: 800; }
-                        Text { text: "Paste a Spotify, Apple, YT Music, Amazon, Bandcamp, Deezer, Qobuz, SoundCloud or Tidal link — tracks land in your library with full metadata."; color: MusicTheme.fg-dim2; font-size: 12px; overflow: elide; } }
-                    Rectangle { horizontal-stretch: 1; }
-                    // Mode toggle — Search (yt-dlp ytsearch on YT Music) vs URL
-                    // (paste + resolve). Only the active mode carries a fill.
-                    VerticalLayout { alignment: center; HorizontalLayout { spacing: 6px;
-                        Rectangle { width: 84px; height: 34px; border-radius: Surface.rr(10px, self.width, self.height);
-                            background: root.dl-mode == "search" ? #06b6d4 : (mdsr.has-hover ? #06b6d422 : transparent);
-                            border-width: 1.5px; border-color: #06b6d4;
-                            animate background { duration: MusicMotion.fast; }
-                            mdsr := TouchArea { mouse-cursor: pointer; clicked => { root.dl-mode = "search"; } }
-                            HorizontalLayout { alignment: center; spacing: 6px;
-                                VerticalLayout { alignment: center; AppIcon { source: Icons.search; tint: root.dl-mode == "search" ? #ffffff : #06b6d4; width: 14px; height: 14px; } }
-                                VerticalLayout { alignment: center; Text { text: "Search"; color: root.dl-mode == "search" ? #ffffff : #06b6d4; font-size: 12px; font-weight: 800; } } } }
-                        Rectangle { width: 70px; height: 34px; border-radius: Surface.rr(10px, self.width, self.height);
-                            background: root.dl-mode == "url" ? #8b5cf6 : (mdur.has-hover ? #8b5cf622 : transparent);
-                            border-width: 1.5px; border-color: #8b5cf6;
-                            animate background { duration: MusicMotion.fast; }
-                            mdur := TouchArea { mouse-cursor: pointer; clicked => { root.dl-mode = "url"; } }
-                            HorizontalLayout { alignment: center; spacing: 6px;
-                                VerticalLayout { alignment: center; AppIcon { source: Icons.clipboard; tint: root.dl-mode == "url" ? #ffffff : #8b5cf6; width: 14px; height: 14px; } }
-                                VerticalLayout { alignment: center; Text { text: "URL"; color: root.dl-mode == "url" ? #ffffff : #8b5cf6; font-size: 12px; font-weight: 800; } } } }
+          // Which list the entries table is showing. The two history lists used
+          // to be modal windows launched from a button row; they are tabs on the
+          // same table now. Search results are NOT a separate tab — a search
+          // seeds the same queue a URL resolve does (mdl::start_search →
+          // seed_rows), so they arrive in "Queue".
+          property <string> dl-tab: "queue";
+          // Controls sit in a fixed rail on the right; the table takes the rest.
+          // Capped as a fraction too, so a narrow window does not leave the
+          // table a sliver.
+          property <length> rail-w: Math.min(377px, dlpane.width * 0.445);
+          // Gutter down the rail's right edge so the scrollbar rides in empty
+          // space instead of over the controls.
+          property <length> rail-pad: dlpane.rail-w * 0.02;
+          // Width every full-bleed control in the rail is cut to. Nothing in
+          // there may size itself off its CONTENT: a pasted URL is one long
+          // unbroken word, and a field that reports it as a minimum width pushes
+          // the whole rail wider than the pane and slides it under the page.
+          property <length> rail-box: dlpane.rail-w - 30px - dlpane.rail-pad;
+          // What the left column ends up being: the pane less the rail, the
+          // outer padding (16 each side) and the gap between the two. Derived
+          // from the PANE rather than read off the column, because a padding
+          // that asks its own layout how wide it is is a binding loop.
+          property <length> table-w: dlpane.width - dlpane.rail-w - 46px;
+          // Inset the table's CONTENT by a twentieth each side. It goes on the
+          // inner rows, never on the card's own layout: padding there would pull
+          // the card outline itself in off the app sidebar and the rail, and
+          // strand the tab strip and column-header bands mid-card.
+          property <length> table-pad: dlpane.table-w * 0.05;
+
+          HorizontalLayout {
+            padding: 16px; spacing: 14px;
+
+            // ══ LEFT — header + entries table ═════════════════════════════
+            VerticalLayout {
+              horizontal-stretch: 1; spacing: 14px;
+
+              // ── header ──────────────────────────────────────────────────
+              // Mark and name on the left, the whole download panel on the
+              // right as ONE row. It used to be a block pinned to the foot of
+              // the rail, where it sat on top of the rail's own content in the
+              // bottom-right corner.
+              Rectangle {
+                height: 76px; vertical-stretch: 0;
+                border-radius: Surface.rr(18px, self.width, self.height);
+                background: MusicTheme.surf0;
+                border-width: 1.5px;
+                border-color: root.dl-status == "downloading" ? #22c55e : MusicTheme.line;
+                drop-shadow-blur: Theme.dark ? 26px : 0px;
+                drop-shadow-color: Theme.dark ? #00000045 : transparent;
+                animate border-color { duration: MusicMotion.fast; }
+                clip: true;
+                HorizontalLayout {
+                  padding-left: 16px; padding-right: 16px; spacing: 12px;
+                  VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Rectangle { width: 42px; height: 42px;
+                      border-radius: Surface.rr(13px, self.width, self.height);
+                      background: @linear-gradient(135deg, #ec4899, #8b5cf6);
+                      AppIcon { source: Icons.download; tint: #ffffff; width: 21px; height: 21px;
+                        x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } }
+                  // Title, and a second line that says what is loaded rather
+                  // than repeating the provider list nobody reads twice.
+                  VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
+                    Text { text: "Music Downloader"; color: MusicTheme.fg;
+                      font-size: 18px; font-weight: 800; overflow: elide; }
+                    Text {
+                      text: root.dl-status == "resolving" ? "Resolving…"
+                          : (root.dl-total > 0
+                             ? (root.dl-kind != "" ? root.dl-kind + "  ·  " : "") + root.dl-total + " tracks resolved"
+                             : "Paste a link or search — tracks land in your library with full metadata");
+                      color: MusicTheme.fg-dim2; font-size: 11.5px; overflow: elide; } }
+                  Rectangle { horizontal-stretch: 1; min-width: 8px; }
+
+                  // ── download panel, one row ───────────────────────────────
+                  // Counters as one chip: four numbers with their own icon, no
+                  // stacked labels — this row has height for one line only.
+                  VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    Rectangle { height: 34px; horizontal-stretch: 0;
+                      border-radius: Surface.rr(17px, self.width, self.height);
+                      background: MusicTheme.surf1;
+                      border-width: 1px; border-color: MusicTheme.line;
+                      HorizontalLayout { padding-left: 13px; padding-right: 13px; spacing: 12px;
+                        HorizontalLayout { spacing: 5px;
+                          VerticalLayout { alignment: center; AppIcon { source: Icons.list-music;
+                            tint: #ec4899; width: 12px; height: 12px; } }
+                          Text { text: root.dl-selected; color: MusicTheme.fg2; font-size: 12px;
+                            font-weight: 800; vertical-alignment: center; } }
+                        HorizontalLayout { spacing: 5px;
+                          VerticalLayout { alignment: center; AppIcon { source: Icons.check;
+                            tint: #22c55e; width: 12px; height: 12px; } }
+                          Text { text: root.dl-done; color: MusicTheme.fg2; font-size: 12px;
+                            font-weight: 800; vertical-alignment: center; } }
+                        HorizontalLayout { spacing: 5px;
+                          VerticalLayout { alignment: center; AppIcon { source: Icons.skip-forward;
+                            tint: #64748b; width: 12px; height: 12px; } }
+                          Text { text: root.dl-skipped; color: MusicTheme.fg2; font-size: 12px;
+                            font-weight: 800; vertical-alignment: center; } }
+                        HorizontalLayout { spacing: 5px;
+                          VerticalLayout { alignment: center; AppIcon { source: Icons.x;
+                            tint: #ef4444; width: 12px; height: 12px; } }
+                          Text { text: root.dl-failed; color: MusicTheme.fg2; font-size: 12px;
+                            font-weight: 800; vertical-alignment: center; } }
+                      } } }
+                  // Progress tracks the SELECTED songs (what will download), not
+                  // the whole queue.
+                  VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    DlPill {
+                      width: 208px; height: 34px;
+                      property <int> denom: root.dl-selected > 0 ? root.dl-selected : root.dl-total;
+                      active: root.dl-status == "downloading";
+                      frac: self.denom > 0 ? 1.0 * (root.dl-done + root.dl-skipped) / self.denom : 0;
+                      fill: self.denom > 0 && (root.dl-done + root.dl-skipped) >= self.denom ? #22c55e : #8b5cf6;
+                      label: (root.dl-done + root.dl-skipped) + " / " + self.denom + " "
+                          + (root.dl-status == "downloading" ? "downloading" : "Downloaded");
                     } }
-                    // Clear — wipe the resolve + queue below the card.
-                    if root.dl-rows.length > 0 || root.dl-kind != "": VerticalLayout { alignment: center;
-                        DlBtn { icon: Icons.trash; label: "Clear"; tint: #ef4444; clicked => { root.dl-clear-all(); } } }
+                  VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    DlBtn { icon: Icons.download; tint: #22c55e;
+                      label: root.dl-selected > 0 ? "Download " + root.dl-selected : "Download";
+                      enabled: root.dl-rows.length > 0;
+                      clicked => { dlpane.dl-tab = "queue"; root.dl-download(); } } }
+                  VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    DlBtn { icon: Icons.x; label: ""; tint: #ef4444;
+                      clicked => { root.dl-cancel(); } } }
+                  // Rescan — the music library only, and the button becomes its
+                  // own progress pill while the scan runs rather than sitting
+                  // there looking unpressed.
+                  VerticalLayout { alignment: center; horizontal-stretch: 0;
+                    if !root.dl-rescan-busy: DlBtn { icon: Icons.refresh-cw; label: ""; tint: #64748b;
+                      clicked => { root.dl-refresh-library(); } }
+                    if root.dl-rescan-busy: DlPill {
+                      width: 148px; height: 34px;
+                      active: true; frac: root.dl-rescan-frac; fill: #64748b;
+                      label: "Rescanning " + Math.round(root.dl-rescan-frac * 100) + "%";
+                    } }
                 }
+              }
 
-                // ── Source card ──────────────────────────────────────────────
-                DlCard { accent: #8b5cf6;
-                    VerticalLayout { padding: 16px; spacing: 10px;
-                        Text { text: root.dl-mode == "search" ? "Search" : "URL / Link"; color: dlpane.ftitle; font-size: 12px; font-weight: 800; }
-                        HorizontalLayout { spacing: 10px;
-                            Rectangle { horizontal-stretch: 1; height: 44px; border-radius: Surface.rr(12px, self.width, self.height); clip: true;
-                                background: #ffffff; border-width: 1.5px; border-color: #8b5cf6;
-                                HorizontalLayout { padding-left: 6px; padding-right: 6px; spacing: 6px;
-                                    // Paste button — pull the clipboard straight into the field.
-                                    VerticalLayout { alignment: center; Rectangle { width: 32px; height: 32px; border-radius: Surface.rr(8px, self.width, self.height);
-                                        background: pst.pressed ? #7c3aed : (pst.has-hover ? #8b5cf6 : #ede9fe);
-                                        animate background { duration: MusicMotion.fast; }
-                                        AppIcon { source: Icons.clipboard; tint: (pst.has-hover || pst.pressed) ? #ffffff : #7c3aed; width: 15px; height: 15px; }
-                                        pst := TouchArea { mouse-cursor: pointer; clicked => { urlbox.focus(); urlbox.select-all(); urlbox.paste(); root.dl-url-changed(urlbox.text); } } } }
-                                    // TextInput lives as a direct child of a clip wrapper (NOT in the
-                                    // layout) with width:100% so a long URL scrolls/clips inside the
-                                    // field instead of stretching the row + pushing the badge out.
-                                    // min-width:0 stops the TextInput's content width from driving
-                                    // the layout — a long URL scrolls inside the clip instead of
-                                    // stretching the row and shoving the provider chip out of the card.
-                                    Rectangle { horizontal-stretch: 1; min-width: 0px; clip: true;
-                                        urlbox := TextInput { width: 100%; height: 100%; vertical-alignment: center; color: #1f2937; font-size: 14px; single-line: true;
-                                            text <=> root.dl-url;
-                                            edited => { root.dl-url-changed(self.text); }
-                                            accepted => { if (root.dl-mode == "search") { root.dl-search(); } else { root.dl-resolve(); } } } }
-                                    // Provider chip — fixed, pinned at the field's right end. Black
-                                    // fill + white text; the accent (dot + outline) is the provider's
-                                    // brand color. Fixed width means a long URL clips instead of
-                                    // pushing the chip out of the card.
-                                    // Search-provider dropdown — YT Music (yt-dlp, default) or
-                                    // Spotify (anonymous web-player token; falls back to YT
-                                    // Music automatically when the token fetch fails).
-                                    if root.dl-mode == "search": VerticalLayout { alignment: center; DlSelect {
-                                        box-width: 124px; height: 34px;
-                                        tint: root.dl-search-provider == "Spotify" ? #1db954 : #ff3b30;
-                                        model: ["YT Music", "Spotify"];
-                                        current: root.dl-search-provider;
-                                        selected(v) => { root.dl-search-provider = v; } } }
-                                    if root.dl-mode == "url" && root.dl-provider-badge != "": VerticalLayout { alignment: center; pbadge := Rectangle {
-                                        property <color> pc:
-                                            root.dl-provider-badge == "Spotify" ? #1db954 :
-                                            root.dl-provider-badge == "Apple" ? #fa2d48 :
-                                            root.dl-provider-badge == "YT Music" ? #ff3b30 :
-                                            root.dl-provider-badge == "Amazon Music" ? #00a8e1 :
-                                            root.dl-provider-badge == "SoundCloud" ? #ff5500 :
-                                            root.dl-provider-badge == "Deezer" ? #a238ff :
-                                            root.dl-provider-badge == "Tidal" ? #22d3ee :
-                                            #8b5cf6;
-                                        width: 124px; height: 34px; border-radius: Surface.rr(9px, self.width, self.height);
-                                        background: #000000; border-width: 1.5px; border-color: pc;
-                                        HorizontalLayout { alignment: center; spacing: 6px; padding-left: 9px; padding-right: 9px;
-                                            VerticalLayout { alignment: center; Rectangle { width: 8px; height: 8px; border-radius: Surface.rr(4px, self.width, self.height); background: pbadge.pc; } }
-                                            VerticalLayout { alignment: center; Text { text: root.dl-provider-badge; color: #ffffff; font-size: 12px; font-weight: 800; overflow: elide; } } } } }
-                                    if root.dl-mode == "url" && root.dl-url != "" && root.dl-provider-badge == "": VerticalLayout { alignment: center; Rectangle {
-                                        width: 116px; height: 34px; border-radius: Surface.rr(9px, self.width, self.height); background: #000000; border-width: 1.5px; border-color: #ef4444;
-                                        HorizontalLayout { alignment: center; VerticalLayout { alignment: center; Text { text: "Unsupported"; color: #ef4444; font-size: 12px; font-weight: 800; } } } } }
-                                } }
-                        }
-                        HorizontalLayout { spacing: 10px;
-                            VerticalLayout { alignment: center; Text { text: "Save to"; color: dlpane.ftitle; font-size: 13px; font-weight: 800; } }
-                            Rectangle { horizontal-stretch: 1; height: 38px; border-radius: Surface.rr(10px, self.width, self.height); clip: true;
-                                background: #ffffff; border-width: 1.5px; border-color: #f59e0b;
-                                HorizontalLayout { padding-left: 12px; padding-right: 12px;
-                                    VerticalLayout { alignment: center; Text { text: root.dl-dest; color: #374151; font-size: 12px; overflow: elide; } } } }
-                            DlBtn { icon: Icons.folder; label: "Change"; tint: #ea580c; clicked => { root.dl-pick-folder(); } } }
-                        HorizontalLayout { spacing: 10px; alignment: center;
-                            DlBtn { icon: Icons.search; label: root.dl-mode == "search" ? "Search" : "Resolve"; tint: root.dl-mode == "search" ? #06b6d4 : #8b5cf6;
-                                clicked => { if (root.dl-mode == "search") { root.dl-search(); } else { root.dl-resolve(); } } }
-                            DlBtn { icon: Icons.download; label: "Download"; tint: #22c55e; clicked => { root.dl-download(); } }
-                            DlBtn { icon: Icons.x; label: "Cancel"; tint: #ef4444; clicked => { root.dl-cancel(); } }
-                            // Counter pill — sits inline with the buttons; lights up
-                            // with an accent outline while a download is running.
-                            Rectangle { height: 38px; border-radius: Surface.rr(11px, self.width, self.height); clip: true;
-                                background: MusicTheme.surf0;
-                                border-width: root.dl-status == "downloading" ? 2px : 1px;
-                                border-color: root.dl-status == "downloading" ? #22c55e : MusicTheme.line;
-                                animate border-color, border-width { duration: MusicMotion.fast; }
-                                // Progress fill — same fraction as the queue pill, so the
-                                // always-visible top counter doubles as a live progress bar
-                                // (stays put while the queue scrolls or the sub-tab changes).
-                                // Translucent so the counter numbers stay readable on top.
-                                property <int> denom: root.dl-selected > 0 ? root.dl-selected : root.dl-total;
-                                Rectangle { x: 0; y: 0; height: 100%;
-                                    width: parent.denom > 0 ? parent.width * Math.clamp(1.0 * (root.dl-done + root.dl-skipped) / parent.denom, 0, 1) : 0;
-                                    background: (parent.denom > 0 && (root.dl-done + root.dl-skipped) >= parent.denom) ? #22c55e2e : #8b5cf62e;
-                                    animate width { duration: MusicMotion.mid; easing: ease-out; }
-                                }
-                                // Icon counters (check / skipped / failed) — real
-                                // AppIcons, not unicode glyphs, so they always render
-                                // (the old ✓ ⤼ ✗ text showed as tofu on Windows).
-                                HorizontalLayout { padding-left: 12px; padding-right: 12px; spacing: 10px;
-                                    VerticalLayout { alignment: center; HorizontalLayout { spacing: 4px;
-                                        VerticalLayout { alignment: center; AppIcon { source: Icons.check; tint: #22c55e; width: 13px; height: 13px; } }
-                                        Text { text: "" + root.dl-done; color: MusicTheme.fg2; font-size: 12px; font-weight: 700; vertical-alignment: center; } } }
-                                    VerticalLayout { alignment: center; HorizontalLayout { spacing: 4px;
-                                        VerticalLayout { alignment: center; AppIcon { source: Icons.skip-forward; tint: #64748b; width: 13px; height: 13px; } }
-                                        Text { text: "" + root.dl-skipped; color: MusicTheme.fg2; font-size: 12px; font-weight: 700; vertical-alignment: center; } } }
-                                    VerticalLayout { alignment: center; HorizontalLayout { spacing: 4px;
-                                        VerticalLayout { alignment: center; AppIcon { source: Icons.x; tint: #ef4444; width: 13px; height: 13px; } }
-                                        Text { text: "" + root.dl-failed; color: MusicTheme.fg2; font-size: 12px; font-weight: 700; vertical-alignment: center; } } } } }
-                            DlBtn { icon: Icons.clock; label: "Downloaded"; tint: #6366f1; clicked => { root.dl-history-open = true; root.dl-open-history(0); } }
-                            DlBtn { icon: Icons.search; label: "Searches"; tint: #06b6d4; clicked => { root.dl-search-open = true; root.dl-open-searches(0); } }
-                            DlBtn { icon: Icons.file-text; label: "Output"; tint: #f59e0b; clicked => { root.dl-cli-open = true; } } }
-                        // Resolve progress — resolve is a single opaque fetch, so this
-                        // is an INDETERMINATE sweeping pill that loops while status ==
-                        // "resolving" and disappears the instant the queue is ready.
-                        if root.dl-status == "resolving": HorizontalLayout { spacing: 10px;
-                            VerticalLayout { alignment: center; horizontal-stretch: 0;
-                                Text { text: "Resolving…"; color: #8b5cf6; font-size: 12px; font-weight: 800; vertical-alignment: center; } }
-                            Rectangle { horizontal-stretch: 1; height: 8px; border-radius: Surface.rr(4px, self.width, self.height); clip: true;
-                                background: MusicTheme.surf1; border-width: 1px; border-color: #8b5cf655;
-                                property <float> t: Math.mod(animation-tick() / 1400ms, 1.0);
-                                Rectangle { width: parent.width * 0.32; height: 100%; border-radius: Surface.rr(4px, self.width, self.height);
-                                    x: (parent.width + self.width) * parent.t - self.width;
-                                    background: @linear-gradient(90deg, #8b5cf600, #8b5cf6 45%, #ec4899 55%, #ec489900); } } }
+              // ── entries table ───────────────────────────────────────────
+              Rectangle {
+                vertical-stretch: 1;
+                border-radius: Surface.rr(18px, self.width, self.height);
+                background: MusicTheme.surf0;
+                border-width: 1.5px; border-color: MusicTheme.line;
+                drop-shadow-blur: Theme.dark ? 26px : 0px;
+                drop-shadow-color: Theme.dark ? #00000045 : transparent;
+                clip: true;
+                VerticalLayout {
+                  // ── tab strip ──────────────────────────────────────────────
+                  Rectangle {
+                    height: 56px; vertical-stretch: 0;
+                    background: MusicTheme.surf1;
+                    HorizontalLayout {
+                      padding: 9px; spacing: 5px;
+                      padding-left: 9px + dlpane.table-pad;
+                      padding-right: 9px + dlpane.table-pad;
+                      DlTab { icon: Icons.list-music; label: "Queue"; tint: #ec4899;
+                        // -1 hides the badge — an explicit "0" on every tab before
+                        // anything has been fetched reads as a failed load.
+                        count: root.dl-total > 0 ? root.dl-total : -1;
+                        active: dlpane.dl-tab == "queue";
+                        clicked => { dlpane.dl-tab = "queue"; } }
+                      DlTab { icon: Icons.clock; label: "Downloaded"; tint: #6366f1;
+                        count: root.dl-history.length > 0 ? root.dl-history.length : -1;
+                        active: dlpane.dl-tab == "downloaded";
+                        clicked => { dlpane.dl-tab = "downloaded"; root.dl-open-history(0); } }
+                      DlTab { icon: Icons.search; label: "Searches"; tint: #06b6d4;
+                        count: root.dl-searches.length > 0 ? root.dl-searches.length : -1;
+                        active: dlpane.dl-tab == "searches";
+                        clicked => { dlpane.dl-tab = "searches"; root.dl-open-searches(0); } }
+                      Rectangle { horizontal-stretch: 1; min-width: 4px; }
+                      // Clear acts on whichever list is showing. The history ones
+                      // go behind a confirm (they wipe records); the queue one is
+                      // just a reset of what is on screen.
+                      if dlpane.dl-tab == "queue" && (root.dl-rows.length > 0 || root.dl-kind != ""):
+                        VerticalLayout { alignment: center; DlBtn { icon: Icons.trash; label: "Clear";
+                          tint: #ef4444; clicked => { root.dl-clear-all(); } } }
+                      if dlpane.dl-tab == "downloaded" && root.dl-history.length > 0:
+                        VerticalLayout { alignment: center; DlBtn { icon: Icons.trash; label: "Clear";
+                          tint: #ef4444; clicked => { root.dl-history-clear-open = true; } } }
+                      if dlpane.dl-tab == "searches" && root.dl-searches.length > 0:
+                        VerticalLayout { alignment: center; DlBtn { icon: Icons.trash; label: "Clear";
+                          tint: #ef4444; clicked => { root.dl-search-clear-open = true; } } }
                     }
-                }
+                  }
+                  Rectangle { height: 1px; vertical-stretch: 0; background: MusicTheme.line; }
 
-                // ── YT non-music warning ─────────────────────────────────────
-                // The YT provider resolves any YouTube link; when it doesn't look
-                // like tagged music (a plain video), warn but still let it through.
-                if root.dl-yt-warn: Rectangle { height: 44px; border-radius: Surface.rr(12px, self.width, self.height);
-                    background: #f59e0b1a; border-width: 1.5px; border-color: #f59e0b;
-                    HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 10px;
-                        VerticalLayout { alignment: center; AppIcon { source: Icons.triangle-alert; tint: #f59e0b; width: 16px; height: 16px; } }
-                        VerticalLayout { alignment: center; horizontal-stretch: 1; Text {
-                            text: "This YouTube link doesn't look like tagged music — it'll still download, but for regular videos use the YouTube section.";
-                            color: MusicTheme.fg2; font-size: 12px; font-weight: 600; wrap: word-wrap; } } } }
+                  // ── queue toolbar — selection + sort ───────────────────────
+                  if dlpane.dl-tab == "queue" && root.dl-rows.length > 0: HorizontalLayout {
+                    padding-left: 12px + dlpane.table-pad; padding-right: 12px + dlpane.table-pad;
+                    padding-top: 11px; padding-bottom: 11px;
+                    spacing: 8px; vertical-stretch: 0;
+                    // One checkbox instead of an All / None pair — it already has
+                    // two states, and it matches the box on every row below it.
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                      CheckBox { text: "All";
+                        checked: root.dl-total > 0 && root.dl-selected >= root.dl-total;
+                        toggled => { root.dl-select-all(self.checked); } } }
+                    Rectangle { width: 8px; }
+                    // Sort chips carry no fill — they are buttons, not states.
+                    // The one in force gets a light wash, which reads in both
+                    // themes, plus the direction arrow.
+                    VerticalLayout { alignment: center; SortChip { label: "Name"; icon: Icons.music; tint: #8b5cf6;
+                      active: root.dl-sort == "name"; dir: root.dl-sort == "name" ? root.dl-sort-dir : 0;
+                      clicked => { root.dl-sort-by("name"); } } }
+                    VerticalLayout { alignment: center; SortChip { label: "Length"; icon: Icons.clock; tint: #f59e0b;
+                      active: root.dl-sort == "length"; dir: root.dl-sort == "length" ? root.dl-sort-dir : 0;
+                      clicked => { root.dl-sort-by("length"); } } }
+                    VerticalLayout { alignment: center; SortChip { label: "Artist"; icon: Icons.user; tint: #06b6d4;
+                      active: root.dl-sort == "artist"; dir: root.dl-sort == "artist" ? root.dl-sort-dir : 0;
+                      clicked => { root.dl-sort-by("artist"); } } }
+                    Rectangle { horizontal-stretch: 1; min-width: 4px; }
 
-                // ── Options card ─────────────────────────────────────────────
-                // Format · Name · Bitrate · Parallel · Threads — all on one line.
-                DlCard { accent: #6366f1;
-                    VerticalLayout { padding: 16px;
-                        HorizontalLayout { spacing: 8px;
-                            VerticalLayout { alignment: center; Text { text: "Format"; color: dlpane.ftitle; font-size: 12px; font-weight: 800; } }
-                            VerticalLayout { alignment: center; DlSelect {
-                                box-width: 80px; tint: #8b5cf6;
-                                model: ["opus", "m4a", "mp3", "flac", "wav"];
-                                current: root.dl-format;
-                                selected(v) => { root.dl-set-format(v); } } }
-                            VerticalLayout { alignment: center; Text { text: "Name"; color: dlpane.ftitle; font-size: 12px; font-weight: 800; } }
-                            VerticalLayout { alignment: center; DlSelect {
-                                box-width: 128px; tint: #6366f1;
-                                model: ["Artist - Song", "Artists - Song", "Album - Song", "## - Artist - Song", "Song"];
-                                current: root.dl-name-method;
-                                selected(v) => { root.dl-set-name-method(v); } } }
-                            VerticalLayout { alignment: center; Text { text: "Bitrate"; color: dlpane.ftitle; font-size: 12px; font-weight: 800; } }
-                            VerticalLayout { alignment: center; DlSelect {
-                                box-width: 78px; tint: #f59e0b;
-                                model: ["128", "192", "256", "320"];
-                                current: (root.dl-bitrate == 192 ? "192" : root.dl-bitrate == 256 ? "256" : root.dl-bitrate == 320 ? "320" : "128") + " k";
-                                selected(v) => { root.dl-set-bitrate(v); } } }
-                            DlStepper { horizontal-stretch: 1; label: "Parallel"; tint: #22c55e; value: root.dl-parallel; min: 1; max: 4; changed(v) => { root.dl-set-parallel(v); } }
-                            DlStepper { horizontal-stretch: 1; label: "Threads"; tint: #3b82f6; value: root.dl-threads; min: 1; max: 8; changed(v) => { root.dl-set-threads(v); } }
-                        }
+                    // ── naming & credits, moved off the rail ─────────────────
+                    // Per album / Per list first, then the two dropdowns they
+                    // act with, then the pager. No fill on the two buttons —
+                    // only the one that applies to this queue is coloured.
+                    if root.dl-all-artists.length > 0: VerticalLayout { alignment: center;
+                      SortChip { label: "Per album"; icon: Icons.disc; tint: #ea580c;
+                        active: root.dl-kind == "album";
+                        clicked => { if (root.dl-kind == "album") { root.dl-bulk-main-artist("album", root.dl-bulk-artist); } } } }
+                    if root.dl-all-artists.length > 0: VerticalLayout { alignment: center;
+                      SortChip { label: "Per list"; icon: Icons.list-music; tint: #ec4899;
+                        active: root.dl-kind == "playlist";
+                        clicked => { if (root.dl-kind == "playlist") { root.dl-bulk-main-artist("playlist", root.dl-bulk-artist); } } } }
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                      DlSelect { box-width: 168px; height: 30px; tint: #6366f1;
+                        model: ["Artist - Song", "Artists - Song", "Album - Song", "## - Artist - Song", "Song"];
+                        current: root.dl-name-method;
+                        selected(v) => { root.dl-set-name-method(v); } } }
+                    if root.dl-all-artists.length > 0: VerticalLayout { alignment: center; horizontal-stretch: 0;
+                      Rectangle { width: 156px; height: 30px;
+                        border-radius: Surface.rr(9px, self.width, self.height);
+                        border-width: 1px; border-color: Theme.dark ? MusicTheme.line : #e2e8f0;
+                        background: MusicTheme.surf1;
+                        ComboBox { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px;
+                          model: root.dl-all-artists;
+                          current-value: root.dl-bulk-artist;
+                          selected(v) => { root.dl-bulk-artist = v; } } } }
+
+                    if root.dl-queue-pages > 1: VerticalLayout { alignment: center; PageNav {
+                      tint: #22c55e; filled: true;
+                      page: root.dl-queue-page; pages: root.dl-queue-pages;
+                      go(d) => { root.dl-set-queue-page(root.dl-queue-page + d); } } }
+                  }
+
+                  // ── column header ──────────────────────────────────────────
+                  // Widths here are the row's widths; the two must move together.
+                  if dlpane.dl-tab == "queue" && root.dl-rows.length > 0: Rectangle {
+                    height: 28px; vertical-stretch: 0; background: MusicTheme.surf1;
+                    // Padding matches the row's own (10 card padding + 10 row
+                    // padding-left, 10 + 14 on the right) so the two fixed
+                    // columns at the end line up under their labels.
+                    HorizontalLayout { spacing: 10px;
+                      padding-left: 20px + dlpane.table-pad; padding-right: 24px + dlpane.table-pad;
+                      Rectangle { width: 20px; }
+                      Rectangle { width: 40px; }
+                      Text { text: "TRACK"; color: MusicTheme.fg-mute; font-size: 9.5px; font-weight: 800;
+                        letter-spacing: 0.6px; vertical-alignment: center; horizontal-stretch: 1; }
+                      Text { text: "MAIN ARTIST"; color: MusicTheme.fg-mute; font-size: 9.5px; font-weight: 800;
+                        letter-spacing: 0.6px; vertical-alignment: center; width: 156px; }
+                      Text { text: "STAGE"; color: MusicTheme.fg-mute; font-size: 9.5px; font-weight: 800;
+                        letter-spacing: 0.6px; vertical-alignment: center; width: 118px; }
                     }
-                }
+                  }
+                  Rectangle { height: 1px; vertical-stretch: 0; background: MusicTheme.line; }
 
-                // ── Queue card ───────────────────────────────────────────────
-                if root.dl-rows.length > 0: DlCard { accent: #22c55e;
-                    VerticalLayout { padding: 16px; spacing: 12px;
-                        // Control row — Per Album · Per Playlist · Main artist · All · None.
-                        HorizontalLayout { spacing: 8px;
-                            // Per Album / Per Playlist — only the resolved kind is clickable.
-                            DlBtn { icon: Icons.disc; label: "Per Album"; tint: #ea580c;
-                                enabled: root.dl-kind == "album";
-                                clicked => { root.dl-bulk-main-artist("album", root.dl-bulk-artist); } }
-                            DlBtn { icon: Icons.list-music; label: "Per Playlist"; tint: #ec4899;
-                                enabled: root.dl-kind == "playlist";
-                                clicked => { root.dl-bulk-main-artist("playlist", root.dl-bulk-artist); } }
-                            if root.dl-all-artists.length > 0: VerticalLayout { alignment: center; Text { text: "Main artist"; color: dlpane.ftitle; font-size: 12px; font-weight: 800; } }
-                            if root.dl-all-artists.length > 0: VerticalLayout { alignment: center; horizontal-stretch: 1;
-                                // Accent outline with the ComboBox inset inside it (a bare
-                                // ComboBox is near-invisible on the light theme).
-                                Rectangle { height: 34px; border-radius: Surface.rr(9px, self.width, self.height); border-width: 1.5px; border-color: #8b5cf6; background: MusicTheme.surf1;
-                                    ComboBox { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px;
-                                        model: root.dl-all-artists;
-                                        current-value: root.dl-bulk-artist;
-                                        selected(v) => { root.dl-bulk-artist = v; }
-                                    } } }
-                            if root.dl-all-artists.length == 0: Rectangle { horizontal-stretch: 1; min-width: 4px; }
-                            DlBtn { icon: Icons.check; label: "All"; tint: #22c55e; clicked => { root.dl-select-all(true); } }
-                            DlBtn { icon: Icons.x; label: "None"; tint: #64748b; clicked => { root.dl-select-all(false); } }
-                        }
-                        // Sort chips (left) · progress pill · queue pagination (>25).
-                        HorizontalLayout { spacing: 8px;
-                            VerticalLayout { alignment: center; SortChip { label: "Name"; icon: Icons.music; filled: true; tint: #8b5cf6;
-                                active: root.dl-sort == "name"; dir: root.dl-sort == "name" ? root.dl-sort-dir : 0;
-                                clicked => { root.dl-sort-by("name"); } } }
-                            VerticalLayout { alignment: center; SortChip { label: "Length"; icon: Icons.clock; filled: true; tint: #f59e0b;
-                                active: root.dl-sort == "length"; dir: root.dl-sort == "length" ? root.dl-sort-dir : 0;
-                                clicked => { root.dl-sort-by("length"); } } }
-                            VerticalLayout { alignment: center; SortChip { label: "Artist"; icon: Icons.user; filled: true; tint: #06b6d4;
-                                active: root.dl-sort == "artist"; dir: root.dl-sort == "artist" ? root.dl-sort-dir : 0;
-                                clicked => { root.dl-sort-by("artist"); } } }
-                            // Progress tracks the SELECTED songs (what will download),
-                            // not the whole queue; accent outline while downloading.
-                            DlPill { horizontal-stretch: 1;
-                                property <int> denom: root.dl-selected > 0 ? root.dl-selected : root.dl-total;
-                                active: root.dl-status == "downloading";
-                                frac: self.denom > 0 ? 1.0 * (root.dl-done + root.dl-skipped) / self.denom : 0;
-                                fill: self.denom > 0 && (root.dl-done + root.dl-skipped) >= self.denom ? #22c55e : #8b5cf6;
-                                // State-aware label: reflects the live phase instead of
-                                // always reading "selected" (downloading / downloaded).
-                                label: (root.dl-done + root.dl-skipped) + " / " + self.denom + " "
-                                    + (root.dl-status == "downloading" ? "downloading"
-                                       : (root.dl-status == "done" ? "downloaded"
-                                       : "selected"))
-                                    + (root.dl-failed > 0 ? "  ·  " + root.dl-failed + " failed" : "");
-                            }
-                            if root.dl-queue-pages > 1: VerticalLayout { alignment: center; PageNav {
-                                tint: #22c55e; filled: true;
-                                page: root.dl-queue-page;
-                                pages: root.dl-queue-pages;
-                                go(d) => { root.dl-set-queue-page(root.dl-queue-page + d); }
-                            } }
-                        }
-                        // Per-track cards — Rust pushes only the current page (25);
-                        // row.abs-index is the position in the full queue.
+                  // ── the rows ───────────────────────────────────────────────
+                  ScrollView {
+                    vertical-stretch: 1; horizontal-stretch: 1;
+                    VerticalLayout {
+                      padding: 10px; spacing: 6px; alignment: start;
+                      padding-left: 10px + dlpane.table-pad;
+                      padding-right: 10px + dlpane.table-pad;
+
+                      // Queue — Rust pushes only the current page (25);
+                      // row.abs-index is the position in the full queue.
+                      if dlpane.dl-tab == "queue": VerticalLayout { spacing: 6px;
                         for row[i] in root.dl-rows: card := Rectangle {
-                            // Light theme = pure white card + black text; dark/oled keep
-                            // the surface tokens.
-                            property <color> cbg: Theme.dark ? MusicTheme.surf1 : #ffffff;
-                            property <color> ctext: Theme.dark ? MusicTheme.fg : #0b0f17;
-                            property <color> csub: Theme.dark ? MusicTheme.fg-dim2 : #475569;
-                            property <color> cart: Theme.dark ? MusicTheme.fg-mute : #334155;
-                            height: 60px; border-radius: Surface.rr(12px, self.width, self.height); background: card.cbg;
-                            border-width: 1px; border-color: Theme.dark ? MusicTheme.line : #e2e8f0; clip: true;
-                            property <color> sc:
-                                row.stage == "done" ? #22c55e :
-                                row.stage == "failed" ? #ef4444 :
-                                row.stage == "skipped" ? #64748b :
-                                row.stage == "in library" ? #0ea5e9 :
-                                row.stage == "queued" ? #64748b :
-                                #8b5cf6;
-                            // Color-changing fill behind the content.
-                            Rectangle { x: 0; y: 0; height: 100%;
-                                width: parent.width * (row.percent / 100);
-                                background: card.sc; opacity: 0.16;
-                                animate width { duration: MusicMotion.slow; easing: ease-out; } }
-                            HorizontalLayout { padding-left: 10px; padding-right: 14px; spacing: 10px;
-                                VerticalLayout { alignment: center; CheckBox { checked: row.selected; toggled => { root.dl-toggle-row(row.abs-index); } } }
-                                VerticalLayout { alignment: center; Rectangle { width: 40px; height: 40px; border-radius: Surface.rr(8px, self.width, self.height); background: MusicTheme.surf-thumb; clip: true;
-                                    if row.thumb.width > 0: Image { source: row.thumb; width: 40px; height: 40px; image-fit: cover; }
-                                    if row.thumb.width <= 0: AppIcon { source: Icons.music; tint: MusicTheme.fg-mute; width: 16px; height: 16px; } } }
-                                VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
-                                    Text { text: row.title; color: card.ctext; font-size: 13px; font-weight: 600; overflow: elide; }
-                                    // Length (provider metadata) leads the sub-line, then album/file.
-                                    Text { text: (row.length != "" ? row.length + (row.album != "" || row.file != "" ? "  ·  " : "") : "")
-                                            + (row.album != "" ? row.album : row.file);
-                                        color: card.csub; font-size: 11px; overflow: elide; } }
-                                // Artist field — fixed uniform width across every row
-                                // (single names are short; multi-artist gets a dropdown).
-                                // Artist field — fixed 156×34 box; the ComboBox is inset
-                                // inside the accent outline so the two align exactly.
-                                if row.artists.length > 1: VerticalLayout { alignment: center; horizontal-stretch: 0;
-                                    Rectangle { width: 156px; height: 34px; border-radius: Surface.rr(9px, self.width, self.height); border-width: 1.5px; border-color: #8b5cf6; background: card.cbg;
-                                        ComboBox { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px;
-                                            model: row.artists; current-value: row.main-artist;
-                                            selected(v) => { root.dl-set-main-artist(row.abs-index, v); } } } }
-                                if row.artists.length <= 1: VerticalLayout { alignment: center; horizontal-stretch: 0;
-                                    Rectangle { width: 156px; height: 34px; border-radius: Surface.rr(9px, self.width, self.height); border-width: 1px; border-color: Theme.dark ? MusicTheme.line : #e2e8f0; background: card.cbg;
-                                        Text { text: row.main-artist; color: card.cart; font-size: 12px; overflow: elide; width: parent.width - 20px; horizontal-alignment: center; vertical-alignment: center; } } }
-                                // Status pill — color-filled, one word (done / failed / skipped / …).
-                                VerticalLayout { alignment: center; Rectangle {
-                                    height: 22px; border-radius: Surface.rr(11px, self.width, self.height); horizontal-stretch: 0;
-                                    background: card.sc.with-alpha(0.18); border-width: 1px; border-color: card.sc.with-alpha(0.55);
-                                    HorizontalLayout { padding-left: 11px; padding-right: 11px;
-                                        Text { text: row.stage; color: card.sc; font-size: 10px; font-weight: 800; vertical-alignment: center; } } } }
-                                // Retry — only when the row failed. Re-downloads just this track.
-                                if row.stage == "failed": VerticalLayout { alignment: center; DlBtn { icon: Icons.rotate-cw; label: "Retry"; tint: #f59e0b; clicked => { root.dl-retry(row.abs-index); } } }
-                                VerticalLayout { alignment: center; Text { text: Math.round(row.percent) + "%"; color: card.csub; font-size: 11px; min-width: 36px; horizontal-alignment: right; } }
-                            }
+                          // Light theme = pure white card + black text; dark/oled
+                          // keep the surface tokens.
+                          property <color> cbg: Theme.dark ? MusicTheme.surf1 : #ffffff;
+                          property <color> ctext: Theme.dark ? MusicTheme.fg : #0b0f17;
+                          property <color> csub: Theme.dark ? MusicTheme.fg-dim2 : #475569;
+                          property <color> cart: Theme.dark ? MusicTheme.fg-mute : #334155;
+                          property <color> sc:
+                              row.stage == "done" ? #22c55e :
+                              row.stage == "failed" ? #ef4444 :
+                              row.stage == "skipped" ? #64748b :
+                              row.stage == "in library" ? #0ea5e9 :
+                              row.stage == "queued" ? #3b82f6 :
+                              #8b5cf6;
+                          // Running = the stages with a live percentage. The pill
+                          // shows the number then, the word otherwise.
+                          property <bool> busy: row.stage == "downloading" || row.stage == "searching"
+                              || row.stage == "tagging";
+                          height: 56px; vertical-stretch: 0;
+                          border-radius: Surface.rr(12px, self.width, self.height);
+                          background: row.selected ? card.sc.with-alpha(Theme.dark ? 0.10 : 0.06) : card.cbg;
+                          border-width: 1px;
+                          border-color: row.selected ? card.sc.with-alpha(0.45)
+                              : (Theme.dark ? MusicTheme.line : #e2e8f0);
+                          clip: true;
+                          animate background, border-color { duration: MusicMotion.fast; }
+                          HorizontalLayout { padding-left: 10px; padding-right: 14px; spacing: 10px;
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                              CheckBox { checked: row.selected; toggled => { root.dl-toggle-row(row.abs-index); } } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                              Rectangle { width: 40px; height: 40px; border-radius: Surface.rr(8px, self.width, self.height);
+                                background: MusicTheme.surf-thumb; clip: true;
+                                if row.thumb.width > 0: Image { source: row.thumb; width: 40px; height: 40px; image-fit: cover; }
+                                if row.thumb.width <= 0: AppIcon { source: Icons.music; tint: MusicTheme.fg-mute; width: 16px; height: 16px; } } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
+                              Text { text: row.title; color: card.ctext; font-size: 13px; font-weight: 600; overflow: elide; }
+                              // Length (provider metadata) leads the sub-line, then album/file.
+                              Text { text: (row.length != "" ? row.length + (row.album != "" || row.file != "" ? "  ·  " : "") : "")
+                                      + (row.album != "" ? row.album : row.file);
+                                color: card.csub; font-size: 11px; overflow: elide; } }
+                            // Artist — fixed 156px so every row lines up under the
+                            // header. Multi-artist gets a dropdown, single a label.
+                            if row.artists.length > 1: VerticalLayout { alignment: center; horizontal-stretch: 0;
+                              // Same hairline as the single-artist cell beside
+                              // it — a violet outline on one row in five read as
+                              // an alert rather than as "this one has a choice".
+                              Rectangle { width: 156px; height: 32px; border-radius: Surface.rr(9px, self.width, self.height);
+                                border-width: 1px; border-color: Theme.dark ? MusicTheme.line : #e2e8f0;
+                                background: card.cbg;
+                                ComboBox { x: 2px; y: 2px; width: parent.width - 4px; height: parent.height - 4px;
+                                  model: row.artists; current-value: row.main-artist;
+                                  selected(v) => { root.dl-set-main-artist(row.abs-index, v); } } } }
+                            if row.artists.length <= 1: VerticalLayout { alignment: center; horizontal-stretch: 0;
+                              Rectangle { width: 156px; height: 32px; border-radius: Surface.rr(9px, self.width, self.height);
+                                border-width: 1px; border-color: Theme.dark ? MusicTheme.line : #e2e8f0; background: card.cbg;
+                                Text { text: row.main-artist; color: card.cart; font-size: 12px; overflow: elide;
+                                  width: parent.width - 20px; horizontal-alignment: center; vertical-alignment: center; } } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                              DlStage { stage: row.stage; percent: row.percent; tint: card.sc; running: card.busy; } }
+                            // Retry — only when the row failed. Re-downloads just this track.
+                            if row.stage == "failed": VerticalLayout { alignment: center; horizontal-stretch: 0;
+                              DlBtn { icon: Icons.rotate-cw; label: ""; tint: #f59e0b; clicked => { root.dl-retry(row.abs-index); } } }
+                          }
                         }
+                      }
+
+                      // Downloaded — the old modal, inline.
+                      if dlpane.dl-tab == "downloaded": VerticalLayout { spacing: 6px;
+                        for e[i] in root.dl-history: Rectangle {
+                          height: 54px; vertical-stretch: 0;
+                          border-radius: Surface.rr(10px, self.width, self.height);
+                          background: MusicTheme.surf1;
+                          border-width: 1px; border-color: MusicTheme.line;
+                          HorizontalLayout { padding-left: 14px; padding-right: 10px; spacing: 10px;
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                              Rectangle { width: 34px; height: 34px; border-radius: Surface.rr(9px, self.width, self.height);
+                                background: #6366f126; border-width: 1px; border-color: #6366f166;
+                                AppIcon { source: Icons.music; tint: #818cf8; width: 15px; height: 15px; } } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
+                              Text { text: e.title; color: MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; }
+                              Text { text: e.artists + (e.album != "" ? "  ·  " + e.album : "")
+                                  + (e.provider != "" ? "  ·  " + e.provider : "") + "  ·  " + e.when;
+                                color: MusicTheme.fg-dim2; font-size: 11px; overflow: elide; } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                              DlBtn { icon: Icons.folder-open; label: ""; tint: #3b82f6; clicked => { root.dl-history-reveal(e.path); } } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                              DlBtn { icon: Icons.play; label: ""; tint: #22c55e; clicked => { root.dl-history-play(e.path, e.title, e.artists); } } }
+                          } }
+                      }
+
+                      // Searches — the other old modal, inline.
+                      if dlpane.dl-tab == "searches": VerticalLayout { spacing: 6px;
+                        for e[i] in root.dl-searches: Rectangle {
+                          height: 54px; vertical-stretch: 0;
+                          border-radius: Surface.rr(10px, self.width, self.height);
+                          background: MusicTheme.surf1;
+                          border-width: 1px; border-color: MusicTheme.line;
+                          HorizontalLayout { padding-left: 12px; padding-right: 10px; spacing: 10px;
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                              Rectangle { width: 66px; height: 22px; border-radius: Surface.rr(11px, self.width, self.height);
+                                background: #6366f133; border-width: 1px; border-color: #6366f180;
+                                Text { text: e.kind; color: #818cf8; font-size: 10px; font-weight: 700;
+                                  horizontal-alignment: center; vertical-alignment: center; } } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
+                              Text { text: e.title != "" ? e.title : e.url; color: MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; }
+                              Text { text: (e.provider != "" ? e.provider + "  ·  " : "") + e.when;
+                                color: MusicTheme.fg-dim2; font-size: 11px; overflow: elide; } }
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                              DlBtn { icon: Icons.download; label: "Use"; tint: #8b5cf6;
+                                clicked => { root.dl-url = e.url; root.dl-url-changed(e.url);
+                                  root.dl-use-search(e.url); dlpane.dl-tab = "queue"; } } }
+                          } }
+                      }
+
+                      // ── empty states ─────────────────────────────────────────
+                      // The queue's own empty state is NOT here — it sits under
+                      // the scroll area so it lands at the foot of the tab.
+                      if dlpane.dl-tab == "downloaded" && root.dl-history.length == 0: VerticalLayout {
+                        padding-top: 54px; padding-bottom: 54px; alignment: center;
+                        Text { text: "Nothing downloaded yet."; color: MusicTheme.fg-dim2;
+                          font-size: 13px; horizontal-alignment: center; } }
+                      if dlpane.dl-tab == "searches" && root.dl-searches.length == 0: VerticalLayout {
+                        padding-top: 54px; padding-bottom: 54px; alignment: center;
+                        Text { text: "No searches yet."; color: MusicTheme.fg-dim2;
+                          font-size: 13px; horizontal-alignment: center; } }
                     }
-                }
-                if root.dl-rows.length == 0: Text { text: "No tracks yet — resolve a URL to preview, then download."; color: MusicTheme.fg-dim2; font-size: 13px; }
+                  }
+
+                  // ── queue empty state, at the FOOT of the tab ──────────────
+                  // Below the scroll area rather than inside it: an empty table
+                  // has nothing to scroll, and this then sits on the bottom edge
+                  // instead of floating in the middle of the void.
+                  if dlpane.dl-tab == "queue" && root.dl-rows.length == 0: VerticalLayout {
+                    vertical-stretch: 0;
+                    padding-left: 24px; padding-right: 24px;
+                    padding-top: 18px; padding-bottom: 26px; spacing: 12px;
+                    HorizontalLayout { alignment: center;
+                      Rectangle { width: 74px; height: 74px; border-radius: 37px; horizontal-stretch: 0;
+                        background: @linear-gradient(135deg, #ec4899, #8b5cf6);
+                        Rectangle { width: 62px; height: 62px; border-radius: 31px;
+                          x: 6px; y: 6px; background: MusicTheme.surf0;
+                          AppIcon { source: Icons.download; tint: #ffffff; width: 26px; height: 26px;
+                            x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } } }
+                    Text { text: "Nothing resolved yet"; color: MusicTheme.fg; font-size: 16px;
+                      font-weight: 800; horizontal-alignment: center; }
+                    Text { text: "Paste a track, album or playlist link in the panel on the right — or switch it to Search and look something up. Whatever comes back lands in this table.";
+                      color: MusicTheme.fg-dim2; font-size: 12.5px; horizontal-alignment: center;
+                      wrap: word-wrap; }
+                    // Which links actually resolve. Saying it here beats finding
+                    // out from an "Unsupported link" badge after the paste.
+                    Text { text: "Resolves: Spotify · Apple Music · YT Music · YouTube · Amazon Music · SoundCloud · Deezer · Tidal";
+                      color: MusicTheme.fg-mute; font-size: 11px; horizontal-alignment: center;
+                      wrap: word-wrap; }
+                    // Credits, moved off the foot of the rail. Four short lines
+                    // rather than two wrapped paragraphs — this is the one place
+                    // on the page with room to say it plainly.
+                    Rectangle { height: 6px; }
+                    Text { text: "© 2026 Tulipix — for personal use only.";
+                      color: MusicTheme.fg-mute; font-size: 10.5px; horizontal-alignment: center; }
+                    Text { text: "Downloads powered by yt-dlp.";
+                      color: MusicTheme.fg-mute; font-size: 10.5px; horizontal-alignment: center; }
+                    Text { text: "Respect artists and copyright.";
+                      color: MusicTheme.fg-mute; font-size: 10.5px; horizontal-alignment: center; }
+                    Text { text: "Buy the music you love.";
+                      color: MusicTheme.fg-mute; font-size: 10.5px; horizontal-alignment: center; }
+                  }
+
+                  // ── pager for the two history tabs ─────────────────────────
+                  if dlpane.dl-tab != "queue": Rectangle {
+                    height: 50px; vertical-stretch: 0; background: MusicTheme.surf1;
+                    HorizontalLayout { padding-left: 14px; padding-right: 14px; spacing: 10px;
+                      VerticalLayout { alignment: center; Text {
+                        text: (dlpane.dl-tab == "downloaded" ? root.dl-history.length : root.dl-searches.length) + " shown";
+                        color: MusicTheme.fg-mute; font-size: 11px; font-weight: 700; } }
+                      Rectangle { horizontal-stretch: 1; }
+                      VerticalLayout { alignment: center; DlBtn { icon: Icons.chevron-left; label: ""; tint: #64748b;
+                        clicked => { if (dlpane.dl-tab == "downloaded") { root.dl-open-history(root.dl-history-page - 1); }
+                          else { root.dl-open-searches(root.dl-search-page - 1); } } } }
+                      VerticalLayout { alignment: center; Text {
+                        text: (dlpane.dl-tab == "downloaded"
+                          ? (root.dl-history-page + 1) + " / " + root.dl-history-pages
+                          : (root.dl-search-page + 1) + " / " + root.dl-search-pages);
+                        color: MusicTheme.fg-dim2; font-size: 12px; font-weight: 700; } }
+                      VerticalLayout { alignment: center; DlBtn { icon: Icons.chevron-right; label: ""; tint: #64748b;
+                        clicked => { if (dlpane.dl-tab == "downloaded") { root.dl-open-history(root.dl-history-page + 1); }
+                          else { root.dl-open-searches(root.dl-search-page + 1); } } } }
+                    }
                   }
                 }
-                // ── Footer — copyright + yt-dlp credit ──────────────────────
-                VerticalLayout { alignment: center; padding-top: 16px; spacing: 3px;
-                    Text { text: "© 2026 Tulipix — for personal use only.";
-                        color: MusicTheme.fg-mute; font-size: 11px; horizontal-alignment: center; }
-                    Text { text: "Downloads powered by yt-dlp. Respect artists and copyright — buy the music you love.";
-                        color: MusicTheme.fg-mute; font-size: 11px; horizontal-alignment: center; }
+              }
+            }
+
+            // ══ RIGHT — the control rail ═════════════════════════════════
+            // Everything you set lives here, in one column, so the table can
+            // start at the top of the page instead of below four stacked cards.
+            Rectangle {
+              width: dlpane.rail-w; horizontal-stretch: 0;
+              border-radius: Surface.rr(18px, self.width, self.height);
+              background: MusicTheme.surf0;
+              border-width: 1.5px; border-color: MusicTheme.line;
+              drop-shadow-blur: Theme.dark ? 26px : 0px;
+              drop-shadow-color: Theme.dark ? #00000045 : transparent;
+              clip: true;
+              HorizontalLayout {
+              padding-right: dlpane.rail-pad;
+              ScrollView {
+                VerticalLayout {
+                  spacing: 0px; alignment: start;
+
+                  // ── source ───────────────────────────────────────────────
+                  DlRailSec {
+                    VerticalLayout { padding: 14px; spacing: 10px;
+                      DlRailTitle { label: "SOURCE"; tint: #ec4899; }
+                      // Mode toggle — Search (yt-dlp ytsearch) vs URL (paste +
+                      // resolve). Only the active mode carries a fill.
+                      HorizontalLayout { spacing: 6px; height: 34px;
+                        Rectangle { horizontal-stretch: 1; border-radius: Surface.rr(10px, self.width, self.height);
+                          background: root.dl-mode == "url" ? #8b5cf6 : (mdur.has-hover ? #8b5cf622 : transparent);
+                          border-width: 1.5px; border-color: #8b5cf6;
+                          animate background { duration: MusicMotion.fast; }
+                          mdur := TouchArea { mouse-cursor: pointer; clicked => { root.dl-mode = "url"; } }
+                          HorizontalLayout { alignment: center; spacing: 6px;
+                            VerticalLayout { alignment: center; AppIcon { source: Icons.clipboard;
+                              tint: root.dl-mode == "url" ? #ffffff : #8b5cf6; width: 14px; height: 14px; } }
+                            VerticalLayout { alignment: center; Text { text: "Link";
+                              color: root.dl-mode == "url" ? #ffffff : #8b5cf6; font-size: 12px; font-weight: 800; } } } }
+                        Rectangle { horizontal-stretch: 1; border-radius: Surface.rr(10px, self.width, self.height);
+                          background: root.dl-mode == "search" ? #06b6d4 : (mdsr.has-hover ? #06b6d422 : transparent);
+                          border-width: 1.5px; border-color: #06b6d4;
+                          animate background { duration: MusicMotion.fast; }
+                          mdsr := TouchArea { mouse-cursor: pointer; clicked => { root.dl-mode = "search"; } }
+                          HorizontalLayout { alignment: center; spacing: 6px;
+                            VerticalLayout { alignment: center; AppIcon { source: Icons.search;
+                              tint: root.dl-mode == "search" ? #ffffff : #06b6d4; width: 14px; height: 14px; } }
+                            VerticalLayout { alignment: center; Text { text: "Search";
+                              color: root.dl-mode == "search" ? #ffffff : #06b6d4; font-size: 12px; font-weight: 800; } } } }
+                      }
+                      // The field. Paste key on the left, then the input; a
+                      // long URL scrolls inside the clip rather than stretching
+                      // the row — min-width:0 is what stops the TextInput's
+                      // content width from driving the layout.
+                      Rectangle { height: 40px; width: dlpane.rail-box;
+                        border-radius: Surface.rr(11px, self.width, self.height); clip: true;
+                        background: #ffffff; border-width: 1.5px; border-color: #8b5cf6;
+                        HorizontalLayout { padding-left: 5px; padding-right: 10px; spacing: 6px;
+                          VerticalLayout { alignment: center; horizontal-stretch: 0;
+                            Rectangle { width: 30px; height: 30px; border-radius: Surface.rr(8px, self.width, self.height);
+                              background: pst.pressed ? #7c3aed : (pst.has-hover ? #8b5cf6 : #ede9fe);
+                              animate background { duration: MusicMotion.fast; }
+                              AppIcon { source: Icons.clipboard; tint: (pst.has-hover || pst.pressed) ? #ffffff : #7c3aed;
+                                width: 14px; height: 14px; }
+                              pst := TouchArea { mouse-cursor: pointer;
+                                clicked => { urlbox.focus(); urlbox.select-all(); urlbox.paste(); root.dl-url-changed(urlbox.text); } } } }
+                          Rectangle { horizontal-stretch: 1; min-width: 0px; clip: true;
+                            urlbox := TextInput { width: 100%; height: 100%;
+                              vertical-alignment: center;
+                              color: #1f2937; font-size: 13px; single-line: true;
+                              text <=> root.dl-url;
+                              edited => { root.dl-url-changed(self.text); }
+                              accepted => { if (root.dl-mode == "search") { root.dl-search(); } else { root.dl-resolve(); } } } }
+                        } }
+                      // Provider — the search backend picker in search mode, the
+                      // detected-provider badge in link mode. Full width on its
+                      // own line: at rail width there is no room beside the field.
+                      if root.dl-mode == "search": DlSelect {
+                        box-width: dlpane.rail-box; height: 34px;
+                        tint: root.dl-search-provider == "Spotify" ? #1db954 : #ff3b30;
+                        model: ["YT Music", "Spotify"];
+                        current: root.dl-search-provider;
+                        selected(v) => { root.dl-search-provider = v; } }
+                      if root.dl-mode == "url" && root.dl-provider-badge != "": pbadge := Rectangle {
+                        property <color> pc:
+                            root.dl-provider-badge == "Spotify" ? #1db954 :
+                            root.dl-provider-badge == "Apple" ? #fa2d48 :
+                            root.dl-provider-badge == "YT Music" ? #ff3b30 :
+                            root.dl-provider-badge == "Amazon Music" ? #00a8e1 :
+                            root.dl-provider-badge == "SoundCloud" ? #ff5500 :
+                            root.dl-provider-badge == "Deezer" ? #a238ff :
+                            root.dl-provider-badge == "Tidal" ? #22d3ee :
+                            #8b5cf6;
+                        height: 32px; border-radius: Surface.rr(9px, self.width, self.height);
+                        background: #000000; border-width: 1.5px; border-color: pbadge.pc;
+                        HorizontalLayout { alignment: center; spacing: 7px; padding-left: 10px; padding-right: 10px;
+                          VerticalLayout { alignment: center; Rectangle { width: 8px; height: 8px;
+                            border-radius: 4px; background: pbadge.pc; } }
+                          VerticalLayout { alignment: center; Text {
+                            text: root.dl-provider-badge + (root.dl-kind != "" ? "  ·  " + root.dl-kind : "");
+                            color: #ffffff; font-size: 12px; font-weight: 800; overflow: elide; } } } }
+                      if root.dl-mode == "url" && root.dl-url != "" && root.dl-provider-badge == "": Rectangle {
+                        height: 32px; border-radius: Surface.rr(9px, self.width, self.height);
+                        background: #000000; border-width: 1.5px; border-color: #ef4444;
+                        Text { text: "Unsupported link"; color: #ef4444; font-size: 12px; font-weight: 800;
+                          horizontal-alignment: center; vertical-alignment: center; } }
+                      // Resolve is a single opaque fetch, so this is an
+                      // INDETERMINATE sweep that loops while status ==
+                      // "resolving" and vanishes the instant the queue is ready.
+                      if root.dl-status == "resolving": Rectangle {
+                        // Explicit width, like the URL field above it: appearing
+                        // mid-layout, this bar was reporting a width of its own
+                        // and shoving the rail out from under the pane.
+                        width: dlpane.rail-box;
+                        height: 8px; border-radius: 4px; clip: true;
+                        background: MusicTheme.surf1; border-width: 1px; border-color: #8b5cf655;
+                        property <float> t: Math.mod(animation-tick() / 1400ms, 1.0);
+                        Rectangle { width: parent.width * 0.32; height: 100%; border-radius: 4px;
+                          x: (parent.width + self.width) * parent.t - self.width;
+                          background: @linear-gradient(90deg, #8b5cf600, #8b5cf6 45%, #ec4899 55%, #ec489900); } }
+                      // While a fetch is in flight the same button is the only
+                      // way out of it — starting a second resolve on top of the
+                      // first is never what the click meant.
+                      HorizontalLayout { spacing: 8px;
+                        if root.dl-status == "resolving": DlBtn { horizontal-stretch: 1; icon: Icons.x;
+                          label: "Cancel"; tint: #ef4444;
+                          clicked => { root.dl-cancel-resolve(); } }
+                        if root.dl-status != "resolving": DlBtn { horizontal-stretch: 1; icon: Icons.search;
+                          label: root.dl-mode == "search" ? "Search" : "Resolve";
+                          tint: root.dl-mode == "search" ? #06b6d4 : #8b5cf6;
+                          clicked => { dlpane.dl-tab = "queue";
+                            if (root.dl-mode == "search") { root.dl-search(); } else { root.dl-resolve(); } } } }
+                      // The YT provider resolves any YouTube link; when it does
+                      // not look like tagged music, warn but let it through.
+                      if root.dl-yt-warn: Rectangle {
+                        border-radius: Surface.rr(10px, self.width, self.height);
+                        background: #f59e0b1a; border-width: 1.5px; border-color: #f59e0b;
+                        VerticalLayout { padding: 10px; spacing: 6px;
+                          HorizontalLayout { spacing: 7px;
+                            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                              AppIcon { source: Icons.triangle-alert; tint: #f59e0b; width: 14px; height: 14px; } }
+                            Text { text: "Not tagged as music"; color: #f59e0b; font-size: 11.5px; font-weight: 800;
+                              vertical-alignment: center; } }
+                          Text { text: "It will still download — for regular videos use the YouTube section.";
+                            color: MusicTheme.fg-dim2; font-size: 11px; wrap: word-wrap; } } }
+                    }
+                  }
+
+                  // ── destination ──────────────────────────────────────────
+                  DlRailSec {
+                    VerticalLayout { padding: 14px; spacing: 10px;
+                      DlRailTitle { label: "SAVE TO"; tint: #f59e0b; }
+                      // Field and button on ONE line. The field is sized off the
+                      // rail rather than off its text: a deep save path is a
+                      // single long token, and a Text that reports its full
+                      // width as a minimum drags the whole rail out with it.
+                      // Fixed width + clip means a long path runs on under the
+                      // button's edge instead, which is what elide needs to work.
+                      HorizontalLayout { spacing: 8px; height: 36px;
+                        Rectangle { width: dlpane.rail-box - 128px;
+                          border-radius: Surface.rr(10px, self.width, self.height); clip: true;
+                          background: #ffffff; border-width: 1.5px; border-color: #f59e0b;
+                          HorizontalLayout { padding-left: 11px; padding-right: 11px;
+                            Text { text: root.dl-dest; color: #374151; font-size: 11.5px;
+                              overflow: elide; vertical-alignment: center; } } }
+                        DlBtn { icon: Icons.folder; label: "Change"; tint: #ea580c;
+                          horizontal-stretch: 1;
+                          clicked => { root.dl-pick-folder(); } } }
+                    }
+                  }
+
+                  // ── audio ────────────────────────────────────────────────
+                  DlRailSec {
+                    VerticalLayout { padding: 14px; spacing: 10px;
+                      DlRailTitle { label: "AUDIO"; tint: #8b5cf6; }
+                      HorizontalLayout { spacing: 8px;
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                          Text { text: "Format"; color: dlpane.ftitle; font-size: 12px; font-weight: 800; } }
+                        Rectangle { horizontal-stretch: 1; min-width: 4px; }
+                        DlSelect { box-width: 96px; height: 34px; tint: #8b5cf6;
+                          model: ["opus", "m4a", "mp3", "flac", "wav"];
+                          current: root.dl-format;
+                          selected(v) => { root.dl-set-format(v); } } }
+                      HorizontalLayout { spacing: 8px;
+                        VerticalLayout { alignment: center; horizontal-stretch: 0;
+                          Text { text: "Bitrate"; color: dlpane.ftitle; font-size: 12px; font-weight: 800; } }
+                        Rectangle { horizontal-stretch: 1; min-width: 4px; }
+                        DlSelect { box-width: 96px; height: 34px; tint: #f59e0b;
+                          model: ["128", "192", "256", "320"];
+                          current: (root.dl-bitrate == 192 ? "192" : root.dl-bitrate == 256 ? "256"
+                            : root.dl-bitrate == 320 ? "320" : "128") + " k";
+                          selected(v) => { root.dl-set-bitrate(v); } } }
+                      if root.dl-format == "flac" || root.dl-format == "wav": Text {
+                        text: "Lossless — bitrate does not apply.";
+                        color: MusicTheme.fg-mute; font-size: 10.5px; wrap: word-wrap; }
+                    }
+                  }
+
+                  // Naming & credits used to be a section here. It belongs with
+                  // the rows it renames, so it lives on the queue toolbar now —
+                  // left of the pager, next to the table it acts on.
+
+                  // ── performance ──────────────────────────────────────────
+                  DlRailSec {
+                    VerticalLayout { padding: 14px; spacing: 10px;
+                      DlRailTitle { label: "PERFORMANCE"; tint: #22c55e; }
+                      DlStepper { label: "Parallel tracks"; tint: #22c55e; value: root.dl-parallel;
+                        min: 1; max: 4; changed(v) => { root.dl-set-parallel(v); } }
+                      DlStepper { label: "Threads per track"; tint: #3b82f6; value: root.dl-threads;
+                        min: 1; max: 8; changed(v) => { root.dl-set-threads(v); } }
+                    }
+                  }
+
+                  // ── output ───────────────────────────────────────────────
+                  DlRailSec { last: true;
+                    VerticalLayout { padding: 14px; spacing: 10px;
+                      DlRailTitle { label: "YT-DLP OUTPUT"; tint: #0ea5e9; }
+                      // Fixed width, like every other full-bleed control in the
+                      // rail: yt-dlp lines are long and unbroken, and a no-wrap
+                      // Text reports that length as a width it needs.
+                      Rectangle { width: dlpane.rail-box; height: 92px;
+                        border-radius: Surface.rr(10px, self.width, self.height);
+                        background: #0b0f17; border-width: 1px; border-color: #1e293b; clip: true;
+                        VerticalLayout { padding: 9px; alignment: end;
+                          Text { text: root.dl-cli == "" ? "No activity yet." : root.dl-cli;
+                            color: root.dl-cli == "" ? #64748b : #a7f3d0;
+                            font-size: 10.5px; font-family: "monospace"; wrap: no-wrap; } } }
+                      HorizontalLayout { spacing: 8px;
+                        DlBtn { horizontal-stretch: 1; icon: Icons.maximize; label: "Expand";
+                          tint: #0ea5e9; clicked => { root.dl-cli-open = true; } }
+                        DlBtn { horizontal-stretch: 1; icon: Icons.trash; label: "Clear";
+                          tint: #64748b; clicked => { root.dl-cli-clear(); } } }
+                    }
+                  }
+
                 }
+              }
               }
             }
           }
 
-          // ── Download History popup ─────────────────────────────────────────
-          if root.dl-history-open: Rectangle { background: #00000099;
-              init => { hfs.focus(); }
-              hfs := FocusScope { width: 0px; height: 0px;
-                  key-pressed(e) => { if (e.text == Key.Escape) { root.dl-history-open = false; return accept; } return reject; } }
-              TouchArea { clicked => { root.dl-history-open = false; } }
-              ModalFrost { accent: #8b5cf6;
-                  width: Math.min(760px, parent.width - 80px);
-                  height: Math.min(600px, parent.height - 80px);
+          // ── Clear confirmations ────────────────────────────────────────────
+          // The Downloaded and Searches lists are tabs on the table now, not
+          // modal windows — but wiping either is destructive, so those two keep
+          // a confirm. `dl-history-open` / `dl-search-open` are no longer read
+          // by the UI; Rust still sets them and they are simply ignored.
+          if root.dl-history-clear-open: Rectangle { background: #000000aa;
+              init => { hcfs.focus(); }
+              hcfs := FocusScope { width: 0px; height: 0px;
+                  key-pressed(e) => { if (e.text == Key.Escape) { root.dl-history-clear-open = false; return accept; } return reject; } }
+              TouchArea { clicked => { root.dl-history-clear-open = false; } }
+              ModalFrost { accent: #ef4444; width: 380px; height: 200px;
                   x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                  TouchArea {} // swallow clicks inside the modal
-                  VerticalLayout { padding: 22px; spacing: 14px;
-                      HorizontalLayout { spacing: 10px;
-                          VerticalLayout { alignment: center; AppIcon { source: Icons.clock; tint: MusicTheme.fg; width: 18px; height: 18px; } }
-                          VerticalLayout { alignment: center; Text { text: "Downloaded"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; } }
-                          Rectangle { horizontal-stretch: 1; }
-                          // Counter (rows shown on this page) — left of Close.
-                          VerticalLayout { alignment: center; Rectangle { height: 26px; border-radius: Surface.rr(13px, self.width, self.height); background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
-                              HorizontalLayout { padding-left: 12px; padding-right: 12px;
-                                  Text { text: root.dl-history.length + " shown"; color: MusicTheme.fg-dim2; font-size: 11px; font-weight: 700; vertical-alignment: center; } } } }
-                          // Clear — wipes the history records (not the files), behind a confirm.
-                          if root.dl-history.length > 0: DlBtn { icon: Icons.trash; label: "Clear"; tint: #ef4444; clicked => { root.dl-history-clear-open = true; } }
-                          DlBtn { icon: Icons.x; label: "Close"; tint: #64748b; clicked => { root.dl-history-open = false; } } }
-                      ScrollView { vertical-stretch: 1;
-                          VerticalLayout { spacing: 6px;
-                              if root.dl-history.length == 0: Text { text: "Nothing downloaded yet."; color: MusicTheme.fg-dim2; font-size: 13px; }
-                              for e[i] in root.dl-history: Rectangle { height: 54px; border-radius: Surface.rr(10px, self.width, self.height); background: MusicTheme.surf1;
-                                  HorizontalLayout { padding-left: 12px; padding-right: 10px; spacing: 10px;
-                                      VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
-                                          Text { text: e.title; color: MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; }
-                                          Text { text: e.artists + (e.album != "" ? "  ·  " + e.album : "") + "  ·  " + e.when; color: MusicTheme.fg-dim2; font-size: 11px; overflow: elide; } }
-                                      VerticalLayout { alignment: center; DlBtn { icon: Icons.folder-open; label: "Open"; tint: #3b82f6; clicked => { root.dl-history-reveal(e.path); } } }
-                                      VerticalLayout { alignment: center; DlBtn { icon: Icons.play; label: "Play"; tint: #22c55e; clicked => { root.dl-history-play(e.path, e.title, e.artists); } } }
-                                  } }
-                          } }
+                  TouchArea {}
+                  VerticalLayout { padding: 22px; spacing: 12px; alignment: center;
+                      Text { text: "Clear download history?"; color: MusicTheme.fg; font-size: 16px; font-weight: 800; horizontal-alignment: center; }
+                      Text { text: "Removes the history records only — your downloaded files stay on disk."; color: MusicTheme.fg-dim2; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; }
                       HorizontalLayout { spacing: 10px; alignment: center;
-                          DlBtn { icon: Icons.chevron-left; label: "Prev"; tint: #64748b; clicked => { root.dl-open-history(root.dl-history-page - 1); } }
-                          VerticalLayout { alignment: center; Text { text: (root.dl-history-page + 1) + " / " + root.dl-history-pages; color: MusicTheme.fg-dim2; font-size: 12px; } }
-                          DlBtn { icon: Icons.chevron-right; label: "Next"; tint: #64748b; clicked => { root.dl-open-history(root.dl-history-page + 1); } } }
-                  }
-              }
-              // Clear-history confirmation overlay.
-              if root.dl-history-clear-open: Rectangle { background: #000000aa;
-                  TouchArea { clicked => { root.dl-history-clear-open = false; } }
-                  ModalFrost { accent: #ef4444; width: 380px; height: 200px;
-                      x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                      TouchArea {}
-                      VerticalLayout { padding: 22px; spacing: 12px; alignment: center;
-                          Text { text: "Clear download history?"; color: MusicTheme.fg; font-size: 16px; font-weight: 800; horizontal-alignment: center; }
-                          Text { text: "Removes the history records only — your downloaded files stay on disk."; color: MusicTheme.fg-dim2; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; }
-                          HorizontalLayout { spacing: 10px; alignment: center;
-                              DlBtn { icon: Icons.x; label: "Cancel"; tint: #64748b; clicked => { root.dl-history-clear-open = false; } }
-                              DlBtn { icon: Icons.trash; label: "Clear"; tint: #ef4444; clicked => { root.dl-clear-history(); root.dl-history-clear-open = false; } } }
-                      }
+                          DlBtn { icon: Icons.x; label: "Cancel"; tint: #64748b; clicked => { root.dl-history-clear-open = false; } }
+                          DlBtn { icon: Icons.trash; label: "Clear"; tint: #ef4444; clicked => { root.dl-clear-history(); root.dl-history-clear-open = false; } } }
                   }
               }
           }
 
-          // ── Search History popup ───────────────────────────────────────────
-          if root.dl-search-open: Rectangle { background: #00000099;
-              init => { sfs.focus(); }
-              sfs := FocusScope { width: 0px; height: 0px;
-                  key-pressed(e) => { if (e.text == Key.Escape) { root.dl-search-open = false; return accept; } return reject; } }
-              TouchArea { clicked => { root.dl-search-open = false; } }
-              ModalFrost { accent: #6366f1;
-                  width: Math.min(760px, parent.width - 80px);
-                  height: Math.min(600px, parent.height - 80px);
+          if root.dl-search-clear-open: Rectangle { background: #000000aa;
+              init => { scfs.focus(); }
+              scfs := FocusScope { width: 0px; height: 0px;
+                  key-pressed(e) => { if (e.text == Key.Escape) { root.dl-search-clear-open = false; return accept; } return reject; } }
+              TouchArea { clicked => { root.dl-search-clear-open = false; } }
+              ModalFrost { accent: #ef4444; width: 380px; height: 200px;
                   x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
                   TouchArea {}
-                  VerticalLayout { padding: 22px; spacing: 14px;
-                      HorizontalLayout { spacing: 10px;
-                          VerticalLayout { alignment: center; AppIcon { source: Icons.search; tint: MusicTheme.fg; width: 18px; height: 18px; } }
-                          VerticalLayout { alignment: center; Text { text: "Search History"; color: MusicTheme.fg; font-size: 18px; font-weight: 800; } }
-                          Rectangle { horizontal-stretch: 1; }
-                          // Counter (rows shown on this page) — left of Close.
-                          VerticalLayout { alignment: center; Rectangle { height: 26px; border-radius: Surface.rr(13px, self.width, self.height); background: MusicTheme.surf1; border-width: 1px; border-color: MusicTheme.line;
-                              HorizontalLayout { padding-left: 12px; padding-right: 12px;
-                                  Text { text: root.dl-searches.length + " shown"; color: MusicTheme.fg-dim2; font-size: 11px; font-weight: 700; vertical-alignment: center; } } } }
-                          if root.dl-searches.length > 0: DlBtn { icon: Icons.trash; label: "Clear"; tint: #ef4444; clicked => { root.dl-search-clear-open = true; } }
-                          DlBtn { icon: Icons.x; label: "Close"; tint: #64748b; clicked => { root.dl-search-open = false; } } }
-                      ScrollView { vertical-stretch: 1;
-                          VerticalLayout { spacing: 6px;
-                              if root.dl-searches.length == 0: Text { text: "No searches yet."; color: MusicTheme.fg-dim2; font-size: 13px; }
-                              for e[i] in root.dl-searches: Rectangle { height: 54px; border-radius: Surface.rr(10px, self.width, self.height); background: MusicTheme.surf1;
-                                  HorizontalLayout { padding-left: 12px; padding-right: 10px; spacing: 10px;
-                                      VerticalLayout { alignment: center; Rectangle { width: 62px; height: 22px; border-radius: Surface.rr(11px, self.width, self.height); background: #6366f133; border-width: 1px; border-color: #6366f180;
-                                          Text { text: e.kind; color: #818cf8; font-size: 10px; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } } }
-                                      VerticalLayout { alignment: center; horizontal-stretch: 1; spacing: 2px;
-                                          Text { text: e.title != "" ? e.title : e.url; color: MusicTheme.fg; font-size: 13px; font-weight: 600; overflow: elide; }
-                                          Text { text: (e.provider != "" ? e.provider + "  ·  " : "") + e.when; color: MusicTheme.fg-dim2; font-size: 11px; overflow: elide; } }
-                                      VerticalLayout { alignment: center; DlBtn { icon: Icons.download; label: "Use"; tint: #8b5cf6; clicked => { root.dl-url = e.url; root.dl-url-changed(e.url); root.dl-use-search(e.url); root.dl-search-open = false; } } }
-                                  } }
-                          } }
+                  VerticalLayout { padding: 22px; spacing: 12px; alignment: center;
+                      Text { text: "Clear search history?"; color: MusicTheme.fg; font-size: 16px; font-weight: 800; horizontal-alignment: center; }
+                      Text { text: "Removes the saved resolved-URL list. Nothing on disk is affected."; color: MusicTheme.fg-dim2; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; }
                       HorizontalLayout { spacing: 10px; alignment: center;
-                          DlBtn { icon: Icons.chevron-left; label: "Prev"; tint: #64748b; clicked => { root.dl-open-searches(root.dl-search-page - 1); } }
-                          VerticalLayout { alignment: center; Text { text: (root.dl-search-page + 1) + " / " + root.dl-search-pages; color: MusicTheme.fg-dim2; font-size: 12px; } }
-                          DlBtn { icon: Icons.chevron-right; label: "Next"; tint: #64748b; clicked => { root.dl-open-searches(root.dl-search-page + 1); } } }
-                  }
-              }
-              // Clear-searches confirmation overlay.
-              if root.dl-search-clear-open: Rectangle { background: #000000aa;
-                  TouchArea { clicked => { root.dl-search-clear-open = false; } }
-                  ModalFrost { accent: #ef4444; width: 380px; height: 200px;
-                      x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2;
-                      TouchArea {}
-                      VerticalLayout { padding: 22px; spacing: 12px; alignment: center;
-                          Text { text: "Clear search history?"; color: MusicTheme.fg; font-size: 16px; font-weight: 800; horizontal-alignment: center; }
-                          Text { text: "Removes the saved resolved-URL list. Nothing on disk is affected."; color: MusicTheme.fg-dim2; font-size: 12px; horizontal-alignment: center; wrap: word-wrap; }
-                          HorizontalLayout { spacing: 10px; alignment: center;
-                              DlBtn { icon: Icons.x; label: "Cancel"; tint: #64748b; clicked => { root.dl-search-clear-open = false; } }
-                              DlBtn { icon: Icons.trash; label: "Clear"; tint: #ef4444; clicked => { root.dl-clear-searches(); root.dl-search-clear-open = false; } } }
-                      }
+                          DlBtn { icon: Icons.x; label: "Cancel"; tint: #64748b; clicked => { root.dl-search-clear-open = false; } }
+                          DlBtn { icon: Icons.trash; label: "Clear"; tint: #ef4444; clicked => { root.dl-clear-searches(); root.dl-search-clear-open = false; } } }
                   }
               }
           }
@@ -5807,11 +6275,12 @@ export component MusicPage inherits Rectangle {
                 // Seekbar — volume lives here too so the controls row below
                 // keeps its width for the transport + extras icons.
                 HorizontalLayout {
-                    height: 24px; vertical-stretch: 0; spacing: 12px;
-                    VerticalLayout { alignment: center; Text { text: root.pos-label; color: MusicTheme.fg-dim; font-size: 11px; width: 42px; horizontal-alignment: right; } }
+                    height: 26px; vertical-stretch: 0; spacing: 12px;
                     VerticalLayout { alignment: center; horizontal-stretch: 1;
-                        Scrubber { value: root.pos; maximum: root.dur > 0 ? root.dur : 1.0; wiggle: true; changed(v) => { root.seek(v); } } }
-                    VerticalLayout { alignment: center; Text { text: root.dur-label; color: MusicTheme.fg-dim; font-size: 11px; width: 42px; } }
+                        SeekPill { pos: root.pos; dur: root.dur;
+                            pos-label: root.pos-label; dur-label: root.dur-label;
+                            accent: root.np-accent;
+                            seek(v) => { root.seek(v); } } }
                     // Equalizer — anchored popup above the bar (click-away closes). Sits
                     // just left of the volume button, per request.
                     VerticalLayout { alignment: center; Rectangle { width: 26px; height: 26px;
@@ -5842,11 +6311,12 @@ export component MusicPage inherits Rectangle {
                                     HorizontalLayout { spacing: 8px; alignment: center;
                                         for hz[i] in ["31", "62", "125", "250", "500", "1k", "2k", "4k", "8k", "16k"]:
                                             EqBand { hz: hz; value: root.eq-bands[i]; changed(v) => { root.set-eq-band(i, v); } } } } } } } }
-                    // Volume + mute.
-                    VerticalLayout { alignment: center; PlayerBtn { tip: root.muted ? "Unmute" : "Mute"; icon: root.muted ? Icons.volume-x : Icons.volume; size: 24px; isz: 14px; active: root.muted; clicked => { root.toggle-mute(); } } }
-                    VerticalLayout { alignment: center; Rectangle { width: 100px; height: 24px;
-                        Scrubber { y: (parent.height - self.height)/2; width: 100px; value: root.volume; maximum: 130.0;
-                            fill-color: MusicTheme.fg3; changed(v) => { root.set-volume(v); } } } }
+                    // Volume — mute lives inside the pill now.
+                    VerticalLayout { alignment: center; horizontal-stretch: 0;
+                        VolPill { width: 150px; volume: root.volume; muted: root.muted;
+                            accent: root.np-accent;
+                            set-volume(v) => { root.set-volume(v); }
+                            toggle-mute => { root.toggle-mute(); } } }
                 }
                 // Controls.
                 HorizontalLayout {
@@ -6543,7 +7013,19 @@ export component MusicPage inherits Rectangle {
                                     tint: #ef4444; grad: @linear-gradient(120deg, #ef4444, #f59e0b);
                                     title: "YouTube"; sub: "Home rails";
                                     SetToggle { label: "Gradient outline on the Home rails"; on: root.yt-home-connect; tint: #ef4444; clicked => { root.toggle-yt-home-connect(); } }
-                                    SetHint { text: "The Piped instance and download folder live in the app-wide Settings page."; } }
+                                    // Which backend fetches listings. Auto is
+                                    // what the section always did: Piped first,
+                                    // yt-dlp when it does not answer.
+                                    SetHint { text: "Fetch listings with"; }
+                                    HorizontalLayout { spacing: 7px; alignment: start;
+                                        for f in [
+                                            { k: "auto",  l: "Auto" },
+                                            { k: "piped", l: "Piped" },
+                                            { k: "ytdlp", l: "yt-dlp" },
+                                        ]: SetChip {
+                                            on: root.yt-fetcher == f.k; tint: #ef4444; label: f.l;
+                                            clicked => { root.set-yt-fetcher(f.k); } } }
+                                    SetHint { text: "Piped is quick but instances go down; yt-dlp always works but spawns a process per query. The Piped instance and download folder live in the app-wide Settings page."; } }
                                 Rectangle { horizontal-stretch: 1; } }
                         } }
                 }
@@ -7572,10 +8054,9 @@ export component MusicFullscreen inherits Rectangle {
         if !root.viz-shown && !root.zlyr: Rectangle { vertical-stretch: 1; }
         Rectangle { height: 24px; }
         // Seekbar.
-        HorizontalLayout { spacing: 14px;
-            VerticalLayout { alignment: center; Text { text: pos-label; color: MusicTheme.fg-dim; font-size: 13px; width: 48px; horizontal-alignment: right; } }
-            VerticalLayout { alignment: center; horizontal-stretch: 1; Scrubber { value: pos; maximum: dur > 0 ? dur : 1.0; wiggle: true; changed(v) => { root.seek(v); } } }
-            VerticalLayout { alignment: center; Text { text: dur-label; color: MusicTheme.fg-dim; font-size: 13px; width: 48px; } } }
+        SeekPill { pos: pos; dur: dur; pos-label: pos-label; dur-label: dur-label;
+            accent: root.accent; uiscale: 1.25;
+            seek(v) => { root.seek(v); } }
         Rectangle { height: 16px; }
         // Media controls — lyrics (left) and queue (right) flank the transport.
         HorizontalLayout { alignment: center; spacing: 20px;
@@ -7626,9 +8107,11 @@ export component MusicFullscreen inherits Rectangle {
             VerticalLayout { alignment: center; PlayerBtn { icon: repeat == "one" ? Icons.repeat-1 : Icons.repeat; isz: 20px; active: repeat != "off"; clicked => { root.cycle-repeat(); } } }
             if root.yt-now-video: VerticalLayout { alignment: center;
                 YtWatchBtn { uiscale: 1.2; clicked => { root.watch-video(); } } }
-            VerticalLayout { alignment: center; PlayerBtn { icon: muted ? Icons.volume-x : Icons.volume; isz: 17px; active: muted; clicked => { root.toggle-mute(); } } }
-            VerticalLayout { alignment: center; Rectangle { width: 120px; height: 36px;
-                Scrubber { y: (parent.height - self.height)/2; width: 120px; value: volume; maximum: 130.0; fill-color: MusicTheme.fg3; changed(v) => { root.set-volume(v); } } } }
+            VerticalLayout { alignment: center; horizontal-stretch: 0;
+                VolPill { width: 172px; uiscale: 1.25; volume: volume; muted: muted;
+                    accent: root.accent;
+                    set-volume(v) => { root.set-volume(v); }
+                    toggle-mute => { root.toggle-mute(); } } }
             // Podcast playback speed cycle (zen player).
             if root.podcast-mode: VerticalLayout { alignment: center; Rectangle { width: 58px; height: 36px; border-radius: Surface.rr(18px, self.width, self.height);
                 background: zsp.has-hover ? MusicTheme.surf1 : MusicTheme.surf0; border-width: 1px; border-color: MusicTheme.line;
@@ -7910,25 +8393,11 @@ export component MusicMini inherits Rectangle {
         // the bar itself fills with theme fg (NOT the accent) so it stays
         // visible inside the accent wash on any theme (user report 2026-07-12:
         // accent-on-accent seekbar vanished on dark covers).
-        if root.embedded: Rectangle {
-            height: 26px * root.uiscale; border-radius: self.height / 2;
-            background: root.accent.with-alpha(0.20);
-            border-width: 1px; border-color: root.accent.with-alpha(0.45);
-            HorizontalLayout {
-                padding-left: 12px * root.uiscale; padding-right: 12px * root.uiscale;
-                spacing: 8px * root.uiscale;
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Text { text: pos-label; color: root.cream ? #1f1a14 : MusicTheme.fg;
-                        font-size: 10px * root.uiscale; font-weight: 700; } }
-                VerticalLayout { alignment: center; horizontal-stretch: 1;
-                    Scrubber { value: pos; maximum: dur > 0 ? dur : 1.0; wiggle: true;
-                        fill-color: root.cream ? #1f1a14 : MusicTheme.fg;
-                        track-color: (root.cream ? #1f1a14 : MusicTheme.fg).with-alpha(0.22);
-                        changed(v) => { root.seek(v); } } }
-                VerticalLayout { alignment: center; horizontal-stretch: 0;
-                    Text { text: dur-label; color: root.cream ? #1f1a14 : MusicTheme.fg;
-                        font-size: 10px * root.uiscale; font-weight: 700; } }
-            }
+        if root.embedded: SeekPill {
+            uiscale: root.uiscale; accent: root.accent;
+            ink: root.cream ? #1f1a14 : MusicTheme.fg;
+            pos: pos; dur: dur; pos-label: pos-label; dur-label: dur-label;
+            seek(v) => { root.seek(v); }
         }
         // Embedded under-seekbar visualizer (music.png) — REAL audio spectrum
         // (live FFT bands) drawn as FINE lines, frequency-colored
@@ -7938,13 +8407,10 @@ export component MusicMini inherits Rectangle {
             height: 40px * root.uiscale;
             VizView { width: 100%; height: 100%; bars: root.vis-bars; style: 5; active: root.playing; }
         }
-        if !root.embedded: Scrubber { value: pos; maximum: dur > 0 ? dur : 1.0; wiggle: true;
-            track-color: MusicTheme.line;
-            changed(v) => { root.seek(v); } }
-        if !root.embedded: HorizontalLayout {
-            Text { text: pos-label; color: MusicTheme.fg-dim; font-size: 10px * root.uiscale; }
-            Rectangle { horizontal-stretch: 1; }
-            Text { text: dur-label; color: MusicTheme.fg-dim; font-size: 10px * root.uiscale; }
+        if !root.embedded: SeekPill {
+            uiscale: root.uiscale; accent: root.accent; compact: true;
+            pos: pos; dur: dur; pos-label: pos-label; dur-label: dur-label;
+            seek(v) => { root.seek(v); }
         }
         if !root.radio-mode: HorizontalLayout { alignment: center; spacing: 12px * root.uiscale;
             PlayerBtn { icon: Icons.shuffle; size: 32px * root.uiscale; isz: 16px * root.uiscale; active: root.shuffle; solid: root.embedded; clicked => { root.toggle-shuffle(); } }
@@ -7967,33 +8433,18 @@ export component MusicMini inherits Rectangle {
                     rpb := TouchArea { mouse-cursor: pointer; clicked => { root.playpause(); } }
                     AppIcon { source: playing ? Icons.pause : Icons.play; tint: (playing || rpb.has-hover) ? #ffffff : #14141b; width: 20px * root.uiscale; height: 20px * root.uiscale; } } }
             if !root.radio-mode: VerticalLayout { alignment: center; PlayerBtn { icon: Icons.list-music; size: 32px * root.uiscale; isz: 16px * root.uiscale; active: root.face == "queue"; solid: root.embedded; clicked => { root.face = root.face == "queue" ? "" : "queue"; } } }
-            // Embedded: mute + volume live in ONE outlined pill so they read as
-            // a single unit (matches the other solid chips).
-            if root.embedded: VerticalLayout { alignment: center;
-                Rectangle { height: 32px * root.uiscale; border-radius: self.height / 2; horizontal-stretch: 0;
-                    width: 136px * root.uiscale;
-                    background: #ffffff; border-width: 1.5px; border-color: #ec4899;
-                    HorizontalLayout { padding-left: 8px * root.uiscale; padding-right: 12px * root.uiscale; spacing: 6px * root.uiscale;
-                        VerticalLayout { alignment: center;
-                            mvt := TouchArea { width: 20px * root.uiscale; height: 20px * root.uiscale; mouse-cursor: pointer;
-                                clicked => { root.toggle-mute(); }
-                                AppIcon { source: muted ? Icons.volume-x : Icons.volume;
-                                    tint: muted ? #ec4899 : (mvt.has-hover ? #ec4899 : #14141b);
-                                    width: 15px * root.uiscale; height: 15px * root.uiscale;
-                                    x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } }
-                        VerticalLayout { alignment: center; Rectangle { height: 20px * root.uiscale; horizontal-stretch: 1;
-                            // The pill is always WHITE — darken the accent fill
-                            // and keep a fixed dark track so a light cover
-                            // accent can never white-out the volume bar.
-                            Scrubber { y: (parent.height - self.height)/2; width: parent.width; value: volume; maximum: 130.0;
-                                fill-color: root.accent.darker(25%); track-color: #00000022;
-                                changed(v) => { root.set-volume(v); } } } }
-                    } } }
-            if !root.embedded: VerticalLayout { alignment: center; PlayerBtn { icon: muted ? Icons.volume-x : Icons.volume; size: 30px * root.uiscale; isz: 15px * root.uiscale; active: muted; clicked => { root.toggle-mute(); } } }
-            if !root.embedded: VerticalLayout { alignment: center; Rectangle { width: 96px * root.uiscale; height: 30px * root.uiscale;
-                Scrubber { y: (parent.height - self.height)/2; width: 96px * root.uiscale; value: volume; maximum: 130.0;
-                    fill-color: MusicTheme.fg3;
-                    changed(v) => { root.set-volume(v); } } } }
+            // Embedded: mute + volume in the same pill the seekbar above uses.
+            if root.embedded: VerticalLayout { alignment: center; horizontal-stretch: 0;
+                VolPill { width: 150px * root.uiscale; uiscale: root.uiscale;
+                    accent: root.accent; ink: root.cream ? #1f1a14 : MusicTheme.fg;
+                    volume: volume; muted: muted;
+                    set-volume(v) => { root.set-volume(v); }
+                    toggle-mute => { root.toggle-mute(); } } }
+            if !root.embedded: VerticalLayout { alignment: center; horizontal-stretch: 0;
+                VolPill { width: 126px * root.uiscale; uiscale: root.uiscale; compact: true;
+                    accent: root.accent; volume: volume; muted: muted;
+                    set-volume(v) => { root.set-volume(v); }
+                    toggle-mute => { root.toggle-mute(); } } }
             if !root.radio-mode && !root.yt-now-video: VerticalLayout { alignment: center; PlayerBtn { icon: Icons.lyrics; size: 32px * root.uiscale; isz: 16px * root.uiscale; active: root.face == "lyrics"; solid: root.embedded; clicked => { root.face = root.face == "lyrics" ? "" : "lyrics"; } } }
             VerticalLayout { alignment: center; PlayerBtn { icon: Icons.maximize; size: 32px * root.uiscale; isz: 16px * root.uiscale; solid: root.embedded; clicked => { root.open-zen(); } } } }
     }
@@ -8117,29 +8568,15 @@ export component PodcastMini inherits Rectangle {
         // Flexible gap — drops the seek + both control rows to the bottom so they
         // always sit together and fit, whatever the mini's height.
         Rectangle { vertical-stretch: 1; }
-        // 4. Seekbar — embedded gets the accent track + time pills (music parity).
-        Scrubber { value: pos; maximum: dur > 0 ? dur : 1.0;
-            track-color: root.embedded ? root.accent.with-alpha(0.30) : MusicTheme.line;
-            fill-color: root.accent;
-            changed(v) => { root.seek(v); } }
-        HorizontalLayout {
-            Rectangle {
-                height: 18px * root.uiscale; border-radius: self.height / 2; horizontal-stretch: 0;
-                background: root.embedded ? root.accent.with-alpha(0.16) : transparent;
-                border-width: root.embedded ? 1px : 0px; border-color: root.accent.with-alpha(0.35);
-                width: ppost.preferred-width + (root.embedded ? 16px * root.uiscale : 0px);
-                ppost := Text { width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center;
-                    text: pos-label; color: root.cream ? #1f1a14 : (root.embedded ? MusicTheme.fg : MusicTheme.fg-dim);
-                    font-size: 10px * root.uiscale; font-weight: root.embedded ? 700 : 400; } }
-            Rectangle { horizontal-stretch: 1; }
-            Rectangle {
-                height: 18px * root.uiscale; border-radius: self.height / 2; horizontal-stretch: 0;
-                background: root.embedded ? root.accent.with-alpha(0.16) : transparent;
-                border-width: root.embedded ? 1px : 0px; border-color: root.accent.with-alpha(0.35);
-                width: pdurt.preferred-width + (root.embedded ? 16px * root.uiscale : 0px);
-                pdurt := Text { width: 100%; height: 100%; horizontal-alignment: center; vertical-alignment: center;
-                    text: dur-label; color: root.cream ? #1f1a14 : (root.embedded ? MusicTheme.fg : MusicTheme.fg-dim);
-                    font-size: 10px * root.uiscale; font-weight: root.embedded ? 700 : 400; } } }
+        // 4. Seekbar — the app's one seek pill, elapsed and total inside it. The
+        // two separate time pills that used to sit under a bare bar were this
+        // idea half-done.
+        SeekPill {
+            uiscale: root.uiscale; accent: root.accent; compact: !root.embedded;
+            ink: root.cream ? #1f1a14 : MusicTheme.fg;
+            pos: pos; dur: dur; pos-label: pos-label; dur-label: dur-label;
+            seek(v) => { root.seek(v); }
+        }
         // 5. Transport — -15s · play/pause · +30s · speed. All same height
         //    (level), each with a 1px outline so they read as a matched set of 4.
         HorizontalLayout { alignment: center; spacing: 14px * root.uiscale;
@@ -8176,12 +8613,11 @@ export component PodcastMini inherits Rectangle {
         // 6. Bottom bar — episodes · mute+volume · summary · zen.
         HorizontalLayout { alignment: center; spacing: 8px * root.uiscale;
             PlayerBtn { icon: Icons.list-music; size: 32px * root.uiscale; isz: 16px * root.uiscale; active: root.face == "episodes"; solid: root.embedded; accent: root.accent; clicked => { root.face = root.face == "episodes" ? "" : "episodes"; } }
-            PlayerBtn { icon: muted ? Icons.volume-x : Icons.volume; size: 30px * root.uiscale; isz: 15px * root.uiscale; active: muted; solid: root.embedded; accent: root.accent; clicked => { root.toggle-mute(); } }
-            Rectangle { width: 76px * root.uiscale; height: 30px * root.uiscale;
-                Scrubber { y: (parent.height - self.height)/2; width: 76px * root.uiscale; value: volume; maximum: 130.0;
-                    fill-color: root.embedded ? root.accent : MusicTheme.fg3;
-                    track-color: root.embedded ? root.accent.with-alpha(0.30) : MusicTheme.line;
-                    changed(v) => { root.set-volume(v); } } }
+            VolPill { width: 118px * root.uiscale; uiscale: root.uiscale; compact: true;
+                accent: root.accent; ink: root.cream ? #1f1a14 : MusicTheme.fg;
+                volume: volume; muted: muted;
+                set-volume(v) => { root.set-volume(v); }
+                toggle-mute => { root.toggle-mute(); } }
             PlayerBtn { icon: Icons.lyrics; size: 32px * root.uiscale; isz: 16px * root.uiscale; active: root.face == "summary"; solid: root.embedded; accent: root.accent; clicked => { root.face = root.face == "summary" ? "" : "summary"; } }
             PlayerBtn { icon: Icons.maximize; size: 32px * root.uiscale; isz: 16px * root.uiscale; solid: root.embedded; accent: root.accent; clicked => { root.open-zen(); } } }
     }
@@ -8294,15 +8730,14 @@ export component BookMini inherits Rectangle {
                     tint: bkflip.has-hover ? MusicTheme.fg2 : MusicTheme.fg-mute;
                     width: 14px; height: 14px; x: (parent.width - self.width) / 2; y: (parent.height - self.height) / 2; } } }
         Rectangle { vertical-stretch: 1; }
-        // 4. Seekbar + time labels. Theme-inverse fill (fg on a faint fg track):
-        // the art-derived accent went black-on-black in dark themes.
-        Scrubber { value: pos; maximum: dur > 0 ? dur : 1.0;
-            track-color: MusicTheme.fg.with-alpha(0.20); fill-color: MusicTheme.fg;
-            changed(v) => { root.seek(v); } }
-        HorizontalLayout {
-            Text { text: pos-label; color: MusicTheme.fg-dim; font-size: 10px * root.uiscale; }
-            Rectangle { horizontal-stretch: 1; }
-            Text { text: dur-label; color: MusicTheme.fg-dim; font-size: 10px * root.uiscale; } }
+        // 4. Seekbar. Theme-inverse ink (fg on a faint fg track): the
+        // art-derived accent went black-on-black in dark themes, so the pill
+        // wears the accent and the bar inside it does not.
+        SeekPill {
+            uiscale: root.uiscale; accent: root.accent; compact: true;
+            pos: pos; dur: dur; pos-label: pos-label; dur-label: dur-label;
+            seek(v) => { root.seek(v); }
+        }
         // 5. Transport — chapter‑ · -30s · play/pause · +30s · chapter+.
         HorizontalLayout { alignment: center; spacing: 10px * root.uiscale;
             VerticalLayout { alignment: center; PlayerBtn { icon: Icons.skip-back; size: 40px * root.uiscale; isz: 16px * root.uiscale; accent: root.accent; tip: "Chapter −1"; clicked => { root.chapter-step(-1); } } }
@@ -8337,11 +8772,10 @@ export component BookMini inherits Rectangle {
                     root.set-speed(root.speed >= 3.0 ? 0.75 : (root.speed >= 2.0 ? 3.0 : (root.speed >= 1.5 ? 2.0 : (root.speed >= 1.25 ? 1.5 : (root.speed >= 1.0 ? 1.25 : 1.0))))); } }
                 Text { text: root.speed + "×"; color: kspd.has-hover ? #ffffff : MusicTheme.fg; font-size: 11px * root.uiscale; font-weight: 700; horizontal-alignment: center; vertical-alignment: center; } }
             PlayerBtn { icon: Icons.bookmark; size: 32px * root.uiscale; isz: 15px * root.uiscale; accent: root.accent; tip: "Bookmark here"; clicked => { root.bookmark(); } }
-            PlayerBtn { icon: muted ? Icons.volume-x : Icons.volume; size: 30px * root.uiscale; isz: 15px * root.uiscale; active: muted; accent: root.accent; clicked => { root.toggle-mute(); } }
-            Rectangle { width: 70px * root.uiscale; height: 30px * root.uiscale;
-                Scrubber { y: (parent.height - self.height)/2; width: 70px * root.uiscale; value: volume; maximum: 130.0;
-                    fill-color: MusicTheme.fg; track-color: MusicTheme.fg.with-alpha(0.20);
-                    changed(v) => { root.set-volume(v); } } }
+            VolPill { width: 112px * root.uiscale; uiscale: root.uiscale; compact: true;
+                accent: root.accent; volume: volume; muted: muted;
+                set-volume(v) => { root.set-volume(v); }
+                toggle-mute => { root.toggle-mute(); } }
             PlayerBtn { icon: Icons.maximize; size: 32px * root.uiscale; isz: 16px * root.uiscale; accent: root.accent; clicked => { root.open-zen(); } } }
     }
 }

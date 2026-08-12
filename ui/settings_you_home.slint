@@ -713,8 +713,16 @@ export component SettingsYouHome inherits Rectangle {
                 clip: true;
                 VerticalLayout {
                     spacing: 0px;
-                    Rectangle {
-                        height: 158px; clip: true; vertical-stretch: 0;
+                    // 4:1, the cropper's mask exactly — see crop_dialog.slint.
+                    // A fixed height here is what made the saved crop and the
+                    // preview disagree: the well's proportion moved with the
+                    // window and `image-fit: cover` ate the difference. Clamped
+                    // at both ends so a very narrow or very wide window still
+                    // gets a sane band (and roughly the 198px this used to be
+                    // asked for, a quarter taller than the old 158px).
+                    covbox := Rectangle {
+                        height: Math.clamp(covbox.width / 4, 150px, 240px);
+                        clip: true; vertical-stretch: 0;
                         background: @linear-gradient(120deg, Theme.brand, Theme.brand-2, Accent.color);
                         if root.user.cover-image.width != 0: Image {
                             source: root.user.cover-image; image-fit: cover;
@@ -792,7 +800,7 @@ export component SettingsYouHome inherits Rectangle {
                             // string in `text` would be a name the user has to
                             // clear before typing (and would save as one).
                             Rectangle {
-                                height: 26px; width: 148px;
+                                height: 26px; width: 104px;
                                 background: transparent;
                                 if name-ti.text == "": Text {
                                     text: "Your name";
@@ -812,7 +820,7 @@ export component SettingsYouHome inherits Rectangle {
                                 }
                             }
                             Rectangle {
-                                height: 2px; width: 148px;
+                                height: 2px; width: 104px;
                                 border-radius: Surface.rr(1px, self.width, self.height);
                                 background: name-ti.has-focus ? Accent.color : Theme.outline;
                                 animate background { duration: 140ms; easing: ease-out; }

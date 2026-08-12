@@ -11,7 +11,7 @@
 use crate::{MainWindow, MiniWidget, ThemeChoice, TrayPopup};
 use slint::ComponentHandle;
 use std::cell::{Cell, RefCell};
-use tulipix_music::mini_player::{MiniStyle, PILL_CLUSTER, PILL_CLUSTER_NO_PIN};
+use tulipix_music::mini_player::{MiniStyle, PILL_CLUSTER, PILL_CLUSTER_NO_PIN, PILL_LYRICS};
 use tulipix_platform::TrayNowPlaying;
 
 thread_local! {
@@ -27,7 +27,30 @@ thread_local! {
     /// Art already encoded for the tray menu, keyed by the track it came from,
     /// so a 500 ms tick does not re-encode a PNG it encoded a moment ago.
     static ART_CACHE: RefCell<(String, Vec<u8>)> = const { RefCell::new((String::new(), Vec::new())) };
+    /// The same for the OS media applet: the artwork URL last worked out, and
+    /// the track+size it belongs to.
+    static MEDIA_ART: RefCell<(String, Option<String>)> = const { RefCell::new((String::new(), None)) };
+    /// Which of the two artwork file names was written last — see `media_cover`.
+    static MEDIA_ART_SLOT: Cell<u8> = const { Cell::new(0) };
+    /// The last metadata dict published, as the key that identifies it.
+    static MEDIA_META: RefCell<String> = const { RefCell::new(String::new()) };
+    /// Last volume published to MPRIS, so an unchanged one is not signalled
+    /// twice a second.
+    static MEDIA_VOL: Cell<f32> = const { Cell::new(-1.0) };
+    /// Has the warm-up run? Separate from `MINI` being `Some`, because a failed
+    /// build must not be retried on every tick.
+    static WARMED: Cell<bool> = const { Cell::new(false) };
+    /// Ticks counted since something was loaded in the player, so the warm-up
+    /// lands seconds AFTER playback starts rather than on the same frame.
+    /// Stops counting once it has fired.
+    static WARM_WAIT: Cell<u8> = const { Cell::new(0) };
 }
+
+/// 500 ms ticks between "a track is loaded" and building the widget — 5 seconds.
+/// Long enough that the in-app player has finished laying itself out and its
+/// artwork has landed. Fires once per session and never again, so nothing about
+/// it is tied to any later track change.
+const WARM_DELAY_TICKS: u8 = 10;
 
 /// Whether the app draws its own caption row.
 ///
@@ -102,6 +125,26 @@ fn pill_extra(mini: &MiniWidget, style: MiniStyle) -> f64 {
         return 0.0;
     }
     if mini.get_no_stacking_control() { PILL_CLUSTER_NO_PIN } else { PILL_CLUSTER }
+}
+
+/// The same for the height: the pill's lyrics row, when it is out.
+///
+/// Gated on `has-lyrics` as well as on the toggle, matching the widget's own
+/// `pill-lyrics-on` — a track without lyrics draws no row, so it must not be
+/// given the height for one either.
+fn pill_extra_h(mini: &MiniWidget, style: MiniStyle) -> f64 {
+    let on = style == MiniStyle::Pill && mini.get_pill_lyrics() && mini.get_has_lyrics();
+    if on { PILL_LYRICS } else { 0.0 }
+}
+
+/// Put the pill back to plain: no button cluster, no lyrics row.
+///
+/// Called whenever the widget leaves the pill or is opened fresh. The extras are
+/// window WIDTH and HEIGHT rather than anything the layout can absorb, so a pill
+/// left extended would come back at a size its base geometry does not describe.
+fn collapse_pill(mini: &MiniWidget) {
+    mini.set_pill_open(false);
+    mini.set_pill_lyrics(false);
 }
 
 /// The three lyric lines the square style shows behind its artwork.
@@ -247,6 +290,10 @@ fn build_mini(window: &MainWindow) -> Option<MiniWidget> {
         }
         w.set_mini_widget_style(next.name().into());
         m.set_style(next.name().into());
+        // Leaving the pill retires whatever it had out, so coming back to it
+        // lands on the collapsed pill the base size describes rather than on
+        // the shape it was in when it was cycled away from.
+        collapse_pill(&m);
         let (nw, nh) = next.window_size();
         apply_size(&m, nw, nh);
     });
@@ -255,6 +302,10 @@ fn build_mini(window: &MainWindow) -> Option<MiniWidget> {
     // pill width, four buttons taken out of the title leave about five
     // characters of it. Height is untouched, and the widget scales itself off
     // its height, so nothing in it changes size as the window grows.
+    //
+    // Scale comes off the HEIGHT here — the axis this toggle does not touch —
+    // so the two extras never have to be unwound from the number they are
+    // being re-added to.
     let w = window.as_weak();
     let mw = mini.as_weak();
     mini.on_pill_extend(move || {
@@ -262,9 +313,25 @@ fn build_mini(window: &MainWindow) -> Option<MiniWidget> {
         let style = stored_style(&w);
         if style != MiniStyle::Pill { return }
         let (bw, bh) = style.base_size();
+        let extra_h = pill_extra_h(&m, style);
         let sf = m.window().scale_factor();
-        let scale = m.window().size().to_logical(sf).height as f64 / bh;
-        apply_size(&m, (bw + pill_extra(&m, style)) * scale, bh * scale);
+        let scale = m.window().size().to_logical(sf).height as f64 / (bh + extra_h);
+        apply_size(&m, (bw + pill_extra(&m, style)) * scale, (bh + extra_h) * scale);
+    });
+
+    // The mic on the pill's artwork, the other way round: the row is height, so
+    // the scale is read off the WIDTH, which this toggle leaves alone.
+    let w = window.as_weak();
+    let mw = mini.as_weak();
+    mini.on_pill_lyrics_toggled(move || {
+        let (Some(w), Some(m)) = (w.upgrade(), mw.upgrade()) else { return };
+        let style = stored_style(&w);
+        if style != MiniStyle::Pill { return }
+        let (bw, bh) = style.base_size();
+        let extra_w = pill_extra(&m, style);
+        let sf = m.window().scale_factor();
+        let scale = m.window().size().to_logical(sf).width as f64 / (bw + extra_w);
+        apply_size(&m, (bw + extra_w) * scale, (bh + pill_extra_h(&m, style)) * scale);
     });
 
     let mw = mini.as_weak();
@@ -287,8 +354,8 @@ fn build_mini(window: &MainWindow) -> Option<MiniWidget> {
         let sf = m.window().scale_factor();
         let cur = m.window().size().to_logical(sf).width as f64;
         let style = stored_style(&main);
-        let (nw, nh) =
-            style.resize_locked_with_extra(cur, dx as f64, dy as f64, pill_extra(&m, style));
+        let (nw, nh) = style.resize_locked_pill(
+            cur, dx as f64, dy as f64, pill_extra(&m, style), pill_extra_h(&m, style));
         WANT_SIZE.with(|c| c.set((nw, nh)));
         m.window().set_size(slint::LogicalSize::new(nw as f32, nh as f32));
     });
@@ -301,6 +368,38 @@ fn build_mini(window: &MainWindow) -> Option<MiniWidget> {
     // feature and stays reachable.
     mini.on_close_widget(close_mini);
     Some(mini)
+}
+
+/// Build the widget's window ahead of time, without showing it.
+///
+/// `MiniWidget` is a second top-level Slint component and its tree is not small.
+/// Building it on the click that opens it puts that whole cost on the event loop
+/// at the one moment the user is watching. Doing it once, five seconds into the
+/// first track, means the click that follows only has to push properties and
+/// show a window that already exists.
+///
+/// Two things keep it out of the way. It runs from the 500 ms tick rather than
+/// the play path, so it never lands on the frame that starts a song — that is
+/// the busiest frame the event loop has, and sharing it is what made the
+/// in-app player stall. And `mini-widget-ready` is only raised afterwards, so
+/// the caption row's Mini Player button appears when the window behind it is
+/// real rather than sitting there as a button that would stall on its press.
+fn warm_mini(window: &MainWindow) {
+    if WARMED.with(|c| c.get()) {
+        return;
+    }
+    WARMED.with(|c| c.set(true));
+    MINI.with(|cell| {
+        let mut slot = cell.borrow_mut();
+        if slot.is_none() {
+            *slot = build_mini(window);
+        }
+        tracing::info!(built = slot.is_some(), "mini widget: background warm-up");
+    });
+    // Raised even when the build failed: `open_mini` retries on the click, and
+    // a button that never appears is worse than one that has to do the work
+    // itself on a machine where the second window cannot be created at all.
+    window.set_mini_widget_ready(true);
 }
 
 /// Show the widget and hide the main window — the app "becomes" the widget.
@@ -324,7 +423,7 @@ pub fn open_mini(window: &MainWindow) {
         // layout's preferred size — and held there by the watchdog after.
         // A pill that was left extended reopens collapsed — the width it was
         // last shown at is not the width its base size describes.
-        mini.set_pill_open(false);
+        collapse_pill(mini);
         let (w, h) = style.window_size();
         apply_size(mini, w, h);
         if let Err(e) = mini.show() {
@@ -385,6 +484,8 @@ fn build_popup(window: &MainWindow) -> Option<TrayPopup> {
     let w = window.as_weak();
     popup.on_set_volume(move |v| { if let Some(w) = w.upgrade() { w.invoke_music_set_volume(v); } });
     let w = window.as_weak();
+    popup.on_toggle_mute(move || { if let Some(w) = w.upgrade() { w.invoke_music_toggle_mute(); } });
+    let w = window.as_weak();
     popup.on_toggle_shuffle(move || { if let Some(w) = w.upgrade() { w.invoke_music_toggle_shuffle(); } });
     let w = window.as_weak();
     popup.on_cycle_repeat(move || { if let Some(w) = w.upgrade() { w.invoke_music_cycle_repeat(); } });
@@ -436,10 +537,14 @@ pub fn toggle_popup(window: &MainWindow) {
 }
 
 /// Album art as a small PNG for the tray menu row, cached per track.
+///
+/// A miss starts the encode on a worker and returns nothing; the icon appears on
+/// the following tick. It used to encode inline, which put a resize of a
+/// full-size cover on the event loop at every track change.
 fn tray_art_png(window: &MainWindow) -> Vec<u8> {
     let key = format!("{}|{}", window.get_music_np_title(), window.get_music_np_sub());
-    // Borrow, decide, drop — then encode outside the borrow, so nothing here
-    // depends on where a temporary happens to be released.
+    // Borrow, decide, drop — so nothing here depends on where a temporary
+    // happens to be released.
     let hit = ART_CACHE.with(|c| {
         let g = c.borrow();
         (g.0 == key).then(|| g.1.clone())
@@ -447,20 +552,168 @@ fn tray_art_png(window: &MainWindow) -> Vec<u8> {
     if let Some(png) = hit {
         return png;
     }
-    let png = encode_art(&window.get_music_np_art()).unwrap_or_default();
-    ART_CACHE.with(|c| *c.borrow_mut() = (key, png.clone()));
-    png
+    // Claim the key first: the miss must not re-spawn the same encode on every
+    // tick while the worker is running.
+    ART_CACHE.with(|c| *c.borrow_mut() = (key.clone(), Vec::new()));
+    spawn_tray_encode(&window.get_music_np_art(), key);
+    Vec::new()
 }
 
-fn encode_art(img: &slint::Image) -> Option<Vec<u8>> {
-    let buf = img.to_rgba8()?;
-    let rgba = image::RgbaImage::from_raw(buf.width(), buf.height(), buf.as_bytes().to_vec())?;
-    // Menu rows draw the icon at ~22px; anything larger is bytes over D-Bus for
-    // pixels nobody sees.
-    let small = image::DynamicImage::ImageRgba8(rgba).thumbnail(32, 32);
-    let mut out = std::io::Cursor::new(Vec::new());
-    small.write_to(&mut out, image::ImageFormat::Png).ok()?;
-    Some(out.into_inner())
+/// Write the artwork out for the OS media applet, off the event loop.
+///
+/// MPRIS and SMTC both take a URL and neither takes pixels, so a cover that is
+/// not already a file on disk has to be encoded. That is a resize plus a PNG
+/// encode of a ~1000px image, and doing it inline on a track change was long
+/// enough to be felt as the app stalling every time the song changed.
+///
+/// `SharedPixelBuffer` is `Send` (`slint::Image` is not), so the pixels are
+/// lifted here and everything expensive happens on the worker. When it lands,
+/// the path is filed against the key it was started for and the published
+/// metadata is invalidated, so the next tick re-sends the dict with the cover in
+/// it. If the track has moved on by then the key no longer matches and the
+/// result is dropped.
+///
+/// Two alternating file names rather than one: clients cache artwork by URL, and
+/// a single path rewritten in place leaves the previous track's cover on screen.
+fn spawn_cover_encode(art: &slint::Image, key: String) {
+    let sz = art.size();
+    if sz.width == 0 || sz.height == 0 {
+        return;
+    }
+    let (Some(px), Some(dir)) = (art.to_rgba8(), tulipix_core::paths::cache_dir()) else {
+        return;
+    };
+    let slot = MEDIA_ART_SLOT.with(|c| {
+        c.set(c.get() ^ 1);
+        c.get()
+    });
+    std::thread::spawn(move || {
+        let Some(rgba) =
+            image::RgbaImage::from_raw(px.width(), px.height(), px.as_bytes().to_vec())
+        else {
+            return;
+        };
+        if std::fs::create_dir_all(&dir).is_err() {
+            return;
+        }
+        let path = dir.join(format!("nowplaying-{slot}.png"));
+        // Lockscreen size. The source is often a 1000px cover and none of that
+        // reaches the applet.
+        if image::DynamicImage::ImageRgba8(rgba).thumbnail(512, 512).save(&path).is_err() {
+            return;
+        }
+        let url = path.to_string_lossy().into_owned();
+        let _ = slint::invoke_from_event_loop(move || {
+            let landed = MEDIA_ART.with(|c| {
+                let mut g = c.borrow_mut();
+                let mine = g.0 == key;
+                if mine {
+                    g.1 = Some(url);
+                }
+                mine
+            });
+            if landed {
+                MEDIA_META.with(|c| c.borrow_mut().clear());
+            }
+        });
+    });
+}
+
+/// The tray menu's copy of the same job, at menu-icon size.
+fn spawn_tray_encode(art: &slint::Image, key: String) {
+    let Some(px) = art.to_rgba8() else { return };
+    std::thread::spawn(move || {
+        let Some(rgba) =
+            image::RgbaImage::from_raw(px.width(), px.height(), px.as_bytes().to_vec())
+        else {
+            return;
+        };
+        // Menu rows draw the icon at ~22px; anything larger is bytes over D-Bus
+        // for pixels nobody sees.
+        let small = image::DynamicImage::ImageRgba8(rgba).thumbnail(32, 32);
+        let mut out = std::io::Cursor::new(Vec::new());
+        if small.write_to(&mut out, image::ImageFormat::Png).is_err() {
+            return;
+        }
+        let png = out.into_inner();
+        let _ = slint::invoke_from_event_loop(move || {
+            ART_CACHE.with(|c| {
+                let mut g = c.borrow_mut();
+                if g.0 == key {
+                    g.1 = png;
+                }
+            });
+        });
+    });
+}
+
+/// Publish now-playing to the OS media surface — the desktop's media applet, the
+/// lockscreen, and anything mirroring the session (a phone over KDE Connect).
+///
+/// The app registered as a player at startup and so has always had the media
+/// keys, but nothing ever called `set_metadata`: the applet knew a player called
+/// Tulipix existed and nothing else about it, which is why it drew a generic
+/// note where every other player shows a cover, a title and a scrubber.
+///
+/// Driven from the same 500 ms tick as the tray rather than from the ~8 places
+/// that set now-playing state, so podcasts, radio, YouTube and audiobooks are
+/// covered by the same code as library tracks.
+fn media_sync(window: &MainWindow) {
+    let title = window.get_music_np_title();
+    if title.is_empty() {
+        return;
+    }
+    let sub = window.get_music_np_sub();
+    let art = window.get_music_np_art();
+    let sz = art.size();
+    // Size is in the key because artwork lands AFTER the title on most paths —
+    // without it the first dict would go out coverless and never be revised.
+    let art_key = format!("{title}|{sub}|{}x{}", sz.width, sz.height);
+    let hit = MEDIA_ART.with(|c| {
+        let g = c.borrow();
+        (g.0 == art_key).then(|| g.1.clone())
+    });
+    let cover = match hit {
+        Some(p) => p,
+        None => {
+            // Most covers are already files and the `Image` remembers the path
+            // it came from — that costs nothing. The rest are handed to a
+            // worker, and the key is claimed here so the next tick sees a miss
+            // for the same track as "already started" rather than starting it
+            // again twice a second.
+            let direct = art.path().map(|p| p.to_string_lossy().into_owned());
+            MEDIA_ART.with(|c| *c.borrow_mut() = (art_key.clone(), direct.clone()));
+            if direct.is_none() {
+                spawn_cover_encode(&art, art_key.clone());
+            }
+            direct
+        }
+    };
+    // Duration joins the key for the same reason: mpv reports the length a beat
+    // after the track starts, and a dict published without it gives every remote
+    // a scrubber with no end.
+    let dur = window.get_music_dur();
+    let meta_key = format!("{art_key}|{dur:.0}");
+    let fresh = MEDIA_META.with(|c| {
+        let mut g = c.borrow_mut();
+        (*g != meta_key).then(|| *g = meta_key.clone()).is_some()
+    });
+    if fresh {
+        tulipix_common::media_set_track(
+            &title,
+            &sub,
+            &window.get_music_np_album(),
+            cover.as_deref(),
+            dur,
+        );
+    }
+    tulipix_common::media_set_progress(window.get_music_playing(), window.get_music_pos());
+    // 0..130 in the app (mpv allows the boost); 0..1 on the wire.
+    let vol = window.get_music_volume();
+    if (MEDIA_VOL.with(|c| c.get()) - vol).abs() > 0.5 {
+        MEDIA_VOL.with(|c| c.set(vol));
+        tulipix_common::media_set_volume(vol as f64 / 100.0);
+    }
 }
 
 /// Everything the tray menu says about playback, read off the main window.
@@ -482,6 +735,18 @@ pub fn tray_state(window: &MainWindow) -> TrayNowPlaying {
 /// Push state into whichever of the two windows is currently on screen, plus
 /// the tray menu. Called from the existing 500 ms tray tick.
 pub fn sync(window: &MainWindow) {
+    // Something is loaded in the player: build the widget in the background so
+    // the button that opens it is instant rather than a stall. Once per session,
+    // and ten ticks late on purpose — see `warm_mini`.
+    if !WARMED.with(|c| c.get()) && !window.get_music_np_title().is_empty() {
+        let n = WARM_WAIT.with(|c| {
+            c.set(c.get() + 1);
+            c.get()
+        });
+        if n >= WARM_DELAY_TICKS {
+            warm_mini(window);
+        }
+    }
     // The app being on screen and a widget floating over the desktop are
     // mutually exclusive. `restore` covers the doors we own; this covers the
     // ones we do not — a taskbar click, a dock click, an activation by the WM.
@@ -501,8 +766,23 @@ pub fn sync(window: &MainWindow) {
                 // is already on screen, rather than waiting for the next open.
                 if m.get_style() != style.name() {
                     m.set_style(style.name().into());
+                    collapse_pill(m);
                     let (w, h) = style.window_size();
                     apply_size(m, w, h);
+                } else if style == MiniStyle::Pill
+                    && m.get_pill_lyrics()
+                    && !m.get_has_lyrics()
+                {
+                    // The row is gated on `has-lyrics` in the widget, so a track
+                    // change to something without them takes it off screen. Give
+                    // the window its height back to match, or the pill is left
+                    // with a band of empty panel under it.
+                    m.set_pill_lyrics(false);
+                    let (bw, bh) = style.base_size();
+                    let extra_w = pill_extra(m, style);
+                    let sf = m.window().scale_factor();
+                    let scale = m.window().size().to_logical(sf).width as f64 / (bw + extra_w);
+                    apply_size(m, (bw + extra_w) * scale, bh * scale);
                 }
             }
         });
@@ -517,6 +797,7 @@ pub fn sync(window: &MainWindow) {
         }
     });
     tulipix_platform::update_tray(tray_state(window));
+    media_sync(window);
 }
 
 /// Caption-row window controls, the Mini Player button, and the startup seed of

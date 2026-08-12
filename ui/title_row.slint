@@ -52,6 +52,10 @@ export component TitleRow inherits Rectangle {
     in property <bool> maximized: false;
     // No track loaded → no button. A dead control in the caption row is noise.
     in property <bool> has-track: false;
+    // The widget window is built in the background a few seconds after
+    // playback starts. Until it exists, pressing this would pay the whole
+    // build cost on the click — so the button waits for it.
+    in property <bool> mini-ready: false;
     in property <bool> playing: false;
     in property <color> accent: #ec4899;
 
@@ -129,7 +133,7 @@ export component TitleRow inherits Rectangle {
 
         // `if` rather than `visible`: an invisible element still takes its
         // slot in a layout, which would leave a gap where the button was.
-        if root.mac && root.has-track: mini-mac := Rectangle {
+        if root.mac && root.has-track && root.mini-ready: mini-mac := Rectangle {
             width: 28px; height: 26px;
             y: (parent.height - self.height) / 2;
             horizontal-stretch: 0;
@@ -166,7 +170,7 @@ export component TitleRow inherits Rectangle {
         }
 
         // ── Windows / Linux: Mini Player, then the system trio ───────────
-        if !root.mac && root.has-track: mini-btn := Rectangle {
+        if !root.mac && root.has-track && root.mini-ready: mini-btn := Rectangle {
             width: 40px; horizontal-stretch: 0;
             // Full-height blue fill on hover, like the close button two along
             // — same rule as the mac variant, no wash while playing, no ring.

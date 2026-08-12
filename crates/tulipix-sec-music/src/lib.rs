@@ -596,7 +596,18 @@ pub fn set_instant_mix_queue(w: &MainWindow, ids: &[i64]) {
     let by_pos: std::collections::HashMap<i32, (String, String, f64)> = music_songs().lock()
         .map(|g| g.iter().map(|s| (s.pos, (s.title.clone(), s.artist.clone(), s.duration_s))).collect())
         .unwrap_or_default();
-    let rows: Vec<MusicSongRow> = ids.iter().filter_map(|id| pos_of.get(id).copied()).map(|pos| {
+    // Up-next is a PEEK at what plays next, never the whole queue table.
+    //
+    // `queue::list` hands back everything that was ever queued, and a "play all"
+    // on a real library is thousands of ids. Every row built here calls
+    // `music_thumb_at`, which decodes a PNG on the event loop when the row is
+    // not already in the thumbnail cache — so opening the queue drawer after a
+    // play-all was thousands of synchronous decodes, which is the several-second
+    // hang on that button. Forty is what the sequential and up-next builders
+    // already show; this one is now the same.
+    const UPNEXT_MAX: usize = 40;
+    let rows: Vec<MusicSongRow> = ids.iter().filter_map(|id| pos_of.get(id).copied())
+        .take(UPNEXT_MAX).map(|pos| {
         let (title, artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
         MusicSongRow {
             thumb: music_thumb_at(pos),
@@ -1288,7 +1299,7 @@ pub async fn cache_artwork(client: &reqwest::Client, key: &str, url: &str) -> Op
     let ext = url.rsplit('.').next().filter(|e| e.len() <= 4 && !e.contains('/')).unwrap_or("jpg");
     let dest = dir.join(format!("{key}.{ext}"));
     if dest.exists() { return Some(dest); }
-    let bytes = client.get(url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
+    let bytes = client.get(url).header(reqwest::header::USER_AGENT, tulipix_core::net::BROWSER_UA)
         .send().await.ok()?.bytes().await.ok()?;
     std::fs::write(&dest, &bytes).ok()?;
     Some(dest)
@@ -1479,7 +1490,7 @@ pub fn subscribe_feed_with_progress(weak: slint::Weak<MainWindow>, url: String) 
         let finish = |weak: slint::Weak<MainWindow>| { let _ = weak.upgrade_in_event_loop(|w| { w.set_music_podcast_subscribing(false); }); };
         let Ok(pool) = pool_for("podcasts").await else { finish(weak); return; };
         let client = tulipix_core::net::http().clone();
-        let resp = match client.get(&url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
+        let resp = match client.get(&url).header(reqwest::header::USER_AGENT, tulipix_core::net::BROWSER_UA).send().await {
             Ok(r) => r, Err(_) => { finish(weak); return; } };
         let xml = match resp.text().await { Ok(x) => x, Err(_) => { finish(weak); return; } };
         let feed = tulipix_music::podcasts::parse_feed(&xml);
@@ -1529,6 +1540,12 @@ pub fn populate_podcast_trends(w: &MainWindow) {
                 let art = art_path.filter(|p| !p.is_empty())
                     .map(std::path::PathBuf::from)
                     .filter(|p| p.exists());
+                // A row whose title is still the feed URL is the placeholder a
+                // FAILED fetch used to leave behind — and because step 2 only
+                // fetches feeds missing from this table, that one bad moment
+                // pinned the card to "no artwork, URL for a name" for good.
+                // Treat it as absent so the feed is retried on the next visit.
+                if title.trim().is_empty() || title == feed_url { continue; }
                 stored.insert(feed_url.clone(), TrendMeta { feed_url, title, author, category, art });
             }
         }
@@ -1539,7 +1556,7 @@ pub fn populate_podcast_trends(w: &MainWindow) {
             let client = client.clone();
             tokio::spawn(async move {
                 let (mut title, mut author, mut category, mut art) = (String::new(), String::new(), String::new(), None);
-                if let Ok(resp) = client.get(&url).header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT).send().await {
+                if let Ok(resp) = client.get(&url).header(reqwest::header::USER_AGENT, tulipix_core::net::BROWSER_UA).send().await {
                     if let Ok(xml) = resp.text().await {
                         let feed = tulipix_music::podcasts::parse_feed(&xml);
                         title = feed.title.unwrap_or_default();
@@ -1548,13 +1565,29 @@ pub fn populate_podcast_trends(w: &MainWindow) {
                         art = resolve_artwork(&client, &format!("trend-{i}"), &feed.image_url).await;
                     }
                 }
-                if title.is_empty() { title = url.clone(); }
+                // `ok` is what decides whether this row is worth remembering. A
+                // feed that 403s or times out still needs SOMETHING on its card
+                // this session, but the host reads better than a raw URL and,
+                // more importantly, the row must not be written to the table —
+                // see the loader for what a persisted failure did to the grid.
+                let ok = !title.is_empty();
+                if title.is_empty() {
+                    title = url.split('/').nth(2).unwrap_or(url.as_str()).to_string();
+                }
                 if category.is_empty() { category = "Other".to_string(); }
-                TrendMeta { feed_url: url, title, author, category, art }
+                (ok, TrendMeta { feed_url: url, title, author, category, art })
             })
         }).collect();
         let mut fetched: Vec<TrendMeta> = Vec::new();
-        for h in handles { if let Ok(m) = h.await { fetched.push(m); } }
+        let mut failed: Vec<TrendMeta> = Vec::new();
+        for h in handles {
+            if let Ok((ok, m)) = h.await {
+                if ok { fetched.push(m); } else { failed.push(m); }
+            }
+        }
+        if !failed.is_empty() {
+            tracing::warn!(count = failed.len(), "podcast trends: feeds unreachable, will retry next visit");
+        }
         // Persist the newly fetched rows.
         if !fetched.is_empty() {
             if let Ok(pool) = pool_for("podcasts").await {
@@ -1572,6 +1605,9 @@ pub fn populate_podcast_trends(w: &MainWindow) {
             }
             for m in fetched { stored.insert(m.feed_url.clone(), m); }
         }
+        // Unreachable feeds go into the session cache only, so the grid still
+        // has a card for them and the next visit tries the network again.
+        for m in failed { stored.entry(m.feed_url.clone()).or_insert(m); }
         // 3. Build the cache in feed-list order.
         let metas: Vec<TrendMeta> = feeds.iter().filter_map(|u| stored.get(u).cloned()).collect();
         if let Ok(mut g) = trend_cache().lock() { *g = metas; }
@@ -1861,7 +1897,7 @@ pub async fn podcast_download_one(weak: slint::Weak<MainWindow>, id: i32) {
         let mut last_pct: i32 = -1;
         let result: Option<()> = async {
             let mut resp = client.get(&url)
-                .header(reqwest::header::USER_AGENT, tulipix_music::musicbrainz::USER_AGENT)
+                .header(reqwest::header::USER_AGENT, tulipix_core::net::BROWSER_UA)
                 .send().await.ok()?;
             let total = resp.content_length();
             let mut file = std::fs::File::create(&dest).ok()?;
@@ -2798,6 +2834,11 @@ pub fn play_music_file(w: &MainWindow, url: &str, title: &str, sub: &str) {
     if w.get_music_muted() { pre_args.push("--mute=yes".into()); }
     pre_args.push(format!("--af={}", music_full_af(&music_eq_af(&music_eq().lock().map(|g| *g).unwrap_or([0.0; 10])))));
     pre_args.extend(music_device_args());
+    // Episode audio is served from the same CDNs that bot-filter the feed, and
+    // they answer mpv's default agent with 403 — see `net::BROWSER_UA`.
+    if url.starts_with("http") {
+        pre_args.push(format!("--user-agent={}", tulipix_core::net::BROWSER_UA));
+    }
     let weak = w.as_weak();
     let on_prop = move |name: &str, data: &serde_json::Value| {
         let name = name.to_string();
@@ -3193,6 +3234,10 @@ pub fn play_radio(w: &MainWindow, st: &tulipix_music::radio::Station) {
         "--cache=yes".into(), "--cache-secs=30".into(),
         "--cache-pause-initial=yes".into(), "--cache-pause-wait=10".into(),
         "--demuxer-readahead-secs=30".into(),
+        // Most Icecast/Shoutcast servers and the CDNs in front of them answer
+        // mpv's default agent with 403, or drop the connection during the TLS
+        // handshake. Ask as a browser — see `net::BROWSER_UA`.
+        format!("--user-agent={}", tulipix_core::net::BROWSER_UA),
     ]);
     let station_name = st.name.trim().to_string();
     let stream_url = st.url.clone();
@@ -3262,13 +3307,67 @@ pub fn play_radio(w: &MainWindow, st: &tulipix_music::radio::Station) {
     w.set_music_np_title(station_name.into());
     w.set_music_np_sub("📻 Internet Radio · LIVE".into());
     w.set_music_np_album("".into());      // no stale artist·album on the second line
-    w.set_music_np_art(slint::Image::default());
+    // No favicon = a real generated tile, not an empty frame. The caller
+    // overwrites this the moment a station icon exists.
+    w.set_music_np_art(radio_placeholder_art(w.get_music_radio_np_initial().as_str()));
     w.set_music_np_accent(slint::Color::from_rgb_u8(0x14, 0xb8, 0xa6));
     clear_music_lyrics(w);
     w.set_music_playing(true);
     w.set_music_pos(0.0); w.set_music_dur(0.0);
     w.set_music_pos_label("0:00".into()); w.set_music_dur_label("LIVE".into());
     w.invoke_music_center_mini();
+}
+
+/// The station-initial tile, baked as an image.
+///
+/// The now-playing panel and the floating bubble already draw this by hand when
+/// the art is empty, but the mini widget, the bottom bars, the home layouts and
+/// the lock screen do not — and a station without a favicon is common. Baking
+/// it into `music-np-art` gives every one of them the tile for free, and keeps
+/// the two hand-drawn ones looking exactly the same as before.
+fn radio_placeholder_art(initial: &str) -> slint::Image {
+    use ab_glyph::{Font, ScaleFont};
+    const FONT_SORA: &[u8] = include_bytes!("../../../resources/fonts/Sora[wght].ttf");
+    const S: u32 = 256;
+    // #14b8a6 → #0ea5e9 on the 135° diagonal, the same wash as the UI tiles.
+    const A: [f32; 3] = [0x14 as f32, 0xb8 as f32, 0xa6 as f32];
+    const B: [f32; 3] = [0x0e as f32, 0xa5 as f32, 0xe9 as f32];
+    let mut img = image::RgbaImage::new(S, S);
+    for (x, y, p) in img.enumerate_pixels_mut() {
+        let t = (x + y) as f32 / (2 * (S - 1)) as f32;
+        *p = image::Rgba([
+            (A[0] + (B[0] - A[0]) * t) as u8,
+            (A[1] + (B[1] - A[1]) * t) as u8,
+            (A[2] + (B[2] - A[2]) * t) as u8,
+            255,
+        ]);
+    }
+    // One glyph, centred on its own ink box rather than on the font metrics —
+    // a letter centred by baseline sits visibly high in a square tile.
+    let ch = initial.chars().next().unwrap_or('R');
+    if let Ok(font) = ab_glyph::FontRef::try_from_slice(FONT_SORA) {
+        let sf = font.as_scaled(132.0);
+        let mut g = sf.scaled_glyph(ch);
+        g.position = ab_glyph::point(0.0, 0.0);
+        if let Some(outline) = font.outline_glyph(g) {
+            let bb = outline.px_bounds();
+            let ox = (S as f32 - (bb.max.x - bb.min.x)) / 2.0 - bb.min.x;
+            let oy = (S as f32 - (bb.max.y - bb.min.y)) / 2.0 - bb.min.y;
+            outline.draw(|gx, gy, c| {
+                let x = bb.min.x + ox + gx as f32;
+                let y = bb.min.y + oy + gy as f32;
+                if x < 0.0 || y < 0.0 || x >= S as f32 || y >= S as f32 {
+                    return;
+                }
+                let p = img.get_pixel_mut(x as u32, y as u32);
+                let a = c * 0.82;
+                for i in 0..3 {
+                    p[i] = (255.0 * a + p[i] as f32 * (1.0 - a)) as u8;
+                }
+            });
+        }
+    }
+    slint::Image::from_rgba8(slint::SharedPixelBuffer::clone_from_slice(img.as_raw(), S, S))
 }
 
 /// Register every radio callback + the curated genre chips.
@@ -5295,6 +5394,49 @@ pub fn advance_sequential(w: &MainWindow) {
     play_music_at(w, next);
 }
 
+/// Now-playing cover art + accent, resolved off the event loop.
+///
+/// Both halves of this used to run inline in `play_music_at`:
+/// `render_or_cache` shells out to ffmpeg whenever a track's art is not in the
+/// thumbnail cache, and `dominant_color` decodes the result. On a cold track
+/// that is a third of a second or more of the UI thread doing file work — the
+/// pause between one song and the next that reads as the app hanging.
+///
+/// The previous cover stays on screen until this lands, so the swap fades
+/// rather than blanking. Generation-checked on both ends: a quick skip must not
+/// paint a stale cover over the track that is actually playing.
+///
+/// `keep_art` is for audiobook chapters, whose cover comes from the already
+/// decoded book cache — only the accent is wanted from here.
+fn spawn_np_art(weak: slint::Weak<MainWindow>, path: std::path::PathBuf, gen_id: u64, keep_art: bool) {
+    std::thread::spawn(move || {
+        let thumb = tulipix_core::thumbs::render_or_cache(
+            &path, tulipix_core::thumbs::ThumbSpec {
+                kind: tulipix_core::thumbs::ThumbKind::Audio, width: 320, height: 320 })
+            .ok().flatten().map(|t| t.path);
+        // Dynamic accent from the cover (np.p5.atmusic.art-gradient).
+        let accent = thumb.as_deref().and_then(dominant_color)
+            .unwrap_or(slint::Color::from_rgb_u8(0xec, 0x48, 0x99));
+        // `slint::Image` is not Send — a SharedPixelBuffer is, so the decode
+        // happens here and only the buffer crosses to the event loop.
+        let px = if keep_art { None } else {
+            thumb.as_deref().and_then(|p| image::open(p).ok()).map(|img| {
+                let rgba = img.to_rgba8();
+                let (w, h) = (rgba.width(), rgba.height());
+                slint::SharedPixelBuffer::<slint::Rgba8Pixel>::clone_from_slice(rgba.as_raw(), w, h)
+            })
+        };
+        if MUSIC_GEN.load(std::sync::atomic::Ordering::SeqCst) != gen_id { return; }
+        let _ = weak.upgrade_in_event_loop(move |w| {
+            if MUSIC_GEN.load(std::sync::atomic::Ordering::SeqCst) != gen_id { return; }
+            w.set_music_np_accent(accent);
+            if !keep_art {
+                w.set_music_np_art(px.map(slint::Image::from_rgba8).unwrap_or_default());
+            }
+        });
+    });
+}
+
 /// Play the music track at `idx`: stop the previous one, spawn a headless mpv
 /// with a live IPC control socket, wire a reader thread that streams position /
 /// duration / pause / volume into the now-playing bar, and auto-advances on EOF.
@@ -5491,23 +5633,15 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
     let (title, artist) = music_songs().lock().ok()
         .and_then(|g| g.iter().find(|s| s.pos == idx).map(|s| (s.title.clone(), s.artist.clone())))
         .unwrap_or_else(|| (path.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string(), String::new()));
-    let thumb = tulipix_core::thumbs::render_or_cache(
-        &path, tulipix_core::thumbs::ThumbSpec {
-            kind: tulipix_core::thumbs::ThumbKind::Audio, width: 320, height: 320 })
-        .ok().flatten().map(|t| t.path);
     // Audiobook chapter → the book's (possibly custom) cover is the vinyl art,
     // and the folder name drives book mode (second line = book title).
     let book_folder = path.parent().map(|d| d.display().to_string());
     let book_px = book_folder.as_ref()
         .and_then(|f| ab_cover_cache().lock().ok().and_then(|g| g.get(f).cloned()));
-    let art = match &book_px {
-        Some(px) => slint::Image::from_rgba8(px.clone()),
-        None => thumb.as_ref()
-            .map(|p| slint::Image::load_from_path(p).unwrap_or_default()).unwrap_or_default(),
-    };
-    // Dynamic accent from the cover (np.p5.atmusic.art-gradient).
-    let accent = thumb.as_deref().and_then(dominant_color).unwrap_or(slint::Color::from_rgb_u8(0xec, 0x48, 0x99));
-    w.set_music_np_accent(accent);
+    // Cover art + accent land later, off-thread — see `spawn_np_art`. A book
+    // chapter already has its cover decoded in the cache, so that one is free.
+    if let Some(px) = &book_px { w.set_music_np_art(slint::Image::from_rgba8(px.clone())); }
+    spawn_np_art(w.as_weak(), path.clone(), my_gen, book_px.is_some());
     w.set_music_np_title(title.into());
     // Audiobook chapters carry the book title on the second line (and survive
     // chapter auto-advance, which re-enters here); plain tracks show the artist.
@@ -5523,7 +5657,6 @@ pub fn play_music_at(w: &MainWindow, idx: i32) {
         _ if artist.is_empty() => "Playing from your library".into(),
         _ => artist.into(),
     });
-    w.set_music_np_art(art);
     w.set_music_np_index(idx);
     w.set_music_np_total(total);
     w.set_music_player_mode(if is_book { "book" } else { "music" }.into());
@@ -6789,6 +6922,39 @@ pub fn yt_entry_to_video(e: &serde_json::Value) -> tulipix_music::youtube::piped
         thumbnail: yt_pick_thumb(e),
         is_short: false,
     }
+}
+
+/// Which backend fetches YouTube listings — Settings → Music → YouTube.
+///
+/// `auto` (the default, and what the section always did) asks Piped first and
+/// falls through to yt-dlp when it does not answer. The other two pin the
+/// backend: Piped instances are fast but go down, yt-dlp always works but is a
+/// process spawn per query, and which trade you want depends on your network.
+pub fn yt_fetcher() -> String {
+    tulipix_core::settings::Settings::load().ok()
+        .map(|s| s.text("music.yt.fetcher"))
+        .filter(|v| v == "piped" || v == "ytdlp")
+        .unwrap_or_else(|| "auto".into())
+}
+
+/// Search YouTube through whichever backend the fetcher setting names.
+pub async fn yt_fetch_search(query: &str, n: usize) -> Vec<tulipix_music::youtube::piped::Video> {
+    use tulipix_music::youtube::piped;
+    let mut vids = match yt_fetcher().as_str() {
+        "ytdlp" => return ytdlp_search(query, n).await,
+        "piped" => {
+            let client = tulipix_core::net::http().clone();
+            piped::search_strict(&client, &piped_instance(), query).await
+                .map(|p| p.videos).unwrap_or_default()
+        }
+        _ => {
+            let client = tulipix_core::net::http().clone();
+            piped::search(&client, &piped_instance(), query).await
+                .map(|p| p.videos).unwrap_or_default()
+        }
+    };
+    vids.truncate(n);
+    vids
 }
 
 pub async fn ytdlp_search(query: &str, n: usize) -> Vec<tulipix_music::youtube::piped::Video> {

@@ -436,6 +436,24 @@ mod linux_tray {
                 items.push(ksni::MenuItem::Separator);
             }
 
+            // The Popup tray style, given a row of its own.
+            //
+            // `MENU_ON_ACTIVATE` means the host opens this menu on EVERY click
+            // and never calls `activate`, so the only way into the popup window
+            // was the now-playing header — a row that only exists while
+            // something is playing. Picking "Popup" in Settings with a silent
+            // player therefore did nothing at all, which is exactly the report.
+            if self.np.popup {
+                items.push(
+                    StandardItem {
+                        label: "Mini player…".into(),
+                        activate: Box::new(|t: &mut Self| { let _ = t.tx.send("tray.popup"); }),
+                        ..Default::default()
+                    }
+                    .into(),
+                );
+            }
+
             items.push(
                 StandardItem {
                     label: "Open Tulipix".into(),

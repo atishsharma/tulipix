@@ -173,16 +173,20 @@ async fn get_text(client: &reqwest::Client, url: &str) -> Result<String> {
     Ok(client.get(url).send().await?.error_for_status()?.text().await?)
 }
 
+/// Search via Piped ONLY — no yt-dlp fallback.
+///
+/// Exists for the fetcher setting: with the backend pinned to Piped, a silent
+/// fall-through to yt-dlp would make the choice unobservable.
+pub async fn search_strict(client: &reqwest::Client, instance: &str, query: &str) -> Result<ChannelPage> {
+    let mut page = parse_search(&get_text(client, &search_url(instance, query)).await?)?;
+    page.videos = without_shorts(page.videos);
+    Ok(page)
+}
+
 /// Search via Piped; on any failure fall back to yt-dlp `ytsearch`. Shorts removed.
 pub async fn search(client: &reqwest::Client, instance: &str, query: &str) -> Result<ChannelPage> {
-    match get_text(client, &search_url(instance, query))
-        .await
-        .and_then(|b| parse_search(&b))
-    {
-        Ok(mut page) => {
-            page.videos = without_shorts(page.videos);
-            Ok(page)
-        }
+    match search_strict(client, instance, query).await {
+        Ok(page) => Ok(page),
         Err(_) => yt_dlp_search_fallback(query).await,
     }
 }

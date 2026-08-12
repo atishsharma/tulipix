@@ -49,14 +49,18 @@ impl MiniStyle {
     /// widget could never be resized.
     pub fn base_size(self) -> (f64, f64) {
         match self {
-            // 420 wide, not 380: the chrome cluster went from three buttons to
-            // five (theme + next layout), and at 380 the title row was left
-            // eliding after about six characters. 212 tall, not 176: the bar
-            // now stacks five rows in its right column — mark + window buttons,
-            // track, seek, transport, volume — where it used to overlay the
-            // chrome on the top-right corner and hang the volume off a flyout.
-            // The artwork fills the height, so it grows with it.
-            Self::Bar => (420.0, 212.0),
+            // 441 wide (420 + 5%), not 380: the chrome cluster went from three
+            // buttons to five (theme + next layout), and at 380 the title row
+            // was left eliding after about six characters. 420 was still not
+            // enough — the title ran under the utility buttons — and the extra
+            // width all lands on the title, since it is the row's only flexible
+            // element and `uiscale` divides by this same number, so no glyph
+            // grows with it. 212 tall, not 176: the bar now stacks five rows in
+            // its right column — mark + window buttons, track, seek, transport,
+            // volume — where it used to overlay the chrome on the top-right
+            // corner and hang the volume off a flyout. The artwork fills the
+            // height, so it grows with it.
+            Self::Bar => (441.0, 212.0),
             Self::Square => (280.0, 496.0),
             // 300 wide, not the 260 it was drawn at: even collapsed the pill
             // carries play plus the chevron. 80 tall, not 56: a button label
@@ -121,6 +125,23 @@ impl MiniStyle {
         let w = (scale * bw + delta).clamp(bw * MIN_SCALE, bw * MAX_SCALE);
         (w + extra_ref * (w / bw), w * ratio)
     }
+
+    /// As `resize_locked_with_extra`, with a second reference amount that rides
+    /// on the HEIGHT and is likewise outside the ratio — the pill's lyrics row.
+    /// Both extras scale with the drag but neither joins the aspect lock, so the
+    /// pill part of the window keeps its designed shape whatever is open on it.
+    pub fn resize_locked_pill(
+        self,
+        cur_w: f64,
+        dx: f64,
+        dy: f64,
+        extra_w: f64,
+        extra_h: f64,
+    ) -> (f64, f64) {
+        let (bw, _) = self.base_size();
+        let (w, h) = self.resize_locked_with_extra(cur_w, dx, dy, extra_w);
+        (w, h + extra_h * (w / bw))
+    }
 }
 
 /// Resize bounds as a multiple of a style's base size. Kept in step with the
@@ -136,6 +157,13 @@ const MAX_SCALE: f64 = 3.0;
 pub const PILL_CLUSTER: f64 = 148.0;
 /// The same, where the pin button is hidden (Wayland has no stacking request).
 pub const PILL_CLUSTER_NO_PIN: f64 = 119.0;
+
+/// Extra HEIGHT the pill takes when its lyrics row is showing, in reference px —
+/// two lines of the row plus the gap above it. Like the cluster it is added
+/// outside the aspect lock, and `MiniWidget.base-h` adds the same amount, so
+/// `uiscale` is unchanged by opening the row: the pill scales off its height and
+/// would otherwise grow every glyph in it the moment lyrics appeared.
+pub const PILL_LYRICS: f64 = 32.0;
 
 /// How much larger than the design reference the widget opens. The reference
 /// sizes were drawn for a 1× desktop and read as a stamp on anything bigger.
@@ -228,6 +256,17 @@ mod tests {
         for (dx, dy) in [(40.0, 3.0), (-25.0, 0.0), (0.0, 0.0)] {
             assert_eq!(s.resize_locked_with_extra(bw, dx, dy, 0.0), s.resize_locked(bw, dx, dy));
         }
+        // The lyrics row rides the height the same way the cluster rides the
+        // width: present in the result, absent from the ratio.
+        let (w3, h3) = s.resize_locked_pill(bw, 0.0, 0.0, 0.0, PILL_LYRICS);
+        assert!((w3 - bw).abs() < 1e-9, "the lyrics row leaked into the width");
+        assert!((h3 - (bh + PILL_LYRICS)).abs() < 1e-9);
+        // Dragged out, it scales with the pill rather than staying fixed.
+        let (w4, h4) = s.resize_locked_pill(bw, 60.0, 0.0, 0.0, PILL_LYRICS);
+        assert!((h4 - (bh + PILL_LYRICS) * (w4 / bw)).abs() < 1e-9);
+        // Both extras at zero is exactly the width-only form.
+        assert_eq!(s.resize_locked_pill(bw, 30.0, 0.0, extra, 0.0),
+            s.resize_locked_with_extra(bw, 30.0, 0.0, extra));
     }
 
     #[test]

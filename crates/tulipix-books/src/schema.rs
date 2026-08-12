@@ -5,7 +5,7 @@ use sqlx::SqlitePool;
 
 /// books.db schema revision, stored in `PRAGMA user_version`. Bump when adding
 /// a one-time data migration below, and gate that migration on the old value.
-const SCHEMA_REV: i64 = 1;
+const SCHEMA_REV: i64 = 2;
 
 /// Bookmarks table. Deliberately NOT `UNIQUE(book_id, page)`: reflow books key
 /// their bookmarks by char offset, and after a repagination (font/margin
@@ -178,6 +178,12 @@ pub async fn apply(pool: &SqlitePool) -> Result<()> {
         // keeps every column in one row, so reading it drags each book's whole
         // body off disk. Tracked here instead, where it's a cheap indexed read.
         "ALTER TABLE books ADD COLUMN fts_indexed INTEGER NOT NULL DEFAULT 0",
+        // Has this book's cover art been built (extracted / placeholder-drawn,
+        // then baked into the 3D renditions)? Adding a book used to do all of
+        // that inline, so ingesting a folder ran at the speed of three image
+        // pipelines per file. The row lands immediately with this at 0 and a
+        // background pass fills the art in batches.
+        "ALTER TABLE books ADD COLUMN art_state INTEGER NOT NULL DEFAULT 0",
     ] {
         let _ = sqlx::query(alter).execute(pool).await;
     }
@@ -218,6 +224,8 @@ pub async fn apply(pool: &SqlitePool) -> Result<()> {
         "CREATE INDEX IF NOT EXISTS idx_annots_book ON annotations(book_id)",
         // Drives the background content indexer's "what's left?" query.
         "CREATE INDEX IF NOT EXISTS idx_books_fts_todo ON books(fts_indexed, missing)",
+        // Same, for the background cover-art builder.
+        "CREATE INDEX IF NOT EXISTS idx_books_art_todo ON books(art_state, missing)",
     ] {
         sqlx::query(idx).execute(pool).await?;
     }
@@ -237,6 +245,13 @@ pub async fn apply(pool: &SqlitePool) -> Result<()> {
         )
         .execute(pool)
         .await;
+    }
+    if rev < 2 {
+        // Every book already in the DB went through the old inline bake, so its
+        // art is either on disk or genuinely absent. Stamping them done keeps
+        // the new background builder off an existing library — without this,
+        // upgrading would re-parse and re-bake every book once.
+        let _ = sqlx::query("UPDATE books SET art_state = 1").execute(pool).await;
     }
     if rev < SCHEMA_REV {
         sqlx::query(&format!("PRAGMA user_version = {SCHEMA_REV}")).execute(pool).await?;

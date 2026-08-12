@@ -444,23 +444,37 @@ pub fn stop_music_child() {
     // way out and the handle is about to be dead.
     if !music_ipc_raw("{\"command\":[\"quit\"]}\n") {
         if let Some(s) = &sock {
-            use std::io::Write;
-            if let Ok(mut c) = mpv_ipc::connect(s) {
-                let _ = c.write_all(b"{\"command\":[\"quit\"]}\n");
-            }
+            let _ = ipc_oneshot(s, "{\"command\":[\"quit\"]}\n");
         }
     }
     set_music_cmd(None);
-    let mut exited = false;
-    for _ in 0..8 {
-        match child.try_wait() {
-            Ok(Some(_)) => { exited = true; break; }
-            Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
-            Err(_) => break,
+    // Reaping is what used to cost the CALLER up to 400 ms of sleep, and nearly
+    // every caller is the Slint event loop — that is the stall between one song
+    // ending and the next one starting. mpv has already been told to quit above
+    // and closes its audio stream within a few milliseconds, so the grace
+    // window, the kill fallback and the socket unlink all move off-thread. Both
+    // singletons were taken above, so a play starting in the same breath
+    // installs its own handles and this thread can no longer see them.
+    std::thread::spawn(move || {
+        let mut exited = false;
+        for _ in 0..8 {
+            match child.try_wait() {
+                Ok(Some(_)) => { exited = true; break; }
+                Ok(None) => std::thread::sleep(std::time::Duration::from_millis(50)),
+                Err(_) => break,
+            }
         }
-    }
-    if !exited { let _ = child.kill(); let _ = child.wait(); }
-    if let Some(s) = &sock { mpv_ipc::cleanup(s); }
+        if !exited { let _ = child.kill(); let _ = child.wait(); }
+        // The endpoint path is derived from prefix + pid, so a respawn that
+        // happened while this thread waited is listening on the SAME file.
+        // Unlinking it then would delete the live socket out from under the
+        // track that is playing; only clean up when nothing has claimed it.
+        if let Some(s) = &sock {
+            let reused = music_sock().lock().ok()
+                .map(|g| g.as_deref() == Some(s.as_path())).unwrap_or(false);
+            if !reused { mpv_ipc::cleanup(s); }
+        }
+    });
 }
 /// Kill the headless music mpv if one is running.
 pub fn kill_music_proc() {
@@ -527,6 +541,47 @@ pub fn music_ipc_raw(payload: &str) -> bool {
     false
 }
 
+/// Send `payload` on a throwaway connection without leaving mpv a broken pipe.
+///
+/// The shared connection above removed the *burst* of broken-pipe lines, but
+/// not the last one: whenever a command is sent before the reader thread has
+/// attached (the ~100 ms after a respawn) it lands here, and connect-write-drop
+/// is precisely what mpv complains about. Two things make it write into a
+/// socket we already closed — the reply to the command, and the event stream it
+/// broadcasts to **every** attached client. So:
+///
+/// * `disable_event all` first, which silences the broadcast for this client
+///   only, and
+/// * read the replies before hanging up, so nothing is left in flight.
+///
+/// Returns `None` when the endpoint could not be reached or written, otherwise
+/// the reply lines — `disable_event`'s ack first, then one per payload command.
+/// Bounded by a 250 ms read timeout, because UI-thread callers land here.
+pub fn ipc_oneshot(sock: &std::path::Path, payload: &str) -> Option<Vec<String>> {
+    use std::io::Write;
+    let mut c = mpv_ipc::connect(sock).ok()?;
+    let want = payload.lines().filter(|l| !l.trim().is_empty()).count();
+    let msg = format!("{{\"command\":[\"disable_event\",\"all\"]}}\n{payload}");
+    c.write_all(msg.as_bytes()).ok()?;
+    // Windows named pipes carry no per-handle read timeout, and a blocking read
+    // on the UI thread is worse than the log line this exists to remove.
+    #[cfg(windows)]
+    return Some(Vec::new());
+    #[cfg(not(windows))]
+    {
+        use std::io::BufRead;
+        c.set_read_timeout(Some(std::time::Duration::from_millis(250))).ok()?;
+        let mut out = Vec::new();
+        for line in std::io::BufReader::new(c).lines().map_while(Result::ok) {
+            out.push(line);
+            if out.len() > want {
+                break; // the ack for each command, plus disable_event's
+            }
+        }
+        Some(out)
+    }
+}
+
 /// Build the JSON for one command.
 fn ipc_payload(args: &[&str]) -> String {
     format!("{{\"command\":[{}]}}\n",
@@ -539,19 +594,16 @@ fn ipc_payload(args: &[&str]) -> String {
 
 /// Send a single JSON command to the live music mpv over its IPC socket.
 pub fn music_ipc(args: &[&str]) {
-    use std::io::Write;
     let payload = ipc_payload(args);
     if music_ipc_raw(&payload) {
         return;
     }
     // No shared connection: mpv was spawned moments ago and its reader has not
     // attached yet, or this is a control sent after the process died. A
-    // one-shot connection still gets the command through — and still costs one
-    // broken-pipe line — but it is now the rare path rather than every call.
+    // one-shot connection still gets the command through, and `ipc_oneshot`
+    // makes it cost nothing in mpv's log either.
     let Some(sock) = music_sock().lock().ok().and_then(|g| g.clone()) else { return; };
-    if let Ok(mut s) = mpv_ipc::connect(&sock) {
-        let _ = s.write_all(payload.as_bytes());
-    }
+    let _ = ipc_oneshot(&sock, &payload);
 }
 
 /// Same JSON-IPC push for the windowed VIDEO mpv ("tulipix-mpv" socket) —
@@ -877,21 +929,96 @@ thread_local! {
     /// (which must mirror real state or the DE sends the wrong key event) and the
     /// initial registration share one connection.
     pub static MEDIA_CONTROLS: std::cell::RefCell<Option<souvlaki::MediaControls>> = const { std::cell::RefCell::new(None) };
+    /// Last position we told the OS about. `media_set_playing` is called from
+    /// the toggle paths, which know the new state but not the clock, and a
+    /// `PlaybackStatus` change that drops `Position` back to zero makes every
+    /// remote's scrubber jump to the start on a pause.
+    static MEDIA_POS: std::cell::Cell<f32> = const { std::cell::Cell::new(0.0) };
+}
+
+/// Publish the current track to the OS media surface — MPRIS on Linux, SMTC on
+/// Windows, `MPNowPlayingInfoCenter` on macOS.
+///
+/// Without this the app registers as a player and gets the media keys, but the
+/// desktop's own media applet has nothing to draw: no title, no artist, no
+/// artwork, no length — which is why a phone mirroring the session showed a
+/// generic note where every other player shows a cover.
+///
+/// Only call this when the track actually changed — the caller owns that check,
+/// because on this side of it the artwork has already been resolved and that is
+/// the part worth not repeating.
+pub fn media_set_track(
+    title: &str,
+    artist: &str,
+    album: &str,
+    cover: Option<&str>,
+    dur_secs: f32,
+) {
+    // Remote artwork (a podcast or YouTube thumbnail) is already a URL and must
+    // stay one; a local file has to be handed over as `file://` or clients
+    // ignore it.
+    let cover_url = cover.map(|p| {
+        if p.starts_with("http://") || p.starts_with("https://") || p.starts_with("file://") {
+            p.to_string()
+        } else {
+            format!("file://{p}")
+        }
+    });
+    MEDIA_CONTROLS.with(|c| {
+        if let Some(ctrl) = c.borrow_mut().as_mut() {
+            let _ = ctrl.set_metadata(souvlaki::MediaMetadata {
+                title: (!title.is_empty()).then_some(title),
+                artist: (!artist.is_empty()).then_some(artist),
+                album: (!album.is_empty()).then_some(album),
+                cover_url: cover_url.as_deref(),
+                // A live stream has no length, and publishing a zero one gives
+                // remotes a scrubber that looks broken rather than absent.
+                duration: (dur_secs > 0.0)
+                    .then(|| std::time::Duration::from_secs_f32(dur_secs)),
+            });
+        }
+    });
 }
 
 /// Mirror the real playback state to the OS media surface so the desktop sends
 /// the correct Play vs Pause event for the next media-key press.
 pub fn media_set_playing(playing: bool) {
+    media_set_progress(playing, MEDIA_POS.with(|c| c.get()));
+}
+
+/// The same, carrying where we are in the track — what fills in the elapsed
+/// clock and the scrubber on the OS applet and on anything mirroring it.
+pub fn media_set_progress(playing: bool, pos_secs: f32) {
+    MEDIA_POS.with(|c| c.set(pos_secs.max(0.0)));
+    let progress =
+        Some(souvlaki::MediaPosition(std::time::Duration::from_secs_f32(pos_secs.max(0.0))));
     MEDIA_CONTROLS.with(|c| {
         if let Some(ctrl) = c.borrow_mut().as_mut() {
             let st = if playing {
-                souvlaki::MediaPlayback::Playing { progress: None }
+                souvlaki::MediaPlayback::Playing { progress }
             } else {
-                souvlaki::MediaPlayback::Paused { progress: None }
+                souvlaki::MediaPlayback::Paused { progress }
             };
             let _ = ctrl.set_playback(st);
         }
     });
+}
+
+/// Echo a volume change back to MPRIS.
+///
+/// The protocol requires it: a client that writes `Volume` gets no confirmation
+/// until the player publishes the value it settled on, so a slider dragged on a
+/// remote springs back without this. MPRIS-only — SMTC and the macOS info centre
+/// carry no volume at all, and souvlaki does not define the call there.
+pub fn media_set_volume(vol_0_1: f64) {
+    #[cfg(all(unix, not(target_os = "macos")))]
+    MEDIA_CONTROLS.with(|c| {
+        if let Some(ctrl) = c.borrow_mut().as_mut() {
+            let _ = ctrl.set_volume(vol_0_1.clamp(0.0, 1.0));
+        }
+    });
+    #[cfg(not(all(unix, not(target_os = "macos"))))]
+    let _ = vol_0_1;
 }
 
 

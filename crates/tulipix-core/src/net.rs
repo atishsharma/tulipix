@@ -23,6 +23,21 @@
 use std::sync::OnceLock;
 use std::time::Duration;
 
+/// Agent string for third-party media hosts.
+///
+/// Podcast CDNs (Megaphone, Libsyn, rss.com, Buzzsprout), the image hosts their
+/// artwork sits on, and most Icecast/Shoutcast radio servers run a bot filter in
+/// front of the file. An agent they do not recognise is answered with `403
+/// Forbidden`, and a few reset the connection outright — which is what the
+/// "connection refused on 443" and "403" reports on Podcasts and Radio are.
+/// `Tulipix/0.1 (github…)` reads as a crawler to every one of those filters.
+///
+/// So feeds, episode audio, artwork and radio streams identify as a browser.
+/// Hosts that *want* an identifying agent — MusicBrainz, radio-browser, LRCLIB —
+/// keep sending their own; this is only for the media hosts that block us.
+pub const BROWSER_UA: &str = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) \
+     AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36";
+
 /// Client for ordinary requests: bounded end to end.
 ///
 /// Use for anything whose response is small enough that taking more than a few

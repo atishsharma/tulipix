@@ -268,6 +268,89 @@ component Line inherits Text {
     horizontal-alignment: left;
 }
 
+// Elapsed · bar · total inside one outlined pill.
+//
+// The same control the in-app players wear (`SeekPill` in page_music.slint),
+// redrawn here rather than imported: this is a separate top-level window and so
+// a separate component tree, and pulling the music page in for one component
+// would drag the whole section with it. The two must be kept in step by hand —
+// geometry, weights and the accent wash all match on purpose.
+component SeekPill inherits Rectangle {
+    in property <float> pos;
+    in property <float> dur;
+    in property <string> pos-label: "0:00";
+    in property <string> dur-label: "0:00";
+    in property <float> uiscale: 1.0;
+    in property <bool> compact: false;
+    callback seek(float);
+    height: (root.compact ? 22px : 26px) * root.uiscale;
+    vertical-stretch: 0;
+    border-radius: self.height / 2;
+    background: Tone.a.with-alpha(0.20);
+    border-width: 1px;
+    border-color: Tone.a.with-alpha(0.45);
+    HorizontalLayout {
+        padding-left: (root.compact ? 9px : 12px) * root.uiscale;
+        padding-right: (root.compact ? 9px : 12px) * root.uiscale;
+        spacing: (root.compact ? 5px : 8px) * root.uiscale;
+        cross-axis-alignment: center;
+        Line { text: root.pos-label; color: Theme.text; horizontal-stretch: 0;
+            font-size: (root.compact ? 9px : 10px) * root.uiscale; font-weight: 700; }
+        SeekBar {
+            pos: root.pos; dur: root.dur; horizontal-stretch: 1;
+            thickness: (root.compact ? 6px : 8px) * root.uiscale;
+            height: (root.compact ? 12px : 14px) * root.uiscale;
+            seek(s) => { root.seek(s); }
+        }
+        Line { text: root.dur-label; color: Theme.text; horizontal-stretch: 0;
+            font-size: (root.compact ? 9px : 10px) * root.uiscale; font-weight: 700; }
+    }
+}
+
+// Volume in the same pill: mute on the left, level inside, number on the right.
+// Every style used to carry a separate round mute button beside a bare bar.
+component VolPill inherits Rectangle {
+    in property <float> volume;
+    in property <bool> muted;
+    in property <float> uiscale: 1.0;
+    in property <bool> compact: false;
+    callback set-volume(float);
+    callback toggle-mute();
+    height: (root.compact ? 22px : 26px) * root.uiscale;
+    vertical-stretch: 0;
+    border-radius: self.height / 2;
+    background: Tone.a.with-alpha(0.20);
+    border-width: 1px;
+    border-color: Tone.a.with-alpha(0.45);
+    HorizontalLayout {
+        padding-left: (root.compact ? 8px : 10px) * root.uiscale;
+        padding-right: (root.compact ? 9px : 12px) * root.uiscale;
+        spacing: (root.compact ? 5px : 8px) * root.uiscale;
+        cross-axis-alignment: center;
+        Rectangle {
+            width: (root.compact ? 14px : 16px) * root.uiscale; height: self.width;
+            horizontal-stretch: 0;
+            AppIcon {
+                source: root.muted ? Icons.volume-x : Icons.volume;
+                tint: root.muted ? Tone.ink : Theme.text;
+                width: 100%; height: 100%;
+            }
+            TouchArea { mouse-cursor: pointer; clicked => { root.toggle-mute(); } }
+        }
+        SeekBar {
+            // Muted reads as zero rather than as the level it will come back
+            // to — the icon is the thing that says why.
+            pos: root.muted ? 0 : root.volume; dur: 130; compact: true;
+            horizontal-stretch: 1;
+            thickness: (root.compact ? 6px : 8px) * root.uiscale;
+            height: (root.compact ? 12px : 14px) * root.uiscale;
+            seek(v) => { root.set-volume(v); }
+        }
+        Line { text: Math.round(root.volume); color: Theme.text; horizontal-stretch: 0;
+            font-size: (root.compact ? 9px : 10px) * root.uiscale; font-weight: 700; }
+    }
+}
+
 // ── the widget window ────────────────────────────────────────────────────────
 //
 // One window, three size classes. Nothing here is bound to a fixed window size:
@@ -305,8 +388,14 @@ export component MiniWidget inherits Window {
     // crates/tulipix-music/src/mini_player.rs, which sizes the window on open.
     // Deliberately NOT bound to `width`/`height`: a binding would fight the
     // compositor and the widget could never be resized.
-    property <length> base-w: root.is-pill ? 300px : (root.is-square ? 280px : 420px);
-    property <length> base-h: root.is-pill ? 80px  : (root.is-square ? 496px : 212px);
+    property <length> base-w: root.is-pill ? 300px : (root.is-square ? 280px : 441px);
+    // The pill's lyrics row is added to the REFERENCE height, not just to the
+    // window: the pill measures `uiscale` against this, so a row that grew only
+    // the window would have scaled every glyph in the pill up with it. Kept in
+    // step with PILL_LYRICS in mini_player.rs, which grows the window by the
+    // same amount.
+    property <length> base-h: root.is-pill ? (80px + (root.pill-lyrics-on ? 32px : 0px))
+        : (root.is-square ? 496px : 212px);
     // The pill measures itself against its HEIGHT: extending it sideways for the
     // window buttons must not scale every glyph in it. The two agree everywhere
     // else — the window is aspect-locked, so width/base-w == height/base-h.
@@ -358,6 +447,7 @@ export component MiniWidget inherits Window {
     callback toggle-theme();   // light ⇄ dark, applied to the whole app
     callback cycle-style();    // bar → square → pill → bar
     callback pill-extend();    // widen/narrow the window for the button cluster
+    callback pill-lyrics-toggled(); // grow/shrink the window for the lyrics row
     callback open-zen();     // full-screen zen player, back in the app
     callback expand();       // back to the main window
     callback close-widget(); // to the tray
@@ -376,7 +466,29 @@ export component MiniWidget inherits Window {
     property <bool> lyrics-flip: false;
     // Pill style: the window has been widened to show the button cluster.
     in-out property <bool> pill-open: false;
+    // Pill style: the mic on the artwork has pulled a lyrics row out under the
+    // track. Its own toggle rather than `lyrics-flip` — the pill grows a row
+    // where the bar and the square cover their artwork, and the two states have
+    // to be able to differ per style.
+    in-out property <bool> pill-lyrics: false;
     property <bool> lyrics-open: root.lyrics-flip && root.has-lyrics;
+    property <bool> pill-lyrics-on: root.pill-lyrics && root.has-lyrics;
+
+    // A line has just been replaced, for the ~30 ms it takes the timer to clear
+    // it. The `states` block on the pill's lyrics row uses it to place the new
+    // line one row low and transparent with NO animation, then animates it back
+    // — which is how a slide-in is expressed here: an `animate` alone would run
+    // in both directions and the line would dip before it rose.
+    property <bool> lyr-fresh: false;
+    changed lyric-now => {
+        root.lyr-fresh = true;
+        lyrtick.running = true;
+    }
+    lyrtick := Timer {
+        interval: 30ms;
+        running: false;
+        triggered => { self.running = false; root.lyr-fresh = false; }
+    }
 
     // Space bar plays and pauses while the widget has the keyboard, which is
     // what every media window does and what a widget with no menu especially
@@ -484,11 +596,64 @@ export component MiniWidget inherits Window {
             // the only thing between it and the widget's edges, so the art grows
             // with every resize instead of sitting in a fixed 100px box that
             // left a band of empty panel above and below it.
-            ArtTile {
-                art: root.art; accent: root.accent;
+            // Art, with the lyrics laid over it. The square style shrinks its
+            // cover and puts the lines underneath, which it can afford — this
+            // block is the widget's height, so instead the lines come up over
+            // the art behind a scrim. Same three (previous · current · next),
+            // same `has-lyrics` gate, so a track without them keeps the plain
+            // cover and no button.
+            Rectangle {
                 width: root.height - 4px - 24px * root.uiscale;
                 height: self.width;
-                radius: 14px;
+                background: transparent;
+                ArtTile {
+                    art: root.art; accent: root.accent;
+                    width: parent.width; height: parent.height;
+                    radius: 14px;
+                }
+                if root.lyrics-open: Rectangle {
+                    width: parent.width; height: parent.height;
+                    border-radius: 14px * root.uiscale;
+                    background: Theme.dark ? #0b0d18ee : #fffffff2;
+                    border-width: 1px; border-color: Theme.outline;
+                    VerticalLayout {
+                        padding: 10px * root.uiscale;
+                        spacing: 6px * root.uiscale;
+                        alignment: center;
+                        Text { text: root.lyric-prev;
+                            color: Tone.a.mix(Theme.dark ? #000000 : Theme.text-dim, 0.45);
+                            font-size: 9.5px * root.uiscale; horizontal-alignment: center;
+                            wrap: word-wrap; overflow: elide; }
+                        Text { text: root.lyric-now == "" ? "…" : root.lyric-now;
+                            color: Tone.ink; font-size: 13px * root.uiscale; font-weight: 700;
+                            horizontal-alignment: center; wrap: word-wrap; overflow: elide; }
+                        Text { text: root.lyric-next;
+                            color: Tone.a.mix(Theme.dark ? #000000 : Theme.text-dim, 0.45);
+                            font-size: 9.5px * root.uiscale; horizontal-alignment: center;
+                            wrap: word-wrap; overflow: elide; }
+                    }
+                }
+                TouchArea {
+                    mouse-cursor: root.has-lyrics ? pointer : default;
+                    clicked => { if (root.has-lyrics) { root.lyrics-flip = !root.lyrics-flip; } }
+                }
+                // Flip affordance, bottom-right of the tile — the tell that this
+                // track has lyrics at all.
+                if root.has-lyrics: Rectangle {
+                    width: 24px * root.uiscale; height: self.width;
+                    border-radius: self.width / 2;
+                    x: parent.width - self.width - 7px * root.uiscale;
+                    y: parent.height - self.height - 7px * root.uiscale;
+                    background: Theme.dark ? #0e1020cc : #ffffffdd;
+                    border-width: 1px; border-color: Theme.outline-strong;
+                    AppIcon { source: Icons.mic;
+                        tint: barflip.has-hover ? root.accent : Theme.text-dim;
+                        width: 12px * root.uiscale; height: self.width;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2; }
+                    barflip := TouchArea { mouse-cursor: pointer;
+                        clicked => { root.lyrics-flip = !root.lyrics-flip; } }
+                }
             }
             VerticalLayout {
                 spacing: 4px * root.uiscale; horizontal-stretch: 1; alignment: center;
@@ -525,15 +690,10 @@ export component MiniWidget inherits Window {
                     Line { text: root.np-sub == "" ? "Pick a track" : root.np-sub;
                         color: Theme.text-dim; font-size: 11.5px * root.uiscale; }
                 }
-                SeekBar { pos: root.pos; dur: root.dur; thickness: 5px * root.uiscale;
-                    height: 14px * root.uiscale; seek(s) => { root.seek(s); } }
-                HorizontalLayout {
-                    Line { text: root.pos-label; color: Theme.text-dim;
-                        font-size: 10px * root.uiscale; horizontal-stretch: 1; }
-                    Line { text: root.dur-label; color: Theme.text-dim;
-                        font-size: 10px * root.uiscale;
-                        horizontal-alignment: right; horizontal-stretch: 1; }
-                }
+                SeekPill { uiscale: root.uiscale; compact: true;
+                    pos: root.pos; dur: root.dur;
+                    pos-label: root.pos-label; dur-label: root.dur-label;
+                    seek(s) => { root.seek(s); } }
                 // Transport alone on its row, centred and spaced out.
                 HorizontalLayout {
                     alignment: center;
@@ -553,16 +713,10 @@ export component MiniWidget inherits Window {
                 // had left under it, which at this size was a ~90px track.
                 HorizontalLayout {
                     spacing: 8px * root.uiscale; cross-axis-alignment: center;
-                    WBtn { icon: root.muted ? Icons.volume-x : Icons.volume; tone: 0;
-                        size: 24px * root.uiscale; isz: 12px * root.uiscale;
-                        tip: root.muted ? "Unmute" : "Mute";
-                        clicked => { root.toggle-mute(); } }
-                    SeekBar {
-                        pos: root.muted ? 0 : root.volume; dur: 130;
-                        thickness: 5px * root.uiscale; height: 20px * root.uiscale;
-                        horizontal-stretch: 1;
-                        seek(v) => { root.set-volume(v); }
-                    }
+                    VolPill { uiscale: root.uiscale; compact: true; horizontal-stretch: 1;
+                        volume: root.volume; muted: root.muted;
+                        set-volume(v) => { root.set-volume(v); }
+                        toggle-mute => { root.toggle-mute(); } }
                     WBtn { icon: Icons.maximize; tone: 0;
                         size: 24px * root.uiscale; isz: 12px * root.uiscale;
                         tip: "Full screen";
@@ -671,16 +825,12 @@ export component MiniWidget inherits Window {
                     color: Theme.text-dim; font-size: 11px * root.uiscale;
                     horizontal-alignment: center; }
             }
-            // Thicker track than the bar: this style has the room, and it is the
-            // one people scrub on.
-            SeekBar { pos: root.pos; dur: root.dur; thickness: 8px * root.uiscale;
-                height: 18px * root.uiscale; seek(s) => { root.seek(s); } }
-            HorizontalLayout {
-                Line { text: root.pos-label; color: Theme.text-dim;
-                    font-size: 10px * root.uiscale; horizontal-stretch: 1; }
-                Line { text: root.dur-label; color: Theme.text-dim; font-size: 10px * root.uiscale;
-                    horizontal-alignment: right; horizontal-stretch: 1; }
-            }
+            // The full-size pill: this style has the room, and it is the one
+            // people scrub on.
+            SeekPill { uiscale: root.uiscale;
+                pos: root.pos; dur: root.dur;
+                pos-label: root.pos-label; dur-label: root.dur-label;
+                seek(s) => { root.seek(s); } }
             HorizontalLayout {
                 alignment: center;
                 Transport {
@@ -701,15 +851,10 @@ export component MiniWidget inherits Window {
                 spacing: 8px * root.uiscale; padding-top: 2px * root.uiscale;
                 padding-right: 16px * root.uiscale;
                 cross-axis-alignment: center;
-                WBtn { icon: root.muted ? Icons.volume-x : Icons.volume; tone: 0;
-                    size: 24px * root.uiscale; isz: 12px * root.uiscale;
-                    tip: root.muted ? "Unmute" : "Mute";
-                    clicked => { root.toggle-mute(); } }
-                SeekBar {
-                    pos: root.muted ? 0 : root.volume; dur: 130; thickness: 5px * root.uiscale;
-                    height: 24px * root.uiscale; horizontal-stretch: 1;
-                    seek(v) => { root.set-volume(v); }
-                }
+                VolPill { uiscale: root.uiscale; horizontal-stretch: 1;
+                    volume: root.volume; muted: root.muted;
+                    set-volume(v) => { root.set-volume(v); }
+                    toggle-mute => { root.toggle-mute(); } }
                 WBtn { icon: Icons.maximize; tone: 0; size: 24px * root.uiscale; isz: 12px * root.uiscale;
                     tip: "Full screen";
                     clicked => { root.open-zen(); } }
@@ -723,36 +868,75 @@ export component MiniWidget inherits Window {
         // it needs at this size. The cluster animates its width rather than
         // resizing the window — an aspect-locked window that changed shape on a
         // toggle would fight the compositor for no gain.
-        if root.is-pill: HorizontalLayout {
-            padding: 8px * root.uiscale; spacing: 8px * root.uiscale;
+        if root.is-pill: VerticalLayout {
+            padding: 8px * root.uiscale; spacing: 6px * root.uiscale;
+            // Slack collects above and below the two rows rather than being
+            // shared out between them — with the lyrics row out, an even split
+            // put a visible gap between the track and the line it belongs to.
+            alignment: center;
+            HorizontalLayout {
+            spacing: 8px * root.uiscale;
             // Centres every fixed-height item in the row. The `y: (parent.height
             // - self.height) / 2` this was written with never ran: a BoxLayout
             // writes its children's cross-axis position itself and silently
             // replaces that binding, so the art and the buttons sat against the
             // top padding.
             cross-axis-alignment: center;
-            ArtTile { art: root.art; accent: root.accent;
-                width: 40px * root.uiscale; height: 40px * root.uiscale; radius: 10px; }
+            // Artwork, and the pill's whole lyrics affordance. Nothing is drawn
+            // on it at rest: this style is 40px of cover and a title, and a
+            // permanent badge on something that small read as damage to the
+            // artwork. Hovering brings up the mic — that IS the tell that the
+            // track has lyrics — and clicking pulls the row out underneath.
+            Rectangle {
+                width: 40px * root.uiscale; height: self.width;
+                horizontal-stretch: 0;
+                background: transparent;
+                ArtTile { art: root.art; accent: root.accent;
+                    width: parent.width; height: parent.height; radius: 10px; }
+                thumb := TouchArea {
+                    mouse-cursor: root.has-lyrics ? pointer : default;
+                    clicked => {
+                        if (root.has-lyrics) {
+                            root.pill-lyrics = !root.pill-lyrics;
+                            root.pill-lyrics-toggled();
+                        }
+                    }
+                }
+                // Declared AFTER the touch area so it draws over it — z-order
+                // here is tree order. It carries no touch area of its own, so
+                // the clicks still land on the one underneath.
+                if root.has-lyrics && (thumb.has-hover || root.pill-lyrics): Rectangle {
+                    width: 17px * root.uiscale; height: self.width;
+                    border-radius: self.width / 2;
+                    x: parent.width - self.width - 2px * root.uiscale;
+                    y: parent.height - self.height - 2px * root.uiscale;
+                    // Filled while the row is out, so the mic doubles as the
+                    // state of the thing it opened.
+                    background: root.pill-lyrics ? Tone.ink
+                        : (Theme.dark ? #0e1020e6 : #fffffff2);
+                    border-width: 1px;
+                    border-color: root.pill-lyrics ? transparent : Theme.outline-strong;
+                    AppIcon { source: Icons.mic;
+                        tint: root.pill-lyrics ? #ffffff : Theme.text;
+                        width: 9px * root.uiscale; height: self.width;
+                        x: (parent.width - self.width) / 2;
+                        y: (parent.height - self.height) / 2; }
+                }
+            }
             VerticalLayout {
                 spacing: 0px; horizontal-stretch: 1; alignment: center;
                 Line { text: root.np-title == "" ? "Nothing playing" : root.np-title;
                     color: Theme.text; font-size: 12px * root.uiscale; font-weight: 700; }
                 Line { text: root.np-sub == "" ? "Pick a track" : root.np-sub;
                     color: Theme.text-dim; font-size: 10px * root.uiscale; }
-                // Elapsed and total flanking the track. Tiny type on purpose —
-                // it has to fit inside the pill's one text column without
-                // taking width the title needs.
-                HorizontalLayout {
-                    spacing: 5px * root.uiscale; cross-axis-alignment: center;
-                    Line { text: root.pos-label; color: Theme.text-dim;
-                        font-size: 8.5px * root.uiscale; horizontal-stretch: 0; }
-                    SeekBar { pos: root.pos; dur: root.dur; compact: true;
-                        thickness: 3px * root.uiscale; height: 8px * root.uiscale;
-                        horizontal-stretch: 1;
-                        seek(s) => { root.seek(s); } }
-                    Line { text: root.dur-label; color: Theme.text-dim;
-                        font-size: 8.5px * root.uiscale; horizontal-stretch: 0; }
-                }
+                // The same seek pill as every other player, squeezed: `compact`
+                // sets the type and the bar, and the height is pulled in further
+                // still because this one shares a 40px row with the artwork.
+                SeekPill { uiscale: root.uiscale; compact: true;
+                    height: 17px * root.uiscale;
+                    pos: root.pos; dur: root.dur;
+                    pos-label: root.pos-label; dur-label: root.dur-label;
+                    seek(s) => { root.seek(s); } }
             }
             WBtn { icon: root.playing ? Icons.pause : Icons.play; tone: 3;
                 size: 30px * root.uiscale; isz: 14px * root.uiscale;
@@ -776,6 +960,54 @@ export component MiniWidget inherits Window {
                 theme => { root.toggle-theme(); }
                 next-style => { root.cycle-style(); }
                 close-me => { root.close-widget(); }
+            }
+            }
+            // The lyrics row. ONE line — the one being sung — because that is
+            // all a 300px window can carry and still be a pill; the bar and the
+            // square are where prev/next belong. Two text rows tall and clipped,
+            // so a long line wraps rather than eliding and a very long one is
+            // cut rather than pushing the window taller.
+            //
+            // The window grows to make room (`pill-lyrics-toggled` → PILL_LYRICS
+            // in mini_player.rs), and `base-h` above grows by the same amount so
+            // nothing in the pill changes size when it opens.
+            if root.pill-lyrics-on: Rectangle {
+                height: 26px * root.uiscale;
+                background: transparent;
+                clip: true;
+                lyrtxt := Text {
+                    text: root.lyric-now == "" ? "…" : root.lyric-now;
+                    color: Tone.ink;
+                    font-size: 10.5px * root.uiscale; font-weight: 600;
+                    width: parent.width;
+                    // As tall as the row, and centred in it: a one-line lyric
+                    // left at the top of a two-line box sat against the track
+                    // above it with a band of nothing underneath. Given the
+                    // height explicitly rather than letting the text size
+                    // itself, because `vertical-alignment` only has somewhere to
+                    // centre if the element is taller than its content.
+                    height: parent.height;
+                    vertical-alignment: center;
+                    horizontal-alignment: center;
+                    wrap: word-wrap;
+                    // Cuts a third line off with an ellipsis rather than
+                    // letting the clip slice it in half.
+                    overflow: elide;
+                    y: 0px;
+                    opacity: 1.0;
+                }
+                // The scroll. Each new line is placed a row low and transparent
+                // the instant it arrives (`in` at 0ms) and then travels up into
+                // place (`out` over 320ms) — a plain `animate` would run both
+                // ways and the line would sink before it rose.
+                states [
+                    fresh when root.lyr-fresh: {
+                        lyrtxt.y: 13px * root.uiscale;
+                        lyrtxt.opacity: 0.0;
+                        in { animate lyrtxt.y, lyrtxt.opacity { duration: 0ms; } }
+                        out { animate lyrtxt.y, lyrtxt.opacity { duration: 320ms; easing: ease-out; } }
+                    }
+                ]
             }
         }
 
@@ -919,6 +1151,7 @@ export component TrayPopup inherits Window {
     callback prev();
     callback seek(float);
     callback set-volume(float);
+    callback toggle-mute();
     callback toggle-shuffle();
     callback cycle-repeat();
     callback open-app();
@@ -962,18 +1195,17 @@ export component TrayPopup inherits Window {
                             color: Theme.text; font-size: 13px; font-weight: 700; }
                         Line { text: root.np-sub == "" ? "Pick a track" : root.np-sub;
                             color: Theme.text-dim; font-size: 11.5px; }
-                        HorizontalLayout {
-                            Line { text: root.pos-label; color: Theme.text-dim; font-size: 10px; horizontal-stretch: 1; }
-                            Line { text: root.dur-label; color: Theme.text-dim; font-size: 10px;
-                                horizontal-alignment: right; horizontal-stretch: 1; }
-                        }
                     }
                 }
             }
 
+            // Elapsed and total moved off the header and into the pill, which is
+            // where they live in every other player now.
             HorizontalLayout {
                 padding-left: 12px; padding-right: 12px;
-                SeekBar { pos: root.pos; dur: root.dur; seek(s) => { root.seek(s); } }
+                SeekPill { pos: root.pos; dur: root.dur;
+                    pos-label: root.pos-label; dur-label: root.dur-label;
+                    seek(s) => { root.seek(s); } }
             }
 
             HorizontalLayout {
@@ -991,16 +1223,10 @@ export component TrayPopup inherits Window {
 
             // Volume — 0..130 like the rest of the app (mpv allows the boost).
             HorizontalLayout {
-                padding-left: 12px; padding-right: 12px; padding-bottom: 12px; spacing: 9px;
-                cross-axis-alignment: center;
-                AppIcon { source: root.muted ? Icons.volume-x : Icons.volume; tint: Theme.text-dim;
-                    width: 14px; height: 14px; }
-                SeekBar {
-                    pos: root.volume; dur: 130; horizontal-stretch: 1;
-                    seek(v) => { root.set-volume(v); }
-                }
-                Line { text: Math.round(root.volume); color: Theme.text-dim; font-size: 10px;
-                    width: 20px; horizontal-alignment: right; }
+                padding-left: 12px; padding-right: 12px; padding-bottom: 12px;
+                VolPill { volume: root.volume; muted: root.muted;
+                    set-volume(v) => { root.set-volume(v); }
+                    toggle-mute => { root.toggle-mute(); } }
             }
 
             Rectangle { height: 1px; background: Theme.outline; }
