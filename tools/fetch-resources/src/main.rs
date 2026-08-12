@@ -169,9 +169,23 @@ fn fetch(
     let mut last: Option<anyhow::Error> = None;
 
     for u in std::iter::once(url).chain(fallback) {
+        // Resolved once per source, not per attempt: an asset on a private repo
+        // has to be fetched through the API, with a token.
+        let (target, token) = match api_asset(client, u) {
+            Some((api, t)) => {
+                tracing::info!(url = %u, "private release asset — going through the API");
+                (api, Some(t))
+            }
+            None => (u.to_string(), None),
+        };
         for attempt in 1..=TRIES {
-            let got = client
-                .get(u)
+            let mut req = client.get(&target);
+            if let Some(t) = &token {
+                req = req
+                    .header("Accept", "application/octet-stream")
+                    .header("Authorization", format!("Bearer {t}"));
+            }
+            let got = req
                 .send()
                 .and_then(|r| r.error_for_status())
                 .and_then(|r| r.bytes())
@@ -200,6 +214,47 @@ fn fetch(
         }
     }
     Err(last.unwrap_or_else(|| anyhow::anyhow!("fetch {url}: no attempt was made")))
+}
+
+/// Turn a `github.com/<owner>/<repo>/releases/download/<tag>/<file>` URL into
+/// the API asset URL that can actually be downloaded, plus the token to do it
+/// with. Returns `None` for every other URL, and when no token is in the
+/// environment.
+///
+/// This repo is private, and a private repo answers an anonymous GET on a
+/// release download URL with **404** — which is what killed the Windows job of
+/// v0.9.0 on the exiftool zip cached under the `tooling-cache` release. The
+/// documented way in is `/repos/{o}/{r}/releases/tags/{tag}`, then the asset's
+/// own `url` with `Accept: application/octet-stream`. reqwest drops the
+/// Authorization header when GitHub redirects to its (already signed) storage
+/// host, so the token never leaves github.com.
+fn api_asset(client: &reqwest::blocking::Client, url: &str) -> Option<(String, String)> {
+    let token = std::env::var("GITHUB_TOKEN")
+        .or_else(|_| std::env::var("GH_TOKEN"))
+        .ok()
+        .filter(|t| !t.is_empty())?;
+    let rest = url.strip_prefix("https://github.com/")?;
+    let (owner, rest) = rest.split_once('/')?;
+    let (repo, rest) = rest.split_once("/releases/download/")?;
+    let (tag, file) = rest.split_once('/')?;
+
+    #[derive(Deserialize)]
+    struct Rel { assets: Vec<Asset> }
+    #[derive(Deserialize)]
+    struct Asset { name: String, url: String }
+
+    let rel: Rel = client
+        .get(format!("https://api.github.com/repos/{owner}/{repo}/releases/tags/{tag}"))
+        .header("Accept", "application/vnd.github+json")
+        .header("X-GitHub-Api-Version", "2022-11-28")
+        .header("Authorization", format!("Bearer {token}"))
+        .send()
+        .and_then(|r| r.error_for_status())
+        .and_then(|r| r.json())
+        .map_err(|e| tracing::warn!(url = %url, error = %e, "release lookup failed — trying the plain URL"))
+        .ok()?;
+    let asset = rel.assets.into_iter().find(|a| a.name == file)?;
+    Some((asset.url, token))
 }
 
 /// Drop the leading path component (e.g. the `Image-ExifTool-13.58/` wrapper).

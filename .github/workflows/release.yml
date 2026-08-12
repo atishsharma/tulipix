@@ -93,6 +93,12 @@ jobs:
           mkdir -p dist
 
       - name: Fetch bundled tools (manifest-pinned)
+        # The manifest caches a couple of tools on this repo's own
+        # `tooling-cache` release, and the repo is private: an anonymous GET on
+        # a release download URL gets 404, not 403. The token lets the fetcher
+        # go through the API instead.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: cargo run -p fetch-resources
 
       - name: Build whisper-cli (static, pinned v1.9.1)
@@ -287,6 +293,11 @@ jobs:
           echo "VERSION=$V" >> "$GITHUB_ENV"
 
       - name: Fetch bundled tools (ffmpeg, yt-dlp, mpv.exe, whisper, exiftool, rclone, model)
+        # exiftool for Windows is the standalone exe zip cached on this repo's
+        # `tooling-cache` release. The repo is private, so that URL 404s without
+        # a token — this is what failed v0.9.0's first Windows job.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: cargo run -p fetch-resources
 
       # The player binary only. There was a second half here that downloaded
@@ -417,6 +428,10 @@ jobs:
           echo "VERSION=$V" >> "$GITHUB_ENV"
 
       - name: Fetch bundled tools
+        # See the linux job: private repo, so the tooling-cache assets need the
+        # token to resolve through the API.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           mkdir -p dist
           cargo run -p fetch-resources
