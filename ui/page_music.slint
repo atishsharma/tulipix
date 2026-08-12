@@ -5297,7 +5297,7 @@ export component MusicPage inherits Rectangle {
                     VerticalLayout { padding: root.home-connect ? 14px : 0px; spacing: 12px;
                         Text { text: "Top albums"; color: MusicTheme.fg; font-size: 20px; font-weight: 700; }
                         Rectangle { horizontal-stretch: 1;
-                            property <int> gcols: Math.max(1, Math.min(7, root.top-albums.length));
+                            property <int> gcols: Math.max(1, Math.min(7, Math.floor(self.width / 150px)));   // cell width is fixed, not per-item
                             property <length> cell: self.width / gcols;
                             height: cell + 30px;
                             for a[idx] in root.top-albums: AlbumCard {
@@ -5339,7 +5339,7 @@ export component MusicPage inherits Rectangle {
                                 clicked => { root.set-lib-tab("history"); } }
                         }
                         Rectangle { horizontal-stretch: 1;
-                            property <int> gcols: Math.max(1, Math.min(7, root.continue-rows.length));
+                            property <int> gcols: Math.max(1, Math.min(7, Math.floor(self.width / 150px)));   // cell width is fixed, not per-item
                             property <length> cell: self.width / gcols;
                             height: cell + 30px;
                             for a[idx] in root.continue-rows: Rectangle {
@@ -5362,7 +5362,7 @@ export component MusicPage inherits Rectangle {
                     VerticalLayout { padding: root.home-connect ? 14px : 0px; spacing: 12px;
                         Text { text: "Most played"; color: MusicTheme.fg; font-size: 20px; font-weight: 700; }
                         Rectangle { horizontal-stretch: 1;
-                            property <int> gcols: Math.max(1, Math.min(7, root.most.length));
+                            property <int> gcols: Math.max(1, Math.min(7, Math.floor(self.width / 150px)));   // cell width is fixed, not per-item
                             property <length> cell: self.width / gcols;
                             height: cell + 30px;
                             for a[idx] in root.most: AlbumCard {
@@ -5387,7 +5387,7 @@ export component MusicPage inherits Rectangle {
                                 clicked => { root.open-recent-playlist(); } }
                         }
                         Rectangle { horizontal-stretch: 1;
-                            property <int> gcols: Math.max(1, Math.min(7, root.fresh.length));
+                            property <int> gcols: Math.max(1, Math.min(7, Math.floor(self.width / 150px)));   // cell width is fixed, not per-item
                             property <length> cell: self.width / gcols;
                             height: cell + 30px;
                             for a[idx] in root.fresh: AlbumCard {

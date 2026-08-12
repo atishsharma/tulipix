@@ -975,8 +975,17 @@ pub fn books_refresh_grid(weak: slint::Weak<MainWindow>, sort_idx: usize) {
 /// Reload the whole Book Home page: hero + stats from `home::load`, the grid,
 /// and the chip rows. For changes that move the counts (scan, trash/restore,
 /// delete, collection edits) — otherwise prefer [`books_refresh_grid`].
+///
+/// Safe to call from any thread, unlike [`books_refresh_grid`]. That matters:
+/// the callers that most need it — the every-10-files tick inside
+/// `scan_all_progress`, the post-scan reload, the FS-watch reconcile — all run
+/// on a tokio worker, and `refresh_inner` opens with `weak.upgrade()`, which
+/// returns `None` off the creating thread. Those refreshes were silently doing
+/// nothing, which is why a scan only appeared to land when something else
+/// redrew the page. Hop to the event loop first; from there `upgrade()` works.
 pub fn books_refresh(weak: slint::Weak<MainWindow>, sort_idx: usize) {
-    refresh_inner(weak, sort_idx, true);
+    let inner = weak.clone();
+    let _ = weak.upgrade_in_event_loop(move |_| refresh_inner(inner, sort_idx, true));
 }
 
 fn refresh_inner(weak: slint::Weak<MainWindow>, sort_idx: usize, full: bool) {

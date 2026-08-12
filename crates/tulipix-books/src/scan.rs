@@ -28,7 +28,53 @@ pub async fn add_folder(pool: &SqlitePool, path: &str) -> Result<()> {
         .bind(schema::now())
         .execute(pool)
         .await?;
+    // Book roots live in this table, not in `LibrariesConfig`, so the FS watcher
+    // — which is built from the libraries list — never saw them. Deleting a book
+    // on disk left its row and its tile behind until the next manual rescan.
+    // Attaching here covers every way a root arrives: the Books "Add books"
+    // picker, a Calibre import, and the Genesis download folder, which registers
+    // itself through this same call.
+    tulipix_core::watcher::watch_path(Path::new(path));
     Ok(())
+}
+
+/// Watch every configured book root on the live FS watcher.
+///
+/// [`add_folder`] attaches new roots as they arrive, but roots stored in a
+/// previous session are only rows in a table — nothing re-attaches them at
+/// startup. Call once after the watcher is installed.
+pub async fn watch_folders(pool: &SqlitePool) {
+    for root in folders(pool).await.unwrap_or_default() {
+        tulipix_core::watcher::watch_path(Path::new(&root));
+    }
+}
+
+/// Flag books whose file has vanished, without walking the roots.
+///
+/// The full [`scan_all`] ends with this same reconcile, but it costs a complete
+/// directory walk plus metadata extraction; an FS delete event only needs the
+/// vanished pass. One query plus a `stat` per non-missing row.
+///
+/// Returns how many rows were newly flagged, so a caller can skip the UI refresh
+/// when nothing changed.
+pub async fn reconcile_missing(pool: &SqlitePool) -> Result<usize> {
+    let roots = folders(pool).await.unwrap_or_default();
+    let all: Vec<(i64, String)> = sqlx::query_as("SELECT id, path FROM books WHERE missing = 0")
+        .fetch_all(pool)
+        .await?;
+    let mut gone = 0usize;
+    for (id, p) in all {
+        // Only rows under a configured root — a one-off opened file outside the
+        // roots keeps its row, same rule `scan_all` uses.
+        if roots.iter().any(|r| is_under(&p, r)) && !Path::new(&p).exists() {
+            sqlx::query("UPDATE books SET missing = 1 WHERE id = ?")
+                .bind(id)
+                .execute(pool)
+                .await?;
+            gone += 1;
+        }
+    }
+    Ok(gone)
 }
 
 pub async fn remove_folder(pool: &SqlitePool, path: &str) -> Result<()> {

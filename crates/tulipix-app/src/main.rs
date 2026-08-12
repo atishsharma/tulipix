@@ -3110,6 +3110,17 @@ fn wire_photo_editor(window: &MainWindow) {
                     // Hand the watcher to the module so it stays alive AND so
                     // folders added mid-session (new download dirs) can attach.
                     tulipix_core::watcher::install(watcher);
+                    // Book roots are rows in books.db, not entries in
+                    // LibrariesConfig, so `spawn` above never saw them. Roots
+                    // added this session attach themselves in
+                    // `books::scan::add_folder`; ones stored in a previous
+                    // session need this. Covers the Genesis download folder,
+                    // which registers through that same call.
+                    tokio::runtime::Handle::current().spawn(async {
+                        if let Ok(pool) = pool_for("books").await {
+                            tulipix_books::scan::watch_folders(&pool).await;
+                        }
+                    });
                     let rt = tokio::runtime::Handle::current();
                     let fsweak = window.as_weak();
                     std::thread::Builder::new().name("tulipix-fsapply".into()).spawn(move || {
@@ -4010,6 +4021,25 @@ fn resync_after_fs_change(weak: slint::Weak<MainWindow>) {
     if let Ok(mut g) = music_full().lock() { g.retain(|(_, p, _)| p.exists()); }
     if let Ok(mut g) = photo_full().lock() { g.retain(|(_, p, _)| p.exists()); }
     if let Ok(mut g) = video_full().lock() { g.retain(|(_, p, _)| p.exists()); }
+    // Books keep their own `missing` flag on the `books` table, which
+    // `watcher::apply_event` does not touch — it only knows the shared `items`
+    // shape. Reconcile here, and only redraw the grid when a row actually
+    // changed, so an unrelated delete elsewhere in the library does not reset
+    // the Books page under the user.
+    {
+        let weak = weak.clone();
+        tokio::runtime::Handle::current().spawn(async move {
+            let Ok(pool) = pool_for("books").await else { return };
+            match tulipix_books::scan::reconcile_missing(&pool).await {
+                Ok(0) => {}
+                Ok(n) => {
+                    tracing::info!(count = n, "books: files vanished, flagged missing");
+                    tulipix_sec_books::books_refresh(weak, 0);
+                }
+                Err(e) => tracing::warn!(error = %e, "books: reconcile_missing"),
+            }
+        });
+    }
     let _ = weak.upgrade_in_event_loop(|w| {
         // Music — tiles + dashboard/browse.
         rebuild_music_tiles(&w);
@@ -7381,8 +7411,7 @@ fn wire_youtube(window: &MainWindow) {
             let client = tulipix_core::net::http().clone();
             let dir = yt_thumb_dir();
             let videos = ytdlp_search(&q, 20).await;
-            let mut rows = Vec::with_capacity(videos.len());
-            for v in &videos { rows.push(yt_vid_data(&client, &dir, v).await); }
+            let rows = yt_vid_data_all(&client, &dir, &videos).await;
             yt_remember(&rows);
             if let Ok(pool) = pool_for("youtube").await {
                 let _ = tulipix_music::youtube::store::push_recent_search(&pool, &q).await;
@@ -7466,8 +7495,7 @@ fn wire_youtube(window: &MainWindow) {
                 let client = tulipix_core::net::http().clone();
                 let dir = yt_thumb_dir();
                 let videos = ytdlp_channel_latest(&cid, 10).await;
-                let mut r = Vec::with_capacity(videos.len());
-                for v in &videos { r.push(yt_vid_data(&client, &dir, v).await); }
+                let r = yt_vid_data_all(&client, &dir, &videos).await;
                 if let Some(p) = &pool {
                     let cv: Vec<_> = r.iter().map(yt_data_to_channelvid).collect();
                     let _ = tulipix_music::youtube::store::set_channel_cache(p, &cid, &cv).await;
@@ -7484,12 +7512,13 @@ fn wire_youtube(window: &MainWindow) {
                     .into_iter().find(|s| s.channel_id == cid).and_then(|s| s.avatar_path).unwrap_or_default(),
                 None => String::new(),
             };
+            let decoded = yt_videos(&rows).await;
             let _ = weak.upgrade_in_event_loop(move |w| {
                 w.set_music_yt_channel_id(cid.into());
                 w.set_music_yt_channel_title(name.into());
                 w.set_music_yt_channel_avatar(yt_img(&avatar));
                 w.set_music_yt_channel_sub(sub_line.into());
-                w.set_music_yt_channel_videos(yt_video_model(&rows));
+                w.set_music_yt_channel_videos(yt_model(decoded));
                 w.set_music_yt_channel_subscribed(subscribed);
                 w.set_music_yt_channel_query(slint::SharedString::new());
                 w.set_music_yt_channel_results(yt_video_model(&[]));
@@ -7513,15 +7542,15 @@ fn wire_youtube(window: &MainWindow) {
             let client = tulipix_core::net::http().clone();
             let dir = yt_thumb_dir();
             let videos = ytdlp_channel_latest(&cid, 10).await;
-            let mut rows = Vec::with_capacity(videos.len());
-            for v in &videos { rows.push(yt_vid_data(&client, &dir, v).await); }
+            let rows = yt_vid_data_all(&client, &dir, &videos).await;
             yt_remember(&rows);
             if let Ok(p) = pool_for("youtube").await {
                 let cv: Vec<_> = rows.iter().map(yt_data_to_channelvid).collect();
                 let _ = tulipix_music::youtube::store::set_channel_cache(&p, &cid, &cv).await;
             }
+            let decoded = yt_videos(&rows).await;
             let _ = weak.upgrade_in_event_loop(move |w| {
-                w.set_music_yt_channel_videos(yt_video_model(&rows));
+                w.set_music_yt_channel_videos(yt_model(decoded));
                 w.set_music_yt_busy(false);
             });
         });
@@ -7546,8 +7575,8 @@ fn wire_youtube(window: &MainWindow) {
             let had_cache = !cached.is_empty();
             if had_cache {
                 yt_remember(&cached);
-                let rows = cached.clone();
-                let _ = weak.upgrade_in_event_loop(move |w| w.set_music_yt_channel_videos(yt_video_model(&rows)));
+                let decoded = yt_videos(&cached).await;
+                let _ = weak.upgrade_in_event_loop(move |w| w.set_music_yt_channel_videos(yt_model(decoded)));
             } else {
                 let _ = weak.upgrade_in_event_loop(|w| w.set_music_yt_busy(true));
             }
@@ -7555,8 +7584,7 @@ fn wire_youtube(window: &MainWindow) {
             let client = tulipix_core::net::http().clone();
             let dir = yt_thumb_dir();
             let videos = ytdlp_channel_popular(&cid, 10).await;
-            let mut fresh = Vec::with_capacity(videos.len());
-            for v in &videos { fresh.push(yt_vid_data(&client, &dir, v).await); }
+            let fresh = yt_vid_data_all(&client, &dir, &videos).await;
             if !fresh.is_empty() {
                 yt_remember(&fresh);
                 if let Some(p) = &pool {
@@ -7566,9 +7594,10 @@ fn wire_youtube(window: &MainWindow) {
                 let changed = fresh.iter().map(|r| r.id.clone()).collect::<Vec<_>>()
                     != cached.iter().map(|r| r.id.clone()).collect::<Vec<_>>();
                 if changed || !had_cache {
+                    let decoded = yt_videos(&fresh).await;
                     let _ = weak.upgrade_in_event_loop(move |w| {
                         if w.get_music_yt_channel_mode() == "popular" {
-                            w.set_music_yt_channel_videos(yt_video_model(&fresh));
+                            w.set_music_yt_channel_videos(yt_model(decoded));
                         }
                         w.set_music_yt_busy(false);
                     });
@@ -7599,8 +7628,7 @@ fn wire_youtube(window: &MainWindow) {
             let client = tulipix_core::net::http().clone();
             let dir = yt_thumb_dir();
             let videos = ytdlp_channel_search(&cid, &q, 20).await;
-            let mut rows = Vec::with_capacity(videos.len());
-            for v in &videos { rows.push(yt_vid_data(&client, &dir, v).await); }
+            let rows = yt_vid_data_all(&client, &dir, &videos).await;
             yt_remember(&rows);
             { let mut st = yt_ch_search_state().lock().unwrap(); st.shown = rows.len().min(10); st.all = rows; }
             let _ = weak.upgrade_in_event_loop(|w| yt_render_channel_search(&w));

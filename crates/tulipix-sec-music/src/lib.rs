@@ -239,7 +239,7 @@ static MUSIC_SONGS: std::sync::OnceLock<std::sync::Mutex<Vec<SongMeta>>> = std::
 pub fn music_songs() -> &'static std::sync::Mutex<Vec<SongMeta>> {
     MUSIC_SONGS.get_or_init(|| std::sync::Mutex::new(Vec::new()))
 }
-const SONG_PAGE: usize = 35;
+const SONG_PAGE: usize = 32;
 const RECENT_PAGE: usize = 6;
 static MUSIC_QUERY: std::sync::OnceLock<std::sync::Mutex<String>> = std::sync::OnceLock::new();
 pub fn music_query_filter() -> &'static std::sync::Mutex<String> {
@@ -5752,11 +5752,37 @@ pub fn yt_trunc100(s: &str) -> String {
     if s.chars().count() > 100 { s.chars().take(100).collect::<String>() + "…" } else { s.to_string() }
 }
 
-/// Convert a Piped video into a Send-safe row, fetching its thumbnail as PNG.
+/// Convert a list of Piped videos into rows, fetching thumbnails concurrently.
+///
+/// Every caller used to be `for v in &videos { rows.push(yt_vid_data(..).await) }`
+/// — twenty search results meant twenty HTTP round trips end to end, each
+/// waiting on the last. Bounded at [`YT_DECODE_JOBS`], the same cap the decode
+/// side uses, and the input order is kept by awaiting the handles in order.
+pub async fn yt_vid_data_all(
+    client: &reqwest::Client,
+    dir: &std::path::Path,
+    videos: &[tulipix_music::youtube::piped::Video],
+) -> Vec<YtVidData> {
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(YT_DECODE_JOBS));
+    let handles: Vec<_> = videos.iter().map(|v| {
+        let (sem, client, dir, v) = (sem.clone(), client.clone(), dir.to_path_buf(), v.clone());
+        tokio::spawn(async move {
+            let _permit = sem.acquire().await.ok();
+            yt_vid_data(&client, &dir, &v).await
+        })
+    }).collect();
+    let mut out = Vec::with_capacity(handles.len());
+    for h in handles {
+        if let Ok(r) = h.await { out.push(r); }
+    }
+    out
+}
+
+/// Convert a Piped video into a Send-safe row, fetching its thumbnail.
 pub async fn yt_vid_data(client: &reqwest::Client, dir: &std::path::Path,
                      v: &tulipix_music::youtube::piped::Video) -> YtVidData {
     let thumb = if v.thumbnail.is_empty() { String::new() }
-        else { tulipix_music::youtube::thumbs::fetch_png(client, dir, &v.thumbnail).await.unwrap_or_default() };
+        else { tulipix_music::youtube::thumbs::fetch_thumb(client, dir, &v.thumbnail).await.unwrap_or_default() };
     YtVidData {
         id: v.id.clone(), channel_id: String::new(), title: v.title.clone(), channel: v.channel.clone(),
         meta: yt_fmt_meta(v.views, &v.uploaded), info: yt_trunc100(&v.blurb),
@@ -5779,29 +5805,67 @@ pub fn yt_img(path: &str) -> slint::Image {
 /// and only the cheap `Image::from_rgba8` wrap happens on the UI thread.
 type YtPixels = slint::SharedPixelBuffer<slint::Rgba8Pixel>;
 
+/// How many bytes of decoded thumbnails the cache may hold.
+///
+/// **Bytes, not entries.** The cap used to be "512 images", which says nothing
+/// about memory: YouTube Music serves square album art up to 4153×4153, so one
+/// entry could be 69 MB of RGBA and 512 of them a 5.6 GB ceiling the cache would
+/// never notice it had hit. A measured session held 313 of them — 2.4 GB of
+/// heap, most of it swapped out. `thumbs::MAX_EDGE` now caps a single image at
+/// 4 MB, and this caps the pile.
+const YT_THUMB_BUDGET: usize = 192 * 1024 * 1024;
+
+/// Decoded-thumbnail cache: path → pixels, plus insertion order and the running
+/// byte total so eviction is oldest-first instead of a wholesale clear.
+type YtThumbCache = (
+    std::collections::HashMap<String, YtPixels>,
+    std::collections::VecDeque<String>,
+    usize,
+);
+
 /// Bounded decode cache (path → pixels). A given video's thumbnail appears in
 /// several lists (home rail, recommended, search, its tab) and survives
 /// refreshes; decoding the PNG once and cloning the refcounted buffer avoids
-/// repeat decode work. Cleared wholesale past the cap — coarse but allocation-
-/// free and the worst case is an occasional cold re-decode.
-pub fn yt_thumb_cache() -> &'static std::sync::Mutex<std::collections::HashMap<String, YtPixels>> {
-    static S: OnceLock<std::sync::Mutex<std::collections::HashMap<String, YtPixels>>> = OnceLock::new();
-    S.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+/// repeat decode work.
+///
+/// A `static` here — rather than the `thread_local!` the track-thumb memo
+/// needs — because `SharedPixelBuffer` *is* `Send`. That is the whole point of
+/// this type: the decode runs on a tokio worker and only the cheap
+/// `Image::from_rgba8` wrap happens on the UI thread.
+pub fn yt_thumb_cache() -> &'static std::sync::Mutex<YtThumbCache> {
+    static S: OnceLock<std::sync::Mutex<YtThumbCache>> = OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(Default::default()))
+}
+
+/// Bytes one decoded buffer occupies.
+fn yt_thumb_bytes(buf: &YtPixels) -> usize {
+    buf.width() as usize * buf.height() as usize * 4
 }
 
 /// Decode a thumbnail PNG into a Send pixel buffer. Call OFF the UI thread.
+///
+/// Goes through `thumbs::open_capped`, so an oversized file left by an older
+/// build is shrunk on disk the first time it is read and never costs full size
+/// again.
 pub fn yt_decode_thumb(path: &str) -> Option<YtPixels> {
     if path.is_empty() { return None; }
     if let Ok(c) = yt_thumb_cache().lock() {
-        if let Some(buf) = c.get(path) { return Some(buf.clone()); }
+        if let Some(buf) = c.0.get(path) { return Some(buf.clone()); }
     }
-    let img = image::open(path).ok()?.into_rgba8();
+    let img = tulipix_music::youtube::thumbs::open_capped(std::path::Path::new(path)).ok()?.into_rgba8();
     let (w, h) = img.dimensions();
     let mut buf = YtPixels::new(w, h);
     buf.make_mut_bytes().copy_from_slice(img.as_raw());
     if let Ok(mut c) = yt_thumb_cache().lock() {
-        if c.len() >= 512 { c.clear(); }
-        c.insert(path.to_string(), buf.clone());
+        let bytes = yt_thumb_bytes(&buf);
+        if c.0.insert(path.to_string(), buf.clone()).is_none() {
+            c.1.push_back(path.to_string());
+            c.2 += bytes;
+        }
+        while c.2 > YT_THUMB_BUDGET && c.1.len() > 1 {
+            let Some(old) = c.1.pop_front() else { break };
+            if let Some(dead) = c.0.remove(&old) { c.2 -= yt_thumb_bytes(&dead); }
+        }
     }
     Some(buf)
 }
@@ -5810,13 +5874,66 @@ pub fn yt_decode_thumb(path: &str) -> Option<YtPixels> {
 /// cross into `upgrade_in_event_loop`. Built by `yt_videos` on the worker.
 pub struct YtRow { pub d: YtVidData, pub index: i32, pub pixels: Option<YtPixels> }
 
-/// Decode rows + their thumbnails into Send-able structs. Call OFF the UI thread
-/// (inside the tokio worker) for large lists so PNG decode stays off the UI
-/// thread; the UI thread then only wraps pixels via `yt_model` (cheap).
-pub fn yt_videos(rows: &[YtVidData]) -> Vec<YtRow> {
+/// Decode rows + their thumbnails into Send-able structs, one at a time, on the
+/// calling thread. Only sensible for a handful of rows — see [`yt_videos`].
+pub fn yt_videos_blocking(rows: &[YtVidData]) -> Vec<YtRow> {
     rows.iter().enumerate()
         .map(|(i, d)| YtRow { d: d.clone(), index: i as i32, pixels: yt_decode_thumb(&d.thumb) })
         .collect()
+}
+
+/// How many thumbnails decode at once.
+///
+/// PNG decode is CPU-bound, so this is a parallelism cap, not a queue depth. Four
+/// matches `home_thumbs_parallel` in the app crate and leaves headroom on a box
+/// that has to cap its own build parallelism; at `thumbs::MAX_EDGE` the transient
+/// cost is bounded at 4 × 4 MB.
+const YT_DECODE_JOBS: usize = 4;
+
+/// Decode rows + their thumbnails into Send-able structs, in parallel.
+///
+/// This used to be a plain `.map()` over the whole list: one PNG decoded, then
+/// the next, on a single thread — and for the `yt_video_model` callers, that
+/// single thread was the UI thread, so a channel page froze the window until
+/// every thumbnail in it had been decoded. Now each decode is a `spawn_blocking`
+/// behind a semaphore, and order is preserved by awaiting the handles in order
+/// rather than by finishing in order.
+///
+/// Already-cached thumbnails short-circuit inside `yt_decode_thumb`, so a
+/// re-publish of a list the user has already seen costs a lock and a clone.
+pub async fn yt_videos(rows: &[YtVidData]) -> Vec<YtRow> {
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(YT_DECODE_JOBS));
+    let handles: Vec<_> = rows.iter().enumerate().map(|(i, d)| {
+        let (sem, d, i) = (sem.clone(), d.clone(), i as i32);
+        tokio::spawn(async move {
+            let _permit = sem.acquire().await.ok();
+            let thumb = d.thumb.clone();
+            let pixels = tokio::task::spawn_blocking(move || yt_decode_thumb(&thumb)).await.ok().flatten();
+            YtRow { d, index: i, pixels }
+        })
+    }).collect();
+    let mut out = Vec::with_capacity(handles.len());
+    for h in handles {
+        if let Ok(r) = h.await { out.push(r); }
+    }
+    out
+}
+
+/// Decode `rows` off the UI thread, then hand the finished model to `set`.
+///
+/// The alternative — `w.set_x(yt_video_model(&rows))` inside an event-loop
+/// closure — decodes every thumbnail on the UI thread before the first pixel is
+/// drawn. `set` is a plain `fn`, so a non-capturing closure like
+/// `|w, m| w.set_music_yt_results(m)` coerces straight into it.
+pub fn yt_publish(
+    weak: slint::Weak<MainWindow>,
+    rows: Vec<YtVidData>,
+    set: fn(&MainWindow, slint::ModelRc<YtVideo>),
+) {
+    tokio::runtime::Handle::current().spawn(async move {
+        let decoded = yt_videos(&rows).await;
+        let _ = weak.upgrade_in_event_loop(move |w| set(&w, yt_model(decoded)));
+    });
 }
 
 /// Watched-fraction per video id, mirrored from `yt_progress` so the (sync, UI
@@ -5855,10 +5972,13 @@ pub fn yt_model(rows: Vec<YtRow>) -> slint::ModelRc<YtVideo> {
     slint::ModelRc::new(slint::VecModel::from(v))
 }
 
-/// Convenience: decode + wrap in one call (decode on the calling thread). Prefer
-/// `yt_videos` in the worker + `yt_model` on the UI thread for large lists.
+/// Convenience: decode + wrap in one call, **on the calling thread**.
+///
+/// Fine for clearing a list (`&[]`) or a couple of rows. For anything the user
+/// will wait on, use [`yt_publish`] — this one blocks whoever calls it, and the
+/// callers were all on the UI thread.
 pub fn yt_video_model(rows: &[YtVidData]) -> slint::ModelRc<YtVideo> {
-    yt_model(yt_videos(rows))
+    yt_model(yt_videos_blocking(rows))
 }
 
 pub fn yt_cached_to_data(c: &tulipix_music::youtube::store::CachedVideo) -> YtVidData {
@@ -5946,7 +6066,7 @@ pub fn yt_play_all_playlist(weak: slint::Weak<MainWindow>, pl_id: i64) {
             let client = tulipix_core::net::http().clone();
             let dir = yt_thumb_dir();
             let url = format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", datas[0].id);
-            if let Ok(path) = tulipix_music::youtube::thumbs::fetch_png(&client, &dir, &url).await {
+            if let Ok(path) = tulipix_music::youtube::thumbs::fetch_thumb(&client, &dir, &url).await {
                 if !path.is_empty() {
                     datas[0].thumb = path.clone();
                     if source_url.is_none() {
@@ -5972,7 +6092,7 @@ pub fn yt_play_all_playlist(weak: slint::Weak<MainWindow>, pl_id: i64) {
             for d in datas.iter_mut() {
                 if !d.thumb.is_empty() && std::path::Path::new(&d.thumb).exists() { continue; }
                 let url = format!("https://i.ytimg.com/vi/{}/hqdefault.jpg", d.id);
-                if let Ok(path) = tulipix_music::youtube::thumbs::fetch_png(&client, &dir, &url).await {
+                if let Ok(path) = tulipix_music::youtube::thumbs::fetch_thumb(&client, &dir, &url).await {
                     if path.is_empty() { continue; }
                     d.thumb = path.clone();
                     changed = true;
@@ -6060,7 +6180,7 @@ pub fn populate_yt_recommended(w: &MainWindow) {
             if !c.items.is_empty() && c.sources == want && yt_now_secs().saturating_sub(c.fetched) < YT_RECO_TTL {
                 let items = c.items.clone();
                 yt_remember(&items);
-                let items = yt_videos(&items);
+                let items = yt_videos(&items).await;
                 let _ = weak.upgrade_in_event_loop(move |w| w.set_music_yt_recommended(yt_model(items)));
                 return;
             }
@@ -6090,7 +6210,7 @@ pub fn populate_yt_recommended(w: &MainWindow) {
         if out.is_empty() { return; }
         yt_remember(&out);
         yt_reco_save(&out, &want);
-        let out = yt_videos(&out);
+        let out = yt_videos(&out).await;
         let _ = weak.upgrade_in_event_loop(move |w| w.set_music_yt_recommended(yt_model(out)));
     });
 }
@@ -6128,11 +6248,11 @@ pub fn populate_yt_cached(w: &MainWindow) {
             .filter(|d| !dl_ids.contains(&d.id)).collect();
         yt_remember(&rows);
         // Decode thumbnails here (worker thread), not in the event loop.
-        let home = yt_videos(&rows.iter().take(3).cloned().collect::<Vec<_>>());
+        let home = yt_videos(&rows.iter().take(3).cloned().collect::<Vec<_>>()).await;
         let q = yt_q_get(yt_cached_q());
         let shown: Vec<YtVidData> = if q.is_empty() { rows }
             else { rows.into_iter().filter(|d| d.title.to_lowercase().contains(&q) || d.channel.to_lowercase().contains(&q)).collect() };
-        let shown = yt_videos(&shown);
+        let shown = yt_videos(&shown).await;
         let _ = weak.upgrade_in_event_loop(move |w| {
             w.set_music_yt_cached(yt_model(shown));
             w.set_music_yt_home_cached(yt_model(home));
@@ -6167,8 +6287,8 @@ pub fn populate_yt_downloads(w: &MainWindow) {
         let start = (page * YT_DL_LIST_PAGE) as usize;
         let pagerows: Vec<YtVidData> = rows.into_iter().skip(start).take(YT_DL_LIST_PAGE as usize).collect();
         // Decode thumbnails here (worker thread), not in the event loop.
-        let home = yt_videos(&home);
-        let pagerows = yt_videos(&pagerows);
+        let home = yt_videos(&home).await;
+        let pagerows = yt_videos(&pagerows).await;
         let _ = weak.upgrade_in_event_loop(move |w| {
             w.set_music_yt_downloads_count(total);
             w.set_music_yt_downloads_pages(pages as i32);
@@ -6245,8 +6365,9 @@ pub fn yt_playlist_load(weak: slint::Weak<MainWindow>, page: i64, sort: String, 
         yt_remember(&rows);
         let has_next = (offset + YT_PL_PER_PAGE) < total;
         let sub = format!("{total} videos");
+        let decoded = yt_videos(&rows).await;
         let _ = weak.upgrade_in_event_loop(move |w| {
-            w.set_music_yt_playlist_videos(yt_video_model(&rows));
+            w.set_music_yt_playlist_videos(yt_model(decoded));
             w.set_music_yt_playlist_page((page + 1) as i32);
             w.set_music_yt_playlist_has_next(has_next);
             w.set_music_yt_playlist_sub(sub.into());
@@ -6388,7 +6509,7 @@ pub fn yt_fetch_sub_meta(weak: slint::Weak<MainWindow>, force: bool) {
                 let _permit = sem.acquire().await;
                 if let Some((avatar_url, followers, video_count)) = ytdlp_channel_meta(&cid).await {
                     let avatar = if avatar_url.is_empty() { None }
-                        else { tulipix_music::youtube::thumbs::fetch_png(&client, &dir, &avatar_url).await.ok() };
+                        else { tulipix_music::youtube::thumbs::fetch_thumb(&client, &dir, &avatar_url).await.ok() };
                     let _ = tulipix_music::youtube::store::set_sub_meta(&pool, &cid, avatar.as_deref(), Some(video_count), Some(followers)).await;
                 } else if !force {
                     // First-time fill: stamp 0/0 so we don't retry forever. A forced
@@ -6419,7 +6540,7 @@ pub fn yt_render_search(w: &MainWindow) {
         let shown = st.shown.min(st.all.len());
         (st.all[..shown].to_vec(), shown < st.all.len() || st.nextpage.is_some())
     };
-    w.set_music_yt_results(yt_video_model(&rows));
+    yt_publish(w.as_weak(), rows, |w, m| w.set_music_yt_results(m));
     w.set_music_yt_results_more(more);
     w.set_music_yt_busy(false);
 }
@@ -6438,7 +6559,7 @@ pub fn yt_render_channel_search(w: &MainWindow) {
         let shown = st.shown.min(st.all.len());
         (st.all[..shown].to_vec(), shown < st.all.len())
     };
-    w.set_music_yt_channel_results(yt_video_model(&rows));
+    yt_publish(w.as_weak(), rows, |w, m| w.set_music_yt_channel_results(m));
     w.set_music_yt_channel_results_more(more);
     w.set_music_yt_busy(false);
 }
