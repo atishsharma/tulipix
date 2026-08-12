@@ -1445,16 +1445,9 @@ fn set_rows<T: Clone + 'static>(
     }
 }
 
-fn human(bytes: u64) -> String {
-    tulipix_genesis::model::human_bytes(bytes)
-}
+use tulipix_core::util::human_bytes as human;
 
-fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+use tulipix_core::util::unix_secs_i64 as now_secs;
 
 #[cfg(test)]
 mod tests {

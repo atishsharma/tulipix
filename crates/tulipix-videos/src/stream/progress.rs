@@ -95,12 +95,7 @@ pub fn is_finished(position_s: f64, duration_s: f64) -> bool {
     duration_s > 0.0 && position_s >= duration_s * FINISHED_AT
 }
 
-fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+use tulipix_core::util::unix_secs_i64 as now_secs;
 
 type Row = (String, i64, i64, String, String, i64, f64, f64, i64, i64, String);
 

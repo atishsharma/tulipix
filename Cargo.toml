@@ -18,7 +18,6 @@ members = [
     "crates/tulipix-ai",
     "crates/tulipix-whisper",
     "crates/tulipix-platform",
-    "crates/tulipix-plugins",
     "crates/tulipix-tools",
     "crates/tulipix-transfer",
     "crates/tulipix-sec-tools",
@@ -39,6 +38,17 @@ members = [
     "crates/tulipix-cli",
     "tools/fetch-resources",
 ]
+# tulipix-plugins is NOT a member. Nothing in the workspace depends on it — the
+# WASM/Lua sandboxes were never wired to a call site — but membership still put
+# `wasmtime` (+ the wit-* / wasm-encoder tree) and a vendored `mlua` into the
+# lockfile, and `just clippy`, which runs --workspace --all-targets, compiled
+# all of it. That is a C++ toolchain's worth of build on a box that has to cap
+# its own parallelism.
+#
+# The crate and its tests are untouched on disk. Build it directly when the
+# sandboxes get wired: `cargo build --manifest-path crates/tulipix-plugins/Cargo.toml`.
+# Then move this line back up into `members`.
+exclude = ["crates/tulipix-plugins"]
 
 [workspace.package]
 version = "0.9.0"

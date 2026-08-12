@@ -15,7 +15,11 @@ keyring.workspace = true
 sqlx.workspace = true
 sha2.workspace = true
 reqwest = { workspace = true, features = ["blocking", "json"] }
-notify = "6"
+# notify 8, not 6: 6 pulls its own `mio 0.8` + `inotify 0.9` alongside the
+# `mio 1.x` tokio already links, so the tree carried two copies of the Linux
+# event loop. 8 is API-compatible for what the watcher uses (Watcher::new with
+# a std mpsc Sender, Config, EventKind, event::ModifyKind, RecursiveMode).
+notify = "8"
 walkdir = "2"
 tokio = { workspace = true }
 

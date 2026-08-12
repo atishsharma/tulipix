@@ -13,6 +13,34 @@ pub fn unix_secs_i64() -> i64 {
     unix_secs() as i64
 }
 
+/// A byte count as a short label: `"842 B"`, `"4.20 KB"`, `"12.5 MB"`, `"1.5 TB"`.
+///
+/// Precision scales with magnitude — two decimals under 10, one under 100, none
+/// above — so the string stays about the same width whatever the number.
+///
+/// This is the *short* form, for lists and rows. `tulipix_common::human_size`
+/// is a different thing despite the similar name: it renders the long
+/// properties-panel form, `"3.25 GB (3,489,660,928 bytes)"`.
+pub fn human_bytes(bytes: u64) -> String {
+    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
+    if bytes < 1024 {
+        return format!("{bytes} B");
+    }
+    let mut value = bytes as f64;
+    let mut unit = 0usize;
+    while value >= 1024.0 && unit < UNITS.len() - 1 {
+        value /= 1024.0;
+        unit += 1;
+    }
+    if value >= 100.0 {
+        format!("{value:.0} {}", UNITS[unit])
+    } else if value >= 10.0 {
+        format!("{value:.1} {}", UNITS[unit])
+    } else {
+        format!("{value:.2} {}", UNITS[unit])
+    }
+}
+
 /// Howard Hinnant's days_from_civil — Unix-epoch days from y-m-d, valid for
 /// the full Gregorian range. Returns negative for dates before 1970-01-01.
 pub fn days_from_civil(y: i64, m: i64, d: i64) -> i64 {

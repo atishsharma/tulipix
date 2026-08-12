@@ -996,10 +996,13 @@ export component MainWindow inherits Window {
     callback video-clear-thumbs();
 
     // ── Music library tiles ──
+    // Labels + playback indices only; thumbnails are decoded on demand by
+    // `sec_music::music_thumb_at`. Rust-side lookup table, nothing iterates it.
     in-out property <[PhotoTile]> music-tiles: [];
-    // Tracks grid only: music-tiles minus folders assigned to other music
-    // sections (audiobooks etc.) — tile.index stays the playback position.
-    in-out property <[PhotoTile]> music-tracks-grid: [];
+    // How many of those tiles the Tracks grid owns: music-tiles minus folders
+    // assigned to other music sections (audiobooks etc.). This was a second
+    // full model of decoded thumbnails; the page only ever read its length.
+    in-out property <int> music-track-count: 0;
     // Books section state (np.p8.books).
     in-out property <BooksHero> books-hero;
     in-out property <int> books-hero-count: 0;
@@ -2730,6 +2733,13 @@ callback cloud-go-home();
     in-out property <int> photos-folder-count: 0;
     in-out property <string> photos-category: "timeline";
     in-out property <string> photos-query: "";
+    // Photos matched by the current view but not yet built into tiles — the
+    // grid materialises a window, because every tile owns a decoded thumbnail.
+    in-out property <int> photos-more: 0;
+    callback photos-show-more();
+    // Same for the Videos grid.
+    in-out property <int> videos-more: 0;
+    callback videos-show-more();
     in-out property <[PhotoGroup]> photo-groups: [];   // timeline date groups
     in-out property <[FolderRow]> photo-folders: [];   // library folder list
     in-out property <[PersonCard]> photo-people: [];   // People tab (np.p2.ai.face-clusters)
@@ -3031,6 +3041,8 @@ callback cloud-go-home();
 
             if active-section == "photos":   PhotosPage { width: parent.width; height: parent.height; item-count: root.photos-total; tiles: root.photo-tiles;
                 visible-hint(f) => { root.photos-visible-hint(f); }
+                more-count: root.photos-more;
+                show-more() => { root.photos-show-more(); }
                 groups: root.photo-groups;
                 folders: root.photo-folders;
                 people: root.photo-people;
@@ -3156,6 +3168,8 @@ callback cloud-go-home();
                 category <=> root.video-category;
                 kind <=> root.video-kind;
                 query <=> root.video-query;
+                more-count: root.videos-more;
+                show-more() => { root.videos-show-more(); }
                 shows: root.video-shows;
                 next-up: root.video-next-up;
                 seasons: root.video-seasons;
@@ -3306,7 +3320,7 @@ callback cloud-go-home();
                 stream-set-to-library(on) => { root.video-stream-set-to-library(on); }
                 stream-key-save(k) => { root.video-stream-key-save(k); }
                 stream-key-reset => { root.video-stream-key-reset(); } }
-            if active-section == "music" || music-prewarmed: MusicPage { width: parent.width; height: parent.height; visible: root.active-section == "music"; item-count: root.music-song-total; tiles: root.music-tracks-grid;
+            if active-section == "music" || music-prewarmed: MusicPage { width: parent.width; height: parent.height; visible: root.active-section == "music"; item-count: root.music-song-total; track-count: root.music-track-count;
                 np-title: root.music-np-title; np-sub: root.music-np-sub; np-art: root.music-np-art; playing: root.music-playing;
                 player-mode: root.music-player-mode;
                 view <=> root.music-view; sleep-min: root.music-sleep-min;

@@ -96,10 +96,7 @@ anyhow.workspace = true
 tracing.workspace = true
 tracing-subscriber.workspace = true
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
-# v2 detects via XDG settings portal (ashpd/zbus5, already in-tree through
-# rfd) — v1 dragged a second, duplicate zbus4 + dbus stack (~15 crates).
-dark-light = "2"
-notify = { version = "6", optional = true }
+notify = { version = "8", optional = true }   # keep in step with tulipix-core
 # Dev-only hot-patch runtime + the section-wiring dylib it loads. Both optional,
 # pulled in ONLY by the `hot` feature, so default/release builds never see them.
 hot-lib-reloader = { version = "0.7", optional = true }
@@ -141,6 +138,20 @@ chrono = { version = "0.4", default-features = false, features = ["clock"] }
 [target.'cfg(any(target_os = "linux", target_os = "windows"))'.dependencies]
 mimalloc = { version = "0.1", default-features = false, optional = true }
 tikv-jemallocator = { version = "0.6", optional = true }
+
+# System light/dark detection. On Linux that is one XDG settings-portal read, and
+# rfd's xdg-portal backend already links ashpd 0.11 on zbus/tokio — so we call it
+# directly (`detect_dark`). dark-light v2 wrapped the same call but brought its
+# own ashpd 0.10, which enables `zbus/async-io` and so pulled async-std +
+# async-io/-fs/-net/-global-executor into every Linux build: a second async
+# runtime for one boolean.
+[target.'cfg(target_os = "linux")'.dependencies]
+ashpd = { version = "0.11", default-features = false, features = ["tokio"] }
+
+# Off Linux, dark-light IS the value: the Windows registry read and the macOS
+# AppleInterfaceStyle lookup. Neither drags an extra runtime there.
+[target.'cfg(not(target_os = "linux"))'.dependencies]
+dark-light = "2"
 
 # libc was declared here for PR_SET_PDEATHSIG, but mpv_die_with_parent lives in
 # tulipix-common and that is where the dependency belongs; this crate never

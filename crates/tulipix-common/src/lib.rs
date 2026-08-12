@@ -319,12 +319,7 @@ pub fn add_watched_folder(dir: &std::path::Path) -> bool {
     !had
 }
 
-pub fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+pub use tulipix_core::util::unix_secs_i64 as now_secs;
 
 // ---- Activity log ---------------------------------------------------------
 /// The things a person does to the app that no database writes down: watching

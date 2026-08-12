@@ -8,7 +8,7 @@
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{OnceLock, RwLock};
-use std::time::{Duration, Instant};
+use std::time::Duration;
 use crate::util::unix_secs as now_secs;
 
 const DEFAULT_IDLE_SECS: u64 = 600; // 10 min
@@ -56,21 +56,39 @@ pub fn tick(now: u64) -> bool {
     cross
 }
 
-/// Spawn the idle tracker thread. Caller passes a clock-tick interval (1s is
-/// fine — cheap), and we just poll the wall clock.
+/// Longest this thread will sleep. The threshold can change under it —
+/// Settings › Security toggles auto-lock at runtime — so it must come back
+/// often enough to notice a *shortened* deadline. Half a minute is well inside
+/// the 5 s floor `set_threshold` enforces being meaningful.
+const MAX_SLEEP: Duration = Duration::from_secs(30);
+
+/// Spawn the idle tracker thread.
+///
+/// It sleeps until the next moment the state could actually change rather than
+/// waking once a second. `mark_active` only ever pushes the deadline *later*,
+/// so sleeping the whole remaining time can never miss a crossing; and the
+/// idle→active edge is fired by `mark_active` itself, not detected here.
+///
+/// This matters because auto-lock is off by default, which parks the threshold
+/// a year out — the old 1 Hz loop then woke 86,400 times a day to compare
+/// against a deadline in 2027.
 pub fn spawn_tracker() {
     std::thread::Builder::new()
         .name("tulipix-idle".into())
-        .spawn(|| {
-            let interval = Duration::from_secs(1);
-            let mut last_tick = Instant::now();
-            loop {
-                let now = now_secs();
-                tick(now);
-                let elapsed = last_tick.elapsed();
-                if elapsed < interval { std::thread::sleep(interval - elapsed); }
-                last_tick = Instant::now();
-            }
+        .spawn(|| loop {
+            let now = now_secs();
+            let crossed = tick(now);
+            // Already idle: nothing further to detect until input arrives, and
+            // input comes in through `mark_active`. Otherwise wait out whatever
+            // is left of the threshold.
+            let sleep = if crossed {
+                MAX_SLEEP
+            } else {
+                let last = LAST_ACTIVE_EPOCH.load(Ordering::Relaxed);
+                let elapsed = now.saturating_sub(last);
+                Duration::from_secs(threshold().saturating_sub(elapsed).max(1))
+            };
+            std::thread::sleep(sleep.min(MAX_SLEEP));
         })
         .expect("spawn idle tracker");
 }

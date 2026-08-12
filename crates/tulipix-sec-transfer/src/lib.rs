@@ -1048,12 +1048,7 @@ fn kind_label(name: &str) -> String {
     family.to_string()
 }
 
-fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+use tulipix_core::util::unix_secs_i64 as now_secs;
 
 /// "just now" / "12 min ago" / "3 h ago", then the date once it stops mattering.
 fn when(at: i64) -> String {

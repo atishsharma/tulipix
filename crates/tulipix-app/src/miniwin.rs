@@ -334,6 +334,9 @@ pub fn open_mini(window: &MainWindow) {
         apply_size(mini, w, h);
         window.window().hide().ok();
     });
+    // The app is now only a music widget — put down everything the widget does
+    // not draw. `restore` builds it back. See `release_for_widget`.
+    crate::release_for_widget(window);
 }
 
 /// Bring the app back and dismiss the desktop widget.
@@ -347,6 +350,8 @@ pub fn restore(window: &MainWindow) {
     close_popup();
     let _ = window.show();
     window.window().set_minimized(false);
+    // Refill whatever `release_for_widget` put down on the way out.
+    crate::restore_from_widget(window);
 }
 
 pub fn close_mini() {

@@ -206,26 +206,9 @@ impl SearchQuery {
     }
 }
 
-/// Format a byte count for display next to a download.
-pub fn human_bytes(bytes: u64) -> String {
-    const UNITS: [&str; 5] = ["B", "KB", "MB", "GB", "TB"];
-    if bytes < 1024 {
-        return format!("{bytes} B");
-    }
-    let mut value = bytes as f64;
-    let mut unit = 0usize;
-    while value >= 1024.0 && unit < UNITS.len() - 1 {
-        value /= 1024.0;
-        unit += 1;
-    }
-    if value >= 100.0 {
-        format!("{value:.0} {}", UNITS[unit])
-    } else if value >= 10.0 {
-        format!("{value:.1} {}", UNITS[unit])
-    } else {
-        format!("{value:.2} {}", UNITS[unit])
-    }
-}
+/// Format a byte count for display next to a download. This crate's policy
+/// became the shared one; the implementation now lives in `tulipix_core::util`.
+pub use tulipix_core::util::human_bytes;
 
 /// Parse the size strings Libgen prints, e.g. `19 kB`, `1.4 MB`, `700 B`.
 pub fn parse_size(text: &str) -> Option<u64> {

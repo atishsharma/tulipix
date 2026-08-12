@@ -272,10 +272,85 @@ pub fn map_clusters_from_paths(data: Vec<(f32, f32, i32, PathBuf, String)>) -> V
     }).collect()
 }
 
+// ── Grid paging (np.perf.grid-window) ──────────────────────────────────────
+//
+// Every tile in a grid carries a *decoded* thumbnail: `Image::load_from_path`
+// runs `image::open` eagerly, and the model holds the pixels alive for as long
+// as the row exists (Slint's own image cache is a 5 MB LRU, but it cannot evict
+// what a live model still points at). At 320×320 RGB8 that is ~300 KB a tile,
+// so a 10,000-photo library materialised ~3 GB of bitmaps the moment the
+// section opened — and the `for` loops that draw these grids are not
+// virtualised, so every one of them was also a live element tree.
+//
+// So the grid materialises a window of tiles and grows it on demand. Nothing
+// about the underlying order changes: the window is always a prefix, which is
+// why "load more" can simply extend it without disturbing indices already
+// handed to the viewer or to a live selection.
+
+/// Tiles added per page — one screenful at any sane column count, several times
+/// over, so scrolling normally does not hit the end.
+pub const PHOTO_PAGE: usize = 300;
+
+static PHOTO_LIMIT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(PHOTO_PAGE);
+/// Set by `photos_show_more` so the refresh it triggers keeps the grown window
+/// instead of snapping back to one page. Every other path through
+/// `kick_category_refresh` is a genuinely new view and does want the reset.
+static PHOTO_KEEP_LIMIT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// How many tiles the current grid may materialise.
+pub fn photo_limit() -> usize {
+    PHOTO_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Drop everything the Photos page was drawing.
+///
+/// Called when the user navigates away. The `if active-section == "photos"`
+/// gate in main.slint already destroys the page's *elements*, but the models
+/// hang off `MainWindow`, which outlives every page — so the decoded thumbnails
+/// stayed resident for the rest of the session, and RSS became a high-water
+/// mark of every section ever visited.
+///
+/// Everything here is rebuilt by `kick_category_refresh`, which the section
+/// switch calls on the way back in. Deliberately NOT cleared: `photo_full` and
+/// `photo_paths` (path lists — small, and Home's rails read them), and the
+/// starred/label/stack caches, which are cheap and shared.
+pub fn release(w: &MainWindow) {
+    use slint::{ModelRc, VecModel};
+    w.set_photo_tiles(ModelRc::new(VecModel::<PhotoTile>::default()));
+    w.set_photo_groups(ModelRc::new(VecModel::<PhotoGroup>::default()));
+    w.set_photo_folders(ModelRc::new(VecModel::<FolderRow>::default()));
+    w.set_photo_people(ModelRc::new(VecModel::<PersonCard>::default()));
+    w.set_photo_things(ModelRc::new(VecModel::<ThingChip>::default()));
+    w.set_photo_albums(ModelRc::new(VecModel::<AlbumCard>::default()));
+    w.set_photo_memory_rails(ModelRc::new(VecModel::<MemoryRail>::default()));
+    w.set_photo_map_clusters(ModelRc::new(VecModel::<MapCluster>::default()));
+    w.set_photo_dedupe_groups(ModelRc::new(VecModel::<DedupeGroup>::default()));
+    // These are Rc handles to the models just dropped; holding them would keep
+    // every tile alive regardless of what the window now points at.
+    grid_models_reset();
+    // A full-resolution decode, if the editor was used this visit.
+    editor_release();
+    w.set_photos_more(0);
+}
+
+/// Grow the window by one page and rebuild the current view.
+pub fn photos_show_more(weak: slint::Weak<MainWindow>, category: String, query: String) {
+    PHOTO_LIMIT.fetch_add(PHOTO_PAGE, std::sync::atomic::Ordering::Relaxed);
+    PHOTO_KEEP_LIMIT.store(true, std::sync::atomic::Ordering::Relaxed);
+    kick_category_refresh(weak, category, query);
+}
+
 /// Recompute the allowed-path set for `category` off-thread, then rebuild the
 /// photo grid (honouring `query`) on the UI thread. Shared by the category-tab
 /// switch, right-click flag actions, and the post-scan refresh.
 pub fn kick_category_refresh(weak: slint::Weak<MainWindow>, category: String, query: String) {
+    // A new view starts at one page again; "load more" is the one caller that
+    // asks to keep what it already grew.
+    if !PHOTO_KEEP_LIMIT.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        PHOTO_LIMIT.store(PHOTO_PAGE, std::sync::atomic::Ordering::Relaxed);
+    }
     // A rebuild re-orders photo_paths, so any selection indices are now stale.
     selection_clear();
     let handle = tokio::runtime::Handle::current();
@@ -648,23 +723,34 @@ pub fn populate_timeline(w: &MainWindow, order: Vec<(String, String)>, query: &s
             groups.push(PhotoGroup { label: label.into(), tiles: ModelRc::from(model) });
         }
     };
+    let limit = photo_limit();
+    let mut held_back = 0usize;
     for (path, label) in &order {
         let Some((fname, orig, thumb)) = by_path.get(path).map(|e| (&e.0, &e.1, &e.2)) else { continue; };
         if !q.is_empty() && !fname.to_lowercase().contains(&q) { continue; }
+        let orig_str = orig.to_string_lossy().into_owned();
+        let (stack_count, is_hidden) = stack_info().lock().ok()
+            .map(|g| (g.0.get(&orig_str).copied().unwrap_or(0), g.1.contains(&orig_str)))
+            .unwrap_or_default();
+        if is_hidden { continue; }
+        // Past the window — count the rest, decode none of it. Counted after
+        // the filters above so the number the button shows is the real one.
+        if paths.len() >= limit {
+            held_back += 1;
+            continue;
+        }
+        // Only now can the month heading change: a group must not be opened by
+        // a photo that turns out to be filtered or held back, or the timeline
+        // grows an empty "August 2026" above the load-more button.
         if *label != cur_label && !cur.is_empty() {
             flush(&cur_label, &mut cur, &mut groups);
         }
         cur_label = label.clone();
-        let orig_str = orig.to_string_lossy().into_owned();
         let color_label = color_labels().lock().ok()
             .and_then(|g| g.get(&orig_str).cloned()).unwrap_or_default();
         let item_id_opt = photo_item_ids().lock().ok().and_then(|g| g.get(&orig_str).copied());
         let is_live = item_id_opt.map(|id| live_ids().lock().ok()
             .map(|g| g.contains(&id)).unwrap_or(false)).unwrap_or(false);
-        let (stack_count, is_hidden) = stack_info().lock().ok()
-            .map(|g| (g.0.get(&orig_str).copied().unwrap_or(0), g.1.contains(&orig_str)))
-            .unwrap_or_default();
-        if is_hidden { continue; }
         let gi = paths.len() as i32;
         cur.push(PhotoTile {
             thumb: slint::Image::load_from_path(thumb).unwrap_or_default(),
@@ -683,6 +769,7 @@ pub fn populate_timeline(w: &MainWindow, order: Vec<(String, String)>, query: &s
     drop(full);
     *photo_paths().lock().unwrap() = paths;
     w.set_photo_groups(ModelRc::new(VecModel::from(groups)));
+    w.set_photos_more(held_back as i32);
     refresh_selection_meta(w);
 }
 
@@ -747,6 +834,8 @@ pub fn apply_photo_filter(w: &MainWindow, query: &str) {
     };
     let starred = starred_snapshot();
 
+    let limit = photo_limit();
+    let mut held_back = 0usize;
     let mut tiles: Vec<PhotoTile> = Vec::new();
     let mut paths: Vec<PathBuf> = Vec::new();
     for (label, orig, thumb) in ordered {
@@ -755,15 +844,21 @@ pub fn apply_photo_filter(w: &MainWindow, query: &str) {
         if let Some(c) = &cat {
             if !c.set.contains(&orig_str) { continue; }
         }
+        let (stack_count, is_hidden) = stack_info().lock().ok()
+            .map(|g| (g.0.get(&orig_str).copied().unwrap_or(0), g.1.contains(&orig_str)))
+            .unwrap_or_default();
+        if is_hidden { continue; }
+        // Past the window: keep walking, so the "N more" count is exact after
+        // every filter above, but build nothing. The decode below is what costs.
+        if tiles.len() >= limit {
+            held_back += 1;
+            continue;
+        }
         let color_label = color_labels().lock().ok()
             .and_then(|g| g.get(&orig_str).cloned()).unwrap_or_default();
         let item_id_opt = photo_item_ids().lock().ok().and_then(|g| g.get(&orig_str).copied());
         let is_live = item_id_opt.map(|id| live_ids().lock().ok()
             .map(|g| g.contains(&id)).unwrap_or(false)).unwrap_or(false);
-        let (stack_count, is_hidden) = stack_info().lock().ok()
-            .map(|g| (g.0.get(&orig_str).copied().unwrap_or(0), g.1.contains(&orig_str)))
-            .unwrap_or_default();
-        if is_hidden { continue; }
         let i = tiles.len() as i32;
         tiles.push(PhotoTile {
             thumb: slint::Image::load_from_path(thumb).unwrap_or_default(),
@@ -784,6 +879,7 @@ pub fn apply_photo_filter(w: &MainWindow, query: &str) {
     let model = std::rc::Rc::new(VecModel::from(tiles));
     grid_models_push(model.clone());
     w.set_photo_tiles(ModelRc::from(model));
+    w.set_photos_more(held_back as i32);
     refresh_selection_meta(w);
 }
 
@@ -928,6 +1024,20 @@ pub fn editor_src() -> &'static std::sync::Mutex<Option<PathBuf>> {
 static EDITOR_ORIG: std::sync::OnceLock<std::sync::Mutex<Option<image::DynamicImage>>> = std::sync::OnceLock::new();
 pub fn editor_orig() -> &'static std::sync::Mutex<Option<image::DynamicImage>> {
     EDITOR_ORIG.get_or_init(|| std::sync::Mutex::new(None))
+}
+/// Drop the full-resolution working copy.
+///
+/// `editor_orig` holds the *decoded* source — a 24 MP photo is ~72 MB of RGB
+/// that stayed resident for the rest of the session, because nothing ever put
+/// it back. `open_editor` refills it on the next open, so the only cost of
+/// dropping it here is that re-opening the same photo decodes again.
+///
+/// The edit stack and item id are deliberately left alone: `on_editor_close`
+/// hands both to an async save that outlives this call.
+pub fn editor_release() {
+    if let Ok(mut g) = editor_orig().lock() {
+        *g = None;
+    }
 }
 // Dimensions of the *current* edited result (after the active stack). Crop maps
 // UI fractions against these.

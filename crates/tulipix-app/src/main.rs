@@ -62,10 +62,34 @@ mod hot;
 mod miniwin;
 mod profile_image;
 
+/// Linux: read the XDG settings portal directly, through the `ashpd` that rfd's
+/// file dialogs already put in the tree. dark-light v2 did exactly this read but
+/// carried its own `ashpd 0.10` — and with it `async-std` plus the whole
+/// smol stack (`async-io`/`async-fs`/`async-net`/`async-global-executor`) — into
+/// every Linux build, because ashpd 0.10 turns on `zbus/async-io` while ours
+/// runs on `zbus/tokio`. Two async runtimes for one boolean.
+///
+/// Needs a Tokio reactor, and the caller may be the Slint thread, so the probe
+/// runs in a one-shot current-thread runtime on its own thread.
+#[cfg(target_os = "linux")]
 fn detect_dark() -> bool {
-    // dark-light v2 reads the XDG portal color-scheme via zbus on Linux, which
-    // needs a Tokio reactor. Run the probe inside a one-shot single-threaded
-    // runtime so it works regardless of caller context.
+    use ashpd::desktop::settings::{ColorScheme, Settings as PortalSettings};
+    std::thread::spawn(|| {
+        let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
+        rt.block_on(async { PortalSettings::new().await.ok()?.color_scheme().await.ok() })
+    })
+    .join()
+    .ok()
+    .flatten()
+    // No portal, or no preference recorded → dark. Same default as before.
+    .map(|scheme| scheme != ColorScheme::PreferLight)
+    .unwrap_or(true)
+}
+
+/// Windows/macOS keep dark-light: the registry read and the `AppleInterfaceStyle`
+/// lookup are its whole value, and neither is testable from here.
+#[cfg(not(target_os = "linux"))]
+fn detect_dark() -> bool {
     let mode = std::thread::spawn(|| {
         let rt = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
         rt.block_on(async { dark_light::detect() }).ok()
@@ -119,6 +143,106 @@ fn clear_lib_busy(weak: &slint::Weak<MainWindow>) {
         w.set_lib_busy_task("".into());
         w.set_lib_busy_frac(0.0);
     });
+}
+
+/// The section that was on screen before the current one (np.perf.section-release).
+static LAST_SECTION: OnceLock<std::sync::Mutex<String>> = OnceLock::new();
+fn last_section() -> &'static std::sync::Mutex<String> {
+    LAST_SECTION.get_or_init(|| std::sync::Mutex::new(String::new()))
+}
+
+/// Drop the models a section was drawing.
+///
+/// Only sections with a single known rebuild entry point appear here: a release
+/// without a matching `enter_section` leaves a permanently empty page. Music is
+/// excluded on purpose — `music-prewarmed` keeps MusicPage alive so the player
+/// survives navigation.
+pub fn release_section(w: &MainWindow, name: &str) {
+    match name {
+        "photos" => tulipix_sec_photos::release(w),
+        "videos" => tulipix_sec_videos::release(w),
+        // Only the memo. The rails keep their own clones of whatever is on
+        // screen, so nothing blanks — the next ask just decodes again.
+        "music" => tulipix_sec_music::clear_thumb_cache(),
+        _ => {}
+    }
+}
+
+/// Rebuild what a section draws. The counterpart of [`release_section`], and
+/// the reason it is safe to free anything at all.
+///
+/// Both refreshes are async and land back on the event loop, so the page paints
+/// empty for a frame or two — the same path a post-scan refresh already takes.
+pub fn enter_section(w: &MainWindow, name: &str) {
+    match name {
+        "photos" => {
+            let cat = w.get_photos_category().to_string();
+            let q = w.get_photos_query().to_string();
+            kick_category_refresh(w.as_weak(), cat, q);
+        }
+        "videos" => {
+            let cat = w.get_video_category().to_string();
+            kick_video_refresh(w.as_weak(), cat);
+        }
+        _ => {}
+    }
+}
+
+/// Free the section being navigated away from, and rebuild the one being
+/// navigated into. `on_section_changed` only ever told us where we are going;
+/// the section we are leaving is remembered here.
+fn release_previous_section(w: &MainWindow, entering: &str) {
+    let leaving = {
+        let Ok(mut g) = last_section().lock() else { return };
+        std::mem::replace(&mut *g, entering.to_string())
+    };
+    if leaving == entering {
+        return;
+    }
+    release_section(w, &leaving);
+    enter_section(w, entering);
+}
+
+/// Everything the app can put down while it is *only* a music widget.
+///
+/// Minimising used to be one `window.hide()`: the whole MainWindow stayed
+/// resident — every grid model with its decoded thumbnails, every cache — so
+/// the "minimal music mode" cost the same RAM as the full app with a section
+/// open. The widget draws now-playing state and nothing else, so the section
+/// the user happened to be on is pure ballast until they come back.
+///
+/// Playback is untouched, and that is the whole reason this is safe: audio is
+/// an out-of-process mpv driven over its IPC socket, so it does not care what
+/// the UI process is holding.
+///
+/// NOT done here, deliberately: closing the SQLite pools. `tokio::sync::OnceCell`
+/// has no reset, so it would need a resettable cell plus an interlock against a
+/// running scan — and after the page-cache right-sizing the whole pool ceiling
+/// is ~160 MB rather than the 1.28 GB it was. Not worth that risk yet.
+pub fn release_for_widget(w: &MainWindow) {
+    // The window's own property, not LAST_SECTION: the app opens on Home
+    // without ever firing `section-changed`, so LAST_SECTION is empty until the
+    // first navigation.
+    release_section(w, &w.get_active_section().to_string());
+    // Cheap to refill and never load-bearing: a pure memo in front of decoded
+    // book covers that are all sitting on local disk.
+    tulipix_sec_books::release_covers();
+}
+
+/// Undo [`release_for_widget`] — rebuild whatever section the user left open.
+pub fn restore_from_widget(w: &MainWindow) {
+    let current = w.get_active_section().to_string();
+    enter_section(w, &current);
+    // Home is not in `enter_section` (the section switch refreshes it inline),
+    // but its rails went stale while the window was down.
+    if current == "home" {
+        kick_home_stats(w);
+        kick_home_photos(w);
+        kick_home_videos(w);
+        kick_home_books(w);
+        kick_home_cloud(w);
+        kick_home_continue(w);
+    }
 }
 
 static APP_START: OnceLock<std::time::Instant> = OnceLock::new();
@@ -183,7 +307,7 @@ fn main() -> Result<()> {
     tulipix_core::crash::install_panic_hook();
     let _ = tulipix_core::logging::LOG.write_event("info", "tulipix", "startup");
 
-    // zbus (transitive via rfd/xdg-portal + dark-light + ashpd) requires a
+    // zbus (transitive via rfd/xdg-portal + ashpd) requires a
     // Tokio reactor in scope for the calling thread. Enter a multi-thread
     // runtime so any sync zbus call has a reactor regardless of caller.
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
@@ -209,6 +333,8 @@ fn main() -> Result<()> {
                 let _ = std::fs::create_dir_all(&dir);
             }
         }
+        // The settings file was just deleted out from under the cache.
+        tulipix_core::settings::invalidate();
         tracing::info!("factory reset: all app data cleared on startup");
     }
 
@@ -1361,7 +1487,10 @@ fn main() -> Result<()> {
         std::time::Duration::from_secs(20),
         move || {
             let Some(w0) = wh.upgrade() else { return; };
-            if w0.get_active_section() == "home" {
+            // Six queries' worth of work for a page nobody can see — folded down
+            // to the music widget, the main window is hidden but its section is
+            // still "home". `restore` refreshes on the way back in.
+            if w0.get_active_section() == "home" && w0.window().is_visible() {
                 kick_home_stats(&w0);
                 kick_home_photos(&w0);
                 kick_home_videos(&w0);
@@ -1398,6 +1527,19 @@ fn main() -> Result<()> {
 
     window.on_section_changed(move |s| {
         let Some(w0) = w.upgrade() else { return; };
+        // Free the section being LEFT, then rebuild the one being entered.
+        //
+        // The `if active-section == …` gates in main.slint already destroy each
+        // page's elements, but the models hang off MainWindow, which outlives
+        // every page — and each grid tile owns a decoded thumbnail. Without
+        // this, RSS was a high-water mark of every section visited this
+        // session and never came back down.
+        //
+        // Only Photos and Videos are released: that is where the bitmaps are,
+        // and both have a single rebuild entry point to pair with. Music is
+        // deliberately excluded — `music-prewarmed` keeps MusicPage alive on
+        // purpose so the player survives navigation.
+        release_previous_section(&w0, s.as_str());
         // Transfer binds its port on the way in and drops it on the way out, so
         // it needs to hear about every section change, not just its own.
         tulipix_sec_transfer::section_changed(&w0, s.as_str());
@@ -1739,7 +1881,7 @@ fn main() -> Result<()> {
         w0.set_music_tag_locked(false);
         w0.set_music_tag_fetch_status("".into());
         // Cover preview — the song's tile art.
-        w0.set_music_tag_art(tile_thumb_at(&w0, pos));
+        w0.set_music_tag_art(music_thumb_at(pos));
         w0.set_music_tag_open(true);
         prefill_tag_editor(&w, m.item_id);
     });
@@ -2168,6 +2310,96 @@ fn main() -> Result<()> {
         kick_category_refresh(w.clone(), c.to_string(), q);
     });
 
+    wire_photo_tabs(&window);
+
+    wire_photo_editor(&window);
+
+    wire_settings_panels(&window);
+
+    wire_library_panel(&window);
+
+
+    // Restore watched folders from previous sessions so the section grids are
+    // populated on launch instead of starting empty. Re-scan is cheap because
+    // thumbnails are cached.
+    {
+        let folders = load_watched_folders();
+        if !folders.is_empty() {
+            tracing::info!(count = folders.len(), "restoring watched folders");
+        }
+        set_scan_silent(true); // startup restore never shows the scan popup
+        for path in folders {
+            if path.exists() {
+                add_folder_path_deferred(&window, path);
+            } else {
+                tracing::warn!(path = %path.display(), "watched folder gone — skipping");
+            }
+        }
+    }
+
+    // OS media-key support (XF86Audio Play/Pause/Next/Prev) via MPRIS on Linux,
+    // SMTC on Windows, MediaPlayer on macOS. Held alive for the app's lifetime.
+    // Deferred to a single-shot timer so the native window (and its HWND, which
+    // Windows SMTC requires) is realized before registration runs.
+    {
+        let weak = window.as_weak();
+        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
+            if let Some(w) = weak.upgrade() { setup_media_controls(&w); }
+        });
+    }
+
+    // Freeze "startup to ready" on the first turn of the event loop: every
+    // blocking setup call above has returned by then and the window is about to
+    // paint, which is what the number is supposed to describe.
+    slint::Timer::single_shot(std::time::Duration::ZERO, || {
+        let ms = APP_START.get().map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);
+        let _ = READY_MS.set(ms);
+        tracing::info!(startup_ms = ms, "ready");
+    });
+
+    // Launch filling the screen rather than as a small floating window. The
+    // caption row reads the state back off the `maximized` Window builtin, so
+    // there is nothing to mirror here.
+    window.window().set_maximized(true);
+    if TRAY_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
+        // With a tray icon there is a way back in, so closing the window hides
+        // it instead of ending the process — which is also what makes the Mini
+        // Player widget possible: it hides the main window, and dismissing the
+        // widget would otherwise take the last visible window down with the app.
+        window.window().on_close_requested(|| slint::CloseRequestResponse::HideWindow);
+        window.show()?;
+        slint::run_event_loop_until_quit()?;
+    } else {
+        // No tray host: last window closed has to mean quit, or the process
+        // would keep running with nothing on screen and no way to reach it.
+        window.run()?;
+    }
+
+    // Stop all playback so nothing keeps playing after the window closes.
+    kill_all_mpv();
+    // Tear down any rclone mounts spun up for the cloud section.
+    tulipix_sec_cloud::cloud_unmount_all();
+    // Close the transfer port if the window was shut while the section was open.
+    tulipix_sec_transfer::shutdown();
+
+    // Persist gate-hit counter on shutdown
+    if let Some(cache) = dirs_default().map(|d| d.join("cache")) {
+        let _ = tulipix_core::caps::persist_hit_counts(&cache);
+    }
+    // Bounded runtime shutdown — the implicit `Drop` waits FOREVER for running
+    // blocking tasks (a wedged rclone/network call, a mid-walk scan), which left
+    // a windowless zombie process after close. Cap it, then return.
+    drop(_rt_guard);
+    rt.shutdown_timeout(std::time::Duration::from_secs(2));
+    Ok(())
+}
+
+/// Photos tabs: multi-select, People, Things and Albums.
+///
+/// Carved out of `main()` verbatim: same statements, same order, no captured
+/// state beyond `window`. Splitting main() is the peak-compile-RAM lever in
+/// this crate — one 4,000-line function is one enormous MIR body.
+fn wire_photo_tabs(window: &MainWindow) {
     // ── Multi-select (np.p2.multiselect) ──────────────────────────────────
     // Tile-level: ctrl-click / circle = toggle; shift-click = range from anchor.
     let w = window.as_weak();
@@ -2501,6 +2733,14 @@ fn main() -> Result<()> {
         });
     });
 
+}
+
+/// The photo editor (np.p2.edit.*) — adjust, crop, AI ops, export.
+///
+/// Carved out of `main()` verbatim: same statements, same order, no captured
+/// state beyond `window`. Splitting main() is the peak-compile-RAM lever in
+/// this crate — one 4,000-line function is one enormous MIR body.
+fn wire_photo_editor(window: &MainWindow) {
     // ── Photo editor (np.p2.edit.*) ───────────────────────────────────────
     let w = window.as_weak();
     window.on_editor_adjust(move |e, c, s, t, hi, sh| {
@@ -2745,6 +2985,10 @@ fn main() -> Result<()> {
         // Persist the edit stack to photo_edits on close.
         let item = editor_item().lock().map(|g| *g).unwrap_or(None);
         let stack = editor_stack().lock().map(|g| g.clone()).unwrap_or_default();
+        // Read the stack first, then drop the decoded full-res original — the
+        // save below only needs the stack, and the image was being kept for the
+        // rest of the session.
+        editor_release();
         let _ = w;
         if let Some(id) = item {
             let handle = tokio::runtime::Handle::current();
@@ -2828,6 +3072,20 @@ fn main() -> Result<()> {
     window.on_photos_visible_hint(move |f| {
         SCAN_HINT.store(f.clamp(0.0, 1.0).to_bits(), std::sync::atomic::Ordering::Relaxed);
     });
+    // "Show N more" — grow the tile window by one page and rebuild the view.
+    let w = window.as_weak();
+    window.on_photos_show_more(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let cat = w0.get_photos_category().to_string();
+        let q = w0.get_photos_query().to_string();
+        photos_show_more(w.clone(), cat, q);
+    });
+    let w = window.as_weak();
+    window.on_videos_show_more(move || {
+        let Some(w0) = w.upgrade() else { return; };
+        let cat = w0.get_video_category().to_string();
+        videos_show_more(w.clone(), cat);
+    });
     // Live FS watcher (np.p1.lib.watch): notify across every watched folder.
     // Renames update items rows in place; deletes flip missing_since. The
     // event is applied to every section pool — UPDATE is a no-op where the
@@ -2902,6 +3160,15 @@ fn main() -> Result<()> {
     seed_shortcut_groups(&window);
     window.set_palette_rows(slint::ModelRc::new(slint::VecModel::from(build_palette_rows(""))));
 
+}
+
+/// The generic settings panels (AI · Endpoints · Security · Data · System),
+/// capability gating, the chat overlay and the API-keys panel.
+///
+/// Carved out of `main()` verbatim: same statements, same order, no captured
+/// state beyond `window`. Splitting main() is the peak-compile-RAM lever in
+/// this crate — one 4,000-line function is one enormous MIR body.
+fn wire_settings_panels(window: &MainWindow) {
     // ── Generic settings-panel handlers (AI · Endpoints · Security · Data ·
     // System). Toggles + text fields persist into Settings.flags / .advanced;
     // actions dispatch one-shot operations. All re-seed the panels after.
@@ -3272,6 +3539,15 @@ fn main() -> Result<()> {
         tracing::info!(%service, "custom api key removed");
     });
 
+}
+
+/// Library panel actions, the scan schedule, the command palette, voice
+/// search, the error boundary and the properties window.
+///
+/// Carved out of `main()` verbatim: same statements, same order, no captured
+/// state beyond `window`. Splitting main() is the peak-compile-RAM lever in
+/// this crate — one 4,000-line function is one enormous MIR body.
+fn wire_library_panel(window: &MainWindow) {
     // ── Scan schedule handlers ─────────────────────────────────────────────
     let w = window.as_weak();
     window.on_set_default_cadence(move |c| {
@@ -3599,80 +3875,6 @@ fn main() -> Result<()> {
         let p = PathBuf::from(w.get_props().path.to_string());
         let _ = tulipix_platform::fm::reveal_in_file_manager(&p);
     });
-
-    // Restore watched folders from previous sessions so the section grids are
-    // populated on launch instead of starting empty. Re-scan is cheap because
-    // thumbnails are cached.
-    {
-        let folders = load_watched_folders();
-        if !folders.is_empty() {
-            tracing::info!(count = folders.len(), "restoring watched folders");
-        }
-        set_scan_silent(true); // startup restore never shows the scan popup
-        for path in folders {
-            if path.exists() {
-                add_folder_path_deferred(&window, path);
-            } else {
-                tracing::warn!(path = %path.display(), "watched folder gone — skipping");
-            }
-        }
-    }
-
-    // OS media-key support (XF86Audio Play/Pause/Next/Prev) via MPRIS on Linux,
-    // SMTC on Windows, MediaPlayer on macOS. Held alive for the app's lifetime.
-    // Deferred to a single-shot timer so the native window (and its HWND, which
-    // Windows SMTC requires) is realized before registration runs.
-    {
-        let weak = window.as_weak();
-        slint::Timer::single_shot(std::time::Duration::ZERO, move || {
-            if let Some(w) = weak.upgrade() { setup_media_controls(&w); }
-        });
-    }
-
-    // Freeze "startup to ready" on the first turn of the event loop: every
-    // blocking setup call above has returned by then and the window is about to
-    // paint, which is what the number is supposed to describe.
-    slint::Timer::single_shot(std::time::Duration::ZERO, || {
-        let ms = APP_START.get().map(|t| t.elapsed().as_millis() as u64).unwrap_or(0);
-        let _ = READY_MS.set(ms);
-        tracing::info!(startup_ms = ms, "ready");
-    });
-
-    // Launch filling the screen rather than as a small floating window. The
-    // caption row reads the state back off the `maximized` Window builtin, so
-    // there is nothing to mirror here.
-    window.window().set_maximized(true);
-    if TRAY_ACTIVE.load(std::sync::atomic::Ordering::Relaxed) {
-        // With a tray icon there is a way back in, so closing the window hides
-        // it instead of ending the process — which is also what makes the Mini
-        // Player widget possible: it hides the main window, and dismissing the
-        // widget would otherwise take the last visible window down with the app.
-        window.window().on_close_requested(|| slint::CloseRequestResponse::HideWindow);
-        window.show()?;
-        slint::run_event_loop_until_quit()?;
-    } else {
-        // No tray host: last window closed has to mean quit, or the process
-        // would keep running with nothing on screen and no way to reach it.
-        window.run()?;
-    }
-
-    // Stop all playback so nothing keeps playing after the window closes.
-    kill_all_mpv();
-    // Tear down any rclone mounts spun up for the cloud section.
-    tulipix_sec_cloud::cloud_unmount_all();
-    // Close the transfer port if the window was shut while the section was open.
-    tulipix_sec_transfer::shutdown();
-
-    // Persist gate-hit counter on shutdown
-    if let Some(cache) = dirs_default().map(|d| d.join("cache")) {
-        let _ = tulipix_core::caps::persist_hit_counts(&cache);
-    }
-    // Bounded runtime shutdown — the implicit `Drop` waits FOREVER for running
-    // blocking tasks (a wedged rclone/network call, a mid-walk scan), which left
-    // a windowless zombie process after close. Cap it, then return.
-    drop(_rt_guard);
-    rt.shutdown_timeout(std::time::Duration::from_secs(2));
-    Ok(())
 }
 
 /// Register the bundled Sora variable font with the Slint runtime so the UI
@@ -10469,6 +10671,11 @@ fn wire_music_playlist(window: &MainWindow) {
     // UI-thread jank watchdog (np.p1.perf.jank): a 100 ms repeating timer
     // measures its own drift — the timer only fires late when the event loop
     // was blocked, so drift > 16 ms ≈ at least one dropped frame.
+    //
+    // Debug builds only. It is a development instrument — it writes to the log
+    // and nothing else reads it — and in a release build it was ten wakeups a
+    // second, forever, on battery, to measure a number nobody would see.
+    #[cfg(debug_assertions)]
     {
         let last = std::cell::Cell::new(std::time::Instant::now());
         let jank_timer: &'static slint::Timer = Box::leak(Box::new(slint::Timer::default()));
@@ -10490,7 +10697,14 @@ fn wire_music_playlist(window: &MainWindow) {
         let vis_timer: &'static slint::Timer = Box::leak(Box::new(slint::Timer::default()));
         vis_timer.start(slint::TimerMode::Repeated, std::time::Duration::from_millis(90), move || {
             let Some(w) = weak.upgrade() else { return; };
-            if !w.get_music_playing() {
+            // Nothing on screen consumes the bars unless Music or Home is the
+            // open section AND the main window is actually up. Minimised to the
+            // desktop widget, the old gate (playing?) was still true, so this
+            // rebuilt a spectrum eleven times a second and pushed it into a
+            // hidden window — the widget does not draw bars at all.
+            let drawn = matches!(w.get_active_section().as_str(), "music" | "home")
+                && w.window().is_visible();
+            if !drawn || !w.get_music_playing() {
                 if w.get_music_vis_bars().row_count() > 0 {
                     w.set_music_vis_bars(slint::ModelRc::new(slint::VecModel::<f32>::default()));
                 }

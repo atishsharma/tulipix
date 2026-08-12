@@ -59,16 +59,28 @@ impl DbHandle {
             .synchronous(SqliteSynchronous::Normal)
             .foreign_keys(true)
             .busy_timeout(std::time::Duration::from_secs(5))
-            // Read-path tuning: memory-mapped I/O + a larger page cache cut the
+            // Read-path tuning: memory-mapped I/O + a page cache cut the
             // syscalls/copies behind list queries (faster section loads), and
             // temp tables/indexes for sorts stay in RAM. cache_size is negative
-            // = KiB (here ~16 MiB); mmap_size is bytes (256 MiB ceiling).
+            // = KiB; mmap_size is bytes (256 MiB ceiling, virtual — it does not
+            // add to RSS, though it does inflate what `btop`/smaps report).
+            //
+            // The page cache is per CONNECTION, and there are ten of these pools
+            // (one per section DB). At the old 16 MiB × 8 connections × 10 pools
+            // the ceiling was 1.28 GB of anonymous memory living inside SQLite,
+            // invisible to every Rust profiler. These queries are list reads over
+            // tables of thousands of rows, not analytics — 4 MiB holds the hot
+            // b-tree pages of any of them. Raise it for one section (not all ten)
+            // if a specific library measurably regresses.
             .pragma("mmap_size", "268435456")
-            .pragma("cache_size", "-16000")
+            .pragma("cache_size", "-4000")
             .pragma("temp_store", "MEMORY")
             .create_if_missing(true);
         let pool = SqlitePoolOptions::new()
-            .max_connections(8)
+            // Writers serialise on the WAL lock anyway; the readers that
+            // actually run concurrently are the section populate calls, and
+            // there are never eight of those in flight against one DB.
+            .max_connections(4)
             .acquire_timeout(std::time::Duration::from_secs(10))
             .connect_with(opts)
             .await

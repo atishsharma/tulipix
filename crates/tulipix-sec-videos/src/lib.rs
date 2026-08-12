@@ -436,7 +436,58 @@ pub fn kick_discover_refresh(weak: slint::Weak<MainWindow>) {
 /// Rebuild the videos grid for `category` off-thread, then set the tiles +
 /// index→path/id maps on the UI thread. Thumbnails come from the accumulated
 /// scan output (video_full) so a tab switch never re-renders a frame.
+// ── Grid paging (np.perf.grid-window) ──────────────────────────────────────
+// Same reasoning as the Photos grid: every tile owns a decoded poster, the
+// `for` that draws them is not virtualised, and `video_rows_for` has no LIMIT —
+// so opening Videos materialised the whole library at once.
+
+/// Tiles added per page.
+pub const VIDEO_PAGE: usize = 300;
+
+static VIDEO_LIMIT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(VIDEO_PAGE);
+static VIDEO_KEEP_LIMIT: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// How many tiles the current grid may materialise.
+pub fn video_limit() -> usize {
+    VIDEO_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Grow the window by one page and rebuild the current tab.
+pub fn videos_show_more(weak: slint::Weak<MainWindow>, category: String) {
+    VIDEO_LIMIT.fetch_add(VIDEO_PAGE, std::sync::atomic::Ordering::Relaxed);
+    VIDEO_KEEP_LIMIT.store(true, std::sync::atomic::Ordering::Relaxed);
+    kick_video_refresh(weak, category);
+}
+
+/// Drop everything the Videos page was drawing.
+///
+/// Same reasoning as `tulipix_sec_photos::release`: the `if active-section`
+/// gate destroys the page's elements, but these models live on `MainWindow` and
+/// each tile owns a decoded poster. `kick_video_refresh` rebuilds them when the
+/// section is opened again.
+///
+/// `VIDEO_FULL` / `VIDEO_PATHS` stay — they are path lists, and the click
+/// handler resolves an index through them.
+pub fn release(w: &MainWindow) {
+    use slint::{ModelRc, VecModel};
+    w.set_video_tiles(ModelRc::new(VecModel::<VideoTile>::default()));
+    w.set_video_shows(ModelRc::new(VecModel::<ShowCard>::default()));
+    w.set_video_next_up(ModelRc::new(VecModel::<VideoTile>::default()));
+    // Live TV shares the Videos section; its channel grid and the decoded logo
+    // cache behind it go the same way.
+    w.set_livetv_channels(ModelRc::new(VecModel::<LiveChannel>::default()));
+    w.set_livetv_groups(ModelRc::new(VecModel::<LiveGroup>::default()));
+    livetv::release();
+}
+
 pub fn kick_video_refresh(weak: slint::Weak<MainWindow>, category: String) {
+    // A new tab starts at one page again; `videos_show_more` is the one caller
+    // that asks to keep the window it just grew.
+    if !VIDEO_KEEP_LIMIT.swap(false, std::sync::atomic::Ordering::Relaxed) {
+        VIDEO_LIMIT.store(VIDEO_PAGE, std::sync::atomic::Ordering::Relaxed);
+    }
     let handle = tokio::runtime::Handle::current();
     // TV tab, not drilled into a show, on the Library sub-tab → show cards.
     let kind = video_kind().lock().map(|g| g.clone()).unwrap_or_else(|_| "local".into());
@@ -526,10 +577,16 @@ pub fn kick_video_refresh(weak: slint::Weak<MainWindow>, category: String) {
                     .map(|(label, orig, thumb)| (orig.to_string_lossy().into_owned(), (label.clone(), thumb.clone())))
                     .collect())
                 .unwrap_or_default();
-            let mut tiles: Vec<VideoTile> = Vec::with_capacity(rows.len());
-            let mut paths: Vec<PathBuf> = Vec::with_capacity(rows.len());
-            let mut ids: Vec<i64> = Vec::with_capacity(rows.len());
-            for r in &rows {
+            let limit = video_limit();
+            let held_back = rows.len().saturating_sub(limit);
+            let mut tiles: Vec<VideoTile> = Vec::with_capacity(rows.len().min(limit));
+            let mut paths: Vec<PathBuf> = Vec::with_capacity(rows.len().min(limit));
+            let mut ids: Vec<i64> = Vec::with_capacity(rows.len().min(limit));
+            // `break`, not `continue`: nothing below filters, so the tiles are
+            // exactly the first `limit` rows and the remainder is arithmetic.
+            // paths/ids are pushed in the same iteration, so a click still maps
+            // through `video_paths` by tile index.
+            for r in rows.iter().take(limit) {
                 let (label, ffmpeg_thumb) = by_path.get(&r.abs_path).cloned().unwrap_or_else(|| {
                     let l = std::path::Path::new(&r.abs_path).file_name()
                         .and_then(|s| s.to_str()).unwrap_or("").to_string();
@@ -581,6 +638,7 @@ pub fn kick_video_refresh(weak: slint::Weak<MainWindow>, category: String) {
             };
             w.set_video_seasons(slint::ModelRc::new(slint::VecModel::from(seasons)));
             w.set_video_tiles(slint::ModelRc::new(slint::VecModel::from(tiles)));
+            w.set_videos_more(held_back as i32);
         });
     });
 }

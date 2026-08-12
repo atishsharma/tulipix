@@ -90,6 +90,14 @@ where
                 sub.push_str(&format!("{{\"command\":[\"observe_property\",{id},\"{name}\"]}}\n"));
             }
             let _ = stream.write_all(sub.as_bytes());
+            // Hand the write half to `music_ipc`, exactly as the persistent
+            // transport does. Without this every control sent during a podcast,
+            // radio stream or YouTube track missed the shared connection and
+            // fell back to connect-write-drop — a socket setup and teardown per
+            // play/pause/seek/volume, and one "[ipc_N] Write error (Broken
+            // pipe)" in mpv's log each time, because the client closed before
+            // mpv could answer.
+            crate::set_music_cmd(stream.try_clone().ok());
             // Same once-a-second throttle the persistent reader applies; see it
             // for why. Podcasts, radio and the legacy per-track path all land
             // here, and they push into the same UI properties.
@@ -110,6 +118,13 @@ where
                 }
                 on_prop(name, &v["data"]);
             }
+        }
+        // Nothing drains the socket any more, so the shared write half has to
+        // go with it — a write into it would never be read. Guarded by the
+        // generation for the same reason the persistent reader guards its
+        // cleanup: a dying reader must not clear what a newer play installed.
+        if MUSIC_GEN.load(std::sync::atomic::Ordering::SeqCst) == gen_id {
+            crate::set_music_cmd(None);
         }
         // Socket closed = track ended (or was replaced). Auto-advance only if
         // this is still the active generation (natural EOF, not user action).

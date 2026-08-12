@@ -70,12 +70,7 @@ impl Bookmark {
     }
 }
 
-fn now_secs() -> i64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0)
-}
+use tulipix_core::util::unix_secs_i64 as now_secs;
 
 pub async fn is_saved(pool: &SqlitePool, subject_id: &str) -> bool {
     sqlx::query_scalar::<_, i64>("SELECT 1 FROM stream_bookmarks WHERE subject_id = ?")

@@ -16,7 +16,6 @@ use sqlx::SqlitePool;
 use std::path::{Path, PathBuf};
 use std::sync::mpsc;
 use std::sync::{Mutex, OnceLock};
-use std::time::{SystemTime, UNIX_EPOCH};
 
 /// The live app watcher, kept here so folders added mid-session (e.g. a new
 /// download destination) can be attached to it without a restart.
@@ -59,9 +58,7 @@ pub struct MissingMark {
     pub missing_since_unix: i64,
 }
 
-fn now_secs() -> i64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs() as i64).unwrap_or(0)
-}
+use crate::util::unix_secs_i64 as now_secs;
 
 pub fn mark_missing(path: PathBuf) -> MissingMark {
     MissingMark { path, missing_since_unix: now_secs() }
@@ -171,7 +168,7 @@ pub async fn startup_reconcile(pool: &SqlitePool, libs: &LibrariesConfig) -> Res
                     let mtime = meta
                         .modified()
                         .ok()
-                        .and_then(|t| t.duration_since(UNIX_EPOCH).ok())
+                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
                         .map(|d| d.as_secs() as i64)
                         .unwrap_or(0);
                     if size != prev_size || mtime != prev_mtime {

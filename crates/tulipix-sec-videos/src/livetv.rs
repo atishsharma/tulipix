@@ -293,8 +293,42 @@ thread_local! {
     /// survives a restart and is never downloaded twice.
     static LOGOS: RefCell<HashMap<String, (slint::Image, Option<PathBuf>)>> =
         RefCell::new(HashMap::new());
+    /// Insertion order for LOGOS, oldest first — the eviction queue.
+    static LOGO_ORDER: RefCell<std::collections::VecDeque<String>> =
+        RefCell::new(std::collections::VecDeque::new());
     /// URLs with a fetch in flight, so paging back and forth cannot ask twice.
     static PENDING: RefCell<HashSet<String>> = RefCell::new(HashSet::new());
+}
+
+/// How many decoded logos to keep. An iptv-org playlist carries thousands of
+/// channels and every one the user scrolled past used to stay decoded for the
+/// session. Evicting costs a re-decode from the on-disk cover cache (see
+/// `cache_cover`, which checks the disk before the network), never a download.
+const LOGO_CACHE_MAX: usize = 128;
+
+/// Drop the decoded logos. The bytes are still on disk (`cache_cover`), so
+/// re-opening Live TV re-decodes rather than re-downloads.
+pub fn release() {
+    LOGOS.with(|m| m.borrow_mut().clear());
+    LOGO_ORDER.with(|o| o.borrow_mut().clear());
+}
+
+/// Record a fetched logo, evicting the oldest once over the cap.
+fn logo_store(url: String, entry: (slint::Image, Option<PathBuf>)) {
+    LOGOS.with(|m| {
+        let mut map = m.borrow_mut();
+        LOGO_ORDER.with(|o| {
+            let mut order = o.borrow_mut();
+            if map.insert(url.clone(), entry).is_none() {
+                order.push_back(url);
+            }
+            while order.len() > LOGO_CACHE_MAX {
+                if let Some(old) = order.pop_front() {
+                    map.remove(&old);
+                }
+            }
+        });
+    });
 }
 
 /// Download the logos for the channels now on screen, then repaint.
@@ -314,12 +348,9 @@ fn fetch_logos(w: &MainWindow, urls: Vec<String>) {
     handle.spawn(async move {
         let paths = cache_covers(want).await;
         let _ = weak.upgrade_in_event_loop(move |w| {
-            LOGOS.with(|m| {
-                let mut m = m.borrow_mut();
-                for (url, path) in asked.iter().zip(paths) {
-                    m.insert(url.clone(), (load_image(path.clone()), path));
-                }
-            });
+            for (url, path) in asked.iter().zip(paths) {
+                logo_store(url.clone(), (load_image(path.clone()), path));
+            }
             PENDING.with(|p| {
                 let mut p = p.borrow_mut();
                 for url in &asked {

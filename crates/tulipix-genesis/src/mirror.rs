@@ -20,7 +20,7 @@
 //! Whatever comes out of that is a *pool*, not a single choice: if the chosen
 //! mirror fails mid-operation, the next one is tried transparently.
 
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use ureq::http::Uri;
 
@@ -367,12 +367,7 @@ fn discover_from_any(seeds: &[Uri], policy: &NetPolicy) -> Vec<Uri> {
     Vec::new()
 }
 
-fn now_secs() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
+use tulipix_core::util::unix_secs as now_secs;
 
 /// Read the cached ranking, if it is present and fresh.
 fn load_cache(policy: &NetPolicy) -> Option<Vec<Uri>> {

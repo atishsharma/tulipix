@@ -1856,7 +1856,9 @@ export component MusicPage inherits Rectangle {
     in property <bool> home-connect: false;       // gradient-outline the Home blocks
     in property <bool> yt-home-connect: true;     // gradient-outline the YouTube Home rails (default on)
     in property <bool> mini-outline: true;        // bold gradient ring on the now-playing mini players
-    in property <[PhotoTile]> tiles: [];
+    // How many tracks the library holds. Was a `[PhotoTile]` model — one decoded
+    // thumbnail per track — that this page only ever asked for `.length`.
+    in property <int> track-count: 0;
     in property <string> np-title: "";
     in property <string> np-sub: "";
     in property <image> np-art;
@@ -5221,7 +5223,7 @@ export component MusicPage inherits Rectangle {
           }
         }
 
-        if root.view == "mymusic" && root.lib-tab != "downloader" && tiles.length > 0: libscroll := ScrollView {
+        if root.view == "mymusic" && root.lib-tab != "downloader" && track-count > 0: libscroll := ScrollView {
             // Entrance: this whole surface fades in when the view or sub-tab
             // changes. The `if` above rebuilds the subtree, so `init` fires
             // exactly once per arrival. Opacity only — these sit inside a
@@ -5741,7 +5743,7 @@ export component MusicPage inherits Rectangle {
             }
         }
 
-        if root.view == "mymusic" && root.lib-tab != "downloader" && tiles.length == 0: Rectangle {
+        if root.view == "mymusic" && root.lib-tab != "downloader" && track-count == 0: Rectangle {
             // Entrance: this whole surface fades in when the view or sub-tab
             // changes. The `if` above rebuilds the subtree, so `init` fires
             // exactly once per arrival. Opacity only — these sit inside a
@@ -5774,7 +5776,7 @@ export component MusicPage inherits Rectangle {
         // loaded in the transport (np-title set) — the latter covers YouTube
         // audio, which streams via the same mpv-IPC now-playing state even when
         // no music folder has been added (np.p4.music.player / .youtube).
-        if (tiles.length > 0 || root.np-title != "") && root.view != "podcasts" && root.view != "audiobooks" && root.view != "radio": Rectangle {
+        if (track-count > 0 || root.np-title != "") && root.view != "podcasts" && root.view != "audiobooks" && root.view != "radio": Rectangle {
             height: 124px; horizontal-stretch: 1;
             background: MusicTheme.surf-player;
             border-width: 1px; border-color: MusicTheme.line;
@@ -6166,7 +6168,7 @@ export component MusicPage inherits Rectangle {
     // 104px player so the header tabs and player stay usable.
     if root.detail-open: Rectangle {
         // Reserve the full 124px player so its synced-lyric line stays visible.
-        width: 100%; y: 126px; height: parent.height - 126px - (root.tiles.length > 0 ? 124px : 0px); background: MusicTheme.surf-page;
+        width: 100%; y: 126px; height: parent.height - 126px - (root.track-count > 0 ? 124px : 0px); background: MusicTheme.surf-page;
         // Backstop — absorb hover/click on empty areas so the library behind the
         // overlay never reacts (fixes hover/play bleed-through on artist/album pages).
         TouchArea { width: 100%; height: 100%; }

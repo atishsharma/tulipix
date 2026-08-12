@@ -36,10 +36,15 @@ pub fn music_full() -> &'static std::sync::Mutex<Vec<(String, PathBuf, PathBuf)>
 /// `music_full` set. Each tile's `index` is its playback position.
 ///
 /// `music_tiles` stays position-aligned and COMPLETE (audiobook chapters
-/// included) because rails/albums/audiobook cards resolve thumbs by playback
-/// position. The My Music *Tracks grid* binds the separate `music_tracks_grid`
-/// model, which drops every track under a folder assigned to a non-"My Music"
-/// section — audiobooks live in their own tab, not in the song grid.
+/// included) because rails/albums/audiobook cards resolve labels and thumbs by
+/// playback position. It carries **no images**: see [`music_thumb_at`].
+///
+/// The My Music Tracks grid used to bind a second, filtered copy of this model
+/// (`music_tracks_grid`) — every track outside a non-"My Music" folder, each
+/// with its own decoded thumbnail. Nothing ever iterated it: `page_music.slint`
+/// only read `tiles.length` to pick between the library and the empty state,
+/// and the Songs list renders from `music_song_rows`, 35 at a time. The model
+/// is gone; `music_track_count` is that length.
 pub fn rebuild_music_tiles(w: &MainWindow) {
     shuffle_reset(); // playback indices shift with the tiles — stale order dies here
     let full = music_full().lock().map(|g| g.clone()).unwrap_or_default();
@@ -50,23 +55,77 @@ pub fn rebuild_music_tiles(w: &MainWindow) {
         .collect();
     let mut paths: Vec<PathBuf> = Vec::with_capacity(full.len());
     let mut tiles: Vec<PhotoTile> = Vec::with_capacity(full.len());
-    let mut grid: Vec<PhotoTile> = Vec::with_capacity(full.len());
-    for (i, (label, orig, thumb_path)) in full.iter().enumerate() {
-        let tile = PhotoTile {
-            thumb: slint::Image::load_from_path(thumb_path).unwrap_or_default(),
+    let mut in_grid = 0i32;
+    for (i, (label, orig, _thumb)) in full.iter().enumerate() {
+        if !excluded.iter().any(|e| orig.starts_with(e)) {
+            in_grid += 1;
+        }
+        tiles.push(PhotoTile {
             label: label.clone().into(),
             index: i as i32,
             ..Default::default()
-        };
-        if !excluded.iter().any(|e| orig.starts_with(e)) {
-            grid.push(tile.clone());
-        }
-        tiles.push(tile);
+        });
         paths.push(orig.clone());
     }
+    // Positions just moved; anything memoised against the old ones is wrong.
+    clear_thumb_cache();
     if let Ok(mut g) = music_paths().lock() { *g = paths; }
-    w.set_music_tracks_grid(slint::ModelRc::new(slint::VecModel::from(grid)));
+    w.set_music_track_count(in_grid);
     w.set_music_tiles(slint::ModelRc::new(slint::VecModel::from(tiles)));
+}
+
+// Decoded track thumbnails, keyed by playback position, bounded.
+//
+// `rebuild_music_tiles` used to call `Image::load_from_path` for every track in
+// the library and keep the result in two root-level Slint models. That is an
+// eager full decode — ~300 KB per 320×320 thumb — held for the life of the
+// process, twice, for a library that renders at most a few dozen thumbs at a
+// time. On a 10k-track library it was the largest single allocation in the app.
+// Same LRU shape as the Live TV logo and book cover caches, but `thread_local!`
+// rather than a static: `slint::Image` is neither `Send` nor `Sync` (its
+// `ImageInner` holds a `VRc`), so it cannot live in a `static` at all. Same
+// reason `MUSIC_BROWSE` above is a thread-local. Every caller here runs on the
+// Slint event-loop thread — the fns take `&MainWindow`, or sit inside an
+// `upgrade_in_event_loop` closure — so one thread's copy is the only copy.
+const THUMB_CACHE_MAX: usize = 256;
+type ThumbCache = (std::collections::HashMap<usize, slint::Image>, std::collections::VecDeque<usize>);
+thread_local! {
+    static THUMB_CACHE: std::cell::RefCell<ThumbCache> = std::cell::RefCell::new(Default::default());
+}
+
+/// Drop every memoised thumb. Called whenever playback positions shift (the
+/// cache is keyed by position) and when the section is unloaded.
+pub fn clear_thumb_cache() {
+    THUMB_CACHE.with(|c| { let mut c = c.borrow_mut(); c.0.clear(); c.1.clear(); });
+}
+
+/// Thumbnail for a playback position, decoded on first ask.
+///
+/// The path comes from `music_full`, which is position-aligned with
+/// `music_paths` and `music_tiles` by construction — one push per entry in
+/// `rebuild_music_tiles`. Out-of-range and un-decodable both give the default
+/// image, which is what the old `tiles.row_data(pos).thumb` returned too.
+pub fn music_thumb_at(pos: i32) -> slint::Image {
+    if pos < 0 { return slint::Image::default(); }
+    let pos = pos as usize;
+    // Borrow ends before the decode — `load_from_path` must never run while the
+    // cache is borrowed, or a re-entrant ask would panic the RefCell.
+    if let Some(img) = THUMB_CACHE.with(|c| c.borrow().0.get(&pos).cloned()) {
+        return img;
+    }
+    let path = music_full().lock().ok().and_then(|g| g.get(pos).map(|(_, _, t)| t.clone()));
+    let Some(path) = path else { return slint::Image::default() };
+    let img = slint::Image::load_from_path(&path).unwrap_or_default();
+    THUMB_CACHE.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.0.insert(pos, img.clone()).is_none() {
+            c.1.push_back(pos);
+            while c.1.len() > THUMB_CACHE_MAX {
+                if let Some(old) = c.1.pop_front() { c.0.remove(&old); }
+            }
+        }
+    });
+    img
 }
 /// Drop every accumulated music track whose abs path is under `dir` (used when
 /// a folder is removed from the library so its tiles disappear without a rescan).
@@ -383,10 +442,8 @@ pub fn rebuild_recent_page(w: &MainWindow) {
     let g = match music_recent().lock() { Ok(g) => g, Err(_) => return };
     let pages = g.len().div_ceil(RECENT_PAGE).clamp(1, 3);
     let page = (w.get_music_recent_page() as usize).min(pages - 1);
-    let tiles = w.get_music_tiles();
     let rows: Vec<MusicSongRow> = g.iter().skip(page * RECENT_PAGE).take(RECENT_PAGE).map(|s| MusicSongRow {
-        thumb: if s.pos >= 0 && (s.pos as usize) < tiles.row_count() {
-            tiles.row_data(s.pos as usize).map(|t| t.thumb).unwrap_or_default() } else { slint::Image::default() },
+        thumb: music_thumb_at(s.pos),
         title: s.title.clone().into(), artist: s.artist.clone().into(),
         duration: if s.duration_s > 0.0 { fmt_clock(s.duration_s).into() } else { "".into() },
         index: s.pos,
@@ -490,7 +547,6 @@ pub fn build_sequential_queue(w: MainWindow) {
     let by_pos: std::collections::HashMap<i32, (String, String, f64)> = music_songs().lock()
         .map(|g| g.iter().map(|s| (s.pos, (s.title.clone(), s.artist.clone(), s.duration_s))).collect())
         .unwrap_or_default();
-    let tiles = w.get_music_tiles();
     let paths = music_paths().lock().map(|g| g.clone()).unwrap_or_default();
     let cur_dir = paths.get(cur as usize).and_then(|p| p.parent().map(|d| d.to_path_buf()));
     let is_book = cur_dir.as_ref()
@@ -520,7 +576,7 @@ pub fn build_sequential_queue(w: MainWindow) {
             // art) — their scan thumbs are generic waveform placeholders.
             thumb: match &book_thumb {
                 Some(cover) => cover.clone(),
-                None => if (pos as usize) < tiles.row_count() { tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default() } else { slint::Image::default() },
+                None => music_thumb_at(pos),
             },
             title: if title.is_empty() { "Track".into() } else { title.into() },
             artist: artist.into(),
@@ -540,11 +596,10 @@ pub fn set_instant_mix_queue(w: &MainWindow, ids: &[i64]) {
     let by_pos: std::collections::HashMap<i32, (String, String, f64)> = music_songs().lock()
         .map(|g| g.iter().map(|s| (s.pos, (s.title.clone(), s.artist.clone(), s.duration_s))).collect())
         .unwrap_or_default();
-    let tiles = w.get_music_tiles();
     let rows: Vec<MusicSongRow> = ids.iter().filter_map(|id| pos_of.get(id).copied()).map(|pos| {
         let (title, artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
         MusicSongRow {
-            thumb: if (pos as usize) < tiles.row_count() { tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default() } else { slint::Image::default() },
+            thumb: music_thumb_at(pos),
             title: if title.is_empty() { "Track".into() } else { title.into() },
             artist: artist.into(),
             duration: if dur > 0.0 { fmt_clock(dur).into() } else { "".into() },
@@ -562,11 +617,10 @@ pub fn set_upnext_queue(w: &MainWindow, pos: i32) {
     let by_pos: std::collections::HashMap<i32, (String, String, f64)> = music_songs().lock()
         .map(|g| g.iter().map(|s| (s.pos, (s.title.clone(), s.artist.clone(), s.duration_s))).collect())
         .unwrap_or_default();
-    let tiles = w.get_music_tiles();
     let rows: Vec<MusicSongRow> = (1..=40i32).map(|k| pos + k).filter(|p| *p >= 0 && *p < total).map(|p| {
         let (title, artist, dur) = by_pos.get(&p).cloned().unwrap_or_default();
         MusicSongRow {
-            thumb: if (p as usize) < tiles.row_count() { tiles.row_data(p as usize).map(|t| t.thumb).unwrap_or_default() } else { slint::Image::default() },
+            thumb: music_thumb_at(p),
             title: if title.is_empty() { "Track".into() } else { title.into() },
             artist: artist.into(),
             duration: if dur > 0.0 { fmt_clock(dur).into() } else { "".into() },
@@ -737,16 +791,15 @@ pub fn pick_playlist_ids() -> &'static std::sync::Mutex<Vec<i64>> {
 /// Map a list of item_ids (in order) to MusicSongRows, resolving each to its
 /// playback position so the existing `play-music`/`tile-clicked` path plays it.
 /// Ids not in the current library are skipped. Shared by Favorites + History.
-pub fn song_rows_for_ids(w: &MainWindow, ids: &[i64]) -> Vec<MusicSongRow> {
+pub fn song_rows_for_ids(ids: &[i64]) -> Vec<MusicSongRow> {
     let pos_of: std::collections::HashMap<i64, i32> = music_ids().lock()
         .map(|g| g.iter().enumerate().map(|(i, id)| (*id, i as i32)).collect()).unwrap_or_default();
     let by_pos: std::collections::HashMap<i32, (String, String, f64)> = music_songs().lock()
         .map(|g| g.iter().map(|s| (s.pos, (s.title.clone(), s.artist.clone(), s.duration_s))).collect()).unwrap_or_default();
-    let tiles = w.get_music_tiles();
     ids.iter().filter_map(|id| pos_of.get(id).copied()).map(|pos| {
         let (title, artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
         MusicSongRow {
-            thumb: if pos >= 0 && (pos as usize) < tiles.row_count() { tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default() } else { slint::Image::default() },
+            thumb: music_thumb_at(pos),
             title: if title.is_empty() { "Track".into() } else { title.into() },
             artist: artist.into(),
             duration: if dur > 0.0 { fmt_clock(dur).into() } else { "".into() },
@@ -817,7 +870,7 @@ pub fn rebuild_fav_page(w: &MainWindow) {
     let pages = ids.len().div_ceil(PER).max(1);
     let page = (w.get_music_fav_page().max(0) as usize).min(pages - 1);
     let slice: Vec<i64> = ids.iter().skip(page * PER).take(PER).copied().collect();
-    let rows = song_rows_for_ids(w, &slice);
+    let rows = song_rows_for_ids(&slice);
     w.set_music_fav_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
     w.set_music_fav_pages(pages as i32);
     w.set_music_fav_page(page as i32);
@@ -859,7 +912,7 @@ pub fn rebuild_history_page(w: &MainWindow) {
     w.set_music_history_page(page as i32);
     let start = (page - 1) * PER;
     let slice: Vec<i64> = ids.iter().skip(start).take(PER).copied().collect();
-    let rows = song_rows_for_ids(w, &slice);
+    let rows = song_rows_for_ids(&slice);
     w.set_music_history_rows(slint::ModelRc::new(slint::VecModel::from(rows)));
 }
 pub fn populate_history(w: &MainWindow) {
@@ -912,7 +965,7 @@ pub fn open_album_detail(w: &MainWindow, album_id: i64) {
             s
         };
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let rows = song_rows_for_ids(&w, &ids);
+            let rows = song_rows_for_ids(&ids);
             let art = rows.first().map(|r| r.thumb.clone())
                 .or_else(|| cover.as_ref().filter(|p| std::path::Path::new(p).exists())
                     .map(|p| slint::Image::load_from_path(std::path::Path::new(p)).unwrap_or_default()))
@@ -968,7 +1021,7 @@ pub fn open_artist_detail(w: &MainWindow, artist_id: i64) {
         let _ = weak.upgrade_in_event_loop({
             let name = name.clone();
             move |w| {
-                let rows = song_rows_for_ids(&w, &ids);
+                let rows = song_rows_for_ids(&ids);
                 let art = rows.first().map(|r| r.thumb.clone())
                     .or_else(|| image.as_ref().filter(|p| std::path::Path::new(p).exists())
                         .map(|p| slint::Image::load_from_path(std::path::Path::new(p)).unwrap_or_default()))
@@ -986,13 +1039,11 @@ pub fn open_artist_detail(w: &MainWindow, artist_id: i64) {
                 // Build the artist-albums column tiles (cover → first-track thumb).
                 let pos_of: std::collections::HashMap<i64, i32> = music_ids().lock()
                     .map(|g| g.iter().enumerate().map(|(i, id)| (*id, i as i32)).collect()).unwrap_or_default();
-                let tiles = w.get_music_tiles();
                 let album_tiles: Vec<PhotoTile> = alb.iter().map(|(_aid, title, cover, first, loved, rating)| {
                     let pos = pos_of.get(first).copied().unwrap_or(-1);
                     let thumb = cover.as_ref().filter(|p| std::path::Path::new(p).exists())
                         .map(|p| slint::Image::load_from_path(std::path::Path::new(p)).unwrap_or_default())
-                        .or_else(|| if pos >= 0 && (pos as usize) < tiles.row_count() { tiles.row_data(pos as usize).map(|t| t.thumb) } else { None })
-                        .unwrap_or_default();
+                        .unwrap_or_else(|| music_thumb_at(pos));
                     PhotoTile { thumb, label: title.clone().into(), index: pos,
                         starred: *loved != 0, stack_count: *rating as i32, ..Default::default() }
                 }).collect();
@@ -1030,7 +1081,7 @@ pub fn open_genre_detail(w: &MainWindow, genre: String) {
             .bind(&genre).fetch_all(&pool).await.unwrap_or_default();
         let sub = format!("{} track{}", ids.len(), if ids.len() == 1 { "" } else { "s" });
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let rows = song_rows_for_ids(&w, &ids);
+            let rows = song_rows_for_ids(&ids);
             // Genre cover override wins over the first track's album art.
             let art = load_music_pref(&format!("music.genre.cover.{genre}"))
                 .map(|c| slint::Image::load_from_path(std::path::Path::new(&c)).unwrap_or_default())
@@ -1080,7 +1131,7 @@ pub fn open_folder_detail(w: &MainWindow, pos: i32) {
     let ids = folder_track_ids(&dir);
     let title = dir.file_name().and_then(|s| s.to_str()).unwrap_or("Folder").to_string();
     let sub = format!("{} track{}", ids.len(), if ids.len() == 1 { "" } else { "s" });
-    let rows = song_rows_for_ids(w, &ids);
+    let rows = song_rows_for_ids(&ids);
     let art = rows.first().map(|r| r.thumb.clone()).unwrap_or_default();
     if let Ok(mut g) = music_detail().lock() { *g = ("folder".into(), -1, ids.clone()); }
     w.set_music_detail_kind("folder".into());
@@ -1188,12 +1239,11 @@ pub fn build_playlist_detail(w: &MainWindow, playlist_id: i64) {
             let by_pos: std::collections::HashMap<i32, (String, String, f64)> = music_songs().lock()
                 .map(|g| g.iter().map(|s| (s.pos, (s.title.clone(), s.artist.clone(), s.duration_s))).collect())
                 .unwrap_or_default();
-            let tiles = w.get_music_tiles();
             let mut rows: Vec<MusicSongRow> = item_ids.iter().map(|id| {
                 let pos = pos_of.get(id).copied().unwrap_or(-1);
                 let (title, artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
                 MusicSongRow {
-                    thumb: if pos >= 0 && (pos as usize) < tiles.row_count() { tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default() } else { slint::Image::default() },
+                    thumb: music_thumb_at(pos),
                     title: if title.is_empty() { "Track".into() } else { title.into() },
                     artist: artist.into(),
                     duration: if dur > 0.0 { fmt_clock(dur).into() } else { "".into() },
@@ -2408,19 +2458,13 @@ pub fn chapter_rows_for(
 pub fn fill_book_detail(
     w: &MainWindow, folder: &str, ids: &[i64], listened: &[i64], current: Option<i64>,
 ) {
-    let tiles = w.get_music_tiles();
     let (rows, first_pos, resume_pos, total) = chapter_rows_for(ids, listened, current);
     // Real book cover (folder image / embedded art) decoded by the cards
     // populate; tile thumb only as the last resort.
     let cover = ab_cover_cache().lock().ok()
         .and_then(|g| g.get(folder).cloned())
         .map(slint::Image::from_rgba8)
-        .or_else(|| {
-            if first_pos >= 0 && (first_pos as usize) < tiles.row_count() {
-                tiles.row_data(first_pos as usize).map(|t| t.thumb)
-            } else { None }
-        })
-        .unwrap_or_default();
+        .unwrap_or_else(|| music_thumb_at(first_pos));
     w.set_music_ab_d_title(book_display_title(folder).into());
     w.set_music_ab_d_author(ab_meta_cache().lock().ok()
         .and_then(|g| g.get(folder).map(|(_, a)| a.clone())).unwrap_or_default().into());
@@ -2575,11 +2619,10 @@ pub fn populate_audiobooks(w: &MainWindow) {
             .map(|(f, c, ..)| format!("{}   ·   {} chapters   —   {}", book_display_title(f), c.len(), f))
             .collect();
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let tiles = w.get_music_tiles();
             let rows: Vec<MusicSongRow> = ids.iter().filter_map(|id| pos_of.get(id).copied()).map(|pos| {
                 let (title, artist, dur) = by_pos.get(&pos).cloned().unwrap_or_default();
                 MusicSongRow {
-                    thumb: if pos >= 0 && (pos as usize) < tiles.row_count() { tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default() } else { slint::Image::default() },
+                    thumb: music_thumb_at(pos),
                     title: if title.is_empty() { "Track".into() } else { title.into() },
                     artist: artist.into(),
                     duration: if dur > 0.0 { fmt_clock(dur).into() } else { "".into() },
@@ -3517,16 +3560,6 @@ pub fn editing_target(w: &MainWindow) -> Option<i64> {
     tag_edit_target().lock().ok().and_then(|g| *g).or_else(|| current_music_id(w))
 }
 
-/// The album-art thumbnail for a playback position (from the live tiles model).
-pub fn tile_thumb_at(w: &MainWindow, pos: i32) -> slint::Image {
-    use slint::Model;
-    if pos < 0 { return slint::Image::default(); }
-    let tiles = w.get_music_tiles();
-    if (pos as usize) < tiles.row_count() {
-        tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default()
-    } else { slint::Image::default() }
-}
-
 /// Fill the tag-editor dropdown + stored fields (release date / genre / album
 /// artist / credits / lock) for an item, async (np.p5.music.tag-editor).
 pub fn prefill_tag_editor(weak: &slint::Weak<MainWindow>, id: i64) {
@@ -4212,12 +4245,7 @@ pub fn rebuild_music_songs_page(w: &MainWindow) {
     let per = if q.is_empty() { SONG_PAGE } else { 14 };
     let pages = total.div_ceil(per).max(1);
     let page = (w.get_music_song_page() as usize).min(pages - 1);
-    let tiles = w.get_music_tiles();
-    let thumb_at = |pos: i32| -> slint::Image {
-        if pos >= 0 && (pos as usize) < tiles.row_count() {
-            tiles.row_data(pos as usize).map(|t| t.thumb).unwrap_or_default()
-        } else { slint::Image::default() }
-    };
+    let thumb_at = music_thumb_at;
     let page_rows: Vec<&SongMeta> = view.iter().skip(page * per).take(per).copied().collect();
     let rows: Vec<MusicSongRow> = page_rows.iter().map(|s| MusicSongRow {
         thumb: thumb_at(s.pos),
@@ -4488,10 +4516,15 @@ pub fn populate_music_views(weak: slint::Weak<MainWindow>) {
             for (i, id) in ids.iter().enumerate() { if *id >= 0 { pos_of.entry(*id).or_insert(i as i32); } }
             if let Ok(mut g) = music_ids().lock() { *g = ids.clone(); }
 
-            // Snapshot the scanned song tiles by position to reuse thumbs/labels.
+            // Snapshot the scanned song tiles by position to reuse labels. The
+            // model carries no image, so the thumb is decoded here — rails are a
+            // row or two, not the library.
             let songs = w.get_music_tiles();
             let tile_at = |pos: i32| -> Option<PhotoTile> {
-                if pos >= 0 && (pos as usize) < songs.row_count() { songs.row_data(pos as usize) } else { None }
+                if pos < 0 || pos as usize >= songs.row_count() { return None; }
+                let mut t = songs.row_data(pos as usize)?;
+                t.thumb = music_thumb_at(pos);
+                Some(t)
             };
             // Tagged title by item_id. The scanned tile is labelled with the
             // file stem — right for the Songs grid, which has to name a track
@@ -4659,13 +4692,10 @@ pub fn populate_music_views(weak: slint::Weak<MainWindow>) {
             // drops them: a book lands as 40 "new songs" and would be the whole
             // tab.
             {
-                let tiles = w.get_music_tiles();
                 let mut newest: Vec<&SongMeta> = metas.iter().filter(|m| !m.is_audiobook).collect();
                 newest.sort_by(|a, b| b.added.cmp(&a.added));
                 let rows: Vec<MusicSongRow> = newest.iter().take(4).map(|s| MusicSongRow {
-                    thumb: if s.pos >= 0 && (s.pos as usize) < tiles.row_count() {
-                        tiles.row_data(s.pos as usize).map(|t| t.thumb).unwrap_or_default()
-                    } else { slint::Image::default() },
+                    thumb: music_thumb_at(s.pos),
                     title: s.title.clone().into(), artist: s.artist.clone().into(),
                     duration: if s.duration_s > 0.0 { fmt_clock(s.duration_s).into() } else { "".into() },
                     index: s.pos,

@@ -242,6 +242,39 @@ component TileGrid inherits Rectangle {
     }
 }
 
+// "Load more" footer — shown under a grid that is holding photos back.
+//
+// The grids build a window of tiles rather than the whole library, because
+// every tile owns a decoded thumbnail (see PHOTO_PAGE in tulipix-sec-photos).
+// This is the door to the rest of them.
+component LoadMoreRow inherits Rectangle {
+    in property <int> count: 0;
+    callback clicked();
+    height: 64px;
+    horizontal-stretch: 1;
+    Rectangle {
+        x: (parent.width - self.width) / 2;
+        y: (parent.height - self.height) / 2;
+        width: 260px; height: 40px;
+        border-radius: Surface.rr(12px, self.width, self.height);
+        background: ta.has-hover ? Theme.n-hover : Theme.n-chip;
+        border-width: 1px;
+        border-color: Theme.n-hair;
+        animate background { duration: 140ms; easing: ease-out; }
+        Text {
+            text: "Show " + root.count + " more";
+            color: Theme.n-ink;
+            font-size: 13px; font-weight: 600;
+            width: 100%; height: 100%;
+            horizontal-alignment: center; vertical-alignment: center;
+        }
+        ta := TouchArea {
+            mouse-cursor: pointer;
+            clicked => { root.clicked(); }
+        }
+    }
+}
+
 // One pill in the selection action bar (np.p2.multiselect).
 component SelBtn inherits Rectangle {
     in property <string> glyph;
@@ -381,6 +414,8 @@ export component PhotosPage inherits Rectangle {
     in property <bool> selecting: false;           // multi-select mode active
     in property <int> select-count: 0;             // number of selected photos
     in property <bool> can-paste: false;           // clipboard has photos to paste
+    in property <int> more-count: 0;               // photos matched but not yet built
+    callback show-more();                          // grow the grid by one page
     callback add-folder();
     callback set-category(string);
     callback visible-hint(float); // np.p1.thumbs.lazy — viewport scroll fraction
@@ -612,6 +647,10 @@ export component PhotosPage inherits Rectangle {
                             select-range(i) => { root.tile-select-range(i); }
                         }
                     }
+                    if root.more-count > 0: LoadMoreRow {
+                        count: root.more-count;
+                        clicked => { root.show-more(); }
+                    }
                 }
             }
             // Drag scrubber — right edge. Hover/drag shows the month and jumps
@@ -701,6 +740,10 @@ export component PhotosPage inherits Rectangle {
                     archive(i) => { root.tile-archive(i); }
                     select-toggle(i) => { root.tile-select-toggle(i); }
                     select-range(i) => { root.tile-select-range(i); }
+                }
+                if root.more-count > 0: LoadMoreRow {
+                    count: root.more-count;
+                    clicked => { root.show-more(); }
                 }
             }
         }
@@ -1055,6 +1098,10 @@ export component PhotosPage inherits Rectangle {
                                     select-toggle(i) => { root.tile-select-toggle(i); }
                                     select-range(i) => { root.tile-select-range(i); }
                                 }
+                            }
+                            if root.more-count > 0: LoadMoreRow {
+                                count: root.more-count;
+                                clicked => { root.show-more(); }
                             }
                         }
                     }

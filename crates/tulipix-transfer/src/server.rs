@@ -30,12 +30,7 @@ const COOKIE: &str = "tx";
 /// small enough that a cancelled download stops promptly.
 const CHUNK: usize = 64 * 1024;
 
-pub fn now_secs() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0)
-}
+pub use tulipix_core::util::unix_secs as now_secs;
 
 /// A poisoned mutex means some other handler panicked; the data behind it is
 /// still the data. Recovering beats taking the process down with it.

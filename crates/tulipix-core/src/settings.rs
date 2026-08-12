@@ -47,8 +47,47 @@ pub enum ViewMode { #[default]
 Library, Folders, Timeline }
 
 
+/// The settings file, parsed once (np.perf.settings-cache).
+///
+/// `Settings::load()` is called from 89 places, many of them UI callbacks and a
+/// few inside loops, and each call was a `read_to_string` + a full serde parse
+/// on whatever thread asked — including the event-loop thread. The file is
+/// small, but blocking disk I/O in a click handler is the wrong shape.
+///
+/// `save()` refreshes this, so the app always reads back its own writes. The
+/// cache is only wrong if *another process* rewrites settings.json underneath a
+/// running app — the CLI can, and this trades that (already racy) case away.
+/// `invalidate()` is the escape hatch.
+static CACHE: std::sync::OnceLock<std::sync::RwLock<Option<Settings>>> = std::sync::OnceLock::new();
+fn cache() -> &'static std::sync::RwLock<Option<Settings>> {
+    CACHE.get_or_init(|| std::sync::RwLock::new(None))
+}
+
+/// Forget the parsed settings; the next `load` re-reads the file. Call after
+/// anything outside `Settings::save` has written it (factory reset, import).
+pub fn invalidate() {
+    if let Ok(mut g) = cache().write() {
+        *g = None;
+    }
+}
+
 impl Settings {
     pub fn load() -> Result<Self> {
+        if let Ok(g) = cache().read() {
+            if let Some(s) = g.as_ref() {
+                return Ok(s.clone());
+            }
+        }
+        let parsed = Self::read_file()?;
+        if let Ok(mut g) = cache().write() {
+            *g = Some(parsed.clone());
+        }
+        Ok(parsed)
+    }
+
+    /// The uncached read. Kept separate so `load` stays a cache lookup and the
+    /// parse lives in one place.
+    fn read_file() -> Result<Self> {
         let Some(path) = paths::settings_path() else { return Ok(Settings::default()); };
         if !path.exists() { return Ok(Settings::default()); }
         let text = std::fs::read_to_string(&path)?;
@@ -62,6 +101,11 @@ impl Settings {
         let tmp = path.with_extension("json.tmp");
         std::fs::write(&tmp, serde_json::to_vec_pretty(self)?)?;
         std::fs::rename(&tmp, &path)?;
+        // Publish AFTER the rename, so a failed write leaves the cache holding
+        // what is actually on disk rather than what we hoped to put there.
+        if let Ok(mut g) = cache().write() {
+            *g = Some(self.clone());
+        }
         Ok(())
     }
 }

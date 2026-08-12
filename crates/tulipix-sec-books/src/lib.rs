@@ -1867,9 +1867,22 @@ thread_local! {
         RefCell::new(std::collections::VecDeque::new());
 }
 
-/// Decoded covers kept in memory. A grid page shows 6 books × 3 renditions;
-/// this holds roughly the last 30 pages browsed.
-const COVER_CACHE_MAX: usize = 192;
+/// Decoded covers kept in memory. A grid page shows 6 books × 3 renditions, so
+/// this holds roughly the last ten pages browsed — plenty for paging back and
+/// forth, which is what the cache is for.
+///
+/// These are decoded bitmaps, not files: at book-cover dimensions 192 entries
+/// was tens of megabytes parked for the session to save re-reading images that
+/// are already on local disk. A miss costs one decode.
+const COVER_CACHE_MAX: usize = 64;
+
+/// Empty the cover memo. Safe at any time — every entry is re-decodable from a
+/// file on local disk, and every reader already handles a miss. Used when the
+/// app folds down to the music widget and stops drawing books entirely.
+pub fn release_covers() {
+    COVER_CACHE.with(|c| c.borrow_mut().clear());
+    COVER_ORDER.with(|o| o.borrow_mut().clear());
+}
 
 /// Memoise a decoded image, evicting the oldest entries past the cap.
 fn cover_cache_put(key: String, img: slint::Image) {
