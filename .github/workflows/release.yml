@@ -509,76 +509,63 @@ jobs:
           body: |
             ## Highlights
 
-            A section that tells you what the app is doing, an embedded video player
-            that is gone rather than half-working, and five Music tabs that finally
-            show the state they were already keeping.
+            Seven ways to arrange Home, a mini player that lives outside the
+            window, a Music Downloader that speaks seven services, and a lock
+            screen that finally covers the screen.
 
-            ### Breaking — the embedded video player is deleted
+            ### Home — seven layouts, one section
 
-            Video playback shells out to mpv now, on every platform, always. The
-            in-window player was a second playback path with its own bugs, its own
-            libmpv link and its own build problems, and it was never as good as the
-            thing it was reimplementing. Removing it takes libmpv off the build
-            entirely — the Windows job no longer rebuilds an import library from a
-            DLL's export table — and the Playback settings panel is wired to the
-            player that actually runs, which it had quietly stopped being.
+            Home is no longer one opinion. Classic, Cinema, Columns, Editorial,
+            Stream, Deck and Welcome are complete layouts of the same data,
+            switched from Settings; Cinema grows a hub, and the Timeline becomes a
+            table whose money stops waiting on a second pass to be correct.
 
-            ### Status — new section
+            ### Mini player — a real desktop widget
 
-            One page that reads every section's own database and says what is true
-            right now: what is indexed, what is running, what is stale, what failed.
-            Six live metrics, a card per section that opens into detail, a merged
-            activity timeline, and the watched-folder list with add, rescan and
-            forget in place.
+            The now-playing widget opens at its own size instead of dragging
+            itself into one, warms in the background five seconds after playback
+            starts, and the caption-row button waits for it rather than freezing
+            the first play. Radio without a favicon gets a generated station tile,
+            so no player anywhere draws an empty frame.
 
-            It ships as **two renderings of one snapshot** — a native Slint page in
-            the sidebar, and an HTML dashboard served over loopback behind a
-            per-run token, for a browser or a second screen. There is a single
-            `collect()` behind both; no second set of queries exists anywhere.
+            ### Music Downloader — the other six providers
 
-            Adding, removing or rescanning a library folder is now recorded, so the
-            timeline shows it whether it happened in the app or on the dashboard.
+            Seven services resolve now, not one. A playlist stops naming every
+            album after itself, the main-artist choice moved beside the pager, and
+            a resolve in flight can be cancelled instead of stacked on. The rail
+            keeps its own width whatever gets pasted into it, and the library
+            rescan refreshes Music only — with its own progress.
 
-            ### Music — the five tabs stop hiding what they already know
+            ### Lock screen
 
-            Every tab was sitting on state it never drew.
+            Full screen, above the caption row, with a ten-wallpaper slideshow at
+            80% behind a light blur. Previous track, spacebar play/pause, and the
+            player works without opening the app. No lock while minimised.
 
-            - **My Music** grows from three rails to six — Continue listening with
-              real resume percentages, Most played, Recently added — over a
-              listening strip of week / all-time / top genre / streak.
-            - **Podcasts** get a cross-show queue that persists and hands off on
-              EOF, and the episode progress hairline the data already supported.
-            - **Audiobooks** get a real bookmark panel: rename in place, jump across
-              chapter boundaries, delete, per-book speed, mark finished.
-            - **Radio** gets an ON AIR card — the live ICY track, find-track into
-              library search, a rolling heard-log, and recording.
-            - **YouTube** resumes where you stopped (saved every ~10s, drawn as a
-              sliver on the thumbnail) and caps its cache by bytes rather than by
-              file count, which said nothing about the disk.
+            ### Playback
 
-            Motion runs through one global instead of 112 literal durations, so
-            `reduce-motion` reaches Music at last, and one timer per window drives
-            every looping animation.
+            - Song changes no longer stall the UI: cover render, dominant colour
+              and decode moved off the event loop.
+            - The queue drawer opened the entire persisted queue and decoded a
+              thumbnail per row while doing it. Capped, like every other builder.
+            - Podcasts and radio ask as a browser — Icecast CDNs answered mpv's
+              own agent with 403 or dropped the handshake.
+            - One mpv socket, and a clock that stops shouting.
 
-            ### Finances
+            ### Memory and speed
 
-            - **Planning** is the only place the section answers "what should I do
-              next" — the Plan tab is absorbed into it, calendar and year view as a
-              modal, envelope history inside the Envelopes drill-down.
-            - **The numbers stop contradicting themselves**: the section-level
-              figures are computed the same way as the pages they summarise.
-            - The Trends breakdown is the same donut the Overview draws, instead of
-              a sparkline that could not carry a category split.
+            The app stops hoarding what nothing is drawing, and YouTube thumbnails
+            stop being the largest thing in the process. Slint moves to 1.17 with
+            its compiler re-vendored to match.
 
-            ### Books, Videos, Cloud, Transfer
+            ### Elsewhere
 
-            - **Genesis** mirrors unwedge themselves, Live TV paginates and keeps
-              playback state, and Stream lands on a provider-aware page with
-              seekable streams.
-            - **Transfer** trusts its certificate on first use, so a phone no longer
-              has to install a root CA to reach the secure origin the QR scanner
-              needs. Device names take 15 characters, and the ledger is numbered and
-              centred.
-            - **Cloud** carries the OAuth token through to Connect.
+            - **Settings** grow an AI Requirements sheet (what each on-device model
+              actually needs) and a YouTube fetcher choice — Auto, Piped, yt-dlp.
+            - **Transfer** shows the bytes moving and retries when they stop.
+            - **Status** survives its own close button.
+            - **Profile** and Home get their edges back; My Music stops shelving
+              books; Stream survives a rename and Genesis lands a book on a USB
+              stick.
 
             ---
