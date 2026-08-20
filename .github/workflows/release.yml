@@ -94,9 +94,9 @@ jobs:
 
       - name: Fetch bundled tools (manifest-pinned)
         # The manifest caches a couple of tools on this repo's own
-        # `tooling-cache` release, and the repo is private: an anonymous GET on
-        # a release download URL gets 404, not 403. The token lets the fetcher
-        # go through the API instead.
+        # `tooling-cache` release. Anonymous GETs resolve now the repo is
+        # public, but the token stays: it keeps the fetcher on the API path
+        # and off the 60-req/hour anonymous rate limit.
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: cargo run -p fetch-resources
@@ -138,11 +138,14 @@ jobs:
           #     than 16 because the same 16 killed the Windows job inside a
           #     single tulipix-ui codegen unit this cycle; the peak is one LLVM
           #     module, so smaller modules are the lever.
-          #  4. -j1: one crate at a time on the way there.
+          #  4. -j2: two crates at a time on the way there. This was -j1 while
+          #     the repo was private and this runner had 2 cores / 7 GB; public
+          #     repos get 4 cores / 16 GB, and macOS has run -j2 on 7 GB for
+          #     several releases. The peak is still one unit, not the width.
           # opt-level stays at the profile's "s": smaller code is less for the
           # LTO step and the linker to chew on, and it is what macOS survives on.
           RUSTFLAGS: "-C link-arg=-fuse-ld=lld -C link-arg=-Wl,--threads=1"
-          CARGO_BUILD_JOBS: "1"
+          CARGO_BUILD_JOBS: "2"
           CARGO_PROFILE_RELEASE_DEBUG: "false"
           CARGO_PROFILE_RELEASE_LTO: "thin"
           CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
@@ -294,8 +297,9 @@ jobs:
 
       - name: Fetch bundled tools (ffmpeg, yt-dlp, mpv.exe, whisper, exiftool, rclone, model)
         # exiftool for Windows is the standalone exe zip cached on this repo's
-        # `tooling-cache` release. The repo is private, so that URL 404s without
-        # a token — this is what failed v0.9.0's first Windows job.
+        # `tooling-cache` release. That URL 404'd anonymously while the repo was
+        # private — what failed v0.9.0's first Windows job — so the fetch keeps
+        # going through the API with a token.
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: cargo run -p fetch-resources
@@ -428,8 +432,8 @@ jobs:
           echo "VERSION=$V" >> "$GITHUB_ENV"
 
       - name: Fetch bundled tools
-        # See the linux job: private repo, so the tooling-cache assets need the
-        # token to resolve through the API.
+        # See the linux job: the tooling-cache assets resolve through the API
+        # with a token rather than as anonymous downloads.
         env:
           GITHUB_TOKEN: ${{ github.token }}
         run: |
