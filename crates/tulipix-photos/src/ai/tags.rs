@@ -36,6 +36,15 @@ pub fn label(class: usize) -> Option<&'static str> {
 
 pub trait Tagger: Send + Sync {
     fn predict(&self, img: &image::DynamicImage) -> Result<Vec<Detection>>;
+
+    /// Provenance written to `item_tags.source`, so a tag can be traced to what
+    /// produced it and one detector's output can be dropped without touching
+    /// the user's own tags.
+    ///
+    /// Defaulted rather than required: every COCO-80 detector fits `predict`,
+    /// and the column used to be hardcoded to `'yolov8'` by a module that has
+    /// never run a detector of any kind.
+    fn source(&self) -> &str { "object-detect" }
 }
 
 /// No-op tagger — emits zero detections. Used when YOLOv8 weights are not
@@ -70,10 +79,10 @@ pub async fn ingest_predictions(
             "INSERT INTO tags (name) VALUES (?) ON CONFLICT(name) DO UPDATE SET name = name RETURNING id",
         ).bind(name).fetch_one(pool).await?;
         let r = sqlx::query(
-            "INSERT INTO item_tags (item_id, tag_id, confidence, source) VALUES (?, ?, ?, 'yolov8')
+            "INSERT INTO item_tags (item_id, tag_id, confidence, source) VALUES (?, ?, ?, ?)
              ON CONFLICT(item_id, tag_id) DO UPDATE SET confidence = excluded.confidence WHERE excluded.confidence > item_tags.confidence",
         )
-        .bind(item_id).bind(tag_id).bind(conf as f64)
+        .bind(item_id).bind(tag_id).bind(conf as f64).bind(tagger.source())
         .execute(pool).await?;
         inserted += r.rows_affected() as u32;
     }

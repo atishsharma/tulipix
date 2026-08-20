@@ -20,6 +20,106 @@ quant = "fp32"
 min_vram_mb = 512
 cap = "photos.ai.faces"
 
+# The recognition half of the same buffalo_s pack. Detection above finds the
+# boxes; this turns a crop into the 512-d vector `faces.embedding` stores and
+# `face_clusters` compares. Both are needed before the People tab can populate —
+# detection alone fills `faces` with rows that cluster into nothing.
+[[models]]
+name = "face-rec-500m"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/immich-app/buffalo_s/resolve/main/recognition/model.onnx"
+size_bytes = 13616099
+quant = "fp32"
+min_vram_mb = 512
+cap = "photos.ai.faces"
+
+# CLIP ViT-B/32 — one int8 file carrying BOTH encoder branches.
+#
+# IMPORTANT for whoever implements the embedders: this is the *whole* CLIPModel,
+# not a single tower. It takes `input_ids` + `attention_mask` + `pixel_values`
+# together and returns `image_embeds` and `text_embeds` — the projected, 512-d,
+# joint-space vectors `clip::DIM` expects. Embedding an image therefore means
+# passing a dummy text (and vice versa), and every call runs both towers:
+# roughly 1.5× the compute of a single-branch model, since CLIP always pads text
+# to 77 tokens.
+#
+# That waste buys a 4× smaller download, and it is the only way to get quantised
+# weights at all. The published *split* exports (Xenova's `vision_model_*` /
+# `text_model_*`) are the bare towers with no projection head — they emit
+# hidden states, not joint-space embeddings, so they cannot be compared against
+# each other and are the wrong thing however small they are. The two publishers
+# who do ship the projection split (immich-app, Qdrant) publish fp32 only, at
+# 606 MB the pair.
+#
+# Sizes of the other quantisations of this same file, if the trade needs
+# revisiting: fp32 606 MB · fp16 304 MB · q4 189 MB · q4f16 126 MB. fp16 is a
+# poor pick here specifically — inference runs on the CPU EP, which has no
+# native fp16 compute and casts back to fp32, so it costs download size without
+# buying speed. int8 is what the CPU actually goes faster on.
+[[models]]
+name = "clip-vit-b32-q8"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/onnx/model_quantized.onnx"
+size_bytes = 153695702
+quant = "int8"
+min_vram_mb = 512
+cap = "photos.ai.clip"
+
+# CLIP's byte-level BPE vocabulary, in HuggingFace `tokenizers` JSON form.
+# Not a model — but the text branch is unusable without it, and shipping it
+# through the same verified-download path beats vendoring 49k tokens into the
+# binary or hand-rolling the merge table.
+#
+# From the same repo as the weights on purpose: a tokenizer that disagrees with
+# the export produces embeddings that are wrong without being obviously wrong.
+[[models]]
+name = "clip-vit-b32-tokenizer"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/Xenova/clip-vit-base-patch32/resolve/main/tokenizer.json"
+size_bytes = 2224119
+quant = "none"
+min_vram_mb = 0
+cap = "photos.ai.clip"
+
+# COCO-80 object detection for the Things tab.
+#
+# YOLOX, not YOLOv8, for a licensing reason: Ultralytics ship YOLOv8 (and v10,
+# and v5) under AGPL-3.0, and this app is Apache-2.0. YOLOX is Megvii's, Apache
+# -2.0, and predicts the same COCO-80 classes in the same order — so it drops
+# into `tags::COCO80` unchanged and only the `Tagger::source()` label differs.
+# The official Ultralytics repo publishes no ONNX at all, only `.pt`, so the
+# AGPL route would additionally have meant converting weights ourselves.
+#
+# Third-party ONNX export (upstream Megvii ships .pth), same situation as the
+# mobile-sam and realesrgan rows.
+#
+# `yolox_s` over `yolox_tiny` (20 MB, also in this repo): ~40.5 vs ~32.8 COCO
+# mAP, and a wrong tag in the Things tab is worse than a missing one. Swap to
+# tiny if indexing a large library proves too slow — it is ~4× faster.
+#
+# NOTES FOR THE IMPLEMENTER — the two things that fail silently here:
+#   1. YOLOX takes raw RGB in 0..255. NO /255, NO ImageNet mean/std. Feeding it
+#      normalised input returns plausible-looking garbage.
+#   2. Letterbox to the model's square input (pad bottom-right with 114), keep
+#      the scale factor, and undo it on the boxes afterwards.
+# Output is [1, N, 85] — cx, cy, w, h, objectness, then 80 class scores — with
+# N over strides 8/16/32; decode as (raw_xy + grid) * stride and
+# exp(raw_wh) * stride, score = objectness * class, then NMS. Confirm the input
+# resolution against the actual file (`TULIPIX_INSPECT`) before trusting 640:
+# upstream builds nano/tiny at 416 and s at 640, and this is a re-export.
+[[models]]
+name = "yolox-s"
+version = "1.0.0"
+sha256 = "tofu"
+url = "https://huggingface.co/hr16/yolox-onnx/resolve/main/yolox_s.onnx"
+size_bytes = 35858002
+quant = "fp32"
+min_vram_mb = 512
+cap = "photos.ai.tags"
+
 [[models]]
 name = "lama-inpaint"
 version = "1.0.0"

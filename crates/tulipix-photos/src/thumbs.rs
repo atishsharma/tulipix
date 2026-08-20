@@ -26,19 +26,20 @@ pub fn thumb_path(src: &Path, mtime: i64, size: u64, dim: u32) -> Option<PathBuf
 
 /// True if the decoder for `ext` is in-process. The pipeline falls back to
 /// `ffmpeg` for everything else.
+///
+/// Delegates to `tulipix_core::thumbs`, which owns the thumbnail cache and
+/// makes this same choice on the live path — two copies of the table would
+/// eventually disagree about one extension, and the two answers would be a
+/// silent behaviour difference rather than a build error.
 pub fn is_native_decode(ext: &str) -> bool {
-    matches!(
-        ext.to_ascii_lowercase().as_str(),
-        "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "tif" | "tiff"
-    )
+    matches!(tulipix_core::thumbs::photo_decoder(ext), tulipix_core::thumbs::PhotoDecoder::InProcess)
 }
 
 pub fn needs_ffmpeg_decode(ext: &str) -> bool {
-    matches!(
-        ext.to_ascii_lowercase().as_str(),
-        "heic" | "heif" | "avif" | "jxl"
-        | "raw" | "cr2" | "cr3" | "nef" | "arw" | "dng" | "raf" | "rw2" | "orf" | "pef"
-    )
+    // Not simply `!is_native_decode`: this answers "is this a photo ffmpeg must
+    // handle", so extensions that are not photos at all answer false.
+    matches!(tulipix_core::thumbs::kind_for(ext), tulipix_core::thumbs::ThumbKind::Photo)
+        && !is_native_decode(ext)
 }
 
 #[derive(Debug, Clone, Default)]

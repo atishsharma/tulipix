@@ -1840,13 +1840,29 @@ pub fn populate_podcast_latest(w: &MainWindow) {
         let filter = pod_filter("home");
         let like = format!("%{}%", filter.trim());
         let extra = if filter.trim().is_empty() { "" } else { " AND (e.title LIKE ?1 OR p.title LIKE ?1)" };
+        // Rank once per episode, then keep the top of each partition — NOT a
+        // correlated subquery. The previous form asked "is this row the newest
+        // of its show?" by re-running an ORDER BY ... LIMIT 1 over that show's
+        // episodes for EVERY episode in the table, and `COALESCE(published,0)`
+        // made that inner sort unindexable, so each one was a fresh scan. It
+        // logged a 1.05 s slow-statement warning to return 7 rows.
+        //
+        // The COALESCE was also unnecessary. SQLite sorts NULL below every
+        // value, so `published DESC` already puts undated episodes last —
+        // exactly what mapping them to 0 achieved — and dropping it lets
+        // `podcast_episodes_pod_idx (podcast_id, published DESC)` serve the
+        // window's PARTITION BY / ORDER BY. (The two differ only for an episode
+        // published exactly at the epoch, which would tie with undated ones
+        // instead of sorting just above them.)
         let q = format!(
             "SELECT e.id, COALESCE(e.title,''), e.audio_url, e.published, e.duration_s,
                     COALESCE(e.image_url,''), COALESCE(NULLIF(p.custom_image,''), p.image_url, ''), p.id, e.downloaded_path, COALESCE(e.played,0), COALESCE(p.title,''), e.downloaded_at
-             FROM podcast_episodes e JOIN podcasts p ON p.id = e.podcast_id
-             WHERE e.id = (SELECT e2.id FROM podcast_episodes e2 WHERE e2.podcast_id = e.podcast_id
-                           ORDER BY COALESCE(e2.published,0) DESC, e2.id DESC LIMIT 1){extra}
-             ORDER BY COALESCE(e.published,0) DESC, e.id DESC LIMIT 14");
+             FROM (SELECT *, ROW_NUMBER() OVER (
+                       PARTITION BY podcast_id ORDER BY published DESC, id DESC) AS rn
+                   FROM podcast_episodes) e
+             JOIN podcasts p ON p.id = e.podcast_id
+             WHERE e.rn = 1{extra}
+             ORDER BY e.published DESC, e.id DESC LIMIT 14");
         let mut qb = sqlx::query_as(&q);
         if !filter.trim().is_empty() { qb = qb.bind(like); }
         let eps: Vec<EpQueryRow> = qb.fetch_all(&pool).await.unwrap_or_default();

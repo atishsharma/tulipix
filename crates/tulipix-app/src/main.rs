@@ -477,6 +477,12 @@ fn main() -> Result<()> {
     // the main thread.
     spawn_progress_flusher(window.as_weak());
 
+    // Idle-only background indexer (np.p2.ai.background) — backfills EXIF and
+    // the photo full-text index while the machine is unused. Gated on idle and
+    // mains power, and it backs off once the queue drains, so on a settled
+    // library it costs a wakeup every couple of minutes.
+    spawn_background_indexer();
+
     // Theme picker callback — apply + persist to settings.json.
     let w = window.as_weak();
     window.on_theme_changed(move |choice| {
@@ -2614,6 +2620,7 @@ fn wire_photo_tabs(window: &MainWindow) {
     window.on_photo_person_open(move |id| {
         let Some(_w0) = w.upgrade() else { return; };
         let weak = w.clone();
+        let my_gen = next_refresh_gen();
         let handle = tokio::runtime::Handle::current();
         handle.spawn(async move {
             let Ok(pool) = pool_for("photos").await else { return; };
@@ -2624,13 +2631,16 @@ fn wire_photo_tabs(window: &MainWindow) {
             let title = name.unwrap_or_else(|| format!("Person {id}"));
             let paths: Vec<String> = photos.into_iter().map(|(_, p)| p).collect();
             let set: std::collections::HashSet<String> = paths.iter().cloned().collect();
-            let _ = weak.upgrade_in_event_loop(move |w| {
-                if let Ok(mut g) = category_paths().lock() { *g = Some(CatFilter { set, order: paths }); }
-                w.set_photos_filter_title(title.into());
-                w.set_photos_category("facephotos".into());
-                selection_clear();
-                apply_photo_filter(&w, "");
-            });
+            // Stored before the refresh, not inside its event-loop hop: the
+            // plan reads `category_paths`, and it now runs off the UI thread.
+            if let Ok(mut g) = category_paths().lock() { *g = Some(CatFilter { set, order: paths }); }
+            selection_clear();
+            refresh_photo_filter(
+                weak,
+                String::new(),
+                Some(GridHeader { title, category: "facephotos".into() }),
+                my_gen,
+            ).await;
         });
     });
     // Inline rename a cluster, then reload the People list.
@@ -2656,17 +2666,19 @@ fn wire_photo_tabs(window: &MainWindow) {
         let Some(_w0) = w.upgrade() else { return; };
         let label = label.to_string();
         let weak = w.clone();
+        let my_gen = next_refresh_gen();
         let handle = tokio::runtime::Handle::current();
         handle.spawn(async move {
             let paths = tag_photo_paths(&label).await;
             let set: std::collections::HashSet<String> = paths.iter().cloned().collect();
-            let _ = weak.upgrade_in_event_loop(move |w| {
-                if let Ok(mut g) = category_paths().lock() { *g = Some(CatFilter { set, order: paths }); }
-                w.set_photos_filter_title(label.into());
-                w.set_photos_category("tagphotos".into());
-                selection_clear();
-                apply_photo_filter(&w, "");
-            });
+            if let Ok(mut g) = category_paths().lock() { *g = Some(CatFilter { set, order: paths }); }
+            selection_clear();
+            refresh_photo_filter(
+                weak,
+                String::new(),
+                Some(GridHeader { title: label, category: "tagphotos".into() }),
+                my_gen,
+            ).await;
         });
     });
 
@@ -2675,6 +2687,7 @@ fn wire_photo_tabs(window: &MainWindow) {
     let w = window.as_weak();
     window.on_photo_album_open(move |id| {
         let weak = w.clone();
+        let my_gen = next_refresh_gen();
         let handle = tokio::runtime::Handle::current();
         handle.spawn(async move {
             let Ok(pool) = pool_for("photos").await else { return; };
@@ -2686,13 +2699,14 @@ fn wire_photo_tabs(window: &MainWindow) {
                 .bind(id as i64).fetch_optional(&pool).await.ok().flatten();
             let title = name.unwrap_or_else(|| "Album".into());
             let set: std::collections::HashSet<String> = paths.iter().cloned().collect();
-            let _ = weak.upgrade_in_event_loop(move |w| {
-                if let Ok(mut g) = category_paths().lock() { *g = Some(CatFilter { set, order: paths }); }
-                w.set_photos_filter_title(title.into());
-                w.set_photos_category("albumphotos".into());
-                selection_clear();
-                apply_photo_filter(&w, "");
-            });
+            if let Ok(mut g) = category_paths().lock() { *g = Some(CatFilter { set, order: paths }); }
+            selection_clear();
+            refresh_photo_filter(
+                weak,
+                String::new(),
+                Some(GridHeader { title, category: "albumphotos".into() }),
+                my_gen,
+            ).await;
         });
     });
     let w = window.as_weak();
@@ -7060,6 +7074,223 @@ fn flush_progress(weak: &slint::Weak<MainWindow>) {
 /// starts producing unfinished rows again).
 static SCAN_HIDE_SCHEDULED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
+/// True while any section's library scan is running.
+fn any_scan_active() -> bool {
+    scan_state()
+        .lock()
+        .map(|g| g.values().any(|c| c.active.load(std::sync::atomic::Ordering::Relaxed)))
+        .unwrap_or(false)
+}
+
+/// The idle-only background indexer (np.p2.ai.background).
+///
+/// `tulipix_photos::ai::background` has always owned the *policy* — when to run,
+/// when to pause, how big a batch — and said in its own header that the worker
+/// loop "lives in tulipix-app's main runtime". It did not; nothing called
+/// `decide` or `pending`, so no photo was ever indexed outside a scan. This is
+/// that loop.
+///
+/// Shape mirrors the library scan: claim a bounded batch, do the per-file work
+/// in parallel off the reactor, write the results, repeat. The differences are
+/// that this one yields to the user — it only runs while idle and off battery,
+/// and rechecks between every batch — and that its queue is defined by
+/// `photo_ai_state`, so it drains and then costs one query per tick.
+fn spawn_background_indexer() {
+    use tulipix_photos::ai::background::{self, BackgroundPolicy, RunState, Stage, SystemSnapshot};
+
+    static SPAWNED: OnceLock<()> = OnceLock::new();
+    if SPAWNED.set(()).is_err() { return; }
+
+    // Stages with an implementation behind them. Faces and Tags are here now
+    // that SCRFD/ArcFace and YOLOX are wired; each still no-ops when its blob
+    // is not installed, checked inside the stage rather than here so that
+    // downloading a model takes effect without a restart.
+    //
+    // CLIP is absent: `ai/clip.rs` still ships only its Null embedder, and
+    // running it would mark every photo considered while embedding nothing —
+    // draining the queue to a wrong answer and leaving the real model with no
+    // work to find.
+    const LIVE_STAGES: [Stage; 4] = [Stage::Exif, Stage::Fts, Stage::Faces, Stage::Tags];
+
+    let handle = tokio::runtime::Handle::current();
+    handle.spawn(async move {
+        let policy = BackgroundPolicy::default();
+        // Consecutive passes that found nothing. A drained library is the
+        // steady state — most of the time this loop exists to do nothing — so
+        // it backs off to a couple of minutes rather than opening the pool and
+        // running two counting queries every five seconds forever.
+        let mut quiet_passes: u32 = 0;
+        loop {
+            tokio::time::sleep(policy.tick * (1u32 << quiet_passes.min(5))).await;
+
+            // A library scan is the one thing guaranteed to be competing for the
+            // same disk and cores, and it is the user waiting on a result. Yield
+            // to it outright — this check does not depend on idle detection.
+            if any_scan_active() {
+                continue;
+            }
+
+            let snapshot = SystemSnapshot {
+                // CAVEAT: this is weaker than it looks. `idle::mark_active` is
+                // documented as being called "on every pointer/key event" and is
+                // in fact called from exactly two places — the ambient overlay's
+                // dismiss handler and its own minimised-window re-arm. Nothing
+                // reports ordinary input, so after `spawn_tracker`'s first tick
+                // this counts seconds since app start, not seconds since the
+                // user last did something.
+                //
+                // The existing consumer (ambient screensaver / auto-lock) does
+                // not notice because auto-lock is off by default, which parks
+                // the threshold a year out. Wiring real input reporting is a fix
+                // to the idle subsystem, not to the indexer, so it is left
+                // alone here — and `any_scan_active` above plus the small batch,
+                // the backoff and the battery gate are what actually keep this
+                // loop out of the user's way in the meantime.
+                idle_secs: tulipix_core::idle::idle_secs(),
+                on_battery: matches!(
+                    tulipix_core::power_aware::power_source(),
+                    tulipix_core::power_aware::PowerSource::Battery
+                ),
+            };
+            if background::decide(&policy, snapshot) != RunState::Active {
+                // Not a quiet pass — there may be plenty of work, the user is
+                // simply using the machine. Keep the short tick so indexing
+                // resumes promptly once they stop.
+                continue;
+            }
+
+            let Ok(pool) = pool_for("photos").await else {
+                quiet_passes = quiet_passes.saturating_add(1);
+                continue;
+            };
+            // One batch per pass, not a drain loop: the idle/battery check above
+            // is the yield point, and someone who touches the keyboard mid-drain
+            // should get the machine back at the next batch boundary rather than
+            // when the library runs out.
+            let mut worked = false;
+            for stage in LIVE_STAGES {
+                let batch = match background::next_batch(&pool, stage, policy.batch_size as i64).await {
+                    Ok(b) if !b.is_empty() => b,
+                    Ok(_) => continue,
+                    Err(e) => {
+                        tracing::warn!(stage = stage.key(), error = %e, "indexer queue");
+                        continue;
+                    }
+                };
+                let n = batch.len();
+                if let Err(e) = run_index_stage(&pool, stage, batch).await {
+                    tracing::warn!(stage = stage.key(), error = %e, "indexer stage");
+                } else {
+                    tracing::debug!(stage = stage.key(), count = n, "indexed");
+                }
+                worked = true;
+                break;
+            }
+            quiet_passes = if worked { 0 } else { quiet_passes.saturating_add(1) };
+        }
+    });
+}
+
+/// Run one stage over one claimed batch, marking every item considered.
+///
+/// Every item is marked whether or not the stage produced anything, which is
+/// what lets the queue drain — see the note on `photo_ai_state`.
+async fn run_index_stage(
+    pool: &sqlx::SqlitePool,
+    stage: tulipix_photos::ai::background::Stage,
+    batch: Vec<(i64, String)>,
+) -> Result<()> {
+    use tulipix_photos::ai::background::{self, Stage};
+
+    match stage {
+        Stage::Exif => {
+            // Re-read EXIF for photos that never got a `photo_meta` row — a
+            // library scanned by an older build, or a file whose read failed.
+            let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(scan_concurrency()));
+            let handles: Vec<_> = batch
+                .into_iter()
+                .map(|(id, path)| {
+                    let sem = sem.clone();
+                    tokio::spawn(async move {
+                        let _permit = sem.acquire().await.ok();
+                        let facts = tokio::task::spawn_blocking(move || {
+                            tulipix_photos::exif::read(std::path::Path::new(&path)).unwrap_or_default()
+                        })
+                        .await
+                        .ok();
+                        (id, facts)
+                    })
+                })
+                .collect();
+            for h in handles {
+                let Ok((id, Some(facts))) = h.await else { continue };
+                if let Err(e) = tulipix_photos::exif::write_facts(pool, id, &facts).await {
+                    tracing::warn!(item = id, error = %e, "indexer exif write");
+                    continue;
+                }
+                background::mark_done(pool, id, Stage::Exif, "").await?;
+            }
+        }
+        Stage::Fts => {
+            // The full-text index was only ever built by the "Rebuild search
+            // index" button in Settings → Maintenance, so a freshly scanned
+            // library had an empty `photo_fts`. Keeping it current here is what
+            // makes search work without the user knowing that button exists.
+            for (id, _) in batch {
+                if let Err(e) = tulipix_photos::search::index_item(pool, id).await {
+                    tracing::warn!(item = id, error = %e, "indexer fts");
+                    continue;
+                }
+                background::mark_done(pool, id, Stage::Fts, "").await?;
+            }
+        }
+        Stage::Tags => {
+            // No detector installed is not the same as "detected nothing":
+            // marking these done would drain the queue to a wrong answer and
+            // leave the real model with no work when it arrives.
+            let Some(tagger) = make_tagger() else { return Ok(()) };
+            for (id, path) in batch {
+                let p = std::path::PathBuf::from(&path);
+                match tulipix_photos::ai::tags::ingest_predictions(pool, id, &p, tagger.as_ref(), 0.35).await {
+                    Ok(n) => tracing::debug!(item = id, tags = n, "tagged"),
+                    // A file that cannot be decoded will never tag; mark it
+                    // considered so it stops coming back round.
+                    Err(e) => tracing::debug!(item = id, error = %e, "tag skipped"),
+                }
+                background::mark_done(pool, id, Stage::Tags, tagger.source()).await?;
+            }
+        }
+        Stage::Faces => {
+            let Some((detector, embedder)) = make_face_models() else { return Ok(()) };
+            let mut found = 0usize;
+            for (id, path) in batch {
+                let p = std::path::PathBuf::from(&path);
+                match tulipix_photos::ai::faces::extract_crops(pool, id, &p, detector.as_ref()).await {
+                    Ok(ids) => found += ids.len(),
+                    Err(e) => tracing::debug!(item = id, error = %e, "face detect skipped"),
+                }
+                background::mark_done(pool, id, Stage::Faces, embedder.model_name()).await?;
+            }
+            if found > 0 {
+                // Embed the crops just written, then re-cluster. Clustering is
+                // over the whole library by nature — a new face can merge two
+                // existing piles — so it runs once per batch, not per photo.
+                tulipix_photos::ai::faces::embed_pending(pool, embedder.as_ref(), found as i64 * 2).await?;
+                let n = tulipix_photos::ai::face_clusters::recluster(
+                    pool,
+                    tulipix_photos::ai::face_clusters::DEFAULT_THRESHOLD,
+                )
+                .await?;
+                tracing::debug!(faces = found, people = n, "reclustered");
+            }
+        }
+        // CLIP still needs its embedder — see `LIVE_STAGES`. Kept exhaustive so
+        // adding one is a compile error here rather than a silent no-op.
+        Stage::Clip => {}
+    }
+    Ok(())
+}
+
 /// Spawn the singleton flush ticker — coalesces atomic counters into one UI
 /// post per ~80 ms regardless of file throughput.
 fn spawn_progress_flusher(weak: slint::Weak<MainWindow>) {
@@ -7091,49 +7322,20 @@ fn list_section_files(root: &std::path::Path, section: &str) -> Vec<PathBuf> {
 
 // now_secs moved to tulipix_common.
 
-/// Pure-Rust thumbnail renderer for the formats the `image` crate handles
-/// natively (JPEG/PNG/WebP/GIF/BMP/TIFF). Writes a JPEG to the same cache
-/// folder ThumbResult uses so the rest of the app can't tell the difference.
-fn render_thumb_pure_rust(src: &std::path::Path) -> Result<PathBuf> {
-    use sha2::{Digest, Sha256};
-    let meta = std::fs::metadata(src).with_context(|| format!("stat {}", src.display()))?;
-    let mtime = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
-    let size = meta.len();
-    let mut h = Sha256::new();
-    h.update(src.display().to_string().as_bytes());
-    h.update(format!(":{mtime}:{size}").as_bytes());
-    let d = h.finalize();
-    let mut key = String::with_capacity(24);
-    for &b in d.iter().take(6) {
-        key.push_str(&format!("{:02x}", b));
-    }
-    let cache_root = dirs_default()
-        .map(|d| d.join("cache").join("thumbs"))
-        .ok_or_else(|| anyhow::anyhow!("no cache dir"))?;
-    std::fs::create_dir_all(&cache_root).ok();
-    let out = cache_root.join(format!("{key}.jpg"));
-    if out.exists() {
-        return Ok(out);
-    }
-    let img = image::open(src).with_context(|| format!("decode {}", src.display()))?;
-    let thumb = img.thumbnail(320, 320);
-    let mut buf = std::io::BufWriter::new(std::fs::File::create(&out)?);
-    thumb
-        .to_rgb8()
-        .write_to(&mut buf, image::ImageFormat::Jpeg)
-        .with_context(|| format!("encode thumb {}", out.display()))?;
-    Ok(out)
-}
-
-/// Render a thumb for `src` using ffmpeg if available, falling back to the
-/// pure-Rust path for the photo case so the app works without `just fetch`.
-/// Runs the whole thing on a blocking worker so the tokio reactor stays
-/// responsive while ffmpeg / image-crate decode are crunching.
+/// Render a thumb for `src`. Runs on a blocking worker so the tokio reactor
+/// stays responsive while the decode is crunching.
+///
+/// The photo/ffmpeg choice lives in `tulipix_core::thumbs::render_photo` now:
+/// JPEG/PNG/WebP/GIF/BMP/TIFF decode in-process and only fall back to ffmpeg if
+/// that fails, so the common formats work without `just fetch` and without a
+/// subprocess. This used to be a second renderer here, writing JPEGs into
+/// `~/.config/Tulipix/cache/thumbs` while the real cache lives in
+/// `~/.cache/Tulipix/thumbs` — a split the LRU eviction, the cache-size readout
+/// and "Clear cache" all knew nothing about, and which meant every photo still
+/// paid for a doomed ffmpeg spawn before reaching it.
+///
+/// `Ok(None)` is `ThumbKind::OsFallback`: no thumbnail is produced and the
+/// caller draws the source path via the OS icon theme.
 async fn thumb_for(src: PathBuf, kind: tulipix_core::thumbs::ThumbKind) -> Result<PathBuf> {
     tokio::task::spawn_blocking(move || {
         match tulipix_core::thumbs::render_or_cache(
@@ -7141,21 +7343,8 @@ async fn thumb_for(src: PathBuf, kind: tulipix_core::thumbs::ThumbKind) -> Resul
             tulipix_core::thumbs::ThumbSpec { kind, width: 320, height: 320 },
         ) {
             Ok(Some(t)) => Ok(t.path),
-            Ok(None) => {
-                if matches!(kind, tulipix_core::thumbs::ThumbKind::Photo) {
-                    render_thumb_pure_rust(&src)
-                } else {
-                    Ok(src.clone())
-                }
-            }
-            Err(e) => {
-                if matches!(kind, tulipix_core::thumbs::ThumbKind::Photo) {
-                    // ffmpeg missing / failed — try pure-rust JPEG/PNG path.
-                    render_thumb_pure_rust(&src).context(e)
-                } else {
-                    Err(e)
-                }
-            }
+            Ok(None) => Ok(src.clone()),
+            Err(e) => Err(e),
         }
     })
     .await
@@ -7195,32 +7384,169 @@ fn inode_of(meta: &std::fs::Metadata) -> i64 {
 #[cfg(not(unix))]
 fn inode_of(_meta: &std::fs::Metadata) -> i64 { 0 }
 
-/// Insert (or update) a single file row in the section DB. Returns the
-/// item id. Caller is responsible for any per-section side effects.
+/// A file's identity for the `items` row, read once in `scan_file_work` and
+/// carried to the DB stage so no `stat` happens under the write lock.
+#[derive(Debug, Clone, Copy)]
+struct FileMeta {
+    inode: i64,
+    size: i64,
+    mtime: i64,
+}
+
+/// Everything one scanned file needs, gathered without touching the database.
 ///
-/// Takes a connection rather than the pool so the scan loop can hand it a
-/// transaction and commit the item row together with that section's
-/// side-effect row. SQLite takes exactly one writer at a time, so every extra
+/// Stat, EXIF and thumbnail are pure per-file work over the filesystem with no
+/// shared state, which is exactly what makes them parallelisable; the DB half
+/// that follows is the part that must serialise.
+struct ScanFile {
+    /// Index in the original walk order, so grid placement stays stable no
+    /// matter which order the batch happens to finish in.
+    slot: usize,
+    path: PathBuf,
+    /// `None` when the file could not be stat'd — it vanished mid-scan.
+    meta: Option<FileMeta>,
+    /// Photos only.
+    facts: Option<tulipix_photos::exif::ExifFacts>,
+    /// The rendered thumb, or a message ready for the progress card.
+    thumb: std::result::Result<PathBuf, String>,
+}
+
+/// The filesystem half of scanning one file. Blocking throughout — call it from
+/// `spawn_blocking`, never on the reactor.
+fn scan_file_work(
+    slot: usize,
+    path: PathBuf,
+    section: &str,
+    kind: tulipix_core::thumbs::ThumbKind,
+) -> ScanFile {
+    let meta = std::fs::metadata(&path).ok().map(|m| FileMeta {
+        inode: inode_of(&m),
+        size: m.len() as i64,
+        mtime: m
+            .modified()
+            .ok()
+            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+            .map(|d| d.as_secs() as i64)
+            .unwrap_or(0),
+    });
+    let facts = (section == "photos")
+        .then(|| tulipix_photos::exif::read(&path).unwrap_or_default());
+    // `render_or_cache` directly rather than `thumb_for`: we are already on a
+    // blocking worker, so there is nothing to gain from another hop.
+    let thumb = match tulipix_core::thumbs::render_or_cache(
+        &path,
+        tulipix_core::thumbs::ThumbSpec { kind, width: 320, height: 320 },
+    ) {
+        Ok(Some(t)) => Ok(t.path),
+        // OsFallback — no thumb is produced and the tile draws the source.
+        Ok(None) => Ok(path.clone()),
+        Err(e) => Err(friendly_err("Thumb", &path, &e)),
+    };
+    ScanFile { slot, path, meta, facts, thumb }
+}
+
+/// Files whose filesystem half may be in flight at once.
+///
+/// The work is decode- and stat-bound, so past the core count there is nothing
+/// to win, and the ceiling keeps a many-core box from having that many ffmpeg
+/// subprocesses live at once for the formats that still need one.
+fn scan_concurrency() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 8)
+}
+
+/// Files per transaction. Large enough that the write lock is taken rarely,
+/// small enough that a batch's worth of work is still bounded and progress
+/// still moves visibly.
+const SCAN_BATCH: usize = 64;
+
+/// How often a scan in progress pushes what it has found into the live grid.
+///
+/// Throttled by time rather than by file count because a rebuild costs the same
+/// whether the scan is crawling over RAW files or racing through small JPEGs:
+/// the window is capped at `PHOTO_PAGE` tiles, so the expensive half is bounded
+/// and what varies is how often it is paid. Per batch would mean ~78 rebuilds
+/// for a 5,000-file import, most of them superseded before they finished.
+const SCAN_STREAM_EVERY: std::time::Duration = std::time::Duration::from_millis(800);
+
+/// Append freshly scanned rows to the section's in-memory library, deduped by
+/// absolute path so a re-scan, or a second watched folder, cannot double them.
+///
+/// Ordering note: rows arrive in scan order (viewport-proximity first), not in
+/// `walkdir` order as they did when the whole list was appended at the end. That
+/// is not a regression to defend against — `walkdir` order is filesystem order,
+/// arbitrary to begin with, and every view either takes its order from the DB
+/// (timeline, folder, the category tabs) or sorts for itself (Library).
+fn append_section_rows(section: &str, rows: Vec<(String, PathBuf, PathBuf)>) {
+    if rows.is_empty() { return; }
+    let acc = match section {
+        "photos" => photo_full(),
+        "videos" => video_full(),
+        "music" => music_full(),
+        _ => return,
+    };
+    let Ok(mut g) = acc.lock() else { return };
+    let mut have: std::collections::HashSet<String> =
+        g.iter().map(|(_, o, _)| o.to_string_lossy().into_owned()).collect();
+    for row in rows {
+        if have.insert(row.1.to_string_lossy().into_owned()) {
+            g.push(row);
+        }
+    }
+}
+
+/// Rebuild the section's live view from what has been accumulated so far, so a
+/// scan fills the grid as it runs instead of staying blank until it ends.
+///
+/// This is the same work the end-of-scan block does; running it mid-scan is
+/// safe because a grid rebuild is a pure function of the accumulator, and
+/// because `kick_category_refresh` stamps each rebuild and drops superseded
+/// ones — so a tick that lands while a later one is already in flight throws
+/// its own result away rather than fighting over the grid.
+fn stream_section_refresh(section: &'static str, weak: &slint::Weak<MainWindow>) {
+    let _ = weak.upgrade_in_event_loop(move |w| match section {
+        "photos" => {
+            // Guard released on this line: `photo_folder_count` takes the same
+            // lock, and `std::sync::Mutex` is not reentrant.
+            let total = photo_full().lock().map(|g| g.len() as i32).unwrap_or(0);
+            w.set_photos_total(total);
+            w.set_photos_folder_count(photo_folder_count());
+            let cat = w.get_photos_category().to_string();
+            let q = w.get_photos_query().to_string();
+            kick_category_refresh(w.as_weak(), cat, q);
+        }
+        "videos" => {
+            let cat = w.get_video_category().to_string();
+            kick_video_refresh(w.as_weak(), cat);
+        }
+        "music" => {
+            rebuild_music_tiles(&w);
+            populate_music_views(w.as_weak());
+        }
+        _ => {}
+    });
+}
+
+/// Insert (or update) a single file row in the section DB. Returns the item id.
+/// Caller is responsible for any per-section side effects.
+///
+/// Takes a connection rather than the pool so the scan loop can hand it the
+/// batch transaction and commit item rows together with their sections'
+/// side-effect rows. SQLite takes exactly one writer at a time, so every extra
 /// autocommit statement is another acquisition of the same global write lock —
 /// with several library scans running at once the loser busy-waits on
 /// `busy_timeout` (5s), which is what the multi-second "slow statement"
 /// warnings were.
+///
+/// `meta` is passed in rather than stat'd here: the filesystem read belongs in
+/// `scan_file_work`, where it happens in parallel and outside the write lock.
 async fn upsert_one(
     conn: &mut sqlx::SqliteConnection,
     section: &str,
     path: &std::path::Path,
+    meta: FileMeta,
 ) -> Result<i64> {
-    let meta = std::fs::metadata(path)
-        .with_context(|| format!("stat {}", path.display()))?;
     let abs = path.to_string_lossy().into_owned();
-    let inode = inode_of(&meta);
-    let size = meta.len() as i64;
-    let mtime = meta
-        .modified()
-        .ok()
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or(0);
+    let FileMeta { inode, size, mtime } = meta;
     let now = now_secs();
     let existing: Option<i64> = sqlx::query_scalar(
         "SELECT id FROM items WHERE abs_path = ?",
@@ -7247,39 +7573,91 @@ async fn upsert_one(
     }
 }
 
-/// One file's whole DB footprint for a scan, committed together: the `items`
-/// row plus the section's side-effect row (`photo_meta` from already-read EXIF,
-/// or the empty `video_meta` seed). Nothing in here touches the filesystem, so
-/// the write lock is held for two statements and no I/O.
-///
-/// The write lock is global to the database — several library scans share one
-/// pool per section — so the number of times it is taken is what decides
-/// whether the losers busy-wait. This halves that count.
-async fn scan_write_one(
-    pool: &sqlx::SqlitePool,
+/// One file's rows inside an open batch transaction: the `items` row plus its
+/// section's side-effect row. Purely SQL — the stat, EXIF and thumbnail it
+/// depends on were all done in `scan_file_work`.
+async fn scan_write_row(
+    conn: &mut sqlx::SqliteConnection,
     section: &str,
-    path: &std::path::Path,
-    facts: Option<&tulipix_photos::exif::ExifFacts>,
+    f: &ScanFile,
+    meta: FileMeta,
 ) -> Result<i64> {
-    let _w = scan_write_lock(section).lock().await;
-    let mut tx = pool.begin().await.context("begin scan tx")?;
-    let id = upsert_one(&mut tx, section, path).await?;   // Transaction derefs to the connection
-    if let Some(f) = facts {
-        tulipix_photos::exif::write_facts(&mut *tx, id, f).await.context("photo_meta")?;
+    let id = upsert_one(&mut *conn, section, &f.path, meta).await?;
+    if let Some(facts) = f.facts.as_ref() {
+        tulipix_photos::exif::write_facts(&mut *conn, id, facts).await.context("photo_meta")?;
+        // The scan has just read this file's EXIF, so record the attempt in the
+        // same transaction. Without it the background indexer would queue every
+        // freshly scanned photo for a second read that can only reach the same
+        // answer. The FTS stage is deliberately NOT marked — the scan does not
+        // do it, so those stay queued and the indexer picks them up.
+        tulipix_photos::ai::background::mark_done(
+            &mut *conn,
+            id,
+            tulipix_photos::ai::background::Stage::Exif,
+            "",
+        )
+        .await
+        .context("ai_state exif")?;
     } else if section == "videos" {
         sqlx::query("INSERT OR IGNORE INTO video_meta (item_id) VALUES (?)")
-            .bind(id).execute(&mut *tx).await.context("video_meta")?;
+            .bind(id).execute(&mut *conn).await.context("video_meta")?;
     }
-    tx.commit().await.context("commit scan tx")?;
     Ok(id)
 }
 
-/// One write mutex per section, held only across `scan_write_one`'s two
-/// statements. Several library scans share a section's pool, and SQLite admits
-/// exactly one writer; without this they discover that by busy-waiting on
-/// `busy_timeout` (5s) and logging multi-second "slow statement" warnings. The
-/// lock turns that spin into a fair queue. It is NEVER held across file I/O —
-/// the EXIF read happens before the call.
+/// A whole batch of scanned files committed in ONE transaction: each `items`
+/// row plus its section's side-effect row (`photo_meta` from the already-read
+/// EXIF, or the empty `video_meta` seed). Returns one result per input, in
+/// order, so the caller can attribute a failure to its file.
+///
+/// The write lock is global to the database — several library scans share one
+/// pool per section — so the number of times it is taken is what decides
+/// whether the losers busy-wait on `busy_timeout` and log multi-second "slow
+/// statement" warnings. One acquisition per batch rather than per file is the
+/// point: at `SCAN_BATCH` = 64 that is 64× fewer.
+///
+/// Nothing here touches the filesystem. Every stat, EXIF read and thumbnail
+/// happened in `scan_file_work` before this was called, so the write lock is
+/// never held across I/O — one slow photo cannot stall every other scan.
+async fn scan_write_batch(
+    pool: &sqlx::SqlitePool,
+    section: &str,
+    batch: &[ScanFile],
+) -> Vec<Result<i64>> {
+    let _w = scan_write_lock(section).lock().await;
+    let mut tx = match pool.begin().await.context("begin scan tx") {
+        Ok(tx) => tx,
+        // The batch never opened, so nothing in it landed.
+        Err(e) => {
+            let msg = format!("{e:#}");
+            return batch.iter().map(|_| Err(anyhow::anyhow!("{msg}"))).collect();
+        }
+    };
+    let mut out: Vec<Result<i64>> = Vec::with_capacity(batch.len());
+    for f in batch {
+        // A file that vanished between the walk and the stat has no row to
+        // write; it fails on its own without costing the rest of the batch.
+        let Some(meta) = f.meta else {
+            out.push(Err(anyhow::anyhow!("stat {}: not found", f.path.display())));
+            continue;
+        };
+        out.push(scan_write_row(&mut tx, section, f, meta).await);
+    }
+    // A failed commit invalidates every id handed out above — none of those
+    // rows exist. Report the whole batch as failed rather than let the caller
+    // act on ids (TV classification, poster scrape) that point at nothing.
+    if let Err(e) = tx.commit().await.context("commit scan tx") {
+        let msg = format!("{e:#}");
+        return batch.iter().map(|_| Err(anyhow::anyhow!("{msg}"))).collect();
+    }
+    out
+}
+
+/// One write mutex per section, held only across one batch's statements.
+/// Several library scans share a section's pool, and SQLite admits exactly one
+/// writer; without this they discover that by busy-waiting on `busy_timeout`
+/// (5s) and logging multi-second "slow statement" warnings. The lock turns that
+/// spin into a fair queue. It is NEVER held across file I/O.
 fn scan_write_lock(section: &str) -> &'static tokio::sync::Mutex<()> {
     static LOCKS: std::sync::OnceLock<
         std::sync::Mutex<std::collections::HashMap<String, &'static tokio::sync::Mutex<()>>>,
@@ -7399,166 +7777,150 @@ fn kick_section_scan(
         let mut pending: std::collections::BTreeMap<usize, PathBuf> =
             files.iter().cloned().enumerate().collect();
         let mut slots: Vec<Option<(PathBuf, String, PathBuf)>> = vec![None; total_files];
+        let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(scan_concurrency()));
+        // Rows found since the last push to the grid, and when that push was.
+        // `None` means "due now", so the first completed batch paints rather
+        // than waiting out a full interval on an empty page.
+        let mut streamed: Vec<(String, PathBuf, PathBuf)> = Vec::new();
+        let mut last_stream: Option<std::time::Instant> = None;
         while !pending.is_empty() {
+            // 2a) Claim the batch nearest the viewport. The hint is sampled once
+            // per batch rather than once per file — re-reading it between two
+            // files of the same batch would only add noise.
             let frac = f32::from_bits(SCAN_HINT.load(Relaxed)).clamp(0.0, 1.0);
             let want = ((frac as f64) * total_files.saturating_sub(1) as f64) as usize;
-            let key = pending.range(want..).next().map(|(k, _)| *k)
-                .or_else(|| pending.range(..want).next_back().map(|(k, _)| *k))
-                .unwrap_or(0);
-            let slot_idx = key;
-            let p = &pending.remove(&key).unwrap();
-        {
-            // 2a) The file's EXIF, read BEFORE any transaction opens. It touches
-            // the file on disk, and holding SQLite's single write lock across a
-            // file read is exactly how one slow photo stalls every other scan.
-            let facts = if section == "photos" {
-                Some(tulipix_photos::exif::read(p).unwrap_or_default())
-            } else { None };
+            let mut claimed: Vec<(usize, PathBuf)> = Vec::with_capacity(SCAN_BATCH);
+            while claimed.len() < SCAN_BATCH && !pending.is_empty() {
+                let key = pending.range(want..).next().map(|(k, _)| *k)
+                    .or_else(|| pending.range(..want).next_back().map(|(k, _)| *k))
+                    .unwrap_or(0);
+                let p = pending.remove(&key).unwrap();
+                claimed.push((key, p));
+            }
 
-            // 2b) The item row and its section's side-effect row, in ONE
-            // transaction — one acquisition of the write lock per file instead
-            // of two. Bubble a specific reason into the progress card.
-            let id = match scan_write_one(&pool, section, p, facts.as_ref()).await {
-                Ok(id) => id,
-                Err(e) => {
-                    let msg = friendly_err("DB insert", p, &e);
-                    tracing::warn!(section, path = %p.display(), "{msg}");
-                    counters.failed.fetch_add(1, Relaxed);
-                    if let Ok(mut g) = counters.last_error.lock() { *g = msg; }
-                    continue;
-                }
-            };
+            // 2b) The filesystem half — stat, EXIF and thumbnail — in parallel.
+            // These touch only their own file, so there is nothing to serialise
+            // between them; the permit bounds how many run at once, and it is
+            // taken in the async half because `spawn_blocking` cannot await one.
+            let handles: Vec<_> = claimed
+                .into_iter()
+                .map(|(slot, path)| {
+                    let sem = sem.clone();
+                    tokio::spawn(async move {
+                        let _permit = sem.acquire().await.ok();
+                        tokio::task::spawn_blocking(move || {
+                            scan_file_work(slot, path, section, kind)
+                        })
+                        .await
+                        .ok()
+                    })
+                })
+                .collect();
+            let mut batch: Vec<ScanFile> = Vec::with_capacity(handles.len());
+            for h in handles {
+                if let Ok(Some(f)) = h.await { batch.push(f); }
+            }
 
-            let book_cover: Option<PathBuf> = None;
-            let book_label: Option<String> = None;
-            if section == "videos" {
-                // TV detection (np.p3.episodes): an SxxEyy filename ⇒ episode of
-                // the show named by its parent folder. Populates shows+episodes
-                // so the Videos "TV" tab can group it. Left outside the
-                // transaction above: it does its own multi-table work.
-                classify_tv_episode(&pool, id, p).await;
-                // TMDB/TVDB poster scrape runs in background so it doesn't
-                // block the scan loop (np.p3.tmdb).
-                {
+            // 2c) The DB half — every row for the batch in one transaction, so
+            // the global write lock is taken once instead of `SCAN_BATCH` times.
+            let ids = scan_write_batch(&pool, section, &batch).await;
+
+            // 2d) Per-file bookkeeping, in batch order.
+            for (f, id) in batch.into_iter().zip(ids) {
+                let id = match id {
+                    Ok(id) => id,
+                    Err(e) => {
+                        let msg = friendly_err("DB insert", &f.path, &e);
+                        tracing::warn!(section, path = %f.path.display(), "{msg}");
+                        counters.failed.fetch_add(1, Relaxed);
+                        if let Ok(mut g) = counters.last_error.lock() { *g = msg; }
+                        continue;
+                    }
+                };
+
+                if section == "videos" {
+                    // TV detection (np.p3.episodes): an SxxEyy filename ⇒ episode
+                    // of the show named by its parent folder. Populates
+                    // shows+episodes so the Videos "TV" tab can group it. Left
+                    // outside the transaction above: it does its own multi-table
+                    // work.
+                    classify_tv_episode(&pool, id, &f.path).await;
+                    // TMDB/TVDB poster scrape runs in background so it doesn't
+                    // block the scan loop (np.p3.tmdb).
                     let pool2 = pool.clone();
-                    let path2 = p.to_owned();
+                    let path2 = f.path.clone();
                     tokio::spawn(async move { scrape_video_tmdb(pool2, id, path2).await; });
                 }
-            }
 
-            // 2c) Thumbnail. Run on a blocking worker so ffmpeg / image-crate
-            // decode doesn't choke the tokio reactor; pure-rust fallback for
-            // photos when ffmpeg is missing.
-            let label = book_label
-                .filter(|s| !s.is_empty())
-                .unwrap_or_else(|| p.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string());
-            let (thumb, ok, err) = if let Some(cover) = book_cover {
-                (cover, true, None) // real EPUB/CBZ cover
-            } else {
-                match thumb_for(p.clone(), kind).await {
-                    Ok(t)  => (t, true, None),
-                    Err(e) => (p.clone(), false, Some(friendly_err("Thumb", p, &e))),
+                let label = f.path.file_name().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                let (thumb, ok) = match f.thumb {
+                    Ok(thumb) => (thumb, true),
+                    Err(msg) => {
+                        // No thumb: the tile still appears, drawing the source.
+                        if let Ok(mut g) = counters.last_error.lock() { *g = msg; }
+                        (f.path.clone(), false)
+                    }
+                };
+                if ok {
+                    counters.added.fetch_add(1, Relaxed);
+                } else {
+                    counters.failed.fetch_add(1, Relaxed);
                 }
-            };
-            slots[slot_idx] = Some((thumb, label, p.clone()));
-            if ok {
-                counters.added.fetch_add(1, Relaxed);
-            } else {
-                counters.failed.fetch_add(1, Relaxed);
-                if let Some(msg) = err {
-                    if let Ok(mut g) = counters.last_error.lock() { *g = msg; }
-                }
+                slots[f.slot] = Some((thumb.clone(), label.clone(), f.path.clone()));
+                // The accumulator's tuple order differs from the slot's.
+                streamed.push((label, f.path, thumb));
+            }
+            // No progress flush here on purpose: `spawn_progress_flusher`
+            // already coalesces those atomics into one UI post per ~80 ms
+            // regardless of throughput, and posting per batch on top of it would
+            // only add event-loop work the ticker exists to avoid.
+            //
+            // The grid is a different matter — nothing else pushes it — so what
+            // has been found so far goes in on a timer.
+            let due = last_stream.map(|t| t.elapsed() >= SCAN_STREAM_EVERY).unwrap_or(true);
+            if due && !streamed.is_empty() {
+                append_section_rows(section, std::mem::take(&mut streamed));
+                stream_section_refresh(section, &weak);
+                last_stream = Some(std::time::Instant::now());
             }
         }
-        }
+        // Whatever the last interval did not carry. The end-of-scan block below
+        // re-appends everything from `slots` anyway and dedupes, so this is
+        // about the rows being present before that runs, not about losing them.
+        append_section_rows(section, std::mem::take(&mut streamed));
         // Re-assemble in original walk order — grid placement stays stable.
         let tiles: Vec<(PathBuf, String, PathBuf)> = slots.into_iter().flatten().collect();
         counters.active.store(false, Relaxed);
         flush_progress(&weak);
 
-        let cols = 6i32;
+        let n = tiles.len() as i32;
+        // Slots hold (thumb, label, orig); the accumulator wants (label, orig,
+        // thumb). Appended off the UI thread — these are plain global mutexes,
+        // and the dedup means the rows already streamed in cost nothing here.
+        let full: Vec<(String, PathBuf, PathBuf)> = tiles
+            .into_iter()
+            .map(|(thumb, label, orig)| (label, orig, thumb))
+            .collect();
+        append_section_rows(section, full);
+        // One last rebuild so the grid reflects the finished library.
+        //
+        // This used to build a `Vec<PhotoTile>` here first, calling
+        // `Image::load_from_path` once per file — every thumbnail in the scan,
+        // decoded on the event loop — and then every single arm below dropped it
+        // on the floor with `let _ = (paths, out, n)`. On a five-thousand-photo
+        // import that was five thousand JPEG decodes on the UI thread whose only
+        // effect was the hitch they caused. The grid is rebuilt from the
+        // accumulator by the refresh below, as the old comment said it was.
+        stream_section_refresh(section, &weak);
+
         let lib_id_for_ui = lib_id.clone();
         let _ = weak.upgrade_in_event_loop(move |w| {
-            let mut out: Vec<PhotoTile> = Vec::with_capacity(tiles.len());
-            let mut paths: Vec<PathBuf> = Vec::with_capacity(tiles.len());
-            let mut full: Vec<(String, PathBuf, PathBuf)> = Vec::with_capacity(tiles.len());
-            for (i, (thumb_path, label, orig)) in tiles.into_iter().enumerate() {
-                let img = slint::Image::load_from_path(&thumb_path).unwrap_or_default();
-                full.push((label.clone(), orig.clone(), thumb_path.clone()));
-                out.push(PhotoTile {
-                    thumb: img,
-                    label: label.into(),
-                    col: (i as i32) % cols,
-                    row: (i as i32) / cols,
-                    index: i as i32,
-                    starred: false,
-                    selected: false,
-                    color_label: "".into(),
-                    is_live: false,
-                    stack_count: 0,
-                    count: 0,
-                });
-                paths.push(orig);
-            }
-            let n = out.len();
-            match section {
-                "photos" => {
-                    let _ = (paths, out, n); // grid is rebuilt by the refresh below
-                    // Append this folder's photos (dedup by abs path) so multiple
-                    // watched folders accumulate instead of replacing each other.
-                    if let Ok(mut g) = photo_full().lock() {
-                        let have: std::collections::HashSet<String> =
-                            g.iter().map(|(_, o, _)| o.to_string_lossy().into_owned()).collect();
-                        for row in full {
-                            if !have.contains(&row.1.to_string_lossy().into_owned()) { g.push(row); }
-                        }
-                        w.set_photos_total(g.len() as i32);
-                    }
-                    w.set_photos_folder_count(photo_folder_count());
-                    // Rebuild the active tab from the accumulated library.
-                    let cat = w.get_photos_category().to_string();
-                    let q = w.get_photos_query().to_string();
-                    kick_category_refresh(w.as_weak(), cat, q);
-                }
-                "videos" => {
-                    // Accumulate this folder's videos (label, abs, thumb); the
-                    // active tab is rebuilt from the DB by kick_video_refresh so
-                    // star/archive/trash/progress all reflect live state.
-                    let _ = (paths, out, n);
-                    if let Ok(mut g) = video_full().lock() {
-                        let have: std::collections::HashSet<String> =
-                            g.iter().map(|(_, o, _)| o.to_string_lossy().into_owned()).collect();
-                        for row in full {
-                            if !have.contains(&row.1.to_string_lossy().into_owned()) { g.push(row); }
-                        }
-                    }
-                    let cat = w.get_video_category().to_string();
-                    kick_video_refresh(w.as_weak(), cat);
-                }
-                "music"  => {
-                    let _ = (paths, out, n);
-                    // Accumulate this folder's tracks (dedup by abs path) so adding
-                    // a second folder ADDS to the library instead of replacing the
-                    // first. The DB already holds every folder's items; this keeps
-                    // the in-memory tiles/paths in sync with that.
-                    if let Ok(mut g) = music_full().lock() {
-                        let have: std::collections::HashSet<String> =
-                            g.iter().map(|(_, o, _)| o.to_string_lossy().into_owned()).collect();
-                        for row in full {
-                            if !have.contains(&row.1.to_string_lossy().into_owned()) { g.push(row); }
-                        }
-                    }
-                    rebuild_music_tiles(&w);
-                    populate_music_views(w.as_weak());
-                    // Refresh the scanned-roots list (Folders tab) so a freshly
-                    // added music folder shows up immediately with its count.
-                    populate_folder_roots(&w);
-                    // Extract tags (title/artist/album/…) for items lacking them,
-                    // then refresh the views (np.p4.music.tags).
-                    ingest_music_tags(w.as_weak());
-                }
-                "books"  => { let _ = (paths, out, n); }
-                _ => {}
+            if section == "music" {
+                // Once per scan, not on the periodic refresh: the scanned-roots
+                // list so a freshly added folder shows up with its count, and the
+                // tag extraction pass for tracks lacking them (np.p4.music.tags).
+                populate_folder_roots(&w);
+                ingest_music_tags(w.as_weak());
             }
             let model = w.get_library_rows();
             let mut rows: Vec<LibraryRow> = (0..model.row_count())
@@ -7566,7 +7928,7 @@ fn kick_section_scan(
             for r in rows.iter_mut() {
                 if r.id == lib_id_for_ui.as_str() {
                     r.r#last_scan = "just now".into();
-                    r.item_count = n as i32;
+                    r.item_count = n;
                 }
             }
             w.set_library_rows(slint::ModelRc::new(slint::VecModel::from(rows)));

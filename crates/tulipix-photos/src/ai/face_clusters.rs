@@ -84,6 +84,18 @@ pub fn cluster(embeddings: Vec<FaceEmbedding>, threshold: f32) -> Vec<Cluster> {
     clusters
 }
 
+/// Re-run clustering over every embedded face and persist the result.
+///
+/// The three steps existed separately and were never joined up, so nothing in
+/// the app turned faces into people. Returns the number of clusters formed.
+pub async fn recluster(pool: &SqlitePool, threshold: f32) -> Result<usize> {
+    let embeddings = load_embeddings(pool).await?;
+    if embeddings.is_empty() { return Ok(0); }
+    let clusters = cluster(embeddings, threshold);
+    persist_clusters(pool, &clusters).await?;
+    Ok(clusters.len())
+}
+
 /// Read all face embeddings from the DB. Faces without an embedding blob are
 /// skipped (no model installed yet → no clustering input).
 pub async fn load_embeddings(pool: &SqlitePool) -> Result<Vec<FaceEmbedding>> {

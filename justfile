@@ -127,9 +127,38 @@ trace:
 cli *args:
     cargo run -p tulipix-cli -- {{args}}
 
-# Lint + format
+# Lint + format. Capped and scoped for four reasons a bare `cargo clippy` gets
+# wrong here:
+#  1. Own target dir. A plain cargo invocation into target/ or target-dev* mixes
+#     codegen backends with the `fast` cranelift builds above and makes the next
+#     warm app build fail — the same trap `test-crate` documents.
+#  2. femtovg, not the default renderer. --workspace picks up tulipix-app's
+#     default features, which select renderer-skia and start the skia-bindings
+#     C++ build: ~40 min and network-dependent, so effectively impossible here.
+#     tulipix-app is the only workspace crate with non-empty default features, so
+#     --no-default-features costs the others nothing.
+#     Known gap: everything shipped (`run`, `release-*`, `installer-*`) is skia,
+#     and this recipe lints the other arm of every renderer cfg in main.rs. The
+#     default-features recipe had the mirror-image gap and could not be run here
+#     at all; CI is femtovg in every job too, so a release build is the only
+#     thing that compiles the skia arms. Small surface — keep it that way.
+#  3. genesis/finances re-named. Not for their crates: tulipix-sec-genesis and
+#     tulipix-sec-finances are workspace members and get linted regardless. It is
+#     the six #[cfg(feature = ...)] blocks INSIDE main.rs that wire those sections
+#     in — --no-default-features switches them off, and they stop being compiled
+#     at all. That is how genesis shipped broken for a cycle (see the `finances`
+#     comment in crates/tulipix-app/Cargo.toml).
+#  4. Memory scope + -j 1, like every other build. An unbounded clippy over the
+#     whole workspace is exactly the shape that froze the box three times.
 lint:
-    cargo clippy --workspace --all-targets -- -D warnings
+    CARGO_TARGET_DIR=target-lint \
+      systemd-run --user --scope --unit=tulipix-lint \
+      -p MemoryHigh=4800M -p MemoryMax=5600M -p MemorySwapMax=3000M \
+      nice -n 18 ionice -c3 \
+      cargo clippy --workspace --all-targets -j 1 \
+        --no-default-features \
+        --features tulipix-app/renderer-femtovg,tulipix-app/alloc-mimalloc,tulipix-app/genesis,tulipix-app/finances \
+        -- -D warnings
     cargo fmt --all --check
 
 # WCAG AAA contrast audit on ui/tokens.slint
@@ -139,15 +168,31 @@ contrast:
 fmt:
     cargo fmt --all
 
-# Release build (current host)
+# Release build (current host).
+#
+# `full` is not implied by `default` — ort/download-binaries fetches the native
+# runtime at build time, so putting it in `default` would hang a network
+# dependency on every bare `cargo build` and `bacon` run. It has to be named
+# here instead, and .github/workflows/release.yml names it in all three platform
+# jobs. Without it the editor's Upscale silently degrades to Lanczos and
+# Colorize errors out of `make_coloriser`, so a locally-built release binary is
+# not the binary that ships.
 release-linux:
-    cargo build -p tulipix-app --release --target x86_64-unknown-linux-gnu
+    cargo build -p tulipix-app --release --features full --target x86_64-unknown-linux-gnu
 
 # Size-lean release: femtovg renderer, no embedded video player (external mpv
 # only). Smallest binary / fastest cold start. Use where the in-app player isn't
-# needed.
+# needed. Deliberately NOT `full`: ORT plus its native runtime is the largest
+# single thing this build exists to leave out.
+#
+# genesis + finances ARE named, because --no-default-features drops them and
+# they are not merely crates — six #[cfg(feature = ...)] blocks inside main.rs
+# wire those sections in, so without them the build has no Genesis and no
+# Finances at all. That is how Genesis shipped broken for a cycle; see the
+# `finances` comment in crates/tulipix-app/Cargo.toml.
 release-lite:
-    cargo build -p tulipix-app --release --no-default-features --features renderer-femtovg
+    cargo build -p tulipix-app --release --no-default-features \
+      --features renderer-femtovg,alloc-mimalloc,genesis,finances
 
 # Absolute-minimum binary (nightly, Linux): lite build + recompiled std with
 # panic_immediate_abort, dropping panic-formatting/unwinding machinery from std.
@@ -155,25 +200,29 @@ release-lite:
 # panic messages become abort-only; verify before shipping.
 release-min:
     cargo +nightly build -p tulipix-app --release \
-      --no-default-features --features renderer-femtovg \
+      --no-default-features --features renderer-femtovg,alloc-mimalloc,genesis,finances \
       -Z build-std=std,panic_abort -Z build-std-features=panic_immediate_abort \
       --target x86_64-unknown-linux-gnu
 
 release-win:
-    cargo build -p tulipix-app --release --target x86_64-pc-windows-msvc
+    cargo build -p tulipix-app --release --features full --target x86_64-pc-windows-msvc
 
 release-mac:
-    cargo build -p tulipix-app --release --target aarch64-apple-darwin
+    cargo build -p tulipix-app --release --features full --target aarch64-apple-darwin
 
-# Installers (host-specific tooling)
-installer-linux:
-    cargo deb -p tulipix-app
+# Installers (host-specific tooling).
+#
+# Linux mirrors CI: build once with `release-linux`, then package that exact
+# binary. A bare `cargo deb` would rebuild with default features and drop
+# `full`, shipping an installer whose contents differ from `just release-linux`.
+installer-linux: release-linux
+    cargo deb -p tulipix-app --no-build --target x86_64-unknown-linux-gnu
 
 installer-win:
-    cargo wix -p tulipix-app
+    cargo wix -p tulipix-app --features full
 
 installer-mac:
-    cargo bundle --release -p tulipix-app
+    cargo bundle --release -p tulipix-app --features full
 
 # Desktop identity for an UNINSTALLED dev run (Linux). Wayland has no window-icon
 # call: the compositor matches the toplevel app_id ("tulipix") against an installed

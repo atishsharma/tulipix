@@ -5,8 +5,13 @@
 //!      a stub `NullDetector` is used until the model is downloaded. The
 //!      trait keeps the rest of the pipeline testable without ML deps.
 //!   2. `extract_crops` — given a detector + an image, runs detection,
-//!      pads each bounding box by 25%, resizes to 160×160 (arcface input),
-//!      and writes `face_thumbs/<item_id>/<face_id>.jpg`.
+//!      pads each bounding box by 25%, resizes to 160×160, and writes
+//!      `face_thumbs/<item_id>/<face_id>.jpg`.
+//!
+//! `CROP_SIZE` is 160 because that is a decent face thumbnail for the People
+//! tab — NOT because it is the recogniser's input, which this file used to
+//! claim. ArcFace/buffalo_s takes 112×112, verified against the installed
+//! blob, and `OrtFaceEmbedder` resizes on the way in.
 
 use anyhow::{Context, Result};
 use image::{imageops::FilterType, GenericImageView, ImageFormat, ImageReader};
@@ -37,8 +42,79 @@ impl FaceDetector for NullDetector {
     fn detect(&self, _img: &image::DynamicImage) -> Result<Vec<BBox>> { Ok(Vec::new()) }
 }
 
+/// Turns a 160×160 face crop into the 512-d vector clustering compares.
+///
+/// Separate from `FaceDetector` because they are two different models —
+/// detection finds the boxes, recognition describes the face — and installing
+/// one without the other is a normal state: boxes and crops with no embedding
+/// yet. `face_clusters::load_embeddings` skips those rows, so the People tab
+/// simply stays empty rather than clustering on nothing.
+pub trait FaceEmbedder: Send + Sync {
+    fn embed(&self, crop: &image::DynamicImage) -> Result<Vec<f32>>;
+    /// Name+version of the weights, recorded so a model change can requeue.
+    fn model_name(&self) -> &str;
+}
+
+/// No recognition model installed — errors rather than returning a zero vector,
+/// which would cluster every face in the library into one person.
+pub struct NullFaceEmbedder;
+impl FaceEmbedder for NullFaceEmbedder {
+    fn embed(&self, _: &image::DynamicImage) -> Result<Vec<f32>> {
+        anyhow::bail!("no face-recognition model installed")
+    }
+    fn model_name(&self) -> &str { "none" }
+}
+
 pub fn face_thumbs_dir() -> Option<PathBuf> {
     paths::cache_dir().map(|d| d.join("face_thumbs"))
+}
+
+/// Fill `faces.embedding` for crops that do not have one, up to `limit` rows.
+/// Returns how many were written.
+///
+/// `extract_crops` writes the box and the crop but leaves `embedding` NULL —
+/// it runs the detector, not the recogniser. This is the second half, and
+/// without it `faces` fills up while `load_embeddings` returns nothing and no
+/// cluster is ever formed.
+pub async fn embed_pending(
+    pool: &SqlitePool,
+    embedder: &dyn FaceEmbedder,
+    limit: i64,
+) -> Result<u32> {
+    let root = face_thumbs_dir().context("no cache dir")?;
+    let rows: Vec<(i64, String)> = sqlx::query_as(
+        "SELECT id, crop_path FROM faces
+         WHERE embedding IS NULL AND crop_path <> ''
+         ORDER BY id ASC LIMIT ?",
+    )
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+    let mut written = 0u32;
+    for (face_id, rel) in rows {
+        let path = root.join(&rel);
+        let Ok(img) = ImageReader::open(&path).and_then(|r| r.with_guessed_format()) else {
+            continue;
+        };
+        let Ok(img) = img.decode() else { continue };
+        let vec = match embedder.embed(&img) {
+            Ok(v) => v,
+            // A model that cannot embed at all is the caller's problem to
+            // report; stop rather than walk the whole table failing.
+            Err(e) => return Err(e).with_context(|| format!("embed face {face_id}")),
+        };
+        if vec.len() != crate::ai::face_clusters::EMBED_DIM {
+            anyhow::bail!("embedder returned {} dims, want {}", vec.len(), crate::ai::face_clusters::EMBED_DIM);
+        }
+        let blob: Vec<u8> = vec.iter().flat_map(|f| f.to_le_bytes()).collect();
+        sqlx::query("UPDATE faces SET embedding = ? WHERE id = ?")
+            .bind(blob)
+            .bind(face_id)
+            .execute(pool)
+            .await?;
+        written += 1;
+    }
+    Ok(written)
 }
 
 /// Pad a bounding box outward by `factor` (e.g. 0.25 for +25%), clamped to
@@ -103,6 +179,50 @@ pub async fn extract_crops(
 mod tests {
     use super::*;
     use crate::schema::tests::open_pool;
+
+    /// Embeds to a fixed direction so clustering behaviour is deterministic.
+    struct FixedEmbedder(f32);
+    impl FaceEmbedder for FixedEmbedder {
+        fn embed(&self, _: &image::DynamicImage) -> Result<Vec<f32>> {
+            let mut v = vec![0.0f32; crate::ai::face_clusters::EMBED_DIM];
+            v[0] = self.0;
+            v[1] = 1.0 - self.0;
+            Ok(v)
+        }
+        fn model_name(&self) -> &str { "fixed" }
+    }
+
+    #[tokio::test]
+    async fn embed_pending_fills_the_column_clustering_reads() {
+        let (_t, pool) = open_pool().await;
+        unsafe { std::env::set_var("XDG_CACHE_HOME", tempfile::tempdir().unwrap().keep()); }
+        let tmp = tempfile::tempdir().unwrap();
+        let p = tmp.path().join("face.jpg");
+        image::RgbImage::from_pixel(200, 200, image::Rgb([200, 100, 50])).save(&p).unwrap();
+        sqlx::query("INSERT INTO items (abs_path, inode, size, mtime, section, added, updated) VALUES (?, 0, 1, 0, 'photos', 0, 0)")
+            .bind(p.to_string_lossy().as_ref()).execute(&pool).await.unwrap();
+        let id: i64 = sqlx::query_scalar("SELECT id FROM items WHERE abs_path = ?")
+            .bind(p.to_string_lossy().as_ref()).fetch_one(&pool).await.unwrap();
+        let det = FixedDetector(vec![BBox { x: 40, y: 40, w: 80, h: 80, score: 0.99 }]);
+        extract_crops(&pool, id, &p, &det).await.unwrap();
+
+        // Detection alone leaves nothing for the clusterer to read.
+        assert!(crate::ai::face_clusters::load_embeddings(&pool).await.unwrap().is_empty());
+
+        let n = embed_pending(&pool, &FixedEmbedder(1.0), 100).await.unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(crate::ai::face_clusters::load_embeddings(&pool).await.unwrap().len(), 1);
+
+        // Idempotent: a second pass finds nothing still NULL.
+        assert_eq!(embed_pending(&pool, &FixedEmbedder(1.0), 100).await.unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn null_embedder_refuses_rather_than_returning_zeros() {
+        let img = image::DynamicImage::ImageRgb8(image::RgbImage::new(160, 160));
+        // A zero vector would make every face in the library one person.
+        assert!(NullFaceEmbedder.embed(&img).is_err());
+    }
 
     struct FixedDetector(Vec<BBox>);
     impl FaceDetector for FixedDetector {

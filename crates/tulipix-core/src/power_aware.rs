@@ -35,6 +35,74 @@ pub struct PowerOverrides {
 }
 
 
+/// Read the host's power source.
+///
+/// This module was written as a pure decision layer expecting "the platform
+/// crate" to feed it a snapshot; no such reader was ever wired, so every
+/// consumer of `should_pause` would have had to invent one. Linux is read here
+/// directly because `/sys/class/power_supply` needs nothing but a file read.
+///
+/// Other platforms answer `Unknown`, which every policy above treats as "do not
+/// pause" — the safe direction: a desktop that cannot report a battery should
+/// not have its background work switched off on suspicion.
+pub fn power_source() -> PowerSource {
+    #[cfg(target_os = "linux")]
+    {
+        let Ok(dir) = std::fs::read_dir("/sys/class/power_supply") else {
+            return PowerSource::Unknown;
+        };
+        let mut saw_battery = false;
+        for e in dir.flatten() {
+            let p = e.path();
+            let kind = std::fs::read_to_string(p.join("type")).unwrap_or_default();
+            match kind.trim() {
+                // A mains supply that reports online settles it immediately.
+                "Mains" | "USB" | "USB_PD" | "USB_PD_DRP" => {
+                    if std::fs::read_to_string(p.join("online"))
+                        .map(|s| s.trim() == "1")
+                        .unwrap_or(false)
+                    {
+                        return PowerSource::Ac;
+                    }
+                }
+                "Battery" => saw_battery = true,
+                _ => {}
+            }
+        }
+        // A battery present with no mains online means running off it. No
+        // battery at all is a desktop, which is always on mains.
+        if saw_battery { PowerSource::Battery } else { PowerSource::Ac }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        PowerSource::Unknown
+    }
+}
+
+/// Battery charge 0..=100, or `None` when the host reports no battery.
+pub fn battery_percent() -> BatteryPercent {
+    #[cfg(target_os = "linux")]
+    {
+        let dir = std::fs::read_dir("/sys/class/power_supply").ok()?;
+        for e in dir.flatten() {
+            let p = e.path();
+            if std::fs::read_to_string(p.join("type")).unwrap_or_default().trim() != "Battery" {
+                continue;
+            }
+            if let Ok(cap) = std::fs::read_to_string(p.join("capacity")) {
+                if let Ok(pct) = cap.trim().parse::<u8>() {
+                    return Some(pct.min(100));
+                }
+            }
+        }
+        None
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        None
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum WorkerClass { Indexer, Transcoder, ToolsBackground, Download, RealtimeNotify }
 

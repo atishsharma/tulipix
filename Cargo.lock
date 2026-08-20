@@ -7645,6 +7645,7 @@ name = "tulipix-core"
 version = "0.9.0"
 dependencies = [
  "anyhow",
+ "image",
  "keyring",
  "notify 8.2.0",
  "reqwest",

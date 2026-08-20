@@ -29,9 +29,17 @@ pub fn install_dir(entry: &ModelEntry) -> Option<PathBuf> {
 }
 
 pub fn local_path(entry: &ModelEntry) -> Option<PathBuf> {
-    // Extension follows the blob type: ggml whisper models are .bin, the
-    // photo-editing models are .onnx.
-    let ext = if entry.url.ends_with(".bin") { "bin" } else { "onnx" };
+    // Extension follows the blob type: ggml whisper models are .bin, a CLIP
+    // tokenizer is .json, the rest are .onnx. Matched explicitly rather than
+    // split off the URL — these are the only three shapes, and a query string
+    // or a versioned path should not be able to invent a fourth.
+    let ext = if entry.url.ends_with(".bin") {
+        "bin"
+    } else if entry.url.ends_with(".json") {
+        "json"
+    } else {
+        "onnx"
+    };
     install_dir(entry).map(|d| d.join(format!("{}.{ext}", entry.name)))
 }
 

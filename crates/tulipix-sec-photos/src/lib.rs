@@ -304,6 +304,236 @@ pub fn photo_limit() -> usize {
     PHOTO_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+// ── Off-thread tile decode ────────────────────────────────────────────────
+//
+// Building a grid used to call `slint::Image::load_from_path` once per tile
+// from inside `upgrade_in_event_loop` — i.e. `image::open` plus a full JPEG
+// decode, on the event loop, up to `PHOTO_PAGE` (300) times. Every tab switch,
+// every search keystroke and every star toggle goes through
+// `kick_category_refresh`, which already did its DB work off-thread and then
+// handed the expensive half to the UI thread.
+//
+// Slint's own image cache does not save us here: it is a 5 MB CLRU
+// (i-slint-core `graphics/image/cache.rs`), and at ~300 KB a decoded thumb it
+// holds about a dozen. A 300-tile grid evicts its own earlier tiles long before
+// it finishes, so the hit rate is ~0 and the eviction pressure also throws out
+// the icons and covers the rest of the UI wants. Decoding ourselves and handing
+// Slint finished pixels skips that cache entirely, which is the better outcome
+// for a grid this size.
+//
+// The split is: plan off-thread (pure over the global caches, no Slint types)
+// → decode off-thread (bounded, in parallel) → build on the UI thread, where
+// wrapping a finished buffer is just a handle.
+
+/// Monotonic grid-rebuild generation — the same device `tulipix_sec_books`
+/// uses for its library refresh, and for the same reason.
+///
+/// A rebuild now plans and decodes off the UI thread, so two can be in flight
+/// at once — typing in the search box is the ordinary way to cause it — and
+/// they finish out of order, because how long a decode takes depends on how
+/// many photos matched. Whoever finished last would win, which for a search
+/// means the grid can settle on the results of an *earlier* keystroke. So each
+/// rebuild is stamped and drops its result if a newer one has started.
+///
+/// The race predates this split — the DB half of a refresh was already async —
+/// but the decode moving off-thread widens the window enough to hit routinely.
+static REFRESH_GEN: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Stamp a rebuild that is about to start. Call once per user request, before
+/// any awaiting, so generations order by when the rebuild was *asked for* and
+/// not by whichever task wins the race to the planner.
+pub fn next_refresh_gen() -> u64 {
+    REFRESH_GEN.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1
+}
+
+/// True once a newer rebuild has started and this one's result is moot.
+fn refresh_superseded(my_gen: u64) -> bool {
+    REFRESH_GEN.load(std::sync::atomic::Ordering::SeqCst) != my_gen
+}
+
+/// Decoded pixels for one grid tile. `slint::Image` is not `Send` so it cannot
+/// cross a thread; `SharedPixelBuffer` is, which is what makes this possible.
+///
+/// RGB8, not RGBA8: thumbnails are opaque, and RGB8 is the representation
+/// `Image::load_from_path` picks for them too (i-slint-core's
+/// `dynamic_image_to_shared_image_buffer` takes the no-alpha branch). Matching
+/// it keeps a grid at the ~300 KB a tile the note above budgets for, instead of
+/// growing it by a third for an alpha channel nothing draws.
+pub type TilePixels = slint::SharedPixelBuffer<slint::Rgb8Pixel>;
+
+/// One resolved grid tile — everything `PhotoTile` needs except the image, so
+/// the expensive half can be computed and decoded away from the UI thread.
+///
+/// `col`/`row`/`index` are deliberately absent: they are a function of the
+/// tile's position in the finished list, and assigning them at build time is
+/// what keeps them consistent with `photo_paths` when a decode fails.
+#[derive(Clone)]
+pub struct TilePlan {
+    pub thumb: PathBuf,
+    pub label: String,
+    pub orig: PathBuf,
+    pub starred: bool,
+    pub color_label: String,
+    pub is_live: bool,
+    pub stack_count: i32,
+}
+
+/// How many thumbnails to decode at once. Decoding is CPU-bound, so past the
+/// core count there is nothing to win; the floor keeps a single-core box from
+/// serialising, and the ceiling keeps a 32-thread machine from putting 32
+/// full-size bitmaps in flight at once for a grid that wanted 300 small ones.
+fn decode_concurrency() -> usize {
+    std::thread::available_parallelism().map(|n| n.get()).unwrap_or(4).clamp(2, 8)
+}
+
+/// Decode `paths` into pixel buffers off the UI thread, bounded, preserving
+/// order. `None` marks a file that is missing or undecodable — the slot is kept
+/// rather than dropped so tile indices stay aligned with the caller's plan.
+pub async fn decode_tiles(paths: Vec<PathBuf>) -> Vec<Option<TilePixels>> {
+    let sem = std::sync::Arc::new(tokio::sync::Semaphore::new(decode_concurrency()));
+    let handles: Vec<_> = paths
+        .into_iter()
+        .map(|p| {
+            let sem = sem.clone();
+            // Permit taken in the async half: `spawn_blocking` cannot await one,
+            // and without it every path would claim a blocking thread at once —
+            // the opposite of bounding the work.
+            tokio::spawn(async move {
+                let _permit = sem.acquire().await.ok();
+                tokio::task::spawn_blocking(move || {
+                    let img = image::open(&p).ok()?.into_rgb8();
+                    let (w, h) = (img.width(), img.height());
+                    Some(TilePixels::clone_from_slice(img.as_raw(), w, h))
+                })
+                .await
+                .ok()
+                .flatten()
+            })
+        })
+        .collect();
+    let mut out = Vec::with_capacity(handles.len());
+    for h in handles {
+        out.push(h.await.ok().flatten());
+    }
+    out
+}
+
+/// Wrap one decoded tile, falling back to an empty image when the decode
+/// failed. Cheap — no decode, just a handle.
+fn tile_image(px: Option<TilePixels>) -> slint::Image {
+    px.map(slint::Image::from_rgb8).unwrap_or_default()
+}
+
+/// Turn a plan plus its decoded pixels into the finished tiles, assigning
+/// grid coordinates by position, and collect the parallel path list the viewer
+/// indexes into.
+fn build_tiles(
+    plan: Vec<TilePlan>,
+    pixels: Vec<Option<TilePixels>>,
+    cols: i32,
+    start: usize,
+) -> (Vec<PhotoTile>, Vec<PathBuf>) {
+    let mut pixels = pixels.into_iter();
+    let mut tiles = Vec::with_capacity(plan.len());
+    let mut paths = Vec::with_capacity(plan.len());
+    for (n, t) in plan.into_iter().enumerate() {
+        let i = (start + n) as i32;
+        tiles.push(PhotoTile {
+            thumb: tile_image(pixels.next().flatten()),
+            label: t.label.into(),
+            col: i % cols,
+            row: i / cols,
+            index: i,
+            starred: t.starred,
+            selected: false,
+            color_label: t.color_label.into(),
+            is_live: t.is_live,
+            stack_count: t.stack_count,
+            count: 0,
+        });
+        paths.push(t.orig);
+    }
+    (tiles, paths)
+}
+
+// ── Search ────────────────────────────────────────────────────────────────
+//
+// The grid used to filter on `filename.contains(query)` and nothing else, while
+// `photo_fts` — filename, camera, tags, people, ranked by bm25 — sat unread.
+// (Until A2 it was also unpopulated outside the Settings → Maintenance rebuild
+// button, so reading it would have found an empty table.)
+
+/// Absolute paths matched by the current full-text query.
+///
+/// `None` means no active query, or FTS had nothing to say — the planners then
+/// fall back to the filename test alone.
+static SEARCH_HITS: std::sync::OnceLock<std::sync::Mutex<Option<std::collections::HashSet<String>>>> =
+    std::sync::OnceLock::new();
+fn search_hits() -> &'static std::sync::Mutex<Option<std::collections::HashSet<String>>> {
+    SEARCH_HITS.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+fn search_hits_snapshot() -> Option<std::collections::HashSet<String>> {
+    search_hits().lock().ok().and_then(|g| g.clone())
+}
+
+/// Run `query` against the photo full-text index and cache the matching paths
+/// for the planners. Empty query clears it.
+pub async fn load_search_hits(query: &str) {
+    let q = query.trim();
+    if q.is_empty() {
+        if let Ok(mut g) = search_hits().lock() { *g = None; }
+        return;
+    }
+    let hits = match pool_for("photos").await {
+        Ok(pool) => match tulipix_photos::search::query(&pool, q, None, None, 100_000).await {
+            Ok(h) => Some(h.into_iter().map(|h| h.abs_path).collect()),
+            Err(e) => {
+                // A malformed FTS expression is a user typing, not a fault.
+                tracing::debug!(error = %e, "photo fts query");
+                None
+            }
+        },
+        Err(_) => None,
+    };
+    if let Ok(mut g) = search_hits().lock() { *g = hits; }
+}
+
+/// Does this photo match the active query?
+///
+/// The union of the two tests, deliberately. Filename substring is what the
+/// grid always did and is what someone typing part of a name expects; the FTS
+/// hit adds camera, tags and people on top. Union rather than replacement means
+/// search cannot get *worse* than it was while the background indexer is still
+/// filling the table — a half-built index just contributes fewer extra hits.
+fn matches_query(q: &str, hits: &Option<std::collections::HashSet<String>>, fname: &str, orig: &str) -> bool {
+    if q.is_empty() { return true; }
+    if fname.to_lowercase().contains(q) { return true; }
+    hits.as_ref().is_some_and(|h| h.contains(orig))
+}
+
+/// Per-tile flags shared by every planner: colour label, live-photo state,
+/// stack count and whether the tile is hidden inside a stack, all keyed off the
+/// original path.
+///
+/// Computed for every candidate, including ones the window then holds back —
+/// the previous code deferred the colour/live lookups until after that check.
+/// It is three more uncontended map lookups per held-back photo, against a
+/// `String` allocation the loop was already paying for each of them, and it now
+/// happens off the UI thread; keeping one helper is worth more than saving it.
+fn tile_flags(orig_str: &str) -> (String, bool, i32, bool) {
+    let color_label = color_labels().lock().ok()
+        .and_then(|g| g.get(orig_str).cloned()).unwrap_or_default();
+    let item_id = photo_item_ids().lock().ok().and_then(|g| g.get(orig_str).copied());
+    let is_live = item_id
+        .map(|id| live_ids().lock().ok().map(|g| g.contains(&id)).unwrap_or(false))
+        .unwrap_or(false);
+    let (stack_count, is_hidden) = stack_info().lock().ok()
+        .map(|g| (g.0.get(orig_str).copied().unwrap_or(0), g.1.contains(orig_str)))
+        .unwrap_or_default();
+    (color_label, is_live, stack_count, is_hidden)
+}
+
 /// Drop everything the Photos page was drawing.
 ///
 /// Called when the user navigates away. The `if active-section == "photos"`
@@ -353,6 +583,8 @@ pub fn kick_category_refresh(weak: slint::Weak<MainWindow>, category: String, qu
     }
     // A rebuild re-orders photo_paths, so any selection indices are now stale.
     selection_clear();
+    // Stamped here, not inside the task, so generations order by request.
+    let my_gen = next_refresh_gen();
     let handle = tokio::runtime::Handle::current();
     handle.spawn(async move {
         // Refresh starred membership so every grid colours its star correctly.
@@ -365,12 +597,17 @@ pub fn kick_category_refresh(weak: slint::Weak<MainWindow>, category: String, qu
             }
             reload_phase6_caches(&pool).await;
         }
+        // Resolve the query against the full-text index once, here, rather than
+        // per planner: every arm below reads the same cached hit set, and this
+        // is already off the UI thread.
+        load_search_hits(&query).await;
         match category.as_str() {
             // Timeline = date-grouped grid, newest→oldest (the DB supplies the
-            // order + month label; thumbs come from photo_full on the UI thread).
+            // order + month label; thumbs come from photo_full, planned and
+            // decoded here so the event loop only wraps finished pixels).
             "timeline" => {
                 let order = timeline_order(&query).await;
-                let _ = weak.upgrade_in_event_loop(move |w| populate_timeline(&w, order, &query));
+                refresh_timeline(weak, order, query, my_gen).await;
             }
             // A single library folder opened as a grouped grid, sorted per the
             // active sort mode.
@@ -379,11 +616,11 @@ pub fn kick_category_refresh(weak: slint::Weak<MainWindow>, category: String, qu
                 let sort = sort_mode().lock().map(|g| g.clone()).unwrap_or_else(|_| "date".into());
                 let dir = sort_dir().lock().map(|g| g.clone()).unwrap_or_else(|_| "desc".into());
                 let order = folder_order(&folder, &sort, &dir).await;
-                let _ = weak.upgrade_in_event_loop(move |w| populate_timeline(&w, order, &query));
+                refresh_timeline(weak, order, query, my_gen).await;
             }
             // Library = folder list, derived from the loaded photo grid.
             "library" => {
-                let _ = weak.upgrade_in_event_loop(move |w| populate_library(&w, &query));
+                refresh_library(weak, query, my_gen).await;
             }
             // People tab = face-cluster avatar cards (np.p2.ai.face-clusters).
             "people" => {
@@ -403,55 +640,13 @@ pub fn kick_category_refresh(weak: slint::Weak<MainWindow>, category: String, qu
             // Person / tag / album drill-in — the open handler already stored the
             // path set in category_paths; just rebuild the flat grid from it.
             "facephotos" | "tagphotos" | "albumphotos" => {
-                let _ = weak.upgrade_in_event_loop(move |w| apply_photo_filter(&w, &query));
+                refresh_photo_filter(weak, query, None, my_gen).await;
             }
             // Phase 6 — Memories: year-rail view.
             "memories" => {
                 if let Ok(pool) = pool_for("photos").await {
                     let rails_raw = load_memory_rails(&pool).await;
-                    let weak2 = weak.clone();
-                    let _ = weak.upgrade_in_event_loop(move |w| {
-                        use slint::{ModelRc, VecModel};
-                        let rails: Vec<MemoryRail> = rails_raw.into_iter().map(|(year, ago, paths)| {
-                            let starred = starred_snapshot();
-                            let tiles: Vec<PhotoTile> = {
-                                let full = photo_full().lock().unwrap();
-                                let by_path: std::collections::HashMap<String, (String, std::path::PathBuf)> =
-                                    full.iter().map(|e| (e.1.to_string_lossy().into_owned(), (e.0.clone(), e.2.clone()))).collect();
-                                drop(full);
-                                paths.iter().enumerate().filter_map(|(i, p)| {
-                                    by_path.get(p).map(|(label, thumb)| {
-                                        let color_label = color_labels().lock().ok()
-                                            .and_then(|g| g.get(p).cloned())
-                                            .unwrap_or_default();
-                                        let item_id = photo_item_ids().lock().ok()
-                                            .and_then(|g| g.get(p).copied());
-                                        let is_live = item_id.map(|id| live_ids().lock().ok()
-                                            .map(|g| g.contains(&id)).unwrap_or(false)).unwrap_or(false);
-                                        let (stack_count, _hidden) = {
-                                            
-                                            stack_info().lock().ok()
-                                                .map(|g| (g.0.get(p).copied().unwrap_or(0), g.1.contains(p)))
-                                                .unwrap_or_default()
-                                        };
-                                        PhotoTile {
-                                            thumb: slint::Image::load_from_path(thumb).unwrap_or_default(),
-                                            label: label.clone().into(), col: i as i32, row: 0, index: i as i32,
-                                            starred: starred.contains(p), selected: false,
-                                            color_label: color_label.into(), is_live, stack_count, count: 0,
-                                        }
-                                    })
-                                }).collect()
-                            };
-                            MemoryRail {
-                                year,
-                                ago: ago.into(),
-                                tiles: ModelRc::new(VecModel::from(tiles)),
-                            }
-                        }).collect();
-                        w.set_photo_memory_rails(ModelRc::new(VecModel::from(rails)));
-                        let _ = weak2;
-                    });
+                    refresh_memory_rails(weak, rails_raw, my_gen).await;
                 }
             }
             // Phase 6 — Places: cluster grid.
@@ -485,10 +680,10 @@ pub fn kick_category_refresh(weak: slint::Weak<MainWindow>, category: String, qu
                     let dir = sort_dir().lock().map(|g| g.clone()).unwrap_or_else(|_| "desc".into());
                     sort_paths(&mut cf.order, &sort, &dir).await;
                 }
-                let _ = weak.upgrade_in_event_loop(move |w| {
-                    if let Ok(mut g) = category_paths().lock() { *g = set; }
-                    apply_photo_filter(&w, &query);
-                });
+                // Stored before planning rather than inside the event-loop hop:
+                // `plan_photo_filter` reads this, and it now runs off-thread.
+                if let Ok(mut g) = category_paths().lock() { *g = set; }
+                refresh_photo_filter(weak, query, None, my_gen).await;
             }
         }
     });
@@ -699,43 +894,33 @@ pub fn month_label(unix: i64) -> String {
         .unwrap_or_else(|| "Undated".into())
 }
 
-/// Build the timeline date groups from `order` + the cached thumbs, set them
-/// on the window, and keep photo_paths in flattened group order for the viewer.
-pub fn populate_timeline(w: &MainWindow, order: Vec<(String, String)>, query: &str) {
-    use slint::{ModelRc, VecModel};
+/// Resolve which tiles the date-grouped timeline will show, and in which month
+/// group, without decoding any of them. Pure over the global caches, so it runs
+/// off the UI thread. Returns the groups plus the held-back count the
+/// "load more" button shows.
+pub fn plan_timeline(order: &[(String, String)], query: &str) -> (Vec<(String, Vec<TilePlan>)>, usize) {
     let q = query.trim().to_lowercase();
-    let cols = 6i32;
     let full = photo_full().lock().unwrap();
     let by_path: std::collections::HashMap<String, &(String, PathBuf, PathBuf)> =
         full.iter().map(|e| (e.1.to_string_lossy().into_owned(), e)).collect();
     let starred = starred_snapshot();
-
-    grid_models_reset();
-    let mut groups: Vec<PhotoGroup> = Vec::new();
-    let mut cur_label = String::new();
-    let mut cur: Vec<PhotoTile> = Vec::new();
-    let mut paths: Vec<PathBuf> = Vec::new();
-    let flush = |label: &str, tiles: &mut Vec<PhotoTile>, groups: &mut Vec<PhotoGroup>| {
-        if !tiles.is_empty() {
-            // Hold the VecModel so selection can repaint the group's tiles.
-            let model = std::rc::Rc::new(VecModel::from(std::mem::take(tiles)));
-            grid_models_push(model.clone());
-            groups.push(PhotoGroup { label: label.into(), tiles: ModelRc::from(model) });
-        }
-    };
+    let hits = search_hits_snapshot();
     let limit = photo_limit();
+
+    let mut groups: Vec<(String, Vec<TilePlan>)> = Vec::new();
+    let mut cur_label = String::new();
+    let mut cur: Vec<TilePlan> = Vec::new();
+    let mut taken = 0usize;
     let mut held_back = 0usize;
-    for (path, label) in &order {
+    for (path, label) in order {
         let Some((fname, orig, thumb)) = by_path.get(path).map(|e| (&e.0, &e.1, &e.2)) else { continue; };
-        if !q.is_empty() && !fname.to_lowercase().contains(&q) { continue; }
         let orig_str = orig.to_string_lossy().into_owned();
-        let (stack_count, is_hidden) = stack_info().lock().ok()
-            .map(|g| (g.0.get(&orig_str).copied().unwrap_or(0), g.1.contains(&orig_str)))
-            .unwrap_or_default();
+        if !matches_query(&q, &hits, fname, &orig_str) { continue; }
+        let (color_label, is_live, stack_count, is_hidden) = tile_flags(&orig_str);
         if is_hidden { continue; }
-        // Past the window — count the rest, decode none of it. Counted after
-        // the filters above so the number the button shows is the real one.
-        if paths.len() >= limit {
+        // Past the window — count the rest, plan none of it. Counted after the
+        // filters above so the number the button shows is the real one.
+        if taken >= limit {
             held_back += 1;
             continue;
         }
@@ -743,40 +928,90 @@ pub fn populate_timeline(w: &MainWindow, order: Vec<(String, String)>, query: &s
         // a photo that turns out to be filtered or held back, or the timeline
         // grows an empty "August 2026" above the load-more button.
         if *label != cur_label && !cur.is_empty() {
-            flush(&cur_label, &mut cur, &mut groups);
+            groups.push((std::mem::take(&mut cur_label), std::mem::take(&mut cur)));
         }
         cur_label = label.clone();
-        let color_label = color_labels().lock().ok()
-            .and_then(|g| g.get(&orig_str).cloned()).unwrap_or_default();
-        let item_id_opt = photo_item_ids().lock().ok().and_then(|g| g.get(&orig_str).copied());
-        let is_live = item_id_opt.map(|id| live_ids().lock().ok()
-            .map(|g| g.contains(&id)).unwrap_or(false)).unwrap_or(false);
-        let gi = paths.len() as i32;
-        cur.push(PhotoTile {
-            thumb: slint::Image::load_from_path(thumb).unwrap_or_default(),
-            label: fname.clone().into(),
-            col: gi % cols, row: gi / cols, index: gi,
+        cur.push(TilePlan {
+            thumb: thumb.clone(),
+            label: fname.clone(),
+            orig: orig.clone(),
             starred: starred.contains(path),
-            selected: false,
-            color_label: color_label.into(),
+            color_label,
             is_live,
             stack_count,
-            count: 0,
         });
-        paths.push(orig.clone());
+        taken += 1;
     }
-    flush(&cur_label, &mut cur, &mut groups);
-    drop(full);
+    if !cur.is_empty() { groups.push((cur_label, cur)); }
+    (groups, held_back)
+}
+
+/// Flatten a timeline plan into the decode list, in display order.
+pub fn timeline_thumb_paths(groups: &[(String, Vec<TilePlan>)]) -> Vec<PathBuf> {
+    groups.iter().flat_map(|(_, g)| g.iter().map(|t| t.thumb.clone())).collect()
+}
+
+/// Install a planned timeline with its already-decoded pixels. UI thread —
+/// everything here is a handle wrap or a model swap, no decoding.
+///
+/// Tile indices run across the whole grid rather than restarting per group, so
+/// `col`/`row` stay on one continuous lattice and the index a tile carries is
+/// the same one `photo_paths` is keyed by.
+pub fn build_timeline(
+    w: &MainWindow,
+    groups: Vec<(String, Vec<TilePlan>)>,
+    pixels: Vec<Option<TilePixels>>,
+    held_back: usize,
+) {
+    use slint::{ModelRc, VecModel};
+    let cols = 6i32;
+    grid_models_reset();
+    let mut pixels = pixels.into_iter();
+    let mut out: Vec<PhotoGroup> = Vec::with_capacity(groups.len());
+    let mut paths: Vec<PathBuf> = Vec::new();
+    for (label, plan) in groups {
+        let mine: Vec<Option<TilePixels>> = pixels.by_ref().take(plan.len()).collect();
+        let (tiles, mut group_paths) = build_tiles(plan, mine, cols, paths.len());
+        paths.append(&mut group_paths);
+        // Hold the VecModel so selection can repaint the group's tiles.
+        let model = std::rc::Rc::new(VecModel::from(tiles));
+        grid_models_push(model.clone());
+        out.push(PhotoGroup { label: label.into(), tiles: ModelRc::from(model) });
+    }
     *photo_paths().lock().unwrap() = paths;
-    w.set_photo_groups(ModelRc::new(VecModel::from(groups)));
+    w.set_photo_groups(ModelRc::new(VecModel::from(out)));
     w.set_photos_more(held_back as i32);
     refresh_selection_meta(w);
 }
 
-/// Build the Library folder list (one row per parent dir of the photo grid),
-/// optionally filtered by `query` against the folder name.
-pub fn populate_library(w: &MainWindow, query: &str) {
-    use slint::{ModelRc, VecModel};
+/// Plan, decode and install the timeline. The plan and every JPEG decode happen
+/// off the UI thread; the event loop only wraps finished pixels.
+pub async fn refresh_timeline(
+    weak: slint::Weak<MainWindow>,
+    order: Vec<(String, String)>,
+    query: String,
+    my_gen: u64,
+) {
+    let (groups, held_back) = plan_timeline(&order, &query);
+    let pixels = decode_tiles(timeline_thumb_paths(&groups)).await;
+    if refresh_superseded(my_gen) { return; }
+    let _ = weak.upgrade_in_event_loop(move |w| build_timeline(&w, groups, pixels, held_back));
+}
+
+/// One Library folder row (one per parent dir of the photo grid), resolved but
+/// not yet decoded.
+pub struct FolderPlan {
+    pub name: String,
+    pub path: String,
+    pub count: i32,
+    pub cover: PathBuf,
+}
+
+/// Resolve the Library folder list (one row per parent dir of the photo grid),
+/// filtered by `query` against the folder name and sorted per the selector.
+/// Sorting happens here, before the covers are decoded, so the decode order is
+/// the display order.
+pub fn plan_library(query: &str) -> Vec<FolderPlan> {
     let q = query.trim().to_lowercase();
     let full = photo_full().lock().unwrap();
     // dir → (count, first thumb path)
@@ -789,17 +1024,12 @@ pub fn populate_library(w: &MainWindow, query: &str) {
         e.0 += 1;
     }
     drop(full);
-    let mut rows: Vec<FolderRow> = order.into_iter().filter_map(|path| {
-        let (count, thumb) = map.remove(&path).unwrap();
+    let mut rows: Vec<FolderPlan> = order.into_iter().filter_map(|path| {
+        let (count, cover) = map.remove(&path).unwrap();
         let name = std::path::Path::new(&path).file_name()
             .and_then(|s| s.to_str()).unwrap_or(&path).to_string();
         if !q.is_empty() && !name.to_lowercase().contains(&q) { return None; }
-        Some(FolderRow {
-            name: name.into(),
-            path: path.into(),
-            count,
-            cover: slint::Image::load_from_path(&thumb).unwrap_or_default(),
-        })
+        Some(FolderPlan { name, path, count, cover })
     }).collect();
     // Sort by name or photo count, per the library sort selector.
     let (mode, dir) = lib_sort().lock().map(|g| g.clone()).unwrap_or_else(|_| ("name".into(), "asc".into()));
@@ -809,15 +1039,104 @@ pub fn populate_library(w: &MainWindow, query: &str) {
         rows.sort_by_key(|a| a.name.to_lowercase());
     }
     if dir == "desc" { rows.reverse(); }
+    rows
+}
+
+/// Install a planned Library list with its already-decoded covers. UI thread.
+pub fn build_library(w: &MainWindow, plan: Vec<FolderPlan>, pixels: Vec<Option<TilePixels>>) {
+    use slint::{ModelRc, VecModel};
+    let mut pixels = pixels.into_iter();
+    let rows: Vec<FolderRow> = plan.into_iter().map(|f| FolderRow {
+        name: f.name.into(),
+        path: f.path.into(),
+        count: f.count,
+        cover: tile_image(pixels.next().flatten()),
+    }).collect();
     w.set_photo_folders(ModelRc::new(VecModel::from(rows)));
 }
 
-/// Rebuild the photo grid from the retained full list, filtered by `query`
-/// (case-insensitive filename match). Keeps `photo_paths` in sync for the viewer.
-pub fn apply_photo_filter(w: &MainWindow, query: &str) {
+/// Plan, decode and install the Library folder list off the UI thread.
+pub async fn refresh_library(weak: slint::Weak<MainWindow>, query: String, my_gen: u64) {
+    let plan = plan_library(&query);
+    let pixels = decode_tiles(plan.iter().map(|f| f.cover.clone()).collect()).await;
+    if refresh_superseded(my_gen) { return; }
+    let _ = weak.upgrade_in_event_loop(move |w| build_library(&w, plan, pixels));
+}
+
+/// Resolve the Memories year rails (year → its photos) without decoding.
+pub fn plan_memory_rails(raw: Vec<(i32, String, Vec<String>)>) -> Vec<(i32, String, Vec<TilePlan>)> {
+    let starred = starred_snapshot();
+    let by_path: std::collections::HashMap<String, (String, PathBuf)> = {
+        let full = photo_full().lock().unwrap();
+        full.iter().map(|e| (e.1.to_string_lossy().into_owned(), (e.0.clone(), e.2.clone()))).collect()
+    };
+    raw.into_iter().map(|(year, ago, paths)| {
+        let tiles: Vec<TilePlan> = paths.iter().filter_map(|p| {
+            by_path.get(p).map(|(label, thumb)| {
+                let (color_label, is_live, stack_count, _hidden) = tile_flags(p);
+                TilePlan {
+                    thumb: thumb.clone(),
+                    label: label.clone(),
+                    orig: PathBuf::from(p),
+                    starred: starred.contains(p),
+                    color_label,
+                    is_live,
+                    stack_count,
+                }
+            })
+        }).collect();
+        (year, ago, tiles)
+    }).collect()
+}
+
+/// Install planned Memories rails with their decoded pixels. UI thread.
+/// A rail is a single-row strip, so a tile's column is its position in the rail.
+pub fn build_memory_rails(
+    w: &MainWindow,
+    rails: Vec<(i32, String, Vec<TilePlan>)>,
+    pixels: Vec<Option<TilePixels>>,
+) {
     use slint::{ModelRc, VecModel};
+    let mut pixels = pixels.into_iter();
+    let out: Vec<MemoryRail> = rails.into_iter().map(|(year, ago, plan)| {
+        let tiles: Vec<PhotoTile> = plan.into_iter().enumerate().map(|(i, t)| PhotoTile {
+            thumb: tile_image(pixels.next().flatten()),
+            label: t.label.into(),
+            col: i as i32,
+            row: 0,
+            index: i as i32,
+            starred: t.starred,
+            selected: false,
+            color_label: t.color_label.into(),
+            is_live: t.is_live,
+            stack_count: t.stack_count,
+            count: 0,
+        }).collect();
+        MemoryRail { year, ago: ago.into(), tiles: ModelRc::new(VecModel::from(tiles)) }
+    }).collect();
+    w.set_photo_memory_rails(ModelRc::new(VecModel::from(out)));
+}
+
+/// Plan, decode and install the Memories year rails off the UI thread.
+pub async fn refresh_memory_rails(
+    weak: slint::Weak<MainWindow>,
+    raw: Vec<(i32, String, Vec<String>)>,
+    my_gen: u64,
+) {
+    let rails = plan_memory_rails(raw);
+    let paths: Vec<PathBuf> = rails.iter()
+        .flat_map(|(_, _, t)| t.iter().map(|x| x.thumb.clone())).collect();
+    let pixels = decode_tiles(paths).await;
+    if refresh_superseded(my_gen) { return; }
+    let _ = weak.upgrade_in_event_loop(move |w| build_memory_rails(&w, rails, pixels));
+}
+
+/// Resolve the flat grid from the retained full list, filtered by `query`
+/// (case-insensitive filename match) and by the active category, without
+/// decoding any of it. Pure over the global caches, so it runs off the UI
+/// thread. Returns the tiles plus the held-back count.
+pub fn plan_photo_filter(query: &str) -> (Vec<TilePlan>, usize) {
     let q = query.trim().to_lowercase();
-    let cols = 6i32;
     // Active category filter: None = recent fallback (all photos).
     let cat = category_paths().lock().ok().and_then(|g| g.clone());
     let full = photo_full().lock().unwrap();
@@ -833,47 +1152,47 @@ pub fn apply_photo_filter(w: &MainWindow, query: &str) {
         _ => full.iter().collect(),
     };
     let starred = starred_snapshot();
+    let hits = search_hits_snapshot();
 
     let limit = photo_limit();
     let mut held_back = 0usize;
-    let mut tiles: Vec<PhotoTile> = Vec::new();
-    let mut paths: Vec<PathBuf> = Vec::new();
+    let mut plan: Vec<TilePlan> = Vec::new();
     for (label, orig, thumb) in ordered {
-        if !q.is_empty() && !label.to_lowercase().contains(&q) { continue; }
         let orig_str = orig.to_string_lossy().into_owned();
+        if !matches_query(&q, &hits, label, &orig_str) { continue; }
         if let Some(c) = &cat {
             if !c.set.contains(&orig_str) { continue; }
         }
-        let (stack_count, is_hidden) = stack_info().lock().ok()
-            .map(|g| (g.0.get(&orig_str).copied().unwrap_or(0), g.1.contains(&orig_str)))
-            .unwrap_or_default();
+        let (color_label, is_live, stack_count, is_hidden) = tile_flags(&orig_str);
         if is_hidden { continue; }
         // Past the window: keep walking, so the "N more" count is exact after
-        // every filter above, but build nothing. The decode below is what costs.
-        if tiles.len() >= limit {
+        // every filter above, but plan nothing. The decode is what costs.
+        if plan.len() >= limit {
             held_back += 1;
             continue;
         }
-        let color_label = color_labels().lock().ok()
-            .and_then(|g| g.get(&orig_str).cloned()).unwrap_or_default();
-        let item_id_opt = photo_item_ids().lock().ok().and_then(|g| g.get(&orig_str).copied());
-        let is_live = item_id_opt.map(|id| live_ids().lock().ok()
-            .map(|g| g.contains(&id)).unwrap_or(false)).unwrap_or(false);
-        let i = tiles.len() as i32;
-        tiles.push(PhotoTile {
-            thumb: slint::Image::load_from_path(thumb).unwrap_or_default(),
-            label: label.clone().into(),
-            col: i % cols, row: i / cols, index: i,
+        plan.push(TilePlan {
+            thumb: thumb.clone(),
+            label: label.clone(),
+            orig: orig.clone(),
             starred: starred.contains(&orig_str),
-            selected: false,
-            color_label: color_label.into(),
+            color_label,
             is_live,
             stack_count,
-            count: 0,
         });
-        paths.push(orig.clone());
     }
-    drop(full);
+    (plan, held_back)
+}
+
+/// Install a planned flat grid with its already-decoded pixels. UI thread.
+pub fn build_photo_filter(
+    w: &MainWindow,
+    plan: Vec<TilePlan>,
+    pixels: Vec<Option<TilePixels>>,
+    held_back: usize,
+) {
+    use slint::{ModelRc, VecModel};
+    let (tiles, paths) = build_tiles(plan, pixels, 6, 0);
     *photo_paths().lock().unwrap() = paths;
     grid_models_reset();
     let model = std::rc::Rc::new(VecModel::from(tiles));
@@ -881,6 +1200,38 @@ pub fn apply_photo_filter(w: &MainWindow, query: &str) {
     w.set_photo_tiles(ModelRc::from(model));
     w.set_photos_more(held_back as i32);
     refresh_selection_meta(w);
+}
+
+/// Title + category to switch to as part of the same rebuild, for the drill-in
+/// call sites (person / tag / album) that change the view and repopulate it in
+/// one step. Applied in the same event-loop hop as the finished grid, so the
+/// header never briefly names a view the grid has not caught up with.
+pub struct GridHeader {
+    pub title: String,
+    pub category: String,
+}
+
+/// Plan, decode and install the flat filtered grid. The plan and every JPEG
+/// decode happen off the UI thread; the event loop only wraps finished pixels.
+///
+/// Callers that need `category_paths` to hold a particular set must store it
+/// before calling — the plan reads it.
+pub async fn refresh_photo_filter(
+    weak: slint::Weak<MainWindow>,
+    query: String,
+    header: Option<GridHeader>,
+    my_gen: u64,
+) {
+    let (plan, held_back) = plan_photo_filter(&query);
+    let pixels = decode_tiles(plan.iter().map(|t| t.thumb.clone()).collect()).await;
+    if refresh_superseded(my_gen) { return; }
+    let _ = weak.upgrade_in_event_loop(move |w| {
+        if let Some(h) = header {
+            w.set_photos_filter_title(h.title.into());
+            w.set_photos_category(h.category.into());
+        }
+        build_photo_filter(&w, plan, pixels, held_back);
+    });
 }
 
 // ── People / Things tabs (np.p2.ai.face-clusters / .name / .tags) ──────────
@@ -1201,6 +1552,56 @@ pub fn incremented_stem(dir: &std::path::Path, base: &str, ext: &str) -> String 
     }
     format!("{base}-edit")
 }
+
+/// Path to an installed model blob, or `None` when it has not been downloaded.
+///
+/// `<data>/models/<name>-<version>/<name>.onnx` — the layout
+/// `ai::models::local_path` writes to.
+pub fn installed_model(name: &str, version: &str) -> Option<PathBuf> {
+    let p = tulipix_photos::ai::models::models_root()?
+        .join(format!("{name}-{version}"))
+        .join(format!("{name}.onnx"));
+    p.exists().then_some(p)
+}
+
+/// The COCO-80 object tagger, when both the feature and the blob are present.
+///
+/// Returns `None` rather than a Null tagger on purpose: the background indexer
+/// must be able to tell "no detector" from "detector found nothing", because
+/// only the second one should mark a photo considered.
+#[cfg(feature = "ai-onnx")]
+pub fn make_tagger() -> Option<Box<dyn tulipix_photos::ai::tags::Tagger>> {
+    let p = installed_model("yolox-s", "1.0.0")?;
+    match tulipix_photos::ai::onnx::OrtTagger::load(&p) {
+        Ok(t) => Some(Box::new(t)),
+        Err(e) => { tracing::error!(error = %e, "OrtTagger load failed"); None }
+    }
+}
+#[cfg(not(feature = "ai-onnx"))]
+pub fn make_tagger() -> Option<Box<dyn tulipix_photos::ai::tags::Tagger>> { None }
+
+/// Face detection + recognition. Both or neither — detection alone fills
+/// `faces` with rows that can never be clustered.
+#[cfg(feature = "ai-onnx")]
+pub fn make_face_models() -> Option<(
+    Box<dyn tulipix_photos::ai::faces::FaceDetector>,
+    Box<dyn tulipix_photos::ai::faces::FaceEmbedder>,
+)> {
+    let det_path = installed_model("face-det-500m", "1.0.0")?;
+    let rec_path = installed_model("face-rec-500m", "1.0.0")?;
+    let det = tulipix_photos::ai::onnx::OrtFaceDetector::load(&det_path)
+        .map_err(|e| tracing::error!(error = %e, "OrtFaceDetector load failed"))
+        .ok()?;
+    let rec = tulipix_photos::ai::onnx::OrtFaceEmbedder::load(&rec_path)
+        .map_err(|e| tracing::error!(error = %e, "OrtFaceEmbedder load failed"))
+        .ok()?;
+    Some((Box::new(det), Box::new(rec)))
+}
+#[cfg(not(feature = "ai-onnx"))]
+pub fn make_face_models() -> Option<(
+    Box<dyn tulipix_photos::ai::faces::FaceDetector>,
+    Box<dyn tulipix_photos::ai::faces::FaceEmbedder>,
+)> { None }
 
 /// Resolve the super-resolution model path: `TULIPIX_SR_MODEL` env override,
 /// else `<data>/models/swin2sr-x4.onnx`. None ⇒ no real model installed.

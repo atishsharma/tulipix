@@ -3,6 +3,14 @@
 # The dev binary can't be launched directly from a file manager — it needs the
 # repo as its working dir plus SLINT_LIVE_PREVIEW + the dev-reload watcher env.
 # This script sets all of that, capped at a safe memory budget (no infinite swap).
+#
+# The feature list at the bottom must stay byte-identical to `just run-dev-lite`:
+# both build into target-dev-lite, so any difference re-codegens the app crate on
+# every alternation between the two entry points. It had drifted to a set that
+# could not build at all — `lazy-whisper` and `lazy-ai-ep` were removed from
+# tulipix-app, and cargo rejects an unknown feature before compiling anything, so
+# this launcher and the installed .desktop entry both failed to start. It also
+# dropped genesis/finances, which --no-default-features makes mandatory to name.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
@@ -18,4 +26,4 @@ exec systemd-run --user --scope --unit=tulipix-run-dev-lite \
     --config 'profile.dev.package."*".codegen-backend="llvm"' \
     run -j 1 -p tulipix-app \
     --no-default-features \
-    --features renderer-femtovg,alloc-mimalloc,dev-reload,lazy-whisper,lazy-ai-ep,ai-onnx
+    --features renderer-femtovg,alloc-mimalloc,dev-reload,ai-onnx,genesis,finances

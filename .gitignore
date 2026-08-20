@@ -55,6 +55,7 @@ target/
 target-dev/
 target-dev-lite/
 target-test/
+target-lint/
 .rtk/
 .windsurfrules
 tulipix_plan.html
@@ -71,3 +72,6 @@ mdl/
 MovieBox-Tui/
 # Tomesole upstream source — local reference only
 Tomesole/
+
+# Spartan AI config (contains API keys)
+.spartan/ai.env

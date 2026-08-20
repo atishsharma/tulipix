@@ -100,7 +100,7 @@ CREATE TABLE IF NOT EXISTS item_tags (
     item_id    INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
     tag_id     INTEGER NOT NULL REFERENCES tags(id)  ON DELETE CASCADE,
     confidence REAL    NOT NULL DEFAULT 1.0,
-    source     TEXT    NOT NULL DEFAULT 'user', -- 'user' | 'yolov8' | 'clip'
+    source     TEXT    NOT NULL DEFAULT 'user', -- 'user' | a Tagger::source() | 'clip'
     PRIMARY KEY (item_id, tag_id)
 );
 CREATE INDEX IF NOT EXISTS item_tags_tag_idx ON item_tags(tag_id);
@@ -138,6 +138,27 @@ CREATE TABLE IF NOT EXISTS edit_clipboard (
     ops     TEXT NOT NULL,
     copied  INTEGER NOT NULL
 );
+
+-- What the background indexer has ALREADY TRIED for an item, per stage.
+--
+-- Deliberately records the attempt, not the result. "Pending" cannot be
+-- "produced no rows": a photo with no faces in it produces no `faces` rows, a
+-- photo of scenery produces no `item_tags`, and a screenshot has no EXIF date —
+-- so a queue defined by missing results would hand back the same items forever
+-- and the indexer would never finish, burning CPU every time the machine went
+-- idle. A row here means "considered", which is what makes the queue drain.
+--
+-- `model` is the model name+version for the stages that use one, so bumping a
+-- model can invalidate exactly its own stage by deleting those rows and nothing
+-- else.
+CREATE TABLE IF NOT EXISTS photo_ai_state (
+    item_id  INTEGER NOT NULL REFERENCES items(id) ON DELETE CASCADE,
+    stage    TEXT NOT NULL,
+    done_at  INTEGER NOT NULL,
+    model    TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (item_id, stage)
+);
+CREATE INDEX IF NOT EXISTS photo_ai_state_stage_idx ON photo_ai_state(stage);
 "#;
 
 pub async fn apply(pool: &SqlitePool) -> Result<()> {

@@ -1,5 +1,5 @@
 use crate::paths;
-use anyhow::Result;
+use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -81,6 +81,33 @@ pub fn kind_for(ext: &str) -> ThumbKind {
         "zip" | "tar" | "gz" | "xz" | "bz2" | "7z" | "rar" => ThumbKind::Archive,
         "pdf" | "docx" | "doc" | "odt" | "rtf" | "txt" | "md" => ThumbKind::Doc,
         _ => ThumbKind::OsFallback,
+    }
+}
+
+/// Which decoder produces a photo thumbnail for a given extension.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhotoDecoder {
+    /// The `image` crate, in this process.
+    InProcess,
+    /// An `ffmpeg` subprocess — the container/codec needs libheif or libraw.
+    Ffmpeg,
+}
+
+/// Pick the decoder for a photo extension.
+///
+/// Everything used to go to ffmpeg, which meant a process spawn per photo even
+/// for a plain JPEG the `image` crate reads in-process in microseconds. On an
+/// import that is one spawn per file, serially, and it dominated the thumbnail
+/// stage. ffmpeg is still the only option for HEIC/AVIF/JXL and the raw formats,
+/// which need the bundled build's libheif/libraw.
+///
+/// Extensions not listed are the ones `kind_for` never maps to `Photo`; they
+/// answer `Ffmpeg` so an unexpected caller keeps the old behaviour rather than
+/// handing the `image` crate something it cannot read.
+pub fn photo_decoder(ext: &str) -> PhotoDecoder {
+    match ext.to_ascii_lowercase().as_str() {
+        "jpg" | "jpeg" | "png" | "webp" | "gif" | "bmp" | "tif" | "tiff" => PhotoDecoder::InProcess,
+        _ => PhotoDecoder::Ffmpeg,
     }
 }
 
@@ -304,6 +331,58 @@ fn run_ok(mut cmd: Command) -> Result<()> {
 }
 
 fn render_photo(src: &Path, out: &Path, spec: ThumbSpec) -> Result<()> {
+    let ext = src.extension().and_then(|e| e.to_str()).unwrap_or("");
+    match photo_decoder(ext) {
+        PhotoDecoder::InProcess => render_photo_native(src, out, spec).or_else(|native_err| {
+            // A truncated or unusual file the `image` crate refuses may still
+            // decode in ffmpeg, so the old path stays as the fallback — it is
+            // just no longer the default for formats we can read ourselves.
+            render_photo_ffmpeg(src, out, spec)
+                .with_context(|| format!("in-process decode failed: {native_err:#}"))
+        }),
+        // HEIC/AVIF/JXL and the raw formats need libheif/libraw; the `image`
+        // features we build cannot read them, so there is nothing to fall back to.
+        PhotoDecoder::Ffmpeg => render_photo_ffmpeg(src, out, spec),
+    }
+}
+
+/// Decode, orient and scale a photo in this process, writing PNG.
+///
+/// PNG because `thumb_path` names the whole cache `.png`; written with an
+/// explicit format rather than inferred from the path, because `render_or_cache`
+/// hands this a `.tmp.png` staging sibling.
+fn render_photo_native(src: &Path, out: &Path, spec: ThumbSpec) -> Result<()> {
+    use image::ImageDecoder;
+
+    let mut decoder = image::ImageReader::open(src)
+        .with_context(|| format!("open {}", src.display()))?
+        .with_guessed_format()?
+        .into_decoder()?;
+    // EXIF orientation is metadata: decoding does not apply it, but ffmpeg does,
+    // so skipping this would lay every portrait phone photo on its side the day
+    // the decoder changed. Absent or unreadable orientation means no transform.
+    let orientation = decoder.orientation().unwrap_or(image::metadata::Orientation::NoTransforms);
+    let mut img = image::DynamicImage::from_decoder(decoder)
+        .with_context(|| format!("decode {}", src.display()))?;
+    img.apply_orientation(orientation);
+    // Clamp the box to the image before scaling, mirroring the `min(W,iw)` /
+    // `min(H,ih)` in the ffmpeg filter. `DynamicImage::thumbnail` alone is NOT
+    // equivalent: its ratio is `min(w_ratio, h_ratio)` with no ceiling, so a
+    // 40×25 source would come back upscaled to 320×200 — bigger in the cache
+    // and blurrier on screen than the original it came from.
+    //
+    // Measured after `apply_orientation`, since a 90° turn swaps the sides.
+    let box_w = spec.width.min(img.width());
+    let box_h = spec.height.min(img.height());
+    let thumb = img.thumbnail(box_w, box_h);
+    if let Some(p) = out.parent() { std::fs::create_dir_all(p)?; }
+    thumb
+        .save_with_format(out, image::ImageFormat::Png)
+        .with_context(|| format!("encode thumb {}", out.display()))?;
+    Ok(())
+}
+
+fn render_photo_ffmpeg(src: &Path, out: &Path, spec: ThumbSpec) -> Result<()> {
     // Use ffmpeg's image2 demuxer — handles JPEG/PNG/WebP/HEIC/AVIF/RAW via libheif/libraw
     // if the bundled build was compiled with them. The default BtbN GPL build covers HEIC + AVIF.
     let ff = bundled_bin("ffmpeg").unwrap_or_else(|| PathBuf::from("ffmpeg"));
@@ -320,8 +399,8 @@ fn render_photo(src: &Path, out: &Path, spec: ThumbSpec) -> Result<()> {
     c.arg(out);
     run_ok(c)?;
     // Reject a degenerate output (ffmpeg can exit 0 yet write a tiny invalid
-    // PNG for unusual inputs) so the caller's pure-Rust fallback runs instead
-    // of caching an undecodable thumb forever.
+    // PNG for unusual inputs) rather than caching an undecodable thumb forever:
+    // `render_or_cache` deletes the staging file and reports the failure.
     match std::fs::metadata(out) {
         Ok(m) if m.len() >= 256 => Ok(()),
         _ => anyhow::bail!("ffmpeg produced a degenerate thumbnail"),
@@ -525,6 +604,80 @@ mod tests {
         assert_eq!(kind_for("mkv"), ThumbKind::Video);
         assert_eq!(kind_for("epub"), ThumbKind::Book);
         assert_eq!(kind_for("xyz"), ThumbKind::OsFallback);
+    }
+
+    #[test]
+    fn photo_decoder_routes_by_extension() {
+        // Everything the `image` features cover decodes in-process...
+        for e in ["jpg", "JPEG", "png", "webp", "gif", "bmp", "tif", "tiff"] {
+            assert_eq!(photo_decoder(e), PhotoDecoder::InProcess, "{e}");
+        }
+        // ...and the container/codec families that need libheif or libraw do not.
+        for e in ["heic", "heif", "avif", "jxl", "cr2", "nef", "arw", "dng", "orf"] {
+            assert_eq!(photo_decoder(e), PhotoDecoder::Ffmpeg, "{e}");
+        }
+    }
+
+    /// 16×8 JPEG tagged EXIF Orientation=6 (rotate 90° CW), so applying the
+    /// orientation swaps it to 8×16.
+    ///
+    /// ffmpeg autorotates from EXIF, so when the in-process decoder took over
+    /// it had to as well — `image` does not apply orientation as part of
+    /// decoding. Without this every portrait phone photo lands in the grid on
+    /// its side, which is silent, and looks like a UI bug rather than a decoder
+    /// one. The dimension swap pins it.
+    #[test]
+    fn native_render_applies_exif_orientation() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("rot.jpg");
+        std::fs::write(&src, include_bytes!("../fixtures/exif-orientation-6.jpg")).unwrap();
+        let out = tmp.path().join("out.png");
+        render_photo_native(&src, &out, ThumbSpec::default()).unwrap();
+        let img = image::ImageReader::open(&out).unwrap().decode().unwrap();
+        assert_eq!(
+            (img.width(), img.height()),
+            (8, 16),
+            "EXIF orientation was not applied — portrait photos will render sideways"
+        );
+    }
+
+    #[test]
+    fn native_render_fits_box_and_never_upscales() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("wide.png");
+        image::RgbImage::from_pixel(800, 400, image::Rgb([10, 20, 30])).save(&src).unwrap();
+        let out = tmp.path().join("wide-thumb.png");
+        render_photo_native(&src, &out, ThumbSpec::default()).unwrap();
+        let img = image::ImageReader::open(&out).unwrap().decode().unwrap();
+        // Fits inside 320×320 with the aspect ratio kept, same as ffmpeg's
+        // scale=min(w,iw):min(h,ih):force_original_aspect_ratio=decrease.
+        assert_eq!((img.width(), img.height()), (320, 160));
+
+        // An image already smaller than the box comes back untouched. This is
+        // the clamp, not `thumbnail` — its ratio has no ceiling, so without the
+        // `min` it would enlarge this to 320×200.
+        let small = tmp.path().join("small.png");
+        image::RgbImage::from_pixel(40, 25, image::Rgb([1, 2, 3])).save(&small).unwrap();
+        let small_out = tmp.path().join("small-thumb.png");
+        render_photo_native(&small, &small_out, ThumbSpec::default()).unwrap();
+        let img = image::ImageReader::open(&small_out).unwrap().decode().unwrap();
+        assert_eq!((img.width(), img.height()), (40, 25));
+    }
+
+    /// The renderer writes PNG regardless of the path it is handed — the cache
+    /// stages through a `.tmp.png` sibling, so inferring the format from the
+    /// extension is exactly the thing not to do here.
+    #[test]
+    fn native_render_writes_png_to_a_tmp_suffixed_path() {
+        let tmp = tempfile::tempdir().unwrap();
+        let src = tmp.path().join("in.jpg");
+        image::RgbImage::from_pixel(64, 64, image::Rgb([9, 9, 9])).save(&src).unwrap();
+        let out = tmp.path().join("abc123.tmp.png");
+        render_photo_native(&src, &out, ThumbSpec::default()).unwrap();
+        // Magic bytes, not `ImageReader::format()`: that one infers from the
+        // path extension, so it would answer PNG here whatever we had written.
+        let written = std::fs::read(&out).unwrap();
+        assert_eq!(&written[..8], b"\x89PNG\r\n\x1a\n", "expected a PNG on disk");
     }
 
     #[test]

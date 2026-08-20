@@ -42,6 +42,22 @@ pub fn on_change<F: Fn(bool) + Send + Sync + 'static>(f: F) {
 
 pub fn is_idle() -> bool { IDLE_NOW.load(Ordering::Relaxed) == 1 }
 
+/// Seconds since the last input, regardless of the auto-lock threshold.
+///
+/// `is_idle()` answers "has the *auto-lock* threshold been crossed", and that
+/// threshold is a user setting which defaults to off — parked a year out. A
+/// consumer with its own idea of idle (the background indexer waits ten
+/// minutes) has to measure the interval itself rather than ask a question
+/// phrased in terms of somebody else's deadline.
+///
+/// Zero until the first `mark_active`, so a session that has seen no input yet
+/// reads as busy rather than as idle since the epoch.
+pub fn idle_secs() -> u64 {
+    let last = LAST_ACTIVE_EPOCH.load(Ordering::Relaxed);
+    if last == 0 { return 0; }
+    now_secs().saturating_sub(last)
+}
+
 /// Pure tick — exposed for tests + caller-owned timers. Returns the new state.
 pub fn tick(now: u64) -> bool {
     let last = LAST_ACTIVE_EPOCH.load(Ordering::Relaxed);
