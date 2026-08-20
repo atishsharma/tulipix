@@ -1460,6 +1460,12 @@ export component HomeWelcome inherits Rectangle {
     // The 15s hold clock. Lives out here rather than in the card so it is not
     // torn down and rebuilt every time `hc-player` or the card's own `if`
     // changes — a timer that restarts itself is a timer that never fires.
+    // Kicked through root, not directly: the caller sits inside `if
+    // root.hc-player`, which is its own sub-component, and Slint's codegen
+    // resolves `hold.restart()` against that one (E0609 "no field timer0").
+    // This handler compiles in root's scope, where the timer lives.
+    callback hold-kick();
+    hold-kick => { hold.restart(); }
     hold := Timer {
         interval: 15s; running: root.bar-hold;
         triggered => { root.bar-hold = false; }
@@ -1515,7 +1521,7 @@ export component HomeWelcome inherits Rectangle {
             changed has-hover => {
                 root.bar-peek = self.has-hover;
                 root.bar-hold = true;
-                hold.restart();
+                root.hold-kick();
             }
         }
         // Sunk: only the top `stub-h` of the card is above the floor, so the one

@@ -625,6 +625,14 @@ export component HomeCinema inherits Rectangle {
     // Continue is a slideshow: the hero steps through the tabs on its own, ten
     // seconds each, and a click on a tab both selects it and restarts the clock
     // so the page never yanks an item out from under you.
+    //
+    // The restart hops through root rather than being called where it is
+    // wanted: Slint's codegen resolves `slide.restart()` against the
+    // sub-component the call sits in, and a repeated tile is its own
+    // sub-component (E0609 "no field timer0"). A callback body declared here
+    // compiles in root's scope, where the timer actually lives.
+    callback slide-kick();
+    slide-kick => { slide.restart(); }
     slide := Timer {
         interval: 10s;
         running: root.hc-hero && root.rail-on && root.continue-rows.length > 1;
@@ -1169,7 +1177,7 @@ export component HomeCinema inherits Rectangle {
                             : (c.kind == "podcast" ? #8b5cf6
                             : (c.kind == "book" ? Theme.sec-books : #3b82f6));
                         // Selects, never opens — the hero above carries Resume.
-                        open => { root.hero-sel = i; slide.restart(); }
+                        open => { root.hero-sel = i; root.slide-kick(); }
                     }
                 }
             }
