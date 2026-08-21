@@ -17,6 +17,10 @@ use std::sync::Mutex;
 
 /// Tiles fetched per page. `ShowMore` grows the window by another one of these.
 const PAGE: i64 = 240;
+/// Upper bound when a drill-down resolves through a domain call that takes a
+/// limit rather than a page. Matches the ceiling the Slint glue uses for its
+/// starred and archive lists.
+const DRILL_MAX: i64 = 100_000;
 /// Grid thumbnail tier. `tulipix_photos::thumbs::SIZES` also renders 512/1024
 /// for the viewer; the grid never needs those.
 const GRID_DIM: u32 = 256;
@@ -39,6 +43,12 @@ pub struct PhotoTile {
     pub trashed: bool,
     pub width: i64,
     pub height: i64,
+    /// >1 when this tile is the cover of a stack, and how many it stands for.
+    pub stack_size: i64,
+    /// The stack this tile covers, so the grid can expand or break it.
+    pub stack_id: i64,
+    /// True when a sibling video or an MP4 trailer makes this a live photo.
+    pub live: bool,
 }
 
 /// One date bucket of the timeline, e.g. "May 2026". Empty when the grid is
@@ -66,6 +76,55 @@ pub struct AlbumCard {
     pub smart: bool,
 }
 
+/// A face cluster. `name` is empty until the user names it -- the whole point
+/// of the tab is turning strangers into names, so unnamed clusters are shown,
+/// not hidden.
+#[derive(Debug, Clone)]
+pub struct PersonCard {
+    pub id: i64,
+    pub name: String,
+    pub count: i64,
+    pub cover: String,
+}
+
+/// A detected object tag and how many live photos carry it.
+#[derive(Debug, Clone)]
+pub struct TagCard {
+    pub id: i64,
+    pub name: String,
+    pub count: i64,
+    pub cover: String,
+}
+
+/// Two members of one duplicate cluster, side by side. Clusters can hold more
+/// than two; the Slint tab shows the first two and so does this.
+#[derive(Debug, Clone)]
+pub struct DedupePair {
+    pub cluster_id: i64,
+    /// sha256 (byte-identical) or phash (visually near-identical).
+    pub kind: String,
+    pub left: PhotoTile,
+    pub right: PhotoTile,
+}
+
+/// A map pin: one bucket of geotagged photos.
+#[derive(Debug, Clone)]
+pub struct MapPin {
+    pub lat: f64,
+    pub lon: f64,
+    pub count: i64,
+    pub cover: String,
+}
+
+/// The area every geotagged photo falls inside -- the map's opening viewport.
+#[derive(Debug, Clone)]
+pub struct MapBounds {
+    pub min_lat: f64,
+    pub min_lon: f64,
+    pub max_lat: f64,
+    pub max_lon: f64,
+}
+
 #[derive(Debug, Clone)]
 pub struct PhotosState {
     pub category: String,
@@ -79,10 +138,28 @@ pub struct PhotosState {
     pub folder_count: i64,
     /// 0 when not viewing a single album.
     pub album_id: i64,
+    /// 0 when not drilled into one person.
+    pub person_id: i64,
+    /// Empty when not drilled into one tag. Carried so the header can name the
+    /// tag without Dart having to search `things` for the id.
+    pub tag_name: String,
     pub tiles: Vec<PhotoTile>,
     pub groups: Vec<PhotoGroup>,
     pub folders: Vec<FolderRow>,
     pub albums: Vec<AlbumCard>,
+    pub people: Vec<PersonCard>,
+    pub things: Vec<TagCard>,
+    pub dedupe: Vec<DedupePair>,
+    pub pins: Vec<MapPin>,
+    /// None when nothing carries GPS, which is also when the map has nothing
+    /// to open onto.
+    pub bounds: Option<MapBounds>,
+    /// True when an MBTiles basemap was found. Without one the Places tab has
+    /// pins and nothing to draw them over, so it stays a grid.
+    pub has_basemap: bool,
+    /// name | count | size, for the Library tab's own sort.
+    pub lib_sort: String,
+    pub lib_sort_dir: String,
 }
 
 // -------------------------------------------------------------- commands ----
@@ -91,13 +168,18 @@ pub struct PhotosState {
 pub enum PhotosCmd {
     /// Re-read the current view. Sent on mount and after an external change.
     Refresh,
-    /// One of: recent, starred, archive, trash, places, album, library.
+    /// One of: recent, starred, archive, trash, places, album, library,
+    /// memories, people, facephotos, things, tagphotos.
     SetCategory { name: String },
     Search { query: String },
     /// mode: date | name | size. dir: desc | asc.
     SetSort { mode: String, dir: String },
     ShowMore,
     OpenAlbum { album_id: i64 },
+    OpenPerson { person_id: i64 },
+    OpenTag { tag_id: i64, name: String },
+    /// Empty name un-names the cluster, matching `people::set_name`.
+    RenamePerson { person_id: i64, name: String },
     Star { item_id: i64, starred: bool },
     Archive { item_ids: Vec<i64>, archived: bool },
     Trash { item_ids: Vec<i64> },
@@ -107,6 +189,15 @@ pub enum PhotosCmd {
     AlbumDelete { album_id: i64 },
     AlbumAdd { album_id: i64, item_ids: Vec<i64> },
     AddFolder { path: String },
+    /// The folder list sorts independently of the photo grid: one sorts
+    /// folders, the other photos, and "name" means a different thing to each.
+    SetLibSort { mode: String, dir: String },
+    /// Keep one of a duplicate pair and trash the other.
+    DedupeResolve { keep_item_id: i64, trash_item_id: i64 },
+    /// Show or hide a stack's members in the grid.
+    ToggleStack { stack_id: i64, expanded: bool },
+    /// Break a stack up; its members become ordinary tiles again.
+    Unstack { stack_id: i64 },
     Scan,
 }
 
@@ -135,6 +226,11 @@ struct Session {
     sort_dir: String,
     limit: i64,
     album_id: i64,
+    person_id: i64,
+    tag_id: i64,
+    tag_name: String,
+    lib_sort: String,
+    lib_sort_dir: String,
 }
 
 impl Default for Session {
@@ -146,6 +242,11 @@ impl Default for Session {
             sort_dir: "desc".into(),
             limit: PAGE,
             album_id: 0,
+            person_id: 0,
+            tag_id: 0,
+            tag_name: String::new(),
+            lib_sort: "name".into(),
+            lib_sort_dir: "asc".into(),
         }
     }
 }
@@ -183,8 +284,17 @@ pub async fn photos_dispatch(cmd: PhotosCmd) -> Result<PhotosState> {
             let mut s = lock();
             // A tab switch is a new view, so the page window resets with it.
             s.limit = PAGE;
+            // Leaving a drill-down clears what it was drilled into, so a
+            // later Refresh cannot resurrect a stale album, person or tag.
             if name != "album" {
                 s.album_id = 0;
+            }
+            if name != "facephotos" {
+                s.person_id = 0;
+            }
+            if name != "tagphotos" {
+                s.tag_id = 0;
+                s.tag_name = String::new();
             }
             s.category = name;
         }
@@ -204,6 +314,22 @@ pub async fn photos_dispatch(cmd: PhotosCmd) -> Result<PhotosState> {
             s.limit = PAGE;
             s.category = "album".into();
             s.album_id = album_id;
+        }
+        PhotosCmd::OpenPerson { person_id } => {
+            let mut s = lock();
+            s.limit = PAGE;
+            s.category = "facephotos".into();
+            s.person_id = person_id;
+        }
+        PhotosCmd::OpenTag { tag_id, name } => {
+            let mut s = lock();
+            s.limit = PAGE;
+            s.category = "tagphotos".into();
+            s.tag_id = tag_id;
+            s.tag_name = name;
+        }
+        PhotosCmd::RenamePerson { person_id, name } => {
+            tulipix_photos::ai::people::set_name(pool, person_id, &name).await?;
         }
         PhotosCmd::Star { item_id, starred } => {
             tulipix_photos::star::set(pool, item_id, starred).await?;
@@ -238,7 +364,30 @@ pub async fn photos_dispatch(cmd: PhotosCmd) -> Result<PhotosState> {
             add_watched_folder(Path::new(&path));
             scan_watched(pool).await;
         }
-        PhotosCmd::Scan => scan_watched(pool).await,
+        PhotosCmd::SetLibSort { mode, dir } => {
+            let mut s = lock();
+            s.lib_sort = mode;
+            s.lib_sort_dir = dir;
+        }
+        PhotosCmd::DedupeResolve { keep_item_id, trash_item_id } => {
+            // Trash, never delete: the whole point of a soft delete is that a
+            // wrong call about which of two near-identical photos to keep is
+            // recoverable from the Trash tab.
+            let _ = keep_item_id;
+            tulipix_photos::trash::soft_delete(pool, &[trash_item_id]).await?;
+        }
+        PhotosCmd::ToggleStack { stack_id, expanded } => {
+            tulipix_photos::stacks::set_expanded(pool, stack_id, expanded).await?;
+            invalidate_badges();
+        }
+        PhotosCmd::Unstack { stack_id } => {
+            tulipix_photos::stacks::unstack(pool, stack_id).await?;
+            invalidate_badges();
+        }
+        PhotosCmd::Scan => {
+            scan_watched(pool).await;
+            invalidate_badges();
+        }
     }
 
     snapshot(pool).await
@@ -251,6 +400,34 @@ pub fn photos_events(sink: StreamSink<PhotosEvent>) {
     if let Ok(mut sinks) = events().lock() {
         sinks.push(sink);
     }
+}
+
+/// One basemap tile as PNG bytes, or None when there is no basemap or the
+/// tile is past the edge of it.
+///
+/// MBTiles stores tiles in TMS order, where y counts from the bottom; every
+/// slippy-map widget ever written counts from the top. The flip lives here so
+/// the Dart side can think in ordinary XYZ.
+pub async fn photos_map_tile(z: u32, x: u32, y: u32) -> Result<Option<Vec<u8>>> {
+    let Some(pool) = basemap_pool().await else { return Ok(None) };
+    let flipped = (1u32 << z).saturating_sub(1).saturating_sub(y);
+    tulipix_photos::map::tile(pool, z, x, flipped).await
+}
+
+async fn basemap_pool() -> Option<&'static sqlx::SqlitePool> {
+    static P: tokio::sync::OnceCell<Option<sqlx::SqlitePool>> = tokio::sync::OnceCell::const_new();
+    P.get_or_init(|| async {
+        let path = basemap_path()?;
+        match tulipix_photos::map::open_mbtiles(&path).await {
+            Ok(p) => Some(p),
+            Err(e) => {
+                tracing::warn!(error = %e, "basemap open failed");
+                None
+            }
+        }
+    })
+    .await
+    .as_ref()
 }
 
 /// Render the grid thumbnail for one item if the cache does not already hold
@@ -284,6 +461,147 @@ pub async fn photos_ensure_thumb(item_id: i64) -> Result<Option<String>> {
     })
 }
 
+// ---------------------------------------------------------------- viewer ----
+
+/// One line of the viewer's info panel.
+#[derive(Debug, Clone)]
+pub struct ExifRow {
+    pub label: String,
+    pub value: String,
+}
+
+/// Everything the full-size viewer needs for one photo. `tile` carries the
+/// path, dimensions and flags the grid already has; `exif` is the part that is
+/// far too expensive to put in a snapshot of 240 tiles.
+#[derive(Debug, Clone)]
+pub struct PhotoDetail {
+    pub tile: PhotoTile,
+    pub size: i64,
+    pub exif: Vec<ExifRow>,
+}
+
+/// Describe one photo. The viewer's cursor -- which photo is current, what
+/// next and prev mean -- stays in Dart, which already holds the ordered tile
+/// list the last snapshot returned. Putting it in Rust would mean re-running
+/// the whole grid query on every arrow key to answer a question Dart can
+/// already answer, so this asks Rust exactly one thing: describe this id.
+pub async fn photos_item_detail(item_id: i64) -> Result<Option<PhotoDetail>> {
+    let pool = photos_pool().await?;
+    let sql = format!("{TILE_SELECT} WHERE items.id = ?");
+    let row = sqlx::query_as::<sqlx::Sqlite, TileRow>(&sql)
+        .bind(item_id)
+        .fetch_optional(pool)
+        .await?;
+    let Some(row) = row else { return Ok(None) };
+    let size = row.3;
+    let tile = into_tile(row);
+    let path = PathBuf::from(&tile.path);
+    // Opening the file and walking its EXIF segment is blocking IO on a path
+    // that may be a slow disk or a network mount.
+    let exif = tokio::task::spawn_blocking(move || exif_rows(&path)).await?;
+    Ok(Some(PhotoDetail { tile, size, exif }))
+}
+
+/// The same 24 attributes `tulipix_sec_photos::exif_rows` shows, in the same
+/// order, with the same em-dash for a missing tag. Duplicated rather than
+/// imported because that crate links slint, and nothing the bridge links may.
+/// If a field is added there, add it here -- the two lists drifting apart is a
+/// parity bug that no compiler will catch.
+fn exif_rows(path: &Path) -> Vec<ExifRow> {
+    use exif::{In, Reader, Tag};
+    let size = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
+    let dims = image::image_dimensions(path).ok();
+    let ext = path.extension().and_then(|s| s.to_str()).unwrap_or("").to_uppercase();
+    let meta = std::fs::File::open(path).ok().and_then(|f| {
+        let mut br = std::io::BufReader::new(f);
+        Reader::new().read_from_container(&mut br).ok()
+    });
+    let g = |tag: Tag| -> String {
+        meta.as_ref()
+            .and_then(|e| {
+                e.get_field(tag, In::PRIMARY)
+                    .map(|f| f.display_value().with_unit(e).to_string())
+            })
+            .unwrap_or_else(|| MISSING.into())
+    };
+    let row = |label: &str, value: String| ExifRow { label: label.into(), value };
+    vec![
+        row(
+            "File",
+            path.file_name()
+                .and_then(|s| s.to_str())
+                .unwrap_or(MISSING)
+                .to_string(),
+        ),
+        row("Format", if ext.is_empty() { MISSING.into() } else { ext }),
+        row("Size", human_size(size)),
+        row(
+            "Dimensions",
+            dims.map(|(w, h)| format!("{w} \u{d7} {h}"))
+                .unwrap_or_else(|| MISSING.into()),
+        ),
+        row("Date taken", g(Tag::DateTimeOriginal)),
+        row("Date digit.", g(Tag::DateTimeDigitized)),
+        row("Camera make", g(Tag::Make)),
+        row("Camera model", g(Tag::Model)),
+        row("Lens", g(Tag::LensModel)),
+        row("ISO", g(Tag::PhotographicSensitivity)),
+        row("Aperture", g(Tag::FNumber)),
+        row("Shutter", g(Tag::ExposureTime)),
+        row("Exp. program", g(Tag::ExposureProgram)),
+        row("Exp. comp.", g(Tag::ExposureBiasValue)),
+        row("Metering", g(Tag::MeteringMode)),
+        row("Flash", g(Tag::Flash)),
+        row("Focal length", g(Tag::FocalLength)),
+        row("Focal 35mm", g(Tag::FocalLengthIn35mmFilm)),
+        row("White bal.", g(Tag::WhiteBalance)),
+        row("Color space", g(Tag::ColorSpace)),
+        row("Orientation", g(Tag::Orientation)),
+        row("GPS", {
+            let lat = g(Tag::GPSLatitude);
+            let lon = g(Tag::GPSLongitude);
+            if lat == MISSING && lon == MISSING {
+                MISSING.into()
+            } else {
+                format!("{lat}, {lon}")
+            }
+        }),
+        row("Software", g(Tag::Software)),
+        row("Artist", g(Tag::Artist)),
+    ]
+}
+
+/// Placeholder for a tag the file does not carry. Matches the Slint panel.
+const MISSING: &str = "\u{2014}";
+
+/// Scaled unit plus the thousands-separated raw count, exactly as
+/// `tulipix_common::human_size` renders it. That crate links slint too.
+fn human_size(bytes: u64) -> String {
+    let b = bytes as f64;
+    let (val, unit) = if b >= 1_073_741_824.0 {
+        (b / 1_073_741_824.0, "GB")
+    } else if b >= 1_048_576.0 {
+        (b / 1_048_576.0, "MB")
+    } else if b >= 1024.0 {
+        (b / 1024.0, "KB")
+    } else {
+        (b, "bytes")
+    };
+    let digits = bytes.to_string();
+    let mut raw = String::new();
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            raw.push(',');
+        }
+        raw.push(c);
+    }
+    if unit == "bytes" {
+        format!("{raw} bytes")
+    } else {
+        format!("{val:.2} {unit} ({raw} bytes)")
+    }
+}
+
 // ------------------------------------------------------------- internals ----
 
 fn lock() -> std::sync::MutexGuard<'static, Session> {
@@ -298,8 +616,22 @@ async fn snapshot(pool: &sqlx::SqlitePool) -> Result<PhotosState> {
 
     let (tiles, total) = load_tiles(pool, &s).await?;
     let groups = if s.sort_mode == "date" { group_by_month(&tiles) } else { Vec::new() };
-    let folders = folders(pool).await?;
+    let mut folders = folders(pool).await?;
+    sort_folders(&mut folders, &s.lib_sort, &s.lib_sort_dir);
     let albums = albums(pool).await?;
+    // Cards for the two tabs that show a grid of clusters rather than photos.
+    // Both are cheap enough to carry in every snapshot: `people` is one row per
+    // cluster and `things` is one row per tag, not one per photo.
+    let people = people(pool).await?;
+    let things = things(pool).await?;
+    // Only the tab that shows them pays for them: a duplicate scan reads every
+    // cluster, and pin clustering walks every geotagged photo.
+    let dedupe = if s.category == "dedupe" { dedupe_pairs(pool).await? } else { Vec::new() };
+    let (pins, bounds) = if s.category == "places" {
+        map_view(pool).await?
+    } else {
+        (Vec::new(), None)
+    };
 
     Ok(PhotosState {
         item_count: total,
@@ -310,15 +642,26 @@ async fn snapshot(pool: &sqlx::SqlitePool) -> Result<PhotosState> {
         sort_mode: s.sort_mode,
         sort_dir: s.sort_dir,
         album_id: s.album_id,
+        person_id: s.person_id,
+        tag_name: s.tag_name,
         tiles,
         groups,
         folders,
         albums,
+        people,
+        things,
+        dedupe,
+        pins,
+        bounds,
+        has_basemap: basemap_path().is_some(),
+        lib_sort: s.lib_sort,
+        lib_sort_dir: s.lib_sort_dir,
     })
 }
 
 /// Rows the grid needs, plus the unpaged total for the "show more" count.
 async fn load_tiles(pool: &sqlx::SqlitePool, s: &Session) -> Result<(Vec<PhotoTile>, i64)> {
+    let b = badges(pool).await;
     // A search is its own ranking, so it takes the FTS path and the category
     // filter narrows the hits rather than the other way round.
     if !s.query.trim().is_empty() {
@@ -332,26 +675,88 @@ async fn load_tiles(pool: &sqlx::SqlitePool, s: &Session) -> Result<(Vec<PhotoTi
         return Ok((rows, total));
     }
 
-    let (where_sql, bind_album) = category_filter(&s.category);
+    let mut where_sql = category_filter(pool, s).await?;
+    // Collapsed stacks show one tile, not forty. Trash is exempt: a member
+    // hidden behind a cover must still be findable after it is deleted.
+    if !b.hidden.is_empty() && s.category != "trash" {
+        let list = b.hidden.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        where_sql = format!("{where_sql} AND items.id NOT IN ({list})");
+    }
     let order = order_by(&s.sort_mode, &s.sort_dir);
 
     let count_sql = format!(
         "SELECT COUNT(*) FROM items LEFT JOIN photo_meta pm ON pm.item_id = items.id WHERE {where_sql}"
     );
-    let mut cq = sqlx::query_scalar::<sqlx::Sqlite, i64>(&count_sql);
-    if bind_album {
-        cq = cq.bind(s.album_id);
-    }
-    let total = cq.fetch_one(pool).await?;
+    let total = sqlx::query_scalar::<sqlx::Sqlite, i64>(&count_sql)
+        .fetch_one(pool)
+        .await?;
 
     let sql = format!("{TILE_SELECT} WHERE {where_sql} ORDER BY {order} LIMIT ?");
-    let mut q = sqlx::query_as::<sqlx::Sqlite, TileRow>(&sql);
-    if bind_album {
-        q = q.bind(s.album_id);
-    }
-    let rows = q.bind(s.limit).fetch_all(pool).await?;
+    let rows = sqlx::query_as::<sqlx::Sqlite, TileRow>(&sql)
+        .bind(s.limit)
+        .fetch_all(pool)
+        .await?;
 
-    Ok((rows.into_iter().map(into_tile).collect(), total))
+    Ok((rows.into_iter().map(|r| into_tile_with(r, &b)).collect(), total))
+}
+
+/// Stack membership and live-photo detection for the whole library.
+///
+/// Cached because `live_photos::detect_in_library` opens every candidate file
+/// to look for an MP4 trailer -- fine once, ruinous per snapshot, and a
+/// snapshot happens on every keystroke. Invalidated by anything that can move
+/// a photo in or out of a stack.
+#[frb(ignore)]
+#[derive(Default)]
+struct Badges {
+    /// item_id of a stack cover -> how many photos it stands for.
+    stack_size: std::collections::HashMap<i64, i64>,
+    stack_id: std::collections::HashMap<i64, i64>,
+    /// Members that are not the cover of a collapsed stack, hidden from the
+    /// grid so a burst of 40 frames reads as one photo.
+    hidden: Vec<i64>,
+    live: std::collections::HashSet<i64>,
+}
+
+fn badge_cache() -> &'static Mutex<Option<std::sync::Arc<Badges>>> {
+    static B: std::sync::OnceLock<Mutex<Option<std::sync::Arc<Badges>>>> =
+        std::sync::OnceLock::new();
+    B.get_or_init(|| Mutex::new(None))
+}
+
+fn invalidate_badges() {
+    if let Ok(mut g) = badge_cache().lock() {
+        *g = None;
+    }
+}
+
+async fn badges(pool: &sqlx::SqlitePool) -> std::sync::Arc<Badges> {
+    if let Ok(g) = badge_cache().lock() {
+        if let Some(b) = g.as_ref() {
+            return b.clone();
+        }
+    }
+    let mut b = Badges::default();
+    if let Ok(stacks) = tulipix_photos::stacks::list(pool).await {
+        for st in stacks {
+            b.stack_size.insert(st.cover_id, st.member_ids.len() as i64);
+            b.stack_id.insert(st.cover_id, st.id);
+        }
+    }
+    b.hidden = tulipix_photos::stacks::hidden_ids(pool)
+        .await
+        .map(|h| h.into_iter().collect())
+        .unwrap_or_default();
+    // A failure here means no badges, not no photos: a library on a network
+    // mount should still show a grid.
+    if let Ok(live) = tulipix_photos::live_photos::detect_in_library(pool).await {
+        b.live = live.into_iter().map(|l| l.still_item_id).collect();
+    }
+    let arc = std::sync::Arc::new(b);
+    if let Ok(mut g) = badge_cache().lock() {
+        *g = Some(arc.clone());
+    }
+    arc
 }
 
 const TILE_SELECT: &str = "SELECT items.id, items.abs_path, items.mtime, items.size, \
@@ -365,6 +770,10 @@ const TILE_SELECT: &str = "SELECT items.id, items.abs_path, items.mtime, items.s
 type TileRow = (i64, String, i64, i64, i64, i64, i64, i64, i64, i64);
 
 fn into_tile(row: TileRow) -> PhotoTile {
+    into_tile_with(row, &Badges::default())
+}
+
+fn into_tile_with(row: TileRow, badges: &Badges) -> PhotoTile {
     let (id, abs, mtime, size, taken, starred, archived, trashed, w, h) = row;
     let src = Path::new(&abs);
     // Only report a thumb the cache already holds. Rendering here would
@@ -387,6 +796,9 @@ fn into_tile(row: TileRow) -> PhotoTile {
         trashed: trashed != 0,
         width: w,
         height: h,
+        stack_size: badges.stack_size.get(&id).copied().unwrap_or(0),
+        stack_id: badges.stack_id.get(&id).copied().unwrap_or(0),
+        live: badges.live.contains(&id),
     }
 }
 
@@ -404,34 +816,60 @@ async fn rows_for_ids(pool: &sqlx::SqlitePool, ids: &[i64]) -> Result<Vec<PhotoT
 
 /// The WHERE clause per tab, and whether it carries an `album_id` placeholder.
 /// Mirrors `tulipix_sec_photos::category_path_set`.
-fn category_filter(category: &str) -> (&'static str, bool) {
-    match category {
-        "starred" => (
-            "items.missing_since IS NULL AND pm.deleted_at IS NULL AND pm.starred = 1",
-            false,
+/// The WHERE clause for one category.
+///
+/// Async because three of these resolve through the domain crates before they
+/// are a filter at all: Memories is a date computation, People is a face join,
+/// and both hand back an id list rather than a predicate. Ids are i64 read out
+/// of our own tables, so they format straight into the SQL -- nothing the user
+/// typed is ever interpolated, which is why the search path stays separate.
+async fn category_filter(pool: &sqlx::SqlitePool, s: &Session) -> Result<String> {
+    const LIVE: &str = "items.missing_since IS NULL AND pm.deleted_at IS NULL";
+    Ok(match s.category.as_str() {
+        "starred" => format!("{LIVE} AND pm.starred = 1"),
+        "archive" => format!("{LIVE} AND pm.archived = 1"),
+        "trash" => "pm.deleted_at IS NOT NULL".into(),
+        "places" => format!("{LIVE} AND pm.gps_lat IS NOT NULL AND pm.gps_lon IS NOT NULL"),
+        "album" => format!(
+            "{LIVE} AND items.id IN \
+             (SELECT item_id FROM album_items WHERE album_id = {})",
+            s.album_id
         ),
-        "archive" => (
-            "items.missing_since IS NULL AND pm.deleted_at IS NULL AND pm.archived = 1",
-            false,
-        ),
-        "trash" => ("pm.deleted_at IS NOT NULL", false),
-        "places" => (
-            "items.missing_since IS NULL AND pm.deleted_at IS NULL \
-             AND pm.gps_lat IS NOT NULL AND pm.gps_lon IS NOT NULL",
-            false,
-        ),
-        "album" => (
-            "items.missing_since IS NULL AND pm.deleted_at IS NULL \
-             AND items.id IN (SELECT item_id FROM album_items WHERE album_id = ?)",
-            true,
+        "memories" => {
+            let hits = tulipix_photos::memories::on_this_day(pool, now_secs()).await?;
+            id_in(LIVE, hits.into_iter().map(|h| h.item_id))
+        }
+        "facephotos" => {
+            let rows =
+                tulipix_photos::ai::people::photos_of(pool, s.person_id, DRILL_MAX).await?;
+            id_in(LIVE, rows.into_iter().map(|(id, _)| id))
+        }
+        // Both tabs draw cards, not photos. Without this they would run a
+        // 240-row grid query whose result nothing reads.
+        "people" | "things" | "dedupe" => "0 = 1".into(),
+        "tagphotos" => format!(
+            "{LIVE} AND items.id IN (SELECT item_id FROM item_tags WHERE tag_id = {})",
+            s.tag_id
         ),
         // recent, and anything unrecognised: the default library view.
-        _ => (
-            "items.missing_since IS NULL AND pm.deleted_at IS NULL \
-             AND COALESCE(pm.archived, 0) = 0",
-            false,
-        ),
+        _ => format!("{LIVE} AND COALESCE(pm.archived, 0) = 0"),
+    })
+}
+
+/// `... AND items.id IN (...)`, or a clause matching nothing when the list is
+/// empty -- SQLite rejects `IN ()` outright, so an empty People cluster would
+/// be a query error rather than an empty grid.
+fn id_in(live: &str, ids: impl Iterator<Item = i64>) -> String {
+    let list = ids.map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    if list.is_empty() {
+        "0 = 1".into()
+    } else {
+        format!("{live} AND items.id IN ({list})")
     }
+}
+
+fn now_secs() -> i64 {
+    chrono::Utc::now().timestamp()
 }
 
 fn order_by(mode: &str, dir: &str) -> String {
@@ -467,24 +905,204 @@ fn month_label(unix: i64) -> String {
 }
 
 async fn albums(pool: &sqlx::SqlitePool) -> Result<Vec<AlbumCard>> {
-    let rows: Vec<(i64, String, Option<String>, i64, Option<String>)> = sqlx::query_as(
+    let rows: Vec<(i64, String, Option<String>, i64, Option<i64>)> = sqlx::query_as(
         "SELECT a.id, a.name, a.smart_rule, \
                 (SELECT COUNT(*) FROM album_items ai WHERE ai.album_id = a.id), \
-                (SELECT items.abs_path FROM album_items ai \
-                   JOIN items ON items.id = ai.item_id \
+                (SELECT ai.item_id FROM album_items ai \
                   WHERE ai.album_id = a.id ORDER BY ai.sort_key LIMIT 1) \
          FROM albums a ORDER BY a.updated DESC",
     )
     .fetch_all(pool)
     .await?;
+    let covers = covers(pool, rows.iter().filter_map(|r| r.4)).await?;
     Ok(rows
         .into_iter()
         .map(|(id, name, smart, count, cover)| AlbumCard {
             id,
             name,
             count,
-            cover: cover.unwrap_or_default(),
+            cover: cover.and_then(|c| covers.get(&c).cloned()).unwrap_or_default(),
             smart: smart.is_some(),
+        })
+        .collect())
+}
+
+/// One row per face cluster. Prefers the cluster's cover face crop -- a People
+/// grid made of whole photos is a grid of scenes, not of faces -- and falls
+/// back to the person's newest photo when no crop has been rendered yet.
+/// Order matches `ai::people::list`: named clusters first, then by id.
+/// item_id -> the cheapest image on disk for a card cover: the cached grid
+/// thumb when it has been rendered, else the original. One query for every
+/// card on the page, rather than one per card.
+///
+/// A cover is a 150px circle or a 200px rectangle. Handing Dart the original
+/// means decoding a 12 MB file to fill it, once per card, on every scroll --
+/// which is exactly the stutter the thumb cache exists to prevent.
+async fn covers(
+    pool: &sqlx::SqlitePool,
+    ids: impl Iterator<Item = i64>,
+) -> Result<std::collections::HashMap<i64, String>> {
+    let list = ids.map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+    if list.is_empty() {
+        return Ok(std::collections::HashMap::new());
+    }
+    let sql = format!("SELECT id, abs_path, mtime, size FROM items WHERE id IN ({list})");
+    let rows = sqlx::query_as::<sqlx::Sqlite, (i64, String, i64, i64)>(&sql)
+        .fetch_all(pool)
+        .await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, abs, mtime, size)| {
+            let thumb =
+                tulipix_photos::thumbs::thumb_path(Path::new(&abs), mtime, size as u64, GRID_DIM)
+                    .filter(|p| p.exists())
+                    .map(|p| p.to_string_lossy().into_owned());
+            (id, thumb.unwrap_or(abs))
+        })
+        .collect())
+}
+
+/// Duplicate clusters, two members each. Mirrors the query
+/// `tulipix_sec_photos::load_dedupe_groups` runs, including its 2,000-row cap:
+/// a library with tens of thousands of near-duplicates should not be able to
+/// turn one tab into a full-table scan.
+async fn dedupe_pairs(pool: &sqlx::SqlitePool) -> Result<Vec<DedupePair>> {
+    let rows: Vec<(i64, String, i64)> = sqlx::query_as(
+        "SELECT dm.cluster_id, dc.kind, dm.item_id \
+         FROM dedup_members dm JOIN dedup_clusters dc ON dc.id = dm.cluster_id \
+         WHERE (SELECT COUNT(*) FROM dedup_members WHERE cluster_id = dm.cluster_id) >= 2 \
+         ORDER BY dm.cluster_id, dm.item_id LIMIT 2000",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    let mut grouped: std::collections::BTreeMap<i64, (String, Vec<i64>)> = Default::default();
+    for (cid, kind, item_id) in rows {
+        let e = grouped.entry(cid).or_insert_with(|| (kind, Vec::new()));
+        if e.1.len() < 2 {
+            e.1.push(item_id);
+        }
+    }
+    let ids: Vec<i64> = grouped.values().flat_map(|(_, m)| m.iter().copied()).collect();
+    let tiles = rows_for_ids(pool, &ids).await?;
+    let by_id: std::collections::HashMap<i64, PhotoTile> =
+        tiles.into_iter().map(|t| (t.item_id, t)).collect();
+
+    Ok(grouped
+        .into_iter()
+        .filter_map(|(cluster_id, (kind, members))| {
+            // A cluster whose second member has since been trashed is no longer
+            // a decision to make, so it stops being a row.
+            let left = by_id.get(members.first()?)?.clone();
+            let right = by_id.get(members.get(1)?)?.clone();
+            Some(DedupePair { cluster_id, kind, left, right })
+        })
+        .collect())
+}
+
+/// The MBTiles basemap, if the user has one. Looked for where the Slint build
+/// looks: `<data>/maps/basemap.mbtiles`.
+fn basemap_path() -> Option<PathBuf> {
+    let p = tulipix_core::paths::data_dir()?.join("maps").join("basemap.mbtiles");
+    p.exists().then_some(p)
+}
+
+/// Pins and the viewport that holds them. `precision` is the bucket size in
+/// degrees; 0.5 is roughly a city, which is what the "1042 photos here" pin
+/// pattern wants at an opening zoom.
+async fn map_view(pool: &sqlx::SqlitePool) -> Result<(Vec<MapPin>, Option<MapBounds>)> {
+    const PIN_PRECISION: f64 = 0.5;
+    let clusters = tulipix_photos::map::cluster_pins(pool, PIN_PRECISION).await?;
+    let covers = covers(pool, clusters.iter().map(|c| c.cover_item_id)).await?;
+    let pins = clusters
+        .into_iter()
+        .map(|c| MapPin {
+            lat: c.lat,
+            lon: c.lon,
+            count: c.count as i64,
+            cover: covers.get(&c.cover_item_id).cloned().unwrap_or_default(),
+        })
+        .collect();
+    let bounds = tulipix_photos::map::bbox_for_photos(pool).await?.map(|b| MapBounds {
+        min_lat: b.min_lat,
+        min_lon: b.min_lon,
+        max_lat: b.max_lat,
+        max_lon: b.max_lon,
+    });
+    Ok((pins, bounds))
+}
+
+/// The Library tab sorts folders, not photos. `name` there is a directory
+/// name and `size` is the photo count's weight on disk, so it cannot share the
+/// grid's comparator.
+fn sort_folders(rows: &mut [FolderRow], mode: &str, dir: &str) {
+    match mode {
+        "count" => rows.sort_by_key(|f| f.count),
+        "path" => rows.sort_by(|a, b| a.path.cmp(&b.path)),
+        _ => rows.sort_by(|a, b| a.name.to_lowercase().cmp(&b.name.to_lowercase())),
+    }
+    if dir == "desc" {
+        rows.reverse();
+    }
+}
+
+async fn people(pool: &sqlx::SqlitePool) -> Result<Vec<PersonCard>> {
+    let rows: Vec<(i64, Option<String>, i64, Option<String>, Option<i64>)> = sqlx::query_as(
+        "SELECT p.id, p.name, \
+                (SELECT COUNT(*) FROM faces f WHERE f.person_id = p.id), \
+                (SELECT f.crop_path FROM faces f WHERE f.id = p.cover_face), \
+                (SELECT f.item_id FROM faces f \
+                   JOIN items ON items.id = f.item_id \
+                  WHERE f.person_id = p.id ORDER BY items.added DESC LIMIT 1) \
+         FROM people p ORDER BY (p.name IS NULL), p.name, p.id",
+    )
+    .fetch_all(pool)
+    .await?;
+    let crop_dir = tulipix_photos::ai::faces::face_thumbs_dir();
+    let covers = covers(pool, rows.iter().filter_map(|r| r.4)).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, count, crop, newest)| PersonCard {
+            id,
+            name: name.unwrap_or_default(),
+            count,
+            cover: crop
+                .filter(|c| !c.is_empty())
+                .and_then(|c| crop_dir.as_ref().map(|d| d.join(c)))
+                .filter(|p| p.exists())
+                .map(|p| p.to_string_lossy().into_owned())
+                .or_else(|| newest.and_then(|n| covers.get(&n).cloned()))
+                .unwrap_or_default(),
+        })
+        .collect())
+}
+
+/// One row per object tag. The filter mirrors `ai::tags::things` exactly --
+/// live, untrashed, unarchived -- with the tag id and a cover added, which
+/// that function does not return. If its WHERE clause changes, change this.
+async fn things(pool: &sqlx::SqlitePool) -> Result<Vec<TagCard>> {
+    let rows: Vec<(i64, String, i64, Option<i64>)> = sqlx::query_as(
+        "SELECT t.id, t.name, COUNT(it.item_id) AS c, \
+                (SELECT it2.item_id FROM item_tags it2 \
+                   JOIN items ON items.id = it2.item_id \
+                  WHERE it2.tag_id = t.id ORDER BY items.added DESC LIMIT 1) \
+         FROM tags t \
+         JOIN item_tags it ON it.tag_id = t.id \
+         JOIN items i ON i.id = it.item_id \
+         JOIN photo_meta pm ON pm.item_id = i.id \
+         WHERE i.missing_since IS NULL AND pm.deleted_at IS NULL AND pm.archived = 0 \
+         GROUP BY t.id HAVING c > 0 ORDER BY c DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+    let covers = covers(pool, rows.iter().filter_map(|r| r.3)).await?;
+    Ok(rows
+        .into_iter()
+        .map(|(id, name, count, cover)| TagCard {
+            id,
+            name,
+            count,
+            cover: cover.and_then(|c| covers.get(&c).cloned()).unwrap_or_default(),
         })
         .collect())
 }
@@ -624,14 +1242,10 @@ mod tests {
     }
 
     #[test]
-    fn only_album_filter_takes_a_bind() {
-        for cat in ["recent", "starred", "archive", "trash", "places", "nonsense"] {
-            let (sql, bind) = category_filter(cat);
-            assert!(!bind, "{cat} should not bind");
-            assert!(!sql.contains('?'), "{cat} placeholder count must match binds");
-        }
-        let (sql, bind) = category_filter("album");
-        assert!(bind);
-        assert_eq!(sql.matches('?').count(), 1);
+    fn an_empty_id_list_is_a_clause_that_matches_nothing() {
+        // SQLite rejects `IN ()` outright, so a person with no live photos
+        // has to become a false predicate rather than a syntax error.
+        assert_eq!(id_in("live", std::iter::empty()), "0 = 1");
+        assert_eq!(id_in("live", [7, 9].into_iter()), "live AND items.id IN (7,9)");
     }
 }

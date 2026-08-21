@@ -16,6 +16,7 @@ class PhotoTileView extends StatefulWidget {
     required this.controller,
     required this.selected,
     required this.onTap,
+    this.onStackMenu,
     required this.onToggleSelect,
   });
 
@@ -23,6 +24,9 @@ class PhotoTileView extends StatefulWidget {
   final PhotosController controller;
   final bool selected;
   final VoidCallback onTap;
+  /// Null when the tile is not a stack cover. Takes the tap position, so the
+  /// menu opens on the badge and not in the corner of the window.
+  final void Function(TapDownDetails)? onStackMenu;
   final VoidCallback onToggleSelect;
 
   @override
@@ -94,6 +98,48 @@ class _PhotoTileViewState extends State<PhotoTileView> {
                   border: Border.all(color: Tokens.secPhotos, width: 3),
                   borderRadius: BorderRadius.circular(2),
                 ),
+              ),
+            // A stack shows one tile that stands for many; the count is the
+            // only thing that says the other frames exist. Tapping it expands
+            // the stack rather than opening the cover.
+            if (widget.tile.stackSize > 1)
+              Positioned(
+                top: 6,
+                right: 6,
+                child: GestureDetector(
+                  onTapDown: widget.onStackMenu,
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                    decoration: BoxDecoration(
+                      color: const Color(0xB3000000),
+                      borderRadius: BorderRadius.circular(9),
+                    ),
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.layers,
+                            size: 11, color: Colors.white),
+                        const SizedBox(width: 3),
+                        Text(
+                          '${widget.tile.stackSize}',
+                          style: const TextStyle(
+                            fontSize: 10.5,
+                            fontWeight: FontWeight.w600,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            if (widget.tile.live)
+              const Positioned(
+                top: 6,
+                left: 6,
+                child: _TileGlyph(
+                    icon: Icons.motion_photos_on, color: Color(0xFFFFFFFF)),
               ),
             if (widget.tile.starred)
               const Positioned(

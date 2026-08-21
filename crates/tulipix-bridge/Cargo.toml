@@ -22,6 +22,13 @@ license = "Apache-2.0"
 #
 # Precedent in reverse: crates/tulipix-plugins is deliberately `exclude`d from
 # the root workspace for the same build-cost reason.
+#
+# The second lock is the part that needs tending. It resolves independently, so
+# it drifts from the root's — it had reached 148 crates apart, with this one the
+# older of the two, which meant the frozen domain crates were compiling here
+# against versions nothing else had proven. Re-run `cargo update` in this
+# directory whenever the root lock moves; the versions the root ships are the
+# ones tulipix-photos is known to build with.
 [workspace]
 
 [lib]
@@ -39,6 +46,12 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+# The viewer's info panel. Feature lists match tulipix-photos exactly: cargo
+# unifies features across a dependency graph, so asking for a wider set here
+# would pull the AVIF/EXR encoders into a build that already compiles `image`.
+kamadak-exif = "0.6"
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 
 # Frozen domain crates, by relative path. Deliberately NOT tulipix-common: that
 # crate depends on slint, and nothing the bridge links may.

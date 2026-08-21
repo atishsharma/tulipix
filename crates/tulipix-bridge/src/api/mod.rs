@@ -1,5 +1,6 @@
 //! The Dart-facing surface. Three to four exported symbols per section.
 
+pub mod editor;
 pub mod photos;
 
 /// Runs once, before any other bridge call, from `RustLib.init()` on the Dart
