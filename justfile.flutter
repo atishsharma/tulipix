@@ -1,0 +1,103 @@
+# Flutter port recipes — run with: just --justfile justfile.flutter <recipe>
+#
+# Separate file on purpose: the root `justfile` is frozen for the duration of
+# the port (docs/flutter-port-plan.html §02). Nothing here edits it.
+
+set shell := ["bash", "-uc"]
+
+# 4 threads and 8 GB on this box: rustc's own parallelism plus ninja's is what
+# pushes a build into swap. Cap once, here, rather than remembering per command.
+export CARGO_BUILD_JOBS := env("CARGO_BUILD_JOBS", "2")
+export RUSTC_WRAPPER := env("RUSTC_WRAPPER", if path_exists("/usr/bin/sccache") == "true" { "sccache" } else { "" })
+
+root    := justfile_directory()
+bridge  := root / "crates/tulipix-bridge"
+app     := root / "app_flutter"
+# Throwaway data dir. `seed` copies the real DBs in; nothing ever copies out.
+sandbox := root / ".flutter-sandbox"
+
+default:
+    @just --justfile {{justfile()}} --list
+
+# --- one-time setup -------------------------------------------------------
+
+# Fill in the desktop runner scaffolding flutter_create owns (linux/, windows/,
+# macos/). Safe to re-run: it only adds what is missing.
+scaffold:
+    cd {{app}} && flutter create --platforms=linux,windows,macos --org com.tulipix .
+
+# Install the codegen CLI. Its version must match the `flutter_rust_bridge`
+# crate version in crates/tulipix-bridge/Cargo.toml, or generate refuses.
+install-codegen:
+    cargo install flutter_rust_bridge_codegen --locked
+
+# Wire cargokit into the Flutter project so `flutter build` also builds the
+# bridge crate. ONE-TIME. Re-running clobbers lib/main.dart, adds a demo
+# api/simple.rs that collides with api/mod.rs, and rewrites rust_builder/**
+# back to expecting a library called rust_lib_tulipix -- this crate builds
+# libtulipix_bridge.so, so those four build files have been corrected by hand.
+integrate:
+    cd {{app}} && flutter_rust_bridge_codegen integrate --rust-crate-dir ../crates/tulipix-bridge
+
+# Generate the FFI layer: app_flutter/lib/src/rust/** and the bridge's
+# frb_generated.rs. Run after every change to crates/tulipix-bridge/src/api/.
+# Config lives at app_flutter/flutter_rust_bridge.yaml, written by `integrate`.
+# `pub get` first: frb reads pubspec.LOCK to resolve freezed, so a pubspec edit
+# that has not been resolved yet looks to it like a missing dependency.
+gen:
+    cd {{app}} && flutter pub get
+    cd {{app}} && flutter_rust_bridge_codegen generate
+
+# --- dev ------------------------------------------------------------------
+
+# NEVER point the Flutter build at the real data directory. Section schemas
+# apply on open, silently and one-directionally — a Flutter build that opens
+# the real photos.db can migrate it forward under the shipping app's feet.
+seed:
+    mkdir -p {{sandbox}}/data {{sandbox}}/config {{sandbox}}/cache
+    # Self-ignoring: the sandbox holds a copy of the real settings.json and the
+    # section databases. The root .gitignore is frozen, so the rule lives here.
+    printf '*\n' > {{sandbox}}/.gitignore
+    cp -n ~/.local/share/Tulipix/*.db {{sandbox}}/data/ 2>/dev/null || true
+    cp -n ~/.config/Tulipix/settings.json {{sandbox}}/config/ 2>/dev/null || true
+
+dev: gen seed
+    cd {{app}} && \
+    XDG_DATA_HOME={{sandbox}}/data \
+    XDG_CONFIG_HOME={{sandbox}}/config \
+    XDG_CACHE_HOME={{sandbox}}/cache \
+    flutter run -d linux --dart-define=TULIPIX_DEV=1
+
+# Side-by-side parity: the Slint build on the same seeded copy.
+slint-sandboxed: seed
+    cd {{root}} && \
+    XDG_DATA_HOME={{sandbox}}/data \
+    XDG_CONFIG_HOME={{sandbox}}/config \
+    XDG_CACHE_HOME={{sandbox}}/cache \
+    just run-dev-lite
+
+# Wipe the sandbox. The real data directory is never touched.
+reseed:
+    rm -rf {{sandbox}}
+    @just --justfile {{justfile()}} seed
+
+# --- checks ---------------------------------------------------------------
+
+# Depends on `gen`: frb_generated.rs is a derived, gitignored artefact, and
+# checking against a stale one reports errors that the source no longer has.
+# Warm, codegen is about a second.
+check: gen
+    cd {{bridge}} && cargo check
+    cd {{app}} && flutter analyze
+
+test: gen
+    cd {{bridge}} && cargo test
+    cd {{app}} && flutter test
+
+fmt:
+    cd {{bridge}} && cargo fmt
+    cd {{app}} && dart format lib test
+
+# The guard that CI runs, locally. Prints nothing when the branch is additive.
+guard:
+    @git diff --diff-filter=MD --name-only origin/beta...HEAD

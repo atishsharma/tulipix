@@ -1,0 +1,87 @@
+[package]
+# Underscored, unlike every other crate here. Cargokit builds the artifact
+# filename straight from `package.name` and never underscores it, so a
+# `tulipix-bridge` package makes it look for `libtulipix-bridge.so` while cargo
+# emits `libtulipix_bridge.so`, and the CMake install step fails with a missing
+# file. The directory keeps the hyphen; only the package name changes.
+name = "tulipix_bridge"
+version = "1.0.1"
+edition = "2024"
+rust-version = "1.85"
+license = "Apache-2.0"
+
+# The only Rust the Flutter port adds. Its own `[workspace]` table (below) makes
+# it a self-contained workspace, so adding this crate needed no edit to the root
+# manifest — the frozen-tree rule in docs/flutter-port-plan.html §02.
+#
+# The cost is a second Cargo.lock and a second target/, so the domain crates it
+# depends on compile twice. That is fine while the bridge touches two of them.
+# From phase 3, when it touches all of them, trade the purity for the shared
+# build cache: add one line to the root `members` list and add `Cargo.toml` to
+# the CI allowlist in .github/workflows/flutter.yml.
+#
+# Precedent in reverse: crates/tulipix-plugins is deliberately `exclude`d from
+# the root workspace for the same build-cost reason.
+[workspace]
+
+[lib]
+# cdylib for Linux/Windows, staticlib for macOS/iOS, rlib for `cargo test`.
+crate-type = ["cdylib", "staticlib", "rlib"]
+
+[dependencies]
+# Must match BOTH the codegen CLI and the `flutter_rust_bridge` pin in
+# app_flutter/pubspec.yaml. frb checks all three and refuses on a mismatch.
+flutter_rust_bridge = "=2.12.0"
+anyhow = "1"
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "fs"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tracing = "0.1"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+# Frozen domain crates, by relative path. Deliberately NOT tulipix-common: that
+# crate depends on slint, and nothing the bridge links may.
+tulipix-core = { path = "../tulipix-core" }
+tulipix-photos = { path = "../tulipix-photos" }
+
+[dev-dependencies]
+tempfile = "3"
+
+[features]
+default = []
+# Real ONNX editor ops, forwarded to tulipix-photos.
+ai-onnx = ["tulipix-photos/onnx"]
+
+# Cargo reads profiles from the workspace ROOT manifest, and this crate is its
+# own workspace root — so it inherits none of the tuning in the repo's
+# Cargo.toml. Without this block the bridge builds its dependency tree with full
+# debuginfo at opt-level 0, which on a 4-thread / 8 GB box is the difference
+# between a slow build and a swapping one. Mirrors the root profiles; keep the
+# two in step.
+#
+# `.cargo/config.toml` (mold linker) IS picked up, because cargo discovers
+# config by walking up from the working directory rather than from the
+# workspace root.
+[profile.dev]
+opt-level = 0
+debug = "line-tables-only"
+split-debuginfo = "unpacked"
+incremental = true
+
+[profile.dev.package."*"]
+opt-level = 1
+debug = false
+
+[profile.release]
+opt-level = "s"
+lto = "fat"
+codegen-units = 1
+strip = "symbols"
+panic = "abort"
+
+# `#[frb(...)]` expands to code guarded by `cfg(frb_expand)`, a cfg the macro
+# crate sets and this crate never does. Declaring it here silences the warning
+# on every `frb` attribute without switching the whole lint off.
+[lints.rust]
+unexpected_cfgs = { level = "warn", check-cfg = ['cfg(frb_expand)'] }

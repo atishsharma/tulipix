@@ -1,0 +1,42 @@
+name: tulipix
+description: Tulipix desktop — Flutter shell over the frozen Rust domain crates.
+publish_to: none
+version: 1.0.1
+
+environment:
+  sdk: ">=3.5.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  # The generated FFI layer imports this. Its version must match the
+  # `flutter_rust_bridge` crate version in crates/tulipix-bridge/Cargo.toml.
+  flutter_rust_bridge: 2.12.0
+  # Rust enums that carry data generate as `@freezed sealed class` on the Dart
+  # side, so the generated file imports this even though no code here does.
+  freezed_annotation: ">=2.4.4 <4.0.0"
+  rust_lib_tulipix:
+    path: rust_builder
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ">=5.0.0 <7.0.0"
+  # The generator behind the `@freezed sealed class` unions frb emits for Rust
+  # enums that carry data (PhotosCmd, PhotosEvent). frb runs build_runner
+  # itself at the end of `gen`; neither is imported by hand-written code.
+  build_runner: ^2.4.0
+  freezed: ">=2.5.0 <4.0.0"
+  integration_test:
+    sdk: flutter
+
+flutter:
+  uses-material-design: true
+  fonts:
+    # Same variable face the Slint build declares in tokens.slint. Copied
+    # rather than referenced: Flutter refuses asset paths outside the package,
+    # and a symlink breaks the Windows bundle. Re-copy from
+    # resources/fonts/Sora[wght].ttf if that file is ever updated.
+    - family: Sora
+      fonts:
+        - asset: fonts/Sora.ttf
