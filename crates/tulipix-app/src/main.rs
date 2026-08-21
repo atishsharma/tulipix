@@ -632,6 +632,30 @@ fn main() -> Result<()> {
     // ── Live TV: iptv-org playlists, the channel grid, and mpv (Videos tab). ──
     tulipix_sec_videos::livetv::wire(&window);
 
+    // ── Stream Plus: the anime lane and the second provider stack (Videos tab).
+    // Its schema and download queue come up on a background task so a cold start
+    // is not held behind a DB open.
+    tulipix_sec_videos::splus::wire(&window);
+    {
+        let w = window.as_weak();
+        // The download folder picker lives here because this is where the file
+        // dialog already is — the section crate has no business owning one.
+        window.on_splus_pick_download_dir(move || {
+            let Some(w) = w.upgrade() else { return };
+            let weak = w.as_weak();
+            std::thread::spawn(move || {
+                let Some(dir) = rfd::FileDialog::new().pick_folder() else { return };
+                let dir = dir.to_string_lossy().to_string();
+                let _ = slint::invoke_from_event_loop(move || {
+                    if let Some(w) = weak.upgrade() {
+                        tulipix_sec_videos::splus::settings::set_dir(&w, &dir);
+                    }
+                });
+            });
+        });
+    }
+    tokio::spawn(async { tulipix_sec_videos::splus::init().await });
+
     // ── Books: Book Home page (Continue Reading hero, stats, library grid,
     // filter chips) + the reader. Callbacks land on `window.on_books_*`.
     tulipix_sec_books::wire(&window);
@@ -776,6 +800,9 @@ fn main() -> Result<()> {
                 stream_downloads_resume(w.clone());
                 stream_prune_caches();
             }
+            // Stream Plus lands on its home view, and only a click on the Home
+            // sub-tab fires `home-load` — so entering the tab has to fire it.
+            "splus" => w0.invoke_splus_home_load(),
             _ => kick_video_refresh(w.clone(), w0.get_video_category().to_string()),
         }
     });

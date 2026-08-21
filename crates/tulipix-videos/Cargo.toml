@@ -25,6 +25,9 @@ hmac = "0.12"
 md-5 = "0.10"
 base64 = "0.22"
 url = "2"
+# Stream Plus streams a download to disk chunk by chunk rather than buffering a
+# whole episode in memory, which needs reqwest's byte stream.
+futures-util = { workspace = true }
 tulipix-core = { path = "../tulipix-core" }
 
 [dev-dependencies]

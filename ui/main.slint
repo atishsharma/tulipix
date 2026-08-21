@@ -58,6 +58,7 @@ import { FinancesPage, FinStat, FinAccountRow, FinTxnRow, FinRecurRow, FinObliga
           FinSavingsMonth, FinHealthPart, FinTimelineEvent, FinPrediction,
           FinHabit, FinTrendSeries } from "page_finances.slint";
 import { LiveTvPage, LiveChannel, LiveGroup, LivePlaylist } from "page_livetv.slint";
+import { StreamPlusPage, SPlusCard, SPlusEpisode, SPlusFile, SPlusChip, SPlusHistory, SPlusDownload, SPlusHealth } from "page_stream_plus.slint";
 import { ModePill } from "mode_pill.slint";
 import { OnboardingWizard } from "onboarding_wizard.slint";
 import { AppIcon, Icons } from "icons.slint";
@@ -946,6 +947,115 @@ export component MainWindow inherits Window {
     in-out property <string> video-stream-fourk-default: "";
     in-out property <string> video-stream-fourk-error: "";
     in-out property <bool> video-stream-fourk-saved: false;
+    // ── Stream Plus (Videos → Stream Plus) ──
+    // Its own namespace end to end: nothing here is shared with the Stream tab
+    // above, which this feature does not modify.
+    in-out property <string> splus-view: "home";
+    in-out property <bool> splus-servers-open: false;
+    in-out property <bool> splus-busy: false;
+    in-out property <string> splus-status: "";
+    in-out property <string> splus-query: "";
+    in-out property <string> splus-lane: "anime";
+    in-out property <[SPlusCard]> splus-results: [];
+    in-out property <int> splus-results-total: 0;
+    in-out property <bool> splus-results-more: false;
+    in-out property <[string]> splus-suggestions: [];
+    in-out property <[string]> splus-recent: [];
+    in-out property <[SPlusCard]> splus-featured: [];
+    in-out property <int> splus-featured-idx: 0;
+    in-out property <[SPlusHistory]> splus-continue: [];
+    in-out property <[SPlusCard]> splus-trending: [];
+    in-out property <[SPlusCard]> splus-seasonal: [];
+    in-out property <string> splus-season-label: "";
+    in-out property <string> splus-d-title: "";
+    in-out property <string> splus-d-meta: "";
+    in-out property <string> splus-d-overview: "";
+    in-out property <image> splus-d-cover;
+    in-out property <string> splus-d-badge: "TV";
+    in-out property <bool> splus-d-saved: false;
+    in-out property <string> splus-d-skip-note: "";
+    in-out property <[SPlusChip]> splus-d-audio: [];
+    in-out property <[SPlusChip]> splus-d-seasons: [];
+    in-out property <[SPlusEpisode]> splus-d-episodes: [];
+    in-out property <[SPlusFile]> splus-d-files: [];
+    in-out property <[SPlusChip]> splus-d-subs: [];
+    in-out property <int> splus-d-episode: 1;
+    in-out property <int> splus-d-file: 0;
+    in-out property <string> splus-d-resolved: "";
+    in-out property <bool> splus-d-resolving: false;
+    in-out property <[SPlusCard]> splus-saved: [];
+    in-out property <[SPlusHistory]> splus-history: [];
+    in-out property <string> splus-sort: "added";
+    in-out property <string> splus-lib-tab: "saved";
+    in-out property <[SPlusDownload]> splus-downloads: [];
+    in-out property <int> splus-dl-active: 0;
+    in-out property <string> splus-dl-rate: "";
+    in-out property <[SPlusHealth]> splus-health: [];
+    in-out property <string> splus-audio-pref: "sub_then_dub";
+    in-out property <bool> splus-skip-op-ed: true;
+    in-out property <int> splus-watched-pct: 90;
+    in-out property <int> splus-autoplay-secs: 10;
+    in-out property <bool> splus-hide-finished: false;
+    in-out property <bool> splus-subs-wyzie: true;
+    in-out property <bool> splus-subs-subdl: false;
+    in-out property <string> splus-subs-lang: "en";
+    in-out property <bool> splus-subs-with-file: true;
+    in-out property <int> splus-quality: 1080;
+    in-out property <bool> splus-into-library: true;
+    in-out property <int> splus-slots: 2;
+    in-out property <bool> splus-notify-download: true;
+    in-out property <bool> splus-notify-episode: true;
+    in-out property <string> splus-download-dir: "";
+    in-out property <string> splus-hosts-text: "";
+    in-out property <bool> splus-hosts-checking: false;
+    in-out property <bool> splus-hosts-saved: false;
+    callback splus-home-load();
+    callback splus-search(string);
+    callback splus-suggest(string);
+    callback splus-load-more();
+    callback splus-recent-clear();
+    callback splus-open-card(string);
+    callback splus-back();
+    callback splus-set-audio(string);
+    callback splus-set-season(string);
+    callback splus-set-episode(int);
+    callback splus-set-file(int);
+    callback splus-set-sub(string);
+    callback splus-play();
+    callback splus-download();
+    callback splus-download-season();
+    callback splus-toggle-save();
+    callback splus-copy-link();
+    callback splus-cast();
+    callback splus-add-to-library();
+    callback splus-retry-source(string);
+    callback splus-library-load();
+    callback splus-set-sort(string);
+    callback splus-saved-remove(string);
+    callback splus-history-play(string);
+    callback splus-history-remove(string);
+    callback splus-history-clear();
+    callback splus-downloads-load();
+    callback splus-dl-cancel(int);
+    callback splus-dl-retry(int);
+    callback splus-dl-play(int);
+    callback splus-dl-reveal(int);
+    callback splus-dl-delete(int);
+    callback splus-dl-cancel-all();
+    callback splus-dl-clear();
+    callback splus-settings-load();
+    callback splus-set-source-enabled(string, bool);
+    callback splus-move-source(string, int);
+    callback splus-source-test();
+    callback splus-source-reset();
+    callback splus-set-flag(string, bool);
+    callback splus-set-text(string, string);
+    callback splus-set-num(string, int);
+    callback splus-pick-download-dir();
+    callback splus-servers-opened();
+    callback splus-hosts-save(string);
+    callback splus-hosts-reset();
+    callback splus-hosts-check();
     // ── Live TV (Videos → Live TV, left of Stream) ──
     in-out property <[LiveChannel]> livetv-channels: [];
     in-out property <[LiveGroup]> livetv-groups: [];
@@ -3171,7 +3281,121 @@ callback cloud-go-home();
                 config-clear => { root.livetv-config-clear(); }
                 config-save => { root.livetv-config-save(); }
             }
-            if active-section == "videos" && root.video-kind != "livetv":   VideosPage { width: parent.width; height: parent.height; item-count: root.video-tiles.length; tiles: root.video-tiles;
+            // Stream Plus replaces the whole Videos body for the same reason
+            // Live TV does, and carries the kind row itself so there is a way
+            // back to the library.
+            if active-section == "videos" && root.video-kind == "splus": StreamPlusPage {
+                width: parent.width; height: parent.height;
+                kind: root.video-kind;
+                set-kind(k) => { root.set-video-kind(k); }
+                view <=> root.splus-view;
+                servers-open <=> root.splus-servers-open;
+                busy: root.splus-busy;
+                status: root.splus-status;
+                query <=> root.splus-query;
+                lane <=> root.splus-lane;
+                results: root.splus-results;
+                results-total: root.splus-results-total;
+                results-more: root.splus-results-more;
+                suggestions: root.splus-suggestions;
+                recent: root.splus-recent;
+                featured: root.splus-featured;
+                featured-idx <=> root.splus-featured-idx;
+                continue-rows: root.splus-continue;
+                trending: root.splus-trending;
+                seasonal: root.splus-seasonal;
+                season-label: root.splus-season-label;
+                d-title: root.splus-d-title;
+                d-meta: root.splus-d-meta;
+                d-overview: root.splus-d-overview;
+                d-cover: root.splus-d-cover;
+                d-badge: root.splus-d-badge;
+                d-saved: root.splus-d-saved;
+                d-skip-note: root.splus-d-skip-note;
+                d-audio: root.splus-d-audio;
+                d-seasons: root.splus-d-seasons;
+                d-episodes: root.splus-d-episodes;
+                d-files: root.splus-d-files;
+                d-subs: root.splus-d-subs;
+                d-episode: root.splus-d-episode;
+                d-file: root.splus-d-file;
+                d-resolved: root.splus-d-resolved;
+                d-resolving: root.splus-d-resolving;
+                saved: root.splus-saved;
+                history: root.splus-history;
+                sort <=> root.splus-sort;
+                lib-tab <=> root.splus-lib-tab;
+                downloads: root.splus-downloads;
+                dl-active: root.splus-dl-active;
+                dl-rate: root.splus-dl-rate;
+                health: root.splus-health;
+                audio-pref <=> root.splus-audio-pref;
+                skip-op-ed <=> root.splus-skip-op-ed;
+                watched-pct <=> root.splus-watched-pct;
+                autoplay-secs <=> root.splus-autoplay-secs;
+                hide-finished <=> root.splus-hide-finished;
+                subs-wyzie <=> root.splus-subs-wyzie;
+                subs-subdl <=> root.splus-subs-subdl;
+                subs-lang <=> root.splus-subs-lang;
+                subs-with-file <=> root.splus-subs-with-file;
+                quality <=> root.splus-quality;
+                into-library <=> root.splus-into-library;
+                slots <=> root.splus-slots;
+                notify-download <=> root.splus-notify-download;
+                notify-episode <=> root.splus-notify-episode;
+                download-dir: root.splus-download-dir;
+                hosts-text <=> root.splus-hosts-text;
+                hosts-checking: root.splus-hosts-checking;
+                hosts-saved: root.splus-hosts-saved;
+                home-load => { root.splus-home-load(); }
+                search(q) => { root.splus-search(q); }
+                suggest(q) => { root.splus-suggest(q); }
+                load-more => { root.splus-load-more(); }
+                recent-clear => { root.splus-recent-clear(); }
+                open-card(k) => { root.splus-open-card(k); }
+                back => { root.splus-back(); }
+                set-audio(a) => { root.splus-set-audio(a); }
+                set-season(s) => { root.splus-set-season(s); }
+                set-episode(e) => { root.splus-set-episode(e); }
+                set-file(i) => { root.splus-set-file(i); }
+                set-sub(i) => { root.splus-set-sub(i); }
+                play => { root.splus-play(); }
+                download => { root.splus-download(); }
+                download-season => { root.splus-download-season(); }
+                toggle-save => { root.splus-toggle-save(); }
+                copy-link => { root.splus-copy-link(); }
+                cast => { root.splus-cast(); }
+                add-to-library => { root.splus-add-to-library(); }
+                retry-source(s) => { root.splus-retry-source(s); }
+                library-load => { root.splus-library-load(); }
+                set-sort(s) => { root.splus-set-sort(s); }
+                saved-remove(k) => { root.splus-saved-remove(k); }
+                history-play(k) => { root.splus-history-play(k); }
+                history-remove(k) => { root.splus-history-remove(k); }
+                history-clear => { root.splus-history-clear(); }
+                downloads-load => { root.splus-downloads-load(); }
+                dl-cancel(i) => { root.splus-dl-cancel(i); }
+                dl-retry(i) => { root.splus-dl-retry(i); }
+                dl-play(i) => { root.splus-dl-play(i); }
+                dl-reveal(i) => { root.splus-dl-reveal(i); }
+                dl-delete(i) => { root.splus-dl-delete(i); }
+                dl-cancel-all => { root.splus-dl-cancel-all(); }
+                dl-clear => { root.splus-dl-clear(); }
+                settings-load => { root.splus-settings-load(); }
+                set-source-enabled(s, v) => { root.splus-set-source-enabled(s, v); }
+                move-source(s, d) => { root.splus-move-source(s, d); }
+                source-test => { root.splus-source-test(); }
+                source-reset => { root.splus-source-reset(); }
+                set-flag(k, v) => { root.splus-set-flag(k, v); }
+                set-text(k, v) => { root.splus-set-text(k, v); }
+                set-num(k, v) => { root.splus-set-num(k, v); }
+                pick-download-dir => { root.splus-pick-download-dir(); }
+                servers-opened => { root.splus-servers-opened(); }
+                hosts-save(t) => { root.splus-hosts-save(t); }
+                hosts-reset => { root.splus-hosts-reset(); }
+                hosts-check => { root.splus-hosts-check(); }
+            }
+            if active-section == "videos" && root.video-kind != "livetv" && root.video-kind != "splus":   VideosPage { width: parent.width; height: parent.height; item-count: root.video-tiles.length; tiles: root.video-tiles;
                 category <=> root.video-category;
                 kind <=> root.video-kind;
                 query <=> root.video-query;

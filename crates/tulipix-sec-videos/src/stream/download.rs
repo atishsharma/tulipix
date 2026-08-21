@@ -694,7 +694,7 @@ pub fn stream_download_reveal(weak: slint::Weak<MainWindow>, id: i32) {
 /// it selects the file and raises the window. It is asked first, and the plain
 /// launcher is the fallback for desktops that do not export it.
 #[cfg(target_os = "linux")]
-fn reveal_in_file_manager(file: &std::path::Path, dir: &std::path::Path) -> Result<(), String> {
+pub(crate) fn reveal_in_file_manager(file: &std::path::Path, dir: &std::path::Path) -> Result<(), String> {
     let uri = format!("file://{}", file.display());
     let shown = std::process::Command::new("gdbus")
         .args([
@@ -721,7 +721,7 @@ fn reveal_in_file_manager(file: &std::path::Path, dir: &std::path::Path) -> Resu
 }
 
 #[cfg(not(target_os = "linux"))]
-fn reveal_in_file_manager(file: &std::path::Path, dir: &std::path::Path) -> Result<(), String> {
+pub(crate) fn reveal_in_file_manager(file: &std::path::Path, dir: &std::path::Path) -> Result<(), String> {
     // Both of these select the file and bring their window forward already.
     #[cfg(target_os = "macos")]
     let cmd = std::process::Command::new("open").arg("-R").arg(file).spawn();

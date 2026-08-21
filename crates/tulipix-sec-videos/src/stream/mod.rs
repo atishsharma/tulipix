@@ -24,7 +24,7 @@ use tulipix_videos::stream::{
 
 mod cast;
 mod detail;
-mod download;
+pub(crate) mod download;
 mod feed;
 mod hosts;
 mod play;

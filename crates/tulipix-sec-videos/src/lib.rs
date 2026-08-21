@@ -12,6 +12,11 @@ use tulipix_common::*;
 pub mod stream;
 pub use stream::*;
 
+// Stream Plus (Videos → Stream Plus): the anime lane and the second provider
+// stack. Its own tree for the same reason Stream and Live TV have theirs — it
+// shares the poster cache and mpv with them, and nothing else.
+pub mod splus;
+
 // Live TV (Videos → Live TV): iptv-org playlists, a channel grid, and mpv.
 // Its own file for the same reason as Stream — it shares nothing with the
 // local-library queries below.

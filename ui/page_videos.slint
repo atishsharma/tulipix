@@ -1837,6 +1837,9 @@ export component VideosPage inherits Rectangle {
                         // repeats this strip — this tab only has to switch kind.
                         VideoTab { hue: VP.c-copy; label: "Live TV";  active: root.kind == "livetv";  clicked => { root.set-kind("livetv"); } }
                         VideoTab { hue: VP.c-play; label: "Stream";   active: root.kind == "stream";   clicked => { root.set-kind("stream"); } }
+                        // Stream Plus draws its own page (page_stream_plus.slint)
+                        // and repeats this strip, same as Live TV above.
+                        VideoTab { hue: VP.accent; label: "Stream Plus"; active: root.kind == "splus"; clicked => { root.set-kind("splus"); } }
                     }
                 }
 

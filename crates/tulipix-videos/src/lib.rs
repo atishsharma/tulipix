@@ -24,6 +24,9 @@ pub mod pre_roll;
 pub mod scan;
 pub mod schema;
 pub mod skip_intro;
+// Stream Plus (Videos → Stream Plus): the anime lane and the second provider
+// stack. Its own module tree — it shares nothing with `stream` but the DB file.
+pub mod splus;
 pub mod star_archive_trash;
 pub mod stream;
 pub mod sub_local;
