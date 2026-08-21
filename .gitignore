@@ -75,3 +75,6 @@ Tomesole/
 
 # Spartan AI config (contains API keys)
 .spartan/ai.env
+
+# Spartan specs and design docs — local planning state, same as docs/
+.planning/
