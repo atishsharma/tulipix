@@ -98,6 +98,11 @@ fmt:
     cd {{bridge}} && cargo fmt
     cd {{app}} && dart format lib test
 
-# The guard that CI runs, locally. Prints nothing when the branch is additive.
+# The frozen-tree check. Prints nothing when the branch is additive.
+#
+# This is the ONLY place it runs. There was a workflow doing it on every push
+# to flport; it was deleted because the repo is private and its Actions billing
+# is blocked, so the job never started and the push fired it for nothing.
+# Re-add it when the repo goes public. Until then, run this after every commit.
 guard:
     @git diff --diff-filter=MD --name-only origin/beta...HEAD
