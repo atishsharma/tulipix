@@ -58,8 +58,20 @@ seed:
     # Self-ignoring: the sandbox holds a copy of the real settings.json and the
     # section databases. The root .gitignore is frozen, so the rule lives here.
     printf '*\n' > {{sandbox}}/.gitignore
-    cp -n ~/.local/share/Tulipix/*.db {{sandbox}}/data/ 2>/dev/null || true
-    cp -n ~/.config/Tulipix/settings.json {{sandbox}}/config/ 2>/dev/null || true
+    # Under Tulipix/, not at the root: the app reads $XDG_DATA_HOME/Tulipix and
+    # $XDG_CONFIG_HOME/Tulipix, so copies left a level up are copies nothing
+    # ever opens -- which is how this sandbox ran for weeks against a settings
+    # file the real one had never been copied into.
+    mkdir -p {{sandbox}}/data/Tulipix {{sandbox}}/config/Tulipix
+    cp -n ~/.local/share/Tulipix/*.db {{sandbox}}/data/Tulipix/ 2>/dev/null || true
+    cp -n ~/.config/Tulipix/settings.json {{sandbox}}/config/Tulipix/ 2>/dev/null || true
+    # The transfer CA, and it has to be the real one. A phone trusts a root, not
+    # a machine: let the sandbox mint its own and every paired phone meets a
+    # certificate signed by a root it has never seen, has to be told to proceed
+    # past the warning, and lands on an origin the browser treats as insecure --
+    # no service worker, no installed PWA, and uploads that fail in ways
+    # downloads do not.
+    cp -rn ~/.local/share/Tulipix/transfer {{sandbox}}/data/Tulipix/ 2>/dev/null || true
 
 dev: gen seed
     cd {{app}} && \

@@ -45,6 +45,11 @@ sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio",
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 tracing = "0.1"
+# The Slint binary installs this in main(); a cdylib has no main, so without it
+# every `tracing::warn!` the domain crates emit -- "inbox unwritable", "upload
+# could not be finalised", "no certificate, serving plain HTTP" -- is discarded,
+# and a bug that names itself out loud looks like silence.
+tracing-subscriber = { version = "0.3", default-features = false, features = ["fmt", "env-filter"] }
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 
 # The viewer's info panel. Feature lists match tulipix-photos exactly: cargo
@@ -53,10 +58,25 @@ chrono = { version = "0.4", default-features = false, features = ["clock", "std"
 kamadak-exif = "0.6"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "tiff"] }
 
+# Transfer. The QR is a module matrix, not an image: Dart paints the squares,
+# which is a twentieth of the bytes and stays crisp when the code is enlarged.
+# default-features off for the same reason tulipix-sec-transfer does it — the
+# image converters go through resvg + tiny-skia to rasterise an SVG.
+fast_qr = { version = "0.12", default-features = false }
+# The OS file chooser, for the three buttons that pick real paths. Same version
+# and same backend as tulipix-sec-transfer: xdg-portal rather than GTK, so
+# nothing here needs a GTK main thread.
+rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+
 # Frozen domain crates, by relative path. Deliberately NOT tulipix-common: that
 # crate depends on slint, and nothing the bridge links may.
 tulipix-core = { path = "../tulipix-core" }
 tulipix-photos = { path = "../tulipix-photos" }
+tulipix-transfer = { path = "../tulipix-transfer" }
+# `fm::open_default` and `fm::reveal_in_file_manager`. Default features only —
+# the `tray` feature is what pulls ksni/tray-icon in, and the bridge has no
+# tray. No slint here either, which is why this one is allowed.
+tulipix-platform = { path = "../tulipix-platform" }
 
 [dev-dependencies]
 tempfile = "3"

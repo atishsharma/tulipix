@@ -1131,7 +1131,11 @@ async fn folders(pool: &sqlx::SqlitePool) -> Result<Vec<FolderRow>> {
     Ok(out)
 }
 
-async fn scan_watched(pool: &sqlx::SqlitePool) {
+/// `pub(crate)` for Transfer: an upload landing in the inbox is what makes the
+/// library look again, exactly as `refresh_library` does in the Slint build.
+/// The fan-out to every section belongs to the shell (phase 4); Photos is the
+/// only section this build has.
+pub(crate) async fn scan_watched(pool: &sqlx::SqlitePool) {
     for dir in load_watched_folders() {
         emit(PhotosEvent::ScanStarted { root: dir.to_string_lossy().into_owned() });
         let lib = tulipix_core::libraries::Library {
