@@ -13,9 +13,12 @@ import 'dart:ui' show AppExitResponse;
 import 'package:flutter/material.dart';
 
 import 'design/tokens.dart';
+import 'sections/books/books_page.dart';
+import 'sections/cloud/cloud_page.dart';
 import 'sections/music/music_overlay.dart';
 import 'sections/music/music_page.dart';
 import 'sections/photos/photos_page.dart';
+import 'sections/tools/tools_page.dart';
 import 'sections/transfer/transfer_page.dart';
 import 'src/rust/api/music.dart';
 import 'src/rust/api/transfer.dart';
@@ -97,6 +100,21 @@ class _TulipixAppState extends State<TulipixApp> {
                     label: Text('Music'),
                   ),
                   NavigationRailDestination(
+                    icon: Icon(Icons.menu_book_outlined),
+                    selectedIcon: Icon(Icons.menu_book),
+                    label: Text('Books'),
+                  ),
+                  NavigationRailDestination(
+                    icon: Icon(Icons.cloud_outlined),
+                    selectedIcon: Icon(Icons.cloud),
+                    label: Text('Cloud'),
+                  ),
+                  NavigationRailDestination(
+                    icon: Icon(Icons.build_outlined),
+                    selectedIcon: Icon(Icons.build),
+                    label: Text('Tools'),
+                  ),
+                  NavigationRailDestination(
                     icon: Icon(Icons.share_outlined),
                     selectedIcon: Icon(Icons.share),
                     label: Text('Transfer'),
@@ -113,10 +131,13 @@ class _TulipixAppState extends State<TulipixApp> {
                   children: [
                     const PhotosPage(),
                     const MusicPage(),
+                    const BooksPage(),
+                    const CloudPage(),
+                    const ToolsPage(),
                     // Told when it is on screen so its poll can slow down: the
                     // server keeps running when the user is in Photos, but
                     // nothing there needs repainting six times a second.
-                    TransferPage(visible: _section == 2),
+                    TransferPage(visible: _section == 5),
                   ],
                 ),
               ),

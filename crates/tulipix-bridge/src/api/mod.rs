@@ -1,8 +1,11 @@
 //! The Dart-facing surface. Three to four exported symbols per section.
 
+pub mod books;
+pub mod cloud;
 pub mod editor;
 pub mod music;
 pub mod photos;
+pub mod tools;
 pub mod transfer;
 
 /// Runs once, before any other bridge call, from `RustLib.init()` on the Dart
