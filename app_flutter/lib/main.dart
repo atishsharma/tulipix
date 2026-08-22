@@ -15,6 +15,7 @@ import 'package:flutter/material.dart';
 import 'design/tokens.dart';
 import 'sections/books/books_page.dart';
 import 'sections/cloud/cloud_page.dart';
+import 'sections/finances/finances_page.dart';
 import 'sections/music/music_overlay.dart';
 import 'sections/music/music_page.dart';
 import 'sections/photos/photos_page.dart';
@@ -119,6 +120,11 @@ class _TulipixAppState extends State<TulipixApp> {
                     selectedIcon: Icon(Icons.share),
                     label: Text('Transfer'),
                   ),
+                  NavigationRailDestination(
+                    icon: Icon(Icons.savings_outlined),
+                    selectedIcon: Icon(Icons.savings),
+                    label: Text('Finances'),
+                  ),
                 ],
               ),
               // All three stay alive across a switch: Transfer polls a running
@@ -138,6 +144,7 @@ class _TulipixAppState extends State<TulipixApp> {
                     // server keeps running when the user is in Photos, but
                     // nothing there needs repainting six times a second.
                     TransferPage(visible: _section == 5),
+                    const FinancesPage(),
                   ],
                 ),
               ),

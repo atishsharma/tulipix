@@ -34,6 +34,7 @@ static YOUTUBE: OnceCell<SqlitePool> = OnceCell::const_new();
 static BOOKS: OnceCell<SqlitePool> = OnceCell::const_new();
 static CLOUD: OnceCell<SqlitePool> = OnceCell::const_new();
 static TOOLS: OnceCell<SqlitePool> = OnceCell::const_new();
+static FINANCES: OnceCell<SqlitePool> = OnceCell::const_new();
 
 /// Open (once) music.db and apply the music overlay on top of the shared
 /// `items` proxy schema `init_pool` puts down.
@@ -118,4 +119,15 @@ pub async fn youtube_pool() -> Result<&'static SqlitePool> {
             Ok(pool)
         })
         .await
+}
+
+/// The money database.
+///
+/// The one pool here that does not open its own handle: `tulipix_finances::open`
+/// applies the schema, seeds the default categories *and* seeds the sample data
+/// on a database that has never held anything real. Opening it by hand would
+/// skip the last of those and leave nine tabs of zeroes on a first run, which is
+/// indistinguishable from nine broken tabs.
+pub async fn finances_pool() -> Result<&'static SqlitePool> {
+    FINANCES.get_or_try_init(tulipix_finances::open).await
 }

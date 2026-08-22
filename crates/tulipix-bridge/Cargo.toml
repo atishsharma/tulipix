@@ -88,6 +88,11 @@ tulipix-music = { path = "../tulipix-music" }
 tulipix-books = { path = "../tulipix-books" }
 tulipix-cloud = { path = "../tulipix-cloud" }
 tulipix-tools = { path = "../tulipix-tools" }
+# Finances: money arithmetic in i64 minor units, the recurrence engine, budgets,
+# loans, dues, insights and statement import. No slint, and no UI types at all —
+# the crate was written to be testable with no renderer, which is what makes it
+# linkable here.
+tulipix-finances = { path = "../tulipix-finances" }
 # `fm::open_default` and `fm::reveal_in_file_manager`. Default features only —
 # the `tray` feature is what pulls ksni/tray-icon in, and the bridge has no
 # tray. No slint here either, which is why this one is allowed.

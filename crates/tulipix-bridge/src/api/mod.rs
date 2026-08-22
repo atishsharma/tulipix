@@ -3,6 +3,7 @@
 pub mod books;
 pub mod cloud;
 pub mod editor;
+pub mod finances;
 pub mod music;
 pub mod photos;
 pub mod tools;
