@@ -3784,6 +3784,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "tulipix-music"
+version = "1.0.1"
+dependencies = [
+ "anyhow",
+ "image",
+ "md-5",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sqlx",
+ "tokio",
+ "tulipix-core",
+]
+
+[[package]]
 name = "tulipix-photos"
 version = "1.0.1"
 dependencies = [
@@ -3847,6 +3862,7 @@ dependencies = [
  "flutter_rust_bridge",
  "image",
  "kamadak-exif",
+ "reqwest",
  "rfd",
  "serde",
  "serde_json",
@@ -3856,6 +3872,7 @@ dependencies = [
  "tracing",
  "tracing-subscriber",
  "tulipix-core",
+ "tulipix-music",
  "tulipix-photos",
  "tulipix-platform",
  "tulipix-transfer",

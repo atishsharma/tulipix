@@ -40,7 +40,10 @@ crate-type = ["cdylib", "staticlib", "rlib"]
 # app_flutter/pubspec.yaml. frb checks all three and refuses on a mismatch.
 flutter_rust_bridge = "=2.12.0"
 anyhow = "1"
-tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "fs"] }
+# `process` is Music's: mpv, ffprobe, ffmpeg and yt-dlp are all out-of-process,
+# and the ones that are awaited (yt-dlp listings, downloads) must not block a
+# bridge worker for the minutes they can take.
+tokio = { version = "1.40", features = ["rt-multi-thread", "macros", "sync", "fs", "process"] }
 sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "sqlite", "macros"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
@@ -68,11 +71,20 @@ fast_qr = { version = "0.12", default-features = false }
 # nothing here needs a GTK main thread.
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 
+# Music. Four of its five tabs talk to the network — RSS feeds, radio-browser,
+# LRCLIB, artwork — and the domain crate hands back parsed types rather than
+# bytes, so the client is named here too. Same version and same TLS backend as
+# the root workspace: a second rustls in one process is a second root store.
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
+
 # Frozen domain crates, by relative path. Deliberately NOT tulipix-common: that
 # crate depends on slint, and nothing the bridge links may.
 tulipix-core = { path = "../tulipix-core" }
 tulipix-photos = { path = "../tulipix-photos" }
 tulipix-transfer = { path = "../tulipix-transfer" }
+# Music: scan, tags, browse, playlists, queue, ratings, lyrics, podcasts,
+# audiobooks, radio and the YouTube store. No slint, so it is allowed.
+tulipix-music = { path = "../tulipix-music" }
 # `fm::open_default` and `fm::reveal_in_file_manager`. Default features only —
 # the `tray` feature is what pulls ksni/tray-icon in, and the bridge has no
 # tray. No slint here either, which is why this one is allowed.
