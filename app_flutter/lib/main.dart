@@ -21,8 +21,10 @@ import 'sections/music/music_page.dart';
 import 'sections/photos/photos_page.dart';
 import 'sections/tools/tools_page.dart';
 import 'sections/transfer/transfer_page.dart';
+import 'sections/videos/videos_page.dart';
 import 'src/rust/api/music.dart';
 import 'src/rust/api/transfer.dart';
+import 'src/rust/api/videos.dart';
 import 'src/rust/frb_generated.dart';
 
 Future<void> main() async {
@@ -59,6 +61,10 @@ class _TulipixAppState extends State<TulipixApp> {
       onExitRequested: () async {
         transferShutdown();
         musicShutdown();
+        // Same reason as the other two: the process going away does not take
+        // the mpv window with it on every platform, and a film left playing
+        // over a closed app is not a thing anyone asked for.
+        videosShutdown();
         return AppExitResponse.exit;
       },
     );
@@ -125,6 +131,11 @@ class _TulipixAppState extends State<TulipixApp> {
                     selectedIcon: Icon(Icons.savings),
                     label: Text('Finances'),
                   ),
+                  NavigationRailDestination(
+                    icon: Icon(Icons.movie_outlined),
+                    selectedIcon: Icon(Icons.movie),
+                    label: Text('Videos'),
+                  ),
                 ],
               ),
               // All three stay alive across a switch: Transfer polls a running
@@ -145,6 +156,7 @@ class _TulipixAppState extends State<TulipixApp> {
                     // nothing there needs repainting six times a second.
                     TransferPage(visible: _section == 5),
                     const FinancesPage(),
+                    const VideosPage(),
                   ],
                 ),
               ),

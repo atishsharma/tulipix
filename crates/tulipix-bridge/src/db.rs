@@ -35,6 +35,7 @@ static BOOKS: OnceCell<SqlitePool> = OnceCell::const_new();
 static CLOUD: OnceCell<SqlitePool> = OnceCell::const_new();
 static TOOLS: OnceCell<SqlitePool> = OnceCell::const_new();
 static FINANCES: OnceCell<SqlitePool> = OnceCell::const_new();
+static VIDEOS: OnceCell<SqlitePool> = OnceCell::const_new();
 
 /// Open (once) music.db and apply the music overlay on top of the shared
 /// `items` proxy schema `init_pool` puts down.
@@ -130,4 +131,29 @@ pub async fn youtube_pool() -> Result<&'static SqlitePool> {
 /// indistinguishable from nine broken tabs.
 pub async fn finances_pool() -> Result<&'static SqlitePool> {
     FINANCES.get_or_try_init(tulipix_finances::open).await
+}
+
+/// The videos database.
+///
+/// Four schemas on one file, applied in the order the Slint build applies them:
+/// the section's own tables, then Discover's feed cache, then the Stream tab's
+/// three (progress, bookmarks, resolved-stream cache, the download ledger and
+/// the landing-feed cache), then Stream Plus's. They are separate `apply`
+/// functions because the features shipped separately, not because they are
+/// separate databases — the Slint build opens exactly this one file.
+pub async fn videos_pool() -> Result<&'static SqlitePool> {
+    VIDEOS
+        .get_or_try_init(|| async {
+            let pool = DbHandle::open("videos")?.init_pool().await?;
+            tulipix_videos::schema::apply(&pool).await?;
+            tulipix_videos::discover::apply_schema(&pool).await?;
+            tulipix_videos::stream::progress::apply_schema(&pool).await?;
+            tulipix_videos::stream::bookmarks::apply_schema(&pool).await?;
+            tulipix_videos::stream::cache::apply_schema(&pool).await?;
+            tulipix_videos::stream::downloads::apply_schema(&pool).await?;
+            tulipix_videos::stream::feed_cache::apply_schema(&pool).await?;
+            tulipix_videos::splus::schema::apply_schema(&pool).await?;
+            Ok(pool)
+        })
+        .await
 }

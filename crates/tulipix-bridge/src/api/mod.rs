@@ -8,6 +8,7 @@ pub mod music;
 pub mod photos;
 pub mod tools;
 pub mod transfer;
+pub mod videos;
 
 /// Runs once, before any other bridge call, from `RustLib.init()` on the Dart
 /// side. Wires Rust panics and `println!` through to the Dart console.

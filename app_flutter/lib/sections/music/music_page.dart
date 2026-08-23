@@ -36,7 +36,11 @@ class _MusicPageState extends State<MusicPage> {
   @override
   void initState() {
     super.initState();
-    _c.refresh();
+    // Not `_c.refresh()` straight: `initState` runs inside a build, `send`
+    // notifies before it awaits, and the mini player wrapping the whole app is
+    // already listening — marking it dirty mid-build is an assertion. Ask for
+    // the first snapshot once this frame is out.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _c.refresh());
   }
 
   @override
