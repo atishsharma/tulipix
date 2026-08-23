@@ -2596,7 +2596,9 @@ fn save_watched_folders(folders: &[PathBuf]) {
     }
 }
 
-fn add_watched_folder(dir: &Path) {
+/// `pub(crate)`: the Downloader adds its destination to the same list, so a
+/// download outside the library root is still watched.
+pub(crate) fn add_watched_folder(dir: &Path) {
     let mut existing = load_watched_folders();
     if existing.iter().any(|p| p == dir) {
         return;
@@ -4431,6 +4433,10 @@ async fn fill_mymusic(pool: &sqlx::SqlitePool, s: &Session, st: &mut MusicState)
             st.song_total = st.songs.len() as i64;
             st.song_pages = 1;
         }
+        // The Downloader draws from its own module and needs nothing from the
+        // library query — without this arm it would fall through to
+        // `browse_cards` and pay for a grid nobody is looking at.
+        "downloader" => {}
         other => {
             let (cards, total) = browse_cards(pool, other, s).await;
             st.cards = cards;

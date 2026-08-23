@@ -44,8 +44,7 @@ const List<MusicView> musicViews = [
       Color(0xFFF43F5E), Color(0xFFF97316)),
 ];
 
-/// My Music's own sub-tabs. `lib-tab` on the Slint page, minus `downloader`,
-/// which is a separate app's worth of queue management (see the ledger).
+/// My Music's own sub-tabs — `lib-tab` on the Slint page, all nine of them.
 class LibTab {
   const LibTab(this.id, this.label, this.icon);
   final String id;
@@ -63,6 +62,7 @@ const List<LibTab> libTabs = [
   LibTab('folders', 'Folders', Icons.folder_outlined),
   LibTab('favorites', 'Favourites', Icons.favorite_outline),
   LibTab('history', 'History', Icons.history),
+  LibTab('downloader', 'Downloader', Icons.download_outlined),
 ];
 
 class MusicController extends ChangeNotifier {

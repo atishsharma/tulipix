@@ -10,6 +10,7 @@ import 'package:flutter/material.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'detail_page.dart';
+import 'downloader_tab.dart';
 import 'music_controller.dart';
 import 'music_dialogs.dart';
 import 'music_widgets.dart';
@@ -47,6 +48,7 @@ class MyMusicTab extends StatelessWidget {
     }
     return switch (st.libTab) {
       'home' => _Home(controller: controller, st: st),
+      'downloader' => const DownloaderTab(),
       'songs' || 'favorites' || 'history' => _SongsList(
           controller: controller,
           st: st,

@@ -6,6 +6,7 @@ pub mod editor;
 pub mod finances;
 pub mod genesis;
 pub mod home;
+pub mod mdl;
 pub mod music;
 pub mod photos;
 pub mod settings;

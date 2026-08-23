@@ -114,6 +114,10 @@ tulipix-transfer = { path = "../tulipix-transfer" }
 # audiobooks, radio and the YouTube store. No slint, so it is allowed.
 tulipix-music = { path = "../tulipix-music" }
 tulipix-books = { path = "../tulipix-books" }
+# The Downloader: provider scrapers (URL -> tracklist) and the per-track
+# search/download/tag pipeline over the bundled yt-dlp. No slint; the crate was
+# written against reqwest and lofty only.
+tulipix-mdl = { path = "../tulipix-mdl" }
 tulipix-cloud = { path = "../tulipix-cloud" }
 tulipix-tools = { path = "../tulipix-tools" }
 # Finances: money arithmetic in i64 minor units, the recurrence engine, budgets,
