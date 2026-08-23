@@ -3,8 +3,10 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/books.dart';
+import '../genesis/genesis_page.dart';
 import 'book_detail.dart';
 import 'book_reader.dart';
 import 'books_controller.dart';
@@ -21,6 +23,10 @@ class BooksPage extends StatefulWidget {
 class _BooksPageState extends State<BooksPage> {
   final BooksController _c = BooksController();
   final TextEditingController _search = TextEditingController();
+
+  /// Genesis is a sub-page of this section, like the reader: it takes the whole
+  /// area until you come back out of it.
+  bool _genesis = false;
 
   @override
   void initState() {
@@ -46,18 +52,30 @@ class _BooksPageState extends State<BooksPage> {
         // the book until you leave it.
         if (_c.reader != null) return BookReader(controller: _c);
 
+        if (_genesis) {
+          return GenesisPage(
+            // Coming back re-scans nothing: a download already asked the books
+            // library to rescan, and the snapshot behind this page is fresh.
+            onBack: () => setState(() => _genesis = false),
+          );
+        }
+
         return ColoredBox(
           color: t.nCanvas,
           child: Column(
             children: [
-              _Header(controller: _c, search: _search),
+              _Header(
+                controller: _c,
+                search: _search,
+                onGenesis: () => setState(() => _genesis = true),
+              ),
               if (_c.progress != null) _ScanBar(controller: _c),
               if (_c.error != null) _ErrorBanner(controller: _c),
               if (st != null && st.status.isNotEmpty)
                 _StatusBanner(message: st.status),
               Expanded(
                 child: st == null
-                    ? const Center(child: CircularProgressIndicator())
+                    ? FirstLoad(error: _c.error, onRetry: _c.refresh)
                     : _Body(controller: _c, state: st),
               ),
             ],
@@ -69,10 +87,15 @@ class _BooksPageState extends State<BooksPage> {
 }
 
 class _Header extends StatelessWidget {
-  const _Header({required this.controller, required this.search});
+  const _Header({
+    required this.controller,
+    required this.search,
+    required this.onGenesis,
+  });
 
   final BooksController controller;
   final TextEditingController search;
+  final VoidCallback onGenesis;
 
   @override
   Widget build(BuildContext context) {
@@ -135,6 +158,17 @@ class _Header extends StatelessWidget {
                   onSubmitted: (v) =>
                       controller.send(BooksCmd.search(text: v.trim())),
                 ),
+              ),
+              const SizedBox(width: 8),
+              // Genesis — search and download, left of the local controls.
+              // Filled red, so the one control that leaves the library for the
+              // open internet does not look like the ones that do not.
+              FilledButton.icon(
+                onPressed: onGenesis,
+                icon: const Icon(Icons.download, size: 15),
+                label: const Text('Genesis'),
+                style: FilledButton.styleFrom(
+                    backgroundColor: const Color(0xFFEF4444)),
               ),
               const SizedBox(width: 8),
               _SortButton(controller: controller),

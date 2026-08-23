@@ -3,6 +3,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/cloud.dart';
 import 'cloud_connect.dart';
@@ -54,7 +55,7 @@ class _CloudPageState extends State<CloudPage> {
                     _StatusBanner(message: st.status),
                   Expanded(
                     child: st == null
-                        ? const Center(child: CircularProgressIndicator())
+                        ? FirstLoad(error: _c.error, onRetry: _c.refresh)
                         : Row(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [

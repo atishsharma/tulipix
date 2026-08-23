@@ -11,6 +11,9 @@ import 'package:flutter/material.dart';
 
 /// The nine section identities. `Section` in tokens.slint.
 enum Section {
+  // Home leads, and its ordinal is the shell's IndexedStack index — the two
+  // are one list, and a second ordering would drift.
+  home,
   photos,
   videos,
   music,
@@ -145,6 +148,7 @@ class Tokens extends ThemeExtension<Tokens> {
   static const int weightLift = 600;
 
   static Color accentOf(Section s) => switch (s) {
+        Section.home => secHome,
         Section.photos => secPhotos,
         Section.videos => secVideos,
         Section.music => secMusic,

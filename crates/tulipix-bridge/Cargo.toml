@@ -85,8 +85,28 @@ rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "t
 # the root workspace: a second rustls in one process is a second root store.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
-# Frozen domain crates, by relative path. Deliberately NOT tulipix-common: that
-# crate depends on slint, and nothing the bridge links may.
+# Not called, and never entered — declared only to make the graph compile.
+#
+# tulipix-common (below, and again transitively through tulipix-status) asks for
+# `slint/backend-winit`, and i-slint-backend-winit is a `compile_error!` until
+# something in the build picks a renderer. Nothing here opens a window, so the
+# choice is only about what gets linked: `renderer-software` is pure Rust and
+# pulls no skia, no GL and no C++ toolchain. The Slint app picks `renderer-skia`
+# for the same reason in reverse — it actually draws.
+#
+# If tulipix-common ever loses its slint dependency (it carries it for two
+# histogram helpers nothing here calls), delete this line with it.
+slint = { version = "1.17", default-features = false, features = ["std", "compat-1-2", "renderer-software"] }
+
+# Frozen domain crates, by relative path.
+#
+# `tulipix-common` used to be excluded here on the grounds that it depends on
+# slint and nothing the bridge links may. That rule is already spent --
+# tulipix-status drags the same crate in transitively (see its comment below) --
+# so naming it directly costs nothing new and buys `quotes::shuffled`, the Home
+# page's quote shelf. If pool_for ever moves out of tulipix-common, both of
+# these go with it.
+tulipix-common = { path = "../tulipix-common" }
 tulipix-core = { path = "../tulipix-core" }
 tulipix-photos = { path = "../tulipix-photos" }
 tulipix-transfer = { path = "../tulipix-transfer" }
@@ -105,6 +125,21 @@ tulipix-finances = { path = "../tulipix-finances" }
 # catalogues, Live TV and Stream Plus. No slint -- the crate was written against
 # sqlx and reqwest only, which is what makes it linkable here.
 tulipix-videos = { path = "../tulipix-videos" }
+# Status: `collect()` -- one JSON snapshot of every section, and the only place
+# these figures are derived. The browser dashboard, the Slint page and the
+# Flutter page all render this same Value, which is why none of them can
+# disagree about a number.
+#
+# The one dependency in this file that drags slint in, and not on its own
+# account: it needs `tulipix_common::pool_for`, and tulipix-common carries a
+# slint dep for two histogram helpers nothing here calls. Nothing starts it --
+# slint is linked and never entered -- but it does mean this cdylib is not the
+# slint-free object the rest of the tree is. The alternative was re-deriving
+# 1,800 lines of queries, which would let the two dashboards drift.
+tulipix-status = { path = "../tulipix-status" }
+# Genesis: LibGen search, mirror ranking, record pages, covers and downloads.
+# Blocking (ureq) by design; every call from here goes through `spawn_blocking`.
+tulipix-genesis = { path = "../tulipix-genesis" }
 # `fm::open_default` and `fm::reveal_in_file_manager`. Default features only —
 # the `tray` feature is what pulls ksni/tray-icon in, and the bridge has no
 # tray. No slint here either, which is why this one is allowed.

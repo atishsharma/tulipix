@@ -7,6 +7,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/videos.dart';
 import 'videos_controller.dart';
@@ -87,7 +88,7 @@ class _VideosPageState extends State<VideosPage> {
                 ),
               Expanded(
                 child: st == null
-                    ? const Center(child: CircularProgressIndicator())
+                    ? FirstLoad(error: _c.error, onRetry: _c.refresh)
                     : _body(st),
               ),
             ],

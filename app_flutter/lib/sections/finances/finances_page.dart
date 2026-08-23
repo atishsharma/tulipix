@@ -7,6 +7,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/finances.dart';
 import 'finances_accounts.dart';
@@ -58,7 +59,7 @@ class _FinancesPageState extends State<FinancesPage> {
               if (_c.error != null) _ErrorBanner(c: _c),
               Expanded(
                 child: st == null
-                    ? const Center(child: CircularProgressIndicator())
+                    ? FirstLoad(error: _c.error, onRetry: _c.refresh)
                     : Stack(
                         children: [
                           _Body(c: _c, st: st),
@@ -283,8 +284,7 @@ class _NoticeBanner extends StatelessWidget {
                         fontSize: 12.5,
                         fontWeight: FontWeight.w700,
                         color: t.nInk)),
-                Text(n.body,
-                    style: TextStyle(fontSize: 11.5, color: t.nInk2)),
+                Text(n.body, style: TextStyle(fontSize: 11.5, color: t.nInk2)),
               ],
             ),
           ),

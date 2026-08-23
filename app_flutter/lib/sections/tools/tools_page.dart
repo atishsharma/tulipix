@@ -6,6 +6,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/tools.dart';
 import 'tools_controller.dart';
@@ -51,7 +52,7 @@ class _ToolsPageState extends State<ToolsPage> {
               if (_c.error != null) _ErrorBanner(controller: _c),
               Expanded(
                 child: st == null
-                    ? const Center(child: CircularProgressIndicator())
+                    ? FirstLoad(error: _c.error, onRetry: _c.refresh)
                     : Row(
                         crossAxisAlignment: CrossAxisAlignment.stretch,
                         children: [

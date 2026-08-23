@@ -229,6 +229,14 @@ fn with<R>(f: impl FnOnce(&TransferService) -> R) -> Option<R> {
     guard().as_ref().map(f)
 }
 
+/// What the Status dashboard reads about this service.
+///
+/// Returns the "not sharing" default when the service is parked mid-start/stop,
+/// which is what it is at that moment.
+pub(crate) fn status_snapshot(now: u64) -> tulipix_transfer::StatusSnapshot {
+    with(|s| s.status_snapshot(now)).unwrap_or_default()
+}
+
 /// What the page remembers between commands. Not the service's business: the
 /// ledger's sort order and page are a view, and a second window on the same
 /// service would want its own.

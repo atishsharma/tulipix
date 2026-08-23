@@ -9,6 +9,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'audiobooks_tab.dart';
@@ -67,7 +68,7 @@ class _MusicPageState extends State<MusicPage> {
                 _StatusBanner(message: st.status),
               Expanded(
                 child: st == null
-                    ? const Center(child: CircularProgressIndicator())
+                    ? FirstLoad(error: _c.error, onRetry: _c.refresh)
                     // IndexedStack, not a switch: each tab holds scroll
                     // positions and text fields, and rebuilding the whole
                     // subtree on every category change would throw both away.

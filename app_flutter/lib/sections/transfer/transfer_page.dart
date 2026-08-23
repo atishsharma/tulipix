@@ -14,6 +14,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/transfer.dart';
 import 'connection_card.dart';
@@ -89,7 +90,7 @@ class _TransferPageState extends State<TransferPage> {
         builder: (context, _) {
           final state = _c.state;
           if (state == null) {
-            return const Center(child: CircularProgressIndicator());
+            return FirstLoad(error: _c.error, onRetry: _c.start);
           }
           return Column(
             children: [

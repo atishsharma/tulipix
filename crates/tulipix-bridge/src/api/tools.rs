@@ -1239,6 +1239,12 @@ fn category_of(kind: &str) -> &'static str {
     }
 }
 
+/// How many operations the catalogue offers. Home's hub tile prints it, and it
+/// must be the same number the Tools page lists rather than a second count.
+pub(crate) fn op_count() -> i64 {
+    ALL_OPS.len() as i64
+}
+
 const ALL_OPS: &[&str] = &[
     "rename",
     "merge",

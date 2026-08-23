@@ -1,13 +1,14 @@
-// Flutter shell — phase 4 territory, standing in as the thinnest thing that can
-// host a section. The real sidebar, routing, settings panels, the custom
-// caption row and the home rails are not ported yet. What is here is a stock
-// NavigationRail, which exists so the two ported sections can both be reached
-// and compared against the Slint build; it is scaffolding, not a port of
-// ui/sidebar.slint, and phase 4 replaces it wholesale.
+// The Flutter shell.
+//
+// A port of ui/sidebar.slint over an IndexedStack of the ten sections. The
+// sidebar owns which section is up (`ShellController`, a singleton, because
+// Home's tiles and the Status lamp both navigate); this file owns the theme,
+// which is read from and written back to the same settings file the Slint
+// build uses.
+//
+// Still scaffolding above the sidebar: no custom caption row, no command
+// palette, no lock screen.
 
-// `AppExitResponse` is declared in dart:ui and re-exported by nothing, so it
-// is named directly. `show` rather than a bare import: dart:ui also carries a
-// Color and a Size, and material's are the ones this file means.
 import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
@@ -16,13 +17,18 @@ import 'design/tokens.dart';
 import 'sections/books/books_page.dart';
 import 'sections/cloud/cloud_page.dart';
 import 'sections/finances/finances_page.dart';
+import 'sections/home/home_page.dart';
 import 'sections/music/music_overlay.dart';
 import 'sections/music/music_page.dart';
 import 'sections/photos/photos_page.dart';
+import 'sections/settings/settings_page.dart';
 import 'sections/tools/tools_page.dart';
 import 'sections/transfer/transfer_page.dart';
 import 'sections/videos/videos_page.dart';
+import 'shell/shell_controller.dart';
+import 'shell/sidebar.dart';
 import 'src/rust/api/music.dart';
+import 'src/rust/api/shell.dart';
 import 'src/rust/api/transfer.dart';
 import 'src/rust/api/videos.dart';
 import 'src/rust/frb_generated.dart';
@@ -41,12 +47,13 @@ class TulipixApp extends StatefulWidget {
 }
 
 class _TulipixAppState extends State<TulipixApp> {
-  // Theme.dark / Theme.oled from ui/tokens.slint. Reading and writing the real
-  // Settings file is a phase 4 gate item, so for now these are session-local.
+  // Theme.dark / Theme.oled from ui/tokens.slint, resolved from the same
+  // `Settings.theme` string the Slint build stores: "system" | "light" |
+  // "dark" | "extra-dark".
   bool _dark = true;
   bool _oled = false;
 
-  int _section = 0;
+  final ShellController _shell = ShellController.instance;
 
   /// Closing the window has to close the listening socket, and stop the audio.
   /// The process exit would do both too, but not before the OS has had a moment
@@ -57,6 +64,10 @@ class _TulipixAppState extends State<TulipixApp> {
   @override
   void initState() {
     super.initState();
+    _shell.addListener(_onShell);
+    // The first snapshot also carries the stored theme, which is why this runs
+    // before anything is drawn rather than when the sidebar first appears.
+    WidgetsBinding.instance.addPostFrameCallback((_) => _shell.refresh());
     _lifecycle = AppLifecycleListener(
       onExitRequested: () async {
         transferShutdown();
@@ -72,9 +83,41 @@ class _TulipixAppState extends State<TulipixApp> {
 
   @override
   void dispose() {
+    _shell.removeListener(_onShell);
     _lifecycle?.dispose();
     super.dispose();
   }
+
+  void _onShell() {
+    final theme = _shell.state?.theme ?? 'system';
+    final dark = theme != 'light';
+    final oled = theme == 'extra-dark';
+    if (dark == _dark && oled == _oled) {
+      setState(() {});
+      return;
+    }
+    setState(() {
+      _dark = dark;
+      _oled = oled;
+    });
+  }
+
+  /// light → dark → extra-dark → light, and stored. The sidebar's theme button
+  /// calls this; the same three stops the Slint build cycles through.
+  void _cycleTheme() {
+    final next = !_dark
+        ? 'dark'
+        : !_oled
+            ? 'extra-dark'
+            : 'light';
+    _shell.send(ShellCmd.setTheme(theme: next));
+  }
+
+  IconData get _themeIcon => !_dark
+      ? Icons.light_mode
+      : _oled
+          ? Icons.star_outline
+          : Icons.dark_mode;
 
   @override
   Widget build(BuildContext context) {
@@ -88,99 +131,44 @@ class _TulipixAppState extends State<TulipixApp> {
       // they are how that stays visible.
       home: MusicOverlay(
         child: Scaffold(
-          body: Row(
-            children: [
-              NavigationRail(
-                backgroundColor: tokens.panel,
-                selectedIndex: _section,
-                labelType: NavigationRailLabelType.all,
-                onDestinationSelected: (i) => setState(() => _section = i),
-                destinations: const [
-                  NavigationRailDestination(
-                    icon: Icon(Icons.photo_library_outlined),
-                    selectedIcon: Icon(Icons.photo_library),
-                    label: Text('Photos'),
+          backgroundColor: tokens.bg,
+          body: AnimatedBuilder(
+            animation: _shell,
+            builder: (context, _) {
+              final at = _shell.section;
+              return Row(
+                children: [
+                  Sidebar(
+                    controller: _shell,
+                    onCycleTheme: _cycleTheme,
+                    themeIcon: _themeIcon,
                   ),
-                  NavigationRailDestination(
-                    icon: Icon(Icons.library_music_outlined),
-                    selectedIcon: Icon(Icons.library_music),
-                    label: Text('Music'),
-                  ),
-                  NavigationRailDestination(
-                    icon: Icon(Icons.menu_book_outlined),
-                    selectedIcon: Icon(Icons.menu_book),
-                    label: Text('Books'),
-                  ),
-                  NavigationRailDestination(
-                    icon: Icon(Icons.cloud_outlined),
-                    selectedIcon: Icon(Icons.cloud),
-                    label: Text('Cloud'),
-                  ),
-                  NavigationRailDestination(
-                    icon: Icon(Icons.build_outlined),
-                    selectedIcon: Icon(Icons.build),
-                    label: Text('Tools'),
-                  ),
-                  NavigationRailDestination(
-                    icon: Icon(Icons.share_outlined),
-                    selectedIcon: Icon(Icons.share),
-                    label: Text('Transfer'),
-                  ),
-                  NavigationRailDestination(
-                    icon: Icon(Icons.savings_outlined),
-                    selectedIcon: Icon(Icons.savings),
-                    label: Text('Finances'),
-                  ),
-                  NavigationRailDestination(
-                    icon: Icon(Icons.movie_outlined),
-                    selectedIcon: Icon(Icons.movie),
-                    label: Text('Videos'),
+                  // Every section stays alive across a switch: Transfer polls a
+                  // running server, Music holds a playing mpv and a queue, and
+                  // rebuilding either every time it is looked at would restart
+                  // the poll and lose the ledger's page and sort, or drop the
+                  // now-playing. The ones that cost something to keep warm are
+                  // told whether they are on screen instead.
+                  Expanded(
+                    child: IndexedStack(
+                      index: at.index,
+                      children: [
+                        HomePage(visible: at == Section.home),
+                        const PhotosPage(),
+                        const VideosPage(),
+                        const MusicPage(),
+                        const BooksPage(),
+                        const CloudPage(),
+                        const ToolsPage(),
+                        TransferPage(visible: at == Section.transfer),
+                        const FinancesPage(),
+                        SettingsPage(visible: at == Section.settings),
+                      ],
+                    ),
                   ),
                 ],
-              ),
-              // All three stay alive across a switch: Transfer polls a running
-              // server, Music holds a playing mpv and a queue, and rebuilding
-              // either every time it is looked at would restart the poll and
-              // lose the ledger's page and sort, or drop the now-playing.
-              Expanded(
-                child: IndexedStack(
-                  index: _section,
-                  children: [
-                    const PhotosPage(),
-                    const MusicPage(),
-                    const BooksPage(),
-                    const CloudPage(),
-                    const ToolsPage(),
-                    // Told when it is on screen so its poll can slow down: the
-                    // server keeps running when the user is in Photos, but
-                    // nothing there needs repainting six times a second.
-                    TransferPage(visible: _section == 5),
-                    const FinancesPage(),
-                    const VideosPage(),
-                  ],
-                ),
-              ),
-            ],
-          ),
-          floatingActionButton: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              // Parity checking means flipping both themes and the OLED tier on
-              // the same screen, side by side with the Slint build.
-              FloatingActionButton.small(
-                heroTag: 'theme',
-                tooltip: _dark ? 'Light theme' : 'Dark theme',
-                onPressed: () => setState(() => _dark = !_dark),
-                child: Icon(_dark ? Icons.light_mode : Icons.dark_mode),
-              ),
-              const SizedBox(width: 8),
-              FloatingActionButton.small(
-                heroTag: 'oled',
-                tooltip: 'OLED tier',
-                onPressed: () => setState(() => _oled = !_oled),
-                child: const Icon(Icons.contrast),
-              ),
-            ],
+              );
+            },
           ),
         ),
       ),

@@ -1504,7 +1504,7 @@ fn step_chapter(forward: bool) {
 /// stops being reasonable.
 const THUMB_CAP: usize = 200;
 
-async fn run_scan(pool: &sqlx::SqlitePool) -> Result<()> {
+pub(crate) async fn run_scan(pool: &sqlx::SqlitePool) -> Result<()> {
     let report = scan::scan_all_progress(pool, |done, total, name| {
         emit(BooksEvent::ScanProgress {
             done: done as i64,

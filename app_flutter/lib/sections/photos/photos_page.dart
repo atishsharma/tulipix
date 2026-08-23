@@ -11,6 +11,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 
+import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/photos.dart';
 import 'photo_tile.dart';
@@ -86,7 +87,7 @@ class _PhotosPageState extends State<PhotosPage> {
               _CategoryChips(controller: _c),
               Expanded(
                 child: state == null
-                    ? const Center(child: CircularProgressIndicator())
+                    ? FirstLoad(error: _c.error, onRetry: _c.refresh)
                     : _Body(controller: _c, state: state),
               ),
               if (_c.selecting) _SelectionBar(controller: _c),
@@ -133,8 +134,8 @@ class _Header extends StatelessWidget {
                       controller.send(PhotosCmd.setCategory(name: crumb.$1)),
                   borderRadius: BorderRadius.circular(6),
                   child: Padding(
-                    padding: const EdgeInsets.symmetric(
-                        horizontal: 6, vertical: 2),
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                     child: Text(
                       crumb.$2,
                       style: const TextStyle(
@@ -545,11 +546,11 @@ Future<void> _stackMenu(
   );
   switch (picked) {
     case 'expand':
-      await c.send(
-          PhotosCmd.toggleStack(stackId: tile.stackId, expanded: true));
+      await c
+          .send(PhotosCmd.toggleStack(stackId: tile.stackId, expanded: true));
     case 'collapse':
-      await c.send(
-          PhotosCmd.toggleStack(stackId: tile.stackId, expanded: false));
+      await c
+          .send(PhotosCmd.toggleStack(stackId: tile.stackId, expanded: false));
     case 'unstack':
       await c.send(PhotosCmd.unstack(stackId: tile.stackId));
   }
@@ -772,8 +773,8 @@ class _FolderList extends StatelessWidget {
               return ListTile(
                 leading: const Icon(Icons.folder, color: Tokens.secPhotos),
                 title: Text(f.name, style: TextStyle(color: t.nInk)),
-                subtitle:
-                    Text(f.path, style: TextStyle(fontSize: 12, color: t.nInk2)),
+                subtitle: Text(f.path,
+                    style: TextStyle(fontSize: 12, color: t.nInk2)),
                 trailing: Text('${f.count}', style: TextStyle(color: t.nInk2)),
               );
             },
@@ -857,9 +858,9 @@ class _LibSortBar extends StatelessWidget {
       'album' => (
           'albums',
           s.albums
-              .where((a) => a.id == s.albumId)
-              .map((a) => a.name)
-              .firstOrNull ??
+                  .where((a) => a.id == s.albumId)
+                  .map((a) => a.name)
+                  .firstOrNull ??
               'Album',
         ),
       'facephotos' => (
@@ -1120,8 +1121,7 @@ class _PeopleGrid extends StatelessWidget {
         final p = state.people[i];
         final named = p.name.isNotEmpty;
         return InkWell(
-          onTap: () =>
-              controller.send(PhotosCmd.openPerson(personId: p.id)),
+          onTap: () => controller.send(PhotosCmd.openPerson(personId: p.id)),
           borderRadius: BorderRadius.circular(Tokens.radiusMd),
           child: Column(
             children: [
@@ -1153,7 +1153,9 @@ class _PeopleGrid extends StatelessWidget {
               Text(
                 '${p.count} ${p.count == 1 ? 'face' : 'faces'}',
                 style: TextStyle(
-                    fontFamily: Tokens.fontFamily, fontSize: 11, color: t.nInk2),
+                    fontFamily: Tokens.fontFamily,
+                    fontSize: 11,
+                    color: t.nInk2),
               ),
             ],
           ),
@@ -1227,8 +1229,8 @@ class _ThingsGrid extends StatelessWidget {
       itemBuilder: (context, i) {
         final tag = state.things[i];
         return InkWell(
-          onTap: () => controller
-              .send(PhotosCmd.openTag(tagId: tag.id, name: tag.name)),
+          onTap: () =>
+              controller.send(PhotosCmd.openTag(tagId: tag.id, name: tag.name)),
           borderRadius: BorderRadius.circular(Tokens.radiusMd),
           child: Stack(
             fit: StackFit.expand,

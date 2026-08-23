@@ -2633,7 +2633,7 @@ fn is_audio(path: &Path) -> bool {
 /// Walk every watched root as a music library, prune the non-audio rows the
 /// shared populator inserted, and seed a `track_meta` row for each survivor so
 /// the browse joins are cheap.
-async fn scan_watched() -> Result<()> {
+pub(crate) async fn scan_watched() -> Result<()> {
     let pool = music_pool().await?;
     let roots = load_watched_folders();
     let total = roots.len() as i64;
