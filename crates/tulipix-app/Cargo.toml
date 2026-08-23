@@ -90,7 +90,8 @@ full = ["ai-onnx"]
 [dependencies]
 slint.workspace = true
 tulipix-ui = { path = "../tulipix-ui" }
-tulipix-common = { path = "../tulipix-common" }
+# `histogram`: this crate draws the histogram into a slint Image.
+tulipix-common = { path = "../tulipix-common", features = ["histogram"] }
 tokio.workspace = true
 anyhow.workspace = true
 tracing.workspace = true

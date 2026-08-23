@@ -118,13 +118,13 @@ class _LedgerTabState extends State<LedgerTab> {
               IconButton(
                 tooltip: 'Read a receipt',
                 iconSize: 19,
-                onPressed: () => c.send(const FinancesCmd.scanReceipt()),
+                onPressed: c.scanReceipt,
                 icon: const Icon(Icons.document_scanner_outlined),
               ),
               IconButton(
                 tooltip: 'Import a statement',
                 iconSize: 19,
-                onPressed: () => c.send(const FinancesCmd.importPick()),
+                onPressed: c.importStatement,
                 icon: const Icon(Icons.upload_file_outlined),
               ),
             ],

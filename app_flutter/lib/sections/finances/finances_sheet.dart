@@ -743,7 +743,7 @@ class ImportPanel extends StatelessWidget {
           ),
         if (st.importRows.isEmpty)
           OutlinedButton.icon(
-            onPressed: () => c.send(const FinancesCmd.importPick()),
+            onPressed: c.importStatement,
             icon: const Icon(Icons.file_open_outlined, size: 17),
             label: const Text('Choose a statement'),
           )
@@ -804,7 +804,7 @@ class ImportPanel extends StatelessWidget {
           Align(
             alignment: Alignment.centerLeft,
             child: TextButton.icon(
-              onPressed: () => c.send(const FinancesCmd.importPick()),
+              onPressed: c.importStatement,
               icon: const Icon(Icons.swap_horiz, size: 16),
               label: const Text('Choose a different file',
                   style: TextStyle(fontSize: 12)),

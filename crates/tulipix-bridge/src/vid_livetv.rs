@@ -349,7 +349,7 @@ fn play(index: i64) {
     let index = index.max(0);
     let Some(ch) = with(|s| s.live.channels.get(index as usize).cloned()) else { return };
     with(|s| {
-        s.ui.live.status = format!("Opening {} in mpv…", ch.name);
+        s.ui.live.status = format!("Opening {}…", ch.name);
         s.live.now = Some((index as usize, ch.clone()));
         show_now(s, index, &ch);
     });
@@ -378,7 +378,7 @@ fn play(index: i64) {
         if PLAY_GEN.load(Ordering::SeqCst) != epoch {
             return;
         }
-        with(|s| s.ui.live.status = format!("Playing {name} in mpv"));
+        with(|s| s.ui.live.status = format!("Playing {name}"));
         v::emit(VideosEvent::Changed);
     });
 }

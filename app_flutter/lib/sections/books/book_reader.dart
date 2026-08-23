@@ -1,10 +1,17 @@
 // The reader.
 //
-// Two kinds of book, one set of controls. An EPUB is text the bridge has
+// Three kinds of book, one set of controls. An EPUB is text the bridge has
 // already laid out into pages against the current typography, so a page here is
-// a string and changing the font size repaginates on the Rust side. A PDF or a
-// comic is a rendered image per leaf, so a page here is a file path and the
-// typography controls do not apply.
+// a string and changing the font size repaginates on the Rust side. A comic is
+// a rendered image per leaf, so a page here is a file path the bridge extracted
+// from the archive. A PDF is neither: pdfium is in this process, so the file
+// itself crosses and a page is drawn here — which is what makes the text
+// selectable, the zoom continuous and the search real rather than a picture of
+// a page rasterised at a guessed DPI.
+//
+// The one PDF path still rendered in Rust is trim, which crops scanned margins
+// by measuring the raster. pdfium has no equivalent, so turning trim on puts
+// that book back on the poppler path for as long as it is on.
 //
 // The spread is the unit of navigation in both: two leaves side by side, or one
 // in single mode, and right-to-left books swap which leaf goes where. That
@@ -14,6 +21,7 @@ import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:pdfrx/pdfrx.dart';
 
 import '../../design/tokens.dart';
 import '../../src/rust/api/books.dart';
@@ -463,6 +471,63 @@ class _Spread extends StatelessWidget {
   }
 }
 
+/// One PDF page, drawn by pdfium in this process.
+///
+/// `PdfDocumentViewBuilder` owns the document's lifetime and caches it per
+/// path, so turning the page does not reopen the file — which is the whole
+/// reason a spread of two leaves can each ask for their own page and cost one
+/// open between them.
+class _PdfLeaf extends StatelessWidget {
+  const _PdfLeaf({
+    required this.path,
+    required this.folio,
+    required this.night,
+    required this.palette,
+  });
+
+  final String path;
+
+  /// 1-based, which is also what pdfrx counts in.
+  final int folio;
+  final bool night;
+  final ({Color page, Color ink, Color faint}) palette;
+
+  /// The reader's dark theme, applied to a page that is black on white.
+  /// Rasterising an inverted PNG is what the Rust path did; a colour filter
+  /// does it on the GPU and survives a zoom.
+  static const ColorFilter _invert = ColorFilter.matrix(<double>[
+    -1, 0, 0, 0, 255, //
+    0, -1, 0, 0, 255, //
+    0, 0, -1, 0, 255, //
+    0, 0, 0, 1, 0, //
+  ]);
+
+  @override
+  Widget build(BuildContext context) {
+    final view = PdfDocumentViewBuilder.file(
+      path,
+      builder: (context, document) {
+        if (document == null) {
+          return Center(
+            child: SizedBox(
+              width: 18,
+              height: 18,
+              child: CircularProgressIndicator(strokeWidth: 2, color: palette.faint),
+            ),
+          );
+        }
+        if (folio > document.pages.length) return const SizedBox.shrink();
+        return PdfPageView(
+          document: document,
+          pageNumber: folio,
+          alignment: Alignment.center,
+        );
+      },
+    );
+    return night ? ColorFiltered(colorFilter: _invert, child: view) : view;
+  }
+}
+
 class _Leaf extends StatelessWidget {
   const _Leaf({
     required this.reader,
@@ -483,18 +548,27 @@ class _Leaf extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (reader.imageMode) {
-      if (image.isEmpty) return const SizedBox.shrink();
+      // A PDF the bridge did not rasterise: it handed over the file instead.
+      final pdf = image.isEmpty && reader.filePath.isNotEmpty && folio > 0;
+      if (!pdf && image.isEmpty) return const SizedBox.shrink();
       return Column(
         children: [
           Expanded(
-            child: Image.file(
-              File(image),
-              fit: BoxFit.contain,
-              errorBuilder: (_, __, ___) => Center(
-                child: Text('Page $folio would not render',
-                    style: TextStyle(color: palette.faint, fontSize: 12)),
-              ),
-            ),
+            child: pdf
+                ? _PdfLeaf(
+                    path: reader.filePath,
+                    folio: folio,
+                    night: reader.prefs.theme == 'dark',
+                    palette: palette,
+                  )
+                : Image.file(
+                    File(image),
+                    fit: BoxFit.contain,
+                    errorBuilder: (_, __, ___) => Center(
+                      child: Text('Page $folio would not render',
+                          style: TextStyle(color: palette.faint, fontSize: 12)),
+                    ),
+                  ),
           ),
           const SizedBox(height: 6),
           Text('$folio', style: TextStyle(fontSize: 11, color: palette.faint)),

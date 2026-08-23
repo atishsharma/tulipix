@@ -1,15 +1,16 @@
 // YouTube — search, subscriptions, playlists, the cache and the downloads.
 //
-// Audio only, and deliberately: playback lands on the same mpv the other four
+// Audio only, and deliberately: playback lands on the same deck the other four
 // tabs use, so a video here behaves like a track — it goes in the same bar,
 // stops the same album, and honours the same volume. Watching video is the
-// Videos section's job and it has its own windowed mpv.
+// Videos section's job and it has its own player, over the window.
 //
 // Every listing is yt-dlp. The Piped backend the Slint build can be switched
 // to is a Settings choice, and Settings belongs to the shell (phase 04).
 
 import 'package:flutter/material.dart';
 
+import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
@@ -500,12 +501,9 @@ class _Subscriptions extends StatelessWidget {
               icon: const Icon(Icons.upload_file, size: 16),
               label: const Text('Import subscriptions'),
               onPressed: () async {
-                final path = await promptPath(
-                  context,
-                  title: 'Import YouTube subscriptions',
-                  label: "Path to Google Takeout's subscriptions.csv",
-                  hint: '/home/you/Downloads/subscriptions.csv',
-                  confirm: 'Import',
+                final path = await pickFile(
+                  label: "Takeout's subscriptions.csv",
+                  extensions: ['csv'],
                 );
                 if (path != null) {
                   await controller.send(MusicCmd.ytImportSubs(path: path));

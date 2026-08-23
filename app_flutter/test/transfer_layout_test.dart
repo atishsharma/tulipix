@@ -110,6 +110,13 @@ TransferState _state({
     pages: rows > 0 ? 4 : 1,
     sort: 5,
     sortDesc: true,
+    // No certificate: the default path, and the one the trust strip belongs to.
+    // The certificate card's own states are not a layout risk — it is a column
+    // of text in a box that grows.
+    certHost: '',
+    certWaiting: false,
+    certRecord: '',
+    certValue: '',
   );
 }
 

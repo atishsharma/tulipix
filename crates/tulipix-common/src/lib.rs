@@ -224,6 +224,7 @@ pub fn human_size(bytes: u64) -> String {
 }
 
 /// Decode `path` and render its histogram; an empty 256×100 buffer on failure.
+#[cfg(feature = "histogram")]
 pub fn histogram_image(path: &std::path::Path) -> slint::Image {
     let Ok(img) = image::open(path) else {
         use slint::{Rgba8Pixel, SharedPixelBuffer};
@@ -234,6 +235,7 @@ pub fn histogram_image(path: &std::path::Path) -> slint::Image {
 
 /// Render a 256×100 additive RGB histogram buffer from an already-decoded
 /// image. Shared by the viewer/properties panels and the editor curve grid.
+#[cfg(feature = "histogram")]
 pub fn histogram_buf(img: &image::DynamicImage) -> slint::SharedPixelBuffer<slint::Rgba8Pixel> {
     use slint::{Rgba8Pixel, SharedPixelBuffer};
     const W: usize = 256;

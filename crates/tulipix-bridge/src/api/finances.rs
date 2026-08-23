@@ -935,8 +935,13 @@ pub enum FinancesCmd {
     FlagAction { action: String },
 
     // Import, receipts, detection, rates
-    ImportPick,
-    ScanReceipt,
+    //
+    // Both carry the path Dart's chooser returned. The bridge used to open the
+    // dialog itself, through `rfd`; the extension lists the chooser filters on
+    // are still this side's — `import::EXTENSIONS` for statements — and are
+    // exported below rather than transcribed into Dart.
+    ImportPick { path: String },
+    ScanReceipt { path: String },
     AcceptProposal { idx: i32 },
     RatesRefresh,
     /// Opens the ledger filtered to the account being reconciled.
@@ -4285,16 +4290,11 @@ async fn show_preview(
     Ok(())
 }
 
-async fn pick_statement() -> Result<()> {
-    let Some(file) = rfd::AsyncFileDialog::new()
-        .set_title("Choose a bank statement")
-        .add_filter("Statements", import::EXTENSIONS)
-        .pick_file()
-        .await
-    else {
+async fn pick_statement(chosen: String) -> Result<()> {
+    if chosen.is_empty() {
         return Ok(());
-    };
-    let path = file.path().to_path_buf();
+    }
+    let path = std::path::PathBuf::from(chosen);
     let pool = finances_pool().await?;
 
     // Read as bytes, not as text: a PDF or a spreadsheet is binary, and even a
@@ -4401,7 +4401,7 @@ async fn envelope_note(category_label: &str) -> Result<()> {
 /// the account, date and category, and the fields it did fill are corrections
 /// away from right — which is the only safe shape for this: an OCR'd total is a
 /// guess, and a guess must pass under human eyes before it becomes a ledger row.
-async fn scan_receipt() -> Result<()> {
+async fn scan_receipt(chosen: String) -> Result<()> {
     if !tulipix_finances::ocr::available() {
         // The message has to go somewhere the user is looking, and the note only
         // renders inside a sheet — so open the one they were heading for anyway.
@@ -4413,15 +4413,10 @@ async fn scan_receipt() -> Result<()> {
         return Ok(());
     }
 
-    let Some(file) = rfd::AsyncFileDialog::new()
-        .set_title("Choose a photo of the receipt")
-        .add_filter("Images", &["jpg", "jpeg", "png", "webp", "tif", "tiff", "bmp"])
-        .pick_file()
-        .await
-    else {
+    if chosen.is_empty() {
         return Ok(());
-    };
-    let path = file.path().to_path_buf();
+    }
+    let path = std::path::PathBuf::from(chosen);
     let base = fx::base_currency();
 
     // OCR is a subprocess doing real work on a multi-megapixel photo, so it goes
@@ -4849,8 +4844,8 @@ async fn apply(cmd: FinancesCmd) -> Result<()> {
         }
 
         // ── import, receipts, detection, rates ──────────────────────────────
-        FinancesCmd::ImportPick => pick_statement().await?,
-        FinancesCmd::ScanReceipt => scan_receipt().await?,
+        FinancesCmd::ImportPick { path } => pick_statement(path).await?,
+        FinancesCmd::ScanReceipt { path } => scan_receipt(path).await?,
         FinancesCmd::AcceptProposal { idx } => {
             let Some(p) = session().proposals.get(idx.max(0) as usize).cloned() else {
                 return Ok(());
@@ -5687,6 +5682,14 @@ pub async fn finances_dispatch(cmd: FinancesCmd) -> Result<FinancesState> {
 #[frb(sync)]
 pub fn finances_events(sink: StreamSink<FinancesEvent>) {
     let _ = events().set(sink);
+}
+
+/// What the statement chooser should offer, straight from the importer that has
+/// to read the file. Transcribing this list into Dart would mean a format the
+/// pipeline gained but the dialog would not show.
+#[frb(sync)]
+pub fn finances_import_extensions() -> Vec<String> {
+    import::EXTENSIONS.iter().map(|e| e.to_string()).collect()
 }
 
 #[cfg(test)]

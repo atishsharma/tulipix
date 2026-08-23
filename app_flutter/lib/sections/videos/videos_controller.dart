@@ -17,6 +17,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../design/tokens.dart';
+import '../../playback/video_layer.dart';
 import '../../src/rust/api/videos.dart';
 
 /// The seven top-level tabs, in the order the header draws them.
@@ -136,6 +137,22 @@ class VideosController extends ChangeNotifier {
       case VideosEvent_Failed(:final message):
         error = message;
         notifyListeners();
+      case VideosEvent_VideoPlay(
+          :final token,
+          :final src,
+          :final startAt,
+          :final props
+        ):
+        // The layer that draws it wraps the whole app, not this section: a
+        // channel started here keeps playing while you look at Photos.
+        videoRequest.value = VideoRequest(
+          token: token,
+          src: src,
+          startAt: startAt,
+          props: props,
+        );
+      case VideosEvent_VideoStop():
+        videoRequest.value = null;
     }
   }
 

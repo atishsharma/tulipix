@@ -24,7 +24,8 @@ anyhow.workspace = true
 tracing.workspace = true
 rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
 tulipix-ui = { path = "../tulipix-ui" }
-tulipix-common = { path = "../tulipix-common" }
+# `histogram`: this crate draws the histogram into a slint Image.
+tulipix-common = { path = "../tulipix-common", features = ["histogram"] }
 tulipix-core = { path = "../tulipix-core" }
 tulipix-cloud = { path = "../tulipix-cloud" }
 tulipix-platform = { path = "../tulipix-platform" }

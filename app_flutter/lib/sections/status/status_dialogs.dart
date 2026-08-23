@@ -4,6 +4,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/status.dart';
 import 'status_controller.dart';
@@ -330,7 +331,6 @@ class _LibrarySheet extends StatefulWidget {
 class _LibrarySheetState extends State<_LibrarySheet> {
   bool _armed = false;
   final TextEditingController _typed = TextEditingController();
-  final TextEditingController _folder = TextEditingController();
 
   /// The word that arms the reset, from the crate that checks it.
   final String _phrase = statusResetPhrase();
@@ -338,7 +338,6 @@ class _LibrarySheetState extends State<_LibrarySheet> {
   @override
   void dispose() {
     _typed.dispose();
-    _folder.dispose();
     super.dispose();
   }
 
@@ -478,42 +477,8 @@ class _LibrarySheetState extends State<_LibrarySheet> {
     );
   }
 
-  /// A typed path rather than a native picker, the same way the other sections
-  /// take one: the file dialog belongs to the shell, and the shell is phase 4.
   Future<void> _addFolder() async {
-    final t = context.tokens;
-    _folder.clear();
-    final path = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        backgroundColor: t.panel,
-        title: Text('Watch a folder',
-            style: TextStyle(fontSize: 16, color: t.text)),
-        content: SizedBox(
-          width: 460,
-          child: TextField(
-            controller: _folder,
-            autofocus: true,
-            style: TextStyle(fontSize: 13, color: t.text),
-            decoration: const InputDecoration(
-              hintText: '/home/you/Media',
-              isDense: true,
-            ),
-            onSubmitted: (v) => Navigator.of(context).pop(v.trim()),
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(),
-            child: const Text('Cancel'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.of(context).pop(_folder.text.trim()),
-            child: const Text('Watch'),
-          ),
-        ],
-      ),
-    );
+    final path = await pickDirectory();
     if (path == null || path.isEmpty) return;
     await widget.controller.send(StatusCmd.addFolder(path: path));
   }

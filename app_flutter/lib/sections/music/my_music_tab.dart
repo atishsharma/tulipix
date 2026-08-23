@@ -7,6 +7,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'detail_page.dart';
@@ -61,34 +62,9 @@ class MyMusicTab extends StatelessWidget {
 }
 
 Future<void> _addFolder(BuildContext context, MusicController c) async {
-  // A typed path, not a native chooser: the shell (phase 04) owns file dialogs
-  // for every section, and duplicating one here would have to be reverted.
-  final text = TextEditingController();
-  final path = await showDialog<String>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: const Text('Add a music folder'),
-      content: TextField(
-        controller: text,
-        autofocus: true,
-        decoration: const InputDecoration(
-          hintText: '/home/you/Music',
-          labelText: 'Absolute path',
-        ),
-        onSubmitted: (v) => Navigator.pop(ctx, v),
-      ),
-      actions: [
-        TextButton(
-            onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-        FilledButton(
-          onPressed: () => Navigator.pop(ctx, text.text),
-          child: const Text('Add'),
-        ),
-      ],
-    ),
-  );
-  final trimmed = path?.trim() ?? '';
-  if (trimmed.isNotEmpty) await c.send(MusicCmd.addFolder(path: trimmed));
+  final path = await pickDirectory();
+  if (path == null) return;
+  await c.send(MusicCmd.addFolder(path: path));
 }
 
 class _SubTabs extends StatelessWidget {

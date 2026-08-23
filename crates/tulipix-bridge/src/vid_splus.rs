@@ -941,7 +941,7 @@ async fn play() {
     args.extend(splus::aniskip::mpv_args(&spans, resume));
     args.push(format!("--force-media-title={} {}", ep.title.display_title(), ep.label()));
 
-    set_status(&format!("Opening {} {} in mpv…", ep.title.display_title(), ep.label()));
+    set_status(&format!("Opening {} {}…", ep.title.display_title(), ep.label()));
 
     let ep2 = ep.clone();
     let source = file.source.to_string();

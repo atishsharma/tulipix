@@ -7,6 +7,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/videos.dart';
 import 'videos_controller.dart';
@@ -53,37 +54,13 @@ class VideosLibrary extends StatelessWidget {
 }
 
 /// The bridge takes a path rather than opening a chooser itself — a native
-/// dialog from a cdylib has no window to parent to. `file_selector` is not a
-/// dependency here, so this is a typed path, the same shape Cloud's "connect"
-/// form uses.
+/// dialog from a cdylib has no window to parent to. `file_selector` opens it on
+/// this side, which is what the comment here used to say was missing.
 Future<void> addVideoFolder(
     BuildContext context, VideosController controller) async {
-  final text = TextEditingController();
-  final path = await showDialog<String>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: const Text('Add a media folder'),
-      content: TextField(
-        controller: text,
-        autofocus: true,
-        decoration: const InputDecoration(
-          hintText: '/home/you/Videos',
-          helperText: 'Everything under it is scanned and watched.',
-        ),
-        onSubmitted: (v) => Navigator.pop(ctx, v),
-      ),
-      actions: [
-        TextButton(
-            onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-        FilledButton(
-            onPressed: () => Navigator.pop(ctx, text.text),
-            child: const Text('Add')),
-      ],
-    ),
-  );
-  text.dispose();
-  if (path == null || path.trim().isEmpty) return;
-  await controller.send(VideosCmd.addFolder(path: path.trim()));
+  final path = await pickDirectory();
+  if (path == null) return;
+  await controller.send(VideosCmd.addFolder(path: path));
 }
 
 // ------------------------------------------------------------------ grid ----

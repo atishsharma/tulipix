@@ -7,6 +7,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/pick.dart';
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/settings.dart';
@@ -423,14 +424,6 @@ class LibrariesTab extends StatefulWidget {
 }
 
 class _LibrariesTabState extends State<LibrariesTab> {
-  final TextEditingController _path = TextEditingController();
-
-  @override
-  void dispose() {
-    _path.dispose();
-    super.dispose();
-  }
-
   @override
   Widget build(BuildContext context) {
     final t = context.tokens;
@@ -472,32 +465,19 @@ class _LibrariesTabState extends State<LibrariesTab> {
             ),
           ),
         const SizedBox(height: 18),
-        Row(
-          children: [
-            Expanded(
-              child: TextField(
-                controller: _path,
-                style: TextStyle(fontSize: 12.5, color: t.text),
-                decoration: const InputDecoration(
-                  isDense: true,
-                  border: OutlineInputBorder(),
-                  hintText: '/home/you/Media',
-                  labelText: 'Add a folder',
-                ),
-                onSubmitted: _add,
-              ),
-            ),
-            const SizedBox(width: 10),
-            FilledButton(
-              onPressed: () => _add(_path.text),
-              child: const Text('Watch'),
-            ),
-          ],
+        Align(
+          alignment: Alignment.centerLeft,
+          child: FilledButton.icon(
+            icon: const Icon(Icons.create_new_folder_outlined, size: 16),
+            label: const Text('Watch a folder'),
+            onPressed: () async {
+              final path = await pickDirectory();
+              if (path != null) _add(path);
+            },
+          ),
         ),
         const SizedBox(height: 8),
-        Text(
-            'A typed path, not a file dialog: the picker belongs to the shell '
-            'and is not ported yet.',
+        Text('Everything under it is scanned and kept in step.',
             style: TextStyle(fontSize: 11, color: t.textDim)),
       ],
     );
@@ -506,7 +486,6 @@ class _LibrariesTabState extends State<LibrariesTab> {
   void _add(String v) {
     final path = v.trim();
     if (path.isEmpty) return;
-    _path.clear();
     widget.controller.send(SettingsCmd.libAdd(path: path));
   }
 }

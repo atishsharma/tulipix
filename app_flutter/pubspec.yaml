@@ -17,6 +17,22 @@ dependencies:
   freezed_annotation: ">=2.4.4 <4.0.0"
   rust_lib_tulipix:
     path: rust_builder
+  # libmpv in this process, for both players. The audio deck (Music, Podcasts,
+  # Audiobooks, Radio, YouTube) and the video layer are two `Player`s over the
+  # same engine — which is why doing both at once cost less than either alone.
+  # `media_kit_libs_video` is what bundles libmpv rather than borrowing the
+  # distro's; it covers audio-only playback too.
+  media_kit: ^1.2.6
+  media_kit_video: ^2.0.1
+  media_kit_libs_video: ^1.0.7
+  # pdfium in this process, for the Books reader. Replaces rasterising a page
+  # to PNG with `pdftoppm` and showing the file: selectable text, real search,
+  # continuous zoom. Comics still come through the bridge as extracted images.
+  pdfrx: ^2.4.7
+  # Native file and folder dialogs, Flutter-team maintained. The bridge used to
+  # open three of these through `rfd` and its xdg-portal backend; every other
+  # path in the app was typed. See lib/design/pick.dart.
+  file_selector: ^1.1.0
 
 dev_dependencies:
   flutter_test:

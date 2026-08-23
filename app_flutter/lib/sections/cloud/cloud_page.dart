@@ -3,6 +3,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/pick.dart';
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/cloud.dart';
@@ -297,13 +298,10 @@ class _RemoteMenu extends StatelessWidget {
           case 'edit':
             controller.send(CloudCmd.editRemote(name: remote.name));
           case 'mount':
-            final path = await promptText(
-              context,
-              title: 'Mount ${remote.name}',
-              label: 'Mount point (an empty directory)',
-              hint: '/home/you/mnt/${remote.name}',
-              confirm: 'Mount',
-            );
+            // A mount point is a directory that must already exist and be
+            // empty; the chooser can only offer the first half of that, and
+            // rclone says the rest.
+            final path = await pickDirectory();
             if (path != null) {
               await controller.send(CloudCmd.mount(
                 name: remote.name,
@@ -510,13 +508,7 @@ class _Crumbs extends StatelessWidget {
             tooltip: 'Upload a file here',
             icon: const Icon(Icons.upload_file),
             onPressed: () async {
-              final path = await promptText(
-                context,
-                title: 'Upload',
-                label: 'Local file or folder',
-                hint: '/home/you/photo.jpg',
-                confirm: 'Upload',
-              );
+              final path = await pickFile(label: 'Any file');
               if (path != null) {
                 await controller.send(CloudCmd.uploadFile(local: path));
               }
@@ -667,13 +659,7 @@ class _EntryMenu extends StatelessWidget {
       onSelected: (v) async {
         switch (v) {
           case 'download':
-            final dest = await promptText(
-              context,
-              title: 'Download ${entry.name}',
-              label: 'Save into',
-              hint: '/home/you/Downloads',
-              confirm: 'Download',
-            );
+            final dest = await pickDirectory();
             if (dest != null) {
               await controller
                   .send(CloudCmd.downloadEntry(name: entry.name, dest: dest));

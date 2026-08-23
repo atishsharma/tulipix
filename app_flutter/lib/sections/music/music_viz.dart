@@ -7,15 +7,17 @@
 // PCM in the UI process.
 //
 // Loudness is polled, not pushed. It changes many times a second, and putting
-// it on the event stream would make it by far the loudest thing on it — so the
-// bridge exposes a sync getter and the ticker here reads it at ~11 fps.
+// it on the event stream would make it by far the loudest thing on it. It used
+// to be an atomic in Rust behind a sync bridge symbol; now that the deck is
+// media_kit in this process, the r128 meter is observed there and left in a
+// plain variable, which the ticker here reads at ~11 fps.
 
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/scheduler.dart' show Ticker;
 
-import '../../src/rust/api/music.dart' show musicLoudness;
+import '../../playback/audio_deck.dart' show audioLoudness;
 
 const List<String> visStyleNames = [
   'Bars',
@@ -110,7 +112,7 @@ class _VizViewState extends State<VizView> with SingleTickerProviderStateMixin {
     }
     // 0.18 floor: at true silence the bars should still breathe, or a quiet
     // passage looks like playback stopped.
-    final env = 0.18 + 0.82 * musicLoudness();
+    final env = 0.18 + 0.82 * audioLoudness;
     final shaped = syntheticBars(_kBars, _clock.elapsedMicroseconds / 1e6)
         .map((b) => (b * env).clamp(0.0, 1.0))
         .toList();

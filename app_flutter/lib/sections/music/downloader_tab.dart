@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 // `playList` takes the former.
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
+import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/mdl.dart';
 import '../../src/rust/api/music.dart';
@@ -465,14 +466,23 @@ class _Output extends StatelessWidget {
             controller: dest,
             onSubmitted: (v) => controller.send(MdlCmd.setDest(path: v)),
             onChanged: (v) => controller.send(MdlCmd.setDest(path: v)),
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               isDense: true,
               labelText: 'Download folder',
-              prefixIcon: Icon(Icons.folder_outlined, size: 18),
-              border: OutlineInputBorder(),
-              // A typed path, not a native chooser: the shell owns file dialogs
-              // for every section (accepted difference #2) and a second one here
-              // would have to be reverted.
+              prefixIcon: const Icon(Icons.folder_outlined, size: 18),
+              border: const OutlineInputBorder(),
+              // Typed or chosen: the field stays editable because a path
+              // pasted from somewhere else is often faster than walking to it.
+              suffixIcon: IconButton(
+                tooltip: 'Choose a folder',
+                icon: const Icon(Icons.more_horiz, size: 18),
+                onPressed: () async {
+                  final path = await pickDirectory(initial: dest.text);
+                  if (path == null) return;
+                  dest.text = path;
+                  await controller.send(MdlCmd.setDest(path: path));
+                },
+              ),
               helperText: 'Also added to the watched folders, so it survives a '
                   'rescan',
             ),

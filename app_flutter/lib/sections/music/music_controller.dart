@@ -14,6 +14,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
+import '../../playback/audio_deck.dart';
 import '../../src/rust/api/music.dart';
 import 'music_accent.dart';
 
@@ -73,6 +74,10 @@ class MusicController extends ChangeNotifier {
   static final MusicController instance = MusicController._();
 
   MusicController._() {
+    // The deck is the media_kit player the bridge drives. Started here because
+    // this controller is the only thing that receives the events it answers to,
+    // and it outlives every page.
+    AudioDeck.instance.start();
     _events = musicEvents().listen(_onEvent, onError: (Object e) {
       error = e;
       notifyListeners();
@@ -166,6 +171,27 @@ class MusicController extends ChangeNotifier {
         error = message;
         progress = null;
         notifyListeners();
+
+      // The deck. These are not state — nothing here redraws — so they go
+      // straight to the player and never touch `notifyListeners`.
+      case MusicEvent_AudioPlay(
+          :final token,
+          :final src,
+          :final startAt,
+          :final props
+        ):
+        AudioDeck.instance.play(
+          token: token,
+          src: src,
+          startAt: startAt,
+          props: props,
+        );
+      case MusicEvent_AudioStop():
+        AudioDeck.instance.stop();
+      case MusicEvent_AudioProp(:final name, :final value):
+        AudioDeck.instance.setProperty(name, value);
+      case MusicEvent_AudioSeek(:final secs):
+        AudioDeck.instance.seek(secs);
     }
   }
 

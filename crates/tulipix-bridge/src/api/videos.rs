@@ -702,6 +702,17 @@ pub enum VideosEvent {
     /// snapshot each time. The Downloads page patches its own row from this.
     DownloadTick { id: i64, progress: f64, detail: String, label: String, active: bool },
     Failed { message: String },
+
+    /// Open this in the in-app player.
+    ///
+    /// `props` are mpv properties as `k=v`, in the order they must be applied:
+    /// the Settings→Playback options first, then whatever the caller added.
+    /// `sub-file=` repeats — mpv appends each to a list, so Dart loads them in
+    /// order and the first is the chosen track. `token` comes back on every
+    /// report so a reply from the source this one replaced can be dropped.
+    VideoPlay { token: i64, src: String, start_at: f64, props: Vec<String> },
+    /// Close the player. Also sent immediately before every `VideoPlay`.
+    VideoStop,
 }
 
 // --------------------------------------------------------------- session ----
@@ -872,13 +883,33 @@ pub fn videos_splus_link() -> String {
     crate::vid_splus::picked_link()
 }
 
-/// Close the mpv window. Called from the app's exit hook, for the same reason
-/// `music_shutdown` is: the process going away does not take a child window
-/// with it on every platform, and a film left playing over a closed app is not
-/// a thing anyone asked for.
+/// Close the player. Called from the app's exit hook, for the same reason
+/// `music_shutdown` is: whatever is on should stop when the app goes, and the
+/// hooks this drops are the ones that would otherwise write a position back
+/// against a session nobody is watching.
 #[frb(sync)]
 pub fn videos_shutdown() {
     crate::vmpv::stop();
+}
+
+// -------------------------------------------------------- from the player ---
+//
+// Bare functions rather than `VideosCmd` arms, for the same reason the deck's
+// reports are: a dispatch returns a whole `VideosState`, and these say nothing
+// the grid needs redrawn for.
+
+/// The player has a running clock. Live TV waits for this before it says
+/// "Playing" — negotiating a live stream can take seconds.
+#[frb(sync)]
+pub fn videos_playback_started(token: i64) {
+    crate::vmpv::started(token);
+}
+
+/// The player closed at `pos` of `dur`. This is what writes a film's position
+/// back into `watch_progress`, so Dart must send it on every way out of the
+/// player — closing it, not only reaching the end.
+pub async fn videos_playback_ended(token: i64, pos: f64, dur: f64) {
+    crate::vmpv::ended(token, pos, dur).await;
 }
 
 // -------------------------------------------------------------- dispatch ----

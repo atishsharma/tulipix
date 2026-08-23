@@ -21,6 +21,10 @@ mdns-sd = "0.13"
 # already resolved in this tree; the default would be free to pick aws-lc-rs and
 # link a second crypto library in beside it.
 rcgen = { version = "0.14", default-features = false, features = ["crypto", "pem", "ring"] }
+# Reading the ACME chain and key back off disk. rcgen writes PEM but does not
+# read it, and rustls wants DER; this is the two-function crate that bridges
+# them, and it is already in the tree under hyper-rustls.
+rustls-pemfile = "2"
 # SHA-256 of the leaf, for the fingerprint the trust-on-first-use flow is checked
 # against. Already compiled in this tree — rcgen and rustls below both resolve to
 # it — so naming it here costs a line and nothing else.

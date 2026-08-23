@@ -7,6 +7,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
@@ -131,21 +132,15 @@ Future<void> _more(
     BuildContext context, MusicController c, String choice) async {
   switch (choice) {
     case 'import':
-      final path = await promptPath(
-        context,
-        title: 'Import OPML',
-        label: 'Path to the .opml file',
-        hint: '/home/you/Downloads/podcasts.opml',
-        confirm: 'Import',
-      );
+      final path = await pickFile(label: 'OPML', extensions: ['opml', 'xml']);
       if (path != null) await c.send(MusicCmd.podOpmlImport(path: path));
     case 'export':
-      final path = await promptPath(
-        context,
-        title: 'Export OPML',
-        label: 'Where to write it',
-        hint: '/home/you/podcasts.opml',
-        confirm: 'Export',
+      // A save location rather than a folder: the file does not exist yet, and
+      // what it is called is part of what is being chosen.
+      final path = await pickSaveLocation(
+        suggestedName: 'podcasts.opml',
+        label: 'OPML',
+        extensions: ['opml'],
       );
       if (path != null) await c.send(MusicCmd.podOpmlExport(path: path));
     case 'reset':

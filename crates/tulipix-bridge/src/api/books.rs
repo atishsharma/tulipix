@@ -177,6 +177,10 @@ pub struct Reader {
     pub title: String,
     pub author: String,
     pub format: String,
+    /// The book on disk. Only a PDF needs it: Flutter renders those itself,
+    /// through pdfium, so what crosses is the file rather than a raster of one
+    /// page of it. Empty for every other format.
+    pub file_path: String,
     /// True for PDF/CBZ/CBR — pages are rendered images, not laid-out text.
     pub image_mode: bool,
     /// 1-based screen page (a spread counts as one).
@@ -1010,9 +1014,18 @@ fn heading_for(r: &ReaderSession, leaf: Option<usize>) -> String {
 }
 
 /// The rendered image for one leaf, at the current theme and trim.
+///
+/// Empty for a PDF unless trim is on. Flutter draws those with pdfium — live
+/// zoom, selectable text, a real search — and rasterising a PNG here would be
+/// paying poppler for a picture nobody looks at. Trim is the exception: it
+/// crops the scanned margins by measuring the raster, which is a thing pdfium
+/// does not offer, so that path still goes through poppler.
 fn leaf_image(r: &ReaderSession, leaf: Option<usize>) -> String {
     let Some(i) = leaf else { return String::new() };
     if !r.image_mode {
+        return String::new();
+    }
+    if r.format == "pdf" && !r.trim {
         return String::new();
     }
     let night = r.prefs.theme() == "dark";
@@ -1932,6 +1945,7 @@ async fn reader_view(pool: &sqlx::SqlitePool) -> Reader {
             .unwrap_or_default(),
         left_heading: heading_for(r, left),
         right_heading: heading_for(r, right),
+        file_path: if r.format == "pdf" { r.path.clone() } else { String::new() },
         left_image: leaf_image(r, left),
         right_image: leaf_image(r, right),
         left_folio: left.map(|i| i as i64 + 1).unwrap_or(0),
@@ -1995,6 +2009,7 @@ fn empty_reader(prefs: Prefs) -> Reader {
         title: String::new(),
         author: String::new(),
         format: String::new(),
+        file_path: String::new(),
         image_mode: false,
         page: 0,
         page_count: 0,

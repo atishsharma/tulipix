@@ -404,6 +404,7 @@ pub enum MusicCmd {
     /// Re-read the current view. Sent on mount, after an external change, and
     /// by the player tick when the track has moved on.
     Refresh,
+
     /// mymusic | podcasts | audiobooks | radio | youtube
     SetView { name: String },
     Search { query: String },
@@ -575,6 +576,17 @@ pub enum MusicEvent {
     ScanProgress { root: String, done: i64, total: i64 },
     ScanFinished { inserted: i64, updated: i64, missing: i64 },
     Failed { message: String },
+
+    /// Put this on the deck. `props` are mpv properties as `k=v`, in the order
+    /// they must be applied — ReplayGain and gapless from the domain crate, the
+    /// output device, the EQ chain, volume, mute, loop-file. `token` comes back
+    /// on every report so a reply from the source this one replaced is dropped.
+    AudioPlay { token: i64, src: String, start_at: f64, props: Vec<String> },
+    /// Stop the deck. Also sent immediately before every `AudioPlay`.
+    AudioStop,
+    /// One mpv property. `value` is a JSON literal: `true`, `85`, `"inf"`.
+    AudioProp { name: String, value: String },
+    AudioSeek { secs: f64 },
 }
 
 // --------------------------------------------------------------- session ----
@@ -737,7 +749,7 @@ fn events() -> &'static Mutex<Vec<StreamSink<MusicEvent>>> {
     E.get_or_init(|| Mutex::new(Vec::new()))
 }
 
-fn emit(event: MusicEvent) {
+pub(crate) fn emit(event: MusicEvent) {
     if let Ok(mut sinks) = events().lock() {
         // `add` fails once Dart has cancelled the subscription; dropping those
         // here is the only place they get collected.
@@ -779,22 +791,48 @@ pub fn music_events(sink: StreamSink<MusicEvent>) {
 /// the same reason `transfer_shutdown` is: process exit would stop the audio
 /// too, but not before the speakers have had a second of it after the window
 /// went away.
-/// 0..1 momentary loudness of whatever is playing, for the visualizer's
-/// envelope. Sync and lock-free-ish on purpose: the UI reads it on its own
-/// frame timer, so it must never wait on mpv.
-#[frb(sync)]
-pub fn music_loudness() -> f64 {
-    let o = mpv::observe();
-    if o.paused || !o.loaded {
-        0.0
-    } else {
-        o.loud
-    }
-}
-
 #[frb(sync)]
 pub fn music_shutdown() {
     mpv::stop();
+}
+
+// ---------------------------------------------------------- from the deck ---
+//
+// Bare functions rather than `MusicCmd` arms, and `sync` rather than async: a
+// dispatch returns a whole `MusicState`, and the deck reports about once a
+// second. Paying for a snapshot — every card, every queue row — per tick is the
+// cost this shape exists to avoid. What the reports change is read by the next
+// snapshot something else asks for.
+
+/// Where playback got to. Sent about once a second, and whenever
+/// pause/volume/mute/title changes. `title` is mpv's `media-title`, which for a
+/// radio stream is the ICY title and the only place the actual song is
+/// readable.
+#[frb(sync)]
+pub fn music_audio_tick(
+    token: i64,
+    pos: f64,
+    dur: f64,
+    paused: bool,
+    volume: f64,
+    muted: bool,
+    title: String,
+) {
+    mpv::report(token, pos, dur, paused, volume, muted, title);
+}
+
+/// End of source. This is what advances the queue — it runs the `on_eof` the
+/// launch registered, which emits `Ended`, which Dart answers with `Next`.
+#[frb(sync)]
+pub fn music_audio_ended(token: i64) {
+    mpv::ended(token);
+}
+
+/// The source could not be opened — a file that moved, a codec that is not
+/// there, a stream that refused.
+#[frb(sync)]
+pub fn music_audio_failed(token: i64, message: String) {
+    mpv::failed(token, message);
 }
 
 /// Resolve artwork for one thing, rendering it if that is what it takes, and
@@ -1114,7 +1152,7 @@ fn output_devices() -> Vec<String> {
 fn launch(src: &str, slot: mpv::Slot, start_s: Option<f64>) {
     let repeat_one = lock().repeat == "one";
     let args = audio_args(repeat_one);
-    let result = mpv::play(
+    mpv::play(
         src,
         slot,
         &args,
@@ -1128,15 +1166,7 @@ fn launch(src: &str, slot: mpv::Slot, start_s: Option<f64>) {
         },
         || emit(MusicEvent::Ended),
     );
-    if let Err(e) = result {
-        tracing::warn!(error = %e, "mpv launch failed");
-        lock().status = format!("Could not start playback: {e}");
-        emit(MusicEvent::Failed {
-            message: format!("mpv could not be started: {e}"),
-        });
-    } else {
-        emit(MusicEvent::TrackChanged);
-    }
+    emit(MusicEvent::TrackChanged);
 }
 
 /// Play one library track and make it the now-playing.
@@ -1414,7 +1444,7 @@ async fn play_episode(episode_id: i64) -> Result<()> {
         "--user-agent={}",
         tulipix_core::net::BROWSER_UA
     ));
-    if let Err(e) = mpv::play(
+    mpv::play(
         &src,
         mpv::Slot::Podcast,
         &args,
@@ -1427,9 +1457,7 @@ async fn play_episode(episode_id: i64) -> Result<()> {
             })
         },
         || emit(MusicEvent::Ended),
-    ) {
-        anyhow::bail!("mpv could not be started: {e}");
-    }
+    );
     let art_local = cache_remote(&art).await.unwrap_or_default();
     mpv::set_now_playing(mpv::NowPlaying {
         item_id: 0,
@@ -1467,7 +1495,7 @@ async fn play_chapter(pool: &sqlx::SqlitePool, item_id: i64) -> Result<()> {
         // The same filter the Slint build's skip-silence toggle installs.
         args.push("--af-append=lavfi=[silenceremove=1:0:-50dB]".into());
     }
-    if let Err(e) = mpv::play(
+    mpv::play(
         &path,
         mpv::Slot::Book,
         &args,
@@ -1480,9 +1508,7 @@ async fn play_chapter(pool: &sqlx::SqlitePool, item_id: i64) -> Result<()> {
             })
         },
         || emit(MusicEvent::Ended),
-    ) {
-        anyhow::bail!("mpv could not be started: {e}");
-    }
+    );
     let book = Path::new(&folder)
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -1512,7 +1538,7 @@ async fn play_station(index: usize) -> Result<()> {
     // A stream has no duration and no end; without this mpv gives up on the
     // first hiccup instead of reconnecting.
     args.push("--stream-lavf-o=reconnect=1,reconnect_streamed=1,reconnect_delay_max=5".into());
-    if let Err(e) = mpv::play(
+    mpv::play(
         &station.url,
         mpv::Slot::Radio,
         &args,
@@ -1525,9 +1551,7 @@ async fn play_station(index: usize) -> Result<()> {
             })
         },
         || emit(MusicEvent::Ended),
-    ) {
-        anyhow::bail!("mpv could not be started: {e}");
-    }
+    );
     mpv::set_now_playing(mpv::NowPlaying {
         item_id: 0,
         title: station.name.clone(),
@@ -1596,7 +1620,7 @@ async fn play_youtube(video_id: &str) -> Result<()> {
 
     let mut args = audio_args(false);
     args.push(format!("--user-agent={}", tulipix_core::net::BROWSER_UA));
-    if let Err(e) = mpv::play(
+    mpv::play(
         &src,
         mpv::Slot::Youtube,
         &args,
@@ -1609,9 +1633,7 @@ async fn play_youtube(video_id: &str) -> Result<()> {
             })
         },
         || emit(MusicEvent::Ended),
-    ) {
-        anyhow::bail!("mpv could not be started: {e}");
-    }
+    );
     mpv::set_now_playing(mpv::NowPlaying {
         item_id: 0,
         title,
@@ -2321,7 +2343,7 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                 anyhow::bail!("that download is no longer on disk");
             }
             let args = audio_args(false);
-            if let Err(e) = mpv::play(
+            mpv::play(
                 &media_path,
                 mpv::Slot::Youtube,
                 &args,
@@ -2334,9 +2356,7 @@ async fn apply(cmd: MusicCmd) -> Result<()> {
                     })
                 },
                 || emit(MusicEvent::Ended),
-            ) {
-                anyhow::bail!("mpv could not be started: {e}");
-            }
+            );
             let pool = youtube_pool().await?;
             let meta: Option<(String, String, String)> = sqlx::query_as(
                 "SELECT COALESCE(title, ''), COALESCE(channel, ''), COALESCE(thumb_path, '') \

@@ -305,9 +305,19 @@ pub async fn start(cfg: Config) -> anyhow::Result<Running> {
     };
     let secure = identity.is_some();
     if let Some(id) = &identity {
-        *lock(&state.ca) = Some((id.ca_pem.clone(), id.ca_der.clone()));
+        // Empty for a public CA's certificate: there is no root of ours in the
+        // chain, so the gateway has nothing to offer for download and should
+        // not offer an empty file.
+        if !id.ca_der.is_empty() {
+            *lock(&state.ca) = Some((id.ca_pem.clone(), id.ca_der.clone()));
+        }
         *lock(&state.fingerprint) = id.fingerprint.clone();
-        tracing::info!(names = ?id.names, fingerprint = %id.fingerprint, "transfer: serving HTTPS");
+        tracing::info!(
+            names = ?id.names,
+            fingerprint = %id.fingerprint,
+            public_ca = id.public_ca,
+            "transfer: serving HTTPS"
+        );
     }
 
     let mdns = crate::mdns::advertise(&ips, port, secure);

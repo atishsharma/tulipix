@@ -14,6 +14,7 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/finances.dart';
 
@@ -90,6 +91,27 @@ class FinancesController extends ChangeNotifier {
   }
 
   Future<void> refresh() => send(const FinancesCmd.refresh());
+
+  /// The two places this section reads a file the user picked. The chooser used
+  /// to be `rfd`, inside the bridge; the extension list still comes from there,
+  /// because the importer is what has to read the file.
+  Future<void> importStatement() async {
+    final path = await pickFile(
+      label: 'Statements',
+      extensions: financesImportExtensions(),
+    );
+    if (path == null) return;
+    await send(FinancesCmd.importPick(path: path));
+  }
+
+  Future<void> scanReceipt() async {
+    final path = await pickFile(
+      label: 'Images',
+      extensions: const ['jpg', 'jpeg', 'png', 'webp', 'tif', 'tiff', 'bmp'],
+    );
+    if (path == null) return;
+    await send(FinancesCmd.scanReceipt(path: path));
+  }
 
   /// Sample data. The label is set here rather than read off the snapshot: both
   /// operations take about the same time and look identical, so the chip has to

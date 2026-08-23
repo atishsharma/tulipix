@@ -71,13 +71,28 @@ fast_qr = { version = "0.12", default-features = false }
 # the same formula tulipix-videos uses for its own TMDB cache -- so both builds
 # hit the same files rather than downloading the artwork twice.
 sha2 = "0.10"
-# `PR_SET_PDEATHSIG` on the windowed mpv. Without it a crashed app leaves a
-# video playing in a window nothing owns. Unix only; the cfg is in vmpv.rs.
-libc = "0.2"
-# The OS file chooser, for the three buttons that pick real paths. Same version
-# and same backend as tulipix-sec-transfer: xdg-portal rather than GTK, so
-# nothing here needs a GTK main thread.
-rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "tokio"] }
+# ACME (RFC 8555), for the transfer server's optional real certificate.
+#
+# `default-features = false` matters more than usual here: the default is
+# aws-lc-rs, and tulipix-transfer's tls.rs builds its rustls config with a
+# *named* ring provider precisely because a second provider in one process makes
+# `ServerConfig::builder()` panic on a process-wide default that is now
+# ambiguous. `ring` keeps one provider in the tree. `rcgen` is what makes
+# `Order::finalize` generate the key itself, and it resolves to the same
+# rcgen 0.14 tulipix-transfer already uses.
+instant-acme = { version = "0.8.5", default-features = false, features = ["ring", "hyper-rustls", "rcgen"] }
+
+# Two dependencies left this file on 2026-08-24 and are named here so nobody
+# adds them back by reflex.
+#
+# `libc` was `PR_SET_PDEATHSIG` on the windowed mpv, which existed because a
+# crashed app could leave a video playing in a window nothing owns. There is no
+# such window any more — media_kit draws into this one.
+#
+# `rfd` (xdg-portal) opened three file choosers. Dart's `file_selector` opens
+# every chooser in the app now, including the eleven places that used to be a
+# text field you typed an absolute path into, so the dialogs are all in one
+# place and it is not this one.
 
 # Music. Four of its five tabs talk to the network — RSS feeds, radio-browser,
 # LRCLIB, artwork — and the domain crate hands back parsed types rather than
@@ -85,27 +100,22 @@ rfd = { version = "0.15", default-features = false, features = ["xdg-portal", "t
 # the root workspace: a second rustls in one process is a second root store.
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "json"] }
 
-# Not called, and never entered — declared only to make the graph compile.
-#
-# tulipix-common (below, and again transitively through tulipix-status) asks for
-# `slint/backend-winit`, and i-slint-backend-winit is a `compile_error!` until
-# something in the build picks a renderer. Nothing here opens a window, so the
-# choice is only about what gets linked: `renderer-software` is pure Rust and
-# pulls no skia, no GL and no C++ toolchain. The Slint app picks `renderer-skia`
-# for the same reason in reverse — it actually draws.
-#
-# If tulipix-common ever loses its slint dependency (it carries it for two
-# histogram helpers nothing here calls), delete this line with it.
-slint = { version = "1.17", default-features = false, features = ["std", "compat-1-2", "renderer-software"] }
+# There is no slint in this file, and that is the point. It used to be here --
+# `renderer-software`, declared purely so `slint/backend-winit`'s compile_error!
+# would stop firing -- because tulipix-common carried an unconditional slint dep
+# for two histogram helpers nothing here calls. That dep is `optional` now,
+# behind tulipix-common's `histogram` feature, which only the three Slint-only
+# crates turn on. 289 crates of slint, winit, fontique and the software renderer
+# left this cdylib's build with it. Do not re-add it; if something here ever
+# fails to link for want of a renderer, the real cause is a new path into
+# `histogram`, and that path is the bug.
 
 # Frozen domain crates, by relative path.
 #
 # `tulipix-common` used to be excluded here on the grounds that it depends on
-# slint and nothing the bridge links may. That rule is already spent --
-# tulipix-status drags the same crate in transitively (see its comment below) --
-# so naming it directly costs nothing new and buys `quotes::shuffled`, the Home
-# page's quote shelf. If pool_for ever moves out of tulipix-common, both of
-# these go with it.
+# slint and nothing the bridge links may. It no longer does (see above), so it
+# is an ordinary dependency: `pool_for` -- which tulipix-status needs too -- and
+# `quotes::shuffled`, the Home page's quote shelf.
 tulipix-common = { path = "../tulipix-common" }
 tulipix-core = { path = "../tulipix-core" }
 tulipix-photos = { path = "../tulipix-photos" }
@@ -134,12 +144,9 @@ tulipix-videos = { path = "../tulipix-videos" }
 # Flutter page all render this same Value, which is why none of them can
 # disagree about a number.
 #
-# The one dependency in this file that drags slint in, and not on its own
-# account: it needs `tulipix_common::pool_for`, and tulipix-common carries a
-# slint dep for two histogram helpers nothing here calls. Nothing starts it --
-# slint is linked and never entered -- but it does mean this cdylib is not the
-# slint-free object the rest of the tree is. The alternative was re-deriving
-# 1,800 lines of queries, which would let the two dashboards drift.
+# It reaches tulipix-common for `pool_for`, which is what used to make this the
+# one dependency here that dragged slint in. It no longer does -- see the note
+# above the domain-crate block.
 tulipix-status = { path = "../tulipix-status" }
 # Genesis: LibGen search, mirror ranking, record pages, covers and downloads.
 # Blocking (ureq) by design; every call from here goes through `spawn_blocking`.

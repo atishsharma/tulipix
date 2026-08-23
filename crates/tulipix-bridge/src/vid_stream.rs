@@ -1701,9 +1701,9 @@ async fn play(index: i64) {
     prefetch_next();
 
     let mut msg = match (named, chosen.and_then(|i| tracks.get(i))) {
-        (0, _) => format!("Playing {label} in mpv · no subtitles"),
-        (n, Some(c)) => format!("Playing {label} in mpv · {n} subtitles · {}", c.lang),
-        (n, None) => format!("Playing {label} in mpv · {n} subtitles · off"),
+        (0, _) => format!("Playing {label} · no subtitles"),
+        (n, Some(c)) => format!("Playing {label} · {n} subtitles · {}", c.lang),
+        (n, None) => format!("Playing {label} · {n} subtitles · off"),
     };
     if let Some(at) = resume {
         msg.push_str(&format!(" · resumed at {}", v::fmt_duration(at)));
@@ -1886,7 +1886,7 @@ fn trailer() {
         vec!["--ytdl-format=best[height<=1080]".to_string()],
         None,
     );
-    set_status("Trailer opened in mpv.", false);
+    set_status("Playing trailer.", false);
 }
 
 /// The armed stream's URL, resolved. Called from `videos_stream_link`.

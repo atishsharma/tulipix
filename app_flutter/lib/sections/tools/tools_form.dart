@@ -5,6 +5,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/tools.dart';
 import 'tools_controller.dart';
@@ -164,13 +165,22 @@ class _FieldRow extends StatelessWidget {
           ],
         );
       case 'files':
-        // One path per line: the shell owns the native multi-file chooser
-        // (phase 04), and typing is the honest interim.
+        // Still one path per line, and still editable — a tool run over forty
+        // files is usually a paste, not forty clicks — but the chooser fills it
+        // and appends rather than replacing, so a second pick adds to the list.
         return _Text(
           value: field.value,
           hint: '/path/to/one\n/path/to/another',
           maxLines: 5,
           onChanged: _set,
+          onBrowse: () async {
+            final picked = await pickFiles();
+            if (picked.isEmpty) return;
+            final existing = field.value.trim();
+            _set(existing.isEmpty
+                ? picked.join('\n')
+                : '$existing\n${picked.join('\n')}');
+          },
         );
       default:
         return _Text(
@@ -183,6 +193,17 @@ class _FieldRow extends StatelessWidget {
           },
           maxLines: 1,
           onChanged: _set,
+          onBrowse: switch (field.kind) {
+            'file' => () async {
+                final p = await pickFile(label: 'Any file');
+                if (p != null) _set(p);
+              },
+            'folder' => () async {
+                final p = await pickDirectory();
+                if (p != null) _set(p);
+              },
+            _ => null,
+          },
         );
     }
   }
@@ -196,12 +217,16 @@ class _Text extends StatefulWidget {
     required this.hint,
     required this.maxLines,
     required this.onChanged,
+    this.onBrowse,
   });
 
   final String value;
   final String hint;
   final int maxLines;
   final ValueChanged<String> onChanged;
+
+  /// Null for the fields that are not paths — a bitrate has nothing to browse.
+  final Future<void> Function()? onBrowse;
 
   @override
   State<_Text> createState() => _TextState();
@@ -235,6 +260,13 @@ class _TextState extends State<_Text> {
           isDense: true,
           hintText: widget.hint,
           border: const OutlineInputBorder(),
+          suffixIcon: widget.onBrowse == null
+              ? null
+              : IconButton(
+                  tooltip: 'Choose',
+                  icon: const Icon(Icons.more_horiz, size: 18),
+                  onPressed: widget.onBrowse,
+                ),
         ),
         onChanged: widget.onChanged,
       );

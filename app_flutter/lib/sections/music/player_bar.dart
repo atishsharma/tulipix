@@ -1,7 +1,8 @@
 // The player bar, and the three panels that slide out of it.
 //
 // It belongs to the section, not to a tab: My Music, Podcasts, Audiobooks,
-// Radio and YouTube all drive the same mpv process, and the bar is where that
+// Radio and YouTube all drive the same deck — one media_kit player — and the
+// bar is where that
 // shows. `mode` on the snapshot says which of them owns the current sound, and
 // the transport changes shape accordingly — Next means the next track in a
 // queue, the next episode, the next chapter or the next station, and a radio

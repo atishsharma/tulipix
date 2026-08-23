@@ -17,6 +17,7 @@ import 'package:flutter/material.dart';
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/transfer.dart';
+import 'certificate_card.dart';
 import 'connection_card.dart';
 import 'receive_card.dart';
 import 'send_card.dart';
@@ -114,10 +115,16 @@ class _TransferPageState extends State<TransferPage> {
                     ),
                     if (state.trustUrl.isNotEmpty) ...[
                       const SizedBox(height: 20),
-                      _TrustStrip(
-                        trustUrl: state.trustUrl,
-                        fingerprint: state.fingerprint,
-                      ),
+                      // With a real certificate there is no warning to explain,
+                      // so the strip that explains it gives way to the card that
+                      // got you one.
+                      if (state.certHost.isEmpty)
+                        _TrustStrip(
+                          trustUrl: state.trustUrl,
+                          fingerprint: state.fingerprint,
+                        ),
+                      const SizedBox(height: 12),
+                      CertificateCard(controller: _c, state: state),
                     ],
                     const SizedBox(height: 20),
                     const _Footer(),

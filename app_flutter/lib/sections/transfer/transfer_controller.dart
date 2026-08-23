@@ -14,6 +14,7 @@ import 'dart:async';
 
 import 'package:flutter/foundation.dart';
 
+import '../../design/pick.dart';
 import '../../src/rust/api/transfer.dart';
 
 /// How often the page re-reads the service while it is on screen. Fast enough
@@ -135,8 +136,21 @@ class TransferController extends ChangeNotifier {
       ? const TransferCmd.stop()
       : const TransferCmd.start());
 
-  Future<void> addFiles() => send(const TransferCmd.addFiles());
-  Future<void> addFolder() => send(const TransferCmd.addFolder());
+  /// The chooser is opened here rather than in the bridge, which is why these
+  /// three are the only actions on this page that do anything before sending.
+  /// A cancelled chooser sends nothing at all — the old `rfd` arms dispatched
+  /// regardless and paid for a snapshot to show an unchanged tray.
+  Future<void> addFiles() async {
+    final paths = await pickFiles();
+    if (paths.isEmpty) return;
+    await send(TransferCmd.addFiles(paths: paths));
+  }
+
+  Future<void> addFolder() async {
+    final path = await pickDirectory();
+    if (path == null) return;
+    await send(TransferCmd.addFolder(path: path));
+  }
   Future<void> removeFile(int id) => send(TransferCmd.remove(id: id));
   Future<void> clearTray() => send(const TransferCmd.clear());
   Future<void> setShareTarget(String token) =>
@@ -146,7 +160,11 @@ class TransferController extends ChangeNotifier {
   Future<void> renameDevice(String token, String name) =>
       send(TransferCmd.renameDevice(token: token, name: name));
   Future<void> setIface(String ip) => send(TransferCmd.setIface(ip: ip));
-  Future<void> pickInbox() => send(const TransferCmd.pickInbox());
+  Future<void> pickInbox() async {
+    final path = await pickDirectory(initial: state?.inbox);
+    if (path == null) return;
+    await send(TransferCmd.setInbox(path: path));
+  }
   Future<void> openInbox() => send(const TransferCmd.openInbox());
   Future<void> openRow(int rowId) => send(TransferCmd.openRow(rowId: rowId));
   Future<void> retryRow(int rowId) => send(TransferCmd.retryRow(rowId: rowId));

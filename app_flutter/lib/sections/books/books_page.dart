@@ -3,6 +3,7 @@
 
 import 'package:flutter/material.dart';
 
+import '../../design/pick.dart';
 import '../../design/first_load.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/books.dart';
@@ -238,13 +239,7 @@ class _LibraryMenu extends StatelessWidget {
       onSelected: (v) async {
         switch (v) {
           case 'add':
-            final path = await promptText(
-              context,
-              title: 'Add a books folder',
-              label: 'Absolute path',
-              hint: '/home/you/Books',
-              confirm: 'Add and scan',
-            );
+            final path = await pickDirectory();
             if (path != null) {
               await controller.send(BooksCmd.addFolder(path: path));
             }
@@ -839,13 +834,7 @@ class _Empty extends StatelessWidget {
               icon: const Icon(Icons.add),
               label: const Text('Add a books folder'),
               onPressed: () async {
-                final path = await promptText(
-                  context,
-                  title: 'Add a books folder',
-                  label: 'Absolute path',
-                  hint: '/home/you/Books',
-                  confirm: 'Add and scan',
-                );
+                final path = await pickDirectory();
                 if (path != null) {
                   await controller.send(BooksCmd.addFolder(path: path));
                 }

@@ -173,6 +173,17 @@ pub struct TransferState {
     /// Name 0 | Size 1 | Type 2 | Status 3 | From/To 4 | Time 5.
     pub sort: i64,
     pub sort_desc: bool,
+
+    // --- the optional real certificate ---
+    /// The name a public CA issued for, empty when the server is on its own
+    /// self-signed leaf. That leaf is the default and stays the default: see
+    /// the module docs in `tulipix-transfer/src/tls.rs`.
+    pub cert_host: String,
+    /// True between "request a certificate" and the TXT record being verified.
+    pub cert_waiting: bool,
+    /// The record to add, while waiting. `_acme-challenge.<host>` and its value.
+    pub cert_record: String,
+    pub cert_value: String,
 }
 
 #[derive(Debug, Clone)]
@@ -181,9 +192,10 @@ pub enum TransferCmd {
     Refresh,
     Start,
     Stop,
-    /// Opens the OS file chooser and adds whatever comes back.
-    AddFiles,
-    AddFolder,
+    /// Paths the user chose. Dart opens the chooser — the bridge used to, and
+    /// carried `rfd` and its xdg-portal backend for the privilege.
+    AddFiles { paths: Vec<String> },
+    AddFolder { path: String },
     Remove { id: i64 },
     Clear,
     /// Empty aims the tray at every paired device.
@@ -193,7 +205,17 @@ pub enum TransferCmd {
     Forget { token: String },
     RenameDevice { token: String, name: String },
     SetIface { ip: String },
-    PickInbox,
+    SetInbox { path: String },
+
+    /// Ask Let's Encrypt for a certificate for `host` and come back with the
+    /// TXT record that proves you own it. Nothing is issued yet.
+    CertRequest { host: String },
+    /// The record is in place — validate and issue. Restart the server after,
+    /// because the certificate is chosen when the listener is built.
+    CertConfirm,
+    /// Delete the certificate and go back to the self-signed leaf. Also the way
+    /// out of a request that will not validate.
+    CertForget,
     OpenInbox,
     /// Reveal a ledger row's file in the file manager, by ledger id.
     OpenRow { row_id: i64 },
@@ -309,21 +331,16 @@ pub async fn transfer_dispatch(cmd: TransferCmd) -> Result<TransferState> {
         TransferCmd::Refresh => {}
         TransferCmd::Start => start_service().await,
         TransferCmd::Stop => stop_service().await,
-        TransferCmd::AddFiles => {
-            if let Some(files) = rfd::AsyncFileDialog::new().set_title("Share files").pick_files().await
-            {
-                let _ = with(|svc| {
-                    for f in &files {
-                        svc.add(f.path());
-                    }
-                });
-            }
+        TransferCmd::AddFiles { paths } => {
+            let _ = with(|svc| {
+                for p in &paths {
+                    svc.add(Path::new(p));
+                }
+            });
         }
-        TransferCmd::AddFolder => {
-            if let Some(dir) =
-                rfd::AsyncFileDialog::new().set_title("Share a folder").pick_folder().await
-            {
-                let _ = with(|svc| svc.add(dir.path()));
+        TransferCmd::AddFolder { path } => {
+            if !path.is_empty() {
+                let _ = with(|svc| svc.add(Path::new(&path)));
             }
         }
         TransferCmd::Remove { id } => {
@@ -382,13 +399,31 @@ pub async fn transfer_dispatch(cmd: TransferCmd) -> Result<TransferState> {
                 start_service().await;
             }
         }
-        TransferCmd::PickInbox => {
-            if let Some(dir) = rfd::AsyncFileDialog::new()
-                .set_title("Choose the inbox folder")
-                .pick_folder()
-                .await
-            {
-                set_inbox(dir.path());
+        TransferCmd::SetInbox { path } => {
+            if !path.is_empty() {
+                set_inbox(Path::new(&path));
+            }
+        }
+        TransferCmd::CertRequest { host } => {
+            // The error is worth showing rather than logging: every way this
+            // fails is something the person can act on — a typo in the name,
+            // no internet, a rate limit.
+            crate::acme::begin(host).await?;
+        }
+        TransferCmd::CertConfirm => {
+            crate::acme::finish().await?;
+            // The certificate is chosen when the listener is built, so a server
+            // that is already up is still serving the old one.
+            if with(|svc| svc.is_running()).unwrap_or(false) {
+                stop_service().await;
+                start_service().await;
+            }
+        }
+        TransferCmd::CertForget => {
+            crate::acme::forget().await?;
+            if with(|svc| svc.is_running()).unwrap_or(false) {
+                stop_service().await;
+                start_service().await;
             }
         }
         TransferCmd::OpenInbox => {
@@ -592,6 +627,7 @@ async fn snapshot() -> Result<TransferState> {
     let Some(snap) = with(|svc| svc.snapshot()) else {
         return Ok(last_state().unwrap_or_else(off_state));
     };
+    let cert = crate::acme::status().await;
 
     // One sampling for both directions: the service hands over cumulative byte
     // counts and no clock, on purpose, so the rate is the difference between
@@ -786,6 +822,10 @@ async fn snapshot() -> Result<TransferState> {
         pages,
         sort,
         sort_desc,
+        cert_host: cert.host,
+        cert_waiting: cert.waiting,
+        cert_record: cert.record,
+        cert_value: cert.value,
     };
     *last().lock().unwrap_or_else(|e| e.into_inner()) = Some(state.clone());
     Ok(state)
@@ -830,6 +870,10 @@ fn off_state() -> TransferState {
         pages: 1,
         sort: 5,
         sort_desc: true,
+        cert_host: String::new(),
+        cert_waiting: false,
+        cert_record: String::new(),
+        cert_value: String::new(),
     }
 }
 

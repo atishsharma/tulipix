@@ -39,6 +39,22 @@
 //! peeks the first byte: a TLS handshake starts with 0x16, and anything else is
 //! plaintext.
 //!
+//! # The third state: a certificate a public CA issued
+//!
+//! Everything above is the default and stays the default. If someone owns a
+//! domain, though, a name in public DNS pointing at the LAN address can carry a
+//! real certificate — DNS-01 proves the name, and public DNS is allowed to
+//! answer with a private address — and then there is no warning, no CA to
+//! install, and no Play Integrity trade to make. The bridge's `acme` module
+//! obtains it; all this file does is prefer it when it is on disk, which is why
+//! that is fifteen lines at the top of [`Identity::load`] rather than a second
+//! implementation of anything.
+//!
+//! It is preferred, not required. A lapsed certificate, an offline LAN, or a
+//! router whose DNS-rebinding protection eats a public name pointing into
+//! RFC1918 space all fall back to the self-signed leaf, which is why the leaf
+//! can never be deleted — only demoted.
+//!
 //! The plaintext side is not a redirect to the TLS side — that was the bug. A
 //! phone sent straight to https on its first visit meets the browser's
 //! interstitial, and from behind an interstitial there is no way to reach the
@@ -273,6 +289,12 @@ pub struct Identity {
     pub fingerprint: String,
     /// Every name and address the leaf is good for, for the log line.
     pub names: Vec<String>,
+    /// True when what is being served is a public CA's certificate rather than
+    /// ours. The gateway page needs no third state for it — it already probes
+    /// TLS and crosses over by itself, and with a real certificate that probe
+    /// simply succeeds first time — but the log line should not claim a
+    /// fingerprint matters when nobody will ever be asked to check it.
+    pub public_ca: bool,
 }
 
 impl Identity {
@@ -280,6 +302,9 @@ impl Identity {
     /// answers on, signed by the persisted root and itself persisted.
     pub fn load(ips: &[IpAddr]) -> anyhow::Result<Self> {
         let dir = ca_dir().ok_or_else(|| anyhow::anyhow!("no data directory for the CA"))?;
+        if let Some(id) = acme_identity(&dir) {
+            return Ok(id);
+        }
         let ca = load_or_create_ca(&dir)?;
 
         let mut want: Vec<String> = vec![HOST.to_string(), "localhost".to_string()];
@@ -325,8 +350,65 @@ impl Identity {
             ca_der: ca.ca_der,
             fingerprint,
             names,
+            public_ca: false,
         })
     }
+}
+
+/// A certificate a public CA issued, if one has been obtained and still parses.
+///
+/// Three files, written by the bridge's `acme` module: the chain, the key, and
+/// the name it is for. Any failure here is a `None` and a warning, never an
+/// error — the self-signed path below it always works, and a malformed file
+/// must not be the reason the server does not start.
+fn acme_identity(dir: &Path) -> Option<Identity> {
+    let chain_path = dir.join("acme.pem");
+    let key_path = dir.join("acme.key.pem");
+    let host = std::fs::read_to_string(dir.join("acme.host")).ok()?;
+    let host = host.trim().to_string();
+    if host.is_empty() {
+        return None;
+    }
+
+    let chain: Vec<CertificateDer<'static>> = rustls_pemfile::certs(&mut std::io::BufReader::new(
+        std::fs::File::open(&chain_path).ok()?,
+    ))
+    .filter_map(Result::ok)
+    .collect();
+    let leaf_der = chain.first()?.to_vec();
+
+    let key = rustls_pemfile::private_key(&mut std::io::BufReader::new(
+        std::fs::File::open(&key_path).ok()?,
+    ))
+    .ok()
+    .flatten()?;
+
+    let config = match ServerConfig::builder_with_provider(Arc::new(
+        tokio_rustls::rustls::crypto::ring::default_provider(),
+    ))
+    .with_safe_default_protocol_versions()
+    .and_then(|b| b.with_no_client_auth().with_single_cert(chain, key))
+    {
+        Ok(c) => c,
+        Err(e) => {
+            tracing::warn!(error = %e, "transfer: the ACME certificate was rejected, falling back");
+            return None;
+        }
+    };
+    let mut config = config;
+    config.alpn_protocols = vec![b"http/1.1".to_vec()];
+
+    Some(Identity {
+        config: Arc::new(config),
+        // No root of ours is involved, so there is nothing for a phone to
+        // install and nothing to hand out. The gateway's download button reads
+        // these, and an empty CA is what makes it stay hidden.
+        ca_pem: String::new(),
+        ca_der: Vec::new(),
+        fingerprint: fingerprint(&leaf_der),
+        names: vec![host],
+        public_ca: true,
+    })
 }
 
 /// PEM body → DER. One certificate, no headers beyond the BEGIN/END lines,

@@ -12,6 +12,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 
 import '../../design/first_load.dart';
+import '../../design/pick.dart';
 import '../../design/tokens.dart';
 import '../../src/rust/api/photos.dart';
 import 'photo_tile.dart';
@@ -202,33 +203,13 @@ class _Header extends StatelessWidget {
   }
 }
 
-/// Typed path rather than a native directory chooser: a picker means another
-/// package, and the shell (phase 4) owns file dialogs for every section.
+/// The native directory chooser. This was a typed path until 2026-08-24 —
+/// accepted difference #2, on the grounds that the shell would own dialogs one
+/// day. `file_selector` is that day.
 Future<void> _promptAddFolder(BuildContext context, PhotosController c) async {
-  final field = TextEditingController();
-  final path = await showDialog<String>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: const Text('Add a folder to the library'),
-      content: TextField(
-        controller: field,
-        autofocus: true,
-        decoration: const InputDecoration(hintText: '/home/you/Pictures'),
-        onSubmitted: (v) => Navigator.pop(ctx, v),
-      ),
-      actions: [
-        TextButton(
-            onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-        FilledButton(
-          onPressed: () => Navigator.pop(ctx, field.text),
-          child: const Text('Add'),
-        ),
-      ],
-    ),
-  );
-  field.dispose();
-  final trimmed = path?.trim() ?? '';
-  if (trimmed.isNotEmpty) await c.send(PhotosCmd.addFolder(path: trimmed));
+  final path = await pickDirectory();
+  if (path == null) return;
+  await c.send(PhotosCmd.addFolder(path: path));
 }
 
 class _SortMenu extends StatelessWidget {

@@ -26,7 +26,8 @@ image = { version = "0.25", default-features = false, features = ["jpeg", "png",
 kamadak-exif = "0.6"
 chrono = { version = "0.4", default-features = false, features = ["clock"] }
 tulipix-ui = { path = "../tulipix-ui" }
-tulipix-common = { path = "../tulipix-common" }
+# `histogram`: this crate draws the histogram into a slint Image.
+tulipix-common = { path = "../tulipix-common", features = ["histogram"] }
 tulipix-photos = { path = "../tulipix-photos" }
 
 # False positives: exif is the `kamadak-exif` crate; md-5→`md5`; reqwest

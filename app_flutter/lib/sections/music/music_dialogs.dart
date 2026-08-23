@@ -1,54 +1,16 @@
-// The section's modals: the tag editor, the audio settings, the playlist
-// picker, and the one-line path prompt every import and export uses.
+// The section's modals: the tag editor, the audio settings and the playlist
+// picker.
 //
-// The path prompt is a typed absolute path rather than a native chooser for
-// the same reason Photos' "Add folder" is: the shell (phase 04) owns file
-// dialogs for every section, and a chooser built here would have to be
-// reverted when it lands.
+// There was a one-line path prompt here too, which every import and export
+// used, because the shell was supposed to own file dialogs one day. It does
+// now — `lib/design/pick.dart` — so the prompt is gone and the callers open a
+// native chooser instead.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_rust_bridge/flutter_rust_bridge.dart' show Int64List;
 
 import '../../src/rust/api/music.dart';
 import 'music_controller.dart';
-
-/// One line of text, with a title and a hint. Returns the trimmed value, or
-/// null when cancelled or left empty.
-Future<String?> promptPath(
-  BuildContext context, {
-  required String title,
-  required String label,
-  String hint = '',
-  String confirm = 'OK',
-  String initial = '',
-}) async {
-  final text = TextEditingController(text: initial);
-  final value = await showDialog<String>(
-    context: context,
-    builder: (ctx) => AlertDialog(
-      title: Text(title),
-      content: SizedBox(
-        width: 460,
-        child: TextField(
-          controller: text,
-          autofocus: true,
-          decoration: InputDecoration(labelText: label, hintText: hint),
-          onSubmitted: (v) => Navigator.pop(ctx, v),
-        ),
-      ),
-      actions: [
-        TextButton(
-            onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
-        FilledButton(
-          onPressed: () => Navigator.pop(ctx, text.text),
-          child: Text(confirm),
-        ),
-      ],
-    ),
-  );
-  final trimmed = value?.trim() ?? '';
-  return trimmed.isEmpty ? null : trimmed;
-}
 
 /// Yes/no, for the three things in this section that cannot be undone.
 Future<bool> confirm(

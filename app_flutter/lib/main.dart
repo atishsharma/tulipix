@@ -12,6 +12,7 @@
 import 'dart:ui' show AppExitResponse;
 
 import 'package:flutter/material.dart';
+import 'package:media_kit/media_kit.dart';
 
 import 'design/tokens.dart';
 import 'sections/books/books_page.dart';
@@ -25,6 +26,7 @@ import 'sections/settings/settings_page.dart';
 import 'sections/tools/tools_page.dart';
 import 'sections/transfer/transfer_page.dart';
 import 'sections/videos/videos_page.dart';
+import 'playback/video_layer.dart';
 import 'shell/shell_controller.dart';
 import 'shell/sidebar.dart';
 import 'src/rust/api/music.dart';
@@ -35,6 +37,9 @@ import 'src/rust/frb_generated.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
+  // libmpv, for both players. Must run before any `Player` is constructed, and
+  // the music controller builds one the moment the Music section is touched.
+  MediaKit.ensureInitialized();
   await RustLib.init();
   runApp(const TulipixApp());
 }
@@ -72,9 +77,9 @@ class _TulipixAppState extends State<TulipixApp> {
       onExitRequested: () async {
         transferShutdown();
         musicShutdown();
-        // Same reason as the other two: the process going away does not take
-        // the mpv window with it on every platform, and a film left playing
-        // over a closed app is not a thing anyone asked for.
+        // Same reason as the other two: what is on should stop when the app
+        // goes, and this is what drops the hooks that would otherwise write a
+        // position back against a session nobody is watching.
         videosShutdown();
         return AppExitResponse.exit;
       },
@@ -126,49 +131,52 @@ class _TulipixAppState extends State<TulipixApp> {
       title: 'Tulipix',
       debugShowCheckedModeBanner: false,
       theme: tulipixTheme(tokens),
-      // The floating mini and the zen player wrap the whole app: what is
-      // playing does not stop playing when you leave the Music section, and
-      // they are how that stays visible.
-      home: MusicOverlay(
-        child: Scaffold(
-          backgroundColor: tokens.bg,
-          body: AnimatedBuilder(
-            animation: _shell,
-            builder: (context, _) {
-              final at = _shell.section;
-              return Row(
-                children: [
-                  Sidebar(
-                    controller: _shell,
-                    onCycleTheme: _cycleTheme,
-                    themeIcon: _themeIcon,
-                  ),
-                  // Every section stays alive across a switch: Transfer polls a
-                  // running server, Music holds a playing mpv and a queue, and
-                  // rebuilding either every time it is looked at would restart
-                  // the poll and lose the ledger's page and sort, or drop the
-                  // now-playing. The ones that cost something to keep warm are
-                  // told whether they are on screen instead.
-                  Expanded(
-                    child: IndexedStack(
-                      index: at.index,
-                      children: [
-                        HomePage(visible: at == Section.home),
-                        const PhotosPage(),
-                        const VideosPage(),
-                        const MusicPage(),
-                        const BooksPage(),
-                        const CloudPage(),
-                        const ToolsPage(),
-                        TransferPage(visible: at == Section.transfer),
-                        const FinancesPage(),
-                        SettingsPage(visible: at == Section.settings),
-                      ],
+      // The floating mini, the zen player and the video all wrap the whole
+      // app: what is playing does not stop playing when you leave the section
+      // that started it, and these are how it stays visible. Video is outermost
+      // — a film covers the window, including the mini.
+      home: VideoLayer(
+        child: MusicOverlay(
+          child: Scaffold(
+            backgroundColor: tokens.bg,
+            body: AnimatedBuilder(
+              animation: _shell,
+              builder: (context, _) {
+                final at = _shell.section;
+                return Row(
+                  children: [
+                    Sidebar(
+                      controller: _shell,
+                      onCycleTheme: _cycleTheme,
+                      themeIcon: _themeIcon,
                     ),
-                  ),
-                ],
-              );
-            },
+                    // Every section stays alive across a switch: Transfer polls a
+                    // running server, Music holds a playing deck and a queue, and
+                    // rebuilding either every time it is looked at would restart
+                    // the poll and lose the ledger's page and sort, or drop the
+                    // now-playing. The ones that cost something to keep warm are
+                    // told whether they are on screen instead.
+                    Expanded(
+                      child: IndexedStack(
+                        index: at.index,
+                        children: [
+                          HomePage(visible: at == Section.home),
+                          const PhotosPage(),
+                          const VideosPage(),
+                          const MusicPage(),
+                          const BooksPage(),
+                          const CloudPage(),
+                          const ToolsPage(),
+                          TransferPage(visible: at == Section.transfer),
+                          const FinancesPage(),
+                          SettingsPage(visible: at == Section.settings),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
           ),
         ),
       ),

@@ -271,7 +271,7 @@ class FirstRun extends StatelessWidget {
                     title: 'Import a statement',
                     detail: 'CSV, OFX, PDF or a spreadsheet.',
                     primary: true,
-                    onTap: () => c.send(const FinancesCmd.importPick()),
+                    onTap: c.importStatement,
                   ),
                   _Door(
                     icon: Icons.account_balance_outlined,
